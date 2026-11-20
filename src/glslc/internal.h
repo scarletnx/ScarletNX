@@ -607,6 +607,12 @@ typedef struct {
 /* the emitter's arrays and sections */
 #define GLSLC_MAX_RESOURCES 256u  /* samplers, images and blocks: their (set, binding) pairs */
 #define GLSLC_MAX_LOCATION  1024u /* an in or out variable's last location, plus one */
+#define GLSLC_MAX_BLOCK_READS 64u   /* uniform blocks read otherwise than whole from a uniform buffer (GlslcBlockFn) */
+/* a uniform block GlslcOptions.block reads otherwise than whole: its symbol (0 the default block), how, a window's
+   push constant bit and the variable its reads go through, at the block's set and binding */
+typedef struct {
+    uint32_t sym, mode, bit, var;
+} GlslcBlockRead;
 typedef struct {
     uint32_t* type_ids;    /* each type's SPIR-V type, by layout: [type * 3 + GLSLC_LAYOUT_*] */
     uint32_t* sym_ids;     /* each symbol's variable (a pointer) or function; a loose uniform's member */
@@ -638,6 +644,11 @@ typedef struct {
     /* flip_y: gl_FragCoord's [0] and gl_PointCoord's [1] Input variables, and the Private copies the shader reads */
     uint32_t flip_in[2], flip_copy[2];
     uint32_t interface_count;
+    GlslcBlockRead block_reads[GLSLC_MAX_BLOCK_READS];
+    uint32_t nblock_reads;
+    uint32_t window_type;  /* a window's Block struct of 4096 uvec4, 0 before the first */
+    uint32_t window_push;  /* the push constant variable the windows' offsets are read from, 0 without a window */
+    uint32_t window_word0; /* the push constants' word its member starts at */
     uint32_t resources[GLSLC_MAX_RESOURCES]; /* (set << 16) | binding taken */
     uint32_t nresources;
     uint8_t in_locations[GLSLC_MAX_LOCATION];
@@ -666,6 +677,9 @@ typedef struct {
     void* bind_user;
     int map_default; /* the map places the default uniform block too */
     int flip_y;      /* gl_FragCoord and gl_PointCoord read through the push constant's flip */
+    GlslcBlockFn block; /* how each uniform block is read, or NULL */
+    int desktop;     /* a desktop context's shader: GlslcOptions.desktop */
+    uint16_t desktop_version; /* a desktop GLSL shader's #version (110, 120, 330), 0 for GLSL ES */
     jmp_buf fail;
     /* the raw scanner */
     uint32_t cur;

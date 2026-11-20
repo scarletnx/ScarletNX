@@ -9,6 +9,7 @@
 #include "nds/cartridge/rom.h"
 #include "nds/gpu/gpu3d.h"
 #include "nds/gpu/gpu3d_state.h"
+#include "nds/hle/pxi.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/nds_image.h"
@@ -347,6 +348,43 @@ static void test_matrices(NdsBoard* board) {
     CHECK((uint32_t)g->tex_matrix[12] == 0xFFF00005u);
 }
 
+/* a vector through the vector matrix keeps the 32 bits of its sum: a matrix word of 2^30 + 1.0 times a component of
+   511 passes int's range, and what the engine keeps of the product (bits 12 to 22 for a normal, 9 to 24 for the
+   vector test) is 1.0's, so a lit normal's colour and the test's answer are the identity matrix's */
+static void test_vectors(NdsBoard* board) {
+    const NdsGpu3D* g = nds_gpu3d_state(board);
+    uint8_t lit[3];
+    gx(board, 0x10, 2), gx(board, 0x15, 0);
+    gx(board, 0x30, 0x7FFF), gx(board, 0x31, 0);                         /* white diffuse, nothing else */
+    gx(board, 0x32, 0x200), gx(board, 0x33, 0x7FFF);                     /* light 0, white, shining down -x */
+    gx(board, 0x29, 0x001F00C1), gx(board, 0x40, 0), gx(board, 0x41, 0); /* light 0 on */
+    gx(board, 0x21, 0x1FF);                                              /* a normal along +x, towards the light */
+    memcpy(lit, g->vertex_color, sizeof lit);
+    CHECK(lit[0] == 29 && lit[1] == 29 && lit[2] == 29); /* 31 * 31 * 511 >> 14 */
+    gx(board, 0x72, 0x1FF);
+    CHECK(nds_io_read(board, IO + 0x630, 4) == 0x0FF8 && nds_io_read(board, IO + 0x634, 2) == 0);
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x16, k == 0 ? 0x40001000u : k % 5 == 0 ? 0x1000 : 0);
+    gx(board, 0x21, 0x1FF);
+    CHECK(!memcmp(lit, g->vertex_color, sizeof lit));
+    gx(board, 0x72, 0x1FF);
+    CHECK(nds_io_read(board, IO + 0x630, 4) == 0x0FF8 && nds_io_read(board, IO + 0x634, 2) == 0);
+    gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+}
+
+/* the sound driver's volumes are bytes a game sets whole, and its table of them holds 128 levels: a sequence at
+   volume 255 that is stopped, which reads its tracks' volumes, reads inside the table. Nothing of the read shows
+   without a note playing: it is the sanitizers' build that stops on one past the table */
+static void test_sound(NdsBoard* board) {
+    const uint32_t list = 0x02050000, notes = 0x02050100;
+    const uint32_t commands[3][6] = {{list + 0x18, 2, 0, notes, 0, 0},     /* prepare sequence 0 over empty notes */
+                                     {list + 0x30, 6, 0, 0x05, 255, 0x01}, /* its volume (key 0x105), 255 */
+                                     {0, 1, 0, 0, 0, 0}};                  /* stop it */
+    for (uint32_t i = 0; i < 3; ++i)
+        for (uint32_t k = 0; k < 6; ++k) nds_write32(board, list + i * 0x18 + k * 4, commands[i][k]);
+    nds_sound_request(board, list);
+    nds_sound_request(board, 0);
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -371,6 +409,8 @@ int main(void) {
     test_wfc_menu();
     test_geometry(board);
     test_matrices(board);
+    test_vectors(board);
+    test_sound(board);
     nds_board_free(board);
     free(board);
     nds_rom_close(&rom);

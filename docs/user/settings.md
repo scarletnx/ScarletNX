@@ -203,6 +203,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_calibrated_timestamps` | `auto` | `VK_KHR_calibrated_timestamps` |
 | `vk_khr_cooperative_matrix` | `auto` | `VK_KHR_cooperative_matrix` |
 | `vk_khr_copy_memory_indirect` | `auto` | `VK_KHR_copy_memory_indirect` |
+| `vk_khr_driver_properties` | `auto` | `VK_KHR_driver_properties`, promoted to Vulkan 1.2 |
 | `vk_khr_dynamic_rendering` | `auto` | `VK_KHR_dynamic_rendering`, promoted to Vulkan 1.3 |
 | `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
 | `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
@@ -228,6 +229,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_shader_maximal_reconvergence` | `auto` | `VK_KHR_shader_maximal_reconvergence` |
 | `vk_khr_swapchain` | `auto` | `VK_KHR_swapchain` |
 | `vk_khr_synchronization2` | `auto` | `VK_KHR_synchronization2`, promoted to Vulkan 1.3 |
+| `vk_khr_timeline_semaphore` | `auto` | `VK_KHR_timeline_semaphore`, promoted to Vulkan 1.2 |
 | `vk_khr_unified_image_layouts` | `auto` | `VK_KHR_unified_image_layouts` |
 | `vk_khr_video_decode_av1` | `auto` | `VK_KHR_video_decode_av1` |
 | `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
@@ -340,12 +342,13 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 
 ## Online
 
-Each console's online service, the launcher's Online group. They do nothing for a Switch game.
+Each console's online service, the launcher's Online group.
 
 | Key | Default | Effect |
 | --- | --- | --- |
 | `nds_wfc` | `off` | The DS's WFC service, the community's replacement of the closed original, by the DNS server set in the firmware's first Wi-Fi connection: `auto` is the service whose server answers first as the game starts (each asked once, for 1.5 s at most; the log says each one's time and the one taken, and with no answer the connections stay unset), `kaeru` (Kaeru WFC), `wiilink` (WiiLink), `wiimmfi` (Wiimmfi), `wiilink_wfc` (WiiLink WFC), `altwfc` (AltWFC), `newwfc` (NewWFC), `skytemple` (SkyTemple WFC), `diyfi` (DIYFI), `sudomemo` (Sudomemo); `custom` is the server `nds_wfc_dns` names, `off` the DNS of the DS's network. The DS driver reads it from the command line (`--nds-wfc`) or `settings.ini`'s `[Online]`. Another word stops the game, naming it. The DS driver has no wireless yet: a game's Wi-Fi settings show the connection, and no game connects through it ([DS](../platforms/nds/README.md#wfc)) |
 | `nds_wfc_dns` | empty | The DNS server `nds_wfc=custom` sets, an IPv4 address (`178.62.43.212`); with `custom`, empty or anything but an address stops the game |
+| `switch_online` | `0` | The Switch's online service of the console maker (its accounts, friends and game servers) is not offered: the row stays greyed, `Not offered`, on every system, and `0` (Off) is its one value. ScarletNX connects to none of its servers, nor to a service that stands in for them. A game's own internet access is `network` |
 
 ## User
 
@@ -390,7 +393,7 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `host_page` | `0` | The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB. `16384` or `65536` runs as a host with 16 or 64 KiB pages does, where views copy and a host page holds several guest pages ([PowerPC64](../hosts/ppc64.md#host-pages-larger-than-4-kib)). `0` is the host's own; any other value runs with the host's own too, said at start |
 | `nce_foreign_scan` | `0` | Under NCE, the seconds between two looks at what of the host's process lies in the game's addresses and is not the game's (another owner's mapping over its memory, a run nothing maps), `1` to `3600`; each new finding is logged once. `0` is off: it looks only as the game's code starts and in a crash report ([NCE](../platforms/nx/nce.md#the-guests-addresses-moved-above-64-gib)). Each look reads `/proc/self/maps`, a few milliseconds |
 | `gpu_page_check` | `0` | `1` counts the GPU's written pages (`gpu/maxwell/maxwell3d.c` and `write_pages.c`) and the renderer's pending results (`gpu/vk/pending_pages.c`), which the runtime counts by GPU page, by guest address too, and each lookup translates its range through the GMMU as well: the log warns of each write or result only that finds. Slow: for checking those tables |
-| `draw_state_check` | `0` | `1` has a draw that keeps an earlier draw's shaders and pipeline make them again to compare, and the log names each difference (a register missing from a group, an input that is not compared, a kept key that is not the state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where the full check found a change. Slow: for checking what a draw keeps |
+| `draw_state_check` | `0` | `1` has a draw that keeps an earlier draw's shaders and pipeline make them again to compare, and the log names each difference (a register missing from a group, an input that is not compared, a kept key that is not the state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where the full check found a change. The buffers and images of a draw past the count it has of each, which a draw leaves unwritten, hold a pattern, so a read past a count shows. Slow: for checking what a draw keeps |
 | `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
 | `hooks` | `1` | `1` runs the native handler of each of the game's exported functions the runtime has one for (`hle/hook/hooks.hook`: the C library's `memcpy`, `memmove` and `memset`) instead of its own code. `0` runs every function's own code, to tell whether a problem comes from a hook ([Hooks](../platforms/nx/hooks.md)) |
 | `hooks_off` | empty | The families of hooks (`hooks.hook`'s family lines, such as `libc`) whose functions run their own code, separated by commas or spaces, to tell which family a problem comes from. Empty, every family is on |

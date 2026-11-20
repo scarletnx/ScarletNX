@@ -304,7 +304,7 @@ typedef struct {
     int has_display_timing;
     /* the device's memory (uma.c): VK_MEM_*, and how guest buffers reach it, VK_MEM_PATH_* (the vk_memory setting) */
     int mem_model, mem_path;
-    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
+    char start_failure[1024]; /* why vk_init found no device it runs on, with each device's Vulkan version */
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
@@ -324,9 +324,14 @@ typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } V
 int vk_init(void);
 /* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
 const char* vk_start_failure(void);
+/* why a swapchain could not be made, into out: the device, its driver ("" for its driver) and r with its number */
+void vk_swapchain_failure(char* out, size_t size, const char* device, const char* driver, VkResult r);
 /* how many of the extensions a Vulkan 1.2 device runs the renderer with (1.3's, device.c) e lacks, their names in out
    (size bytes, may be 0) comma separated */
 u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);
+/* on a Vulkan 1.1 device, what the 1.2 way takes there: a timeline semaphore and the driver's identity, which 1.2
+   made core, and those; how many e lacks, named in out the same way */
+u32 vk_1_1_missing(const SnxVkExtensions* e, char* out, size_t size);
 /* the vk_api setting's text as the most Vulkan version the renderer takes, *cap (0 for auto, the device's up to 1.3):
    1, or 0 with why (n bytes) naming the value and the ones it takes */
 int vk_api_setting(const char* text, u32* cap, char* why, size_t n);
@@ -1985,15 +1990,16 @@ void vk_bc7_cache_close(void);
 /* 1 while the cache is open and held no level as it opened: every ASTC level is encoded as it first loads */
 int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
-/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped), or the
+   cache's I/O thread is held 250 ms in a read (a slow disk: the record kept) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
-/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
-   and buf) into img, in layout, by copy there when they check out (none when img is VK_NULL_HANDLE): before the
-   commands that cb
-   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
-   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+/* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
+   copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
+   is VK_NULL_HANDLE): before the commands that cb gets after this, and before its submission. cb must go through that
+   thread (vk_rec_ring). 1 when it is queued; 0 when they aren't there, or the I/O thread is behind a slow disk (the
+   level is encoded then); -1 when there is no such thread or the file can't be opened again (read them with
    vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
-   vk_bc7_cache_take_failed with owner and gva */
+   vk_bc7_cache_take_failed with owner and gva; so does a read the recording thread left as late, its record kept */
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
                             VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
 /* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
@@ -2003,9 +2009,14 @@ int vk_bc7_cache_failed_pending(void);
 /* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
    was timed */
 u64 vk_bc7_cache_read_ns(u64 bytes);
+/* key's blocks, size bytes at p, kept: in the index at once, written by the cache's I/O thread in its turn; not kept
+   when the writes waiting hold 64 MiB (counted, vk_bc7_cache_late) */
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
+/* the hits whose read was left as late and those not asked while the cache's I/O thread was behind, their levels
+   encoded instead, and the new records not kept for want of room in its queue of writes, in all: a slow disk's */
+void vk_bc7_cache_late(u64* late, u64* skipped, u64* unkept);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
@@ -2494,7 +2505,6 @@ typedef struct {
    stages, geometry, fragment (ST_VS to ST_FS), then an Ounce's task and mesh stages (DS_TASK, DS_MESH) */
 #define VK_DRAW_STAGES DS_GFX_STAGES
 typedef struct {
-    VkDrawGbuf b[VK_DRAW_STAGES][16];
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
@@ -2503,6 +2513,9 @@ typedef struct {
        the draw's vertex streams */
     u32 attr[32][4];
     u32 divisor[32];
+    /* last: a draw clears what is above and the n[stage] buffers each stage has (render.c's draw_storage_read), not
+       the 5 KiB of all of them. Nothing reads a stage's buffers past its count */
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
@@ -3111,6 +3124,14 @@ int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
+/* An indirect draw of quads, its record at record_at of record (16 bytes of a draw of vertices, 20 of one of indices),
+   made the indexed record of their triangles at *arguments_at of *arguments, on the GPU. size 0: quads of vertices,
+   drawn with the renderer's quad indices of vertex numbers, which hold limit quads. Else quads of indices of size
+   bytes, limit of them from indices_at of indices on: their triangles' 32-bit indices are made at *made_at of
+   *arguments. last: the quad's last vertex provokes. A record past limit draws the quads limit allows. 0 when it
+   can't be made */
+int vk_indirect_quads(VkBuffer record, u64 record_at, u32 size, VkBuffer indices, u64 indices_at, u32 limit, int last,
+                      VkBuffer* arguments, u64* arguments_at, u64* made_at);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
@@ -3185,10 +3206,10 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
    block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
    CPU, a range from the buffer cache, or a range under a pending result (not kept); and of the kept ones, those kept
    past the submission they were made in. A texture slot: its handle kept, resolved again, or past the limits of its
-   pools; and its view and its sampler kept */
+   pools; its view and its sampler kept; and the lookups that went through the memo, kept or not */
 enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
        VK_CB_PAST_SUBMIT, VK_CB_N };
-enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_N };
+enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_MEMO, VK_TEX_N };
 /* A draw's fragment key (render.c's fs_key): the draw before's, or made again for the first of these that held it
    back, in the order fs_key asks them; then the keys made again that weren't kept for the next draw, and why */
 enum {
@@ -3204,9 +3225,9 @@ enum {
     VK_FS_EPOCH,           /* a write tracking epoch */
     VK_FS_PRESENT,         /* a present */
     VK_FS_HANDLES,         /* other handle words */
-    VK_FS_QUIET,           /* a slot's target undefined, or its texture not quiet now */
+    VK_FS_QUIET,           /* a slot's target undefined, its texture not quiet now, or the target it is over drawn to */
     VK_FS_UNKEPT_IMAGES,   /* not kept: the program has images, which image_variant reads each draw */
-    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps, or is over a target */
+    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
     VK_FS_N
 };
 typedef struct {
@@ -3221,6 +3242,9 @@ typedef struct {
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
+    u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
+                      that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
+                      before them, bank 2, the root tables */
 } VkDrawCounts;
 void vk_draw_counts(VkDrawCounts* c);
 void vk_render_stats_log(void); /* the counts of the last 600 presents in the log (each 600 presents) */
@@ -3281,6 +3305,12 @@ extern u64 g_vk_barriers_in_pass;
 #define VK_FEEDBACK_IN_PLACE  0
 #define VK_FEEDBACK_PREDRAW   1
 #define VK_FEEDBACK_INTERLOCK 2
+/* The mode a device takes: the capture on NVIDIA's and AMD's GPUs (vendor) that have the fragment interlock with
+   attachment feedback loops and fragment stores, the two draws on the others with dynamic rendering local read */
+static inline int vk_feedback_choice(u32 vendor, int feedback, int interlock, int stores, int local_read) {
+    const int capture = (vendor == 0x10DE || vendor == 0x1002) && feedback && interlock && stores;
+    return capture ? VK_FEEDBACK_INTERLOCK : local_read ? VK_FEEDBACK_PREDRAW : VK_FEEDBACK_IN_PLACE;
+}
 extern u64 g_vk_predraws;        /* feedback draws drawn two times (render.c predraw_run) */
 extern u64 g_vk_predraw_refused; /* and those that stayed in place, which the log says why of */
 void vk_predraw_report(void);   /* logs the counts of each reason (render.c) */
@@ -3378,6 +3408,7 @@ enum {
     VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */
     VK_PROF_VIC,             /* a VIC composition (vic.c) */
     VK_PROF_XFB_INDIRECT,    /* a transform feedback counter's draw arguments (xfb_indirect.comp) */
+    VK_PROF_INDIRECT_QUADS,  /* an indirect draw of quads made one of triangles (indirect_quads.comp) */
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */

@@ -190,6 +190,9 @@ static struct {
        (vk_buf_own_got) */
     u32 got;
     u64 got_id;
+    /* the map of a draw with nothing aliased, staged in the frame map_none_frame - 1 (0: never): draw_map_none */
+    VkBuffer map_none;
+    u64 map_none_off, map_none_frame;
 } g_buffer;
 /* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
 enum {
@@ -3490,6 +3493,25 @@ void vk_buf_alias_counts(u64* atlas, u64* pages, u64* inplace, u64 why[VK_ALIAS_
 /* All bindings of an aliasing draw index one page atlas, where they can't be bound in place (alias_in_place). This
    also covers fragmented GPU mappings: the shader's word index is translated through its binding's page list, so a
    write through either VA reaches the same word. */
+/* The map of a draw with nothing aliased: no table for any of the 16 bindings, then their 32 zero offsets and sizes.
+   The same words for every stage of every such draw, so they are staged once a frame (vk_stage lives for the frame,
+   as render.c's frame_consts) and each draw binds them where the last one did: a stage whose buffers stay keeps its
+   descriptor set (desc_set_cached), which a map at a new offset for each draw never let it. One game drew 5800 times
+   a frame with a vertex program that has global memory, each with a set of its own for this map alone */
+#define DRAW_MAP_WORDS 48
+static int draw_map_none(VkBuffer* buf, u64* off) {
+    if (g_buffer.map_none_frame != vk_frame_id() + 1) {
+        u32* map = (u32*)vk_stage(DRAW_MAP_WORDS * 4, vk_stage_align(), &g_buffer.map_none, &g_buffer.map_none_off);
+        if (!map) return 0;
+        for (int i = 0; i < 16; i++) map[i] = ~0u;
+        for (int i = 16; i < DRAW_MAP_WORDS; i++) map[i] = 0;
+        snx_le32_array(map, DRAW_MAP_WORDS); /* the shader reads the table little-endian */
+        g_buffer.map_none_frame = vk_frame_id() + 1;
+    }
+    *buf = g_buffer.map_none;
+    *off = g_buffer.map_none_off;
+    return 1;
+}
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
     size_t n = 0;
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
@@ -3537,12 +3559,19 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     }
     for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!draw->n[s]) continue;
-        size_t words = 48;
-        if (alias)
-            for (int i = 0; i < draw->n[s]; i++) {
-                VkDrawGbuf* b = &draw->b[s][i];
-                if (b->addr && active[s * 16 + i]) words += ((b->addr & 4095) + b->size + 4095) >> 12;
+        if (!alias) {
+            if (!draw_map_none(&draw->map_buf[s], &draw->map_off[s])) {
+                free(p);
+                return 0;
             }
+            draw->map_size[s] = DRAW_MAP_WORDS * 4;
+            continue;
+        }
+        size_t words = DRAW_MAP_WORDS;
+        for (int i = 0; i < draw->n[s]; i++) {
+            VkDrawGbuf* b = &draw->b[s][i];
+            if (b->addr && active[s * 16 + i]) words += ((b->addr & 4095) + b->size + 4095) >> 12;
+        }
         u32* map = (u32*)vk_stage(words * 4, vk_stage_align(), &draw->map_buf[s], &draw->map_off[s]);
         if (!map) {
             free(p);
@@ -3550,23 +3579,21 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
         }
         draw->map_size[s] = words * 4;
         for (int i = 0; i < 16; i++) map[i] = ~0u;
-        for (int i = 16; i < 32; i++) map[i] = 0;
-        for (int i = 32; i < 48; i++) map[i] = 0;
-        size_t at = 48;
-        if (alias)
-            for (int i = 0; i < draw->n[s]; i++) {
-                VkDrawGbuf* b = &draw->b[s][i];
-                if (!b->addr || !active[s * 16 + i]) continue;
-                map[i] = (u32)at;
-                map[16 + i] = (u32)((b->addr & 4095) >> 2);
-                map[32 + i] = b->size >> 2;
-                for (u64 g = b->addr & ~4095ull, e = b->addr + b->size; g < e; g += 4096)
-                    map[at++] = draw_page_index(p, unique, draw_page_key(g));
-                b->aliased = 1;
-                b->buf = atlas;
-                b->off = atlas_off;
-                b->range = atlas_size;
-            }
+        for (int i = 16; i < DRAW_MAP_WORDS; i++) map[i] = 0;
+        size_t at = DRAW_MAP_WORDS;
+        for (int i = 0; i < draw->n[s]; i++) {
+            VkDrawGbuf* b = &draw->b[s][i];
+            if (!b->addr || !active[s * 16 + i]) continue;
+            map[i] = (u32)at;
+            map[16 + i] = (u32)((b->addr & 4095) >> 2);
+            map[32 + i] = b->size >> 2;
+            for (u64 g = b->addr & ~4095ull, e = b->addr + b->size; g < e; g += 4096)
+                map[at++] = draw_page_index(p, unique, draw_page_key(g));
+            b->aliased = 1;
+            b->buf = atlas;
+            b->off = atlas_off;
+            b->range = atlas_size;
+        }
         snx_le32_array(map, words); /* the shader reads the table little-endian */
     }
     if (alias)

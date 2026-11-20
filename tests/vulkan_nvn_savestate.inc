@@ -293,7 +293,10 @@ static int check_nvn_savestate(const char* shot) {
                 (unsigned long long)own_bytes);
     CHECK(!own && !own_bytes);
     /* what the renderer built from the queue's draw state is keyed by generations this process hands out */
-    for (u32 g = 0; g < DS_GENS; g++) CHECK(g_nvn.replay.q[0].d.ds.gen[g] > before);
+    const DsState* ds = &g_nvn.replay.q[0].d.ds;
+    for (u32 g = 0; g < DS_GENS; g++) CHECK(ds->gen[g] > before);
+    for (u32 s = 0; s < DS_GFX_STAGES; s++) CHECK(ds->inl_gen[0][s] > before && ds->inl_gen[1][s] > before);
+    CHECK(ds->root_gen > before);
     /* the pacer's clock goes on from the save, and the window's next texture comes at once: its last present's slot
        is behind that clock, not an hour ahead of the process's */
     CHECK(nvn_now() >= NVN_OBJ(const NvnWindow, window)->pace);

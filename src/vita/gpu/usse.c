@@ -1991,6 +1991,10 @@ static void fragment_inputs(T* t) {
                 fail(t, "point sprite texture reads");
                 return;
             }
+            if (coord_index >= sizeof coords / sizeof *coords) {
+                fail(t, "texture coordinate %u", (unsigned)coord_index);
+                return;
+            }
             if (resource >= USSE_TEXTURES) {
                 fail(t, "sampler %u", (unsigned)resource);
                 return;
@@ -2232,13 +2236,35 @@ static void fragment_output(T* t) {
     SPV_VOID(&t->e, SPV_OP_STORE, out, SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v4f, v.c[0], v.c[1], v.c[2], v.c[3]));
 }
 
+/* whether a table lies in the program's bytes: count records of bytes each, from where the offset field at field
+   points (an empty one is nowhere). The counts and the offsets are the game's words, and the translator walks each
+   table by its count */
+static bool table_fits(const unsigned char* gxp, size_t size, unsigned field, unsigned count_field, unsigned bytes) {
+    uint64_t at = (uint64_t)field + snx_ld_le32(gxp + field), count = snx_ld_le32(gxp + count_field);
+    return !count || (at <= size && count * bytes <= size - at);
+}
 bool usse_translate(const unsigned char* gxp, size_t size, const UsseHints* hints, bool preserve_infnan,
                     UsseShader* out, char* error, size_t error_size) {
+    static const struct {
+        const char* name;
+        unsigned field, count_field, bytes;
+    } tables[] = {{"parameters", GXP_PARAMETERS, GXP_PARAMETER_COUNT, 16},
+                  {"containers", GXP_CONTAINERS, GXP_CONTAINER_COUNT, 8},
+                  {"uniform buffers", GXP_UNIFORM_BUFFERS, GXP_UNIFORM_BUFFER_COUNT, 8},
+                  {"dependent samplers", GXP_DEPENDENT_SAMPLERS, GXP_DEPENDENT_SAMPLER_COUNT, 4},
+                  {"literals", GXP_LITERALS, GXP_LITERALS_COUNT, 8}};
     memset(out, 0, sizeof *out);
     if (size < 160 || snx_ld_le32(gxp) != GXP_MAGIC) {
         snprintf(error, error_size, "not a GXP program");
         return false;
     }
+    for (unsigned i = 0; i < sizeof tables / sizeof *tables; ++i)
+        if (!table_fits(gxp, size, tables[i].field, tables[i].count_field, tables[i].bytes)) {
+            snprintf(error, error_size, "the GXP program's %u %s, from byte %llu, end past its %zu bytes",
+                     (unsigned)snx_ld_le32(gxp + tables[i].count_field), tables[i].name,
+                     (unsigned long long)tables[i].field + snx_ld_le32(gxp + tables[i].field), size);
+            return false;
+        }
     T* t = calloc(1, sizeof *t);
     if (!t) {
         snprintf(error, error_size, "out of memory");

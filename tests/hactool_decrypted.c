@@ -16,6 +16,8 @@
 #pragma clang diagnostic ignored "-Winconsistent-dllimport"
 #endif
 #include "nx/runtime/driver/hactool/nca.h"
+#include "nx/runtime/driver/hactool/hfs0.h"
+#include "nx/runtime/driver/hactool/pfs0.h"
 #include "nx/runtime/driver/hactool/xci.h"
 #include "nx/runtime/driver/hactool/sha.h"
 #if defined(_WIN32) && defined(__clang__)
@@ -288,9 +290,75 @@ static void invalid_patch_layout(unsigned kind) {
     exit(90);
 }
 
+/* A dump's words that name more than it holds: a file's name that starts past its table's string table (kind 4, a
+   PFS0; 6, an HFS0; 7, an NCA's PFS0 section) or has no end in it (5), which strcmp and strlen would read to wherever
+   a zero is, and an IVFC level's block size of 2^32 (8), a shift by the width of what is shifted */
+static void invalid_table(unsigned kind) {
+    hactool_ctx_t tool = {0};
+    struct {
+        pfs0_header_t header;
+        pfs0_file_entry_t entry;
+        char names[8];
+    } pfs = {{snx_le32(MAGIC_PFS0), snx_le32(1), snx_le32(8), 0}, {0, 0, snx_le32(0x7FFFFFF0), 0}, "a"};
+    if (kind == 5) pfs.entry.string_table_offset = 0, memset(pfs.names, 'a', sizeof(pfs.names));
+    if (kind == 4 || kind == 5) {
+        pfs0_ctx_t ctx = {0};
+        ctx.tool_ctx = &tool;
+        ctx.file = archive(&pfs, sizeof(pfs), NULL, 0);
+        pfs0_process(&ctx);
+    } else if (kind == 6) {
+        struct {
+            hfs0_header_t header;
+            hfs0_file_entry_t entry;
+            char names[8];
+        } hfs = {{snx_le32(MAGIC_HFS0), snx_le32(1), snx_le32(8), 0}, {0}, "a"};
+        hfs0_ctx_t ctx = {0};
+        hfs.entry.string_table_offset = snx_le32(8); /* the first byte after the table */
+        ctx.tool_ctx = &tool;
+        ctx.file = archive(&hfs, sizeof(hfs), NULL, 0);
+        hfs0_process(&ctx);
+    } else if (kind == 7) {
+        /* pfs_sections' plaintext archive, its PFS0 the one above: the hash table's one block covers it */
+        nca_header_t header = {0};
+        nca_ctx_t ctx;
+        unsigned char body[0x200] = {0};
+        pfs0_superblock_t* sb = &header.fs_headers[0].pfs0_superblock;
+        memcpy(body + 0x20, &pfs, sizeof(pfs));
+        sha256_hash_buffer(body, &pfs, sizeof(pfs));
+        sha256_hash_buffer(sb->master_hash, body, 0x20);
+        sb->block_size = 0x40;
+        sb->hash_table_size = 0x20;
+        sb->pfs0_offset = 0x20;
+        sb->pfs0_size = sizeof(pfs);
+        header.magic = MAGIC_DNCA;
+        header.fixed_key_generation = 0xFF;
+        header.crypto_type = 0xFF;
+        header.section_entries[0].media_start_offset = 6;
+        header.section_entries[0].media_end_offset = 7;
+        header.fs_headers[0].partition_type = PARTITION_PFS0;
+        header.fs_headers[0].fs_type = FS_TYPE_PFS0;
+        header.fs_headers[0].crypt_type = CRYPT_CTR;
+        memset(header.rights_id, 0xA5, sizeof(header.rights_id));
+        nca_header_swap(&header);
+        tool.action = ACTION_VERIFY;
+        nca_init(&ctx);
+        ctx.tool_ctx = &tool;
+        ctx.file = archive(&header, sizeof(header), body, sizeof(body));
+        nca_process(&ctx);
+    } else {
+        nca_section_ctx_t section = {0};
+        romfs_superblock_t sb = {0};
+        section.tool_ctx = &tool;
+        section.romfs_ctx.superblock = &sb;
+        sb.ivfc_header.level_headers[0].block_size = 32;
+        nca_process_ivfc_section(&section);
+    }
+    exit(90); /* read on, where the table is refused */
+}
+
 static void invalid_patch_layouts(const char* self) {
     CHECK(!fflush(NULL));
-    for (unsigned kind = 0; kind < 4; kind++) {
+    for (unsigned kind = 0; kind < 9; kind++) {
 #if defined(_WIN32)
         char kind_text[] = {(char)('0' + kind), 0};
         char* quoted_self = malloc(strlen(self) + 3);
@@ -303,13 +371,32 @@ static void invalid_patch_layouts(const char* self) {
         (void)self;
         pid_t child = fork();
         CHECK(child >= 0);
-        if (!child) invalid_patch_layout(kind);
+        if (!child) kind < 4 ? invalid_patch_layout(kind) : invalid_table(kind);
         int status;
         CHECK(waitpid(child, &status, 0) == child);
         CHECK(WIFEXITED(status));
         CHECK(WEXITSTATUS(status) == EXIT_FAILURE);
 #endif
     }
+}
+
+/* a PFS0 whose main.npdm holds no byte: no ExeFS, and no read of the magic the file has not (malloc gives a block of
+   no bytes for it, which the sanitizers' build stops a read of) */
+static void empty_npdm(void) {
+    hactool_ctx_t tool = {0};
+    pfs0_ctx_t ctx = {0};
+    struct {
+        pfs0_header_t header;
+        pfs0_file_entry_t entry;
+        char names[16];
+    } pfs = {{snx_le32(MAGIC_PFS0), snx_le32(1), snx_le32(16), 0}, {0}, "main.npdm"};
+    ctx.tool_ctx = &tool;
+    ctx.file = archive(&pfs, sizeof(pfs), NULL, 0);
+    pfs0_process(&ctx);
+    CHECK(!ctx.is_exefs && ctx.npdm_size == 0);
+    free(ctx.npdm);
+    free(ctx.header);
+    CHECK(!fclose(ctx.file));
 }
 
 static void gamecard_headers(void) {
@@ -352,8 +439,9 @@ static void gamecard_headers(void) {
 
 int main(int argc, char** argv) {
     if (argc == 3 && !strcmp(argv[1], "--invalid-bktr")) {
-        CHECK(argv[2][0] >= '0' && argv[2][0] <= '3' && !argv[2][1]);
-        invalid_patch_layout((unsigned)(argv[2][0] - '0'));
+        CHECK(argv[2][0] >= '0' && argv[2][0] <= '8' && !argv[2][1]);
+        argv[2][0] < '4' ? invalid_patch_layout((unsigned)(argv[2][0] - '0'))
+                         : invalid_table((unsigned)(argv[2][0] - '0'));
     }
     CHECK(sizeof(nca_header_t) == 0xC00);
     CHECK(sizeof(xci_header_t) == 0x200);
@@ -364,6 +452,7 @@ int main(int argc, char** argv) {
     plaintext_patch(CRYPT_NONE, 0, 0x4200);
     plaintext_patch(CRYPT_NONE, 0x200, 0x4200);
     invalid_patch_layouts(argv[0]);
+    empty_npdm();
     gamecard_headers();
     printf("hactool decrypted: %u checks passed\n", checks);
     return 0;

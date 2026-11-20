@@ -554,6 +554,93 @@ static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 in
     return 0;
 }
 
+/* Indirect draws whose indices Vulkan can't read as they are, which the renderer makes on the GPU from the whole
+   index buffer (render.c's indirect_indices_made), the record unchanged: strips of every index size whose restart
+   index is 2 (one green triangle; taken for a vertex it draws red), with and without 8-bit indices on the device, and
+   an 8-bit list from first index 1 on a device without them, whose index 0 is a vertex outside the buffer. Without
+   the conversion none of them was drawn */
+static int indirect_made_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 strip[5] = {4, 5, 7, 2, 4}, list[7] = {9, 4, 5, 7, 5, 6, 7}, list0[6] = {0, 1, 3, 1, 2, 3};
+    /* count, instances, first index, base vertex, base instance */
+    const u32 strip_record[5] = {5, 1, 0, 0, 0}, list_record[5] = {6, 1, 1, 0, 0};
+    const int had8 = g_vk.has_index8;
+    DrawCall call = {
+        .topology = 5, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 20};
+    CHECK(!put_words(args, strip_record, 5));
+    for (int index8 = had8; index8 >= 0; index8--) {
+        g_vk.has_index8 = index8;
+        for (u32 isz = 1; isz <= 4; isz *= 2) {
+            CHECK(!index_buffer(channel, indices, strip, 5, isz, 2));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_half_green(&px))
+                fprintf(stderr,
+                        "indirect strip of %u byte indices restarting at 2, 8-bit indices %s: %u green, %u "
+                        "blue, %u red\n",
+                        isz, index8 ? "on the device" : "widened", px.green, px.blue, px.red);
+            CHECK(index_half_green(&px));
+        }
+    }
+    g_vk.has_index8 = 0;
+    CHECK(!put_words(args, list_record, 5));
+    CHECK(!index_buffer(channel, indices, list, 7, 1, ~0u));
+    call.topology = 4;
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect list of widened 8-bit indices from index 1: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    g_vk.has_index8 = had8;
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: 8-bit indices widened and restart indices made Vulkan's on the GPU, the records unchanged");
+    return 0;
+}
+
+/* Indirect draws of quads, whose record a compute pass makes the indexed record of their triangles (render.c's
+   indirect_quads, indirect_quads.comp): the green quad's vertices; the red quad then the green one over it, two
+   quads of one record; quads of 1, 2 and 4-byte indices from first index 1, through a base vertex, and with a
+   count past the buffer's end, which draws the one quad the buffer holds. None of them was drawn before */
+static int indirect_quads_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 quad[5] = {9, 4, 5, 6, 7}, quad0[4] = {0, 1, 2, 3}, list0[6] = {0, 1, 3, 1, 2, 3};
+    /* count, instances, first vertex, base instance */
+    const u32 green[4] = {4, 1, 4, 0}, both[4] = {8, 1, 0, 0};
+    /* count, instances, first index, base vertex, base instance */
+    const u32 from1[5] = {4, 1, 1, 0, 0}, based[5] = {4, 1, 0, 4, 0}, past[5] = {8, 1, 1, 0, 0};
+    DrawCall call = {.topology = 7, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 16};
+    CHECK(!put_words(args, green, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads of vertices: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    CHECK(!put_words(args, both, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads, two of a record: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    call.indexed = 1;
+    call.stride = 20;
+    for (u32 isz = 1; isz <= 4; isz *= 2) {
+        const struct {
+            const u32* indices;
+            u32 count;
+            const u32* record;
+            const char* what;
+        } cases[3] = {{quad, 5, from1, "from index 1"},
+                      {quad0, 4, based, "through a base vertex"},
+                      {quad, 5, past, "with a count past the buffer"}};
+        for (u32 c = 0; c < 3; c++) {
+            CHECK(!index_buffer(channel, indices, cases[c].indices, cases[c].count, isz, ~0u));
+            CHECK(!put_words(args, cases[c].record, 5));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_all_green(&px))
+                fprintf(stderr, "indirect quads of %u byte indices %s: %u green, %u red\n", isz, cases[c].what,
+                        px.green, px.red);
+            CHECK(index_all_green(&px));
+        }
+    }
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: quads of vertices and of indices made triangles on the GPU, their records too");
+    return 0;
+}
+
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
    add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
@@ -1916,6 +2003,8 @@ static int check_index_draws(void) {
     CHECK(!index_list_restart_cases(channel, target, indices));
     g_vk.has_list_restart = had_list_restart;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_made_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_quads_cases(channel, target, indices, address + 0x16000));
     CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));

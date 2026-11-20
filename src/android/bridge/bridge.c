@@ -266,6 +266,12 @@ void bridge_set_keep_ir(const char* folder) {
 
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
+    /* before anything of the bridge is kept: b.window says it started, and a start that failed is tried whole again */
+    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    if (!recompiler) {
+        snprintf(error, error_size, "the LLVM backend cannot target this host");
+        return false;
+    }
     /* the window at the same address on every run: the compiled code's cache is keyed by the code's addresses */
     void* w = plat_mem_reserve_at(WINDOW_ADDRESS, WINDOW_SIZE);
     if (!w) {
@@ -276,8 +282,13 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     void* e = plat_mem_alloc(EXPORTS_MAX * sizeof(Export));
     if (!w || !t || !e) {
         snprintf(error, error_size, "cannot reserve the native bridge's code window");
+        if (w) plat_mem_release(w, WINDOW_SIZE);
+        if (t) plat_mem_release(t, TABLE_BYTES);
+        if (e) plat_mem_release(e, EXPORTS_MAX * sizeof(Export));
+        snx_recompiler_free(recompiler);
         return false;
     }
+    b.recompiler = recompiler;
     b.window = w;
     b.table = t;
     b.exports = e;
@@ -289,11 +300,6 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.hi = b.lo + WINDOW_SIZE;
     b.next = b.lo + 0x10000; /* address 0 of the window stays unmapped */
     b.exports_base = b.hi - EXPORTS_SIZE;
-    b.recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    if (!b.recompiler) {
-        snprintf(error, error_size, "the LLVM backend cannot target this host");
-        return false;
-    }
     /* a phone's CPU: Armv8.2, without pointer authentication (getauxval's HWCAP says the same) */
     snx_recompiler_set_a64_target(b.recompiler, SNX_RECOMPILER_A64_ANDROID);
     if (b.optimization) snx_recompiler_set_optimization(b.recompiler, b.optimization);

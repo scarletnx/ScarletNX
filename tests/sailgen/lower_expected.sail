@@ -1,6 +1,7 @@
 /* sail-arm's definitions that lower.roots reaches (sailgen --extract), as they are in:
      lower.sail
-   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: an NX fixup goes in nx.sail */
+   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay
+   (README.md beside this file) */
 
 enum Mode = {Mode_Near, Mode_Far}
 

@@ -1,0 +1,57 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* An indirect draw of quads made one of triangles where the GPU holds its record: the count and the first index are
+   read here, and no host read or wait is needed. Invocation 0 writes the indexed record of the triangles (words 0 to
+   4 of the output). With size 0 the record was of vertices, drawn through the quad indices of vertex numbers the
+   renderer keeps, of which it has limit quads. Else it was of indices of size bytes, of which the bound range holds
+   limit from byte bias on: quad e's become two triangles from word 8 of the output on, around the provoking vertex
+   as texconv's TC_INDEX_QUADS orders them (last set: the quad's fourth vertex provokes). A record that asks for
+   more quads than limit allows draws that many */
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer Record {
+    uint record[];
+};
+layout(std430, set = 0, binding = 1) readonly buffer Indices {
+    uint src[];
+};
+layout(std430, set = 0, binding = 2) writeonly buffer Triangles {
+    uint dst[];
+};
+layout(push_constant) uniform Params {
+    uint first; /* the record's first word in its binding */
+    uint bias;
+    uint size;
+    uint last;
+    uint limit;
+};
+uint index_at(uint i) {
+    uint b = bias + i * size;
+    if (size == 4u) return src[b >> 2];
+    return (src[b >> 2] >> (8u * (b & 3u))) & (size == 1u ? 0xFFu : 0xFFFFu);
+}
+void main() {
+    uint e = gl_GlobalInvocationID.x, count = record[first], from = record[first + 2u], quads = count / 4u;
+    if (size == 0u)
+        quads = min(quads, limit);
+    else
+        quads = from < limit ? min(quads, (limit - from) / 4u) : 0u;
+    if (e == 0u) {
+        dst[0] = 6u * quads;
+        dst[1] = record[first + 1u];
+        dst[2] = 0u;
+        /* vertices: the first vertex is the offset of the vertex numbers; indices: the record's base vertex */
+        dst[3] = size == 0u ? from : record[first + 3u];
+        dst[4] = size == 0u ? record[first + 3u] : record[first + 4u];
+    }
+    if (size == 0u || e >= quads) return;
+    uint at = from + 4u * e, o = 8u + 6u * e;
+    uint a = index_at(at), b = index_at(at + 1u), c = index_at(at + 2u), d = index_at(at + 3u);
+    if (last == 0u) {
+        dst[o] = a, dst[o + 1u] = b, dst[o + 2u] = c;
+        dst[o + 3u] = a, dst[o + 4u] = c, dst[o + 5u] = d;
+    } else {
+        dst[o] = a, dst[o + 1u] = b, dst[o + 2u] = d;
+        dst[o + 3u] = b, dst[o + 4u] = c, dst[o + 5u] = d;
+    }
+}

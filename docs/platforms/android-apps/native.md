@@ -195,7 +195,10 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
 
 **GLES 2, 3.0 and 3.1** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
 
-- **Shaders** compile with glslc (`docs/layers/gpu/glslc.md`). `glCompileShader` compiles for the errors and the info log.
+- **Shaders** and programs are the shared GL layer's (`src/common/gpu/gl/gl_program.c`, which the console's GL games
+  use too): flat records and a byte arena a save state holds, while each program's Vulkan objects (its modules and
+  layouts) are the bridge's, made from the link at its first draw. They compile with glslc (`docs/layers/gpu/glslc.md`).
+  `glCompileShader` compiles for the errors and the info log.
   `glLinkProgram` compiles each stage again with a binding map: binding 0 of the program's set is the vertex
   shader's default uniform block, 1 the fragment shader's, then each sampler, image and block of one name at one
   binding for both stages. The link writes the vertex outputs' locations into the fragment shader's inputs of the
@@ -203,7 +206,8 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
   block: the link reads their offsets, strides and types from the module, and flattens structs and arrays into GL's
   names and locations. `glUniform*` writes into each stage's copy, which a draw puts into the frame's arena when it
   changed. The vertex inputs take `glBindAttribLocation`'s locations, else glslc's.
-- **Buffers** keep the guest's bytes in memory of their own, which `glMapBufferRange` gives the guest. A draw reads
+- **Buffers** and vertex arrays are the shared GL layer's too (`src/common/gpu/gl/gl_object.c`): a buffer's bytes
+  sit in chunks of host memory the layer places them in, and `glMapBufferRange` gives the guest those bytes. A draw reads
   their Vulkan copy, written in place when no submission in flight reads it, else copied into the frame's arena.
   A buffer that the GPU writes (`glReadPixels` into a pack buffer) moves to host-cached memory, and is read back.
 - **Textures** are one image each, with the whole chain of levels of the base level: 2D, cube maps, 3D and 2D arrays,

@@ -6,11 +6,12 @@
 
      sailgen --extract ROOTS -o OUT INPUT...
          copies the definitions of INPUT (sail-arm's .sail files) that ROOTS reaches into OUT (extract.c)
-     sailgen --generate ROOTS --backend llvm.h [--profile a64.profile] -o OUT INPUT... [--overlay FILE]...
+     sailgen --generate ROOTS --backend FILE... [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
          writes OUT, C that builds each decode function ROOTS names as LLVM IR (gen.c), from INPUT and the overlays,
-         whose definitions take the place of INPUT's of the same name (a platform's fixups), with the back end
-         (llvm.h, the lowering of Sail's builtins) copied at its top. A feature the profile's feature lines do not
-         name is one no guest has: IsFeatureImplemented of it is false when sailgen runs
+         whose definitions take the place of INPUT's of the same name (a platform's fixups), with the back end's files
+         (core.h, the lowering of Sail's builtins, then a machine's state: llvm.h for A64, llvm_arm.h for AArch32)
+         copied at its top in their order. A feature the profile's feature lines do not name is one no guest has:
+         IsFeatureImplemented of it is false when sailgen runs; its since lines give an encoding's architecture
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -125,12 +126,12 @@ int sg_flush(const char* path) {
 }
 
 static int usage(const char* why) {
-    fprintf(
-        stderr,
-        "sailgen: %s\n"
-        "usage: sailgen --extract ROOTS -o OUT INPUT...\n"
-        "       sailgen --generate ROOTS --backend llvm.h [--profile a64.profile] -o OUT INPUT... [--overlay FILE]...\n",
-        why);
+    fprintf(stderr,
+            "sailgen: %s\n"
+            "usage: sailgen --extract ROOTS -o OUT INPUT...\n"
+            "       sailgen --generate ROOTS --backend FILE [--backend FILE]... [--profile PROFILE] -o OUT INPUT...\n"
+            "               [--overlay FILE]...\n",
+            why);
     return 2;
 }
 
@@ -138,7 +139,8 @@ int main(int argc, char** argv) {
     const char* mode = NULL;
     const char* roots = NULL;
     const char* out = NULL;
-    const char* backend = NULL;
+    const char* backends[4];
+    int backend_count = 0;
     const char* profile = NULL;
     const char* inputs[16];
     int overlays[16], count = 0, i;
@@ -150,7 +152,8 @@ int main(int argc, char** argv) {
             roots = argv[++i];
         } else if (!strcmp(argv[i], "--backend")) {
             if (i + 1 >= argc) return usage("--backend takes the back end's file");
-            backend = argv[++i];
+            if (backend_count == 4) return usage("more than 4 back end files");
+            backends[backend_count++] = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
             if (i + 1 >= argc) return usage("--profile takes the decoder's profile (a64.profile)");
             profile = argv[++i];
@@ -177,7 +180,7 @@ int main(int argc, char** argv) {
         if (profile) return usage("--profile is --generate's");
         return sg_extract(roots, out, inputs, count);
     }
-    if (!backend) return usage("--generate needs --backend llvm.h");
+    if (!backend_count) return usage("--generate needs the back end's files (--backend core.h --backend llvm.h)");
     for (i = 0; i < count; ++i) sg_parse_file(inputs[i], overlays[i]);
-    return sg_generate(roots, backend, profile, out);
+    return sg_generate(roots, backends, backend_count, profile, out);
 }

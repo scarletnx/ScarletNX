@@ -177,7 +177,7 @@ endforeach()
 file(WRITE "${WORK}/unknown.txt" "table g_test_ini\nsetting Elsewhere\n    key elsewhere\n    int 0 1\n    default 0\n    only amiga\n")
 execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.txt"
                 RESULT_VARIABLE unknown_result OUTPUT_VARIABLE unknown_output ERROR_VARIABLE unknown_errors)
-if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux and arm64-linux\n$")
+if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux, arm64-linux and none\n$")
     message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
 endif()
 # a slider of a text, or of an int without words, is refused with its line: its steps are an int's words

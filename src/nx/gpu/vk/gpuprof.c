@@ -26,6 +26,7 @@
 #include <stdatomic.h>
 #include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/gpuprof_setting.h"
+#include "nx/gpu/vk/gpuprof_time.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -532,12 +533,9 @@ static GpKey* gp_key(const GpPass* p) {
     }
     return NULL;
 }
-/* to's ticks after from's, below 0 before it, within the graphics queue's valid bits: its counter may wrap */
-static i64 gp_ticks(u64 from, u64 to) {
-    u32 bits = g_vk.gfx_timestamp_bits;
-    u64 mask = bits >= 64 ? ~0ull : (1ull << bits) - 1, d = (to - from) & mask;
-    return d > mask / 2 ? -(i64)((from - to) & mask) : (i64)d;
-}
+/* on the graphics queue, whose counter may wrap */
+static i64 gp_ticks(u64 from, u64 to) { return vk_gpuprof_ticks(g_vk.gfx_timestamp_bits, from, to); }
+static u64 gp_ns(u64 from, u64 to, double period) { return vk_gpuprof_ns(g_vk.gfx_timestamp_bits, from, to, period); }
 /* The graphics queue's busy time in the slot's submissions, into g_stats_busy.ns: the union of their spans from begin
    to end, on the whole timeline. A command buffer's begin is written once the queue reaches it, which may be before
    the one before it ended, in this frame or the last (the slots are read in the order they were used): only what runs
@@ -562,7 +560,8 @@ static void gp_busy(const GpSlot* g, const u64* ts) {
 static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx) {
     for (u32 i = 0; i < o->nop; i++) {
         GpOp* x = &o->op[i];
-        u64 ns = (u64)((double)(ts[x->qi + 1] - ts[x->qi]) * period);
+        u64 ns = vk_gpuprof_ns(ctx == VK_GPU_CTX_COMPUTE ? g_vk.compute_timestamp_bits : g_vk.gfx_timestamp_bits,
+                               ts[x->qi], ts[x->qi + 1], period);
         GpDKey* k;
         if (x->kind != VK_OP_DRAW) { /* a pass's sum has its draws in it already */
             k = gp_dkey(x->kind, x->key, x->site);
@@ -639,7 +638,7 @@ void vk_gpuprof_frame_done(u32 slot) {
     gp_ops_done(&g->ops, ts, period, VK_GPU_CTX_GRAPHICS);
     for (u32 i = 0; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
-        u64 ns = (u64)((double)(ts[p->qi + 1] - ts[p->qi]) * period);
+        u64 ns = gp_ns(ts[p->qi], ts[p->qi + 1], period);
         GpKey* k = gp_key(p);
         g_pass_ns += ns;
         if (!k) continue;
@@ -651,7 +650,8 @@ void vk_gpuprof_frame_done(u32 slot) {
     for (u32 i = 1; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
         int c = p->dispatches ? 0 : p->xfers ? 1 : p->barriers ? 2 : 3;
-        u64 gns = (u64)((double)(ts[p->qi] - ts[g->pass[i - 1].qi + 1]) * period);
+        /* 0 for a pass the queue began before the one recorded before it ended */
+        u64 gns = gp_ns(ts[g->pass[i - 1].qi + 1], ts[p->qi], period);
         g_gap_ns[c] += gns;
         g_gaps[c]++;
         if (c == 1) {
@@ -662,7 +662,7 @@ void vk_gpuprof_frame_done(u32 slot) {
             g_mix_n[m] += p->kind[0] + p->kind[1] + p->kind[2];
         }
     }
-    g_span_ns += (u64)((double)(ts[g->ops.used - 1] - ts[0]) * period);
+    g_span_ns += gp_ns(ts[0], ts[g->ops.used - 1], period);
     g_frames++;
     static u64 last;
     u64 now = plat_ns();
@@ -836,6 +836,7 @@ static void gp_report(void) {
                                                    [VK_PROF_TEXCONV] = "a texture conversion",
                                                    [VK_PROF_VIC] = "a VIC composition",
                                                    [VK_PROF_XFB_INDIRECT] = "transform feedback's draw arguments",
+                                                   [VK_PROF_INDIRECT_QUADS] = "an indirect draw's quads",
                                                    [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
                                                    [VK_PROF_QUERY_COMPARE] = "a query compare",
                                                    [VK_PROF_QUERY_COUNT] = "the queries' counts",

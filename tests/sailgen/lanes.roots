@@ -1,5 +1,13 @@
-# three element loops: one that sets per-lane locals alone (one vector operation), one that carries a local from one
-# element to the next and one whose element is read after it (each stays a loop of elements)
+# element loops: one that sets per-lane locals alone (one vector operation), one that carries a local from one element
+# to the next and one whose element is read after it (each stays a loop of elements); one that reads elements 2e and
+# 2e + 1 of a concatenation (a shuffle); one from 1 that folds every element into a sum that starts at element 0 (a
+# reduction) and one whose sum starts at element 1 (a loop); and one with a loop inside a branch on U, which the
+# clause of one fixes at 0 (no loop inside: one vector operation) and the other leaves free (a loop)
 root decode_lanes_aarch64_instrs_test
 root decode_carried_aarch64_instrs_test
 root decode_last_aarch64_instrs_test
+root decode_pairs_aarch64_instrs_test
+root decode_fold_aarch64_instrs_test
+root decode_start_aarch64_instrs_test
+root decode_fixed_aarch64_instrs_test
+root decode_free_aarch64_instrs_test

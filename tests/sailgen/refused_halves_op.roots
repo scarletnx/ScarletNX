@@ -1,0 +1,2 @@
+# the same function joining the halves' results by EOR: refused, sailgen makes the sum alone
+root decode_op_aarch64_instrs_test

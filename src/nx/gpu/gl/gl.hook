@@ -1,0 +1,367 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The EGL and OpenGL functions the GL layer implements for a game that draws through its own GL driver
+# (gpu/gl/gl_loader.c), for tools/hookgen with --prefix gl: hooks.hook's grammar, each function by the
+# symbol the driver exports it as (eglInitialize, _glClearColor; eglGetProcAddress answers glClearColor with that
+# export's address). Every other egl and _gl export of the driver takes the handler that stops the game, naming
+# it. The handlers: gpu/gl/gl_egl.c (EGL), gpu/gl/gl_calls.c (GL, over common/gpu/gl/gl_state.h),
+# gpu/gl/gl_program_calls.c (shaders and programs, over common/gpu/gl/gl_program.h), gpu/gl/gl_object_calls.c
+# (buffers and vertex arrays, over common/gpu/gl/gl_object.h), gpu/gl/gl_texture_calls.c (textures and samplers, over
+# common/gpu/gl/gl_texture.h), gpu/gl/gl_framebuffer_calls.c (framebuffers and renderbuffers, over
+# common/gpu/gl/gl_framebuffer.h), gpu/gl/gl_sync_calls.c (fences, over common/gpu/gl/gl_sync.h).
+
+# EGL functions no hook implements yet, which a game's main calls directly: through their slots, to that handler
+route eglBindTexImage
+route eglCopyBuffers
+route eglCreatePbufferFromClientBuffer
+route eglCreatePixmapSurface
+route eglReleaseTexImage
+
+family egl
+hook eglGetError() -> i32 = gl_egl_get_error
+hook eglGetDisplay(addr native) -> addr = gl_egl_get_display
+hook eglInitialize(addr dpy, addr major, addr minor) -> u32 = gl_egl_initialize
+hook eglTerminate(addr dpy) -> u32 = gl_egl_terminate
+hook eglQueryString(addr dpy, i32 name) -> addr = gl_egl_query_string
+hook eglBindAPI(u32 api) -> u32 = gl_egl_bind_api
+hook eglQueryAPI() -> u32 = gl_egl_query_api
+hook eglGetConfigs(addr dpy, addr configs, i32 size, addr count) -> u32 = gl_egl_get_configs
+hook eglChooseConfig(addr dpy, addr attribs, addr configs, i32 size, addr count) -> u32 = gl_egl_choose_config
+hook eglGetConfigAttrib(addr dpy, addr config, i32 attribute, addr value) -> u32 = gl_egl_get_config_attrib
+hook eglCreateContext(addr dpy, addr config, addr share, addr attribs) -> addr = gl_egl_create_context
+hook eglDestroyContext(addr dpy, addr context) -> u32 = gl_egl_destroy_context
+hook eglQueryContext(addr dpy, addr context, i32 attribute, addr value) -> u32 = gl_egl_query_context
+hook eglCreateWindowSurface(addr dpy, addr config, addr window, addr attribs) -> addr = gl_egl_create_window_surface
+hook eglCreatePbufferSurface(addr dpy, addr config, addr attribs) -> addr = gl_egl_create_pbuffer_surface
+hook eglDestroySurface(addr dpy, addr surface) -> u32 = gl_egl_destroy_surface
+hook eglQuerySurface(addr dpy, addr surface, i32 attribute, addr value) -> u32 = gl_egl_query_surface
+hook eglSurfaceAttrib(addr dpy, addr surface, i32 attribute, i32 value) -> u32 = gl_egl_surface_attrib
+hook eglMakeCurrent(addr dpy, addr draw, addr read, addr context) -> u32 = gl_egl_make_current
+hook eglGetCurrentContext() -> addr = gl_egl_get_current_context
+hook eglGetCurrentDisplay() -> addr = gl_egl_get_current_display
+hook eglGetCurrentSurface(i32 which) -> addr = gl_egl_get_current_surface
+hook eglSwapBuffers(addr dpy, addr surface) -> u32 = gl_egl_swap_buffers
+hook eglSwapInterval(addr dpy, i32 interval) -> u32 = gl_egl_swap_interval
+hook eglWaitClient() -> u32 = gl_egl_wait_client
+hook eglWaitGL() -> u32 = gl_egl_wait_gl
+hook eglWaitNative(i32 engine) -> u32 = gl_egl_wait_native
+hook eglReleaseThread() -> u32 = gl_egl_release_thread
+hook eglGetProcAddress(addr name) -> addr = gl_egl_get_proc_address
+
+family state
+hook _glGetError() -> u32 = gl_get_error
+hook _glEnable(u32 cap) = gl_enable
+hook _glDisable(u32 cap) = gl_disable
+hook _glIsEnabled(u32 cap) -> u8 = gl_is_enabled
+hook _glBlendFunc(u32 src, u32 dst) = gl_blend_func
+hook _glBlendFuncSeparate(u32 src_rgb, u32 dst_rgb, u32 src_alpha, u32 dst_alpha) = gl_blend_func_separate
+hook _glBlendEquation(u32 mode) = gl_blend_equation
+hook _glBlendEquationSeparate(u32 rgb, u32 alpha) = gl_blend_equation_separate
+hook _glBlendColor(f32 r, f32 g, f32 b, f32 a) = gl_blend_color
+hook _glColorMask(u8 r, u8 g, u8 b, u8 a) = gl_color_mask
+hook _glDepthMask(u8 flag) = gl_depth_mask
+hook _glDepthFunc(u32 func) = gl_depth_func
+hook _glDepthRangef(f32 n, f32 f) = gl_depth_rangef
+hook _glDepthRange(f64 n, f64 f) = gl_depth_range
+hook _glCullFace(u32 mode) = gl_cull_face
+hook _glFrontFace(u32 mode) = gl_front_face
+hook _glStencilFunc(u32 func, i32 ref, u32 mask) = gl_stencil_func
+hook _glStencilFuncSeparate(u32 face, u32 func, i32 ref, u32 mask) = gl_stencil_func_separate
+hook _glStencilOp(u32 fail, u32 zfail, u32 zpass) = gl_stencil_op
+hook _glStencilOpSeparate(u32 face, u32 fail, u32 zfail, u32 zpass) = gl_stencil_op_separate
+hook _glStencilMask(u32 mask) = gl_stencil_mask
+hook _glStencilMaskSeparate(u32 face, u32 mask) = gl_stencil_mask_separate
+hook _glClearColor(f32 r, f32 g, f32 b, f32 a) = gl_clear_color
+hook _glClearDepthf(f32 depth) = gl_clear_depthf
+hook _glClearDepth(f64 depth) = gl_clear_depth
+hook _glClearStencil(i32 s) = gl_clear_stencil
+hook _glViewport(i32 x, i32 y, i32 width, i32 height) = gl_viewport
+hook _glScissor(i32 x, i32 y, i32 width, i32 height) = gl_scissor
+hook _glLineWidth(f32 width) = gl_line_width
+hook _glPointSize(f32 size) = gl_point_size
+hook _glPolygonMode(u32 face, u32 mode) = gl_polygon_mode
+hook _glPolygonOffset(f32 factor, f32 units) = gl_polygon_offset
+hook _glSampleCoverage(f32 value, u8 invert) = gl_sample_coverage
+hook _glHint(u32 target, u32 mode) = gl_hint
+hook _glPixelStorei(u32 pname, i32 value) = gl_pixel_storei
+hook _glGetIntegerv(u32 pname, addr data) = gl_get_integerv
+hook _glGetInteger64v(u32 pname, addr data) = gl_get_integer64v
+hook _glGetFloatv(u32 pname, addr data) = gl_get_floatv
+hook _glGetBooleanv(u32 pname, addr data) = gl_get_booleanv
+hook _glGetString(u32 name) -> addr = gl_get_string
+hook _glGetStringi(u32 name, u32 index) -> addr = gl_get_stringi
+hook _glFlush() = gl_flush
+hook _glFinish() = gl_finish
+
+family draw
+hook _glClear(u32 mask) = gl_clear
+hook _glDrawArrays(u32 mode, i32 first, i32 count) = gl_draw_arrays
+hook _glDrawArraysInstanced(u32 mode, i32 first, i32 count, i32 instances) = gl_draw_arrays_instanced
+hook _glDrawElements(u32 mode, i32 count, u32 type, addr indices) = gl_draw_elements
+hook _glDrawRangeElements(u32 mode, u32 start, u32 end, i32 count, u32 type, addr indices) = gl_draw_range_elements
+hook _glDrawElementsBaseVertex(u32 mode, i32 count, u32 type, addr indices, i32 base) = gl_draw_elements_base_vertex
+hook _glDrawElementsInstanced(u32 mode, i32 count, u32 type, addr indices, i32 instances) = gl_draw_elements_instanced
+hook _glDrawElementsInstancedBaseVertex(u32 mode, i32 count, u32 type, addr indices, i32 instances, i32 base) = gl_draw_elements_instanced_base_vertex
+
+family program
+hook _glCreateShader(u32 type) -> u32 = gl_create_shader
+hook _glDeleteShader(u32 shader) = gl_delete_shader
+hook _glIsShader(u32 shader) -> u8 = gl_is_shader
+hook _glShaderSource(u32 shader, i32 count, addr strings, addr lengths) = gl_shader_source
+hook _glCompileShader(u32 shader) = gl_compile_shader
+hook _glGetShaderiv(u32 shader, u32 pname, addr params) = gl_get_shaderiv
+hook _glGetShaderInfoLog(u32 shader, i32 size, addr length, addr log) = gl_get_shader_info_log
+hook _glGetShaderSource(u32 shader, i32 size, addr length, addr source) = gl_get_shader_source
+hook _glGetShaderPrecisionFormat(u32 type, u32 precision, addr range, addr bits) = gl_get_shader_precision_format
+hook _glShaderBinary(i32 count, addr shaders, u32 format, addr binary, i32 length) = gl_shader_binary
+hook _glReleaseShaderCompiler() = gl_release_shader_compiler
+hook _glMaxShaderCompilerThreadsARB(u32 count) = gl_max_shader_compiler_threads
+hook _glMaxShaderCompilerThreadsKHR(u32 count) = gl_max_shader_compiler_threads
+hook _glCreateProgram() -> u32 = gl_create_program
+hook _glDeleteProgram(u32 program) = gl_delete_program
+hook _glIsProgram(u32 program) -> u8 = gl_is_program
+hook _glAttachShader(u32 program, u32 shader) = gl_attach_shader
+hook _glDetachShader(u32 program, u32 shader) = gl_detach_shader
+hook _glGetAttachedShaders(u32 program, i32 max, addr count, addr shaders) = gl_get_attached_shaders
+hook _glBindAttribLocation(u32 program, u32 index, addr name) = gl_bind_attrib_location
+hook _glLinkProgram(u32 program) = gl_link_program
+hook _glUseProgram(u32 program) = gl_use_program
+hook _glValidateProgram(u32 program) = gl_validate_program
+hook _glProgramParameteri(u32 program, u32 pname, i32 value) = gl_program_parameteri
+hook _glGetProgramiv(u32 program, u32 pname, addr params) = gl_get_programiv
+hook _glGetProgramInfoLog(u32 program, i32 size, addr length, addr log) = gl_get_program_info_log
+hook _glGetActiveUniform(u32 program, u32 index, i32 size, addr length, addr count, addr type, addr name) = gl_get_active_uniform
+hook _glGetActiveAttrib(u32 program, u32 index, i32 size, addr length, addr count, addr type, addr name) = gl_get_active_attrib
+hook _glGetAttribLocation(u32 program, addr name) -> i32 = gl_get_attrib_location
+hook _glGetFragDataLocation(u32 program, addr name) -> i32 = gl_get_frag_data_location
+hook _glGetUniformLocation(u32 program, addr name) -> i32 = gl_get_uniform_location
+hook _glGetUniformfv(u32 program, i32 location, addr params) = gl_get_uniformfv
+hook _glGetUniformiv(u32 program, i32 location, addr params) = gl_get_uniformiv
+hook _glGetUniformuiv(u32 program, i32 location, addr params) = gl_get_uniformiv
+hook _glGetnUniformfv(u32 program, i32 location, i32 size, addr params) = gl_get_nuniformfv
+hook _glGetnUniformiv(u32 program, i32 location, i32 size, addr params) = gl_get_nuniformiv
+hook _glGetnUniformuiv(u32 program, i32 location, i32 size, addr params) = gl_get_nuniformiv
+hook _glGetUniformBlockIndex(u32 program, addr name) -> u32 = gl_get_uniform_block_index
+hook _glUniformBlockBinding(u32 program, u32 index, u32 binding) = gl_uniform_block_binding
+hook _glGetActiveUniformBlockiv(u32 program, u32 index, u32 pname, addr params) = gl_get_active_uniform_blockiv
+hook _glGetActiveUniformBlockName(u32 program, u32 index, i32 size, addr length, addr name) = gl_get_active_uniform_block_name
+hook _glGetUniformIndices(u32 program, i32 count, addr names, addr indices) = gl_get_uniform_indices
+hook _glGetActiveUniformsiv(u32 program, i32 count, addr indices, u32 pname, addr params) = gl_get_active_uniformsiv
+hook _glGetProgramInterfaceiv(u32 program, u32 interface, u32 pname, addr params) = gl_get_program_interfaceiv
+hook _glGetProgramResourceIndex(u32 program, u32 interface, addr name) -> u32 = gl_get_program_resource_index
+hook _glGetProgramResourceName(u32 program, u32 interface, u32 index, i32 size, addr length, addr name) = gl_get_program_resource_name
+hook _glGetProgramResourceiv(u32 program, u32 interface, u32 index, i32 count, addr props, i32 size, addr length, addr params) = gl_get_program_resourceiv
+hook _glGetProgramResourceLocation(u32 program, u32 interface, addr name) -> i32 = gl_get_program_resource_location
+hook _glProgramBinary(u32 program, u32 format, addr binary, i32 length) = gl_program_binary
+hook _glGetProgramBinary(u32 program, i32 size, addr length, addr format, addr binary) = gl_get_program_binary
+hook _glGenProgramPipelines(i32 n, addr pipelines) = gl_gen_program_pipelines
+hook _glDeleteProgramPipelines(i32 n, addr pipelines) = gl_delete_program_pipelines
+hook _glIsProgramPipeline(u32 pipeline) -> u8 = gl_is_program_pipeline
+hook _glBindProgramPipeline(u32 pipeline) = gl_bind_program_pipeline
+hook _glUseProgramStages(u32 pipeline, u32 stages, u32 program) = gl_use_program_stages
+hook _glActiveShaderProgram(u32 pipeline, u32 program) = gl_active_shader_program
+hook _glValidateProgramPipeline(u32 pipeline) = gl_validate_program_pipeline
+hook _glGetProgramPipelineiv(u32 pipeline, u32 pname, addr params) = gl_get_program_pipelineiv
+hook _glGetProgramPipelineInfoLog(u32 pipeline, i32 size, addr length, addr log) = gl_get_program_pipeline_info_log
+hook _glCreateShaderProgramv(u32 type, i32 count, addr strings) -> u32 = gl_create_shader_programv
+hook _glUniform1f(i32 location, f32 v0) = gl_uniform1f
+hook _glUniform1fv(i32 location, i32 count, addr value) = gl_uniform1fv
+hook _glProgramUniform1f(u32 program, i32 location, f32 v0) = gl_program_uniform1f
+hook _glProgramUniform1fv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform1fv
+hook _glUniform1i(i32 location, i32 v0) = gl_uniform1i
+hook _glUniform1iv(i32 location, i32 count, addr value) = gl_uniform1iv
+hook _glProgramUniform1i(u32 program, i32 location, i32 v0) = gl_program_uniform1i
+hook _glProgramUniform1iv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform1iv
+hook _glUniform1ui(i32 location, u32 v0) = gl_uniform1ui
+hook _glUniform1uiv(i32 location, i32 count, addr value) = gl_uniform1uiv
+hook _glProgramUniform1ui(u32 program, i32 location, u32 v0) = gl_program_uniform1ui
+hook _glProgramUniform1uiv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform1uiv
+hook _glUniform2f(i32 location, f32 v0, f32 v1) = gl_uniform2f
+hook _glUniform2fv(i32 location, i32 count, addr value) = gl_uniform2fv
+hook _glProgramUniform2f(u32 program, i32 location, f32 v0, f32 v1) = gl_program_uniform2f
+hook _glProgramUniform2fv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform2fv
+hook _glUniform2i(i32 location, i32 v0, i32 v1) = gl_uniform2i
+hook _glUniform2iv(i32 location, i32 count, addr value) = gl_uniform2iv
+hook _glProgramUniform2i(u32 program, i32 location, i32 v0, i32 v1) = gl_program_uniform2i
+hook _glProgramUniform2iv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform2iv
+hook _glUniform2ui(i32 location, u32 v0, u32 v1) = gl_uniform2ui
+hook _glUniform2uiv(i32 location, i32 count, addr value) = gl_uniform2uiv
+hook _glProgramUniform2ui(u32 program, i32 location, u32 v0, u32 v1) = gl_program_uniform2ui
+hook _glProgramUniform2uiv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform2uiv
+hook _glUniform3f(i32 location, f32 v0, f32 v1, f32 v2) = gl_uniform3f
+hook _glUniform3fv(i32 location, i32 count, addr value) = gl_uniform3fv
+hook _glProgramUniform3f(u32 program, i32 location, f32 v0, f32 v1, f32 v2) = gl_program_uniform3f
+hook _glProgramUniform3fv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform3fv
+hook _glUniform3i(i32 location, i32 v0, i32 v1, i32 v2) = gl_uniform3i
+hook _glUniform3iv(i32 location, i32 count, addr value) = gl_uniform3iv
+hook _glProgramUniform3i(u32 program, i32 location, i32 v0, i32 v1, i32 v2) = gl_program_uniform3i
+hook _glProgramUniform3iv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform3iv
+hook _glUniform3ui(i32 location, u32 v0, u32 v1, u32 v2) = gl_uniform3ui
+hook _glUniform3uiv(i32 location, i32 count, addr value) = gl_uniform3uiv
+hook _glProgramUniform3ui(u32 program, i32 location, u32 v0, u32 v1, u32 v2) = gl_program_uniform3ui
+hook _glProgramUniform3uiv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform3uiv
+hook _glUniform4f(i32 location, f32 v0, f32 v1, f32 v2, f32 v3) = gl_uniform4f
+hook _glUniform4fv(i32 location, i32 count, addr value) = gl_uniform4fv
+hook _glProgramUniform4f(u32 program, i32 location, f32 v0, f32 v1, f32 v2, f32 v3) = gl_program_uniform4f
+hook _glProgramUniform4fv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform4fv
+hook _glUniform4i(i32 location, i32 v0, i32 v1, i32 v2, i32 v3) = gl_uniform4i
+hook _glUniform4iv(i32 location, i32 count, addr value) = gl_uniform4iv
+hook _glProgramUniform4i(u32 program, i32 location, i32 v0, i32 v1, i32 v2, i32 v3) = gl_program_uniform4i
+hook _glProgramUniform4iv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform4iv
+hook _glUniform4ui(i32 location, u32 v0, u32 v1, u32 v2, u32 v3) = gl_uniform4ui
+hook _glUniform4uiv(i32 location, i32 count, addr value) = gl_uniform4uiv
+hook _glProgramUniform4ui(u32 program, i32 location, u32 v0, u32 v1, u32 v2, u32 v3) = gl_program_uniform4ui
+hook _glProgramUniform4uiv(u32 program, i32 location, i32 count, addr value) = gl_program_uniform4uiv
+hook _glUniformMatrix2fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix2
+hook _glProgramUniformMatrix2fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix2
+hook _glUniformMatrix3fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix3
+hook _glProgramUniformMatrix3fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix3
+hook _glUniformMatrix4fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix4
+hook _glProgramUniformMatrix4fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix4
+hook _glUniformMatrix2x3fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix2x3
+hook _glProgramUniformMatrix2x3fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix2x3
+hook _glUniformMatrix3x2fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix3x2
+hook _glProgramUniformMatrix3x2fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix3x2
+hook _glUniformMatrix2x4fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix2x4
+hook _glProgramUniformMatrix2x4fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix2x4
+hook _glUniformMatrix4x2fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix4x2
+hook _glProgramUniformMatrix4x2fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix4x2
+hook _glUniformMatrix3x4fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix3x4
+hook _glProgramUniformMatrix3x4fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix3x4
+hook _glUniformMatrix4x3fv(i32 location, i32 count, u8 transpose, addr value) = gl_uniform_matrix4x3
+hook _glProgramUniformMatrix4x3fv(u32 program, i32 location, i32 count, u8 transpose, addr value) = gl_program_uniform_matrix4x3
+
+family object
+hook _glGenBuffers(i32 n, addr buffers) = gl_gen_buffers
+hook _glCreateBuffers(i32 n, addr buffers) = gl_gen_buffers
+hook _glDeleteBuffers(i32 n, addr buffers) = gl_delete_buffers
+hook _glIsBuffer(u32 buffer) -> u8 = gl_is_buffer
+hook _glBindBuffer(u32 target, u32 buffer) = gl_bind_buffer
+hook _glBindBufferBase(u32 target, u32 index, u32 buffer) = gl_bind_buffer_base
+hook _glBindBufferRange(u32 target, u32 index, u32 buffer, i64 offset, i64 size) = gl_bind_buffer_range
+hook _glBufferData(u32 target, i64 size, addr data, u32 usage) = gl_buffer_data
+hook _glNamedBufferData(u32 buffer, i64 size, addr data, u32 usage) = gl_named_buffer_data
+hook _glBufferStorage(u32 target, i64 size, addr data, u32 flags) = gl_buffer_storage
+hook _glNamedBufferStorage(u32 buffer, i64 size, addr data, u32 flags) = gl_named_buffer_storage
+hook _glBufferSubData(u32 target, i64 offset, i64 size, addr data) = gl_buffer_sub_data
+hook _glNamedBufferSubData(u32 buffer, i64 offset, i64 size, addr data) = gl_named_buffer_sub_data
+hook _glGetBufferSubData(u32 target, i64 offset, i64 size, addr data) = gl_get_buffer_sub_data
+hook _glGetNamedBufferSubData(u32 buffer, i64 offset, i64 size, addr data) = gl_get_named_buffer_sub_data
+hook _glMapBufferRange(u32 target, i64 offset, i64 length, u32 access) -> addr = gl_map_buffer_range
+hook _glMapNamedBufferRange(u32 buffer, i64 offset, i64 length, u32 access) -> addr = gl_map_named_buffer_range
+hook _glMapBuffer(u32 target, u32 access) -> addr = gl_map_buffer
+hook _glMapNamedBuffer(u32 buffer, u32 access) -> addr = gl_map_named_buffer
+hook _glUnmapBuffer(u32 target) -> u8 = gl_unmap_buffer
+hook _glUnmapNamedBuffer(u32 buffer) -> u8 = gl_unmap_named_buffer
+hook _glFlushMappedBufferRange(u32 target, i64 offset, i64 length) = gl_flush_mapped_buffer_range
+hook _glFlushMappedNamedBufferRange(u32 buffer, i64 offset, i64 length) = gl_flush_mapped_named_buffer_range
+hook _glGetBufferPointerv(u32 target, u32 pname, addr params) = gl_get_buffer_pointerv
+hook _glGetNamedBufferPointerv(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_pointerv
+hook _glCopyBufferSubData(u32 read, u32 write, i64 read_offset, i64 write_offset, i64 size) = gl_copy_buffer_sub_data
+hook _glCopyNamedBufferSubData(u32 read, u32 write, i64 read_offset, i64 write_offset, i64 size) = gl_copy_named_buffer_sub_data
+hook _glGetBufferParameteriv(u32 target, u32 pname, addr params) = gl_get_buffer_parameteriv
+hook _glGetBufferParameteri64v(u32 target, u32 pname, addr params) = gl_get_buffer_parameteri64v
+hook _glGetNamedBufferParameteriv(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_parameteriv
+hook _glGetNamedBufferParameteri64v(u32 buffer, u32 pname, addr params) = gl_get_named_buffer_parameteri64v
+hook _glGenVertexArrays(i32 n, addr arrays) = gl_gen_vertex_arrays
+hook _glCreateVertexArrays(i32 n, addr arrays) = gl_gen_vertex_arrays
+hook _glDeleteVertexArrays(i32 n, addr arrays) = gl_delete_vertex_arrays
+hook _glIsVertexArray(u32 array) -> u8 = gl_is_vertex_array
+hook _glBindVertexArray(u32 array) = gl_bind_vertex_array
+hook _glVertexAttribPointer(u32 index, i32 size, u32 type, u8 normalized, i32 stride, addr pointer) = gl_vertex_attrib_pointer
+hook _glVertexAttribIPointer(u32 index, i32 size, u32 type, i32 stride, addr pointer) = gl_vertex_attrib_ipointer
+hook _glVertexAttribFormat(u32 index, i32 size, u32 type, u8 normalized, u32 relative) = gl_vertex_attrib_format
+hook _glVertexAttribIFormat(u32 index, i32 size, u32 type, u32 relative) = gl_vertex_attrib_iformat
+hook _glVertexAttribBinding(u32 index, u32 binding) = gl_vertex_attrib_binding
+hook _glBindVertexBuffer(u32 binding, u32 buffer, i64 offset, i32 stride) = gl_bind_vertex_buffer
+hook _glVertexBindingDivisor(u32 binding, u32 divisor) = gl_vertex_binding_divisor
+hook _glEnableVertexAttribArray(u32 index) = gl_enable_vertex_attrib_array
+hook _glDisableVertexAttribArray(u32 index) = gl_disable_vertex_attrib_array
+hook _glVertexAttribDivisor(u32 index, u32 divisor) = gl_vertex_attrib_divisor
+hook _glVertexAttrib1f(u32 index, f32 x) = gl_vertex_attrib1f
+hook _glVertexAttrib1fv(u32 index, addr v) = gl_vertex_attrib1fv
+hook _glVertexAttrib2f(u32 index, f32 x, f32 y) = gl_vertex_attrib2f
+hook _glVertexAttrib2fv(u32 index, addr v) = gl_vertex_attrib2fv
+hook _glVertexAttrib3f(u32 index, f32 x, f32 y, f32 z) = gl_vertex_attrib3f
+hook _glVertexAttrib3fv(u32 index, addr v) = gl_vertex_attrib3fv
+hook _glVertexAttrib4f(u32 index, f32 x, f32 y, f32 z, f32 w) = gl_vertex_attrib4f
+hook _glVertexAttrib4fv(u32 index, addr v) = gl_vertex_attrib4fv
+hook _glVertexAttribI4i(u32 index, i32 x, i32 y, i32 z, i32 w) = gl_vertex_attrib_i4i
+hook _glVertexAttribI4ui(u32 index, u32 x, u32 y, u32 z, u32 w) = gl_vertex_attrib_i4ui
+hook _glVertexAttribI4iv(u32 index, addr v) = gl_vertex_attrib_i4iv
+hook _glVertexAttribI4uiv(u32 index, addr v) = gl_vertex_attrib_i4uiv
+hook _glGetVertexAttribiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribIiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribIuiv(u32 index, u32 pname, addr params) = gl_get_vertex_attribiv
+hook _glGetVertexAttribfv(u32 index, u32 pname, addr params) = gl_get_vertex_attribfv
+hook _glGetVertexAttribPointerv(u32 index, u32 pname, addr params) = gl_get_vertex_attrib_pointerv
+
+family texture
+hook _glGenTextures(i32 n, addr textures) = gl_gen_textures
+hook _glDeleteTextures(i32 n, addr textures) = gl_delete_textures
+hook _glIsTexture(u32 texture) -> u8 = gl_is_texture
+hook _glBindTexture(u32 target, u32 texture) = gl_bind_texture
+hook _glActiveTexture(u32 texture) = gl_active_texture
+hook _glTexImage2D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 border, u32 format, u32 type, addr pixels) = gl_tex_image_2d
+hook _glTexImage3D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 depth, i32 border, u32 format, u32 type, addr pixels) = gl_tex_image_3d
+hook _glTexSubImage2D(u32 target, i32 level, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, addr pixels) = gl_tex_sub_image_2d
+hook _glTexSubImage3D(u32 target, i32 level, i32 x, i32 y, i32 z, i32 width, i32 height, i32 depth, u32 format, u32 type, addr pixels) = gl_tex_sub_image_3d
+hook _glCompressedTexImage2D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 border, i32 size, addr data) = gl_compressed_tex_image_2d
+hook _glCompressedTexImage3D(u32 target, i32 level, u32 internal, i32 width, i32 height, i32 depth, i32 border, i32 size, addr data) = gl_compressed_tex_image_3d
+hook _glCompressedTexSubImage2D(u32 target, i32 level, i32 x, i32 y, i32 width, i32 height, u32 format, i32 size, addr data) = gl_compressed_tex_sub_image_2d
+hook _glCompressedTexSubImage3D(u32 target, i32 level, i32 x, i32 y, i32 z, i32 width, i32 height, i32 depth, u32 format, i32 size, addr data) = gl_compressed_tex_sub_image_3d
+hook _glTexStorage2D(u32 target, i32 levels, u32 internal, i32 width, i32 height) = gl_tex_storage_2d
+hook _glTexStorage3D(u32 target, i32 levels, u32 internal, i32 width, i32 height, i32 depth) = gl_tex_storage_3d
+hook _glTexStorage2DMultisample(u32 target, i32 samples, u32 internal, i32 width, i32 height, u8 fixed) = gl_tex_storage_2d_multisample
+hook _glTexParameteri(u32 target, u32 pname, i32 param) = gl_tex_parameteri
+hook _glTexParameterf(u32 target, u32 pname, f32 param) = gl_tex_parameterf
+hook _glTexParameteriv(u32 target, u32 pname, addr params) = gl_tex_parameteriv
+hook _glTexParameterfv(u32 target, u32 pname, addr params) = gl_tex_parameterfv
+hook _glGetTexParameteriv(u32 target, u32 pname, addr params) = gl_get_tex_parameteriv
+hook _glGetTexParameterfv(u32 target, u32 pname, addr params) = gl_get_tex_parameterfv
+hook _glGetTexLevelParameteriv(u32 target, i32 level, u32 pname, addr params) = gl_get_tex_level_parameteriv
+hook _glGetTexLevelParameterfv(u32 target, i32 level, u32 pname, addr params) = gl_get_tex_level_parameterfv
+hook _glGenerateMipmap(u32 target) = gl_generate_mipmap
+hook _glBindImageTexture(u32 unit, u32 texture, i32 level, u8 layered, i32 layer, u32 access, u32 format) = gl_bind_image_texture
+hook _glGenSamplers(i32 n, addr samplers) = gl_gen_samplers
+hook _glDeleteSamplers(i32 n, addr samplers) = gl_delete_samplers
+hook _glIsSampler(u32 sampler) -> u8 = gl_is_sampler
+hook _glBindSampler(u32 unit, u32 sampler) = gl_bind_sampler
+hook _glSamplerParameteri(u32 sampler, u32 pname, i32 param) = gl_sampler_parameteri
+hook _glSamplerParameterf(u32 sampler, u32 pname, f32 param) = gl_sampler_parameterf
+hook _glSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_sampler_parameteriv
+hook _glSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_sampler_parameterfv
+hook _glGetSamplerParameteriv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameteriv
+hook _glGetSamplerParameterfv(u32 sampler, u32 pname, addr params) = gl_get_sampler_parameterfv
+
+family framebuffer
+hook _glGenRenderbuffers(i32 n, addr renderbuffers) = gl_gen_renderbuffers
+hook _glDeleteRenderbuffers(i32 n, addr renderbuffers) = gl_delete_renderbuffers
+hook _glIsRenderbuffer(u32 renderbuffer) -> u8 = gl_is_renderbuffer
+hook _glBindRenderbuffer(u32 target, u32 renderbuffer) = gl_bind_renderbuffer
+hook _glRenderbufferStorage(u32 target, u32 internal, i32 width, i32 height) = gl_renderbuffer_storage
+hook _glRenderbufferStorageMultisample(u32 target, i32 samples, u32 internal, i32 width, i32 height) = gl_renderbuffer_storage_multisample
+hook _glGetRenderbufferParameteriv(u32 target, u32 pname, addr params) = gl_get_renderbuffer_parameteriv
+hook _glGenFramebuffers(i32 n, addr framebuffers) = gl_gen_framebuffers
+hook _glDeleteFramebuffers(i32 n, addr framebuffers) = gl_delete_framebuffers
+hook _glIsFramebuffer(u32 framebuffer) -> u8 = gl_is_framebuffer
+hook _glBindFramebuffer(u32 target, u32 framebuffer) = gl_bind_framebuffer
+hook _glFramebufferTexture2D(u32 target, u32 attachment, u32 textarget, u32 texture, i32 level) = gl_framebuffer_texture_2d
+hook _glFramebufferTextureLayer(u32 target, u32 attachment, u32 texture, i32 level, i32 layer) = gl_framebuffer_texture_layer
+hook _glFramebufferTexture(u32 target, u32 attachment, u32 texture, i32 level) = gl_framebuffer_texture
+hook _glFramebufferRenderbuffer(u32 target, u32 attachment, u32 rbtarget, u32 renderbuffer) = gl_framebuffer_renderbuffer
+hook _glCheckFramebufferStatus(u32 target) -> u32 = gl_check_framebuffer_status
+hook _glGetFramebufferAttachmentParameteriv(u32 target, u32 attachment, u32 pname, addr params) = gl_get_framebuffer_attachment_parameteriv
+hook _glDrawBuffers(i32 n, addr buffers) = gl_draw_buffers
+hook _glDrawBuffer(u32 mode) = gl_draw_buffer
+hook _glReadBuffer(u32 mode) = gl_read_buffer
+hook _glInvalidateFramebuffer(u32 target, i32 n, addr attachments) = gl_invalidate_framebuffer
+
+family sync
+hook _glFenceSync(u32 condition, u32 flags) -> addr = gl_fence_sync
+hook _glDeleteSync(addr sync) = gl_delete_sync
+hook _glIsSync(addr sync) -> u8 = gl_is_sync
+hook _glClientWaitSync(addr sync, u32 flags, u64 timeout) -> u32 = gl_client_wait_sync
+hook _glWaitSync(addr sync, u32 flags, u64 timeout) = gl_wait_sync
+hook _glGetSynciv(addr sync, u32 pname, i32 count, addr length, addr values) = gl_get_synciv

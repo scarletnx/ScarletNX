@@ -36,8 +36,9 @@
 #                         menus show them greyed and pick nothing, and a build with it takes them as any others
 #     once                written to the .ini only once it is set (the default stays its value until then)
 #     only SYSTEM         it does something on SYSTEM alone: macos, windows, android, linux (Android too) or
-#                         arm64-linux (the same on arm64). On another system the launcher's Settings grey its row and
-#                         say which beside it (ini.h's ini_only); its value is read and written there as anywhere
+#                         arm64-linux (the same on arm64); none for something ScarletNX does not offer, its help
+#                         saying why. On another system the launcher's Settings grey its row and say which beside it
+#                         (ini.h's ini_only, "Not offered" for none); its value is read and written there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
@@ -1111,6 +1112,18 @@ setting DS WFC DNS server
     help The DNS server nds_wfc=custom gives the DS, an IPv4 address such as 178.62.43.212. With custom, empty or
     help anything but an address stops the game
 
+# the Switch's, which nothing reads: its row shows the service is not offered
+table g_switch_online_ini
+setting Switch online service
+    key switch_online
+    int 0 0
+    default 0
+    only none
+    words Off
+    help The console maker's online service for the Switch, its accounts, friends and game servers, is not offered:
+    help ScarletNX connects to none of its servers, nor to a service that stands in for them. A game's own internet
+    help access is network
+
 table g_user_ini
 setting User uid
     key user_uid
@@ -1198,11 +1211,12 @@ setting Vulkan API
     text 8
     default auto
     startup
-    words auto=Auto|1.2=1.2
+    words auto=Auto|1.2=1.2|1.1=1.1
     help The Vulkan version the renderer runs at. auto = the device's, up to 1.3: a device with only 1.2 runs the 1.2
     help way where it has the extensions 1.3 took in. 1.2 = the 1.2 way on a 1.3 device too, to test it: the 1.3
-    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. Any other value stops the game,
-    help saying so
+    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. 1.1 = on a device with only
+    help Vulkan 1.1, which the renderer cannot run yet, the game stops naming what the 1.2 way lacks there; a 1.2 or
+    help 1.3 device runs as auto. Any other value stops the game, saying so
 setting Native ASTC
     key native_astc
     int 0 1
@@ -1420,7 +1434,8 @@ setting Draw state check
     help state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept
     help texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and
     help compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where
-    help the full check found a change. Slow: for checking what a draw keeps
+    help the full check found a change. The buffers and images of a draw past the count it has of each, which a draw
+    help leaves unwritten, hold a pattern, so a read past a count shows. Slow: for checking what a draw keeps
 setting Profiler
     key profile
     only windows
@@ -2162,6 +2177,7 @@ setting @VK_GOOGLE_display_timing
 setting @VK_KHR_calibrated_timestamps
 setting @VK_KHR_cooperative_matrix
 setting @VK_KHR_copy_memory_indirect
+setting @VK_KHR_driver_properties
 setting @VK_KHR_dynamic_rendering
 setting @VK_KHR_dynamic_rendering_local_read
 setting @VK_KHR_extended_flags
@@ -2187,6 +2203,7 @@ setting @VK_KHR_shader_clock
 setting @VK_KHR_shader_maximal_reconvergence
 setting @VK_KHR_swapchain
 setting @VK_KHR_synchronization2
+setting @VK_KHR_timeline_semaphore
 setting @VK_KHR_unified_image_layouts
 setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
@@ -2209,7 +2226,7 @@ section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons 
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
 section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
-section Online: g_nds_network_ini
+section Online: g_nds_network_ini, g_switch_online_ini
 section User: g_user_ini
 section Debug: g_debug_ini
 

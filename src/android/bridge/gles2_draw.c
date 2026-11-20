@@ -289,7 +289,7 @@ void gles2_rendering_stop(Gles2Context* gl) {
 
 /* the renderbuffers of the target that are new: their images are in UNDEFINED */
 static void mark_ready(Gles2Context* gl) {
-    G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
+    G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
     if (!fb) return;
     for (int i = 0; i < G2_ATTACHMENTS; ++i)
         if (fb->at[i].kind == 2) {
@@ -302,7 +302,7 @@ bool gles2_rendering_begin(Gles2Context* gl) {
     GlesSurface* s = gles2_surface(gl);
     if (!s) return false;
     Target t;
-    if (!target_of(gl, gl->draw_fbo, false, &t)) {
+    if (!target_of(gl, gles2_fbos(gl)->draw, false, &t)) {
         gles2_error(gl, GL_INVALID_FRAMEBUFFER_OPERATION_);
         return false;
     }
@@ -440,7 +440,7 @@ static uint8_t topology_class(unsigned mode) {
     return mode == GL_POINTS_ ? 0 : mode <= GL_LINE_STRIP_ ? 1 : 2;
 }
 
-static VkPipeline pipeline(const G2Program* p, const G2PipelineKey* k) {
+static VkPipeline pipeline(const G2ProgramVk* p, const G2PipelineKey* k) {
     uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
     if (g_gles2.pipeline_capacity) {
         for (size_t i = hash & (g_gles2.pipeline_capacity - 1);; i = (i + 1) & (g_gles2.pipeline_capacity - 1)) {
@@ -572,10 +572,9 @@ static VkPipeline pipeline(const G2Program* p, const G2PipelineKey* k) {
     return made;
 }
 
-void gles2_pipelines_forget(const G2Program* p) {
+void gles2_pipelines_forget(uint32_t name) {
     size_t cap = g_gles2.pipeline_capacity;
     if (!cap) return;
-    uint32_t name = (uint32_t)(p - g_gles2.programs);
     /* the table without them, entries moved back to fill the gaps of open addressing */
     G2PipelineEntry* table = calloc(cap, sizeof *table);
     if (!table) return;
@@ -614,7 +613,7 @@ void gles2_draw_vk_free(void) {
 /* ---- the vertex inputs ---- */
 
 /* the Vulkan format of an attribute array, for a shader input of base; 0 for one Vulkan has no format of */
-static VkFormat vertex_format(const G2Attrib* a, uint8_t base) {
+static VkFormat vertex_format(const SnxGlAttrib* a, uint8_t base) {
     int n = a->size;
     bool integer = a->integer || base != SNX_GLSLC_BASE_FLOAT;
     static const VkFormat f32[4] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT,
@@ -673,9 +672,7 @@ static uint32_t type_bytes(unsigned type) {
     default: return 4;
     }
 }
-static uint32_t attrib_bytes(const G2Attrib* a) {
-    return gles2_vertex_bytes(a->type, a->size);
-}
+static uint32_t attrib_bytes(const SnxGlAttrib* a) { return snx_gl_vertex_bytes(a->type, a->size); }
 
 /* a draw's vertices: the bindings, their offsets and strides by location */
 typedef struct {
@@ -686,17 +683,17 @@ typedef struct {
 
 /* the vertex inputs of p for the vertices [lo, hi] and the instances [0, instances): the key's formats and rates,
    and the buffers. A client array's range is copied into the frame's arena */
-static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, uint32_t lo, uint32_t hi,
+static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const SnxGlProgram* p, uint32_t lo, uint32_t hi,
                           uint32_t instances, G2PipelineKey* key, Vertices* v) {
-    G2VertexArray* vao = gles2_vertex_array(gl);
+    SnxGlVertexArray* vao = snx_gl_vertex_array(gl->ctx);
     *v = (Vertices){0};
     for (uint32_t i = 0; i < p->input_count; ++i) {
-        const G2Input* in = &p->inputs[i];
+        const SnxGlInput* in = &snx_gl_program_inputs(p)[i];
         if (in->location < 0 || in->spirv < 0) continue;
         for (uint32_t e = 0; e < (uint32_t)in->count * in->columns; ++e) {
             uint32_t index = (uint32_t)in->location + e, loc = (uint32_t)in->spirv + e;
             if (index >= G2_ATTRIBS || loc >= G2_ATTRIBS) continue;
-            const G2Attrib* a = &vao->attribs[index];
+            const SnxGlAttrib* a = &vao->attribs[index];
             VkFormat format = a->enabled ? vertex_format(a, in->base) : VK_FORMAT_UNDEFINED;
             if (a->enabled && !format) gles2_warn(10, "a vertex attribute of a type Vulkan has no format of");
             v->used |= 1u << loc;
@@ -706,7 +703,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, 
                                                     VK_FORMAT_R32G32B32A32_SFLOAT};
                 VkDeviceSize at = gles_vk_arena_take(slot, &slot->vertices, 16, 16, 4u << 20, 0);
                 if (at == VK_WHOLE_SIZE) return false;
-                memcpy(slot->vertices.map + at, gl->generic[index].bits, 16);
+                memcpy(slot->vertices.map + at, gles2_objects(gl)->generic[index].bits, 16);
                 key->formats[loc] = (uint32_t)generic[in->base == SNX_GLSLC_BASE_INT    ? 0
                                                       : in->base == SNX_GLSLC_BASE_UINT ? 1
                                                                                         : 2];
@@ -716,7 +713,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, 
                 continue;
             }
             key->formats[loc] = (uint32_t)format;
-            const G2VertexBinding* binding = &vao->bindings[a->binding];
+            const SnxGlVertexBinding* binding = &vao->bindings[a->binding];
             uint32_t stride = binding->stride;
             uint64_t pointer = binding->offset + a->relative;
             v->strides[loc] = stride;
@@ -795,7 +792,6 @@ static bool zeros_ref(GlesSlot* slot, G2Ref* out) {
         if (!z->data) return false;
         z->size = 65536;
         z->stale = true;
-        z->used = true;
     }
     return gles2_buffer_ref(slot, z, false, out);
 }
@@ -803,14 +799,18 @@ static bool zeros_ref(GlesSlot* slot, G2Ref* out) {
 enum { MAX_DESCRIPTORS = 96 };
 
 /* the program's set for the draw: written, or the last draw's when nothing changed */
-static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Program* p) {
-    if (!gles2_program_defaults(slot, p)) return VK_NULL_HANDLE;
+static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, uint32_t name) {
+    if (!gles2_program_defaults(slot, name)) return VK_NULL_HANDLE;
+    const SnxGlProgram* p = snx_gl_program(name);
+    const G2ProgramVk* m = &g_gles2.program_vk[name - 1];
+    const SnxGlBinding* bindings = snx_gl_program_bindings(p);
+    const int32_t* units = snx_gl_program_units(p);
     VkDescriptorImageInfo images[MAX_DESCRIPTORS];
     VkDescriptorBufferInfo buffers[MAX_DESCRIPTORS];
     VkWriteDescriptorSet writes[64];
     uint32_t ni = 0, nb = 0, nw = 0;
     for (uint32_t i = 0; i < p->binding_count && nw < 64; ++i) {
-        const G2Binding* b = &p->bindings[i];
+        const SnxGlBinding* b = &bindings[i];
         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = b->binding,
                                   .descriptorCount = b->count};
         if (b->kind == SNX_GLSLC_REFLECT_SAMPLER && !b->texel_buffer) {
@@ -818,7 +818,7 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
             w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             w.pImageInfo = &images[ni];
             for (uint32_t k = 0; k < b->count; ++k) {
-                int32_t unit = p->units[b->first + k];
+                int32_t unit = units[b->first + k];
                 G2Texture* t = gles2_unit_texture(gl, (unsigned)unit, b->dim);
                 int levels = 0;
                 VkImageView view = VK_NULL_HANDLE;
@@ -859,16 +859,17 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
             for (uint32_t k = 0; k < b->count; ++k) {
                 VkDeviceSize size = b->size ? b->size : 16;
                 if (!b->name) { /* a stage's default block */
-                    buffers[nb++] = (VkDescriptorBufferInfo){p->default_ref[b->stage].buffer,
-                                                             p->default_ref[b->stage].offset, size};
+                    buffers[nb++] = (VkDescriptorBufferInfo){m->default_ref[b->stage].buffer,
+                                                             m->default_ref[b->stage].offset, size};
                     continue;
                 }
                 bool uniform = b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
                 unsigned point = uniform ? (b->first + k < G2_UBO_BINDINGS ? p->block_binding[b->first + k] : 0)
                                          : b->first + k;
-                const G2IndexedBuffer* x = uniform && point < G2_UBO_BINDINGS        ? &gl->uniform_buffers[point]
-                                           : !uniform && point < G2_SSBO_BINDINGS ? &gl->storage_buffers[point]
-                                                                                  : NULL;
+                const SnxGlIndexedBuffer* x = uniform && point < G2_UBO_BINDINGS ? &gles2_objects(gl)->uniforms[point]
+                                              : !uniform && point < G2_SSBO_BINDINGS
+                                                  ? &gles2_objects(gl)->storages[point]
+                                                  : NULL;
                 G2Buffer* buffer = x ? gles2_buffer(x->buffer) : NULL;
                 G2Ref ref;
                 VkDeviceSize offset = 0;
@@ -912,11 +913,11 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
         writes[nw++] = w;
     }
     /* the set as the last draw had it: the same contents of the same layout in this frame */
-    uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, &p->set_layout, sizeof p->set_layout);
+    uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, &m->set_layout, sizeof m->set_layout);
     hash = snx_fnv1a(hash, images, ni * sizeof *images);
     hash = snx_fnv1a(hash, buffers, nb * sizeof *buffers);
     if (g_draw.set && g_draw.set_hash == hash && g_draw.set_serial == gles_vk_pending()) return g_draw.set;
-    VkDescriptorSet set = gles_vk_set(slot, p->set_layout);
+    VkDescriptorSet set = gles_vk_set(slot, m->set_layout);
     if (!set) return VK_NULL_HANDLE;
     for (uint32_t i = 0; i < nw; ++i) writes[i].dstSet = set;
     V.vk.vkUpdateDescriptorSets(V.device, nw, writes, 0, NULL);
@@ -958,49 +959,50 @@ static VkRect2D rect(const Target* t, int x, int y, int w, int h) {
 
 /* the dynamic state of the context's fixed functions */
 static void dynamic_state(Gles2Context* gl, VkCommandBuffer cb, const Target* t, unsigned mode) {
-    const int* vp = gl->viewport;
-    VkViewport viewport = {(float)vp[0], (float)vp[1], (float)vp[2], (float)vp[3], gl->depth_range[0],
-                           gl->depth_range[1]};
+    const SnxGlFixed* fs = gles2_fixed(gl);
+    const int* vp = fs->viewport;
+    VkViewport viewport = {(float)vp[0], (float)vp[1],       (float)vp[2],
+                           (float)vp[3], fs->depth_range[0], fs->depth_range[1]};
     if (t->flip) viewport.y = (float)t->extent.height - (float)vp[1], viewport.height = -(float)vp[3];
     if (viewport.width < 1) viewport.width = 1;
     if (viewport.height == 0) viewport.height = 1;
     V.vk.vkCmdSetViewport(cb, 0, 1, &viewport);
-    VkRect2D scissor = gl->scissor_test ? rect(t, gl->scissor[0], gl->scissor[1], gl->scissor[2], gl->scissor[3])
+    VkRect2D scissor = fs->scissor_test ? rect(t, fs->scissor[0], fs->scissor[1], fs->scissor[2], fs->scissor[3])
                                         : (VkRect2D){{0, 0}, t->extent};
     V.vk.vkCmdSetScissor(cb, 0, 1, &scissor);
-    float width = gl->line_width;
+    float width = fs->line_width;
     if (!V.features.wideLines) width = 1;
     V.vk.vkCmdSetLineWidth(cb, width);
-    V.vk.vkCmdSetDepthBiasEnable(cb, gl->polygon_offset);
-    V.vk.vkCmdSetDepthBias(cb, gl->offset_units, 0, gl->offset_factor);
-    V.vk.vkCmdSetBlendConstants(cb, gl->blend_color);
-    VkCullModeFlags cull = !gl->cull ? VK_CULL_MODE_NONE
-                           : gl->cull_face == GL_FRONT_ ? VK_CULL_MODE_FRONT_BIT
-                           : gl->cull_face == GL_BACK_  ? VK_CULL_MODE_BACK_BIT
+    V.vk.vkCmdSetDepthBiasEnable(cb, fs->polygon_offset);
+    V.vk.vkCmdSetDepthBias(cb, fs->offset_units, 0, fs->offset_factor);
+    V.vk.vkCmdSetBlendConstants(cb, fs->blend_color);
+    VkCullModeFlags cull = !fs->cull                    ? VK_CULL_MODE_NONE
+                           : fs->cull_face == GL_FRONT_ ? VK_CULL_MODE_FRONT_BIT
+                           : fs->cull_face == GL_BACK_  ? VK_CULL_MODE_BACK_BIT
                                                         : VK_CULL_MODE_FRONT_AND_BACK;
     V.vk.vkCmdSetCullMode(cb, cull);
-    bool ccw = gl->front_face == GL_CCW_;
+    bool ccw = fs->front_face == GL_CCW_;
     if (!t->flip) ccw = !ccw; /* drawn upright, the winding turns */
     V.vk.vkCmdSetFrontFace(cb, ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
     V.vk.vkCmdSetPrimitiveTopology(cb, topology(mode));
     bool depth = t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT);
     bool stencil = t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT);
-    V.vk.vkCmdSetDepthTestEnable(cb, depth && gl->depth_test);
-    V.vk.vkCmdSetDepthWriteEnable(cb, depth && gl->depth_test && gl->depth_mask);
-    V.vk.vkCmdSetDepthCompareOp(cb, compare(gl->depth_func));
-    V.vk.vkCmdSetStencilTestEnable(cb, stencil && gl->stencil_test);
+    V.vk.vkCmdSetDepthTestEnable(cb, depth && fs->depth_test);
+    V.vk.vkCmdSetDepthWriteEnable(cb, depth && fs->depth_test && fs->depth_mask);
+    V.vk.vkCmdSetDepthCompareOp(cb, compare(fs->depth_func));
+    V.vk.vkCmdSetStencilTestEnable(cb, stencil && fs->stencil_test);
     for (int f = 0; f < 2; ++f) {
         VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
         /* the front face is set to keep GL's (dynamic_state's winding), so GL's front is Vulkan's front */
-        V.vk.vkCmdSetStencilOp(cb, face, stencil_op(gl->stencil[f].fail), stencil_op(gl->stencil[f].zpass),
-                               stencil_op(gl->stencil[f].zfail), compare(gl->stencil[f].func));
-        V.vk.vkCmdSetStencilCompareMask(cb, face, gl->stencil[f].mask);
-        V.vk.vkCmdSetStencilWriteMask(cb, face, gl->stencil[f].write);
-        V.vk.vkCmdSetStencilReference(cb, face, (uint32_t)gl->stencil[f].ref);
+        V.vk.vkCmdSetStencilOp(cb, face, stencil_op(fs->stencil[f].fail), stencil_op(fs->stencil[f].zpass),
+                               stencil_op(fs->stencil[f].zfail), compare(fs->stencil[f].func));
+        V.vk.vkCmdSetStencilCompareMask(cb, face, fs->stencil[f].mask);
+        V.vk.vkCmdSetStencilWriteMask(cb, face, fs->stencil[f].write);
+        V.vk.vkCmdSetStencilReference(cb, face, (uint32_t)fs->stencil[f].ref);
     }
-    V.vk.vkCmdSetPrimitiveRestartEnable(cb, gl->primitive_restart && mode != GL_POINTS_ && mode != GL_LINES_ &&
+    V.vk.vkCmdSetPrimitiveRestartEnable(cb, fs->primitive_restart && mode != GL_POINTS_ && mode != GL_LINES_ &&
                                                 mode != GL_TRIANGLES_);
-    V.vk.vkCmdSetRasterizerDiscardEnable(cb, gl->rasterizer_discard);
+    V.vk.vkCmdSetRasterizerDiscardEnable(cb, fs->rasterizer_discard);
 }
 
 /* the blend's code in the key: GL's factor as an index of codes */
@@ -1047,9 +1049,11 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         gles2_error(gl, GL_INVALID_VALUE_);
         return;
     }
-    G2Program* p = gles2_draw_program(gl, false);
+    uint32_t name = gles2_draw_program(gl, false);
+    const SnxGlProgram* p = snx_gl_program(name);
+    const G2ProgramVk* m = gles2_program_vk(name);
     GlesSurface* s = gles2_surface(gl);
-    if (!p || !p->linked || !p->modules[0] || (!indirect && (!count || !instances)) || !s) return;
+    if (!p || !m || !m->modules[0] || (!indirect && (!count || !instances)) || !s) return;
     if (!V.v13) return;
     if (!gles_frame_begin(s)) return;
     GlesSlot* slot = &s->slots[s->slot];
@@ -1071,7 +1075,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         }
         /* the vertices a client array copies: the indices' range (a buffer's arrays need none) */
         bool clients = false;
-        G2VertexArray* vao = gles2_vertex_array(gl);
+        SnxGlVertexArray* vao = snx_gl_vertex_array(gl->ctx);
         for (int i = 0; i < G2_ATTRIBS; ++i)
             clients |= vao->attribs[i].enabled && !vao->bindings[vao->attribs[i].binding].buffer;
         lo = 0, hi = 0;
@@ -1079,7 +1083,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
             lo = UINT32_MAX;
             for (int32_t i = 0; i < count; ++i) {
                 uint32_t v = index_at(bytes, idx.type, (uint32_t)i);
-                if (gl->primitive_restart && v == restart) continue;
+                if (gles2_fixed(gl)->primitive_restart && v == restart) continue;
                 if (v < lo) lo = v;
                 if (v > hi) hi = v;
             }
@@ -1107,7 +1111,8 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         for (uint32_t i = 0; i < n; ++i) {
             uint32_t k = i < (uint32_t)count ? i : 0;
             uint32_t v = idx.type ? index_at(bytes, idx.type, k) : (uint32_t)first + k;
-            if (idx.type && gl->primitive_restart && v == restart) v = size == 4 ? 0xffffffffu : size == 2 ? 0xffff : 0xff;
+            if (idx.type && gles2_fixed(gl)->primitive_restart && v == restart)
+                v = size == 4 ? 0xffffffffu : size == 2 ? 0xffff : 0xff;
             if (size == 4) memcpy(out + 4 * (size_t)i, &v, 4);
             else if (size == 2) {
                 uint16_t h = (uint16_t)v;
@@ -1136,50 +1141,50 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     }
     G2Ref command = {0};
     if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
-    VkDescriptorSet set = descriptor_set(gl, slot, p);
+    VkDescriptorSet set = descriptor_set(gl, slot, name);
     if (!set) return;
     if (!gles2_rendering_begin(gl)) return;
     const Target* t = &g_draw.open;
     /* the pipeline's state */
-    key.program = (uint32_t)(p - g_gles2.programs);
+    key.program = name;
     key.generation = p->generation;
     for (int i = 0; i < G2_COLORS; ++i) key.colors[i] = (uint32_t)t->colors[i];
     key.depth = (uint32_t)t->depth;
     key.samples = (uint8_t)t->samples;
     key.topology = topology_class(mode);
-    key.alpha_to_coverage = gl->alpha_to_coverage;
+    key.alpha_to_coverage = gles2_fixed(gl)->alpha_to_coverage;
     key.clip_control = V.depth_clip_control;
-    key.blend = gl->blend;
+    key.blend = gles2_fixed(gl)->blend;
     for (int i = 0; i < G2_COLORS; ++i)
         if (t->integer[i]) key.blend |= (uint8_t)(1u << (4 + i));
-    key.write_mask = (uint8_t)(gl->color_mask[0] | gl->color_mask[1] << 1 | gl->color_mask[2] << 2 |
-                               gl->color_mask[3] << 3);
-    if (gl->blend) {
-        key.factors[0] = factor_code(gl->blend_src[0]);
-        key.factors[1] = factor_code(gl->blend_dst[0]);
-        key.factors[2] = factor_code(gl->blend_src[1]);
-        key.factors[3] = factor_code(gl->blend_dst[1]);
-        key.ops[0] = equation_code(gl->blend_eq[0]);
-        key.ops[1] = equation_code(gl->blend_eq[1]);
+    key.write_mask = (uint8_t)(gles2_fixed(gl)->color_mask[0] | gles2_fixed(gl)->color_mask[1] << 1 |
+                               gles2_fixed(gl)->color_mask[2] << 2 | gles2_fixed(gl)->color_mask[3] << 3);
+    if (gles2_fixed(gl)->blend) {
+        key.factors[0] = factor_code(gles2_fixed(gl)->blend_src[0]);
+        key.factors[1] = factor_code(gles2_fixed(gl)->blend_dst[0]);
+        key.factors[2] = factor_code(gles2_fixed(gl)->blend_src[1]);
+        key.factors[3] = factor_code(gles2_fixed(gl)->blend_dst[1]);
+        key.ops[0] = equation_code(gles2_fixed(gl)->blend_eq[0]);
+        key.ops[1] = equation_code(gles2_fixed(gl)->blend_eq[1]);
     }
-    key.sample_mask = gl->sample_mask_on ? gl->sample_mask : 0xffffffffu;
-    if (gl->sample_coverage && t->samples > 1) {
-        uint32_t covered = (uint32_t)(gl->coverage_value * (float)t->samples + 0.5f);
+    key.sample_mask = gles2_fixed(gl)->sample_mask_on ? gles2_fixed(gl)->sample_mask : 0xffffffffu;
+    if (gles2_fixed(gl)->sample_coverage && t->samples > 1) {
+        uint32_t covered = (uint32_t)(gles2_fixed(gl)->coverage_value * (float)t->samples + 0.5f);
         uint32_t coverage = covered >= 32 ? 0xffffffffu : (1u << covered) - 1;
-        key.sample_mask &= gl->coverage_invert ? ~coverage : coverage;
+        key.sample_mask &= gles2_fixed(gl)->coverage_invert ? ~coverage : coverage;
     }
     if (!V.depth_clip_control) gles2_warn(15, "the device has no VK_EXT_depth_clip_control: depth is [0, 1] of GL's");
-    VkPipeline pl = pipeline(p, &key);
+    VkPipeline pl = pipeline(m, &key);
     if (!pl) return;
     VkCommandBuffer cb = slot->cb;
     V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
     dynamic_state(gl, cb, t, mode);
-    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, 1, &set, 0, NULL);
+    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m->layout, 0, 1, &set, 0, NULL);
     /* gl_FragCoord.y and gl_PointCoord.y as GL has them: the window's from the bottom, a framebuffer's points' t
        from the top */
     float flip[4] = {-1, (float)t->extent.height, 1, 0};
     if (!t->flip) flip[0] = 1, flip[1] = 0, flip[2] = -1, flip[3] = 1;
-    V.vk.vkCmdPushConstants(cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof flip, flip);
+    V.vk.vkCmdPushConstants(cb, m->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof flip, flip);
     for (uint32_t loc = 0; loc < G2_ATTRIBS; ++loc)
         if (vertices.used & (1u << loc))
             V.vk.vkCmdBindVertexBuffers2(cb, loc, 1, &vertices.buffers[loc], &vertices.offsets[loc], NULL,
@@ -1197,7 +1202,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
 }
 
 static Indices indices_of(Gles2Context* gl, unsigned type, uint64_t pointer) {
-    G2Buffer* b = gles2_buffer(gles2_vertex_array(gl)->elements);
+    G2Buffer* b = gles2_buffer(snx_gl_vertex_array(gl->ctx)->elements);
     if (type != GL_UNSIGNED_BYTE_ && type != GL_UNSIGNED_SHORT_ && type != GL_UNSIGNED_INT_) {
         gles2_error(gl, GL_INVALID_ENUM_);
         return (Indices){0};
@@ -1244,7 +1249,7 @@ static void g_draw_elements_instanced_base_vertex(CPU* c, Gles2Context* gl) {
 /* glDrawArraysIndirect(mode, indirect) and glDrawElementsIndirect(mode, type, indirect): the command in the draw
    indirect buffer, at the offset indirect */
 static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->draw_indirect);
     if (!b || X(1) + 16 > b->size || X(1) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1252,7 +1257,7 @@ static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
     draw(gl, (unsigned)X(0), 0, 0, 0, (Indices){0}, 0, b, X(1));
 }
 static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->draw_indirect);
     if (!b || X(2) + 20 > b->size || X(2) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1267,36 +1272,39 @@ static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
    the writes before visible to the dispatch and its writes to what follows (GLES 3.1 asks a glMemoryBarrier for
    those; one here costs little and keeps the GPU's order) */
 static void dispatch(Gles2Context* gl, uint32_t x, uint32_t y, uint32_t z, G2Buffer* indirect, uint64_t offset) {
-    G2Program* p = gles2_draw_program(gl, true);
-    if (!p || !p->linked || !p->modules[2]) {
+    uint32_t name = gles2_draw_program(gl, true);
+    const SnxGlProgram* p = snx_gl_program(name);
+    if (!p || !p->linked || !p->spirv_words[2]) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
     }
+    G2ProgramVk* m = gles2_program_vk(name);
+    if (!m) return;
     if (!V.v13) return;
     GlesSlot* slot = gles2_transfer_slot(gl);
     if (!slot) return;
-    if (!p->compute) {
+    if (!m->compute) {
         VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                       .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                      .module = p->modules[2],
+                                                      .module = m->modules[2],
                                                       .pName = "main"},
-                                            .layout = p->layout};
-        if (V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &p->compute) != VK_SUCCESS) {
-            p->compute = VK_NULL_HANDLE;
+                                            .layout = m->layout};
+        if (V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &m->compute) != VK_SUCCESS) {
+            m->compute = VK_NULL_HANDLE;
             gles2_warn(22, "Vulkan does not make a compute pipeline of a program");
             return;
         }
     }
     G2Ref command = {0};
     if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
-    VkDescriptorSet set = descriptor_set(gl, slot, p);
+    VkDescriptorSet set = descriptor_set(gl, slot, name);
     if (!set) return;
     /* descriptor_set may have recorded copies (a texture made for a sampler): the slot's frame is the same */
     VkCommandBuffer cb = slot->cb;
     gles2_memory_barrier(cb);
-    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->compute);
-    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, NULL);
+    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m->compute);
+    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m->layout, 0, 1, &set, 0, NULL);
     if (indirect) V.vk.vkCmdDispatchIndirect(cb, command.buffer, command.offset + offset);
     else V.vk.vkCmdDispatch(cb, x, y, z);
     gles2_memory_barrier(cb);
@@ -1311,7 +1319,7 @@ static void g_dispatch_compute(CPU* c, Gles2Context* gl) {
     if (x && y && z) dispatch(gl, x, y, z, NULL, 0);
 }
 static void g_dispatch_compute_indirect(CPU* c, Gles2Context* gl) {
-    G2Buffer* b = gles2_buffer(gl->dispatch_indirect);
+    G2Buffer* b = gles2_buffer(gles2_objects(gl)->dispatch_indirect);
     if (!b || X(0) + 12 > b->size || X(0) % 4) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1330,34 +1338,40 @@ static void clear(Gles2Context* gl, int drawbuffer, const VkClearColorValue* col
     VkClearAttachment at[G2_COLORS + 1];
     uint32_t n = 0;
     if (color) {
-        bool partial = !(gl->color_mask[0] && gl->color_mask[1] && gl->color_mask[2] && gl->color_mask[3]);
-        if (partial && (gl->color_mask[0] || gl->color_mask[1] || gl->color_mask[2] || gl->color_mask[3]))
+        bool partial = !(gles2_fixed(gl)->color_mask[0] && gles2_fixed(gl)->color_mask[1] &&
+                         gles2_fixed(gl)->color_mask[2] && gles2_fixed(gl)->color_mask[3]);
+        if (partial && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
+                        gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]))
             gles2_warn(16, "glClear with a partial color mask clears every channel");
-        for (int i = 0; i < G2_COLORS && (gl->color_mask[0] || gl->color_mask[1] || gl->color_mask[2] ||
-                                          gl->color_mask[3]); ++i) {
+        for (int i = 0; i < G2_COLORS && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
+                                          gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]);
+             ++i) {
             if (!t->color_views[i] || (drawbuffer >= 0 && i != drawbuffer)) continue;
             at[n++] = (VkClearAttachment){VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)i, {.color = *color}};
         }
     }
     VkImageAspectFlags aspect = 0;
-    if (depth && gl->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
+    if (depth && gles2_fixed(gl)->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) && gl->stencil[0].write)
+    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+        gles2_fixed(gl)->stencil[0].write)
         aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
     if (aspect)
         at[n++] = (VkClearAttachment){aspect, 0, {.depthStencil = {depth_value, (uint32_t)stencil_value}}};
-    VkClearRect r = {gl->scissor_test ? rect(t, gl->scissor[0], gl->scissor[1], gl->scissor[2], gl->scissor[3])
-                                      : (VkRect2D){{0, 0}, t->extent},
+    VkClearRect r = {gles2_fixed(gl)->scissor_test ? rect(t, gles2_fixed(gl)->scissor[0], gles2_fixed(gl)->scissor[1],
+                                                          gles2_fixed(gl)->scissor[2], gles2_fixed(gl)->scissor[3])
+                                                   : (VkRect2D){{0, 0}, t->extent},
                      0, 1};
     if (n && r.rect.extent.width && r.rect.extent.height)
         V.vk.vkCmdClearAttachments(s->slots[s->slot].cb, n, at, 1, &r);
 }
 static void g_clear(CPU* c, Gles2Context* gl) {
     unsigned mask = (unsigned)X(0);
-    VkClearColorValue color = {{gl->clear_color[0], gl->clear_color[1], gl->clear_color[2], gl->clear_color[3]}};
+    VkClearColorValue color = {{gles2_fixed(gl)->clear_color[0], gles2_fixed(gl)->clear_color[1],
+                                gles2_fixed(gl)->clear_color[2], gles2_fixed(gl)->clear_color[3]}};
     if (!(mask & (GL_COLOR_BUFFER_BIT_ | GL_DEPTH_BUFFER_BIT_ | GL_STENCIL_BUFFER_BIT_))) return;
-    clear(gl, -1, mask & GL_COLOR_BUFFER_BIT_ ? &color : NULL, (mask & GL_DEPTH_BUFFER_BIT_) != 0, gl->clear_depth,
-          (mask & GL_STENCIL_BUFFER_BIT_) != 0, gl->clear_stencil);
+    clear(gl, -1, mask & GL_COLOR_BUFFER_BIT_ ? &color : NULL, (mask & GL_DEPTH_BUFFER_BIT_) != 0,
+          gles2_fixed(gl)->clear_depth, (mask & GL_STENCIL_BUFFER_BIT_) != 0, gles2_fixed(gl)->clear_stencil);
 }
 /* glClearBuffer{fv,iv,uiv}(buffer, drawbuffer, value) and glClearBufferfi(buffer, drawbuffer, depth, stencil) */
 static void clear_buffer(CPU* c, Gles2Context* gl, char kind) {
@@ -1407,8 +1421,8 @@ typedef struct {
 
 static bool read_source(Gles2Context* gl, Source* out, bool depth) {
     *out = (Source){0};
-    G2Framebuffer* fb = gles2_framebuffer(gl->read_fbo);
-    if (!gl->read_fbo || !fb) {
+    G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->read);
+    if (!gles2_fbos(gl)->read || !fb) {
         GlesSurface* s = gl->read;
         if (!s || !gles_frame_begin(s)) return false;
         if (depth) {
@@ -1500,7 +1514,7 @@ static void g_blit_framebuffer(CPU* c, Gles2Context* gl) {
     int dx0 = (int)X(4), dy0 = (int)X(5), dx1 = (int)X(6), dy1 = (int)X(7);
     unsigned mask = (unsigned)gles2_arg(c, 8), filter = (unsigned)gles2_arg(c, 9);
     Target dst;
-    if (!target_of(gl, gl->draw_fbo, false, &dst)) {
+    if (!target_of(gl, gles2_fbos(gl)->draw, false, &dst)) {
         gles2_error(gl, GL_INVALID_FRAMEBUFFER_OPERATION_);
         return;
     }
@@ -1520,9 +1534,9 @@ static void g_blit_framebuffer(CPU* c, Gles2Context* gl) {
     if ((mask & GL_COLOR_BUFFER_BIT_) && read_source(gl, &src, false)) {
         for (int i = 0; i < G2_COLORS; ++i) {
             if (!dst.color_images[i]) continue;
-            G2Framebuffer* fb = gles2_framebuffer(gl->draw_fbo);
+            G2Framebuffer* fb = gles2_framebuffer(gles2_fbos(gl)->draw);
             uint32_t level = 0, layer = 0;
-            if (fb && gl->draw_fbo) {
+            if (fb && gles2_fbos(gl)->draw) {
                 unsigned which = fb->draw[i];
                 const G2Attachment* a = &fb->at[which - GL_COLOR_ATTACHMENT0_];
                 level = a->kind == 1 ? (uint32_t)a->level : 0;
@@ -1560,7 +1574,7 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
         return;
     }
     if (!width || !height) return;
-    G2Buffer* pack = gles2_buffer(gl->pixel_pack);
+    G2Buffer* pack = gles2_buffer(gles2_objects(gl)->pixel_pack);
     if (!pixels && !pack) return;
     GlesSlot* slot = gles2_transfer_slot(gl);
     Source src;
@@ -1595,7 +1609,6 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
          width, height, VK_FILTER_NEAREST, VK_IMAGE_ASPECT_COLOR_BIT);
     G2Ref ref;
     host.data = NULL;
-    host.used = true;
     unsigned char* zero = calloc(1, (size_t)bytes);
     host.data = zero;
     bool ok = zero && gles2_buffer_ref(slot, &host, true, &ref);
@@ -1612,12 +1625,14 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
         const unsigned char* rows = gles2_buffer_bytes(&host);
         /* GL's pack layout: the rows from the bottom, each at the pack alignment */
         size_t row = (size_t)width * 4;
-        size_t length = (size_t)(gl->pixel[0].row_length ? gl->pixel[0].row_length : width) * 4;
-        size_t align = (size_t)gl->pixel[0].alignment;
+        size_t length =
+            (size_t)(gles2_fixed(gl)->pixel[0].row_length ? gles2_fixed(gl)->pixel[0].row_length : width) * 4;
+        size_t align = (size_t)gles2_fixed(gl)->pixel[0].alignment;
         size_t stride = (length + align - 1) / align * align;
         unsigned char* out = pack ? pack->data : (unsigned char*)(uintptr_t)pixels;
         size_t offset = pack ? (size_t)pixels : 0;
-        offset += (size_t)gl->pixel[0].skip_rows * stride + (size_t)gl->pixel[0].skip_pixels * 4;
+        offset +=
+            (size_t)gles2_fixed(gl)->pixel[0].skip_rows * stride + (size_t)gles2_fixed(gl)->pixel[0].skip_pixels * 4;
         if (!pack || offset + stride * (size_t)(height - 1) + row <= pack->size)
             for (int r = 0; r < height; ++r) memcpy(out + offset + (size_t)r * stride, rows + (size_t)r * row, row);
         if (pack) {
@@ -1696,13 +1711,12 @@ static void g_copy_image_sub_data(CPU* c, Gles2Context* gl) {
                            VK_ACCESS_TRANSFER_WRITE_BIT, ATTACHMENT_ACCESS | VK_ACCESS_SHADER_READ_BIT |
                            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            ATTACHMENT_STAGES | ALL_READERS);
-    G2Texture* t = (unsigned)a[7] != 0x8d41 ? gles2_texture((unsigned)a[6]) : NULL;
-    if (t) t->defined |= 1u << (unsigned)a[8];
+    if ((unsigned)a[7] != 0x8d41) snx_gl_texture_defined((uint32_t)a[6], (int32_t)a[8]);
 }
 /* glReadnPixels(x, y, width, height, format, type, size, pixels): glReadPixels when size holds the rows */
 static void g_readn_pixels(CPU* c, Gles2Context* gl) {
     uint64_t size = X(6);
-    if ((uint64_t)(uint32_t)X(2) * (uint32_t)X(3) * 4 > size && !gles2_buffer(gl->pixel_pack)) {
+    if ((uint64_t)(uint32_t)X(2) * (uint32_t)X(3) * 4 > size && !gles2_buffer(gles2_objects(gl)->pixel_pack)) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
     }
@@ -1719,7 +1733,7 @@ static void copy_tex(Gles2Context* gl, unsigned target, int level, int dx, int d
         target = 0x8513;
     }
     unsigned index = target == GL_TEXTURE_2D_ ? G2_T2D : target == 0x8513 ? G2_TCUBE : target == 0x806f ? G2_T3D : G2_TARRAY;
-    G2Texture* t = gles2_unit_texture(gl, gl->active, index);
+    G2Texture* t = gles2_unit_texture(gl, snx_gl_textures(gl->ctx)->active, index);
     if (!t || !t->image.image || level >= t->levels) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
@@ -1731,7 +1745,7 @@ static void copy_tex(Gles2Context* gl, unsigned target, int level, int dx, int d
     blit(slot->cb, &src, x, y, x + w, y + h, t->image.image, t->layout, t->layout, false, extent, (uint32_t)level,
          (uint32_t)(index == G2_TCUBE ? face : layer), dx, dy, dx + w, dy + h, VK_FILTER_NEAREST,
          VK_IMAGE_ASPECT_COLOR_BIT);
-    t->defined |= 1u << level;
+    gles2_texture_defined(t, level);
 }
 static void g_copy_tex_sub_image_2d(CPU* c, Gles2Context* gl) {
     copy_tex(gl, (unsigned)X(0), (int)X(1), (int)X(2), (int)X(3), 0, (int)X(4), (int)X(5), (int)X(6), (int)X(7));
@@ -1740,29 +1754,12 @@ static void g_copy_tex_sub_image_3d(CPU* c, Gles2Context* gl) {
     copy_tex(gl, (unsigned)X(0), (int)X(1), (int)X(2), (int)X(3), (int)X(4), (int)X(5), (int)X(6), (int)X(7),
              (int)gles2_arg(c, 8));
 }
-/* glCopyTexImage2D(target, level, internal, x, y, width, height, border): the level made, then copied into */
+/* glCopyTexImage2D(target, level, internal, x, y, width, height, border): the level made (the shared layer's), then
+   copied into */
 static void g_copy_tex_image_2d(CPU* c, Gles2Context* gl) {
-    unsigned target = (unsigned)X(0);
     int level = (int)X(1), w = (int)X(5), h = (int)X(6);
-    unsigned internal = (unsigned)X(2);
-    int face = target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X_ && target < GL_TEXTURE_CUBE_MAP_POSITIVE_X_ + 6;
-    unsigned index = face ? G2_TCUBE : G2_T2D;
-    G2Texture* t = gles2_unit_texture(gl, gl->active, index);
-    if (!t || w < 0 || h < 0) {
-        gles2_error(gl, t ? GL_INVALID_VALUE_ : GL_INVALID_OPERATION_);
-        return;
-    }
-    /* the read framebuffer's own format when the internal format is unsized: 4 bytes */
-    const G2Format* f = gles2_format(internal, internal == 0x1907 ? 0x1907 : 0x1908, GL_UNSIGNED_BYTE_);
-    if (!f) f = gles2_format(0x1908, 0x1908, GL_UNSIGNED_BYTE_);
-    int bw = w << level, bh = h << level;
-    if (!t->image.image || t->format != f || (t->width >> level) != w || (t->height >> level) != h) {
-        int m = bw > bh ? bw : bh, levels = 1;
-        while (m > 1) m >>= 1, ++levels;
-        if (!gles2_texture_storage(gl, t, f, bw, bh, 1, levels)) return;
-    }
-    t->defined |= 1u << level;
-    copy_tex(gl, target, level, 0, 0, 0, (int)X(3), (int)X(4), w, h);
+    if (snx_gl_copy_tex_image(gl->ctx, (uint32_t)X(0), level, (uint32_t)X(2), w, h))
+        copy_tex(gl, (unsigned)X(0), level, 0, 0, 0, (int)X(3), (int)X(4), w, h);
 }
 
 const HleSymbol hle_gles2_draw[] = {

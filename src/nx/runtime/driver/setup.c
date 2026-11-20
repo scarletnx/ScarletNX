@@ -12,6 +12,10 @@
 
 #define SETUP_LINE 4200 /* an answer, a path's room */
 
+/* the driver alone has no launcher: no language, until the launcher's snx_menu_language (gui/main.c) takes this one's
+   place (a definition, as driver.c's snx_setting_known is) */
+[[gnu::weak]] const char* snx_menu_language(int i, const char** name) { return (void)i, (void)name, NULL; }
+
 /* the setup under way: where it reads and writes, the data folder (a portable copy's once that is picked), and the
    step it asks of how many */
 typedef struct {
@@ -378,7 +382,7 @@ int snx_setup_terminal(FILE* in, FILE* out, const char* program_dir, int all) {
         free(a.data);
         return 0;
     }
-    while (snx_menu_language && snx_menu_language(languages, &name)) ++languages;
+    while (snx_menu_language(languages, &name)) ++languages;
     for (i = 0; i < SNX_SETUP_STEPS; ++i) a.steps += asked(&ask, i, languages);
     rc = notices(&a, &ask);
     if (!rc && asked(&ask, SNX_SETUP_LANGUAGE, languages)) rc = language(&a, &language_picked);

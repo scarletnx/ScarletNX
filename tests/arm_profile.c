@@ -93,6 +93,13 @@ int main(void) {
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0xf800, 0, &t) == 1 && t.op == 1);
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0xe800, 0, &t) == 1 && t.op == 2);
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0xc903, 0, &t) == 1 && !(t.flags & TH_WB));
+    /* ARMv6's CPS, which user mode runs as a NOP; the forms ARMv6 makes UNPREDICTABLE, refused on the ARM11 and run on
+       the ARM946E-S as they are written (arm.sail's UnpredictableEncoding) */
+    assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0xb662, 0, &t) == 1 && t.shape == TH_HINT); /* CPSIE i */
+    assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0xb660, 0, &t));                           /* no A, I, F */
+    assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0x44ff, 0, &t));                           /* ADD pc, pc */
+    assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, 0x47f8, 0, &t));                           /* BLX pc */
+    assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM946E, 0x47f8, 0, &t) == 1 && t.op == BR_BLX_REG);
     /* the ARM7TDMI: BL's halves apart; BLX, BKPT, CPS, IT and the hints undefined; BX and PUSH as ever */
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xf400, 0xd000, &t) == 1 && t.shape == TH_LEGACY_BL &&
            !t.op);

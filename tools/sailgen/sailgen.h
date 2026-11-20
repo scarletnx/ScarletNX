@@ -42,6 +42,7 @@ enum {
     N_ASSERT,  /* assert(...): the arguments are skipped */
     N_WILD,    /* _ in a pattern */
     N_TYPE,    /* a type, as its source text (name) */
+    N_UPDATE,  /* [a with b = d], or [a with b .. c = d]: bits a with bit b (bits b to c) made d */
     N_COUNT
 };
 
@@ -130,8 +131,9 @@ char* sg_read(const char* path, size_t* size);
 
 /* --extract: the definitions roots reach, copied into out (extract.c) */
 int sg_extract(const char* roots_path, const char* out_path, const char* const* inputs, int input_count);
-/* the generator: C for the decode functions roots names (gen.c), with the back end's file copied at its top */
-int sg_generate(const char* roots_path, const char* backend_path, const char* profile_path, const char* out_path);
+/* the generator: C for the decode functions roots names (gen.c), with the back end's files copied at its top */
+int sg_generate(const char* roots_path, const char* const* backend_paths, int backend_count, const char* profile_path,
+                const char* out_path);
 /* the output buffer, written only when it changes */
 void sg_out(const char* fmt, ...);
 int sg_flush(const char* path);

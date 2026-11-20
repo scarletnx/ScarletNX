@@ -68,6 +68,7 @@ typedef struct {
 /* sh_type, sh_flags and the reserved section indexes */
 #define SHT_PROGBITS      1
 #define SHT_SYMTAB        2
+#define SHT_STRTAB        3
 #define SHT_RELA          4
 #define SHT_NOTE          7
 #define SHT_NOBITS        8
@@ -97,6 +98,7 @@ typedef struct {
 
 #define ELF64_ST_BIND(info) ((info) >> 4)
 #define ELF64_ST_TYPE(info) ((info) & 0xf)
+#define ELF64_ST_INFO(bind, type) (((bind) << 4) + ((type) & 0xf))
 #define STB_GLOBAL          1
 #define STB_WEAK            2
 #define STT_SECTION         3

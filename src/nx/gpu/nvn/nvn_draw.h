@@ -67,16 +67,31 @@ struct NvnDraw {
     DsState scratch;  /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
     DispatchState dx; /* the compute stage's program and bindings, a dispatch's state */
 };
+/* what the present log counts of the draws (nvn_draw_stats_log): the draws, those that moved a base vertex or base
+   instance word of bank 0, those whose inline blocks changed, those of them changed by those words alone, and the
+   blocks that changed */
+enum {
+    NVN_COUNT_DRAWS,
+    NVN_COUNT_BASE_MOVED,
+    NVN_COUNT_INLINE_MOVED,
+    NVN_COUNT_BASE_ONLY,
+    NVN_COUNT_BLOCKS,
+    NVN_COUNTS
+};
 /* the file's state, g_nvn.draw (gpu/nvn/nvn_state.h): the device's window origin and depth mode, for every queue (set
    on the game's threads, read on the GPU thread; atomic). Zero is NVN's default of each, the lower left origin and
    near at -w */
 typedef struct {
     _Atomic u32 origin, depth_mode;
+    _Atomic u64 count[NVN_COUNTS]; /* since the start, on the GPU thread */
+    u64 logged[NVN_COUNTS];        /* count at the last present log, on the presenting thread */
 } NvnDrawState;
 
 /* a queue's state d, all zero: NVN's defaults, its draws owner as renderer.h numbers it, and the window origin's flip
    of the device's origin now (the queue's initialization) */
 void nvn_draw_init(NvnDraw* d, u32 owner);
+/* the draws' counts (NvnDrawState) since the last call, as a line a present over the presents since then */
+void nvn_draw_stats_log(u64 presents);
 /* Release renderer predicate and counter state on the GPU thread after the queue's last replay. */
 void nvn_draw_free(NvnDraw* d);
 /* On the GPU thread, a record a queue replays: its render targets, clears, state, bindings and draws. 0 when the
@@ -92,5 +107,7 @@ void nvn_draw_device(u32 origin, u32 depth_mode);
    engine's registers describe one (gpu/draw_state.h's DsSurf: a multisampled one's size in samples), whether it is a
    depth target, and its sample layout (DS_MSAA_): 0 when the texture's format takes no target */
 int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa);
+/* the same of a texture record the caller holds (another front end's, laid out as NVN lays one out: the GL layer's) */
+int nvn_draw_surface_of(const NvnTexture* t, const NvnView* v, DsSurf* s, int* depth, u32* msaa);
 
 #endif

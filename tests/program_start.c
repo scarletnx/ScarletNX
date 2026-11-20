@@ -98,6 +98,12 @@ int main(void) {
     f.user_kept = -1;
     make(&f);
     assert(!strcmp(value("USER"), "Player"));
+    /* a name that leaves the value room for five more bytes: what follows it is cut there, in the value */
+    f = known();
+    memset(f.user, 'n', SNX_START_TEXT - 6);
+    f.user[SNX_START_TEXT - 6] = 0;
+    make(&f);
+    assert(strlen(value("USER")) == SNX_START_TEXT - 1 && !strcmp(value("USER") + SNX_START_TEXT - 6, " (use"));
     f = known();
     f.version[0] = 0;
     make(&f);
