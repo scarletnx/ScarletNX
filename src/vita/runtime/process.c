@@ -36,11 +36,20 @@ bool vita_string(VitaProcess* p, uint32_t address, char* out, size_t size) {
    back: an allocation in the middle of one can neither be protected nor given back alone. The pages an allocation
    shares with another are counted, and only a page no allocation holds goes back. A range committed into a page
    another allocation still holds is cleared, since the page keeps what the last allocation left there */
+/* The watch's pages are the host's, so the range it is told about is the one mprotect changes, not the allocation's:
+   a neighbor page of the same host page must not keep a protection the wider mprotect just dropped */
+static void watch_release_host(uint64_t lo, uint64_t hi, uint64_t host) {
+    vita_watch_release((uint32_t)(lo * host), (uint32_t)((hi - lo) * host));
+}
 static bool commit(VitaProcess* p, uint32_t address, uint32_t size) {
     uint64_t host = plat_mem_page(), lo, hi, at;
-    vita_watch_release(address, size);
-    if (!p->page_refs) return !plat_mem_protect(p->mem + address, size, PLAT_MEM_READ | PLAT_MEM_WRITE);
+    if (!size) return true;
+    if (!p->page_refs) {
+        vita_watch_release(address, size);
+        return !plat_mem_protect(p->mem + address, size, PLAT_MEM_READ | PLAT_MEM_WRITE);
+    }
     lo = address / host, hi = ((uint64_t)address + size + host - 1) / host;
+    watch_release_host(lo, hi, host);
     if (plat_mem_protect(p->mem + lo * host, (hi - lo) * host, PLAT_MEM_READ | PLAT_MEM_WRITE)) return false;
     for (at = lo; at < hi; ++at) {
         /* a page another allocation still holds is mapped, its old contents with it: this range reads zero, as one on
@@ -57,12 +66,14 @@ static bool commit(VitaProcess* p, uint32_t address, uint32_t size) {
 /* inaccessible again, and zero when committed next */
 static void decommit(VitaProcess* p, uint32_t address, uint32_t size) {
     uint64_t host = plat_mem_page(), lo, hi, at;
-    vita_watch_release(address, size);
+    if (!size) return;
     if (!p->page_refs) {
+        vita_watch_release(address, size);
         (void)plat_mem_decommit(p->mem + address, size);
         return;
     }
     lo = address / host, hi = ((uint64_t)address + size + host - 1) / host;
+    watch_release_host(lo, hi, host);
     for (at = lo; at < hi; ++at)
         if (p->page_refs[at] && --p->page_refs[at] == 0) (void)plat_mem_decommit(p->mem + at * host, host);
 }
@@ -86,8 +97,12 @@ bool vita_mapped(VitaProcess* p, uint32_t address, uint32_t size) {
     return false;
 }
 uint32_t vita_alloc(VitaProcess* p, VitaRegion* region, uint32_t size, uint32_t align) {
+    uint64_t rounded;
     if (!size) return 0;
-    size = (size + PAGE - 1) & ~(PAGE - 1);
+    /* a size within a page of 2^32 would round to nothing: refuse it rather than record a zero-byte allocation */
+    rounded = ((uint64_t)size + PAGE - 1) & ~(uint64_t)(PAGE - 1);
+    if (!rounded || rounded > 0xFFFFFFFFull) return 0; /* the size is the 32-bit address space's */
+    size = (uint32_t)rounded;
     if (align < PAGE) align = PAGE;
     unsigned slot = VITA_ALLOCATIONS;
     for (unsigned i = 0; i < VITA_ALLOCATIONS && slot == VITA_ALLOCATIONS; ++i)
