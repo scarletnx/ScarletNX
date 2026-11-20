@@ -369,11 +369,13 @@ static void invalidate64(struct snx_recompiler* r, uint8_t* mem) {
     {
         /* the module's own copy of the code, which its JIT compiles from, follows the guest's bytes */
         uint32_t words[2] = {0xd503201f, 0xd65f03c0}; /* nop; ret */
-        check(snx_recompiled_update_code(module, helper, words, sizeof(words)) == sizeof(words),
+        uint8_t guest[sizeof(words)];                 /* the words as the guest has them in memory */
+        place(guest, 0, words, 2);
+        check(snx_recompiled_update_code(module, helper, guest, sizeof(guest)) == sizeof(guest),
               "update_code: the words inside the module's ranges are taken");
-        check(snx_recompiled_update_code(module, helper + 2, words, 4) == 0,
+        check(snx_recompiled_update_code(module, helper + 2, guest, 4) == 0,
               "update_code: a misaligned address is refused");
-        check(snx_recompiled_update_code(module, 0x10, words, 4) == 0,
+        check(snx_recompiled_update_code(module, 0x10, guest, 4) == 0,
               "update_code: an address outside the ranges is not taken");
         check(snx_recompiled_update_code(module, helper, mem + helper, sizeof(words)) == sizeof(words),
               "update_code: the original bytes go back");
@@ -607,6 +609,31 @@ static uint64_t repatch_run(struct snx_recompiled* module, uint8_t* mem, RtAPI* 
     snx_recompiled_run(module, &cpu, entry, 0);
     return cpu.x[0];
 }
+
+static void test_update_code_live(void) {
+    static uint8_t mem[MEMORY];
+    const uint32_t program[2] = {0x91000400, 0xd65f03c0}; /* add x0,x0,#1; ret */
+    const uint32_t other = 0xd503201f;                      /* nop */
+    uint8_t guest[4];
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    check(r != NULL, "update_code live: a recompiler");
+    if (!r) return;
+    place(mem, CODE64, program, 2);
+    snx_recompiler_set_live_code(r, 1);
+    struct snx_recompiled* module = snx_recompile(r, CODE64, mem + CODE64, sizeof(program));
+    check(module != NULL, "update_code live: the module compiles");
+    if (!module) {
+        snx_recompiler_free(r);
+        return;
+    }
+    place(guest, 0, &other, 1);
+    check(snx_recompiled_update_code(module, CODE64, guest, sizeof(guest)) == 0,
+          "update_code live: a live-code module has no copy to update");
+    check(memcmp(mem + CODE64, guest, sizeof(guest)) != 0, "update_code live: the caller's bytes are not written");
+    snx_recompiled_free(module);
+    snx_recompiler_free(r);
+}
+
 static void test_repatch(void) {
     enum { AT = 0x4000, PATCHED = AT + 0x40 }; /* the entry's line and the patched word's line differ */
     static uint8_t mem[MEMORY];
@@ -621,7 +648,10 @@ static void test_repatch(void) {
     snx_recompiler_set_hook_direct_calls(r, 1);
     struct snx_recompiled* module = snx_recompile(r, AT, mem + AT, sizeof(words));
     check(module != NULL, "repatch: the module compiles");
-    if (!module) return;
+    if (!module) {
+        snx_recompiler_free(r);
+        return;
+    }
     RtAPI rt;
     snx_runtime_defaults(&rt);
     rt.svc = repatch_svc;
@@ -632,12 +662,14 @@ static void test_repatch(void) {
     for (unsigned k = 2; k <= 6; ++k) {
         uint32_t word = 0x91000000u | (k << 10); /* add x0,x0,#k */
         place(mem, PATCHED, &word, 1);
-        snx_recompiled_update_code(module, PATCHED, &word, sizeof(word));
+        snx_recompiled_update_code(module, PATCHED, mem + PATCHED, sizeof(word));
         snx_recompiled_invalidate(module, PATCHED, 64, NULL, NULL);
         if (repatch_run(module, mem, &rt, AT) != k) all = 0;
     }
     check(all && repatch_undefs == 0,
           "repatch: each patch of the same function runs, none is an undefined instruction");
+    snx_recompiled_free(module);
+    snx_recompiler_free(r);
 }
 
 int main(int argc, char** argv) {
@@ -648,6 +680,7 @@ int main(int argc, char** argv) {
     if (!mem) return 2;
     place(mem, CODE64, a64_words, sizeof(a64_words) / sizeof(a64_words[0]));
     place(mem, CODE32, a32_words, sizeof(a32_words) / sizeof(a32_words[0]));
+    test_update_code_live();
     test_repatch();
     check(snx_recompiler_abi() == SNX_ABI, "the library's ABI is this cpu.h's");
     check(!snx_recompiler_has(0) && !snx_recompiler_new(0), "flags must name a backend");
