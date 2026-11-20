@@ -46,6 +46,11 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static int64_t sg_Dst(SgG* g) { return g->d; }
 [[maybe_unused]] static int64_t sg_RegA(SgG* g) { return g->a; }
 [[maybe_unused]] static int64_t sg_RegB(SgG* g) { return g->b; }
+/* the program's stage (shader.h's ST_*), whether it runs between the vertex and fragment stages, and its input
+   primitive's vertices */
+[[maybe_unused]] static int64_t sg_Stage(SgG* g) { return g->t->stage; }
+[[maybe_unused]] static int sg_Between(SgG* g) { return g->t->between; }
+[[maybe_unused]] static int64_t sg_InVertices(SgG* g) { return g->t->in_vertices; }
 [[maybe_unused]] static SgV sg_R_read(SgG* g, int64_t r) { return sg_v(reg_read(g->c, (u32)r), SGT_U32); }
 [[maybe_unused]] static void sg_R_write(SgG* g, int64_t r, SgV v) { reg_write(g->c, (u32)r, sg_u32(g, v)); }
 [[maybe_unused]] static void sg_R_copy(SgG* g, int64_t d, int64_t r) { reg_copy(g->c, (u32)d, (u32)r); }

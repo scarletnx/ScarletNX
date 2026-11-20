@@ -57,7 +57,6 @@
     }
 }
 
-[[maybe_unused]] static int64_t sg_Stage(SgG* g) { return g->t->stage; }
 [[maybe_unused]] static int sg_LaneModel(SgG* g) { return g->t->lane_model; }
 [[maybe_unused]] static int sg_LaneIsInvocation(SgG* g) { return g->t->lane_is_invocation; }
 [[maybe_unused]] static int sg_QuadLaneModel(SgG* g) { return g->c->quad_lane != 0; }
@@ -88,8 +87,6 @@
 [[maybe_unused]] static SgV sg_PatchVertices(SgG* g) {
     return sg_v(spv_emit_load(&g->c->emit, g->c->u32_type, g->t->patch_vertices), SGT_U32);
 }
-[[maybe_unused]] static int sg_Between(SgG* g) { return g->t->between; }
-[[maybe_unused]] static int64_t sg_InVertices(SgG* g) { return g->t->in_vertices; }
 [[maybe_unused]] static SgV sg_ReadClock(SgG* g, int64_t scope) {
     const Tr* t = g->t;
     return sg_vt(spv_emit_unary(&g->c->emit, SPV_OP_READ_CLOCK_KHR, t->vec2_u32, shader_u32(g->c, (u32)scope)),
