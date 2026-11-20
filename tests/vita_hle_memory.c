@@ -476,6 +476,19 @@ static uint32_t words_block(VitaProcess* p) {
     assert(block && !(block & 0xffff));
     return block;
 }
+
+/* A block that comes back inside a host page another block still holds must read zero, as one on a fresh page does:
+   the page stays mapped, so a range committed into it would otherwise repeat what the last block left there */
+static void shared_page_zero(VitaProcess* p) {
+    uint32_t a = vita_alloc(p, &p->user, 0x1000, 0x1000), b = vita_alloc(p, &p->user, 0x1000, 0x1000);
+    assert(a && b == a + 0x1000);
+    memset(vita_ptr(p, a), 0x5a, 0x1000);
+    vita_free(p, a);
+    assert(vita_alloc(p, &p->user, 0x1000, 0x1000) == a);
+    for (unsigned i = 0; i < 0x1000; i += 4) assert(vita_read32(p, a + i) == 0);
+    vita_free(p, a);
+    vita_free(p, b);
+}
 /* SceLibc's fread and fwrite take a size and a count, and 0x10000 times 0x10001 is 0x10000 more than 4 GiB: the bytes
    the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
    stream's own block is made first, so the buffer is the last and the page past its end is no one's */
@@ -547,6 +560,7 @@ int main(void) {
     ngs_atrac9_and_extra_busses(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
+    shared_page_zero(p);
     /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
     fios_archive_unmount(p, t);
