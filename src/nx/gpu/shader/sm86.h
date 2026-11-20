@@ -357,6 +357,33 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
    A fragment program takes the generics that the draw's mesh program writes per primitive in si->prim_mask (its key):
    the mesh program's translated si->prim_mask, which sm86_mesh_primitive_mask gives from its key alone. Its module
    declares those inputs PerPrimitiveEXT */
+/* The compute-task path (vk_mesh_path=compute, vk/device.c): a task program runs as a compute dispatch, and the mesh
+   program it launches has no task stage. The task's payload, which the hardware copies to each mesh workgroup it
+   launches, is a storage buffer instead (SNX_VKB_MESHBUF, shader.h), a flat array of u32:
+   - the indirect mesh draw's record at words 0 to 3: the most groups one task workgroup launched (an atomic maximum,
+     the draw's x), the task workgroups (y), 1 (z) and 0;
+   - the count of each task workgroup from word 4 on: the mesh groups it launched (the payload's word 1);
+   - the payloads from word 4 + the buffer's groups: task workgroup g's at 4 + groups + g * payload_stride words, where
+     payload_stride is the larger of the task's and the mesh program's payload (ShMesh.payload_stride).
+   The buffer holds sm86_mesh_task_cap(payload_stride) task workgroups, which the push constant's z gives above its
+   flag (SH_PUSH_GPU_MESH_FIRST): the task program cuts its dispatch to them and stores that count at the record's word
+   1, and the mesh program reads it from there. A mesh workgroup (x, y) runs when x is below the count of task
+   workgroup y, and reads y's payload; one that did not run calls OpSetMeshOutputsEXT with 0 and 0 before it returns,
+   as RADV hangs a mesh workgroup that returns without it. The renderer keeps one buffer for each frame in flight,
+   zeroes its record, dispatches the task (of the draw's count, or of its indirect record's) and draws with
+   vkCmdDrawMeshTasksIndirectEXT (vk/render.c) */
+#define SNX_MESH_PAYLOAD_BYTES (1u << 20) /* the buffer's bytes: 1 MiB holds SNX_MESH_TASK_GROUPS slots */
+#define SNX_MESH_TASK_GROUPS   1024u      /* the most task workgroups a buffer holds */
+/* the buffer's bytes for groups task workgroups of a slot of stride_words words: the record, the counts, the payloads */
+static inline u64 sm86_mesh_payload_bytes(u32 stride_words, u32 groups) {
+    return 4ull * (4 + (u64)groups * (stride_words + 1));
+}
+/* the task workgroups a buffer of a slot of stride_words words holds: its words less the record, one to a slot and one
+   to its count */
+static inline u32 sm86_mesh_task_cap(u32 stride_words) {
+    const u32 cap = (SNX_MESH_PAYLOAD_BYTES / 4 - 4) / (stride_words + 1);
+    return cap < SNX_MESH_TASK_GROUPS ? cap : SNX_MESH_TASK_GROUPS;
+}
 /* the generics with a component in the output map of a vertex, tessellation or geometry SPH (its words 0 to 19):
    generic i's four components at bits 432 + 4 i on */
 static inline u32 sm86_omap_generics(const u32* sph) {

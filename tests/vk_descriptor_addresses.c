@@ -144,6 +144,15 @@ void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout l
     (void)count;
     (void)offsets;
 }
+void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
+                                         u32 count, const VkDeviceSize* offsets) {
+    (void)cb;
+    (void)bp;
+    (void)layout;
+    (void)first;
+    (void)count;
+    (void)offsets;
+}
 VKAPI_ATTR VkDeviceAddress VKAPI_CALL vkGetBufferDeviceAddress(VkDevice device, const VkBufferDeviceAddressInfo* info) {
     (void)device;
     assert(info->buffer);

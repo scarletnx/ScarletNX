@@ -17,13 +17,17 @@ static int mesh_draw_program(u64 gva, u32 sph0, u32 omap13, const Sm86Word* code
     return gmem_write(gva, bytes, SM86_SPH_BYTES + 16 * (n + 1));
 }
 /* a mesh program's code: one triangle (-1, -1), (3, -1), (-1, 3) at depth z, as 4 position words a vertex in groups of
-   0x80 bytes (the vertex output area of a program of at most 32 vertices), its indices and the count 1 */
-static u32 mesh_draw_triangle(Sm86Word* code, float z) {
+   0x80 bytes (the vertex output area of a program of at most 32 vertices), its indices and the count 1. With from_payload
+   the depth is payload word 4 (byte 0x10), which a task program writes (the compute-task path reads it from a buffer) */
+static u32 mesh_draw_triangle(Sm86Word* code, float z, int from_payload) {
     u32 n = 0, minus = 0xbf800000u, three = 0x40400000u, one = 0x3f800000u, depth;
     memcpy(&depth, &z, sizeof depth);
     code[n++] = sm86_mov_imm(1, minus);
     code[n++] = sm86_mov_imm(2, three);
-    code[n++] = sm86_mov_imm(3, depth);
+    if (from_payload)
+        code[n++] = sm86_isbe(0, 3, 255, 0x10, SM86_ISBE_B32, SM86_ISBE_ATTR, 0, 0); /* the payload's depth */
+    else
+        code[n++] = sm86_mov_imm(3, depth);
     code[n++] = sm86_mov_imm(4, one);
     static const u8 xy[3][2] = {{1, 1}, {2, 1}, {1, 2}}; /* the registers of each vertex's x and y */
     for (u32 v = 0; v < 3; v++) {
@@ -78,10 +82,10 @@ static int check_mesh_draws(void) {
     gmmu_map(gpu, cpu, 0x10000);
     memset(GP(cpu), 0, 0x10000);
     Sm86Word code[32];
-    u32 n = mesh_draw_triangle(code, 0.5f);
+    u32 n = mesh_draw_triangle(code, 0.5f, 0);
     const u32 position = 0xfu << 12;                                  /* the output map's bits 428 to 431 */
     CHECK(!mesh_draw_program(alone, 0x000c0481u, position, code, n)); /* alone: a vertex program's SPH */
-    n = mesh_draw_triangle(code, 0.25f);
+    n = mesh_draw_triangle(code, 0.25f, 0);
     CHECK(!mesh_draw_program(after, 0x020c0c81u, position, code, n)); /* after a task: an evaluation program's */
     /* the task program: its workgroup index is the count of mesh groups it launches */
     code[0] = sm86_isbe(0, 0, 255, 0, SM86_ISBE_B32, SM86_ISBE_ATTR, 1, 0);
@@ -138,10 +142,51 @@ static int check_mesh_draws(void) {
     vk_render_end();
     CHECK(g_vk_mesh_drawn == drawn + 3);
     CHECK(!mesh_draw_depths(target, 0.25f, "a task program that launches one mesh group"));
+    /* The compute-task path (vk_mesh_path, sm86.h): the task program is a compute dispatch and the mesh program reads
+       the payload from a buffer. The mesh program's depth is payload word 4, which the task program writes, so the
+       depth is the payload's or the target stays at the depth before. The same programs are drawn natively above */
+    const u64 task2 = gpu + 0x2400, after2 = gpu + 0x2800;
+    u32 depth_bits;
+    float want = 0.75f;
+    memcpy(&depth_bits, &want, sizeof depth_bits);
+    n = mesh_draw_triangle(code, 0.0f, 1);
+    CHECK(!mesh_draw_program(after2, 0x020c0c81u, position, code, n)); /* after a task: an evaluation program's */
+    code[0] = sm86_mov_imm(1, depth_bits);
+    code[1] = sm86_isbe(1, 1, 255, 0x10, SM86_ISBE_B32, SM86_ISBE_ATTR, 0, 1); /* the payload's record */
+    code[2] = sm86_isbe(0, 0, 255, 0, SM86_ISBE_B32, SM86_ISBE_ATTR, 1, 0);    /* the launch's first workgroup */
+    code[3] = sm86_isbe(1, 0, 255, 4, SM86_ISBE_B32, SM86_ISBE_ATTR, 0, 1);    /* the mesh groups to launch */
+    code[4] = sm86_exit();
+    CHECK(!mesh_draw_program(task2, 0x000c0481u, 0, code, 5));
+    state->prog.task = task2;
+    state->prog.mesh = after2;
+    state->gen[DS_PROGRAMS] = ds_generation_next();
+    g_vk.mesh_task_compute = !g_vk.has_descriptor_heaps; /* a heap's bind is the graphics pipeline's (device.c) */
+    call.first = 0;
+    vk_render_clear(state, &clear, &owner);
+    vk_render_draw(state, &call, &owner);
+    vk_render_end();
+    CHECK(!mesh_draw_depths(target, 1.0f, "the compute-task path, a task program that launches no group"));
+    call.first = 1;
+    vk_render_draw(state, &call, &owner);
+    vk_render_end();
+    CHECK(!mesh_draw_depths(target, 0.75f, "the compute-task path: the payload's depth"));
+    /* the same through an indirect draw: the task count and the first workgroup are the GPU's record, {count, first} */
+    const u64 record = gpu + 0x2c00;
+    const u32 words[2] = {1, 1};
+    CHECK(!gmem_write(record, words, sizeof words));
+    call = (DrawCall){.mesh = 1, .topology = 4, .count = 1, .instances = 1, .indirect = record, .stride = 8,
+                      .draw_count = 1};
+    vk_render_clear(state, &clear, &owner);
+    vk_render_draw(state, &call, &owner);
+    vk_render_end();
+    CHECK(!mesh_draw_depths(target, 0.75f, "the compute-task path, an indirect draw's record"));
+    g_vk.mesh_task_compute = 0;
+    if (g_vk.has_descriptor_heaps)
+        puts("SKIP the compute-task path: graphics descriptors are heaps");
     /* a mesh program's per-primitive SPH at the offset that its section gives, counted from the start of its code
        area (its own SPH included): generic 0.x per primitive */
     const u64 primitive = gpu + 0x3000, header = 0x200;
-    n = mesh_draw_triangle(code, 0.5f);
+    n = mesh_draw_triangle(code, 0.5f, 0);
     CHECK(!mesh_draw_program(primitive, 0x000c0481u, position, code, n));
     u8 sph[SM86_SPH_BYTES] = {0};
     snx_st_le32(sph, 0x010c1081u);
@@ -153,7 +198,7 @@ static int check_mesh_draws(void) {
                      .max_primitives = 1,
                      .primitive_vertices = 3,
                      .prim_sph = (u32)header};
-    VkSh* shader = vk_shader_mesh(state, primitive, ST_MS, &key);
+    VkSh* shader = vk_shader_mesh(state, primitive, ST_MS, &key, 0, 0);
     CHECK(shader && !shader->failed && shader->si.prim_mask == 1 && shader->si.out_mask == 1);
     if (shader && shader->si.prim_mask != 1)
         fprintf(stderr, "vulkan_headless: a per-primitive SPH at %#llx: generics %#x per primitive, not 1\n",
@@ -168,7 +213,7 @@ static int check_mesh_draws(void) {
     CHECK(!gmem_write(large + 14 * 4, omap, sizeof omap));
     key = (DsMeshKey){.mesh_threads = 1, .mesh_payload = 0x80, .max_vertices = 256, .max_primitives = 1,
                       .primitive_vertices = 3};
-    shader = vk_shader_mesh(state, large, ST_MS, &key);
+    shader = vk_shader_mesh(state, large, ST_MS, &key, 0, 0);
     CHECK(shader && shader->failed && strstr(shader->si.first_unsupported, "maxMeshOutputMemorySize"));
     if (shader && !strstr(shader->si.first_unsupported, "maxMeshOutputMemorySize"))
         fprintf(stderr, "vulkan_headless: a mesh program past the output limit: failed %d, \"%s\"\n", shader->failed,

@@ -1551,6 +1551,20 @@ setting Vulkan hidden commands
     help from the driver, to test that path: an extension that requires one goes off, and the device is made again
     help without it, as with a driver that lists the extension without the command. The log says each. Empty: none.
     help A name that is no device command of a Vulkan extension stops the game, naming the nearest ones
+setting Mesh task path
+    key vk_mesh_path
+    int 0 2
+    default 0
+    startup
+    words Auto|Native|Compute
+    help How a mesh draw with a task program runs, where the device has VK_EXT_mesh_shader and no ban holds (a device
+    help without it draws no mesh program, and the log says why once). Native submits the task and mesh stages together,
+    help as the console's hardware runs them. Compute runs the task program as a compute dispatch that writes the
+    help payload to a buffer, then draws the mesh program alone: the task+mesh gang that hangs RADV on RDNA4 and lost
+    help the device on NVIDIA's driver is not submitted. A direct draw and an indirect one both take it. Auto is
+    help Compute where the device has task shaders and subgroups of 32 in compute, else Native; a device that binds
+    help graphics descriptors in heaps keeps Native, because a heap's bind is the graphics pipeline's
+    help docs/layers/gpu/driver-quirks.md has the devices
 setting Guest memory
     key vk_memory
     int 0 2

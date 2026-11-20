@@ -17,6 +17,7 @@ breaks, where that is known from, what the renderer does about it and where, and
   * [MoltenVK](#moltenvk)
   * [lavapipe](#lavapipe)
   * [Every driver but NVIDIA's](#every-driver-but-nvidias)
+* [Mesh shaders](#mesh-shaders)
 * [The ban table](#the-ban-table)
 * [Known elsewhere, not hit here](#known-elsewhere-not-hit-here)
 
@@ -120,6 +121,48 @@ commit or file at a commit (the table's head names the hashes they were read at)
 |---|---|---|---|
 | A GPU that clips a huge primitive (AMD, Intel, Arm) interpolates the clipped vertices' inputs with less precision than the position, where the console interpolates the vertices' own values: a generic holding the position misses the fragment's pixel | Eden's position_varying_pass.cpp; 153da38c6 | a varying pass reads the position generic from the fragment's own place, on every driver but NVIDIA's (`render.c`, `draw_varying`) | shader_direct_regressions |
 | Fragment shader interlock on AMD waits on more than the fragments that overlap: a feedback draw cost more with it (AMD iGPU, 59.1 ms against 55.3 drawn twice) | 242c613fe | a draw that samples its own target at its pixel uses the interlock on NVIDIA only, and is drawn twice elsewhere (`device.c`, `feedback_mode`) | vulkan_headless (`vulkan_index_draws.inc`) |
+
+## Mesh shaders
+
+An Ounce game's mesh draws (`docs/platforms/nx/ounce.md#draws`) are the one place where a draw submits work to a
+stage other than the graphics pipeline's first, and the shape that has faulted or hung the drivers is the task and
+mesh stages **in one submission**: a task workgroup launches mesh workgroups, and the hardware copies its payload into
+each of them. NVIDIA's driver faulted the GPU with that shape in most menu runs of an Ounce game, which its line in
+the ban table records. RADV on RDNA4 is reported to hang it on an RX 9070 XT (`NX2navi#930`), at about 32 fps where a
+compute path ran at 96 to 105. On an RX 6700 XT (RADV, Mesa 26.2.6) the same shape drew 213,192 mesh draws in one run
+from boot into a race with no fault, and an RX 9060 XT (RADV GFX1200, Mesa 26.2.6) 48,000 in a 90 second run of the
+first scene of one game, so the family alone does not decide it.
+
+Our way around the shape is `vk_mesh_path` (`docs/user/settings.md`): Auto, the default, runs the task program as a
+compute dispatch that writes its payload, its counts and the draw's workgroup record into a storage buffer, and draws
+the mesh program alone, with no task stage. That keeps the console's programs and their outputs and removes the
+gang submission; `Native` puts the two stages back together for a device whose path is measured to work. A direct
+draw and an indirect one both take the compute path: the indirect one's task count is its record's, and the dispatch
+reads it there (`vkCmdDispatchIndirect`), so the host needs no value the GPU holds. One buffer serves the draws of a
+frame, with a barrier around each dispatch; the push constant gives the slots it holds, and the task program stores
+the groups it dispatched in the draw's record for the mesh program to read, so both agree on the slots' places. A
+device that binds graphics descriptors in heaps keeps the native path: the heap bind is the graphics pipeline's, and
+a compute dispatch cannot use it.
+
+A mesh workgroup that was not launched (its x is at or past its task workgroup's count) **calls
+`OpSetMeshOutputsEXT` with 0 and 0 before it returns**: RADV (Mesa 26.2.6, RX 9060 XT) hangs the GPU on a mesh
+workgroup that returns without it, which is what a direct `OpReturn` in the culled case did. Nothing else of the
+mesh program changes.
+
+The buffer holds as many task workgroups as the payload's size allows (`sm86_mesh_task_cap`, 327 for the 3200-byte
+payload one game's largest programs take, 1024 for the smallest). A draw of more task workgroups than that keeps the
+first ones, which the log says once for a direct draw.
+
+What keeps the compute path from regressing: `vulkan_headless_mesh` draws a task program that writes a depth into its
+payload and a mesh program that reads it, through the native path, the compute path, and an indirect draw's record,
+and checks the same depths (`tests/vulkan_mesh_draw.inc`); `vulkan_headless_mesh_native` draws them with the native
+path chosen. The `vulkan:` stats line counts the mesh draws that take the compute path (`N with a compute task`).
+
+Measured here (RX 9060 XT, RADV Mesa 26.2.6, an Ounce game's first 3D scene, the same script): the native path hangs
+the GPU the moment an **indirect** task+mesh gang is submitted (three resets, the hang dump naming
+`DISPATCH_TASKMESH_INDIRECT_MULTI_ACE` with the native `TaskEXT` shader); the compute path ran 120 seconds with
+23,204 mesh draws through it, none skipped, and 90 seconds of the same scene at 36.9 frames a second against 35.8 for
+the native build's run, so the dispatch it adds costs nothing measurable there.
 
 ## The ban table
 
