@@ -14,3 +14,5 @@ int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     sg53_begin(&g, t, i, w, op, d, a, b);
     return sg53_emit(&g, op);
 }
+
+int sm53_sail_takes(int op) { return sg53_takes(op); }

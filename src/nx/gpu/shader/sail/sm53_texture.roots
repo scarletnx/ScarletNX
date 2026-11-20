@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# SM53's texture and surface instructions (sm53_texture.sail), which were emit_texture.c's emit_texture
+op TLD O_TLD O_TLD_B
+op SURFACE O_SULD O_SUST O_SURED O_SUATOM
+op TLDS O_TLDS
+op TEXS O_TEXS
+op TEX O_TEX O_TEX_B
+op TXD O_TXD O_TXD_B
+op TXQ O_TXQ O_TXQ_B
+op TMML O_TMML O_TMML_B
+op TLD4 O_TLD4S O_TLD4 O_TLD4_B
