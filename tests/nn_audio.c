@@ -425,6 +425,24 @@ static void test_two_outs(void) {
     nnaudio_close_out(&cpu, &L, T_OUT2);
 }
 
+/* the clock's turn with a time taken before an append started the out's clock, as its thread takes one before it
+   has the outs' lock: nothing of the buffer has played by then, where the time before the clock's start counted as
+   2^64 ns after it and the buffer came back at once */
+static void test_turn_before_the_clock(void) {
+    AudOut* q = open_output(T_OUT);
+    nnaudio_register_buffer_event(&cpu, T_OUT, EVENT);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
+    test_now += 1000000; /* idle: the append starts the clock here */
+    CHECK(append(T_OUT, 1, SAMPLES, 196, 192, 0) == 1);
+    kev(q->ev)->signaled = 0;
+    nnaudio_out_tick(test_now - 500000);
+    CHECK(q->nqueued == 1 && q->nreleased == 0 && q->played == 0 && !kev(q->ev)->signaled);
+    test_now += 1000000; /* its 48 frames */
+    nnaudio_out_tick(test_now);
+    CHECK(kev(q->ev)->signaled && released(T_OUT) == 1 && taken[0] == B(1));
+    nnaudio_close_out(&cpu, &L, T_OUT);
+}
+
 /* the audio device: the one output's name and channels, its volume on the outs and the renderers, the auto-tune
    flag, and the events a game acquires */
 static void test_device(void) {
@@ -906,6 +924,7 @@ int main(void) {
     test_offset_past_capacity();
     test_partial_frame();
     test_two_outs();
+    test_turn_before_the_clock();
     test_device();
     test_ins();
     test_applet();

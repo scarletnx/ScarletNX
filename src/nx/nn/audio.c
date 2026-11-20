@@ -51,7 +51,9 @@ static u64 frames_in(u64 ns) {
 static u32 out_advance(AudOut* q, u64 now) {
     u32 released = 0;
     u64 avail;
-    if (!q->started || !q->nqueued) return 0;
+    /* the clock's thread takes its time before it has the lock: an append that started an idle out's clock while it
+       waited is later than that time, and none of its buffer has played by it */
+    if (!q->started || !q->nqueued || now < q->t0) return 0;
     avail = frames_in(now - q->t0) - q->t0_frames;
     while (q->nqueued) {
         u32 i = (q->first + q->nreleased) % AUDOUT_BUFFERS;
