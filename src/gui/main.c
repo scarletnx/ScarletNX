@@ -17567,7 +17567,6 @@ static bool missing_ask(App* app, const char* program) {
    folder */
 typedef enum { MISSING_DUMP, MISSING_FOLDER, MISSING_ROM, MISSING_CTR, MISSING_VITA } MissingKind;
 static MissingKind missing_kind(const char* program, const char* file) {
-    static const char* const dumps[] = {".nsp", ".xci", ".dnsp", ".dxci"};
     char *folder, *name;
     SnxSystem system;
     game_where(program, &folder, &name);
@@ -17577,8 +17576,7 @@ static MissingKind missing_kind(const char* program, const char* file) {
     if (system == SNX_SYSTEM_GBA || system == SNX_SYSTEM_NDS) return MISSING_ROM;
     if (system == SNX_SYSTEM_3DS) return MISSING_CTR;
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
-    for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
-        if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
+    if (file && snx_switch_dump_name(file)) return MISSING_DUMP;
     if (file && !file[0]) { /* none named: a folder when a copy of its RomFS stopped, which only a folder's leaves */
         char stopped[SNX_PATH_SIZE];
         bool copy;

@@ -233,12 +233,13 @@ static inline blob_t compressed_build(const blob_t* image, size_t cut, uint64_t 
     return out;
 }
 
-/* A decrypted NCA (DNCA) of content_type: an ExeFS of exefs_count files when exefs is not NULL (main.npdm makes it
-   one), then a RomFS of romfs_count files when romfs is not NULL, stored as compressed_build stores it when romfs_cut
-   or romfs_zeros is nonzero. */
-static inline blob_t dnca_build_romfs(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
-                                      unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count,
-                                      size_t romfs_cut, uint64_t romfs_zeros) {
+/* A decrypted NCA (DNCA) of content_type, its sections from first on (0xC00, right after its header, or 0x4000, where
+   a console's NCAs start theirs): an ExeFS of exefs_count files when exefs is not NULL (main.npdm makes it one), then a RomFS of
+   romfs_count files when romfs is not NULL, stored as compressed_build stores it when romfs_cut or romfs_zeros is
+   nonzero. */
+static inline blob_t dnca_build_at(size_t first, uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
+                                   unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count,
+                                   size_t romfs_cut, uint64_t romfs_zeros) {
     nca_header_t header;
     blob_t sections[2] = {{0}}, body;
     unsigned n = 0;
@@ -275,19 +276,25 @@ static inline blob_t dnca_build_romfs(uint8_t content_type, uint64_t title_id, c
     for (unsigned i = 0; i < n; i++) body.size += sections[i].size;
     body.data = zalloc(body.size);
     size_t at = 0;
+    CHECK(first >= 0xC00 && first % 0x200 == 0);
     for (unsigned i = 0; i < n; i++) {
-        section_entry(&header, i, 0xC00 + at, sections[i].size);
+        section_entry(&header, i, first + at, sections[i].size);
         memcpy(body.data + at, sections[i].data, sections[i].size);
         at += sections[i].size;
         free(sections[i].data);
     }
-    header.nca_size = 0xC00 + body.size;
+    header.nca_size = first + body.size;
     nca_header_swap(&header); /* little-endian, as a file has it */
-    blob_t nca = {zalloc(0xC00 + body.size), 0xC00 + body.size};
+    blob_t nca = {zalloc(first + body.size), first + body.size};
     memcpy(nca.data, &header, sizeof(header));
-    memcpy(nca.data + 0xC00, body.data, body.size);
+    memcpy(nca.data + first, body.data, body.size);
     free(body.data);
     return nca;
+}
+static inline blob_t dnca_build_romfs(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
+                                      unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count,
+                                      size_t romfs_cut, uint64_t romfs_zeros) {
+    return dnca_build_at(0xC00, content_type, title_id, exefs, exefs_count, romfs, romfs_count, romfs_cut, romfs_zeros);
 }
 static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
                                 unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count) {

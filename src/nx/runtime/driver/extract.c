@@ -29,10 +29,11 @@ typedef struct {
     SnxU64 total, written;
     double said_at;
     int said;
+    unsigned long restarts; /* reads of a solid NCZ behind where its stream got to, each decoding it again */
 } ExtractState;
 
 static void extract_help(void) {
-    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp|FOLDER [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.xcz|BASE.nsz|BASE.dxci|BASE.dnsp|FOLDER [options]\n"
          "  FOLDER, an extracted game (exefs/, romfs/), is copied into --out as it is\n"
          "  --update FILE       Apply a same-title update during extraction, or add a DLC's RomFS image\n"
          "  --name NAME         Output name (default: base dump stem)\n"
@@ -206,6 +207,13 @@ static void progress_tick(uint64_t written, void* data) {
     progress_say(state, 0);
 }
 
+/* a read of a solid NCZ (an NSZ's) behind where its stream got to, which decodes it again from its start: counted, for
+   the line after the extraction */
+static void restart_count(const char* line, void* data) {
+    (void)line;
+    ((ExtractState*)data)->restarts++;
+}
+
 /* the files and folders under path and their bytes, added to the counts */
 static void tree_count(const char* path, unsigned long* files, unsigned long* folders, SnxU64* bytes) {
     char** names = NULL;
@@ -248,6 +256,10 @@ static void say_extracted(ExtractState* state) {
                folders ? "s" : "", size);
     } else
         puts("  RomFS: none");
+    if (state->restarts) /* what reading a solid NCZ cost */
+        printf("  The NCZ, one zstd stream, was decoded again from its start %lu time%s, for reads behind where it had "
+               "got to\n",
+               state->restarts, state->restarts == 1 ? "" : "s");
     fflush(stdout);
 }
 
@@ -381,6 +393,8 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     state->said = 0;
     state->said_at = snx_seconds(); /* a quick one says nothing */
     snx_hac_progress(progress_tick, state);
+    state->restarts = 0;
+    snx_hac_on_restart(restart_count, state);
     if (options->program)
         printf("Extracting program %d of the base%s\n", options->program,
                patch->found ? ", with the update's patch of it applied" : "");
@@ -405,6 +419,7 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
                           : snx_hac_extract(state->dump.hac, program->container, program->entry, -1, 0, state->exefs,
                                             state->romfs);
     snx_hac_progress(NULL, NULL);
+    snx_hac_on_restart(NULL, NULL);
     if (state->said) progress_say(state, 1);
     if (failed) return snx_hac_error("the Program NCA cannot be extracted");
     main_path = snx_path_join(state->exefs, "main");

@@ -874,6 +874,8 @@ if(TARGET hactool_internals)
     if(NOT WIN32) # the dump's link: Windows makes one only with the right to
         add_test(NAME filesystem_dump COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump)
         add_test(NAME filesystem_dump_source COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-source)
+        # an NSZ, its program a solid NCZ, read in place as its NCA would be, what that costs said
+        add_test(NAME filesystem_dump_nsz COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-nsz)
         add_test(NAME filesystem_dump_none COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-none)
         add_test(NAME filesystem_data_link COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> data-link)
         add_test(NAME filesystem_dump_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-gone)
@@ -2668,7 +2670,8 @@ snx_test_target(snx-test-run-ticking c23)
 target_link_libraries(snx-test-run-ticking PRIVATE snx_test_common)
 add_test(NAME run_ticking COMMAND snx-test-run-ticking)
 
-# GNU C23 for hactool's headers, which build the synthetic dumps (hac_synth.h); extract.c itself stays ISO C23 in the driver
+# GNU C23 for hactool's headers, which build the synthetic dumps (hac_synth.h) and their NCZs (ncz_synth.h); extract.c
+# itself stays ISO C23 in the driver
 add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
