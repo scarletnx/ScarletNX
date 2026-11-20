@@ -498,6 +498,22 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
     assert(CALL(libc, "fread", buffer, 0x10000, 1, file) == 1 && bytes[0] == 0x5a && bytes[0xffff] == 0x5a);
     assert(CALL(libc, "fclose", file) == 0);
 }
+/* the calls that fill a structure of the game's answer an error for a pointer to no memory of its own, and write
+   nothing: a semaphore's and the free memory's, a module's, a stat's, the controller's and the touch panel's */
+static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* kernel = vita_hle_kernel;
+    strcpy(vita_ptr(p, mem), "sema");
+    uint32_t sema = CALL(kernel, "sceKernelCreateSema", mem, 0, 1, 10, 0);
+    assert(sema && !(sema & 0x80000000u));
+    assert(CALL(kernel, "sceKernelGetSemaInfo", sema, UNMAPPED, 0x3c) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
+    assert(CALL(kernel, "sceKernelGetSemaInfo", sema, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x100) == 0x3c);
+    assert(CALL(kernel, "sceKernelGetFreeMemorySize", UNMAPPED) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
+    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
+    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
+    strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
+    assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
+    assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
+}
 /* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
    would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry
    and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
@@ -549,6 +565,7 @@ int main(void) {
     gxm_texture_transfers(p, t, mem);
     /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
+    unmapped_outputs(p, t, mem);
     fios_archive_unmount(p, t);
     vita_process_free(p);
     assert(!snx_remove_tree(root));

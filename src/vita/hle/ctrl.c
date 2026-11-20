@@ -26,7 +26,7 @@ static void ctrl_data(VitaProcess* p, uint32_t at, const VitaInput* in) {
 /* sceCtrlPeekBufferPositive(port, data, count): the state now, in each of count entries */
 static uint32_t peek_buffer_positive(VitaProcess* p, VitaThread* t) {
     uint32_t data = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
-    if (!data || count < 1 || count > 64) return SCE_CTRL_ERROR_INVALID_ARG;
+    if (!data || count < 1 || count > 64 || !vita_mapped(p, data, count * 32)) return SCE_CTRL_ERROR_INVALID_ARG;
     VitaInput in;
     vita_input_read(&in);
     for (uint32_t i = 0; i < count; ++i) ctrl_data(p, data + i * 32, &in);
@@ -47,7 +47,8 @@ static uint32_t set_sampling_mode(VitaProcess* p, VitaThread* t) {
 /* SceTouchData (144 bytes): the time, a status, the report count, then each report (16 bytes: id, force, x, y) */
 static uint32_t touch_peek(VitaProcess* p, VitaThread* t) {
     uint32_t port = vita_arg(p, t, 0), data = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
-    if (port > 1 || !data || count < 1 || count > 64) return SCE_TOUCH_ERROR_INVALID_ARG;
+    if (port > 1 || !data || count < 1 || count > 64 || !vita_mapped(p, data, count * 144))
+        return SCE_TOUCH_ERROR_INVALID_ARG;
     VitaInput in;
     vita_input_read(&in);
     bool down = port ? in.back : in.front;
