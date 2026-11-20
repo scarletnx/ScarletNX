@@ -582,10 +582,9 @@ class Publisher(Hub):
 
     def tagged(self, name):
         """name is a tag of REPO (a run's head_branch is the tag a tag push pushed)"""
-        try:
-            return bool(self.read(f'repos/{self.repo}/git/ref/tags/{urllib.parse.quote(name)}'))
-        except RuntimeError:
-            return False
+        # GitHub's 404 alone says it is no tag: any other failure (a token, the network) is not an answer, and the run
+        # of a release is not left unpublished by it
+        return bool(self.missing(f'repos/{self.repo}/git/ref/tags/{urllib.parse.quote(name)}'))
 
     def on_run(self, run):
         # a scheduled run builds the default branch, as a push to it; a run by hand builds the branch it was asked for
