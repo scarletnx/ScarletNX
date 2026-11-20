@@ -7834,7 +7834,8 @@ static int check_vk12_way(void) {
     char why[64] = "";
     CHECK(vk_api_setting("auto", &cap, why, sizeof why) && cap == 0);
     CHECK(vk_api_setting("1.2", &cap, why, sizeof why) && cap == VK_API_VERSION_1_2);
-    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto or 1.2"));
+    CHECK(vk_api_setting("1.1", &cap, why, sizeof why) && cap == VK_API_VERSION_1_1);
+    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto, 1.2 or 1.1"));
     /* a swapchain the driver could not make, said with the device, its driver and the result's name and number */
     {
         char said[300];
@@ -7845,7 +7846,10 @@ static int check_vk12_way(void) {
         CHECK(strstr(said, "(its driver): VK_ERROR_SURFACE_LOST_KHR (-1000000000)") != NULL);
     }
     CHECK(!g_vk.api_cap == !strcmp(g_settings.vulkan_api, "auto"));
-    if (g_vk.api_cap) {
+    if (g_vk.api_cap == VK_API_VERSION_1_1) { /* lavapipe has 1.3 and more: it runs as auto */
+        CHECK(!strcmp(g_settings.vulkan_api, "1.1"));
+        CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
+    } else if (g_vk.api_cap) {
         CHECK(!strcmp(g_settings.vulkan_api, "1.2"));
         CHECK(g_vk.api < VK_API_VERSION_1_3 && g_vk.api >= VK_API_VERSION_1_2);
         CHECK(version == 0x00010500u);
@@ -7928,6 +7932,22 @@ static int check_vk12_way(void) {
     snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
     CHECK(vk_1_2_missing(&ext, names, sizeof names) == 2 &&
           !strcmp(names, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+    /* on a 1.1 device the timeline semaphore and the driver's identity before them, as 1.2 has them in its core;
+       the list cut to the room given */
+    {
+        char longer[512], cut[40];
+        CHECK(vk_1_1_missing(&ext, longer, sizeof longer) == 4 &&
+              !strcmp(longer, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME ", " VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME
+                                                                       ", " VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                                                                       ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+        CHECK(vk_1_1_missing(&ext, cut, sizeof cut) == 4 && strlen(cut) == sizeof cut - 1);
+        snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "%s",
+                 VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+        CHECK(vk_1_1_missing(&ext, longer, sizeof longer) == 3 &&
+              !strcmp(longer, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME ", " VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                                                                      ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+        snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
+    }
     /* all of them on a driver the bans keep from dynamic rendering: the filter create_device runs first takes it out,
        and the device lacks it by name. The table and the device are put back after */
     ext.list = list;
