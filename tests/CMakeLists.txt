@@ -2225,6 +2225,16 @@ snx_test_target(snx-test-gsv-hdr gnu23)
 snx_service_swipc(snx-test-gsv-hdr hle/services/native_video.swipc hle/services/gsv.swipc hle/services/nvdrv.swipc)
 add_test(NAME gsv_hdr COMMAND snx-test-gsv-hdr)
 
+# the save state loader's staging of the HLE's copy (runtime/state.c, included for its statics): what a state file says
+# of a service object's size and of an am storage's bytes is checked. The rest of the loader is not run, and what it
+# calls of the runtime is left unresolved, which the linkers of Linux and FreeBSD take an option for
+if(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
+    add_executable(snx-test-state-stage state_stage.c)
+    snx_test_target(snx-test-state-stage gnu23)
+    target_link_options(snx-test-state-stage PRIVATE LINKER:--unresolved-symbols=ignore-all)
+    add_test(NAME state_stage COMMAND snx-test-state-stage)
+endif()
+
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
 add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
 snx_test_target(snx-test-am-nacp gnu23)
