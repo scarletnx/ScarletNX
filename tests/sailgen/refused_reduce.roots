@@ -1,2 +1,0 @@
-# Reduce of a floating-point op: sailgen lowers ReduceOp_ADD alone, so it is refused with its file, line and op
-root decode_reduce_aarch64_instrs_test

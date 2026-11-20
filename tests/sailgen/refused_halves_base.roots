@@ -1,0 +1,3 @@
+# a function that calls itself on each half of its bits and gives zeros for one element: refused, an element's sum is
+# the element
+root decode_base_aarch64_instrs_test

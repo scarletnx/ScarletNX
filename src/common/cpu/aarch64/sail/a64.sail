@@ -22704,6 +22704,57 @@ function SP_read () = {
     }
 }
 
+val Reduce : forall 'N 'esize,
+  ('N in {8, 16, 32, 64, 128, 256, 512, 1024, 2048} & 'esize in {8, 16, 32, 64} & 'N >= 'esize).
+  (ReduceOp, bits('N), int('esize)) -> bits('esize)
+
+val Reduce__1 : forall 'N 'esize,
+  ('N in {8, 16, 32, 64, 128, 256, 512, 1024, 2048} & 'esize in {8, 16, 32, 64} & 'N >= 'esize).
+  (ReduceOp, bits('N), int('esize), bool) -> bits('esize)
+
+function Reduce (op, input, esize) = {
+    let altfp : bool = (HaveAltFP() & not_bool(UsingAArch32())) & FPCR[AH] == 0b1;
+    return(Reduce__1(op, input, esize, altfp))
+}
+
+function Reduce__1 (op, input, esize, altfp) = {
+    assert(esize == 8 | esize == 16 | esize == 32 | esize == 64);
+    result : bits('esize) = undefined;
+    if 'N == esize then {
+        return(input[esize - 1 .. 0])
+    };
+    let 'half = DIV('N, 2);
+    let hi : bits('esize) = Reduce__1(op, input['N - 1 .. half], esize, altfp);
+    let lo : bits('esize) = Reduce__1(op, input[half - 1 .. 0], esize, altfp);
+    match op {
+      ReduceOp_FMINNUM => {
+          assert(constraint('esize in {16, 32, 64}));
+          result = FPMinNum(lo, hi, FPCR_read())
+      },
+      ReduceOp_FMAXNUM => {
+          assert(constraint('esize in {16, 32, 64}));
+          result = FPMaxNum(lo, hi, FPCR_read())
+      },
+      ReduceOp_FMIN => {
+          assert(constraint('esize in {16, 32, 64}));
+          result = FPMin__1(lo, hi, FPCR_read(), altfp)
+      },
+      ReduceOp_FMAX => {
+          assert(constraint('esize in {16, 32, 64}));
+          result = FPMax__1(lo, hi, FPCR_read(), altfp)
+      },
+      ReduceOp_FADD => {
+          assert(constraint('esize in {16, 32, 64}));
+          result = FPAdd(lo, hi, FPCR_read())
+      },
+      ReduceOp_ADD => {
+          result = lo + hi
+      }
+    };
+    let result = result;
+    return(result)
+}
+
 val DecodeBitMasks : forall 'M ('immediate : Bool), 'M >= 0.
   (bits(1), bits(6), bits(6), bool('immediate), int('M)) -> (bits('M), bits('M))
 

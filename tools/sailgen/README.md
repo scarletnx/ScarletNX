@@ -62,6 +62,17 @@ for `e` 0 (the same tree with 0 for `e`, every other name bound before it to a v
 every lane from 0: `llvm.vector.reduce` of `x`'s lanes, an integer's sum exact at the narrowest power of two of bits
 that holds it, the result one lane (`sg_l_reduce_add`, `sg_l_reduce_minmax`).
 
+A function that calls itself on bits of the guest's is read in one shape, ADDV's `Reduce__1`: it gives its bits where
+they are one element wide (`if 'N == esize then return(input[esize - 1 .. 0])`), and elsewhere calls itself on each
+half of them (`input['N - 1 .. half]` and `input[half - 1 .. 0]`, `half` being `DIV('N, 2)`, every other argument
+passed on as it came) and gives the two results' `+`. That is the sum of the bits' elements, whatever the order (`+` of
+bits is associative and commutative), so it is the same `llvm.vector.reduce.add` of the lanes, found when sailgen
+runs: the shape is read on the Sail's tree, and what joins the two results is walked as any Sail, each result a value
+that only their `+` may take; a `match` there on a value known when sailgen runs keeps the case it picks, so
+`ReduceOp_ADD` picks the `+` and the other ops' cases are not walked. Such a function that joins them any other way (a
+floating-point op, whose result depends on the order), gives other than that sum, or changes state where it joins them
+is refused, and so is any other function that calls itself there (`sailgen_halves`, `sailgen_refused_halves_*`).
+
 The body may only set locals per lane: one that sets state (a register, an action), carries a local from one element to
 the next (REV's container loop), holds another loop (PMUL's polynomial product), reads an element other than `e` but
 of a concatenation, uses a value per lane where one is wanted, folds into a local other than as above, sets an element
@@ -88,7 +99,6 @@ Builtins, lowered by the back end rather than from Sail:
 | `ConditionHolds(cond)` | the compare the flags came from, when one made them in this block; else its own Sail |
 | `RoundTowardsZero(Real(a) / Real(b))` | `udiv`/`sdiv` with the divisor 1 where it is 0 or -1 under the most negative value (the caller's select gives 0 for the first) |
 | `CountLeadingZeroBits`, `CountLeadingSignBits` | `llvm.ctlz` |
-| `Reduce(ReduceOp_ADD, x, esize)` (ADDV) | `llvm.vector.reduce.add` of x's lanes; the floating-point ops, whose order is Reduce's pairwise one, are not lowered |
 | `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
 | `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice`, `Elem_set` | the map, or C when the value is STATIC |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`); false, a CONST, for a feature `--profile` names nowhere |
@@ -168,9 +178,10 @@ The front (the parse, the inlining, the times) and the Sail don't depend on LLVM
 `tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and of a function it
 lowers the `val` and the types it names alone; `--generate` refuses a throw it has no meaning for, an `Error_See` under a
 run-time condition, a write to a field a `let` holds fixed, a register or a field the back end does not keep, the back
-end's function that takes no `path` under a run-time condition, one whose `val` gives an integer and a `Reduce` of a
-floating-point op, naming its line; `sailgen_lanes` says which element loops become lanes; `sailgen_a64` generates the
-in-tree A64 subsets whole.
+end's function that takes no `path` under a run-time condition, one whose `val` gives an integer and a function that
+calls itself other than as the sum of its bits' elements, naming its line; `sailgen_lanes` says which element loops
+become lanes and `sailgen_halves` that such a function is one reduction; `sailgen_a64` generates the in-tree A64
+subsets whole.
 
 `tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
 (`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same

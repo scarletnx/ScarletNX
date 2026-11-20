@@ -40,8 +40,12 @@ typedef struct {
        element into it may take; ACC_FOLD that fold of every lane, one value (accumulate). acc_var: its local */
     unsigned char acc;
     int acc_var;
+    /* in a function that calls itself on each half of its bits (halves_call): HALF_LO and HALF_HI what it gives for
+       each half, which only their + may take; HALF_SUM that sum, the fold of every element */
+    unsigned char half;
 } Val;
 enum { ACC_NONE, ACC_READ, ACC_FOLD };
+enum { HALF_NONE, HALF_LO = 1, HALF_HI = 2, HALF_SUM = 4 };
 
 typedef struct {
     unsigned name;
@@ -60,6 +64,7 @@ typedef struct {
     /* an accumulator: the loop that folds every lane into it, a vector of one lane (accumulate); its start's node, its
        binding's place on the stack and the assignments it had outside a loop's lanes since it was declared */
     unsigned acc_loop, init_node, decl_depth, sets;
+    unsigned char half_sum; /* it holds a HALF_SUM, set where its function's body is walked (halves_call) */
 } Var;
 
 typedef struct {
@@ -103,7 +108,7 @@ static struct {
     unsigned helper_count;
     int indent;
     int in_helper;      /* walking a static helper: a throw returns 1, a return sets its outputs */
-    int dynamic_branch; /* inside a branch of a DYN if: no state may change */
+    int dynamic_branch; /* inside a branch of a DYN if, or what joins a function's halves: no state may change */
     char path[400];     /* the run-time condition (an i1's C expression) the code walked is under, "" for none */
     unsigned call_depth;
     int sees; /* the decode function walked has thrown Error_See */
@@ -121,6 +126,11 @@ static struct {
     int lane_indent, fold_ok;
     int acc_set[8];
     unsigned acc_set_count;
+    /* the call walked of a function that calls itself on each half of its bits (halves_call), the indent and the
+       run-time branches its body is walked at, and the C of the sum of those bits' elements */
+    unsigned halves;
+    int halves_indent, halves_branch;
+    char halves_sum[400];
     /* the bits of the instruction's word the clause walked fixes, and their values */
     SgU64 word_mask, word_value;
     unsigned refused[64], refused_count;
@@ -162,6 +172,11 @@ static void emit(const char* fmt, ...) {
         if (strstr(line, "sg_acc")) lane_refuse("an accumulator read other than to fold an element into it");
         if (!g_gen.fold_ok && strstr(line, "sg_l_reduce_")) lane_refuse("a fold used other than as its accumulator");
     }
+    if (g_gen.halves && strstr(line, "sg_one_half"))
+        sg_fail(g_gen.halves,
+                "%s joins what it gives for each half of its bits other than by + of the two: sailgen makes the sum of "
+                "the bits' elements of such a function, and no other fold",
+                sg_str(g_parse.nodes[g_gen.halves].name));
     buf_add(g_gen.out, line, (size_t)n);
 }
 
@@ -433,29 +448,19 @@ static long long enum_member(const char* name) {
     return -1;
 }
 
-/* the name of member k of the enum that has the member named like, "" when there is none such */
-static const char* enum_name(const char* like, long long k) {
-    unsigned i, m;
-    for (i = 1; i < g_parse.def_count; ++i) {
-        const SgDef* d = &g_parse.defs[i];
-        long long j = 0;
-        if (d->kind != D_ENUM) continue;
-        for (m = d->params; m; m = N(m).next)
-            if (!strcmp(name_of(m), like)) break;
-        if (!m) continue;
-        for (m = d->params; m; m = N(m).next, ++j)
-            if (j == k) return name_of(m);
-    }
-    return "";
-}
-
 static Val eval(unsigned n, int tail);
 static void assign(unsigned target, Val v);
 static Val undefined_of(unsigned type, int bt);
 static void stmt(unsigned n) { (void)eval(n, 0); }
 
+/* where no state may change, and so nothing may end the decode function: the reason, for the error */
+static const char* stateless(void) {
+    return g_gen.halves ? "where a function that calls itself joins what it gives for each half of its bits"
+                        : "under a condition known only at run time";
+}
+
 static void throw_undefined(unsigned n) {
-    if (g_gen.dynamic_branch) sg_fail(n, "a throw under a condition known only at run time");
+    if (g_gen.dynamic_branch) sg_fail(n, "a throw %s", stateless());
     if (g_gen.in_helper)
         emit("return 1;\n");
     else {
@@ -467,7 +472,7 @@ static void throw_undefined(unsigned n) {
    make a NOP), or handed on to the next clause that matches it (Error_See: sg_see checks that nothing was emitted yet).
    Each is a return from the decode function, so none may be in a helper or under a run-time condition */
 static void end_decode(unsigned n, const char* what, int see) {
-    if (g_gen.dynamic_branch) sg_fail(n, "%s under a condition known only at run time", what);
+    if (g_gen.dynamic_branch) sg_fail(n, "%s %s", what, stateless());
     if (g_gen.in_helper) sg_fail(n, "%s in a function of what the recompiler knows", what);
     if (see) {
         emit("return sg_see(g);\n");
@@ -926,6 +931,186 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
     return r;
 }
 
+/* ---- halves: a function that calls itself on each half of its bits ----
+   f(x, size, ...) that gives x where x is size bits wide, and elsewhere the + of what it gives for x's upper half and
+   for its lower half (Reduce__1 of ReduceOp_ADD, ADDV's), gives the sum of x's elements of size bits: + of bits is
+   associative and commutative, so the tree of halves adds what one llvm.vector.reduce.add of the lanes does (llvm.h's
+   sg_l_reduce_add, as the element loops' accumulators), and one element is its own sum. The base, the half and the two
+   calls are read on the Sail's tree (halves_shape). What joins the two results is walked as any Sail, once, but for a
+   match on a value known here, which keeps the case it picks (Reduce's op: match_expr): each result is a value only
+   their + may take (HALF_LO, HALF_HI; emit refuses a line that names one), that + is the sum (HALF_SUM), and the
+   function's value has to be it. A function that calls itself any other way is refused. x is size bits times a power
+   of two wide, or the Sail's own recursion has no end */
+
+typedef struct {
+    unsigned x, size;            /* the parameters: the bits, an element's size */
+    unsigned width, half_name;   /* the names of x's width and of half of it */
+    unsigned base, half, hi, lo; /* the body's items: the return of one element, the half, the two calls */
+} Halves;
+
+/* does n, or what follows it, call the function named name? */
+static int calls(unsigned n, unsigned name) {
+    for (; n; n = N(n).next) {
+        if (N(n).kind == N_CALL && same_name(N(n).name, name)) return 1;
+        if (calls(N(n).a, name) || calls(N(n).b, name) || calls(N(n).c, name) || calls(N(n).d, name)) return 1;
+    }
+    return 0;
+}
+static int is_name(unsigned n, unsigned name) { return n && N(n).kind == N_ID && same_name(N(n).name, name); }
+static int is_number(unsigned n, SgU64 value) { return n && N(n).kind == N_NUM && N(n).value == value; }
+/* name - 1 */
+static int is_one_less(unsigned n, unsigned name) {
+    return n && N(n).kind == N_BINOP && !strcmp(name_of(n), "-") && is_name(N(n).a, name) && is_number(N(n).b, 1);
+}
+/* the name a let or a local's declaration in a block binds: its node, 0 for a pattern of other than one name */
+static unsigned bound_name(unsigned item) {
+    unsigned p;
+    if (N(item).kind == N_VAR) return item;
+    if (N(item).kind != N_LET || N(item).c) return 0;
+    for (p = N(item).a; N(p).kind == N_TYPED; p = N(p).a) {}
+    return N(p).kind == N_ID ? p : 0;
+}
+/* f's call on a half of x, every other argument the parameter as it came: HALF_HI for x[width - 1 .. half], HALF_LO
+   for x[half - 1 .. 0], HALF_NONE for any other call */
+static int halves_side(unsigned call, const unsigned* names, unsigned count, const Halves* h) {
+    unsigned k, a = N(call).a;
+    int side = HALF_NONE;
+    for (k = 0; k < count; ++k, a = N(a).next) {
+        if (!a) return HALF_NONE;
+        if (k != h->x) {
+            if (!is_name(a, names[k])) return HALF_NONE;
+            continue;
+        }
+        if (N(a).kind != N_SLICE || !is_name(N(a).a, names[k])) return HALF_NONE;
+        if (is_one_less(N(a).b, h->width) && is_name(N(a).c, h->half_name))
+            side = HALF_HI;
+        else if (is_one_less(N(a).b, h->half_name) && is_number(N(a).c, 0))
+            side = HALF_LO;
+        else
+            return HALF_NONE;
+    }
+    return a ? HALF_NONE : side;
+}
+/* is def's body, in this order among its items: `if width == size then return(x[size - 1 .. 0])`, `let half =
+   DIV(width, 2)`, and a let of def's call on each half of x, with no other call of def and no other let or local of
+   one of those names? */
+static int halves_shape(unsigned def, const unsigned* names, unsigned count, Halves* h) {
+    unsigned body = g_parse.defs[def].body, self = g_parse.defs[def].name, item, k;
+    *h = (Halves){0};
+    if (N(body).kind != N_BLOCK) return 0;
+    for (item = N(body).a; item; item = N(item).next) {
+        unsigned bound = bound_name(item), value = N(item).kind == N_LET ? N(item).b : 0;
+        if (!h->base && N(item).kind == N_IF && !N(item).c) {
+            unsigned cond = N(item).a, ret = N(item).b, slice;
+            while (N(ret).kind == N_BLOCK && N(ret).a && !N(N(ret).a).next) ret = N(ret).a;
+            slice = N(ret).kind == N_RETURN ? N(ret).a : 0;
+            if (!slice || N(slice).kind != N_SLICE || N(N(slice).a).kind != N_ID || !is_number(N(slice).c, 0)) return 0;
+            for (h->x = 0; h->x < count && !is_name(N(slice).a, names[h->x]); ++h->x) {}
+            for (h->size = 0; h->size < count && !is_one_less(N(slice).b, names[h->size]); ++h->size) {}
+            if (h->x == count || h->size == count || N(cond).kind != N_BINOP || strcmp(name_of(cond), "==")) return 0;
+            if (is_name(N(cond).b, names[h->size]) && N(N(cond).a).kind == N_ID)
+                h->width = N(N(cond).a).name;
+            else if (is_name(N(cond).a, names[h->size]) && N(N(cond).b).kind == N_ID)
+                h->width = N(N(cond).b).name;
+            else
+                return 0;
+            h->base = item;
+            continue;
+        }
+        if (h->base && !h->half && bound && is_call(value, "DIV") && arg_count(value) == 2 &&
+            is_name(arg_at(value, 0), h->width) && is_number(arg_at(value, 1), 2)) {
+            h->half = item;
+            h->half_name = N(bound).name;
+            continue;
+        }
+        if (h->half && bound && N(value).kind == N_CALL && same_name(N(value).name, self)) {
+            int side = halves_side(value, names, count, h);
+            if (side == HALF_NONE || (side == HALF_HI ? h->hi : h->lo)) return 0;
+            *(side == HALF_HI ? &h->hi : &h->lo) = item;
+            continue;
+        }
+        if (calls(N(item).a, self) || calls(N(item).b, self) || calls(N(item).c, self) || calls(N(item).d, self))
+            return 0;
+        if (bound && h->base) { /* a name the shape reads, bound again */
+            if (same_name(N(bound).name, h->width) || (h->half && same_name(N(bound).name, h->half_name))) return 0;
+            for (k = 0; k < count; ++k)
+                if (same_name(N(bound).name, names[k])) return 0;
+        } else if (h->base && (N(item).kind == N_LET || N(item).kind == N_VAR))
+            return 0; /* a pattern of several names */
+    }
+    return h->base && h->half && h->hi && h->lo;
+}
+
+static void let_bind(unsigned pattern, Val v, unsigned value_node, int lazy);
+static int lazy_let(unsigned pattern, unsigned value_node, unsigned scope);
+
+/* a call of a function of that shape (halves_shape): the sum of x's elements. Its body is walked once for what joins
+   the two halves' results, as a branch of a run-time if is, so it may change no state: the Sail runs it once for each
+   pair of halves */
+static Val halves_call(unsigned n, unsigned def, Val* args, unsigned count, const Halves* h) {
+    unsigned names[16], name_count, k, item, saved_frame = g_gen.frame, base = g_gen.depth;
+    const char* self = sg_str(g_parse.defs[def].name);
+    char width[sizeof args[0].c + 32];
+    Binding* w;
+    Val r = unit(), size;
+    param_names(def, names, &name_count);
+    if (g_gen.halves)
+        sg_fail(n, "%s, which calls itself on each half of its bits, called in another such function", self);
+    if (g_gen.lane) {
+        lane_refuse("a function that calls itself on each half of its bits");
+        return args[h->x];
+    }
+    if (args[h->x].kind != K_BITS) sg_fail(n, "%s halves a value that is not bits", self);
+    size = need_static_int(n, args[h->size], "an element's size");
+    args[h->x] = keep(raise(args[h->x], BT_DYN));
+    if (++g_gen.call_depth > 48) sg_fail(n, "calls nested over 48 deep inlining %s", self);
+    for (k = 0; k < count; ++k) bind(names[k], args[k], -1, args[k].node);
+    g_gen.frame = base;
+    bind_widths(def, args, count);
+    snprintf(width, sizeof width, "(long long)(%s).w", args[h->x].c);
+    w = lookup(sg_str(h->width));
+    if (!w || w->var >= 0 || strcmp(w->val.c, width))
+        sg_fail(n, "%s's base is not where %s is as wide as its bits", self, sg_str(h->width));
+    emit("/* %s: the sum of the elements, from its halves */\n", self);
+    k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum,
+                           "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))",
+                           args[h->x].c, size.c, args[h->x].c, size.c);
+    if (k >= sizeof g_gen.halves_sum) sg_fail(n, "a sum's C over %zu characters", sizeof g_gen.halves_sum);
+    g_gen.halves = n;
+    g_gen.halves_indent = g_gen.indent;
+    g_gen.halves_branch = ++g_gen.dynamic_branch;
+    for (item = N(g_parse.defs[def].body).a; item; item = N(item).next) {
+        if (item == h->base || item == h->half) continue;
+        if (item == h->hi || item == h->lo) {
+            Val half = val_c(K_BITS, BT_DYN, "sg_one_half");
+            half.half = item == h->hi ? HALF_HI : HALF_LO;
+            bind(N(bound_name(item)).name, half, -1, 0);
+            r = unit();
+            continue;
+        }
+        if (N(item).kind == N_LET && !N(item).c) {
+            Val value = eval(N(item).b, 0);
+            let_bind(N(item).a, value, N(item).b, lazy_let(N(item).a, N(item).b, N(item).next));
+            r = unit();
+            continue;
+        }
+        r = eval(item, !N(item).next);
+    }
+    if (r.half != HALF_SUM)
+        sg_fail(n,
+                "%s gives other than the + of what it gives for each half of its bits: sailgen makes the sum of "
+                "the bits' elements of such a function, and no other fold",
+                self);
+    r.half = HALF_NONE;
+    r = keep(r);
+    --g_gen.dynamic_branch;
+    g_gen.halves = 0;
+    g_gen.frame = saved_frame;
+    g_gen.depth = base;
+    --g_gen.call_depth;
+    return r;
+}
+
 /* ---- builtins: Sail's library and the shared functions sailgen lowers itself (README.md, "Builtins") ---- */
 
 /* a width known here over the 64 bits a value known when it recompiles keeps (SgS): such bits (a SIMD&FP register's
@@ -1104,24 +1289,6 @@ static int builtin(unsigned n, const char* name, Val* r) {
 
 static int builtin_body(unsigned n, const char* name, Val* r) {
     Val a, b, c;
-    if (!strcmp(name, "Reduce")) { /* Reduce(ReduceOp_ADD, x, size): the sum of x's elements of size bits, modular */
-        need_args(n, 3);
-        a = arg(n, 0);
-        b = need_bits(n, arg(n, 1), name);
-        c = need_static_int(n, arg(n, 2), "an element's size");
-        if (a.kind != K_ENUM || a.bt != BT_CONST || a.value != enum_member("ReduceOp_ADD"))
-            sg_fail(
-                n,
-                "Reduce of %s: sailgen lowers ReduceOp_ADD alone (the floating-point ops fold pairwise, in Reduce's "
-                "order)",
-                a.kind == K_ENUM && a.bt == BT_CONST ? enum_name("ReduceOp_ADD", a.value)
-                                                     : "an op known only when it recompiles");
-        b = keep(raise(b, BT_DYN));
-        *r = val_c(K_BITS, BT_DYN,
-                   "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))", b.c, c.c,
-                   b.c, c.c);
-        return 1;
-    }
     if (!strcmp(name, "Elem_read")) { /* Elem_read(x, e, size): element e of size bits of x */
         Val e, size;
         need_args(n, 3);
@@ -1469,8 +1636,8 @@ static Val action_call(unsigned n, const char* name, int takes) {
     int kind = val ? (int)g_parse.defs[val].ret_kind : K_UNIT, at;
     char text[1024], t[16];
     Val outs[4];
-    if (g_gen.dynamic_branch && !(takes & BACKEND_PATH))
-        sg_fail(n, "%s, the back end's action, under a condition known only at run time", name);
+    if (g_gen.dynamic_branch && (!(takes & BACKEND_PATH) || g_gen.halves))
+        sg_fail(n, "%s, the back end's action, %s", name, stateless());
     if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
     if (g_gen.lane) lane_refuse("the back end's action in an element loop, which lanes run once");
     if (kind == K_BIT) kind = K_BITS;
@@ -1530,6 +1697,17 @@ static Val call(unsigned n) {
     /* arguments all known here (none, or constants) inline, so a fixup's constant answer (nx.sail's HaveGCS) folds */
     if (all_static && !all_const && !reaches_state(def, 0)) return helper_call(n, def, args, count);
     for (i = 0; i < count; ++i) args[i] = keep(args[i]);
+    if (calls(g_parse.defs[def].body, g_parse.defs[def].name)) { /* inlined, it would never end */
+        unsigned names[16], name_count;
+        Halves h;
+        param_names(def, names, &name_count);
+        if (name_count != count || !halves_shape(def, names, count, &h))
+            sg_fail(n,
+                    "%s calls itself: sailgen reads a function that gives its bits where they are one element wide and "
+                    "else calls itself on each half of them, and no other",
+                    name);
+        return halves_call(n, def, args, count, &h);
+    }
     return inline_call(n, def, args, count);
 }
 
@@ -1792,8 +1970,7 @@ static unsigned concat_leaves(unsigned n, unsigned* out, unsigned cap) {
 
 /* the register written is not under a run-time condition (its branches are selects, which a store is not) */
 static void need_static_write(unsigned n, unsigned reg) {
-    if (g_gen.dynamic_branch)
-        sg_fail(n, "the register %s written under a condition known only at run time", reg_name(reg));
+    if (g_gen.dynamic_branch) sg_fail(n, "the register %s written %s", reg_name(reg), stateless());
 }
 /* REG.F = v, or REG.F1 @ REG.F2 @ ... = v of a struct register's consecutive fields: one write, of the first and how
    many */
@@ -1858,6 +2035,7 @@ static Val ident(unsigned n) {
             const Var* a = &g_gen.vars[b->var];
             v.bt = a->bt;
             v.kind = a->kind;
+            v.half = (unsigned char)(a->half_sum && g_gen.halves ? HALF_SUM : HALF_NONE);
             if (g_gen.lane && g_gen.lane_from == 1 && (unsigned)b->var < g_gen.lane_var_base &&
                 (a->kind == K_INT || a->kind == K_BITS) && a->init_node && N(a->init_node).kind != N_UNDEF &&
                 !a->sets && (a->bt != BT_LANE || a->acc_loop == g_gen.lane_loop)) { /* an accumulator (accumulate) */
@@ -1967,6 +2145,11 @@ static Val binop(unsigned n) {
     }
     b = eval(N(n).b, 0);
     if (a.bt == BT_LANE || b.bt == BT_LANE) return lane_binop(n, op, a, b);
+    if ((a.half | b.half) == (HALF_LO | HALF_HI) && !strcmp(op, "+")) { /* the two halves' results: the sum (halves) */
+        a = val_c(K_BITS, BT_DYN, "%s", g_gen.halves_sum);
+        a.half = HALF_SUM;
+        return a;
+    }
     shorten(&a, &b);
     bt = top_bt(a.bt, b.bt);
     if (a.huge || b.huge) sg_fail(n, "%s of an integer over 62 bits", op);
@@ -2173,6 +2356,7 @@ static void declare_var(unsigned name, unsigned type, unsigned init_node) {
     g_gen.vars[var].init_node = init_node;
     g_gen.vars[var].decl_depth = g_gen.depth - 1;
     g_gen.vars[var].sets = 0;
+    g_gen.vars[var].half_sum = 0;
 }
 
 /* does the name occur in n (and the items after it) only as what Elem_read reads? */
@@ -2235,7 +2419,7 @@ static void assign(unsigned target, Val v) {
         Val f;
         if (b->var < 0 || b->val.kind != K_STRUCT)
             sg_fail(t, "the field %s assigned of other than a struct local", name_of(t));
-        if (g_gen.dynamic_branch) sg_fail(t, "a struct's field assigned under a condition known only at run time");
+        if (g_gen.dynamic_branch) sg_fail(t, "a struct's field assigned %s", stateless());
         f = struct_field(t, b->val.sdef, b->val.c);
         if (v.bt == BT_DYN) sg_fail(t, "the field %s assigned a value known only at run time", name_of(t));
         if ((f.kind == K_BOOL) != (v.kind == K_BOOL) || (f.kind == K_BITS) != (v.kind == K_BITS) ||
@@ -2262,7 +2446,7 @@ static void assign(unsigned target, Val v) {
         const char* s = name_of(t);
         Val args[17];
         unsigned count = arg_count(t), i, def;
-        if (g_gen.dynamic_branch) sg_fail(t, "%s() = under a condition known only at run time", s);
+        if (g_gen.dynamic_branch) sg_fail(t, "%s() = %s", s, stateless());
         def = function_def(s, count + 1);
         if (!def) sg_fail(t, "the setter %s has no definition of %u arguments", s, count + 1);
         for (i = 0; i < count; ++i) args[i] = keep(eval(arg_at(t, i), 0));
@@ -2291,6 +2475,7 @@ static void assign(unsigned target, Val v) {
         hi = need_static_int(t, eval(N(t).b, 0), "a slice's bound");
         lo = N(t).kind == N_SLICE ? need_static_int(t, eval(N(t).c, 0), "a slice's bound") : hi;
         need_bits(t, v, "a slice's value");
+        g_gen.vars[b->var].half_sum = 0;
         var_raise(b->var, v.bt);
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
         if (g_gen.vars[b->var].bt == BT_DYN)
@@ -2357,6 +2542,9 @@ static void assign(unsigned target, Val v) {
         if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
         if (v.kind != K_UNIT && (v.kind != g_gen.vars[b->var].kind || v.sdef != g_gen.vars[b->var].sdef))
             sg_fail(t, "%s (kind %d) assigned a value of kind %d", s, g_gen.vars[b->var].kind, v.kind);
+        /* the halves' sum stays one in a local set where the function's body is walked, under no condition */
+        g_gen.vars[b->var].half_sum = v.half == HALF_SUM && g_gen.halves && g_gen.indent == g_gen.halves_indent &&
+                                      g_gen.dynamic_branch == g_gen.halves_branch;
         emit("%s = %s;\n", b->val.c, raise(v, g_gen.vars[b->var].bt).c);
         return;
     }
@@ -2602,6 +2790,17 @@ static Val match_expr(unsigned n, int tail) {
         return unit();
     }
     if (s.bt == BT_DYN) sg_fail(n, "a match on a value known only at run time");
+    /* what joins a function's halves (halves_call), on a value known here (Reduce's op): the one case it picks, so
+       the others' ways of joining them are not walked. Elsewhere every case is C: a local's time comes from them all */
+    if (g_gen.halves && s.bt == BT_CONST && (s.kind == K_ENUM || s.kind == K_INT) && !s.huge)
+        for (c = N(n).b; c && !N(c).c; c = N(c).next) {
+            unsigned p = N(c).a;
+            long long m = N(p).kind == N_ID ? enum_member(name_of(p)) : -1;
+            if (N(p).kind == N_WILD || (N(p).kind == N_NUM && s.kind == K_INT && (long long)N(p).value == s.value) ||
+                (m >= 0 && s.kind == K_ENUM && m == s.value))
+                return eval(N(c).b, tail);
+            if (N(p).kind != N_NUM && m < 0) break; /* a pattern read below */
+        }
     s = keep(raise(s, BT_STATIC));
     for (c = N(n).b; c; c = N(c).next)
         if (N(c).c) sg_fail(c, "a guarded case");
@@ -2670,7 +2869,7 @@ static Val foreach_loop(unsigned n) {
     Val by = N(n).c ? need_static_int(n, eval(N(n).c, 0), "a foreach's step") : val_const(K_INT, 1);
     char v[96];
     unsigned saved = g_gen.depth;
-    if (g_gen.dynamic_branch) sg_fail(n, "a foreach under a run-time condition");
+    if (g_gen.dynamic_branch) sg_fail(n, "a foreach %s", stateless());
     if (g_gen.lane) {
         lane_refuse("a loop inside an element loop");
         return unit();
