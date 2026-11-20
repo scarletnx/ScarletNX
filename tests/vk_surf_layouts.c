@@ -180,6 +180,7 @@ void vk_lock(void) { STUB(); }
 int vk_mem_heap(void) { STUB(); }
 void vk_mem_use(u64* usage, u64* budget) { STUB(); }
 u64 vk_memory_blocks(void) { STUB(); }
+u64 vk_bc7_cache_release(u32 before) { STUB(); }
 int vk_ms_moves(const Surf* s) { STUB(); }
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch) { STUB(); }
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa) { STUB(); }

@@ -659,13 +659,22 @@ static int al_cache_in_run(const char* path) {
     size_t n = strlen(g_cachedir);
     return n && !strncmp(path, g_cachedir, n) && path[n];
 }
+/* the BC7 cache's counts as the checks take them: its hits, the levels it kept, those it let go, and its bytes */
+static void cache_counts(u64* reads, u64* stored, u64* gone, u64* bytes) {
+    VkBc7CacheStats s;
+    vk_bc7_cache_stats(&s);
+    *reads = s.hits;
+    *stored = s.stored;
+    *gone = s.evicted;
+    *bytes = s.bytes;
+}
 static int al_cache_open(const char* path) {
     if (!al_cache_in_run(path)) {
         fprintf(stderr, "vulkan_headless: the BC7 cache %s is outside this run's folder %s\n", path, g_cachedir);
         return 1;
     }
     remove(path);
-    vk_astc_cache_open(path);
+    vk_astc_cache_open();
     return 0;
 }
 /* the guard itself: a bare name (the working folder's), another folder and the folder alone are refused */
@@ -685,14 +694,14 @@ static int al_cached(void) {
     char cache[sizeof g_cachedir + 32];
     al_cache_path(cache, sizeof cache, "vulkan_headless_test.vkbc7");
     CHECK(!al_cache_open(cache));
-    vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    cache_counts(&reads, &stored, &restarts, &file);
     Surf* t = al_make(&x, &c, 7);
     CHECK(t && t->bc7.queued && t->bc7.keyed == (1u << x.tex.d.levels) - 1);
     al_until_done(t, &over);
     vk_lock();
     vk_finish(); /* the levels read back land in the cache */
     vk_unlock();
-    vk_bc7_cache_stats(&reads, &stored2, &restarts, &file);
+    cache_counts(&reads, &stored2, &restarts, &file);
     vk_astc_stats(&levels, &hits, &bytes, &rgba8);
     const u64 encodes = vk_astc_dispatches();
     Surf* twin = al_frame(x.twin);
@@ -743,7 +752,8 @@ static int al_auto(void) {
     g_settings.texture_system_memory = 0;
     g_settings.astc_mode = 0;
     g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
-    vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
+    (void)reads, (void)stored, (void)restarts;
+    file0 = vk_bc7_cache_max(); /* the cache's bound: 0 while it has not started */
     Surf* a = al_make(&xa, &c, 10);
     CHECK(a && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !a->bc7_later && !vk_astc_bc7());
     kind_land(); /* the kind of its random blocks read: nothing BCn holds, its blocks let go */
@@ -771,7 +781,7 @@ static int al_auto(void) {
     vk_unlock();
     const int kept = g_vk.astc_auto.bc7;
     const u64 band = g_vk.astc_auto.band;
-    vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    file = vk_bc7_cache_max();
     g_renderer->mem_may_have_changed();
     g_vk_present++; /* the first use of the two since the switch */
     vk_lock();
@@ -798,7 +808,7 @@ static int al_auto(void) {
             "astc_mode's Auto: after a trim under a budget of %llu MB, BC7 %d after %llu switches (a band of %llu "
             "MB), the first texture marked %d and read again at its next use %d (its texels the same %d), the one whose memory changed "
             "marked %d and Exact at its next use %d, the next held as BC7 later %d, queued %d, kept at a present "
-            "%d, the BC7 cache %llu bytes; with the budget back BC7 %d after %llu switches, the third texture held "
+            "%d, the BC7 cache's bound %llu bytes; with the budget back BC7 %d after %llu switches, the third texture held "
             "as BC7 later %d\n",
             (unsigned long long)(usage >> 20), trimmed.bc7, (unsigned long long)trimmed.switches,
             (unsigned long long)(trimmed.band >> 20), a_marked, a_again, same, e_marked, e_exact, b ? b->bc7_later : -1,

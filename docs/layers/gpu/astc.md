@@ -653,9 +653,9 @@ and in 48 ms with mode 6 alone. Beside a running game, a 4096x4096 level took (d
 
 The same ASTC bytes always become the same BC7 blocks, and the memory budget's trim evicts textures a game uses again:
 each came back through the decoder and the encoder (one game encoded 6,000 to 14,000 levels in a 150 second run, each
-3 to 5 ms of an RTX 2080). So the blocks of each whole level encoded are kept, as an index in memory and records on
-disk in `shader_cache/<game>.vkbc7`, beside the shader files (`gpu/vk/bc7_cache.c`), from run to run. `pipeline.c`
-opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
+3 to 5 ms of an RTX 2080). So the blocks of whole levels encoded are kept in memory while the game runs
+(`gpu/vk/bc7_cache.c`): the levels it uses most, up to a bound. Nothing of it is on disk, and every run starts with it
+empty. `pipeline.c` starts it where ASTC textures are held as BC7 (`vk_astc_bc7`).
 
 - **The key** is XXH3-128 (`vk_hash128`) of the level's guest bytes, as the CPU has them, and the words that place its
   blocks in them (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the
@@ -663,29 +663,29 @@ opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
   decode mode, the encoder's build and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). A level of which the GPU holds any byte
   (an engine's result, `memory/own.c`) is not keyed, nor one the page table does not map whole, nor a region, nor a
   sparse texture's (only its bound strips are decoded).
-- **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds whose
-  blocks it keeps (not the quick one's, which it never stores), of `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and its pipeline cache UUID
-  (`vk_astc_cache_open`). A file of another version starts empty.
-- **Straight to BC7** (`vk_astc_upload` with the key): a hit reads the record's blocks from the file 1 MiB at a time,
-  checks them (XXH3 of each piece, folded) as it copies them into staging, and one copy writes the whole level, every
-  layer or slice, into the image: no decode, no encode. A miss encodes as before and also copies each strip's blocks
+- **Straight to BC7** (`vk_astc_upload` with the key): a hit copies the level's blocks from the cache into staging, on
+  the recording thread where the frame's commands go through it, and one copy writes the whole level, every layer or
+  slice, into the image: no decode, no encode. A miss encodes as before and also copies each strip's blocks
   into their place in the frame's readback ring (`vk_stage_back`), with a barrier to the host after the last strip.
 - **Between frames** (`texture.c`'s `later_encode`): the RGBA8 upload keeps each level's key (`Surf.bc7.key`), and a
   level the cache has is copied from it into the BC7 image, counted a sixteenth of its blocks against the frame's
   `VK_BC7_LATER_BLOCKS`; a level the encoder makes whole is copied from the BC7 image into the readback ring
   (`vk_bc7_capture_level`). A texture whose bytes change in pieces loses its keys until it loads whole again.
-- **Landing:** once the submission is done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file,
+- **Landing:** once the submission is done, `cmd.c`'s landing (`vk_astc_frame_done`) gives the blocks to the cache,
   before the frame's ring is reused. The GPU thread never waits for them. Blocks on their way are bounded to
   `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth and is the largest whole level the cache takes (a
   4096x4096 level is 16 MiB). A very large level straight to BC7 goes in pieces instead (below), and any other larger
   level is encoded each time (from 8192x8192, it is mode 6 alone).
-- **Memory and disk:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The file has
-  a bound of `bc7_cache_gb` GB (the setting, 8 by default): a record past it starts the file over. A record a crash cut short ends the
-  reading, and the file is cut there; one that does not check out is dropped and its level encoded again. While the
-  file is open it is locked (`snx_lock_file`): a second process of the same game runs without the cache.
+- **The bound** is an eighth of the machine's memory, from 64 MiB to 2 GiB (256 MiB where the system does not tell
+  how much it has). Every key the cache meets keeps a count of its uses, an encode given to it or a hit, whether its
+  blocks are held or not. A level with no room under the bound takes that of held levels used less than it, none of
+  which the last two presents used; with none, it is not kept and is encoded again at its next use, which counts
+  again. The counts halve every 3600 presents, so the levels of a scene the game left make room.
+- **Low memory:** at the system's word that its memory runs short (`vk_mem_release_run`), the blocks of every level
+  the last two presents did not use are freed, their counts kept.
 
 RGBA8 levels are not cached: their decode is the cheap part (about 1 ms a 4096x4096 level on the RTX 2080), and a
-cached one would be four times the bytes to read and copy.
+cached one would be four times the bytes to hold and copy.
 
 ### Very large levels
 
