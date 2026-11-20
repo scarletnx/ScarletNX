@@ -83,8 +83,9 @@ if(SNX_TEST_SANITIZERS)
         snx-shaderc
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
-        # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen)
+        # the code generators, which tests run on files they refuse, and the one of SMAA's area texture
+        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen
+        snx-areatexgen)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -4521,6 +4522,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                          "${CMAKE_CURRENT_SOURCE_DIR}/vk_extension_settings.py" --repo "${PROJECT_SOURCE_DIR}"
                          --registry "${snx_vk_commands_registry}")
             endif()
+        endif()
+        # tools/areatexgen: SMAA's area texture as the distribution's AreaTex.h has it, byte for byte, in the header it
+        # writes and in the one the build wrote
+        if(TARGET snx-areatexgen)
+            get_property(snx_areatex_h GLOBAL PROPERTY snx_areatex_h)
+            add_test(NAME areatexgen COMMAND "${CMAKE_COMMAND}" "-DAREATEXGEN=$<TARGET_FILE:snx-areatexgen>"
+                     "-DBUILT=${snx_areatex_h}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/areatexgen-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/areatexgen.cmake")
         endif()
         # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
         # own headers read the TargetConditionals.h the test puts in their place
