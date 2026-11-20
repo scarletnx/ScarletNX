@@ -935,6 +935,16 @@ add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 gnu23)
 target_link_libraries(snx-test-cas128 PRIVATE scarletnx-common Threads::Threads)
 add_test(NAME cas128 COMMAND snx-test-cas128)
+# cas128.c's branch for a big-endian host with no instruction of its own (s390x), which none of these builds compiles:
+# its syntax, where this compiler takes the target (the header alone tells)
+execute_process(COMMAND "${CMAKE_C_COMPILER}" --target=s390x-linux-gnu -std=gnu23 -ffreestanding -fsyntax-only
+                        "-I${PROJECT_SOURCE_DIR}/src" -x c "${PROJECT_SOURCE_DIR}/src/common/runtime/interface.h"
+                RESULT_VARIABLE snx_s390x_syntax OUTPUT_QUIET ERROR_QUIET)
+if(snx_s390x_syntax EQUAL 0)
+    add_test(NAME cas128_big_endian_syntax
+             COMMAND "${CMAKE_C_COMPILER}" --target=s390x-linux-gnu -std=gnu23 -ffreestanding -fsyntax-only -Werror
+                     "-I${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/common/runtime/cas128.c")
+endif()
 # the drivers' common options (common/utilities/cli.h): their forms, older names, refusals and help
 add_executable(snx-test-cli cli.c)
 snx_test_target(snx-test-cli c23)
