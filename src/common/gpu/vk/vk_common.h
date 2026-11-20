@@ -119,8 +119,9 @@ int snx_vk_write_replace(const char* path, const void* data, size_t size, char* 
 /* a shader module of size bytes of SPIR-V */
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);
 /* Pipelines made one at a time, for a driver whose compiler deadlocks when several threads make pipelines at once (the
-   extension bans' off lines on vkCreateGraphicsPipelines). With serial on, each pipeline the helpers here make, and each call between snx_vk_compile_enter and
-   snx_vk_compile_leave, is made alone; with it off, enter takes nothing (0) */
+   extension bans' off lines on vkCreateGraphicsPipelines). With serial on, each pipeline the helpers here make, and
+   each call between snx_vk_compile_enter and snx_vk_compile_leave, is made alone; with it off, enter takes nothing
+   (0) */
 void snx_vk_compile_serial(int on);
 int snx_vk_compile_enter(void);
 void snx_vk_compile_leave(int entered);
