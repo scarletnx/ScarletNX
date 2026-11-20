@@ -164,8 +164,9 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
     }
     if (id == SNX_CLI_FRAMES) {
         char* end;
+        errno = 0;
         long frames = strtol(value, &end, 10);
-        if (*end || frames < 0) {
+        if (errno || *end || !isdigit((unsigned char)value[0])) { /* a count a long holds, digits alone */
             snprintf(error, size, "%s: --frames requires a whole number, not %s", program, value);
             return SNX_CLI_ERROR;
         }
