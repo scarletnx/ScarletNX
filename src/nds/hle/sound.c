@@ -972,7 +972,8 @@ static void process_commands(void)
             if (version == 1)
             {
                 // COMMAND TRANSLATE for SM64DS (early sound engine version)
-                cmd = cmd_trans_early[cmd];
+                /* a number past the table names no command */
+                cmd = cmd < sizeof cmd_trans_early / sizeof *cmd_trans_early ? cmd_trans_early[cmd] : UINT32_MAX;
             }
             else if (version == 2)
             {
