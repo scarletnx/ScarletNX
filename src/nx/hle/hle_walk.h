@@ -33,6 +33,7 @@
     X(LibApplet, (h).am.applets[0])                                                                                    \
     X(AudOut, (h).audio.outs_pool[0])                                                                                  \
     X(HwOpus, (h).audio.opus[0])                                                                                       \
+    X(TvmrJpegObj, (h).tvmr_jpeg.obj[0])                                                                               \
     X(ARRen, (h).audren.rens[0])                                                                                       \
     X(ARCompressor, (h).audren_dsp.compressors[0])                                                                     \
     X(PadMotion, (h).hid.pad1.motion[0])                                                                               \
@@ -100,6 +101,7 @@
     X(set, (h).set)                                                                                                    \
     X(sm, (h).sm)                                                                                                      \
     X(time, (h).time)                                                                                                  \
+    X(tvmr_jpeg, (h).tvmr_jpeg)                                                                                        \
     X(vi, (h).vi)                                                                                                      \
     X(bsd, (h).bsd)                                                                                                    \
     X(ldn, (h).ldn)                                                                                                    \

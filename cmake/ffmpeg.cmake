@@ -55,6 +55,9 @@ set(snx_ffmpeg_args
     --disable-avfilter
     --disable-iconv
     --enable-decoder=h264,vp8,vp9,opus,aac,atrac9
+    # the Switch movie library's NVJPG decoder and encoder (src/nx/nn/tvmr_jpeg.c): baseline JPEG pictures
+    --enable-decoder=mjpeg
+    --enable-encoder=mjpeg
     # the Vita's SceMp4 (src/vita/hle/mp4.c): MP4 files demuxed from memory (no protocol), their H.264 made Annex B
     --enable-demuxer=mov
     --enable-bsf=h264_mp4toannexb

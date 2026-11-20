@@ -31,6 +31,7 @@
 #include "nx/nn/time.h"
 #include "nx/nn/pl.h"
 #include "nx/nn/prepo.h"
+#include "nx/nn/tvmr_jpeg.h"
 #include "nx/hle/pool.h"
 
 typedef struct {
@@ -67,6 +68,7 @@ typedef struct {
     HleTime time; /* the native nn::time (nn/time.c) */
     HlePl pl;     /* the native nn::pl (nn/pl.c) */
     HlePrepo prepo; /* the native nn::prepo (nn/prepo.c) */
+    HleTvmrJpeg tvmr_jpeg; /* the movie library's native JPEG decoder and encoder (nn/tvmr_jpeg.c) */
     /* the hooks' guest memory (hook.h); the functions hooked are the process's, in g_host */
     HleHook hook;
 } Hle;
@@ -96,6 +98,7 @@ typedef struct {
     HostSsl ssl;
     HostFs fs;
     HostHook hook;
+    HostTvmrJpeg tvmr_jpeg;
 } HleHost;
 extern HleHost g_host;
 /* The HLE's thread state: each thread's own, all zero when it starts, one member for each file that keeps any

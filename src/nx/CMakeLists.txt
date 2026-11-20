@@ -52,7 +52,7 @@ snx_component(hle hle/services/services.c hle/services/audren.c hle/services/aud
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
               hle/hook/hook.c hle/hook/family.c hle/hook/jump.c hle/hook/ext_skyline.c hle/hook/libc.c hle/hook/alloc.c hle/hook/sync.c hle/hook/os_sync.c hle/hook/libc_std.c hle/hook/libc_wide.c hle/hook/libc_fmt.c hle/hook/libcxx_string.c hle/hook/gs.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
               nn/ro.c nn/fs.c nn/time.c nn/pl.c nn/pl_font.c nn/pctl.c nn/nsd.c nn/ngc.c nn/prepo.c
-              nn/audio.c nn/audio_renderer.c nn/codec.c)
+              nn/audio.c nn/audio_renderer.c nn/codec.c nn/tvmr_jpeg.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which nn/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
 if(APPLE)

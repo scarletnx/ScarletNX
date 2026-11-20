@@ -54,17 +54,25 @@ static int module_of(const SnxModInfo* mods, u32 nmods, u64 addr) {
     return -1;
 }
 
-/* each module's nnSdk version, from the SDK's label in its read-only data, logged */
-static void module_versions(const SnxModInfo* mods, u32 nmods, u32 sdk[HOOK_MODULES]) {
+/* each module's nnSdk version and movie library version, from their labels in its read-only data, logged */
+static void module_versions(const SnxModInfo* mods, u32 nmods, u32 sdk[HOOK_MODULES], u32 movie[HOOK_MODULES]) {
     u32 i;
     for (i = 0; i < nmods && i < HOOK_MODULES; i++) {
         const SnxModInfo* mi = &mods[i];
-        char text[32];
-        sdk[i] = 0;
-        if (mi->ro_size && mi->ro_off <= mi->size && mi->ro_size <= mi->size - mi->ro_off)
+        char text[32], movie_text[48] = "";
+        sdk[i] = movie[i] = 0;
+        if (mi->ro_size && mi->ro_off <= mi->size && mi->ro_size <= mi->size - mi->ro_off) {
             sdk[i] = hook_label_version(GP(mi->base + mi->ro_off), mi->ro_size, "nnSdk");
+            movie[i] = hook_label_version(GP(mi->base + mi->ro_off), mi->ro_size, "movie");
+        }
         hook_version_text(text, sizeof text, HOOK_SDK, sdk[i]);
-        LOG("hooks: module %s, SDK %s%s\n", mi->name, text, sdk[i] ? "" : " (its versioned hooks aren't installed)");
+        if (movie[i]) {
+            char v[32];
+            hook_version_text(v, sizeof v, HOOK_MOVIE, movie[i]);
+            snprintf(movie_text, sizeof movie_text, ", movie %s", v);
+        }
+        LOG("hooks: module %s, SDK %s%s%s\n", mi->name, text, movie_text,
+            sdk[i] || movie[i] ? "" : " (its versioned hooks aren't installed)");
     }
     if (nmods > HOOK_MODULES)
         WARN("hooks: %u modules, so the SDK versions of those past %d are unknown\n", nmods, HOOK_MODULES);
@@ -353,7 +361,7 @@ static void install_a32(void) {
     const SnxModInfo* mods = g_arm_mod->mods;
     const char* name;
     u64 addr;
-    u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES];
+    u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES], movie[HOOK_MODULES];
     unsigned char off[HOOK_FAMILIES + 1] = {0}, missed[HOOK32_COUNT + 1] = {0}, said[HOOK32_COUNT + 1] = {0};
     for (i = 0; i < HOOK_FAMILIES; i++) {
         const char* why = hook_family_unready(hook_family_name[i]);
@@ -362,7 +370,7 @@ static void install_a32(void) {
         else if (why)
             off[i] = 1, LOG("hooks: the %s family is off: %s\n", hook_family_name[i], why);
     }
-    module_versions(mods, nmods, sdk);
+    module_versions(mods, nmods, sdk, movie);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
         _Atomic SnxArmBlock* slot;
@@ -372,6 +380,7 @@ static void install_a32(void) {
             (m = module_of(mods, nmods, addr & ~1ull)) < 0)
             continue;
         versions[HOOK_SDK] = m < HOOK_MODULES ? sdk[m] : 0;
+        versions[HOOK_MOVIE] = m < HOOK_MODULES ? movie[m] : 0;
         k = hook_select(&hook32_table, name, versions, &first);
         if (k == -2 && !missed[first]) {
             char text[32];
@@ -411,7 +420,7 @@ void hook_install(void) {
     const HostHook* h = &g_host.hook;
     const char* name;
     u64 addr;
-    u32 i, sdk[HOOK_MODULES] = {0};
+    u32 i, sdk[HOOK_MODULES] = {0}, movie[HOOK_MODULES] = {0};
     unsigned char off[HOOK_FAMILIES + 1] = {0}, verify[HOOK_FAMILIES + 1] = {0};
     int any_verify = 0;
     unsigned char said[HOOK_COUNT + 1] = {0};   /* the entries whose versions the log gave */
@@ -442,7 +451,7 @@ void hook_install(void) {
         LOG("hooks: verify mode for the pure hooks of the families hooks_verify names, with %u KiB of scratch at %llx\n",
             (HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT) >> 10, (unsigned long long)g_hle.hook.verify_base);
     }
-    module_versions(g_mod->mods, g_mod->nmods, sdk);
+    module_versions(g_mod->mods, g_mod->nmods, sdk, movie);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
         int m, first, k;
@@ -453,6 +462,7 @@ void hook_install(void) {
             continue;
         /* the versions of the module that exports it; the NVN API version isn't read yet, so it is unknown */
         versions[HOOK_SDK] = m < HOOK_MODULES ? sdk[m] : 0;
+        versions[HOOK_MOVIE] = m < HOOK_MODULES ? movie[m] : 0;
         k = hook_select(&hook_table, name, versions, &first);
         if (k == -2 && !missed[first]) {
             char text[32];
