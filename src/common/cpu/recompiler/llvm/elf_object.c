@@ -107,6 +107,9 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             o->nsyms = s->sh_size / sizeof(Elf64_Sym);
             if (s->sh_link >= o->eh->e_shnum)
                 return snx_link_fail(error, error_size, "%s: bad symbol table%s", input->name, "");
+            /* the names' section may come after this one, its own check with it: no pointer past the file before */
+            if (o->sh[s->sh_link].sh_offset > input->size)
+                return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
             o->strtab = (const char*)input->data + o->sh[s->sh_link].sh_offset;
         }
         if (!(s->sh_flags & SHF_ALLOC)) continue;
