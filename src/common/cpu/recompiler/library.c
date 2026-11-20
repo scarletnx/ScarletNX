@@ -127,6 +127,12 @@ struct snx_recompiled {
     size_t view_count;
     int live_code; /* the views are the caller's bytes (snx_recompiler_set_live_code), not a copy */
     _Atomic uint64_t code_generation;
+#ifdef _WIN32
+    SRWLOCK code_update_lock;
+#else
+    pthread_mutex_t code_update_lock;
+#endif
+    int code_update_lock_ready;
     /* the descriptor's entries, which the JIT's code calls directly */
     const uint64_t* entry_addresses;
     const _Atomic GuestFn* entry_functions;
@@ -147,6 +153,40 @@ struct snx_recompiled {
 };
 static char jit_none;
 #define JIT_NONE ((SnxJitService*)(void*)&jit_none)
+
+static int init_code_update_lock(struct snx_recompiled* m) {
+#ifdef _WIN32
+    InitializeSRWLock(&m->code_update_lock);
+#else
+    if (pthread_mutex_init(&m->code_update_lock, NULL)) return -1;
+#endif
+    m->code_update_lock_ready = 1;
+    return 0;
+}
+
+static void destroy_code_update_lock(struct snx_recompiled* m) {
+    if (!m->code_update_lock_ready) return;
+#ifndef _WIN32
+    pthread_mutex_destroy(&m->code_update_lock);
+#endif
+    m->code_update_lock_ready = 0;
+}
+
+static void lock_code_updates(struct snx_recompiled* m) {
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&m->code_update_lock);
+#else
+    pthread_mutex_lock(&m->code_update_lock);
+#endif
+}
+
+static void unlock_code_updates(struct snx_recompiled* m) {
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&m->code_update_lock);
+#else
+    pthread_mutex_unlock(&m->code_update_lock);
+#endif
+}
 
 static void fail(struct snx_recompiler* r, const char* fmt, ...) {
     va_list ap;
@@ -1116,9 +1156,14 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
         return -1;
     }
     if (r->live_code) total = 0; /* no copy: the views are the caller's bytes, which outlive the module */
+    if (init_code_update_lock(m)) {
+        fail(r, "cannot initialize the code update lock");
+        return -1;
+    }
     atomic_init(&m->code_generation, 0);
     m->views = (SnxCodeImage*)calloc(1, count * sizeof(SnxCodeImage) + total);
     if (!m->views) {
+        destroy_code_update_lock(m);
         fail(r, "out of memory for a copy of the code");
         return -1;
     }
@@ -1295,6 +1340,7 @@ struct snx_recompiled* snx_recompile_ranges(struct snx_recompiler* r, const stru
              (unsigned long long)(ranges[range_count - 1].address + ranges[range_count - 1].size));
         free(views);
         free(m->views);
+        destroy_code_update_lock(m);
         free(m);
         return NULL;
     }
@@ -1355,6 +1401,7 @@ void snx_recompiled_free(struct snx_recompiled* m) {
         atomic_load_explicit(&m->jit, memory_order_relaxed) != JIT_NONE)
         snx_jit_service_free(
             atomic_load_explicit(&m->jit, memory_order_relaxed)); /* its threads stop before the code they read goes */
+    destroy_code_update_lock(m);
     free(m->jit_cache_path);
     free(m->compiled_functions);
     free(m->entry_aliases);
@@ -1392,8 +1439,11 @@ GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc) { return mo
 size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code, size_t size) {
     size_t i, updated = 0;
     const unsigned char* bytes = (const unsigned char*)code;
-    int writing = 0;
     if (!m || !code || m->live_code || (addr & 3) || (size & 3) || size > UINT64_MAX - addr) return 0;
+    if (!m->view_count || !size) return 0;
+    /* Serialize writers so no second update can make the reader-visible generation even mid-copy. */
+    lock_code_updates(m);
+    atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
     for (i = 0; i < m->view_count; ++i) {
         const SnxCodeImage* view = &m->views[i];
         uint64_t lo = addr > view->base ? addr : view->base;
@@ -1402,10 +1452,6 @@ size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const
         lo += (4 - (lo & 3)) & 3;
         hi &= ~UINT64_C(3);
         if (lo >= hi) continue;
-        if (!writing) {
-            atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
-            writing = 1;
-        }
         for (at = lo; at < hi; at += 4) {
             uint32_t word;
             memcpy(&word, bytes + (at - addr), sizeof(word));
@@ -1414,7 +1460,8 @@ size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const
         }
         updated += (size_t)(hi - lo);
     }
-    if (writing) atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
+    atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
+    unlock_code_updates(m);
     return updated;
 }
 

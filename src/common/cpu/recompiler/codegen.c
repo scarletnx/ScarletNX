@@ -452,7 +452,10 @@ static int image_read(SnxCodegen* codegen, SnxU64 address, unsigned width, SnxU6
         if (m->atomic_words) {
             unsigned char bytes[8];
             size_t residue = (size_t)(4 - (m->base & 3)) & 3;
-            for (;;) {
+            /* Jump-table entries are discovery hints; under sustained patching, omit this table and let the runtime
+               JIT handle its targets rather than pinning a worker on an image that never stays still. */
+            for (unsigned retry = 0;; ++retry) {
+                if (retry == 128) return 0;
                 uint64_t before = m->generation ? atomic_load_explicit(m->generation, memory_order_seq_cst) : 0;
                 uint64_t after;
                 size_t last_word_off = SIZE_MAX;
