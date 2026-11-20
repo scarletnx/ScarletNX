@@ -1536,17 +1536,19 @@ static void malformed_objects(void) {
     whole.sections[2] = (Elf64_Shdr){
         .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(whole), strings), .sh_size = sizeof(whole.strings)};
     whole.symbols[1] = (Elf64_Sym){.st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT), .st_shndx = 2};
-    for (unsigned kind = 0; kind < 4; ++kind) {
+    for (unsigned kind = 0; kind < 5; ++kind) {
         static const char* const names[] = {"a whole object", "a section that wraps past 2^64",
-                                            "a symbol in section 8 of 3", "a local common symbol"};
+                                            "a symbol in section 8 of 3", "a local common symbol",
+                                            "a section header table that wraps past 2^64"};
         static const char* const wants[] = {"", "truncated section", "symbol 1 is in section 8 of 3",
-                                            "symbol 1 is in section 65522 of 3"};
+                                            "symbol 1 is in section 65522 of 3", "not an x86-64"};
         unsigned machine = 0, abi = 0;
         int rc;
         image = whole;
         if (kind == 1) image.sections[2].sh_offset = UINT64_MAX - 0xFF, image.sections[2].sh_size = 0x100;
         if (kind == 2) image.symbols[1].st_shndx = 8;
         if (kind == 3) image.symbols[1].st_shndx = SHN_COMMON;
+        if (kind == 4) image.header.e_shoff = UINT64_MAX - 0x40;
         error[0] = 0;
         rc = snx_elf_parse(&o, &input, &machine, &abi, error, sizeof(error));
         if ((rc != 0) != (kind != 0) || !strstr(error, wants[kind])) {
