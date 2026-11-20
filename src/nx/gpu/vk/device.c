@@ -2464,30 +2464,37 @@ static int create_device(void) {
         : second                               ? " (a second queue)"
                                                : " (the graphics queue)");
     /* A draw that writes a target it samples at its own pixel gets the value from before the draw on the console.
-       In place, a later primitive of the draw can read what an earlier one wrote. On NVIDIA's GPUs with fragment
-       shader interlock, a capture in an interlock at the program's start saves the old pixel (vk/predraw.c). On the
-       others with dynamic rendering local read, the renderer draws the draw two times in one pass (render.c
-       predraw_run). Without both, the draw stays in place: a copy of the target before each such draw costs too much
-       (5 ms a frame outdoors on a desktop GPU).
+       In place, a later primitive of the draw can read what an earlier one wrote. On NVIDIA's and AMD's GPUs with
+       fragment shader interlock, a capture in an interlock at the program's start saves the old pixel
+       (vk/predraw.c). On the others with dynamic rendering local read, the renderer draws the draw two times in one
+       pass (render.c predraw_run). Without both, the draw stays in place: a copy of the target before each such draw
+       costs too much (5 ms a frame outdoors on a desktop GPU).
 
        Each feedback draw drawn two times takes one by-region barrier, which a GPU that renders in tiles keeps in its
        tile memory with the save attachment. Measured in one game's room of G-buffer blend draws, GPU busy and
        G-buffer pass a frame:
          RTX 4090:          in place (specks) 8.1 / 2.00 ms, interlock 8.45 / 2.28 ms, two draws 9.2 / 3.23 ms
          AMD's iGPU (26.10.1): in place (specks) 47.5 / 13.1 ms, interlock 59.1 / 27.7 ms, two draws 55.3 / 18.4 ms
-       AMD's interlock waits on more than the fragments that overlap, and costs more there than the barriers */
-    int nvidia = g_vk.props.vendorID == 0x10DE;
-    int interlock = nvidia && g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics;
-    g_vk.feedback_mode = interlock             ? VK_FEEDBACK_INTERLOCK
-                         : g_vk.has_local_read ? VK_FEEDBACK_PREDRAW
-                                               : VK_FEEDBACK_IN_PLACE;
+       On that iGPU, with AMD's own driver, the interlock waits on more than the fragments that overlap, and costs
+       more than the barriers. A desktop GPU that waits on its CPU measured the other way: in an open-world game's
+       870 feedback draws of 7100 a frame, the renderer's thread busy and the GPU's queue busy a frame:
+         RX 6700 XT (RADV 26.2): interlock 34.8 / 4.8 ms, two draws 39.6 / 12.2 ms
+       A draw drawn two times is set up three times on the CPU (the draw that finds it, the save draw, the guest's).
+       So AMD's GPUs take the interlock as NVIDIA's do; a device it serves worse gets the two draws back with
+       VK_EXT_fragment_shader_interlock's setting off */
+    const int theirs = g_vk.props.vendorID == 0x10DE || g_vk.props.vendorID == 0x1002;
+    g_vk.feedback_mode = vk_feedback_choice(g_vk.props.vendorID, g_vk.has_feedback, g_vk.has_fragment_interlock,
+                                            g_vk.feat.fragmentStoresAndAtomics, g_vk.has_local_read);
     LOG("vulkan: a draw that samples a target it writes at its own pixel %s (vendor %04x%s, fragment shader interlock "
         "%s, dynamic rendering local read %s)\n",
         g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK ? "reads the pixel as it was before the draw, from a capture in "
                                                       "a fragment interlock"
         : g_vk.feedback_mode == VK_FEEDBACK_PREDRAW ? "is drawn two times, the first saving the target"
                                                     : "reads the target in place",
-        g_vk.props.vendorID, nvidia ? ", NVIDIA: interlock where it has it" : ", not NVIDIA: two draws where it can",
+        g_vk.props.vendorID,
+        g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK ? ", NVIDIA's or AMD's: the interlock"
+        : theirs ? ", NVIDIA's or AMD's without all the interlock's capture needs: two draws where it can"
+                 : ", neither NVIDIA's nor AMD's: two draws where it can",
         g_vk.has_fragment_interlock ? "yes" : "no", g_vk.has_local_read ? "yes" : "no");
     if (g_vk.has_feedback)
         LOG("vulkan: draws sample the color targets they render to in place (attachment feedback loops, %s, %s)\n",
