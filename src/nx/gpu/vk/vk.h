@@ -1590,6 +1590,16 @@ u64 vk_tex_reclaim_superseded(u32 before, u64 want);
 /* t took pixels from a target now: only targets drawn after this cover its memory (vk_tex_reclaim_superseded) */
 void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
+   (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
+   the copies of them (texture.c rt_copy), which go with them */
+typedef struct {
+    u32 n[3], parked[3];
+    u64 bytes[3];
+    u32 copies;
+    u64 copy_bytes;
+} VkRtKinds;
+void vk_rt_kinds(VkRtKinds* k);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */
