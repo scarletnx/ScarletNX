@@ -803,21 +803,32 @@ static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
     const u32 list[12] = {4, 5, 7, 5, 6, 7, 4, 5, 7, 5, 6, 7};
     const int was_on = g_settings.draw_run_stats;
     VkRecRuns before, after;
+    VkDrawCounts tops[4];
     u64 drawn, equal[VK_REC_RUN_KEYS], moved[VK_REC_RUN_KEYS], instanced[VK_REC_RUN_KEYS];
     IndexPixels px;
     if (!vk_rec_threaded()) return 0;
     CHECK(!index_buffer(channel, indices, list, 12, 2, ~0u));
     DrawCall call = {.topology = 4, .indexed = 1, .count = 6, .instances = 1};
     g_settings.draw_run_stats = 1;
+    /* streams whose limits are megabytes away, as a ring's are: only then does a draw look for its highest index */
+    u32 limits[4];
+    for (u32 i = 0; i < 4; i++) limits[i] = channel->r3d[0x7c0 + i];
+    for (u32 stream = 0; stream < 2; stream++) {
+        u64 limit = ((u64)limits[stream * 2] << 32 | limits[stream * 2 + 1]) + (2u << 20);
+        channel->r3d[0x7c0 + stream * 2] = (u32)(limit >> 32);
+        channel->r3d[0x7c1 + stream * 2] = (u32)limit;
+    }
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u;
     mx_draw_state_sync(channel);
     vk_render_draw(&channel->ds, &call, &channel->owner); /* after the clear: it starts a run of every key */
     vk_rec_runs(&before);
+    vk_draw_counts(&tops[0]);
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_rec_runs(&after);
+    vk_draw_counts(&tops[1]);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) equal[k] = after.runs[k] - before.runs[k];
     drawn = after.draws - before.draws;
     before = after;
@@ -830,9 +841,18 @@ static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_rec_runs(&after);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) instanced[k] = after.runs[k] - before.runs[k];
+    /* the same indices written again: their highest index is found by a scan of the draw's six */
+    vk_unlock();
+    CHECK(!index_buffer(channel, indices, list, 12, 2, ~0u));
+    vk_lock();
+    vk_draw_counts(&tops[2]);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_draw_counts(&tops[3]);
     CHECK(!index_pixels(target, &px));
     vk_unlock();
     g_settings.draw_run_stats = was_on;
+    for (u32 i = 0; i < 4; i++) channel->r3d[0x7c0 + i] = limits[i];
+    channel->r3d_dirty = ~0u;
     CHECK(index_all_green(&px));
     if (drawn != 2 || equal[0] || equal[1] || equal[2])
         fprintf(stderr,
@@ -845,6 +865,23 @@ static int draw_runs_case(GpuChannel* channel, u64 target, u64 indices) {
                 (unsigned long long)moved[0], (unsigned long long)moved[1], (unsigned long long)moved[2]);
     CHECK(moved[0] == 1 && !moved[1] && !moved[2]);
     CHECK(instanced[0] == 1 && instanced[1] == 1 && instanced[2] == 1);
+    /* each draw looked its range up once (kept, or scanned again where the write tracking has no epoch between
+       them); the range written again is scanned, its six indices */
+    const u64 looked =
+        tops[1].top[VK_TOP_KEPT] + tops[1].top[VK_TOP_SCANNED] - tops[0].top[VK_TOP_KEPT] - tops[0].top[VK_TOP_SCANNED];
+    if (looked != 2 || tops[3].top[VK_TOP_SCANNED] != tops[2].top[VK_TOP_SCANNED] + 1 ||
+        tops[3].top_indices != tops[2].top_indices + 6 || tops[3].top[VK_TOP_UNKNOWN] != tops[0].top[VK_TOP_UNKNOWN])
+        fprintf(stderr,
+                "index ranges: two draws looked up %llu ranges; a draw after its indices were written scanned %llu "
+                "ranges and %llu indices; %llu not known\n",
+                (unsigned long long)looked,
+                (unsigned long long)(tops[3].top[VK_TOP_SCANNED] - tops[2].top[VK_TOP_SCANNED]),
+                (unsigned long long)(tops[3].top_indices - tops[2].top_indices),
+                (unsigned long long)(tops[3].top[VK_TOP_UNKNOWN] - tops[0].top[VK_TOP_UNKNOWN]));
+    CHECK(looked == 2);
+    CHECK(tops[3].top[VK_TOP_SCANNED] == tops[2].top[VK_TOP_SCANNED] + 1);
+    CHECK(tops[3].top_indices == tops[2].top_indices + 6);
+    CHECK(tops[3].top[VK_TOP_UNKNOWN] == tops[0].top[VK_TOP_UNKNOWN]);
     puts("draw runs: equal draws in one run, another first index a run of its own only as the draws are, other "
          "instances a run of every key");
     return 0;
