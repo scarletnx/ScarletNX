@@ -102,6 +102,11 @@ VK_SHADER_STAGE_GEOMETRY_BIT | off | turnip | * | any | * | lists the geometry s
 # being such shuffles; SHFL and the other warp instructions keep them)
 OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose index differs between invocations into a loop, a hardware shuffle for each distinct index, as many as 32 for an HMMA's gather: an Adreno 610 ran the HMMA bench 35 times faster staged through shared memory (684.9 ms a dispatch to 19.6), where Qualcomm's driver on an Adreno 830 and RADV ran it 5.4 and 2.2 times slower so; no feature or property says it | Mesa's src/freedreno/ir3/ir3_lower_subgroups.c (make_shuffle_uniform, main of 2026-11-04: every Adreno with shfl); ScarletNX #2037 | new:headless:an HMMA program's dispatch timed gathered and staged, as shader_sm86_gpu's SNX_HMMA_BENCH does | 2026-11-13 a loop on 26.2.99 (Adreno 610) | -
 
+# HMMA's B words shared by pairs of lanes (device.c: the rule's way on the drivers below, on a device with subgroups of
+# 32 a pipeline can require; hmma_mode's Auto times each way at a GPU's first start and keeps the rule's where its
+# bench cannot run)
+OpGroupNonUniformShuffleXor | prefer | radv | * | any | * | compiles a shuffle at an xor of 4 into a move between lanes, where a shuffle at any other index goes through shared memory: an HMMA whose lanes 4 apart share B's words ran the HMMA bench 9.7% faster than the gather (RX 6700 XT) | ScarletNX ac161bd6a7 (2026-11-13) | new:headless:the HMMA bench timed by pairs and by the gather | 2026-11-13 faster on an RX 6700 XT | hmma_mode=1
+
 # Feedback draws (nx/gpu/vk/device.c's feedback_mode: a draw that samples a target it writes at its own pixel reads the
 # pixel as it was before the draw from a capture in a fragment interlock, on the drivers below whose device has
 # attachment feedback loops and fragment stores too; every other driver draws it two times, or in place without dynamic

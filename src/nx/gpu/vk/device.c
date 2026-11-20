@@ -1810,13 +1810,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "after the program's\n", names);
     }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
-    /* HMMA off the matrix unit, by the rules: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench
-       ran 9.7% faster), and A and B through shared memory where the driver loops for a shuffle whose index differs
+    /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
+       them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle whose index differs
        between lanes, which no feature or property tells, so the table does. hmma_mode settles the way before the
        first translation (vk_hmma_pick), Auto by the bench, keeping the rules' where it cannot run */
     int compute_subgroups = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
-    g_vk.hmma_rule = shader_hmma_rule(compute_subgroups, p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32,
-                                      vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0);
+    g_vk.hmma_rule =
+        shader_hmma_rule(compute_subgroups, vk_prefer("OpGroupNonUniformShuffleXor", g_vk.has_cs_warp32, ban_say) != 0,
+                         vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0);
     shader_hmma_take(g_vk.hmma_rule, (int)g_vk.props.limits.maxComputeSharedMemorySize);
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
