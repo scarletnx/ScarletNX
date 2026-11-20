@@ -83,6 +83,20 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-gles1 PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-gles1 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_gles1 COMMAND snx-test-android-gles1)
+    # a 32-bit guest's copy of a Java array longer than its window (bridge/arm32_jni.c, included for its statics)
+    add_executable(snx-test-android-arm32-jni-copy "${PROJECT_SOURCE_DIR}/tests/android_arm32_jni_copy.c")
+    target_include_directories(snx-test-android-arm32-jni-copy PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-android-arm32-jni-copy SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                               "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+    if(APPLE)
+        target_link_libraries(snx-test-android-arm32-jni-copy PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-arm32-jni-copy PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-arm32-jni-copy PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-arm32-jni-copy PRIVATE -UNDEBUG)
+    add_test(NAME android_arm32_jni_copy COMMAND snx-test-android-arm32-jni-copy)
     # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time; and
     # a lookup in the linker's libraries while another thread's load is held in its read, plat_pread_fd wrapped
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
@@ -165,6 +179,6 @@ if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
                       snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
-                      snx-test-android-linker-lock)
+                      snx-test-android-linker-lock snx-test-android-arm32-jni-copy)
     snx_sanitizer_path()
 endif()
