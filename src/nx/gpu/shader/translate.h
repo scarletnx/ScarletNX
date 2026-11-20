@@ -672,6 +672,11 @@ typedef struct {
     u8* block_start;
     ShStructure* structure;
 } Tr;
+/* emit_memory.c's, which sail/sm53_memory_spirv.h's instructions take: the constant buffer word of a bank picked at run
+   time from first on, a global slot's bytes written at a byte offset (for its write-back), a shared word's pointer */
+u32 shader_cbuf_read_bank(DirectCtx* c, u32 first, u32 bank, u32 address);
+void shader_log_written(DirectCtx* c, int stage, u32 slot, u32 offset, u32 bytes);
+u32 shader_shared_pointer(DirectCtx* c, const Tr* t, u32 index);
 /* the instruction from SM53's Sail (sm53_sail.c, sail/sm53.sail): 1 when the Sail has it, 0 for its family's emitter */
 int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 /* each family of instructions: writes the instruction i (its word w, opcode op, and fields d, a, b) when one of its branches takes it; op_family (spirv_translate.c) sends each opcode to its family */
@@ -679,6 +684,5 @@ int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void shader_exit(const Tr* t, u32 i, u64 w);
 void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 #endif
