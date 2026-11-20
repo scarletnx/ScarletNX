@@ -101,7 +101,7 @@ static struct {
     IovaMap iova[IOVA_SLOTS]; /* sorted by iova */
     u32 niova;
     PMutex engine_lk; /* the engines: one job's command buffers at a time */
-    _Atomic u32 jobs; /* queued or running on any channel, with __atomic operations: what host1x_drain waits for */
+    _Atomic u32 jobs; /* queued or running on any channel, through <stdatomic.h>'s calls: what host1x_drain waits for */
 } g_host1x = {PMUTEX_INIT, {{0}}, 0, PMUTEX_INIT, 0};
 
 /* A job is one block of words: the command buffer count, the increment count, each command buffer as its length and

@@ -64,7 +64,7 @@ SP_VK_DEVICE(SP_VK_DEFINE)
 
 static PFN_vkGetInstanceProcAddr g_gipa;
 
-/* a function pointer from the library's symbol: through a union, as ISO C has no conversion from void* */
+/* a function pointer from the library's symbol: through memcpy, as ISO C has no conversion from void* */
 static PFN_vkGetInstanceProcAddr symbol(void* lib) {
 #ifdef _WIN32
     FARPROC p = GetProcAddress((HMODULE)lib, "vkGetInstanceProcAddr");
