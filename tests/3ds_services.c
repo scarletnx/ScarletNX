@@ -206,6 +206,15 @@ int main(void) {
         uint32_t other_lock = ctr_command_word(p, 5);
         assert(other_lock != lock && snx_ctr_handle_object(p, other_lock) == lock_id);
         assert(!snx_ctr_handle_close(p, other_lock));
+        /* AppletUtility with no input, TryLockTransition (6): the byte of its output says the transitions are locked */
+        ctr_put(p, SNX_CTR_INITIAL_TLS + 0x10, 0);
+        ctr_put(p, SNX_CTR_INITIAL_TLS + 0x180, 1u << 14 | 2);
+        ctr_put(p, SNX_CTR_INITIAL_TLS + 0x184, SNX_CTR_INITIAL_TLS + 0x10);
+        uint32_t no_input[6] = {0x004b00c2, 6, 0, 1, 0x402, 0};
+        ctr_request(p, no_input, 6);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x004b0082 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2));
+        assert(ctr_word(p, SNX_CTR_INITIAL_TLS + 0x10) == 1);
         uint32_t* r = p->cpu.state.cpu.r;
         for (unsigned i = 0; i < 2; ++i) {
             r[0] = lock;
