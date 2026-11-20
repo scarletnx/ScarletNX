@@ -529,8 +529,7 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
    for a negative width, the most negative one too */
 static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
     const VitaHle* libc = vita_hle_libc;
-    uint32_t out = vita_alloc(p, &p->user, 0x2000, 0x1000);
-    assert(out);
+    uint32_t out = words_block(p);
     char* text = vita_ptr(p, out);
     strcpy(vita_ptr(p, mem), "%*d");
     assert(CALL(libc, "sprintf", out, mem, 0x80000000u, 5) == 4096 && text[0] == '5' && text[4095] == ' ');
