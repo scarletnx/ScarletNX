@@ -251,8 +251,9 @@ static char* save_path(VitaProcess* p, uint32_t address) {
     if (!vita_string(p, address, path, sizeof path)) return NULL;
     if (strchr(path, ':')) return vita_io_host_path(p, address);
     for (const char* q = path; *q;) {
-        const char* slash = strchr(q, '/');
-        size_t n = slash ? (size_t)(slash - q) : strlen(q);
+        /* a backslash parts a path too where the host takes one (Windows) */
+        size_t n = strcspn(q, "/\\");
+        const char* slash = q[n] ? q + n : NULL;
         if (n == 2 && q[0] == '.' && q[1] == '.') return NULL;
         if (!slash) break;
         q = slash + 1;
