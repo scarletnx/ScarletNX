@@ -1,6 +1,7 @@
 #ifndef HACTOOL_hfs0_H
 #define HACTOOL_hfs0_H
 
+#include <string.h>
 #include "types.h"
 #include "utils.h"
 #include "settings.h"
@@ -48,6 +49,18 @@ static inline uint64_t hfs0_get_header_size(hfs0_header_t *hdr) {
 
 static inline char *hfs0_get_file_name(hfs0_header_t *hdr, uint32_t i) {
     return hfs0_get_string_table(hdr) + hfs0_get_file_entry(hdr, i)->string_table_offset;
+}
+
+/* ScarletNX: the first file whose name does not start in the string table or has no end in it, num_files when every
+   name is whole. The offsets are the dump's words, and a name is read to its end wherever it starts: a header is
+   checked once, as it is loaded (in the host's order), and its names are read freely after */
+static inline uint32_t hfs0_first_bad_name(hfs0_header_t *hdr) {
+    for (uint32_t i = 0; i < hdr->num_files; i++) {
+        uint32_t at = hfs0_get_file_entry(hdr, i)->string_table_offset;
+        if (at >= hdr->string_table_size ||
+            !memchr(hfs0_get_string_table(hdr) + at, 0, hdr->string_table_size - at)) return i;
+    }
+    return hdr->num_files;
 }
 
 /* ScarletNX: a header read from its little-endian file put in the host's order, and with entries its file entries too,
