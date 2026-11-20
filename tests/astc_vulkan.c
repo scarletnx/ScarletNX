@@ -643,7 +643,6 @@ static void run_blocks(u32 kind, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 dep
             rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            u8* texels = NULL;
             u8* expected = malloc(size);
             (void)nx, (void)ny;
             /* the level's build of the shader, run on the CPU over the same blocks */
@@ -657,7 +656,6 @@ static void run_blocks(u32 kind, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 dep
                           "got %u\n",
                           name, bw, bh, srgb, lw, lh, ld, l, layer, (unsigned long long)i,
                           (unsigned long long)(i / block_bytes), expected[i], actual[i]);
-            free(texels);
             free(expected);
             free(blocks[layer * levels + l]);
         }
