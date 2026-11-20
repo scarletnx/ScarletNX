@@ -1432,8 +1432,8 @@ void vk_render_stats_log(void) {
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
-        "and %llu samplers kept; descriptor sets %llu written, %llu reused, %llu of those a stage's last; %llu draws "
-        "kept the last one's targets\n",
+        "and %llu samplers kept, %llu lookups through the memo; descriptor sets %llu written, %llu reused, %llu of "
+        "those a stage's last; %llu draws kept the last one's targets\n",
         (unsigned long long)presents, (unsigned long long)(n->cb[VK_CB_INLINE_KEPT] - w->cb[VK_CB_INLINE_KEPT]),
         (unsigned long long)(n->cb[VK_CB_INLINE_STAGED] - w->cb[VK_CB_INLINE_STAGED]),
         (unsigned long long)(n->cb[VK_CB_KEPT] - w->cb[VK_CB_KEPT]),
@@ -1447,9 +1447,9 @@ void vk_render_stats_log(void) {
         (unsigned long long)(n->tex[VK_TEX_PAST] - w->tex[VK_TEX_PAST]),
         (unsigned long long)(n->tex[VK_TEX_VIEW_KEPT] - w->tex[VK_TEX_VIEW_KEPT]),
         (unsigned long long)(n->tex[VK_TEX_SAMPLER_KEPT] - w->tex[VK_TEX_SAMPLER_KEPT]),
+        (unsigned long long)(n->tex[VK_TEX_MEMO] - w->tex[VK_TEX_MEMO]),
         (unsigned long long)(g_vk_dset_new - g_stats.dset_new),
-        (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused),
-        (unsigned long long)(n->sets_last - w->sets_last),
+        (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused), (unsigned long long)(n->sets_last - w->sets_last),
         (unsigned long long)(g_vk_targets_kept - g_stats.targets_kept));
     if (g_vk.has_descriptor_heaps) {
         VkDescriptorHeapStats h;
@@ -1596,8 +1596,8 @@ static int tex_memo_image_pending(TexMemo* m) {
     m->img_adds = adds;
     return 0;
 }
-/* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, -1 none but its
-   headers as memory has them, 0 none, or a texture over a target (its own checks run at each lookup) */
+/* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, 4 and 3 the same of
+   a texture over a target (TexMemo.over), -1 none but its headers as memory has them, 0 none */
 static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
@@ -1621,6 +1621,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     /* a write in place is no result added: its own count moves (vk_uma_writes) */
     u64 adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
+    g_stats.n.tex[VK_TEX_MEMO]++;
     x->handle = handle;
     x->have = 1;
     x->memo = 0;
@@ -1692,7 +1693,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             x->memo = 0;
         }
         g_stats.n.tex[VK_TEX_KEPT]++;
-        return 0;
+        return x->t ? 4 : 0;
     }
     if (miss < 0) {
         m->gw = gw;
@@ -1759,9 +1760,30 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->over_gw = gw; /* read before the headers and the texture */
         m->copy = over && vk_tex_is_copy_of(x->t, over);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
-        return over ? 0 : 1;
+        return over ? 3 : 1;
     }
     return -1;
+}
+/* A texture the memo keeps over a target (TexMemo.over), for the tables in front of the memo: the target and its
+   write generation when the memo's checks last passed, and whether the texture is a copy of it (TexMemo.copy). The
+   target's draws move its write generation and none of those tables' stamps, so each asks tex_over_holds; the memo's
+   other checks of such a way (the target still at the address, the epoch, the GPU's writes under the texture) read
+   stamps the tables hold */
+typedef struct {
+    Surf* rt;
+    u32 wgen;
+    int copy;
+} TexOver;
+/* x's, rt NULL for a texture that is over no target or that the memo doesn't keep */
+static TexOver tex_over_of(const TexRes* x) {
+    if (!x->t || !x->memo) return (TexOver){0};
+    const TexMemo* m = &g_tex_memo.set[(x->memo - 1) / TEX_MEMO_WAYS][(x->memo - 1) % TEX_MEMO_WAYS];
+    if (m->t != x->t || !m->over || m->over->wgen != m->over_wgen) return (TexOver){0};
+    return (TexOver){.rt = m->over, .wgen = m->over_wgen, .copy = m->copy};
+}
+/* the target still holds the pixels the texture was kept over */
+static int tex_over_holds(const TexOver* o) {
+    return o->rt->wgen == o->wgen && o->rt->layout != VK_IMAGE_LAYOUT_UNDEFINED;
 }
 /* The memo's last answers by handle, with what every check of a memo hit reads, taken before the lookup: while none
    of those moved, the same way is found again and each of its checks says the same (the surface table's epoch moves
@@ -1772,18 +1794,21 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
    big for the cache. A draw-level form of the fast draws of Cemu's command processor, which skip the checks of each
    draw while only uniforms and vertex buffers change (cemu-project/Cemu #706, the idea only). A resolve the memo doesn't
    keep keeps its headers here, which the same checks prove unwritten: only the texture is found again from them, as
-   the memo's lookup would. A texture the memo keeps over a target (TexMemo.over) isn't kept here: the target's draws
-   move none of these stamps, so its own checks run at each lookup. With draw_state_check=1 each lookup goes to the
-   memo. A frame's draws use some hundreds of handles: 1024 entries of about 150 bytes, which the cache holds */
+   the memo's lookup would. A texture the memo keeps over a target (TexMemo.over) is kept with the target's write
+   generation (TexOver): one racing game's draws sample such a texture in half of its draws, each a lookup through the
+   memo. With draw_state_check=1 each lookup goes to the memo. A frame's draws use some hundreds of handles: 1024 entries of about 150 bytes, which the cache holds */
 #define TEX_RECENT_BITS 10
-enum { TEX_RECENT_NONE, TEX_RECENT_TARGET, TEX_RECENT_TEXTURE, TEX_RECENT_HEADERS };
+enum { TEX_RECENT_NONE, TEX_RECENT_TARGET, TEX_RECENT_TEXTURE, TEX_RECENT_HEADERS, TEX_RECENT_OVER };
 typedef struct {
     TexRes x;
     const DsState* ds;
     u64 tic_base, tsc_base, gw, adds, img_adds;
     u32 surf_epoch, ww_epoch;
     u32 tex_max, smp_max;
-    int kind; /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, or headers only */
+    /* TEX_RECENT_*: x.t the render target itself read whole, a texture the memo keeps, headers only, or a texture the
+       memo keeps over the target `over` */
+    int kind;
+    TexOver over;
     /* a texture's: the present and the targets' take count of its last check (vk_tex_recheck), which gives the same
        answer while they and the stamps above are the same */
     u32 present;
@@ -1823,6 +1848,13 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                 g_stats.n.tex[VK_TEX_KEPT]++;
                 return;
             }
+        } else if (r->kind == TEX_RECENT_OVER && !tex_over_holds(&r->over)) {
+            /* the target was drawn to: the memo's lookup, which takes the texture from it again */
+        } else if (r->kind == TEX_RECENT_OVER && r->over.copy) {
+            vk_rt_note_read(r->over.rt); /* as the memo's hit notes a read of the target */
+            *x = r->x;
+            g_stats.n.tex[VK_TEX_KEPT]++;
+            return;
         } else if (r->present == g_vk_present && r->take == take && tex_quiet_now(t, ww_epoch)) {
             /* checked in this present and left quiet, and since then no GPU-side write (gw), no CPU write epoch, no
                surface, result or target taken: the check (tex_check) would read the texture's own state to give the
@@ -1845,8 +1877,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     r->kind = TEX_RECENT_NONE;
     /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
     const int memo = tex_resolve_memo(ds, handle, x);
-    if (!memo || (memo == 1 && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
+    if (!memo || ((memo == 1 || memo == 3) && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
+    const TexOver over = memo >= 3 ? tex_over_of(x) : (TexOver){0};
+    if (memo >= 3 && !over.rt) return;
     *r = (TexRecent){.x = *x,
+                     .over = over,
                      .ds = ds,
                      .tic_base = b->tex_pool,
                      .tsc_base = b->smp_pool,
@@ -1860,6 +1895,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                      .present = g_vk_present,
                      .take = take,
                      .kind = memo < 0      ? TEX_RECENT_HEADERS
+                             : memo >= 3   ? TEX_RECENT_OVER
                              : x->t->is_rt ? TEX_RECENT_TARGET
                                            : TEX_RECENT_TEXTURE};
 }
@@ -2044,9 +2080,10 @@ static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
    what each slot's resolve checks. Those checks are the stamps of the texture front table (tex_resolve), the
    targets' take generation (tex_take_drawn), and the present (vk_tex_recheck's checks once a frame). About a third
    of one game's draws read other handle words than the draw before, and a sixth run another program. The key
-   holds for most of the rest. Only where each slot's texture is one the memo keeps, not over a target (whose target's
-   draws move none of these stamps), and each texture is quiet in this present and epoch, as vk_tex_recheck's quiet
-   check asks (a texture that isn't takes a full check at each lookup). A compute result pending over a slot's texture
+   holds for most of the rest. Only where each slot's texture is one the memo keeps, one over a target with that
+   target's write generation (TexOver: the target's draws move none of these stamps), and each texture is quiet in
+   this present and epoch, as vk_tex_recheck's quiet check asks (a texture that isn't takes a full check at each
+   lookup). A compute result pending over a slot's texture
    or headers is one added since the key was made, which moves the results added (the stamp tex_resolve keeps a
    texture by, pending_pages.c's count_add): those made the key land the results over them first. With
    draw_state_check=1 the key is made again in full and compared (fs_key_check) */
@@ -2058,26 +2095,32 @@ typedef struct {
     int nt, valid;
     u32 handles[SH_MAXTEX];
     TexRes res[SH_MAXTEX];
+    TexOver over[SH_MAXTEX]; /* by slot: the target a slot's texture is kept over, rt NULL for none */
     FsKey fk;
 } FsLast;
 static FsLast g_fs_last;
 /* whether the slots' textures res, which the last draw resolved, hold as they are (FsLast): a target still defined, a
-   texture still quiet */
-static int fs_last_holds(const TexRes* res, int nt, u32 ww_epoch) {
+   texture still quiet, one over a target (over, by slot) with that target as it was */
+static int fs_last_holds(const TexRes* res, const TexOver* over, int nt, u32 ww_epoch) {
     for (int i = 0; i < nt; i++) {
         const Surf* t = res[i].t;
         if (!t) continue;
         if (t->is_rt ? t->layout == VK_IMAGE_LAYOUT_UNDEFINED : !tex_quiet_now(t, ww_epoch)) return 0;
+        if (over[i].rt && !tex_over_holds(&over[i])) return 0;
     }
     return 1;
 }
-/* whether each slot's texture of res is one the memo keeps, not over a target (TexMemo.over) */
-static int fs_last_keepable(const TexRes* res, int nt) {
+/* whether each slot's texture of res is one the memo keeps, with the target each is kept over into over (by slot) */
+static int fs_last_keepable(const TexRes* res, int nt, TexOver* over) {
     for (int i = 0; i < nt; i++) {
+        over[i] = (TexOver){0};
         if (!res[i].t) continue;
         if (!res[i].memo) return 0;
         const TexMemo* m = &g_tex_memo.set[(res[i].memo - 1) / TEX_MEMO_WAYS][(res[i].memo - 1) % TEX_MEMO_WAYS];
-        if (m->t != res[i].t || m->over) return 0;
+        if (m->t != res[i].t) return 0;
+        if (!m->over) continue;
+        over[i] = tex_over_of(&res[i]);
+        if (!over[i].rt) return 0;
     }
     return 1;
 }
@@ -2125,7 +2168,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
                     : g_fs_last.ww_epoch != ww_epoch                                   ? VK_FS_EPOCH
                     : g_fs_last.present != g_vk_present                                ? VK_FS_PRESENT
                     : memcmp(g_fs_last.handles, handles, (size_t)nt * sizeof *handles) ? VK_FS_HANDLES
-                    : !fs_last_holds(g_fs_last.res, nt, ww_epoch)                      ? VK_FS_QUIET
+                    : !fs_last_holds(g_fs_last.res, g_fs_last.over, nt, ww_epoch)      ? VK_FS_QUIET
                                                                                        : VK_FS_KEPT;
     g_stats.n.fs[why]++;
     const int check = why == VK_FS_KEPT && g_settings.draw_state_check;
@@ -2140,6 +2183,8 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
             const Surf* t = res[i].t;
             if (t && t->is_rt && t->row && !(t->gva >> 63) && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
                 vk_rt_note_read(res[i].t);
+            /* a copy of a target: the read is the target's, as the memo's hit notes it */
+            if (t && g_fs_last.over[i].rt && g_fs_last.over[i].copy) vk_rt_note_read(g_fs_last.over[i].rt);
         }
         g_stats.n.tex[VK_TEX_KEPT] += (u64)nt;
         *fk = g_fs_last.fk;
@@ -2201,7 +2246,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     if (check) fs_key_check(&kept, res, nt, fk);
     g_fs_last.valid = 0; /* all a reader asks before the rest, which the next key kept writes whole */
     /* image_variant reads the image bindings, which the key doesn't hold: a program with images is keyed each draw */
-    if (s0->si.nimg || !fs_last_keepable(res, nt)) {
+    if (s0->si.nimg || !fs_last_keepable(res, nt, g_fs_last.over)) {
         g_stats.n.fs[s0->si.nimg ? VK_FS_UNKEPT_IMAGES : VK_FS_UNKEPT_TEXTURES]++;
         return;
     }
