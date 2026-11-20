@@ -226,7 +226,8 @@ static struct {
     u64 index_at;
     VkIndexType index_type;
     u64 length[VK_REC_RUN_KEYS]; /* the draws of the run each key is in */
-    VkRecRuns n;
+    VkRecRuns n, logged; /* since the start, and at the last log */
+    int said;            /* that nothing is counted without the recording thread */
 } g_runs;
 static u64 run_hash(u64 h, const void* p, u64 size) {
     const u8* b = p;
@@ -278,19 +279,17 @@ static void run_draw(u32 kind, u32 instances, u32 first_instance, u64 was) {
 }
 void vk_rec_runs(VkRecRuns* runs) { *runs = g_runs.n; }
 void vk_rec_runs_log(void) {
-    static VkRecRuns was;
-    static int said;
     const VkRecRuns* n = &g_runs.n;
     if (g_rec <= 0) {
-        if (!said++)
+        if (!g_runs.said++)
             LOG("vulkan: vk_draw_runs=1 counts what the recording thread's ring takes: vk_record is 0, and no run "
                 "is counted\n");
         return;
     }
-    u64 draws = n->draws - was.draws, runs[VK_REC_RUN_KEYS];
+    u64 draws = n->draws - g_runs.logged.draws, runs[VK_REC_RUN_KEYS];
     double each[VK_REC_RUN_KEYS];
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) {
-        runs[k] = n->runs[k] - was.runs[k];
+        runs[k] = n->runs[k] - g_runs.logged.runs[k];
         each[k] = runs[k] ? (double)draws / (double)runs[k] : 0;
     }
     LOG("vulkan: runs of direct draws in the last 600 presents (vk_draw_runs=1): %llu draws. With nothing between "
@@ -301,7 +300,7 @@ void vk_rec_runs_log(void) {
         (unsigned long long)runs[1], each[1], (unsigned long long)n->longest[1], (unsigned long long)runs[2], each[2],
         (unsigned long long)n->longest[2]);
     for (u32 k = 0; k < VK_REC_RUN_KEYS; k++) g_runs.n.longest[k] = 0;
-    was = g_runs.n;
+    g_runs.logged = g_runs.n;
 }
 
 int vk_rec_sync_until(u64 until) {
