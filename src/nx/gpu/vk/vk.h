@@ -3140,14 +3140,15 @@ int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
-/* An indirect draw of quads, its record at record_at of record (16 bytes of a draw of vertices, 20 of one of indices),
-   made the indexed record of their triangles at *arguments_at of *arguments, on the GPU. size 0: quads of vertices,
-   drawn with the renderer's quad indices of vertex numbers, which hold limit quads. Else quads of indices of size
-   bytes, limit of them from indices_at of indices on: their triangles' 32-bit indices are made at *made_at of
-   *arguments. last: the quad's last vertex provokes. A record past limit draws the quads limit allows. 0 when it
-   can't be made */
-int vk_indirect_quads(VkBuffer record, u64 record_at, u32 size, VkBuffer indices, u64 indices_at, u32 limit, int last,
-                      VkBuffer* arguments, u64* arguments_at, u64* made_at);
+/* An indirect draw of quads, its records from record_at of record on, stride bytes apart (16 bytes each of a draw
+   of vertices, 20 of one of indices), made the indexed records of their triangles, 20 bytes apart from *arguments_at
+   of *arguments on, on the GPU. size 0: quads of vertices, drawn with the renderer's quad indices of vertex numbers,
+   which hold limit quads. Else quads of indices of size bytes, limit of them from indices_at of indices on: their
+   triangles' 32-bit indices are made from *made_at of *arguments on, for a record that starts at any index, and that
+   is where the draw binds its index buffer. last: the quad's last vertex provokes. A record past limit draws the
+   quads limit allows. 0 when they can't be made */
+int vk_indirect_quads(VkBuffer record, u64 record_at, u32 stride, u32 records, u32 size, VkBuffer indices,
+                      u64 indices_at, u32 limit, int last, VkBuffer* arguments, u64* arguments_at, u64* made_at);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
