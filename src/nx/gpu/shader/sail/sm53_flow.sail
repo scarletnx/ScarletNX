@@ -38,6 +38,8 @@ val CbufReadDynamic : (int, bits(32)) -> bits(32)
 /* the program's flow is structured: a BRX's target goes to the structure's switch */
 val Structured : unit -> bool
 val BranchTarget : bits(32) -> unit
+/* (the register r plus the signed 24-bit offset) / 8, toward zero, of i32s: BRX's index in words */
+val SignedWords : (int, int) -> bits(32)
 /* KIL: the lane goes on as a helper, so that its quad's derivatives stay defined, and nothing it writes lands: what
    the hardware gives, and what Eden does. Inside the flow loop it goes on as a lane that only remembers it, and is
    discarded after the loop (DirectCtx.discarded) */
@@ -129,9 +131,7 @@ function execute_JMP() -> unit = PcWrite(IndirectTarget(false, Form() == 1))
 /* BRX: the register at 8 plus the signed offset at 20, in bytes from the next instruction, as words; a target on a
    scheduling word goes to the instruction after it */
 function execute_BRX() -> unit = {
-    let offset = SignExtend(Field(20, 24), 32);
-    let signed_index = R_read(RegA()) + offset;
-    let words = QuotS(signed_index, 0x00000008);
+    let words = SignedWords(RegA(), UInt(Field(20, 24)));
     let target0 = words + to_bits(32, InsnIndex() + 1);
     let after_ten = target0 - 0x0000000a;
     let aligned = (after_ten & 0x00000003) == 0x00000000;

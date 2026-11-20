@@ -45,3 +45,11 @@
         spv_emit_demote(&c->emit);
 }
 [[maybe_unused]] static void sg_Exit(SgG* g) { shader_exit(g->t, g->i, g->w); }
+[[maybe_unused]] static SgV sg_SignedWords(SgG* g, int64_t r, int64_t field) {
+    DirectCtx* c = g->c;
+    u32 i32_type = g->t->i32_type;
+    u32 offset = spv_emit_constant_u32(&c->emit, i32_type, (u32)((i32)((u32)field << 8) >> 8));
+    u32 signed_index = spv_emit_iadd_u32(&c->emit, i32_type, reg_read_as(c, (u32)r, i32_type), offset);
+    u32 words = spv_emit_binary(&c->emit, SPV_OP_S_DIV, i32_type, signed_index, spv_emit_constant_u32(&c->emit, i32_type, 8));
+    return sg_v(spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, words), SGT_U32);
+}

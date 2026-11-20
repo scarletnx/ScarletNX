@@ -96,9 +96,10 @@ function execute_S2R() -> unit = {
    45. The lane model's warp is its lane alone: its ballot is its own bit */
 function execute_VOTE() -> unit = {
     let value = PredRead(UInt(Field(39, 3)), UInt(Field(42, 1)));
+    let one = Bits32(0x00000001); /* made here, as the translator made it */
     let lane_model = LaneModel();
     let lane = if lane_model then LoneLane() else SubgroupLane();
-    let own = if not_bool(lane_model) then 0x00000000 else if QuadLaneModel() then 0x00000001 << lane else 0x00000001;
+    let own = if not_bool(lane_model) then 0x00000000 else if QuadLaneModel() then one << lane else one;
     let mask = if lane_model then (if value then own else 0x00000000) else BallotWord(lane, value);
     let mode = UInt(Field(48, 2));
     if mode < 3 then {

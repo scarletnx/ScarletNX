@@ -226,7 +226,10 @@ function execute_OUT() -> unit = {
 }
 
 /* AL2P: the attribute's address, the register plus the offset at 20 */
-function execute_AL2P() -> unit = R_write(Dst(), R_read(RegA()) + ZeroExtend(Field(20, 11), 32))
+function execute_AL2P() -> unit = {
+    let offset = Bits32(ZeroExtend(Field(20, 11), 32)); /* made before the register's read */
+    R_write(Dst(), R_read(RegA()) + offset)
+}
 /* ISBERD: the index is the vertex's as it is */
 function execute_ISBERD() -> unit = R_write(Dst(), R_read(RegA()))
 
