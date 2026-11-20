@@ -2642,6 +2642,10 @@ static int hdr_surface(u32 space, VkSurfaceFormatKHR* fmt) {
     return found;
 }
 
+void vk_swapchain_failure(char* out, size_t size, const char* device, const char* driver, VkResult r) {
+    snprintf(out, size, "the swapchain could not be made on %s (%s): %s (%d)", device,
+             driver[0] ? driver : "its driver", snx_vk_result_str(r), (int)r);
+}
 int vk_swapchain_create(int kind) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
@@ -2760,7 +2764,12 @@ int vk_swapchain_create(int kind) {
     pm_lock(&g_vk.sc_lock); /* until the new swapchain is g_vk's: the old one is retired from here */
     cr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc);
     if (cr != VK_SUCCESS) { /* tried again on each present while it fails: said a few times */
-        WARN_LIMIT(4, "vulkan: the swapchain could not be made: %s (%d)\n", snx_vk_result_str(cr), (int)cr);
+        char said[sizeof g_vk.start_failure];
+        vk_swapchain_failure(said, sizeof said, g_vk.props.deviceName, g_vk.driver_name, cr);
+        WARN_LIMIT(4, "vulkan: %s\n", said);
+        /* the first one, at the start, is why the run cannot start (renderer_failed) */
+        if (!g_vk.swapchain && !old && !g_vk.start_failure[0])
+            snprintf(g_vk.start_failure, sizeof g_vk.start_failure, "%s", said);
         if (cr == VK_ERROR_SURFACE_LOST_KHR) g_vk.sc_lost = 1;
         if (old) swapchain_retire();
         pm_unlock(&g_vk.sc_lock);
@@ -2890,7 +2899,8 @@ int vk_init(void) {
     if (!create_instance()) return 0;
     backend_vk_check(); /* the instance opened the driver: the one asked for, or the run ends */
     if (!g_opt_headless && !backend_vk_surface(g_vk.instance, &g_vk.surface)) {
-        WARN("vulkan: the window backend could not create a surface\n");
+        snprintf(g_vk.start_failure, sizeof g_vk.start_failure, "the window backend could not create a Vulkan surface");
+        WARN("vulkan: %s\n", g_vk.start_failure);
         return 0;
     }
     if (!create_device()) return start_failed();

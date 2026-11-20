@@ -7714,6 +7714,15 @@ static int check_vk12_way(void) {
     CHECK(vk_api_setting("auto", &cap, why, sizeof why) && cap == 0);
     CHECK(vk_api_setting("1.2", &cap, why, sizeof why) && cap == VK_API_VERSION_1_2);
     CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto or 1.2"));
+    /* a swapchain the driver could not make, said with the device, its driver and the result's name and number */
+    {
+        char said[300];
+        vk_swapchain_failure(said, sizeof said, "Mali-G720 MC7", "panvk", VK_ERROR_INVALID_EXTERNAL_HANDLE);
+        CHECK(!strcmp(said, "the swapchain could not be made on Mali-G720 MC7 (panvk): "
+                            "VK_ERROR_INVALID_EXTERNAL_HANDLE (-1000072003)"));
+        vk_swapchain_failure(said, sizeof said, "Mali-G720 MC7", "", VK_ERROR_SURFACE_LOST_KHR);
+        CHECK(strstr(said, "(its driver): VK_ERROR_SURFACE_LOST_KHR (-1000000000)") != NULL);
+    }
     CHECK(!g_vk.api_cap == !strcmp(g_settings.vulkan_api, "auto"));
     if (g_vk.api_cap) {
         CHECK(!strcmp(g_settings.vulkan_api, "1.2"));

@@ -570,11 +570,12 @@ static void buzzer_open(void) {
 #endif
 }
 
-/* the renderer's start failed: what it says of why, with its values, else the log has it */
+/* the renderer's start failed: what it says of why, with its values, else the log has it. A start that failed for
+   another reason than the device's Vulkan version was said as that before */
 static void renderer_failed(const char* what) {
     const char* why = g_renderer->start_failure ? g_renderer->start_failure() : "";
     if (why && why[0]) fatal("%s: %s.", what, why);
-    fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
+    fatal("%s (see the log).", what);
 }
 /* The Vulkan driver this run picked (the game's vulkan_driver, docs/hosts/apple.md): on a Mac the library SDL loads, and for
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
