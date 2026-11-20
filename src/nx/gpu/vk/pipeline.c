@@ -1880,6 +1880,21 @@ static void* pipe_tail(PipeInfo* o, int robust) {
         snx_vk_compile_leave(entered_);                                                                                \
     } while (0)
 static void pipe_note(const char* what, u64 h, const VkShaderModule modules[5], const PipeKey* k);
+/* gi, a pipeline, a part or a link, made of descriptor heaps (PipeKey.heaps). The driver reads the flags of a chained
+   VkPipelineCreateFlags2CreateInfo (flags2) in place of gi->flags, so flags2 is gi->flags with the heaps' bit for the
+   descriptor buffers' one: a pipeline of heaps is made with the flags it has with sets (a cached link's
+   FAIL_ON_PIPELINE_COMPILE_REQUIRED, the statistics', the shading rate's). The stages' mappings take the place of a
+   layout */
+static void pipe_heaps(VkGraphicsPipelineCreateInfo* gi, VkPipelineCreateFlags2CreateInfo* flags2) {
+    *flags2 = (VkPipelineCreateFlags2CreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+        .pNext = gi->pNext,
+        .flags = ((VkPipelineCreateFlags2)gi->flags & ~VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT) |
+                 VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT};
+    gi->pNext = flags2;
+    gi->flags = 0;
+    gi->layout = VK_NULL_HANDLE;
+}
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
@@ -1906,18 +1921,8 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
                                        .pColorBlendState = &o.cb,
                                        .pDynamicState = &dy,
                                        .layout = e->layout};
-    /* descriptor heaps (k->heaps): the stages' mappings take the place of a layout, and the flags go in flags2 */
-    VkPipelineCreateFlags2CreateInfo flags2 = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-        .pNext = gi.pNext,
-        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT |
-                 (e->k.feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (VkPipelineCreateFlags2)vk_vrs_pipeline_flags() | (VkPipelineCreateFlags2)vk_pipeline_stats_flags()};
-    if (e->k.heaps) {
-        gi.pNext = &flags2;
-        gi.flags = 0;
-        gi.layout = VK_NULL_HANDLE;
-    }
+    VkPipelineCreateFlags2CreateInfo flags2;
+    if (e->k.heaps) pipe_heaps(&gi, &flags2);
     VkPipeline p = VK_NULL_HANDLE;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
     pipe_note("making the graphics pipeline", e->h, modules, &e->k);
@@ -2135,20 +2140,10 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         gi.pMultisampleState = &o.ms;
         break;
     }
-    /* descriptor heaps: every part has the flag (the link's parts agree), the stage parts their stages' mappings
-       (pipe_info), and none a layout, as pipe_make's whole pipeline */
-    VkPipelineCreateFlags2CreateInfo flags2 = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-                                               .pNext = gi.pNext,
-                                               .flags = VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR |
-                                                        VK_PIPELINE_CREATE_2_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT |
-                                                        VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT |
-                                                        (gi.flags & feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT
-                                                                             : 0)};
-    if (l->src.heaps) {
-        gi.pNext = &flags2;
-        gi.flags = 0;
-        gi.layout = VK_NULL_HANDLE;
-    }
+    /* descriptor heaps: every part has the heaps' flag (the link's parts agree), the stage parts their stages' mappings
+       (pipe_info) */
+    VkPipelineCreateFlags2CreateInfo flags2;
+    if (l->src.heaps) pipe_heaps(&gi, &flags2);
     VkPipeline p = VK_NULL_HANDLE;
     const u32 i = l->part == VK_PART_VI ? 0 : l->part == VK_PART_PR ? 1 : l->part == VK_PART_FS ? 2 : 3;
     const VkShaderModule modules[5] = {i == 1 ? l->src.vs : VK_NULL_HANDLE, i == 1 ? l->src.tcs : VK_NULL_HANDLE,
@@ -2233,18 +2228,9 @@ static VkPipeline gpl_link(const Pipe* e, int mode, int* hit) {
                  (mode == GPL_CACHED ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0) |
                  vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
         .layout = e->layout};
-    /* descriptor heaps: the flag as the parts have it, and no layout; the mappings are the stage parts' */
-    VkPipelineCreateFlags2CreateInfo flags2 = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-        .pNext = gi.pNext,
-        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT |
-                 (e->k.feedback ? VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (lto ? VK_PIPELINE_CREATE_2_LINK_TIME_OPTIMIZATION_BIT_EXT : 0)};
-    if (e->k.heaps) {
-        gi.pNext = &flags2;
-        gi.flags = 0;
-        gi.layout = VK_NULL_HANDLE;
-    }
+    /* descriptor heaps: the heaps' flag as the parts have it; the mappings are the stage parts' */
+    VkPipelineCreateFlags2CreateInfo flags2;
+    if (e->k.heaps) pipe_heaps(&gi, &flags2);
     VkPipeline p = VK_NULL_HANDLE;
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
     pipe_note(mode == GPL_CACHED ? "taking the optimized graphics pipeline from the pipeline cache"

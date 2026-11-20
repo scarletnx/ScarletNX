@@ -4,6 +4,10 @@
    independent of descriptor encoding. The forced legacy draw exercises backend selection, not a simulated driver
    error; unsupported create-state rejection is covered separately by the registry's mock lifecycle test. */
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/internal_spv.h"   /* snx_null_fs_spv */
+#include "nx/gpu/vk/pipeline_stats.h" /* vk_pipeline_stats_flags */
+#include "nx/gpu/vk/shading_rate.h"   /* vk_vrs_pipeline_flags */
+#include "common/platform/thread.h"   /* plat_tid */
 
 typedef struct {
     VkDescriptorSetLayout descriptors;
@@ -218,5 +222,140 @@ static int check_descriptor_heaps(void) {
     free(channel);
     printf("PASS descriptor heap rendering: custom colors, view swizzle, same-command-buffer legacy compute and %s fallback exact=1\n",
            g_vk.has_descriptor_buffers ? "buffer" : "set");
+    return 0;
+}
+
+/* A pipeline of descriptor heaps, its parts and its links, as the driver is asked for them. The driver reads the flags
+   of the chained VkPipelineCreateFlags2CreateInfo in place of VkGraphicsPipelineCreateInfo.flags: each call has the
+   heaps' bit, no layout and the flags a pipeline of sets has (statistics, shading rate), and the draw's ask for the
+   optimized link from the pipeline cache (pipeline.c gpl_cached) keeps FAIL_ON_PIPELINE_COMPILE_REQUIRED, or the draw
+   waits for the whole optimized compile that it asked only to find in the cache */
+typedef struct {
+    VkPipelineCreateFlags2 flags;
+    VkGraphicsPipelineLibraryFlagsEXT part; /* the library's part, 0 for a link */
+    u32 linked;                             /* the libraries it links */
+    int flags2_first, layout, draw;         /* flags2 first in the chain, a layout, made on the draw's thread */
+    VkResult result;
+} HeapFlagsCall;
+enum { HEAP_FLAGS_CALLS = 16 };
+static struct {
+    PFN_vkCreateGraphicsPipelines create;
+    PMutex lock;
+    u32 n, draw_tid;
+    HeapFlagsCall calls[HEAP_FLAGS_CALLS];
+} g_heap_flags = {.lock = PMUTEX_INIT};
+static VKAPI_ATTR VkResult VKAPI_CALL heap_flags_create(VkDevice dev, VkPipelineCache cache, u32 n,
+                                                        const VkGraphicsPipelineCreateInfo* info,
+                                                        const VkAllocationCallbacks* alloc, VkPipeline* out) {
+    VkResult r = g_heap_flags.create(dev, cache, n, info, alloc, out);
+    pm_lock(&g_heap_flags.lock);
+    for (u32 i = 0; i < n && g_heap_flags.n < HEAP_FLAGS_CALLS; i++) {
+        HeapFlagsCall* c = &g_heap_flags.calls[g_heap_flags.n++];
+        *c = (HeapFlagsCall){.flags = info[i].flags,
+                             .layout = info[i].layout != VK_NULL_HANDLE,
+                             .draw = plat_tid() == g_heap_flags.draw_tid,
+                             .result = r};
+        const VkBaseInStructure* first = info[i].pNext;
+        for (const VkBaseInStructure* x = first; x; x = x->pNext)
+            if (x->sType == VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO) {
+                c->flags = ((const VkPipelineCreateFlags2CreateInfo*)(const void*)x)->flags;
+                c->flags2_first = x == first;
+            } else if (x->sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT)
+                c->part = ((const VkGraphicsPipelineLibraryCreateInfoEXT*)(const void*)x)->flags;
+            else if (x->sType == VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR)
+                c->linked = ((const VkPipelineLibraryCreateInfoKHR*)(const void*)x)->libraryCount;
+    }
+    pm_unlock(&g_heap_flags.lock);
+    return r;
+}
+static int check_heap_pipeline_flags(void) {
+    if (!g_vk.has_descriptor_heaps || !g_vk.has_gpl) {
+        printf("SKIP descriptor heap pipeline flags: %s\n", !g_vk.has_descriptor_heaps
+                                                                ? "graphics descriptors are not heaps"
+                                                                : "pipelines are not linked from parts");
+        return 0;
+    }
+    /* pipeline.c's pipe_heaps gives flags2 the bits of VkPipelineCreateFlags, which keep their values there */
+    CHECK((VkPipelineCreateFlags2)VK_PIPELINE_CREATE_LIBRARY_BIT_KHR == VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT ==
+              VK_PIPELINE_CREATE_2_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT ==
+              VK_PIPELINE_CREATE_2_LINK_TIME_OPTIMIZATION_BIT_EXT &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT ==
+              VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT ==
+              VK_PIPELINE_CREATE_2_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR ==
+              VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR ==
+              VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR &&
+          (VkPipelineCreateFlags2)VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT ==
+              VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT);
+    size_t words = 0;
+    u32* code = snx_test_spirv_graphics(0, &words);
+    CHECK(code);
+    VkShaderModule vs = vk_module_spv(code, words);
+    VkShaderModule fs = vk_module_spv(snx_null_fs_spv, snx_null_fs_spv_size / sizeof *snx_null_fs_spv);
+    free(code);
+    CHECK(vs && fs);
+    /* new modules: their pre-rasterization and fragment parts are new, and the pipeline links them */
+    PipeKey k = {.vs = vs,
+                 .fs = fs,
+                 .topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                 .ncolor = 1,
+                 .color = {VK_FORMAT_R8G8B8A8_UNORM},
+                 .heaps = 1};
+    k.blend[0].mask = 15;
+    vk_pipeline_quiesce(); /* no worker makes a pipeline of its own meanwhile */
+    g_heap_flags.n = 0;
+    g_heap_flags.draw_tid = plat_tid();
+    g_heap_flags.create = vkCreateGraphicsPipelines;
+    vkCreateGraphicsPipelines = heap_flags_create;
+    VkPipeline p = vk_pipeline_get(&k);
+    vk_pipeline_quiesce(); /* the optimized link a worker makes after the draw's fast one */
+    vkCreateGraphicsPipelines = g_heap_flags.create;
+    CHECK(p && g_heap_flags.n && g_heap_flags.n < HEAP_FLAGS_CALLS);
+    const VkPipelineCreateFlags2 common =
+        (VkPipelineCreateFlags2)vk_vrs_pipeline_flags() | (VkPipelineCreateFlags2)vk_pipeline_stats_flags();
+    const VkPipelineCreateFlags2 library =
+        VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_2_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
+    u32 parts = 0, links = 0, asks = 0, missed = 0, fast = 0;
+    for (u32 i = 0; i < g_heap_flags.n; i++) {
+        const HeapFlagsCall* c = &g_heap_flags.calls[i];
+        const int lto = (c->flags & VK_PIPELINE_CREATE_2_LINK_TIME_OPTIMIZATION_BIT_EXT) != 0;
+        const int ask = c->draw && lto; /* gpl_cached's: a draw makes no optimized link otherwise */
+        const char* wrong = !c->flags2_first ? "its flags outside a first flags2"
+                            : !(c->flags & VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT) ? "no heaps' bit"
+                            : c->flags & VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT  ? "the descriptor buffers' bit"
+                            : c->layout                                                  ? "a layout"
+                            : (c->flags & common) != common              ? "not every flag a pipeline of sets has"
+                            : c->part && (c->flags & library) != library ? "no library flags"
+                            : !c->part && !c->linked                     ? "no part and no libraries"
+                            : ask && !(c->flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
+                                ? "no FAIL_ON_PIPELINE_COMPILE_REQUIRED on the draw's ask of the cache"
+                                : NULL;
+        if (wrong)
+            fprintf(stderr,
+                    "descriptor heap pipeline flags: call %u, %s on %s thread (result %d), has %s: flags 0x%llx, "
+                    "those of a pipeline of sets 0x%llx\n",
+                    i,
+                    c->part ? "a part"
+                    : lto   ? "an optimized link"
+                            : "a fast link",
+                    c->draw ? "the draw's" : "a worker's", (int)c->result, wrong, (unsigned long long)c->flags,
+                    (unsigned long long)common);
+        CHECK(!wrong);
+        parts += c->part != 0;
+        links += c->linked != 0;
+        asks += ask;
+        missed += ask && c->result == VK_PIPELINE_COMPILE_REQUIRED;
+        fast += c->draw && c->linked && !lto;
+    }
+    /* an ask the cache could not answer leaves the draw its fast link */
+    CHECK(parts && links && (!missed || fast));
+    printf("PASS descriptor heap pipeline flags: %u parts and %u links with the heaps' bit, no layout and the flags of "
+           "sets 0x%llx; %u asks of the cache from the draw, each with FAIL_ON_PIPELINE_COMPILE_REQUIRED (%u missed, "
+           "%u fast links)\n",
+           parts, links, (unsigned long long)common, asks, missed, fast);
     return 0;
 }

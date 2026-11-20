@@ -310,6 +310,15 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         --draw-state-check=1)
     set_tests_properties(vulkan_headless_descriptor_heaps_check PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;a descriptor kept from the stage's last table")
+    # the flags of a pipeline of heaps, its parts and its links (check_heap_pipeline_flags), pipeline_stats' among them
+    # where the driver has its statistics, under the validation layer when it is installed: the draw's ask of the
+    # pipeline cache compiles nothing, and the statistics are read only of a pipeline made to keep them
+    add_test(NAME vulkan_heap_pipeline_flags COMMAND snx-test-vulkan -H --vk-descriptors-mode=2 --vk-validation=1
+        "--pipeline-stats=${CMAKE_CURRENT_BINARY_DIR}/vulkan_heap_pipeline_flags.csv")
+    set_tests_properties(vulkan_heap_pipeline_flags PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        ENVIRONMENT "SNX_TEST_NVN_CASE=heap_pipeline_flags;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        SKIP_REGULAR_EXPRESSION "SKIP descriptor heap pipeline flags"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
     # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
     # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left

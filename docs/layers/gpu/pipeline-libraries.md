@@ -400,9 +400,10 @@ after it.
   (vkd3d-proton leaves out `VERTEX_INPUT_INTERFACE` for mesh). Their sets need slots in the layout table, which the
   mesh work adds. The split function then gives a VI key of none.
 - **Descriptor heaps**: `heaps` (the `PipeKey` bit) is in all four keys, so a part of heaps never links with a part
-  of layouts. Each part and the link have `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` in
-  `VkPipelineCreateFlags2CreateInfo` and no layout. The PR and FS parts have the stage mappings of their stages, as a
-  whole pipeline has them. A device that takes heaps (an integrated GPU, `vk_descriptors_auto`) made each heap pipeline
+  of layouts. Each part and the link take their flags in `VkPipelineCreateFlags2CreateInfo`, which the driver reads in
+  place of `flags`: the flags they have with sets, `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` in place of the
+  descriptor buffers' bit (`pipe_heaps`), and no layout. The PR and FS parts have the stage mappings of their stages,
+  as a whole pipeline has them. A device that takes heaps (an integrated GPU, `vk_descriptors_auto`) made each heap pipeline
   whole before. Then the new effects of one game's battles waited 100 to 560 ms a frame for a full compile.
 - **Geometry passthrough**: the passthrough mask is in the geometry program's module key, so it is in the PR key.
 - **Interpolation**: a separate PR part and FS part need the interpolation decorations on both sides, or
