@@ -310,6 +310,22 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
     }
 }
 
+int sm86_eval_step(Sm86EvalState* s, const Sm86Insn* in, const Sm86EvalIo* io) {
+    Ev e;
+    int ok;
+    memcpy(e.r, s->r, sizeof e.r);
+    memcpy(e.ur, s->ur, sizeof e.ur);
+    memcpy(e.p, s->p, sizeof e.p);
+    memcpy(e.up, s->up, sizeof e.up);
+    e.io = io;
+    ok = sm86_eval_takes(in) && ev_step(&e, in);
+    memcpy(s->r, e.r, sizeof e.r);
+    memcpy(s->ur, e.ur, sizeof e.ur);
+    memcpy(s->p, e.p, sizeof e.p);
+    memcpy(s->up, e.up, sizeof e.up);
+    return ok;
+}
+
 int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out) {
     Ev e;
     memset(&e, 0, sizeof e);
