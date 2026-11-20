@@ -1076,6 +1076,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_hdr_metadata = !g_opt_headless && snx_vk_choice_has(c, VK_EXT_HDR_METADATA_EXTENSION_NAME);
     }
     /* guest memory the GPU reads in place (uma.c) */
+    /* a driver that takes every import's pages again at each submission (uma.c's vk_uma_imports_dear): said where
+       uma_copies leaves the choice to the line */
+    static const char imports_key[] = "VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT";
+    g_vk.imports_dear =
+        (g_settings.guest_buffers_copied ? vk_ban_find(imports_key) : vk_ban(imports_key, 1, ban_say)) != 0;
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2, has_dmabuf);
     if (uma_with == VK_UMA_WITH_HOST) snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (uma_with == VK_UMA_WITH_AHB) snx_vk_choice_enable(c, "VK_ANDROID_external_memory_android_hardware_buffer");
