@@ -130,6 +130,18 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             return snx_link_fail(error, error_size, "%s: unsupported allocated section type%s", input->name, "");
     }
     if (!o->syms) return snx_link_fail(error, error_size, "%s: no symbol table%s", input->name, "");
+    /* a symbol's section indexes the arrays above, which hold e_shnum entries: one past them is no section, but for
+       an absolute symbol's and a common one's, which snx_elf_collect_globals refuses by name */
+    for (size_t j = 0; j < o->nsyms; ++j) {
+        unsigned section = o->syms[j].st_shndx;
+        int bind = ELF64_ST_BIND(o->syms[j].st_info);
+        char what[80];
+        if (section < o->eh->e_shnum || section == SHN_ABS ||
+            (section == SHN_COMMON && (bind == STB_GLOBAL || bind == STB_WEAK)))
+            continue;
+        snprintf(what, sizeof(what), "symbol %zu is in section %u of %u", j, section, (unsigned)o->eh->e_shnum);
+        return snx_link_fail(error, error_size, "%s: %s", input->name, what);
+    }
     return 0;
 }
 
