@@ -109,6 +109,28 @@ int main(void) {
                gui_driver_recommended_release(10078, 9, &r) == 0);
         gui_driver_releases_free(&r);
     }
+    /* Soulexit's PanVK, for the Bifrost it builds for: its zip, not the one for a PS2 emulator nor a program */
+    {
+        static const char soulexit_json[] =
+            "[{\"tag_name\": \"v1.0.004\", \"name\": \"soulexit PanVK 1.0.004\", \"prerelease\": false, \"assets\": ["
+            "   {\"name\": \"soulexit-panvk-1.0.004.zip\", \"size\": 9000000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a.zip\"},"
+            "   {\"name\": \"soulexit-panvk-1.0.004-armsx2.zip\", \"size\": 9000000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a-armsx2.zip\"},"
+            "   {\"name\": \"panvk-report.exe\", \"size\": 90000,"
+            "    \"browser_download_url\": \"https://github.com/soulexit/a.exe\"}]}]";
+        const GuiDriverRepo* soulexit = &gui_driver_repos[10];
+        assert(!strcmp(soulexit->path, "soulexit/panvk-bifrost-soulexit") && soulexit->gpu == GUI_DRIVER_MALI);
+        assert(gui_driver_releases_parse(soulexit_json, strlen(soulexit_json), soulexit, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 &&
+               !strcmp(gui_driver_assets(&r)[0].name, "soulexit-panvk-1.0.004.zip"));
+        assert(!strcmp(gui_driver_recommended(10052), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10072), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10076), "Soulexit PanVK") &&
+               !strcmp(gui_driver_recommended(10051), "Zenithblue PanVK") &&
+               gui_driver_recommended_release(10076, 10, &r) == 0);
+        gui_driver_releases_free(&r);
+    }
     /* GitHub's own error, said; what is no list of releases, said by its size */
     assert(!gui_driver_releases_parse("{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}", 51, purple, &r, why,
                                       sizeof why) &&
