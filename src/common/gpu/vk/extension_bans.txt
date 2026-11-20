@@ -7,7 +7,9 @@
 # says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
 # one not proven for the way this renderer uses the feature on a driver that runs here, or a part it has no way
 # around. On NVIDIA's, AMD's and Intel's own drivers, which nobody here runs, another project's ban is off until a
-# tester's run shows the renderer does without it. Compiled in
+# tester's run shows the renderer does without it. A "prefer" line is the other way round: the way its key names is
+# taken on the drivers listed and on no other (vk_prefer), where a measure or the console's result showed that driver
+# to do better with it; no driver or vendor is compared in the code. Compiled in
 # (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
 # that hold for this machine's drivers. docs/layers/gpu/driver-quirks.md shows every line by driver, beside the quirks
 # the code works around by itself: "scripts/check-docs.py --bans" writes those rows from this file after a change to
@@ -22,7 +24,7 @@
 #             dynamic state, format or call (shaderFloat16, VK_DYNAMIC_STATE_CULL_MODE, an extension's feature as
 #             VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation), turned off where the renderer
 #             asks for it (vk_ban). The log names an "off" line that holds and nothing asked for
-#   action    off or warn
+#   action    off, warn or prefer
 #   driver    one of the names below (VkDriverId), or * for each driver (its versions are * then)
 #   versions  * for all of them, or bounds in the driver's own numbering: < V, <= V, >= V, > V, or a lower bound then an
 #             upper one (>= 512.676 < 512.680). NVIDIA's are A.B.C[.D] (580.119.02); Intel's Windows driver gives the
@@ -31,13 +33,15 @@
 #             .99), Qualcomm's 512.800.48, Arm's r48p0 as 48.0.0, AMD's 2.0.302
 #   system    any, or a list of linux, android, windows, macos, ios, freebsd, openbsd, netbsd
 #   devices   *, or a list of the GPUs' deviceID (VkPhysicalDeviceProperties): 0x6020200 is an Adreno 622
-#   breaks    what goes wrong, as it reads after the driver and its versions: "NVIDIA's driver before 580.119.02 ..."
+#   breaks    what goes wrong, as it reads after the driver and its versions: "NVIDIA's driver before 580.119.02 ...";
+#             on a prefer line, what the driver does better with the way than without
 #   source    where it is known from: a commit, a file and line at a commit, an issue
 #   retest    the case that tests it again: headless:ARGS (tests/vulkan_headless.c given ARGS), amberlith:SUITE[: CASE],
 #             or new:headless: or new:amberlith: and the case still to be written (edenprobe: and new:edenprobe:,
 #             Amberlith's name before 1.0.0, are still read)
 #   checked   never, or the date we last tested it and what we saw: 2026-11-04 broken on 512.800.48
-#   override  -, or the setting that turns it on anyway (KEY=VALUE), which the code owning that setting applies
+#   override  -, or the setting that goes over the line (KEY=VALUE), which the code owning that setting applies: it
+#             turns an off line's key on anyway, and a prefer line's way off
 #
 # Drivers: amd-proprietary amdvlk radv nvidia intel-windows anv powervr qualcomm mali swiftshader ggp broadcom lavapipe
 # moltenvk coreavi juice verisilicon turnip v3dv panvk samsung venus dozen nvk powervr-mesa honeykrisp vulkansc

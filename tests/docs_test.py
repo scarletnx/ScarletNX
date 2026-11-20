@@ -348,7 +348,8 @@ BANS = (
 )
 QUIRKS = f'# Quirks\n\n{cd.BANS_BEGIN}\n{cd.BANS_END}\n\nAfter.\n'
 ROWS = [
-    '| Driver | Key | Action | Versions | System | GPUs | What breaks | Source | Tested again by | Last tested |',
+    '| Driver | Key | Action | Versions | System | GPUs | What breaks, or runs better | Source | Tested again by '
+    '| Last tested |',
     '|---|---|---|---|---|---|---|---|---|---|',
     '| `anv` | `featureA` | warn | all | any | `0x1,0x2` | breaks a | src a | `new:headless:a case` '
     '| 2026-11-01 broken |',

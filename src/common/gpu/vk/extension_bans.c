@@ -22,7 +22,7 @@ typedef struct {
     uint32_t at[VK_BAN_FIELDS], size[VK_BAN_FIELDS]; /* each field in g_extension_bans.text */
     uint32_t driver, low, high, systems, gpus[BAN_GPUS], ngpus;
     uint32_t low_at, low_size, high_at, high_size; /* the bounds' versions as the table writes them */
-    unsigned char off, low_bound, high_bound, extension, claimed;
+    unsigned char off, prefer, low_bound, high_bound, extension, claimed;
     unsigned char ignored, forced; /* gone over: by vulkan_ban_ignore, by the extension's setting set on */
     unsigned char held;            /* the last vk_bans_filter took its extension out of the list, or warned of it */
 } Ban;
@@ -404,8 +404,9 @@ static int parse_override(const Ban* b, char* why, size_t n) {
         snprintf(why, n, "override \"%.*s\" is not - or a setting's key=value", (int)size, text);
         return 0;
     }
-    if (!b->off) {
-        snprintf(why, n, "override \"%.*s\" is for an off line: a warn line turns nothing off", (int)size, text);
+    if (!b->off && !b->prefer) {
+        snprintf(why, n, "override \"%.*s\" is for an off or a prefer line: a warn line chooses nothing", (int)size,
+                 text);
         return 0;
     }
     return 1;
@@ -434,12 +435,13 @@ static int parse_ban(Ban* b, char* why, size_t n) {
     static const char* const empty[] = {[VK_BAN_BREAKS] = "breaks: what goes wrong",
                                         [VK_BAN_SOURCE] = "source: where it is known from"};
     if (!parse_key(b, why, n)) return 0;
-    if (!field_is(b, VK_BAN_ACTION, "off") && !field_is(b, VK_BAN_ACTION, "warn")) {
-        snprintf(why, n, "action \"%.*s\" is not off or warn", (int)b->size[VK_BAN_ACTION],
+    b->off = field_is(b, VK_BAN_ACTION, "off");
+    b->prefer = field_is(b, VK_BAN_ACTION, "prefer");
+    if (!b->off && !b->prefer && !field_is(b, VK_BAN_ACTION, "warn")) {
+        snprintf(why, n, "action \"%.*s\" is not off, warn or prefer", (int)b->size[VK_BAN_ACTION],
                  g_extension_bans.text + b->at[VK_BAN_ACTION]);
         return 0;
     }
-    b->off = field_is(b, VK_BAN_ACTION, "off");
     b->driver = 1;
     while (b->driver < DRIVERS && !(driver_names[b->driver] && field_is(b, VK_BAN_DRIVER, driver_names[b->driver])))
         b->driver++;
@@ -605,7 +607,7 @@ static void device_text(char* out, size_t n) {
              g_extension_bans.driver_info, version);
 }
 
-enum { SAY_OFF, SAY_WARN, SAY_UNCLAIMED };
+enum { SAY_OFF, SAY_WARN, SAY_UNCLAIMED, SAY_PREFER };
 static void say_ban(const Ban* b, int how, VkBanSay say) {
     char line[2048], device[900], why[1100], key[160];
     copy_text(b->at[VK_BAN_KEY], b->size[VK_BAN_KEY], key, sizeof key);
@@ -616,6 +618,8 @@ static void say_ban(const Ban* b, int how, VkBanSay say) {
     else if (how == SAY_WARN)
         snprintf(line, sizeof line, "vulkan: a known problem the extension bans do not turn off: %s on %s: %s", key,
                  device, why);
+    else if (how == SAY_PREFER)
+        snprintf(line, sizeof line, "vulkan: %s is preferred on %s: %s", key, device, why);
     else
         snprintf(line, sizeof line,
                  "vulkan: the extension bans turn %s off on %s, which this renderer does not ask "
@@ -628,6 +632,8 @@ static int key_is(const Ban* b, const char* key) { return field_is(b, VK_BAN_KEY
 /* an off line that holds and that neither vulkan_ban_ignore nor its extension's setting goes over: what turns its key
    off */
 static int bans(const Ban* b) { return b->off && !b->ignored && !b->forced && holds(b); }
+/* a line that only says a known problem */
+static int warns(const Ban* b) { return !b->off && !b->prefer; }
 
 /* the edit distance from a's size bytes to b's: insertions, deletions and substitutions, for the nearest keys */
 static uint32_t distance(const char* a, uint32_t na, const char* b, uint32_t nb) {
@@ -708,23 +714,34 @@ void vk_bans_ignored(VkBanSay say) {
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         const Ban* b = &g_extension_bans.bans[i];
         if (!b->ignored || !first_of_key(i)) continue;
-        uint32_t over = 0; /* the first off line on its key that holds, which the setting goes over */
+        /* the first off line on its key that holds, which the setting goes over, or with none the first prefer one */
+        uint32_t over = 0, preferred = 0;
         for (uint32_t k = i; k < g_extension_bans.count && !over; k++) {
             const Ban* o = &g_extension_bans.bans[k];
-            if (o->off && holds(o) && o->size[VK_BAN_KEY] == b->size[VK_BAN_KEY] &&
-                !memcmp(g_extension_bans.text + o->at[VK_BAN_KEY], g_extension_bans.text + b->at[VK_BAN_KEY],
-                        b->size[VK_BAN_KEY]))
+            if (warns(o) || !holds(o) || o->size[VK_BAN_KEY] != b->size[VK_BAN_KEY] ||
+                memcmp(g_extension_bans.text + o->at[VK_BAN_KEY], g_extension_bans.text + b->at[VK_BAN_KEY],
+                       b->size[VK_BAN_KEY]))
+                continue;
+            if (o->off)
                 over = o->line;
+            else if (!preferred)
+                preferred = o->line;
         }
         copy_text(b->at[VK_BAN_KEY], b->size[VK_BAN_KEY], key, sizeof key);
         if (over) {
             vk_ban_why(over, why, sizeof why);
             snprintf(line, sizeof line, "vulkan: %s is not banned on %s: vulkan_ban_ignore=%s goes over the ban: %s",
                      key, device, g_extension_bans.ignore, why);
+        } else if (preferred) {
+            over = preferred;
+            vk_ban_why(over, why, sizeof why);
+            snprintf(line, sizeof line,
+                     "vulkan: %s is not preferred on %s: vulkan_ban_ignore=%s goes over the preference: %s", key,
+                     device, g_extension_bans.ignore, why);
         } else
             snprintf(line, sizeof line,
-                     "vulkan: %s is not banned on %s, with or without vulkan_ban_ignore=%s: no off line on it holds "
-                     "there",
+                     "vulkan: %s is not banned on %s, with or without vulkan_ban_ignore=%s: no off or prefer line "
+                     "on it holds there",
                      key, device, g_extension_bans.ignore);
         say(line, over != 0);
     }
@@ -746,6 +763,17 @@ uint32_t vk_ban(const char* key, int have, VkBanSay say) {
     if (!line || !have) return 0;
     say_ban(ban_at(line), SAY_OFF, say);
     return line;
+}
+
+uint32_t vk_prefer(const char* key, int have, VkBanSay say) {
+    const Ban* first = NULL;
+    for (uint32_t i = 0; i < g_extension_bans.count && !first; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (b->prefer && !b->ignored && key_is(b, key) && holds(b)) first = b;
+    }
+    if (!first || !have) return 0;
+    say_ban(first, SAY_PREFER, say);
+    return first->line;
 }
 
 int vk_bans_lacking(const char* extension, const char* command, int hidden) {
@@ -790,7 +818,7 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
     for (uint32_t i = 0; i < g_extension_bans.nlacking; i++) g_extension_bans.lacking[i].taken = 0;
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         Ban* b = &g_extension_bans.bans[i];
-        if (!holds(b)) continue;
+        if (!holds(b) || b->prefer) continue; /* a prefer line takes nothing out: vk_prefer asks for it */
         if (!b->extension) { /* a feature: its warning now, an off line when the renderer asks */
             if (!b->off && say) say_ban(b, SAY_WARN, say);
             if (!b->off) b->claimed = 1;
@@ -837,7 +865,7 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
 void vk_bans_features_say(VkBanSay say) {
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         const Ban* b = &g_extension_bans.bans[i];
-        if (!b->extension && !b->off && holds(b)) say_ban(b, SAY_WARN, say);
+        if (!b->extension && warns(b) && holds(b)) say_ban(b, SAY_WARN, say);
     }
 }
 

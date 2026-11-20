@@ -562,7 +562,8 @@ def md_text(text):
 def ban_rows(bans):
     """the table's rows the doc holds, (row, the ban's line), by driver then by line"""
     rows = [
-        '| Driver | Key | Action | Versions | System | GPUs | What breaks | Source | Tested again by | Last tested |',
+        '| Driver | Key | Action | Versions | System | GPUs | What breaks, or runs better | Source | Tested again by '
+        '| Last tested |',
         '|---|---|---|---|---|---|---|---|---|---|',
     ]
     lines = [0, 0]

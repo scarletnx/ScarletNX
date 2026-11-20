@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The drivers known to break a Vulkan extension or feature (extension_bans.txt, whose head explains each field), and
+/* The drivers known to break a Vulkan extension or feature, or to run one of the renderer's ways better than the
+   others do (extension_bans.txt, whose head explains each field), and
    what the device does about them: device.c loads the table, says which device it runs on, applies the extension
    settings (vk_extension_settings: auto, on, off for each extension, auto by the bans), takes the banned extensions
    out of the device's list before anything reads it (vk_bans_filter), asks for each feature it can do without
-   (vk_ban), and at the end says the "off" lines that held for something nothing asked for (vk_bans_unclaimed). Every
+   (vk_ban) and each way only some drivers take (vk_prefer), and at the end says the "off" lines that held for
+   something nothing asked for (vk_bans_unclaimed). No driver or vendor is compared anywhere else. Every
    line that holds is said in the log with the extension, the device, its driver and version, and why. An extension
    whose driver turned out to lack one of its commands is taken out the same way, for the device made again
    (vk_bans_lacking) */
@@ -58,6 +60,10 @@ uint32_t vk_ban_find(const char* key);
 /* vk_ban_find, and the line that says key is off said where have (the device has it, so it is turned off): 0 where
    no ban holds, vulkan_ban_ignore goes over it, or have is 0 */
 uint32_t vk_ban(const char* key, int have, VkBanSay say);
+/* the table's line of the first "prefer" line on key that holds for the device, said where have (the device can take
+   the way key names, so it does): 0 where none holds, vulkan_ban_ignore goes over it, or have is 0. The way is one
+   only the drivers listed take; every other driver keeps the renderer's default */
+uint32_t vk_prefer(const char* key, int have, VkBanSay say);
 /* line's driver and versions as a sentence's subject: "NVIDIA's driver before 580.119.02", "Qualcomm's driver on
    Android", "Qualcomm's driver on the GPUs 0x6020200, 0x7000201" */
 void vk_ban_scope(uint32_t line, char* out, size_t n);

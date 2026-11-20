@@ -29,7 +29,8 @@ Two halves of one thing:
   line per driver and versions, with the extension or feature, what breaks, the source and the case that tests it
   again. An `off` line takes an extension out of the device's list, or turns a feature off where the renderer has a
   way without it; a `warn` line is only said in the log: the renderer has no way around it, or the ban is not proven
-  for the way the renderer uses the feature. Every line that holds is said at the start, with the device, the driver,
+  for the way the renderer uses the feature; a `prefer` line names a way of the renderer's that only the drivers
+  listed take, with the measure that showed it. Every line that holds is said at the start, with the device, the driver,
   its version and the source. `vk_ext_<name>=on` goes over every line on an extension, and `vulkan_ban_ignore=KEY` over
   one key, to test a driver again. [The ban table](#the-ban-table) below shows every line, written from the table by
   `scripts/check-docs.py --bans`; `docs_check` fails while the two differ, so a line is changed in the table alone.
@@ -171,7 +172,7 @@ goes in the table, and the rows below are written again from it. The table's com
 without each extension or feature.
 
 <!-- made by scripts/check-docs.py --bans from src/common/gpu/vk/extension_bans.txt: edit the table -->
-| Driver | Key | Action | Versions | System | GPUs | What breaks | Source | Tested again by | Last tested |
+| Driver | Key | Action | Versions | System | GPUs | What breaks, or runs better | Source | Tested again by | Last tested |
 |---|---|---|---|---|---|---|---|---|---|
 | `amd-proprietary` | `shaderFloat16` | off | all | any | every GPU | gets FP16 math wrong from its 2026 versions in one game, by Eden's account | Eden PR 3661 (9d2341eaea, 2026-03-03) | `new:amberlith:the HADD2, HMUL2 and HFMA2 cases against the console's` | never |
 | `amd-proprietary` | `VK_EXT_descriptor_heap` | off | all | any | every GPU | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | `headless:--vk-descriptors-mode=3` | never |
