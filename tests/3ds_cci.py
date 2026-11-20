@@ -210,6 +210,11 @@ def main():
         assert files(root / 'zcci-game') == want, text
         assert (root / 'zcci-game.unpacked.cci').read_bytes() == plain_image, text
         alone(z3ds(plain_image), 'zcci-game', 'zcci', message='Using the unpacked game')
+        # a game in several frames, as every game larger than one frame is kept: each frame ends a decompressor's
+        # call, with the frames after it still in the chunk that was read
+        _, text = alone(z3ds(plain_image, frames=3), 'zcci-frames', 'zcci', message='Unpacked')
+        assert files(root / 'zcci-frames') == want, text
+        assert (root / 'zcci-frames.unpacked.cci').read_bytes() == plain_image, text
         # an encrypted one is unpacked, then decrypted, and without the keys it is the decryption that refuses
         if enc_image is not None:
             alone(z3ds(enc_image), 'zcci-encrypted', 'zcci', status=3, message='no 3DS keys')
