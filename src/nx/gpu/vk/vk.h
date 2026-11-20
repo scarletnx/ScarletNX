@@ -3189,10 +3189,10 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
    block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
    CPU, a range from the buffer cache, or a range under a pending result (not kept); and of the kept ones, those kept
    past the submission they were made in. A texture slot: its handle kept, resolved again, or past the limits of its
-   pools; and its view and its sampler kept */
+   pools; its view and its sampler kept; and the lookups that went through the memo, kept or not */
 enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
        VK_CB_PAST_SUBMIT, VK_CB_N };
-enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_N };
+enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_MEMO, VK_TEX_N };
 /* A draw's fragment key (render.c's fs_key): the draw before's, or made again for the first of these that held it
    back, in the order fs_key asks them; then the keys made again that weren't kept for the next draw, and why */
 enum {
@@ -3208,9 +3208,9 @@ enum {
     VK_FS_EPOCH,           /* a write tracking epoch */
     VK_FS_PRESENT,         /* a present */
     VK_FS_HANDLES,         /* other handle words */
-    VK_FS_QUIET,           /* a slot's target undefined, or its texture not quiet now */
+    VK_FS_QUIET,           /* a slot's target undefined, its texture not quiet now, or the target it is over drawn to */
     VK_FS_UNKEPT_IMAGES,   /* not kept: the program has images, which image_variant reads each draw */
-    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps, or is over a target */
+    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
     VK_FS_N
 };
 typedef struct {
