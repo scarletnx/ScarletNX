@@ -7357,5 +7357,29 @@ msgid "The colors a GBA game shows. GBA screen = as the original GBA's unlit scr
 msgstr ""
 
 #: src/nx/runtime/settings.txt
+msgid "GBA Mobile Adapter"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Mobile"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The Mobile Adapter GB on the link port, through libmobile, for the games that went online with the adapter, on REON's revival of its service: gba_mobile_dns names REON's DNS server. The adapter's configuration, which a game's setup writes, is kept in mobile_adapter.bin of the config folder, whatever game plays"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "GBA Mobile Adapter DNS"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "DNS"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The DNS server the Mobile Adapter GB asks when the game gives none, an IPv4 address such as REON's. Empty: the game's own. Anything but an address stops the game"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""

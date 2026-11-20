@@ -2422,5 +2422,21 @@ setting GBA colors
     help The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors,
     help painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's
     help formula). Raw = as the game writes them, the same as mGBA without a shader
+setting GBA Mobile Adapter
+    label Mobile
+    key gba_mobile
+    int 0 1
+    default 0
+    words Off|On
+    help The Mobile Adapter GB on the link port, through libmobile, for the games that went online with the adapter,
+    help on REON's revival of its service: gba_mobile_dns names REON's DNS server. The adapter's configuration, which a
+    help game's setup writes, is kept in mobile_adapter.bin of the config folder, whatever game plays
+setting GBA Mobile Adapter DNS
+    label DNS
+    key gba_mobile_dns
+    text 16
+    default ""
+    help The DNS server the Mobile Adapter GB asks when the game gives none, an IPv4 address such as REON's. Empty:
+    help the game's own. Anything but an address stops the game
 
 section GBA: g_gba_ini    launcher
