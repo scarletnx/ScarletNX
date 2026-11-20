@@ -181,6 +181,14 @@ SNX_RECOMPILER_API void snx_recompiled_set_fallback(struct snx_recompiled* m, Gu
    loaded for running threads. With snx_recompiler_set_hook_direct_calls, dispatch entries are cleared and the optional
    callback receives each retired [start, end) span. Returns the number of retired functions */
 typedef void (*snx_recompiled_invalidate_callback)(void* context, uint64_t start, uint64_t end);
+/* Bring the module's own copy of the code (the one its JIT compiles from) up to the guest's current bytes for
+   [addr, addr + size), word aligned: call it with what the guest now has before snx_recompiled_invalidate, so the
+   units the JIT then builds for the changed code are the new code. Returns the bytes updated (those inside the
+   module's ranges), 0 for a module made with snx_recompiler_set_live_code, whose JIT already reads the caller's
+   bytes. Concurrent updates to one module are serialized; JIT readers of copied words reject a read if its image
+   generation changes. The caller must still invalidate changed functions after updating the bytes. */
+SNX_RECOMPILER_API size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code,
+                                                     size_t size);
 SNX_RECOMPILER_API size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64_t size,
                                                     snx_recompiled_invalidate_callback callback, void* context);
 /* Calls the guest function at pc (snx_recompiled_lookup) and returns when that host function returns: at the guest

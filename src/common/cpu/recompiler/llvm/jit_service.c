@@ -614,7 +614,7 @@ static int image_word(const SnxCodeImage* images, size_t count, SnxU64 address, 
         const SnxCodeImage* m = &images[i];
         SnxU64 start = m->base + m->text_off, off = address - m->base;
         if (address < start || address - start + 4 > m->text_size || off + 4 > m->image_size) continue;
-        *word = snx_ld_le32(m->image + (size_t)off);
+        *word = snx_code_image_word(m, (size_t)off);
         return 0;
     }
     return -1;
@@ -637,6 +637,56 @@ static int hash_runs(const SnxCodeImage* images, size_t image_count, const unsig
     *h1 = a;
     *h2 = b;
     return 0;
+}
+
+typedef struct {
+    const _Atomic SnxU64* generation;
+    SnxU64 version;
+} SnxImageGeneration;
+
+static int image_generations_take(const SnxCodeImage* images, size_t image_count, SnxImageGeneration** result,
+                                 size_t* result_count) {
+    SnxImageGeneration* generations;
+    size_t count = 0;
+    *result = NULL;
+    *result_count = 0;
+    for (size_t i = 0; i < image_count; ++i)
+        count += images[i].generation != NULL;
+    if (!count) return 1;
+    if (count > SIZE_MAX / sizeof(*generations)) return 0;
+    generations = (SnxImageGeneration*)malloc(count * sizeof(*generations));
+    if (!generations) return 0;
+    count = 0;
+    for (size_t i = 0; i < image_count; ++i) {
+        const _Atomic SnxU64* generation = images[i].generation;
+        SnxU64 version;
+        size_t j;
+        if (!generation) continue;
+        version = atomic_load_explicit(generation, memory_order_seq_cst);
+        if (version & 1) {
+            free(generations);
+            return 0;
+        }
+        for (j = 0; j < count; ++j)
+            if (generations[j].generation == generation) break;
+        if (j < count) {
+            if (generations[j].version != version) {
+                free(generations);
+                return 0;
+            }
+        } else
+            generations[count++] = (SnxImageGeneration){generation, version};
+    }
+    *result = generations;
+    *result_count = count;
+    return 1;
+}
+
+static int image_generations_match(const SnxImageGeneration* generations, size_t count) {
+    for (size_t i = 0; i < count; ++i)
+        if (atomic_load_explicit(generations[i].generation, memory_order_seq_cst) != generations[i].version)
+            return 0;
+    return 1;
 }
 
 /* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
@@ -822,7 +872,8 @@ static CacheRecord* cache_find(Cache* c, SnxU64 pc) {
 /* Appends the unit just loaded: its functions as codegen found them, hashed from the images, and its object. Under
    load_lock */
 static void cache_append(SnxJitService* s, const SnxCodegen* codegen, const char* name, const unsigned char* object,
-                         size_t size, const SnxCodeImage* images, size_t image_count) {
+                         size_t size, const SnxCodeImage* images, size_t image_count,
+                         const SnxImageGeneration* generations, size_t generation_count) {
     size_t name_length = strlen(name);
     SnxU64 h1 = 0, h2 = 0, start = 0, previous = 0;
     unsigned char head[12];
@@ -868,6 +919,7 @@ static void cache_append(SnxJitService* s, const SnxCodegen* codegen, const char
         snx_st_le64(head + 4, (SnxU64)body.size);
         out64(&body, h1);
         /* a full file takes no more: past the limit the next run would read only the records before it */
+        if (!image_generations_match(generations, generation_count)) body.failed = 1;
         if (!body.failed &&
             (s->cache.size > SNX_JIT_CACHE_MAX - 12 || body.size > SNX_JIT_CACHE_MAX - 12 - s->cache.size))
             body.failed = 1;
@@ -884,7 +936,8 @@ static void cache_append(SnxJitService* s, const SnxCodegen* codegen, const char
 
 /* Loads the record r and publishes its functions as a batch publishes its own, when every function's instructions
    are still those it was compiled from: 1, or 0 when it is refused (and it stays so). Under load_lock */
-static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* images, size_t image_count) {
+static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* images, size_t image_count,
+                      const SnxImageGeneration* generations, size_t generation_count) {
     const unsigned char* p = r->functions;
     const char* names[1];
     SnxU64 table = 0, span_lo = ~(SnxU64)0, span_hi = 0;
@@ -894,18 +947,23 @@ static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* imag
     lock(&s->lock);
     SnxU64 epoch = s->epoch; /* memory changing after here makes the record stale: refused below */
     unlock(&s->lock);
+    if (!image_generations_match(generations, generation_count)) return 0;
     for (size_t f = 0; f < r->function_count; ++f) { /* the code it was compiled from, unchanged */
         SnxU64 h1, h2;
         size_t leaders = snx_ld_le32(p + 8);
         p += 12 + 8 * leaders;
         size_t runs = snx_ld_le32(p);
-        if (hash_runs(images, image_count, p + 4, runs, &h1, &h2) || h1 != snx_ld_le64(p + 4 + 12 * runs) ||
-            h2 != snx_ld_le64(p + 12 + 12 * runs)) {
+        int changed = hash_runs(images, image_count, p + 4, runs, &h1, &h2);
+        int mismatch = !changed &&
+                       (h1 != snx_ld_le64(p + 4 + 12 * runs) || h2 != snx_ld_le64(p + 12 + 12 * runs));
+        if (changed || mismatch) {
+            if (!image_generations_match(generations, generation_count)) return 0;
             r->state = -1;
             return 0;
         }
         p += 4 + 12 * runs + 16;
     }
+    if (!image_generations_match(generations, generation_count)) return 0;
     if (r->state == 1)
         table = r->table; /* its code is in the arena still (code is never freed), compiled from what the check found */
     else {
@@ -931,7 +989,7 @@ static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* imag
        changed since the record's code was checked */
     p = r->functions;
     lock(&s->lock);
-    if (epoch != s->epoch) {
+    if (epoch != s->epoch || !image_generations_match(generations, generation_count)) {
         /* memory changed somewhere while it loaded, perhaps not under it: the next miss checks it again (its object
            loaded, once it is) */
         unlock(&s->lock);
@@ -1036,11 +1094,13 @@ static void images_release(SnxJitService* s, SnxCodeImage* images, const unsigne
 }
 
 static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 stamp, int queue) {
-    SnxCodegen codegen;
+    SnxCodegen codegen = {0};
     SnxJitReport report = {0};
     unsigned char taken[1 + SNX_JIT_IMAGES];
     unsigned char* object = NULL;
     size_t size = 0, failed = 0, image_count = 0;
+    size_t generation_count = 0;
+    SnxImageGeneration* generations = NULL;
     char error[512], name[48];
     SnxU64 table = 0, *left = NULL;
     report.pc = pcs[0];
@@ -1053,8 +1113,10 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     batch.count = count;
     lock(&s->lock);
     SnxCodeImage* images = images_take(s, &image_count, taken);
+    SnxU64 epoch = s->epoch;
     unlock(&s->lock);
-    if (images && s->cache.capacity && (left = (SnxU64*)malloc(count * sizeof(*left))) != NULL) {
+    int generation_snapshot = images && image_generations_take(images, image_count, &generations, &generation_count);
+    if (images && generation_snapshot && s->cache.capacity && (left = (SnxU64*)malloc(count * sizeof(*left))) != NULL) {
         /* what the cache has: its units loaded and published, and the pcs they covered done */
         lock(&s->load_lock);
         for (size_t i = 0; i < count; ++i) {
@@ -1067,7 +1129,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
             Entry* e = find(s, pcs[i]);
             int done = e && e->state == DONE && e->code;
             unlock(&s->lock);
-            if (!done) cache_load(s, record, images, image_count);
+            if (!done) cache_load(s, record, images, image_count, generations, generation_count);
         }
         unlock(&s->load_lock);
         lock(&s->lock);
@@ -1079,6 +1141,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         unlock(&s->lock);
         if (!j) {
             free(left);
+            free(generations);
             images_release(s, images, taken);
             return;
         }
@@ -1089,10 +1152,6 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         report.pc = pcs[0];
         report.pcs = count;
     }
-    lock(&s->lock);
-    /* memory changing after the code is read makes this batch's code stale: the publish skips it */
-    SnxU64 epoch = s->epoch;
-    unlock(&s->lock);
     size_t region_limit = s->config.region_instructions, overflow_limit = 0;
     if (!region_limit) {
         region_limit = SNX_JIT_REGION_INSTRUCTIONS;
@@ -1102,14 +1161,20 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     size_t budget = s->config.budget;
     size_t live = s->config.live_budget ? s->config.live_budget : SNX_JIT_LIVE_BUDGET;
     if (queue == LIVE && budget > live) budget = live;
-    int rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, budget,
-                                           s->config.features, region_limit, overflow_limit)
-                    : -1;
-    if (!images) codegen = (SnxCodegen){0};
+    int source_changed = !generation_snapshot || !image_generations_match(generations, generation_count);
+    int rc = images && !source_changed ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch,
+                                                               budget, s->config.features, region_limit, overflow_limit)
+                                       : -1;
+    if (source_changed) snprintf(error, sizeof(error), "instruction image changed during compilation");
     int discovered = !rc;
-    if (rc) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
+    if (rc && !error[0]) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
     for (size_t i = 0; !rc && i < codegen.function_count; ++i) report.instructions += codegen.functions[i].count;
     report.functions = codegen.function_count;
+    if (!rc && !image_generations_match(generations, generation_count)) {
+        rc = -1;
+        source_changed = 1;
+        snprintf(error, sizeof(error), "instruction image changed during compilation");
+    }
     if (!rc) {
         SnxU64 address;
         lock(&s->load_lock);
@@ -1118,6 +1183,11 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         while (snx_code_lookup(s->loader, name, &address));
         unlock(&s->load_lock);
         rc = emit_unit(s, &codegen, name, &object, &size, error, sizeof(error));
+        if (!rc && !image_generations_match(generations, generation_count)) {
+            rc = -1;
+            source_changed = 1;
+            snprintf(error, sizeof(error), "instruction image changed during compilation");
+        }
     }
     if (!rc) {
         SnxLinkInput input;
@@ -1132,12 +1202,20 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         size_t used = snx_code_used(s->loader);
         rc = snx_code_load(s->loader, &input, 1, names, 1, &table, error, sizeof(error));
         report.bytes = snx_code_used(s->loader) - used;
-        if (!rc) cache_append(s, &codegen, name, object, size, images, image_count);
+        if (!rc && image_generations_match(generations, generation_count))
+            cache_append(s, &codegen, name, object, size, images, image_count, generations, generation_count);
+        else if (!rc) {
+            rc = -1;
+            source_changed = 1;
+            snprintf(error, sizeof(error), "instruction image changed during compilation");
+        }
         unlock(&s->load_lock);
     }
     free(object);
+    if (source_changed) rc = -1;
     if (rc && discovered && count > 1) {
         snx_codegen_free(&codegen);
+        free(generations);
         if (images) images_release(s, images, taken);
         for (size_t i = 0; i < count; ++i) compile(s, &pcs[i], 1, stamp, queue);
         free(left);
@@ -1148,7 +1226,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
        so a thread that loads the address (relaxed, cpu.h: x86-64 keeps loads in order) reaches the code and data
        written before it. A slot something else filled meanwhile (another batch, a wrapper) keeps what it holds */
     lock(&s->lock);
-    if (epoch == s->epoch) {
+    if (epoch == s->epoch && image_generations_match(generations, generation_count)) {
         for (size_t i = 0; !rc && i < codegen.function_count; ++i) {
             const SnxFunction* f = &codegen.functions[i];
             GuestFn code = unit_function(table, i);
@@ -1174,7 +1252,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         }
         if (!rc) span_of_batch(s, &codegen, table);
     }
-    int dropped = epoch != s->epoch;
+    int dropped = !generation_snapshot || epoch != s->epoch || !image_generations_match(generations, generation_count);
     for (size_t i = 0; i < count; ++i) {
         Entry* e = find(s, pcs[i]);
         const SnxFunction* f = rc ? NULL : snx_codegen_entry(&codegen, pcs[i]);
@@ -1231,6 +1309,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     report.error = failed ? error : NULL;
     if (s->config.report) s->config.report(&report);
     snx_codegen_free(&codegen);
+    free(generations);
     if (images) images_release(s, images, taken);
     free(left);
 }
@@ -1597,8 +1676,12 @@ static void span_drop(SnxJitService* s, size_t i) {
             e->code = NULL;
         }
         Region* r = region_of(s, u->leaders[j].pc);
-        if (r && atomic_compare_exchange_strong_explicit(slot(r, u->leaders[j].pc), &expected, NULL,
-                                                         memory_order_release, memory_order_relaxed))
+        /* the slot no longer holds the unit's code when something else emptied it first: no code is there, so the
+           pc is new to the service again either way. Leaving the bit set would make every later miss at the pc
+           answer NULL without queueing it (snx_jit_resolve's lock-free test), for good */
+        if (r && (atomic_compare_exchange_strong_explicit(slot(r, u->leaders[j].pc), &expected, NULL,
+                                                          memory_order_release, memory_order_relaxed) ||
+                  !atomic_load_explicit(slot(r, u->leaders[j].pc), memory_order_acquire)))
             clear_pending(r, u->leaders[j].pc);
     }
     free(u->leaders);
