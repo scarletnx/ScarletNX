@@ -8411,6 +8411,8 @@ static int run_headless(int argc, char** argv) {
             result = check_poll_kick();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
+        else if (!strcmp(name, "heap_pipeline_flags"))
+            result = check_heap_pipeline_flags();
         else if (!strcmp(name, "cb_address"))
             result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -8821,6 +8823,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_texture_quiet_present());
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
+    CHECK(!check_heap_pipeline_flags());
     CHECK(!check_cb_address());
     CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());
