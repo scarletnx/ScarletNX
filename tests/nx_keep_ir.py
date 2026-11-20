@@ -48,7 +48,8 @@ def main():
     args = parser.parse_args()
     runtime, repo = args.runtime.resolve(), args.repo.resolve()
     with tempfile.TemporaryDirectory(prefix='scarletnx-nx-keep-ir-') as temporary:
-        scratch = Path(temporary)
+        # by its real path, as the runtime names the folder: macOS's temporary folder is under a link (/var)
+        scratch = Path(temporary).resolve()
         try:
             wide = scratch / 'wide'
             wide.mkdir()
