@@ -121,6 +121,25 @@ static void usage(void) {
          " ~/.local/share/scarletnx.");
 #endif
 }
+/* The game made from an extracted game's folder (its .ini's source=) gets the icon.jpg beside the folder's exefs/, as
+   -x lays one out, in <base>_data/ where Games shows it, whenever the two differ: a cover put there later shows from
+   the game's next run. A game made from a dump has its dump's instead (extract.c) */
+static void folder_icon(const char* folder, const char* name, const char* base) {
+    char *source = snx_game_source(folder, name, NULL), *from = NULL, *to = NULL;
+    unsigned char* jpeg = NULL;
+    size_t size = 0;
+    if (source && snx_extracted_game(source) && (from = snx_path_join(source, "icon.jpg")) != NULL &&
+        snx_is_file(from)) {
+        to = snx_format("%s_data/icon.jpg", base);
+        jpeg = snx_read_file(from, &size);
+        if (!to || !jpeg || snx_write_changed(to, jpeg, size))
+            printf("Games shows no icon for the game: %s could not be copied to %s\n", from, to ? to : base);
+    }
+    free(jpeg);
+    free(to);
+    free(from);
+    free(source);
+}
 static int is_nro_path(const char* path) {
     const char* ext = strrchr(path, '.');
     return ext && strlen(ext) == 4 && tolower((unsigned char)ext[1]) == 'n' && tolower((unsigned char)ext[2]) == 'r' &&
@@ -1374,6 +1393,7 @@ made:
             goto done;
         }
     }
+    if (!nro && !addon && folder && name) folder_icon(folder, name, base); /* the game plays without it, said why */
     /* made from the extraction --out keeps: its dump recorded all the same, which its update's RomFS is read over and
        Extract dump off reads it from */
     if (out && !nro && snx_record_source(folder, name, dump)) {

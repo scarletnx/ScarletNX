@@ -836,13 +836,14 @@ int main(void) {
         free(d);
     }
     /* an extracted game's folder in a library (exefs/ with its main), listed with the dumps by its folder's name and a
-       /, which gui_is_dump takes as a dump's: shown by its control.nacp's name, else its title ID from its NPDM. A
-       folder without exefs/main is a folder of games, and none is listed unasked (GUI_GAMES_RUN) */
+       /, which gui_is_dump takes as a dump's: shown by its control.nacp's name, else its title ID from its NPDM, and
+       drawn with the icon.jpg beside its exefs/ when it has one. A folder without exefs/main is a folder of games, and
+       none is listed unasked (GUI_GAMES_RUN) */
     {
         GuiGames g = {0};
         char* d = snx_temp_dir(NULL);
         static const char* const files[] = {"base/exefs/main", "named/exefs/main", "named/control.nacp",
-                                            "plain/notes.txt"};
+                                            "named/icon.jpg", "plain/notes.txt"};
         unsigned char meta[0xa0] = {0}, *nacp = (unsigned char*)calloc(1, 0x4000);
         size_t k, base = 2, named = 2;
         assert(d && nacp);
@@ -873,8 +874,13 @@ int main(void) {
         assert(base < 2 && named < 2 && gui_is_dump(g.names[base]) && gui_games_dumps_group(&g, named));
         assert(!strcmp(g.shown[base], "0100ABCD12345000") && !strcmp(g.shown[named], "Named Game"));
         {
-            char* path = snx_path_join(d, "base");
+            char *path = snx_path_join(d, "base"), *jpeg = snx_path_join(d, "named/icon.jpg");
+            char* icon = gui_game_icon(g.paths[named]);
             assert(path && !strcmp(g.paths[base], path));
+            assert(icon && jpeg && !strcmp(icon, jpeg));
+            assert(!gui_game_icon(g.paths[base])); /* none beside its exefs/: Wimsy's */
+            free(icon);
+            free(jpeg);
             free(path);
         }
         gui_games_free(&g);

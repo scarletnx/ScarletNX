@@ -119,7 +119,8 @@ bool gui_game_source_missing(const char* path, const char* work, char* out, size
 char* gui_game_shown(const char* path);
 /* The icon the extraction kept for the game whose program is at path, a game of a folder of its own: its
    <name>_data/icon.jpg, or a Vita game's sce_sys/icon0.png (patch/ before app/), a PNG, or beside the program a 3DS
-   game's icon.rgba or a GBA game's box, icon.png; owned, else NULL (none there, or no such game) */
+   game's icon.rgba or a GBA game's box, icon.png; for an extracted game's folder (snx_extracted_game), the icon.jpg
+   beside its exefs/. Owned, else NULL (none there, or no such game) */
 char* gui_game_icon(const char* path);
 /* The updates and DLCs of the game at path, made beside it in its folder (<name>/<name>_<add-on's title ID>_data/, an
    update's program beside it), into addons (emptied first): names <name>_<its title ID>, shown what the player reads
