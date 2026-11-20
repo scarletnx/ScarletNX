@@ -1278,6 +1278,28 @@ static int count_nonwritable(const u32* code, size_t words) {
         if ((code[i] & 0xffff) == 71 && code[i + 2] == 24) found++;
     return found;
 }
+/* With the constant buffers through windows of the staging ring (ShCaps.cb_windows), a vertex or fragment program adds
+   each bank's window offset from push constants, and says so in its info: the renderer places a window only for a
+   program that says it, and binds every bank alone, a new descriptor at each draw's new constants, for one that
+   does not */
+static void constant_buffer_windows_told(void) {
+    const u64 ops[] = {0x4c9807880e070002ull}; /* MOV R2, c[0x2][0x380] */
+    ShaderInfo info;
+    size_t words = 0;
+    g_spirv_translate.cb_windows = 1;
+    u32* code = translate(ops, 1, ST_FS, &info, &words, 1);
+    g_spirv_translate.cb_windows = 0;
+    check_translated(code, &info, "a constant buffer read translates with windows");
+    if (code) {
+        check(count_variables(code, words, 9) == 1, "a program of the windows takes their offsets from push constants");
+        check(info.cb_window == 1, "a program that reads a bank through a window says so");
+    }
+    free(code);
+    code = translate(ops, 1, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a constant buffer read translates without windows");
+    if (code) check(info.cb_window == 0, "a program translated without windows says none");
+    free(code);
+}
 /* A device with fewer uniform buffers a stage than the 18 slots: a slot past them is a read-only storage buffer, which
    only the descriptor's type tells the renderer. The fixture goes through spirv-val */
 static void constant_buffers_past_the_limit(void) {
@@ -6922,6 +6944,7 @@ int main(int argc, char** argv) {
     buffer_formatted_loads();
     immediate_sampler_handle();
     constant_buffers_past_the_limit();
+    constant_buffer_windows_told();
     guarded_handle_merges();
     recomputed_guard_handle();
     volume_surface_atomics();
