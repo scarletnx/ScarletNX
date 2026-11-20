@@ -148,6 +148,12 @@ int main(void) {
     c->x[3] = 5;
     assert(libc_snprintf(c, 0x9400, 1024, put(0x8180, "%600d|")) == 601 && g_mem[0x9400 + 598] == ' ' &&
            !strcmp((char*)g_mem + 0x9400 + 599, "5|"));
+    /* a width given as an argument: a negative one pads to the left, and the lowest int, which has no opposite, is
+       an error */
+    c->x[3] = (u64)-4, c->x[4] = 5;
+    assert(libc_snprintf(c, 0x9400, 64, put(0x81c0, "%*d|")) == 5 && !strcmp((char*)g_mem + 0x9400, "5   |"));
+    c->x[3] = (u64)INT32_MIN, c->x[4] = 5;
+    assert(libc_snprintf(c, 0x9400, 64, put(0x81c0, "%*d|")) == -1);
     /* truncated to the size, the whole length returned */
     assert(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")) == 5 && !strcmp((char*)g_mem + 0x9100, "hel"));
     /* vsnprintf, through a va_list record: two ints from the general registers' save area, a double from the vector
