@@ -97,6 +97,18 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-arm32-jni-copy PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-arm32-jni-copy PRIVATE -UNDEBUG)
     add_test(NAME android_arm32_jni_copy COMMAND snx-test-android-arm32-jni-copy)
+    # a style applied with no array of indices, over assets with no table (res/arsc.c)
+    add_executable(snx-test-android-arsc-style "${PROJECT_SOURCE_DIR}/tests/android_arsc_style.c")
+    target_include_directories(snx-test-android-arsc-style PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    if(APPLE)
+        target_link_libraries(snx-test-android-arsc-style PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-arsc-style PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
+    set_target_properties(snx-test-android-arsc-style PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-android-arsc-style PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME android_arsc_style COMMAND snx-test-android-arsc-style)
     # GLES 1.1's samplers, one for each pair of a texture's filters and wraps: hle_gles.c included for its static,
     # vkCreateSampler stood in for
     add_executable(snx-test-android-gles1-samplers "${PROJECT_SOURCE_DIR}/tests/android_gles1_samplers.c")
@@ -192,6 +204,6 @@ if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
                       snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32 snx-test-android-dex
                       snx-test-android-bridge-start snx-test-android-audio snx-test-android-gles1
                       snx-test-android-linker-lock snx-test-android-arm32-jni-copy
-                      snx-test-android-gles1-samplers)
+                      snx-test-android-gles1-samplers snx-test-android-arsc-style)
     snx_sanitizer_path()
 endif()
