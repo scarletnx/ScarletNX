@@ -518,6 +518,10 @@ static Val ev_binop(unsigned n) {
         b = dyn(n, b);
         return dyn_op(fn, VK_BITS, w, fmt("%d, %s, %s", w, a.c, b.c));
     }
+    if (!strcmp(op, "^")) { /* an int's power, known when the translator runs */
+        if (a.kind != VK_INT || b.kind != VK_INT || a.time == TD || b.time == TD) sg_fail(n, "^ of other than ints known when the translator runs");
+        return v_int_static(fmt("sg_pow_int(%s, %s)", a.c, b.c));
+    }
     if (!strcmp(op, "<<") || !strcmp(op, ">>")) {
         if (a.kind == VK_INT && b.kind == VK_INT && a.time == TS && b.time == TS)
             return v_int_static(fmt("((int64_t)(%s) %s (%s))", a.c, op, b.c));
@@ -1002,7 +1006,11 @@ static const char* case_test(unsigned pat, Val x) {
     if (NODE(pat).kind == N_NUM) return fmt("(int64_t)(%s) == %lld", x.c, (long long)NODE(pat).value);
     if (NODE(pat).kind == N_ID) {
         int index;
-        if (is_enum_member(NODE(pat).name, &index)) return fmt("(%s) == SGE_%s", x.c, sg_str(NODE(pat).name));
+        if (is_enum_member(NODE(pat).name, &index)) {
+            /* a member matched against a member: known when sailgen runs */
+            if (!strncmp(x.c, "SGE_", 4)) return strcmp(x.c + 4, sg_str(NODE(pat).name)) ? "0" : "1";
+            return fmt("(%s) == SGE_%s", x.c, sg_str(NODE(pat).name));
+        }
     }
     if (NODE(pat).kind == N_BINOP && !strcmp(sg_str(NODE(pat).name), "|"))
         return fmt("(%s) || (%s)", case_test(NODE(pat).a, x), case_test(NODE(pat).b, x));
@@ -1309,7 +1317,12 @@ int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, in
     /* the Sail's enums first: the back end's files name their members */
     gen_enums();
     sg_out("static inline int64_t sg_div_int(int64_t a, int64_t b) { return a / b; }\n"
-           "static inline int64_t sg_mod_int(int64_t a, int64_t b) { return a %% b; }\n");
+           "static inline int64_t sg_mod_int(int64_t a, int64_t b) { return a %% b; }\n"
+           "static inline int64_t sg_pow_int(int64_t a, int64_t b) {\n"
+           "    int64_t r = 1;\n"
+           "    while (b-- > 0) r *= a;\n"
+           "    return r;\n"
+           "}\n");
     for (i = 0; i < backend_count; ++i) {
         size_t size;
         char* text = sg_read(backend_paths[i], &size);

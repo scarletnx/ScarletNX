@@ -145,3 +145,31 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     return sg_vt(v, t);
 }
 [[maybe_unused]] static SgV sg_RoundF64(SgG* g, int64_t mode, SgV d) { return sg_fv(round_f64(g->c, (u32)mode, d.id)); }
+
+/* ---- the rest of the integer ALU, the uniform registers, the system registers, the warp ---- */
+[[maybe_unused]] static int sg_SrcIsCbuf(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_CBUF; }
+[[maybe_unused]] static SgV sg_SrcNext(SgG* g, int64_t s) {
+    const Sm86Src* x = sg86_src(g, s);
+    u32 r = x->reg;
+    return sg_v(x->kind == SM86_SRC_UREG ? urd(g->c, r >= SM86_URZ ? r : r + 1) : rd(g->c, r >= SM86_RZ ? r : r + 1), SGT_U32);
+}
+[[maybe_unused]] static int sg_DstHasNext(SgG* g) { return g->in->dst < (g->uniform ? SM86_URZ : SM86_RZ); }
+[[maybe_unused]] static void sg_D_writeNext(SgG* g, SgV v) {
+    if (g->uniform)
+        uwr(g->c, g->in->dst + 1, sg_u32(g, v));
+    else
+        wr(g->c, g->in->dst + 1, sg_u32(g, v));
+}
+[[maybe_unused]] static void sg_U_write(SgG* g, int64_t r, SgV v) { uwr(g->c, (u32)r, sg_u32(g, v)); }
+[[maybe_unused]] static void sg_Int64(SgG* g) { u64_type(g->c); }
+[[maybe_unused]] static SgV sg_ProgramSr(SgG* g, int64_t sr) { return sg_v(program_sr(g->c, (u32)sr), SGT_U32); }
+[[maybe_unused]] static SgV sg_Ballot32(SgG* g, SgV p) { return sg_v(ballot32(g->c, p.id), SGT_U32); }
+[[maybe_unused]] static int64_t sg_InsnIndex(SgG* g) { return g->c->cur; }
+[[maybe_unused]] static int64_t sg_Stage(SgG* g) { return g->c->stage; }
+[[maybe_unused]] static int sg_Passthrough(SgG* g) { return g->c->passthrough; }
+[[maybe_unused]] static void sg_GsEmit(SgG* g) { gs_emit(g->c); }
+[[maybe_unused]] static void sg_EndPrimitive(SgG* g) { spv_emit_end_primitive(&g->c->e); }
+[[maybe_unused]] static void sg_MemoryBarrierDevice(SgG* g) {
+    /* the device scope, for every scope: acquire and release of buffer, workgroup and image memory */
+    spv_emit_memory_barrier(&g->c->e, g->c->t_u32, SPV_SCOPE_DEVICE, 0x8 | 0x40 | 0x100 | 0x800);
+}
