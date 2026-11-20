@@ -1094,7 +1094,9 @@ void nca_process_pfs0_section(nca_section_ctx_t *ctx) {
                 exit(EXIT_FAILURE);
             }
 
-            if (ctx->pfs0_ctx.npdm->magic == SNX_LE32(MAGIC_META)) {
+            /* ScarletNX: a file shorter than the magic has none to read */
+            if (cur_file->size >= sizeof(ctx->pfs0_ctx.npdm->magic) &&
+                ctx->pfs0_ctx.npdm->magic == SNX_LE32(MAGIC_META)) {
                 ctx->pfs0_ctx.is_exefs = 1;
             }
         }

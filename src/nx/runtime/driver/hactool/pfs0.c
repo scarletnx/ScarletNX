@@ -63,7 +63,8 @@ void pfs0_process(pfs0_ctx_t *ctx) {
                 exit(EXIT_FAILURE);
             }
 
-            if (ctx->npdm->magic == SNX_LE32(MAGIC_META)) {
+            /* ScarletNX: a file shorter than the magic has none to read */
+            if (cur_file->size >= sizeof(ctx->npdm->magic) && ctx->npdm->magic == SNX_LE32(MAGIC_META)) {
                 ctx->is_exefs = 1;
             }
         }
