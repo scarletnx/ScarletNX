@@ -4,11 +4,13 @@
    over (rt_superseded). Such a target holds no one's pixels, and a trim takes it before anything else. Where the
    driver moves memory by priority (g_vk.has_pageable), a trim for headroom leaves it for a second and eight presents,
    as the sweep every 30 presents does: targets have the highest priority, and the driver moves textures first. A trim
-   for an allocation (force), or one where the driver does not move memory, takes it after two presents. A target
-   whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
-   pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
-   system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). No Vulkan loader, device or GPU is used:
-   the rest of the renderer is stubs, and a call that the trim must not make aborts */
+   for an allocation (force), or one where the driver does not move memory, takes it after two presents, as does one
+   started by what the caches' count leaves out and the allocator counts: the free space inside the heap's blocks and
+   the memory the frames in flight still hold. A trim for an allocation counts that free space for what went unused for
+   a second. A target whose pixels exist only on the GPU and can't move into system memory stays for its age and goes
+   under the pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while
+   the system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). No Vulkan loader, device or GPU is
+   used: the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,7 +247,11 @@ void vk_mem_use(u64* usage, u64* budget) {
 }
 /* the present `presents` ago, or 60 more where a time is asked too: a second is 60 presents here */
 u32 vk_present_before(u64 ago_ns, u32 presents) { return g_vk_present - presents - (ago_ns ? 60 : 0); }
-u64 vk_deferred_bytes(void) { return 0; }
+/* the memory let go that the frames in flight still hold, and the free space inside the heap's blocks, which
+   vk_mem_use's use leaves out */
+static u64 g_inflight, g_holes;
+u64 vk_deferred_bytes(void) { return g_inflight; }
+u64 vk_mem_holes(void) { return g_holes; }
 u64 vk_deferred_moved(void) { return 0; }
 void vk_defer_bytes(u64 bytes) { g_deferred += bytes; }
 void logf_(int lvl, const char* fmt, ...) {}
@@ -386,6 +392,94 @@ static int sys_heap_short(void) {
     return oldest && hot_stays && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
 }
 
+/* A target later ones drew all over, last used `ago` presents ago, where the driver pages, and a trim whose caches
+   count 64 MiB under its start while `inflight` bytes let go wait for the frames in flight and `holes` bytes are free
+   inside the heap's blocks: with them the heap is past the start, and the trim takes such a target after two presents
+   as for an allocation, a game's churn being what fills it; under the start with them too, there is no trim. 1 when
+   the trim took it */
+static int gap_takes(u64 inflight, u64 holes, u32 ago) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 1;
+    Surf* old = target(0x48000000, 1 << 20, 1);
+    old->last_used = g_vk_present - ago;
+    Surf* over = target(0x48000000, 1 << 20, 2);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && targets_held() == 2);
+    g_use = vk_mem_trim_start(g_budget) - (64u << 20);
+    g_inflight = inflight;
+    g_holes = holes;
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    g_inflight = g_holes = 0;
+    const u32 held = targets_held();
+    CHECK(held == 1 ? g_deferred == 1 << 20 : held == 2 && !g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    CHECK(targets_held() == 0 && !g_ndrawn);
+    return held == 1;
+}
+
+/* Such a trim runs once a present, and takes only what holds nothing: with the caches under every step's mark, a
+   target with nothing drawn, unused for a second, stays, where a trim for an allocation would take it
+   (forced_holes_take). A call in a present where it already ran takes nothing, though a target drawn over is there for
+   it, and the next present's takes that one. 1 when they did so */
+static int gap_once_a_present(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 1;
+    g_use = g_budget - 2 * trim_head(g_budget) - (64u << 20);
+    g_holes = 256u << 20;
+    CHECK(g_use + g_holes > vk_mem_trim_start(g_budget));
+    Surf* idle = target(0x50000000, 1 << 20, 1);
+    idle->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    idle->last_used = g_vk_present - 69;
+    g_deferred = 0;
+    vk_mem_trim(0, 0); /* nothing drawn over yet: it runs and takes nothing */
+    Surf* old = target(0x48000000, 1 << 20, 1);
+    old->last_used = g_vk_present - 5;
+    drawn_over(target(0x48000000, 1 << 20, 2));
+    CHECK(rt_superseded(old));
+    vk_mem_trim(0, 0);
+    const int kept = targets_held() == 3 && !g_deferred;
+    g_vk_present++;
+    old->last_used = g_vk_present - 5;
+    idle->last_used = g_vk_present - 69;
+    vk_mem_trim(0, 0);
+    const int taken = targets_held() == 2 && g_deferred == 1 << 20;
+    g_holes = 0;
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    CHECK(targets_held() == 0 && !g_ndrawn);
+    return kept && taken;
+}
+
+/* A target with nothing drawn, unused for a second and eight presents, another unused for ten presents only, and a
+   trim for an allocation of 16 MiB that the memory in flight covers, the caches counting 64 MiB under the first step's
+   mark: with `holes` bytes free inside the blocks, past the mark by more than the first target, the trim takes it;
+   without them nothing goes. The second stays either way: the step that takes what the last presents used counts no
+   free space inside the blocks, here enough to put the heap past that step's mark. 1 when it took the first */
+static int forced_holes_take(u64 holes) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* idle = target(0x50000000, 1 << 20, 1);
+    idle->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    idle->last_used = g_vk_present - 69;
+    Surf* recent = target(0x50100000, 1 << 20, 2);
+    recent->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    recent->last_used = g_vk_present - 10;
+    CHECK(lossless(idle) && lossless(recent) && targets_held() == 2);
+    const u64 extra = 16u << 20;
+    g_use = g_budget - 2 * trim_head(g_budget) - (64u << 20) - extra;
+    g_inflight = 32u << 20;
+    g_holes = holes;
+    g_deferred = 0;
+    vk_mem_trim(extra, 1);
+    g_inflight = g_holes = 0;
+    const u32 held = targets_held();
+    CHECK(g_rows.surf[g_rows.lists[VK_LRU_RT].head] == recent || g_rows.surf[g_rows.lists[VK_LRU_RT].tail] == recent);
+    CHECK(held == 1 ? g_deferred == 1 << 20 : held == 2 && !g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    CHECK(targets_held() == 0 && !g_ndrawn);
+    return held == 1;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -398,9 +492,18 @@ int main(void) {
     CHECK(aside_or_lost(VK_MEM_UMA) && aside_or_lost(VK_MEM_SMALL_BAR));
     CHECK(aside_hash());
     CHECK(sys_heap_short());
+    /* started by the memory in flight or the free space inside the blocks: taken after two presents, though the driver
+       pages; under the start with them, kept */
+    CHECK(gap_takes(128u << 20, 0, 5) && !gap_takes(128u << 20, 0, 1) && !gap_takes(32u << 20, 0, 5));
+    CHECK(gap_takes(0, 128u << 20, 5) && !gap_takes(0, 128u << 20, 1) && !gap_takes(0, 32u << 20, 5));
+    CHECK(gap_takes(48u << 20, 48u << 20, 5)); /* the two together */
+    CHECK(gap_once_a_present());
+    /* for an allocation, the free space inside the blocks counts for what went unused for a second */
+    CHECK(forced_holes_take(128u << 20) && forced_holes_take(320u << 20) && !forced_holes_take(0));
     printf(
-        "vk_mem_trim: the trims kept and took the targets drawn over as they should; a target with pixels memory "
-        "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
-        "changed meanwhile, and targets in system memory went oldest first while the system heap was short\n");
+        "vk_mem_trim: the trims kept and took the targets drawn over and the idle ones as they should, the memory in "
+        "flight and the free space inside the blocks counted; a target with pixels memory lacks stayed for its age "
+        "and went under the pressure where it can't move, loaded memory again where its bytes changed meanwhile, and "
+        "targets in system memory went oldest first while the system heap was short\n");
     return 0;
 }

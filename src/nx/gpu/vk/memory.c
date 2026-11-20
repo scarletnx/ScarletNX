@@ -1806,6 +1806,14 @@ void vk_mem_use(u64* usage, u64* budget) {
     }
 #endif
 }
+/* the free space inside that heap's blocks, which vk_mem_use leaves out. The blocks count against the budget whole
+   (devmem.c makes none past it), and a piece smaller than a request takes none of it */
+u64 vk_mem_holes(void) {
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+    if (g_heap < 0) heap_find();
+    vk_devmem_budgets(b);
+    return b[g_heap].block_bytes > b[g_heap].allocated_bytes ? b[g_heap].block_bytes - b[g_heap].allocated_bytes : 0;
+}
 
 /* the present clock: a present and its time every quarter second at most, seventeen minutes back */
 #define CLOCK_N 4096
