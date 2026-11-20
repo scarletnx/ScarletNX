@@ -195,3 +195,9 @@ val Capability : int -> unit
 val Shuffle : (bits(32), bits(32)) -> bits(32)
 /* the reduction (a SPIR-V OpGroupNonUniform opcode: IAdd, UMin, BitwiseAnd...) of x over clusters of 32 lanes */
 val ClusterReduce32 : (int, bits(32)) -> bits(32)
+/* a pair of halves' arithmetic, componentwise in f32: sum, product, GLSL's NMin and NMax, clamped to 0 to 1 */
+val Half2Add : (half2, half2) -> half2
+val Half2Mul : (half2, half2) -> half2
+val Half2MinN : (half2, half2) -> half2
+val Half2MaxN : (half2, half2) -> half2
+val Half2Clamp01 : half2 -> half2

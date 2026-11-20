@@ -706,7 +706,10 @@ val DstHasNext : unit -> bool
 /* the operand is a constant buffer's word */
 val SrcIsCbuf : Operand -> bool
 /* uniform register r (URZ reads 0), and written */
+val U_read : int -> bits(32)
 val U_write : (int, bits(32)) -> unit
+/* the operand is the zero register (not URZ, nor an immediate 0) */
+val IsRegZero : Operand -> bool
 /* the Int64 capability and the u64 type, made where the instruction makes them first */
 val Int64 : unit -> unit
 /* a system register (S2R's, S2UR's numbering) as the program reads it */
@@ -1004,3 +1007,447 @@ function Bmov(at : int) -> unit = {
 }
 function execute_BMOV_BI() -> unit = Bmov(24)
 function execute_BMOV_BL() -> unit = Bmov(16)
+
+/* ---- memory, attributes, textures, surfaces, the tensor cores ---- */
+/* What the translator does with a binding model of its own stays its: the global buffers an address is in
+   (global_address, global_dynamic), the constant buffers' windows (cbuf_load, cbuf_subword), the attributes
+   (attr_load, attr_store, gs_attr_load, ipa_input), the textures, surfaces and their handles (texture, texel_fetch,
+   texture_query, texture_grad, uniform_handle, surface), the tensor cores' matrices (hmma, ldsm, fused_ldsm_hmma,
+   movm) and the ISBE (isbe). The Sail says what each instruction reads and where it goes */
+
+/* NAK's atomic operation of a type and an operation: a SPIR-V opcode, 0 for none here */
+val AtomicOpcode : (int, int) -> int
+/* the instruction's address is a pointer from memory, or derived from one, that no buffer key names */
+val AddressFromMemory : unit -> bool
+/* such an access, by its kind (0 store, 1 load, 2 atomic), its atomic's opcode and whether it is a float add */
+val GlobalDynamic : (int, int, int) -> unit
+/* the global buffer the instruction's address is in (uniform_form: the LDG/STG/ATOMG form with a uniform register),
+   for a write when write: 0 when none is (the instruction is refused); its address is Address's */
+val GlobalAddress : (int, int) -> int
+/* a shared or local memory instruction's address, its uniform register ur (URZ for none) added */
+val StackAddress : int -> unit
+val Address : unit -> bits(32)
+/* the global buffer GlobalAddress named read, and written at the address for bytes */
+val MarkRead : unit -> unit
+val MarkWritten : int -> unit
+/* the word at the address of buffer (0 shared memory), its atomic of opcode with data: the old value */
+val AtomicU32 : (int, int, bits(32)) -> bits(32)
+val AtomicFAdd : (int, bits(32)) -> bits(32)
+val AtomicShared : (int, bits(32)) -> bits(32)
+/* the shared memory's variable declared */
+val SharedVar : unit -> unit
+/* a load of type (NAK's MemType) at the address of buffer into the registers from d, and a store of those from data;
+   local memory is the buffer MEM_LOCAL */
+val MemLoad : (int, int, int) -> unit
+val MemStore : (int, int, int) -> unit
+val MEM_LOCAL : unit -> int
+/* a constant buffer's word at a byte offset, plus a register's value; a byte or a halfword (type 0 to 3) of it */
+val CbufLoad : (int, int) -> bits(32)
+val CbufLoadAt : (int, int, bits(32)) -> bits(32)
+val CbufSubword : (int, int, int) -> bits(32)
+val CbufSubwordAt : (int, int, bits(32), int) -> bits(32)
+/* the LDC reads an element of a table of texture handles (prepare_handles): its element's index noted, from the
+   byte offset and the register's value */
+val HandleIndexed : unit -> bool
+val NoteHandleIndex : (bits(32), int) -> unit
+/* an attribute: a vertex's input (a geometry program's of a vertex), an output stored */
+val AttrLoad : int -> bits(32)
+val GsAttrLoad : (int, bits(32)) -> bits(32)
+val AttrStore : (int, bits(32)) -> unit
+/* a fragment's inputs: FragCoord's component, a generic's (interpolated at loc, of frequency freq), whether the face
+   is the front one, PointCoord's component, the primitive's number */
+val FragCoord : int -> bits(32)
+val IpaInput : (int, int, int, int) -> bits(32)
+val FrontFacing : unit -> bool
+val PointCoord : int -> bits(32)
+val PrimitiveId : unit -> bits(32)
+/* the map of the SPH's legacy varyings, the device takes a fragment's PrimitiveId (the Geometry capability), and the
+   SPH's imap reads generic i's component k */
+val LegacyAddress : int -> int
+val GeometryOk : unit -> bool
+val ImapReads : (int, int) -> bool
+/* a texture instruction's handle was found in memory (memory_handles), and the translator's texture instructions */
+val HasHandleSlot : unit -> bool
+val Texture : unit -> unit
+val TextureGrad : unit -> unit
+val TexelFetch : unit -> unit
+val TextureQuery : unit -> unit
+val UniformHandle : unit -> unit
+val Surface : unit -> unit
+/* the tensor cores: HMMA, LDSM, the fused pair of them (fuse.c), MOVM */
+val Hmma : unit -> unit
+val Ldsm : unit -> unit
+val FusedLdsmHmma : unit -> unit
+val Movm : unit -> unit
+/* ISBERD and ISBEWR, a task or mesh program's ISBE */
+val Isbe : unit -> unit
+/* a fragment's discard: noted as one (the renderer tests depth before the program only for one that keeps its pixels),
+   and its lane demoted to a helper */
+val Demote : unit -> unit
+/* the workgroup's barrier */
+val ControlBarrier : unit -> unit
+/* a sum of pairs that the device must not fuse, and a pair of halves' fused multiply-add rounded once (sum_to_odd) */
+val NoContract2 : half2 -> half2
+val SumToOdd : (half2, half2) -> half2
+
+/* ATOMG, ATOMG.NOU and RED: NAK's OpAtom on global memory, AtomicOpcode's operation at 87-90, the data at 32; RED
+   returns nothing. Of type 3 (F32, .FTZ.RN) the ADD alone, AtomicFAdd: one game's compute programs sum positions into a
+   buffer with RED.E.ADD.F32.FTZ.RN */
+function Atomg(red : bool, uniform_form : bool) -> unit = {
+    let how = if red then UInt(Field(87, 3)) else UInt(Field(87, 4));
+    let kind = UInt(Field(73, 3));
+    let opcode = AtomicOpcode(kind, how);
+    let fadd = kind == 3 & how == 0;
+    if opcode == 0 & not_bool(fadd) then throw(Unsupported("%s of type %u, operation %u", OpName(), kind, how));
+    if AddressFromMemory() then GlobalDynamic(2, opcode, if fadd then 1 else 0) else {
+        let buffer = GlobalAddress(if uniform_form then 1 else 0, 1);
+        if buffer != 0 then {
+            MarkRead();
+            MarkWritten(4);
+            let old = if fadd then AtomicFAdd(buffer, R_read(UInt(Field(32, 8))))
+                      else AtomicU32(opcode, buffer, R_read(UInt(Field(32, 8))));
+            if not_bool(red) then R_write(Dst(), old)
+        }
+    }
+}
+function execute_ATOMG() -> unit = Atomg(false, true)
+function execute_ATOMG_NOU() -> unit = Atomg(false, false)
+function execute_RED() -> unit = Atomg(true, Field(91, 1) == 0b1)
+
+/* ATOMS: the same on shared memory, addressed as an LDS or STS is */
+function execute_ATOMS() -> unit = {
+    let how = UInt(Field(87, 4));
+    let kind = UInt(Field(73, 3));
+    let opcode = AtomicOpcode(kind, how);
+    if opcode == 0 then throw(Unsupported("%s of type %u, operation %u", OpName(), kind, how));
+    StackAddress(if Field(91, 1) == 0b1 then UInt(Field(64, 6)) else URZ);
+    SharedVar();
+    R_write(Dst(), AtomicShared(opcode, R_read(UInt(Field(32, 8)))))
+}
+/* ATOMS.POPC.INC: adds the lanes that run it, and returns nothing: one each here, where every lane does its own */
+function execute_ATOMS_POPC_INC() -> unit = {
+    StackAddress(URZ);
+    SharedVar();
+    let _ = AtomicShared(234, 0x00000001) /* OpAtomicIAdd */
+}
+
+/* HFMA2.MMA: only a product of RZ. It is a signed zero (the sign of a's and b's negations), and the sum with the two
+   halves of c, in floats, is exact. ptxas loads two halves with HFMA2.MMA R, -RZ, RZ, imm, imm. Other modifiers (73-91
+   but b's negation at 75) are refused */
+function execute_HFMA2_MMA() -> unit = {
+    let zero = IsRegZero(A) | IsRegZero(B);
+    if not_bool(zero) | (Field(73, 19) & not_vec(0b0000000000000000100)) != 0b0000000000000000000 then
+        throw(Unsupported("HFMA2.MMA of a product other than RZ, or with modifiers 0x%x", Field(73, 19)));
+    let sign = if SrcNegRaw(A) != SrcNegRaw(B) then 0x80000000 else 0x00000000;
+    let p = Half2(Float32(sign), Float32(sign));
+    let c0 = UnpackHalf2(SrcBits(C));
+    let c1 = if SrcIsReg(C) & SrcAbsRaw(C) then Half2Abs(c0) else c0;
+    let c2 = if SrcIsReg(C) & SrcNegRaw(C) then Half2Neg(c1) else c1;
+    D_write(PackHalf(NoContract2(Half2Add(p, c2))))
+}
+
+/* a 16-bit ALU operand as a pair: its swizzle (1, a float, refused), then its abs and neg */
+function HalfPair(s : Operand, sw : int, absed : bool, neg : bool, what : string) -> half2 = {
+    if sw == 1 then throw(Unsupported("%s with a float operand", what));
+    let pair = UnpackHalf2(SrcBits(s));
+    let swizzled = if sw >= 2 then {
+        let h = Half2At(pair, sw - 2);
+        Half2(h, h)
+    } else pair;
+    let a = if absed then Half2Abs(swizzled) else swizzled;
+    if neg then Half2Neg(a) else a
+}
+
+/* HFMA2: a * b + c by halves. a as HADD2's. The operand in the register at 64 keeps its swizzle at 81-82 and its
+   modifiers at 83 (abs) and 84 (neg), not where a three-source float's are. Bit 79 is .RELU: a result at or below zero
+   becomes zero where the predicate at 87 holds, while infinity and NaN stay. Bit 86 is .H0_NH1: b's halves swap and the
+   new low one is negated, the second term of a complex product. Bits 78 and 85 are refused. A product of two halves is
+   exact in a float of 32 bits, and its sum with c is rounded once (sum_to_odd), as the console's fused multiply-add of
+   halves is */
+function Hfma2Operand(k : int, s : Operand, b_at_64 : bool, h0_nh1 : bool) -> half2 = {
+    let at_64 = k != 0 & ((k == 1) == b_at_64);
+    let imm = SrcIsImm(s);
+    let sw = if imm then 0 else if k == 0 then UInt(Field(74, 2)) else if at_64 then UInt(Field(81, 2)) else UInt(Field(60, 2));
+    let absed = if imm then false else if at_64 then Field(83, 1) == 0b1 else SrcAbsRaw(s);
+    let neg = if imm then false else if at_64 then Field(84, 1) == 0b1 else SrcNegRaw(s);
+    if sw == 1 then throw(Unsupported("HFMA2 with a float operand"));
+    if k == 1 & h0_nh1 & (sw != 0 | absed) then throw(Unsupported("HFMA2.H0_NH1 of an operand with a swizzle or abs"));
+    let pair = UnpackHalf2(SrcBits(s));
+    let swizzled = if sw >= 2 then {
+        let h = Half2At(pair, sw - 2);
+        Half2(h, h)
+    } else pair;
+    let swapped = if k == 1 & h0_nh1 then {
+        let low = Half2At(swizzled, 0);
+        let high = Half2At(swizzled, 1);
+        Half2(FNeg(high), low)
+    } else swizzled;
+    let a = if absed then Half2Abs(swapped) else swapped;
+    if neg then Half2Neg(a) else a
+}
+function execute_HFMA2() -> unit = {
+    let relu = Field(79, 1) == 0b1;
+    let h0_nh1 = Field(86, 1) == 0b1;
+    if Field(78, 1) == 0b1 | Field(85, 1) == 0b1 | (relu & Field(77, 1) == 0b1) then
+        throw(Unsupported("HFMA2 with modes 0x%x, 0x%x, saturate %u", Field(78, 2), Field(85, 2), Field(77, 1)));
+    let b_at_64 = Form() == 2 | Form() == 3 | Form() == 7;
+    let va = Hfma2Operand(0, A, b_at_64, h0_nh1);
+    let vb = Hfma2Operand(1, B, b_at_64, h0_nh1);
+    let vc = Hfma2Operand(2, C, b_at_64, h0_nh1);
+    let p = NoContract2(Half2Mul(va, vb));
+    let r0 = SumToOdd(p, vc);
+    let r1 = if Field(77, 1) == 0b1 then Half2Clamp01(r0) else r0;
+    let r = if relu then {
+        let holds = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+        /* a comparison NaN fails, and -0 passes on its way to +0 */
+        let x0 = Half2At(r1, 0);
+        let l0 = if holds & FCompare(3, x0, FConst(0x00000000)) then FConst(0x00000000) else x0;
+        let x1 = Half2At(r1, 1);
+        let l1 = if holds & FCompare(3, x1, FConst(0x00000000)) then FConst(0x00000000) else x1;
+        Half2(l0, l1)
+    } else r1;
+    D_write(PackHalf(r))
+}
+
+/* HMUL2 and HMNMX2: two halves multiplied, or the smaller or larger of each pair by the predicate at 87 (FMNMX's). The
+   operands as HADD2's. HMUL2: bit 77 saturate, 76 and 80 the handling of zeros and denormals, which floats of 32 bits
+   don't lose here */
+function Hmul2(min_max : bool) -> unit = {
+    let swa = UInt(Field(74, 2));
+    let swb = if SrcIsImm(Second) then 0 else UInt(Field(60, 2));
+    if not_bool(min_max) & Field(78, 2) != 0b00 then throw(Unsupported("HMUL2 with mode 0x%x", Field(78, 2)));
+    let va = HalfPair(A, swa, SrcAbs(A), SrcNeg(A), OpName());
+    let vb = HalfPair(Second, swb, SrcAbs(Second), SrcNeg(Second), OpName());
+    let r : half2 = if not_bool(min_max) then {
+        let m = NoContract2(Half2Mul(va, vb));
+        if Field(77, 1) == 0b1 then Half2Clamp01(m) else m
+    } else {
+        let min = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+        let lo = Half2MinN(va, vb);
+        let hi = Half2MaxN(va, vb);
+        let l0 = if min then Half2At(lo, 0) else Half2At(hi, 0);
+        let l1 = if min then Half2At(lo, 1) else Half2At(hi, 1);
+        Half2(l0, l1)
+    };
+    D_write(PackHalf(r))
+}
+function execute_HMUL2() -> unit = Hmul2(false)
+function execute_HMNMX2() -> unit = Hmul2(true)
+
+/* HADD2: two halves added, bit 77 saturate, 78 a float result, 80 FTZ. .F32 (bit 78): the low half's sum as a float,
+   as ptxas's HADD2.F32 R, -RZ, R.H0_H0 widens a half */
+function execute_HADD2() -> unit = {
+    let swa = UInt(Field(74, 2));
+    let swb = if SrcIsImm(Second) then 0 else UInt(Field(60, 2));
+    let va = HalfPair(A, swa, SrcAbs(A), SrcNeg(A), "HADD2");
+    let vb = HalfPair(Second, swb, SrcAbs(Second), SrcNeg(Second), "HADD2");
+    let s0 = NoContract2(Half2Add(va, vb));
+    let sum = if Field(77, 1) == 0b1 then Half2Clamp01(s0) else s0;
+    if Field(78, 1) == 0b1 then D_write(Bits32(Half2At(sum, 0))) else D_write(PackHalf(sum))
+}
+
+/* ULDC.IDX: ULDC UR, c[bank][UR + offset], the uniform register at 24, the offset 38-53 signed. Of NAK's MemType
+   (73-75) as LDC's: a byte or a halfword (0 to 3) as CbufSubword reads it, a word, or a pair. One game's compute
+   program walks a byte code in a constant buffer with ULDC.U8 UR, c[0x4][UR15 + k] */
+function execute_ULDC_IDX() -> unit = {
+    let kind = UInt(Field(73, 3));
+    let bank = UInt(Field(54, 5));
+    let off = UInt(Field(38, 16));
+    if kind > 5 then throw(Unsupported("ULDC (indexed) of type %u", kind));
+    let bias = if off >= 32768 then off - 65536 else off;
+    let d = UInt(Field(16, 6));
+    let index = U_read(UInt(Field(24, 6)));
+    if kind < 4 then U_write(d, CbufSubwordAt(bank, bias, index, kind)) else {
+        U_write(d, CbufLoadAt(bank, bias, index));
+        if kind == 5 & d < URZ then U_write(d + 1, CbufLoadAt(bank, bias + 4, index))
+    }
+}
+/* ULDC: the types as ULDC.IDX's (CuAssembler's sm_86 records give ULDC.U8, .S8 and .U16 too) */
+function execute_ULDC() -> unit = {
+    let kind = UInt(Field(73, 3));
+    let bank = UInt(Field(54, 5));
+    let off = UInt(Field(38, 16));
+    if Field(91, 1) == 0b1 | kind > 5 then throw(Unsupported("ULDC of type %u", kind));
+    let d = UInt(Field(16, 6));
+    if kind < 4 then U_write(d, CbufSubword(bank, off, kind)) else {
+        U_write(d, CbufLoad(bank, off));
+        if kind == 5 & d < URZ then U_write(d + 1, CbufLoad(bank, off + 4))
+    }
+}
+
+/* LDC: a constant buffer's word (or byte, halfword, pair: NAK's MemType at 73), at the offset 38-53 plus the register
+   at 24 */
+function execute_LDC() -> unit = {
+    let kind = UInt(Field(73, 3));
+    let bank = UInt(Field(54, 5));
+    let off = UInt(Field(38, 16));
+    let r = UInt(Field(24, 8));
+    let mode = UInt(Field(78, 2));
+    if (mode != 0 & mode != 2) | kind > 5 then throw(Unsupported("LDC of type %u, mode %u", kind, mode));
+    if r < RZ then {
+        let index = R_read(r);
+        if mode == 2 then {
+            /* NAK's LdcMode::IndexedSegmented (.IS): the register holds the bank past the instruction's in its upper
+               half and the byte offset in its lower half, as NAK packs them with PRMT for a bank known only at run
+               time. A select over the banks from the instruction's on (an unbound one reads zeros). One game's vertex
+               program that draws its frame into the window reads a record of bank 1 for each vertex,
+               c[(VertexId << 5) + 0x10000 + 8] */
+            let seg = index >> 16;
+            let low = index & 0x0000ffff;
+            foreach (w from 0 to (if kind == 5 then 1 else 0)) {
+                var v : bits(32) = 0x00000000;
+                foreach (b from bank to 17) {
+                    let here = if kind < 4 then CbufSubwordAt(b, off, low, kind) else CbufLoadAt(b, off + 4 * w, low);
+                    let is = seg == to_bits(32, b - bank);
+                    v = if is then here else v
+                };
+                if Dst() + w < RZ then R_write(Dst() + w, v)
+            }
+        } else {
+            if HandleIndexed() then NoteHandleIndex(index, off);
+            if kind < 4 then R_write(Dst(), CbufSubwordAt(bank, off, index, kind)) else {
+                R_write(Dst(), CbufLoadAt(bank, off, index));
+                if kind == 5 & Dst() < RZ then R_write(Dst() + 1, CbufLoadAt(bank, off + 4, index))
+            }
+        }
+    } else if kind < 4 then R_write(Dst(), CbufSubword(bank, off, kind)) else {
+        R_write(Dst(), CbufLoad(bank, off));
+        if kind == 5 & Dst() < RZ then R_write(Dst() + 1, CbufLoad(bank, off + 4))
+    }
+}
+
+/* LDG, STG and their forms without the uniform register: a pointer from memory, or derived from one, that no buffer key
+   names is GlobalDynamic's; else the global buffer the address is in */
+function Ldg(load : bool, uniform_form : bool) -> unit = {
+    if AddressFromMemory() then GlobalDynamic(if load then 1 else 0, 0, 0) else {
+        let buffer = GlobalAddress(if uniform_form then 1 else 0, if load then 0 else 1);
+        if buffer != 0 then {
+            let kind = UInt(Field(73, 3));
+            if load then MemLoad(buffer, kind, Dst()) else {
+                MarkWritten(if kind < 2 then 1 else if kind < 4 then 2 else if kind == 4 then 4 else if kind == 5 then 8 else 16);
+                MemStore(buffer, kind, UInt(Field(32, 8)))
+            }
+        }
+    }
+}
+function execute_LDG() -> unit = Ldg(true, true)
+function execute_STG() -> unit = Ldg(false, true)
+function execute_LDG_NOU() -> unit = Ldg(true, false)
+function execute_STG_NOU() -> unit = Ldg(false, false)
+
+/* LDS, STS, LDL and STL: the uniform register is there with bit 91 alone, as CuAssembler's sm_86 encodings show: at
+   32 for a load, at 64 for a store, whose data is at 32 */
+function Lds(load : bool, local : bool) -> unit = {
+    let ur = if Field(91, 1) == 0b1 then (if load then UInt(Field(32, 6)) else UInt(Field(64, 6))) else URZ;
+    StackAddress(ur);
+    let buffer = if local then MEM_LOCAL() else 0;
+    if not_bool(local) then SharedVar();
+    if load then MemLoad(buffer, UInt(Field(73, 3)), Dst()) else MemStore(buffer, UInt(Field(73, 3)), UInt(Field(32, 8)))
+}
+function execute_LDS() -> unit = Lds(true, false)
+function execute_STS() -> unit = Lds(false, false)
+function execute_LDL() -> unit = Lds(true, true)
+function execute_STL() -> unit = Lds(false, true)
+
+/* ALD and AST: a geometry program's ALD names its input vertex in the register at 32 (from ISBERD), and its AST the
+   output vertex's handle at 64 (from OUT), which SPIR-V's emits stand in for. The vertex index read once: the
+   destination may be its register, as Maxwell's ALD reads it first */
+function Ald(load : bool) -> unit = {
+    let addr = UInt(Field(40, 10));
+    let comps = UInt(Field(74, 2)) + 1;
+    let vtx = if load then UInt(Field(32, 8)) else UInt(Field(64, 8));
+    let geometry = Stage() == ST_GS;
+    if UInt(Field(24, 8)) != RZ | (vtx != RZ & not_bool(geometry)) | Field(76, 2) != 0b00 | (load & Field(79, 1) == 0b1) then
+        throw(Unsupported("%s indexed, of a patch or of an output", OpName()));
+    let vertex = if geometry & load & vtx < RZ then R_read(vtx) else 0x00000000;
+    foreach (k from 0 to comps - 1) {
+        if load then {
+            if Dst() < RZ then R_write(Dst() + k, if geometry then GsAttrLoad(addr + 4 * k, vertex) else AttrLoad(addr + 4 * k))
+        } else {
+            let data = UInt(Field(32, 8));
+            AttrStore(addr + 4 * k, R_read(if data >= RZ then data else data + k))
+        }
+    }
+}
+function execute_ALD() -> unit = Ald(true)
+function execute_AST() -> unit = Ald(false)
+
+/* IPA: a fragment's input at the attribute address at 64 (a word's), bits 76-77 NAK's InterpLoc (0 the default, 1 the
+   centroid, 2 at an offset), 78-79 its frequency. FragCoord (0x70), the generics (0x80-0x27f), the front face (NAK's
+   NAK_ATTR_FRONT_FACE, all ones for a front face, as spirv_translate.c reads Maxwell's), PointCoord (NAK's
+   NAK_ATTR_POINT_SPRITE_S and _T; the Maxwell path flips T with the sprite's origin, a push constant of the fragment
+   stage that this translation does not have), the primitive's number (NAK's NAK_ATTR_PRIMITIVE_ID, its bits as they
+   are) */
+function execute_IPA() -> unit = {
+    let raw = UInt(Field(64, 8)) * 4;
+    let addr = LegacyAddress(raw);
+    let loc = UInt(Field(76, 2));
+    let freq = UInt(Field(78, 2));
+    if UInt(Field(32, 8)) != RZ | UInt(Field(24, 8)) != 0 | freq > 1 | loc > 1 then
+        throw(Unsupported("IPA indexed, at an offset or of frequency %u", freq));
+    /* the addresses: FragCoord 0x70-0x7f, the generics 0x80-0x27f, the front face 0x3fc, PointCoord 0x2e0 and 0x2e4,
+       the primitive's number 0x60 */
+    let v : bits(32) = if addr >= 112 & addr < 128 then FragCoord(MOD(DIV(addr, 4), 4))
+        else if addr >= 128 & addr < 640 then IpaInput(DIV(addr - 128, 16), MOD(DIV(addr, 4), 4), loc, freq)
+        else if addr == 1020 then Float32(if FrontFacing() then 0xffffffff else 0x00000000)
+        else if addr == 736 | addr == 740 then PointCoord(MOD(DIV(addr, 4), 2))
+        else if addr == 96 & Stage() == 4 & GeometryOk() then Float32(PrimitiveId())
+        else throw(Unsupported("IPA of attribute 0x%x", addr));
+    R_write(Dst(), Bits32(v))
+}
+
+/* IPA R, a[UR + addr]: the form with bit 91 and the uniform register at 24, which ptxas gives an input array's index.
+   The index is the same in every lane: the generic input whose address the sum is, of those the SPH's imap reads,
+   picked by its address (0 for none). The rest is IPA's */
+function execute_IPA_U() -> unit = {
+    let loc = UInt(Field(76, 2));
+    let freq = UInt(Field(78, 2));
+    if Field(91, 1) != 0b1 | UInt(Field(32, 8)) != RZ | freq > 1 | loc > 1 then
+        throw(Unsupported("IPA with a uniform index, at an offset or of frequency %u", freq));
+    let at = U_read(UInt(Field(24, 6))) + to_bits(32, UInt(Field(64, 8)) * 4);
+    var v : bits(32) = 0x00000000;
+    foreach (i from 0 to 31) {
+        foreach (k from 0 to 3) {
+            if ImapReads(i, k) then {
+                let is = at == to_bits(32, 128 + 16 * i + 4 * k);
+                let x = Bits32(IpaInput(i, k, loc, freq));
+                v = if is then x else v
+            }
+        }
+    };
+    R_write(Dst(), v)
+}
+
+/* the texture instructions whose handle a uniform register holds: memory_handles found the slot, or none (UniformHandle) */
+function TexU(kind : int) -> unit =
+    if not_bool(HasHandleSlot()) then UniformHandle()
+    else match kind { 0 => Texture(), 1 => TexelFetch(), 2 => TextureQuery(), _ => TextureGrad() }
+function execute_TEX_U() -> unit = TexU(0)
+function execute_TLD_U() -> unit = TexU(1)
+function execute_TXQ_U() -> unit = TexU(2)
+function execute_TXD_U() -> unit = TexU(3)
+function execute_TEX() -> unit = Texture()
+function execute_TXD() -> unit = TextureGrad()
+function execute_TLD() -> unit = TexelFetch()
+function execute_TXQ() -> unit = TextureQuery()
+/* TXQ.B: the handle from memory, as a TEX.B's (memory_handles) */
+function execute_TXQ_B() -> unit =
+    if not_bool(HasHandleSlot()) then throw(Unsupported("TXQ.B whose handle is not memory's")) else TextureQuery()
+function execute_SURFACE() -> unit = Surface()
+function execute_HMMA() -> unit = Hmma()
+function execute_LDSM() -> unit = Ldsm()
+function execute_LDSM_HMMA() -> unit = FusedLdsmHmma()
+function execute_MOVM() -> unit = Movm()
+function execute_ISBE() -> unit = Isbe()
+
+/* KILL: the lane demoted to a helper (DemoteToHelperInvocation), which keeps its derivatives' neighbours */
+function execute_KILL() -> unit = {
+    Capability(5379);
+    Demote()
+}
+
+/* BAR.SYNC 0: the workgroup's barrier; other barriers are refused */
+function execute_BAR() -> unit = {
+    if Field(77, 2) != 0b00 | Field(64, 28) != 0x0000000 then throw(Unsupported("BAR other than BAR.SYNC 0"));
+    ControlBarrier()
+}

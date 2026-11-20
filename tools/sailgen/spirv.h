@@ -362,6 +362,16 @@ static inline SgV sg_Half2(SgG* g, SgV lo, SgV hi) {
 }
 static inline SgV sg_Half2Abs(SgG* g, SgV v) { return sg_vt(SPV_EXT(sg_spv(g)->e, v.ty, SPV_GLSL_F_ABS, v.id), v.ty); }
 static inline SgV sg_Half2Neg(SgG* g, SgV v) { return sg_vt(SPV(sg_spv(g)->e, SPV_OP_F_NEGATE, v.ty, v.id), v.ty); }
+static inline SgV sg_Half2Add(SgG* g, SgV a, SgV b) { return sg_vt(sg_op2(sg_spv(g)->e, SPV_OP_F_ADD, a.ty, a.id, b.id), a.ty); }
+static inline SgV sg_Half2Mul(SgG* g, SgV a, SgV b) { return sg_vt(sg_op2(sg_spv(g)->e, SPV_OP_F_MUL, a.ty, a.id, b.id), a.ty); }
+static inline SgV sg_Half2MinN(SgG* g, SgV a, SgV b) { return sg_vt(SPV_EXT(sg_spv(g)->e, a.ty, SPV_GLSL_N_MIN, a.id, b.id), a.ty); }
+static inline SgV sg_Half2MaxN(SgG* g, SgV a, SgV b) { return sg_vt(SPV_EXT(sg_spv(g)->e, a.ty, SPV_GLSL_N_MAX, a.id, b.id), a.ty); }
+static inline SgV sg_Half2Clamp01(SgG* g, SgV a) {
+    SgSpv* s = sg_spv(g);
+    uint32_t zero = sg_FConst(g, 0).id, z = spv_emit_vec2_construct(s->e, a.ty, zero, zero);
+    uint32_t one = sg_FConst(g, 0x3f800000).id, o = spv_emit_vec2_construct(s->e, a.ty, one, one);
+    return sg_vt(SPV_EXT(s->e, a.ty, SPV_GLSL_N_CLAMP, a.id, z, o), a.ty);
+}
 /* a field of a word at a run-time offset: BitFieldUExtract, and BitFieldSExtract of the i32 */
 static inline SgV sg_BitsU(SgG* g, SgV x, SgV at, SgV n) {
     SgSpv* s = sg_spv(g);
