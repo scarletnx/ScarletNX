@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/shaders/depth_spv.h"
 #include "3ds/gpu/vk/shaders/scaled_depth_texture_spv.h"
 #include "3ds/gpu/vk/shaders/scaled_texture_spv.h"
+#include "3ds/gpu/vk/shaders/scaled_transfer_spv.h"
 #include "3ds/gpu/vk/shaders/standin_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
@@ -87,8 +88,9 @@ enum { NO_DEPTH = 0xff };
 /* FB_DEPTH_FORMAT's numbers of the depth formats (depth_word.glsl names them alike) */
 enum { DEPTH_D16 = 0, DEPTH_D24 = 2, DEPTH_D24S8 = 3 };
 /* the open rendering pass: a target's attachments, or a shadow pass with none (its draws write the target's colour
-   image as storage) */
-enum { RENDERING_TARGET = 1, RENDERING_SHADOW = 2 };
+   image as storage). A target whose words a draw read holds RENDERING_READ as its last pass kind: the next pass into
+   it waits for that read */
+enum { RENDERING_TARGET = 1, RENDERING_SHADOW = 2, RENDERING_READ = 3 };
 /* texture unit 0's descriptors: a shadow cube's six faces (the other kinds repeat their one image) */
 enum { TEX0_DESCRIPTORS = 6 };
 /* a draw that ran out of the recording's descriptors, uploads or textures: finished, it is recorded again */
@@ -109,6 +111,7 @@ typedef struct {
 typedef struct {
     uint32_t color_pa, depth_pa, width, height;
     uint8_t color_format, depth_format, flip, scale; /* color in transfer.h's order; depth 0 D16, 2 D24, 3 D24S8 */
+    uint8_t shadow, pad[3]; /* above scale 1 only; zero in every key, which memcmp compares */
 } TargetKey;
 /* A render target kept: its images hold memory's contents when valid, and newer ones when dirty (drawn into since they
    were loaded or stored), whose memory is the GPU's until they are stored */
@@ -266,7 +269,7 @@ typedef struct {
 
 static struct {
     bool made, failed;
-    SnxCtrVkCompute color, depth, texture, scaled_texture, scaled_depth_texture;
+    SnxCtrVkCompute color, depth, texture, scaled_texture, scaled_depth_texture, scaled_transfer;
     VkDescriptorSetLayout set0, set1, set2;
     VkDescriptorSetLayout set_layouts[3]; /* the three, for the shader objects that take them */
     /* the stand-ins' push constants (the fragment one's, and the vertex one's where the device has room for them),
@@ -507,13 +510,15 @@ static bool made(void) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v) return false;
     g.failed = true;
-    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
+    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 32, &g.color) ||
         !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
         !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture) ||
         !snx_ctr_vk_compute(snx_ctr_scaled_texture_spv, snx_ctr_scaled_texture_spv_size / 4, 0, 2, 20,
                             &g.scaled_texture) ||
         !snx_ctr_vk_compute(snx_ctr_scaled_depth_texture_spv, snx_ctr_scaled_depth_texture_spv_size / 4, 2, 1, 28,
-                            &g.scaled_depth_texture))
+                            &g.scaled_depth_texture) ||
+        !snx_ctr_vk_compute(snx_ctr_scaled_transfer_spv, snx_ctr_scaled_transfer_spv_size / 4, 0, 2, 44,
+                            &g.scaled_transfer))
         return false;
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
         g.depth_format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -890,7 +895,7 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
     if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
-        uint32_t push[7] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale};
+        uint32_t push[8] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale, k->shadow};
         if (!dispatch(&g.color, w, 1, t->color.view, push, sizeof push, store ? k->width : width,
                       store ? k->height : height))
             return false;
@@ -975,14 +980,14 @@ static void stale(uint32_t pa, uint64_t size, SnxCtrStaleWriter writer) {
     }
 }
 /* a target's images; a scaled one's colour image is read by a display transfer's blit */
-static bool target_images(Target* t, uint32_t width, uint32_t height, bool scaled) {
+static bool target_images(Target* t, uint32_t width, uint32_t height, bool scaled, bool shadow) {
     VkDeviceSize pixels = (VkDeviceSize)width * height;
     VkDeviceSize alignment = snx_ctr_vk()->properties.limits.minStorageBufferOffsetAlignment;
     if (alignment < 4) alignment = 4;
     t->stencil_at = (pixels * 4 + alignment - 1) / alignment * alignment;
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                       (scaled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
+                       (scaled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) | (shadow ? VK_IMAGE_USAGE_SAMPLED_BIT : 0),
                    &t->color))
         return false;
     if (!image_new(g.depth_format, width, height, 1, 1,
@@ -1025,7 +1030,7 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1, k->shadow)) return NULL;
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -1116,8 +1121,8 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
         for (unsigned i = 0; i < g.target_count; ++i) {
             Target* t = &g.targets[i];
             if (t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
-                t->key.color_format == format && t->key.scale > 1 && (t->color_dirty || t->color_valid) &&
-                t->color.view) {
+                t->key.color_format == format && t->key.scale > 1 && !t->key.shadow &&
+                (t->color_dirty || t->color_valid) && t->color.view) {
                 *scaled = (SnxCtrVkScaled){.view = t->color.view, .scale = t->key.scale, .flip = t->key.flip};
                 t->used = snx_ctr_vk_serial();
                 return true;
@@ -1147,25 +1152,13 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
    (snx_ctr_vk_target_image), and the bytes the dispatch wrote to the destination, which the presenter compares the
    framebuffer's memory with. Recorded after the dispatch, so the copy reads what it wrote. A target at the console's
    scale keeps nothing: its image holds the draws' unquantised colours */
-void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_width, unsigned width, unsigned height,
-                                unsigned in_format, unsigned out_format, unsigned hs, unsigned vs, bool flip) {
+void snx_ctr_vk_target_transfer(SnxCtrVkSource source, uint32_t output, unsigned width, unsigned height,
+                                unsigned out_format, unsigned hs, unsigned vs, bool flip) {
     if (!g.made) return;
+    if (!source.target) return;
     uint32_t columns = width << hs, rows = height << vs;
-    const Target* t = NULL;
-    uint32_t first = 0;
-    for (unsigned i = 0; i < g.target_count && !t; ++i) {
-        const Target* u = &g.targets[i];
-        if (u->key.scale <= 1 || input < u->key.color_pa || u->key.width != in_width ||
-            u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
-            continue;
-        /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
-           copy each screen's rows */
-        uint32_t strip = u->key.width * 8 * color_bytes(u->key.color_format), at = input - u->key.color_pa;
-        if (at % strip || columns > u->key.width || at / strip * 8 + rows > u->key.height) continue;
-        t = u;
-        first = at / strip * 8;
-    }
-    if (!t) return;
+    const Target* t = &g.targets[source.target - 1];
+    uint32_t first = source.first;
     uint32_t scale = t->key.scale, image_width = width * scale, image_height = height * scale;
     uint32_t span = width * height * snx_ctr_pixel_bytes(out_format);
     Shown* s = shown_slot(output);
@@ -1211,6 +1204,36 @@ void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_wid
     s->format = (uint8_t)out_format;
     s->used = snx_ctr_vk_serial();
     s->valid = true;
+}
+/* the scaled target a display transfer reads: the one whose colour holds the input's rows, from a whole strip of
+   8x8 tiles, and the input's first row in it */
+static const Target* scaled_input(uint32_t input, unsigned in_width, uint32_t columns, uint32_t rows,
+                                  unsigned in_format, uint32_t* first) {
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        const Target* u = &g.targets[i];
+        if (u->key.scale <= 1 || u->key.shadow || input < u->key.color_pa || u->key.width != in_width ||
+            u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
+            continue;
+        /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
+           copy each screen's rows */
+        uint32_t strip = u->key.width * 8 * color_bytes(u->key.color_format), at = input - u->key.color_pa;
+        if (at % strip || columns > u->key.width || at / strip * 8 + rows > u->key.height) continue;
+        *first = at / strip * 8;
+        return u;
+    }
+    return NULL;
+}
+/* the scaled source of a display transfer, found before the destination's sync stales a target over it */
+SnxCtrVkSource snx_ctr_vk_target_source(uint32_t input, unsigned in_width, unsigned width, unsigned height,
+                                        unsigned in_format, unsigned hs, unsigned vs) {
+    SnxCtrVkSource source = {0, 0};
+    if (!g.made) return source;
+    uint32_t first = 0;
+    const Target* t = scaled_input(input, in_width, width << hs, height << vs, in_format, &first);
+    if (!t) return source;
+    source.target = (uint32_t)(t - g.targets) + 1;
+    source.first = first;
+    return source;
 }
 /* The run of pages around pa (256 at most on each side, in its region) whose copy is newer than the RAM copied back to
    it, and waited for: the same from then on. One CPU access to what the GPU wrote takes what is around it too, a frame
@@ -1352,19 +1375,32 @@ static const Target* scaled_source(uint32_t pa, uint32_t width, uint32_t height,
     if (levels != 1 || cube || shadow || format >= sizeof color_formats) return NULL;
     for (unsigned i = 0; i < g.target_count; ++i) {
         const Target* t = &g.targets[i];
-        if (t->key.scale > 1 && t->color_valid && t->color.image && t->key.color_pa == pa && t->key.width == width &&
-            t->key.height == height && t->key.color_format == color_formats[format])
+        if (t->key.scale > 1 && !t->key.shadow && t->color_valid && t->color.image && t->key.color_pa == pa &&
+            t->key.width == width && t->key.height == height && t->key.color_format == color_formats[format])
             return t;
     }
     return NULL;
 }
-/* the texture's image filled from the target's colour image by one dispatch of scaled_texture.comp: both are storage
-   images, the source at binding 0 and the destination at 1, with the target's format and flip as push constants */
-static bool scaled_fill(const Target* source, VkImageView destination, uint32_t width, uint32_t height,
-                        uint32_t scale) {
-    VkDescriptorSet set = snx_ctr_vk_set(g.scaled_texture.set);
+/* the scaled shadow target whose words are the whole of a shadow map at pa, in the same size and colour format, and
+   whose colour is valid, except the target the draws are open into (its words are being written) */
+static Target* shadow_source(uint32_t pa, uint32_t width, uint32_t height, uint32_t format) {
+    if (format >= sizeof color_formats) return NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* t = &g.targets[i];
+        if (t->key.shadow && t->key.scale > 1 && !t->key.flip && t->color_valid && t->color.image &&
+            t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
+            t->key.color_format == color_formats[format] && i + 1 != g.open)
+            return t;
+    }
+    return NULL;
+}
+/* one dispatch over width x height of a compute pass that reads source at binding 0 and writes destination at 1, both
+   storage images, with the push constants given: a texture or a transfer filled from a scaled target's image */
+static bool scaled_fill(const SnxCtrVkCompute* c, VkImageView source, VkImageView destination, const void* push,
+                        uint32_t push_size, uint32_t width, uint32_t height) {
+    VkDescriptorSet set = snx_ctr_vk_set(c->set);
     if (!set) return false;
-    VkDescriptorImageInfo from = {VK_NULL_HANDLE, source->color.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo from = {VK_NULL_HANDLE, source, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo to = {VK_NULL_HANDLE, destination, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
@@ -1379,13 +1415,43 @@ static bool scaled_fill(const Target* source, VkImageView destination, uint32_t 
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                        .pImageInfo = &to}};
     vkUpdateDescriptorSets(device(), 2, writes, 0, NULL);
-    uint32_t push[5] = {width, height, source->key.color_format, source->key.flip, scale};
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.scaled_texture.layout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(cb, g.scaled_texture.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
-    vkCmdDispatch(cb, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->layout, 0, 1, &set, 0, NULL);
+    vkCmdPushConstants(cb, c->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size, push);
+    vkCmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
     return true;
+}
+/* After a tiled display transfer's dispatch (SNX_CTR_XFER_NO_SWIZZLE): a destination target of the same size, format,
+   scale and flip as its source takes the transfer's result as its scaled image, by one dispatch of
+   scaled_transfer.comp, and is valid then. The transfer writes every byte of the destination only when its width and
+   height are whole 8x8 tiles, so only then does the image stand for memory. Otherwise nothing changes */
+void snx_ctr_vk_target_fill(SnxCtrVkSource found, uint32_t output, unsigned width, unsigned height, unsigned in_format,
+                            unsigned out_format, unsigned hs, unsigned vs, bool flip) {
+    if (!g.made || width % 8 || height % 8 || !found.target) return;
+    uint32_t first = found.first;
+    const Target* source = &g.targets[found.target - 1];
+    Target* t = NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* u = &g.targets[i];
+        if (u != source && !u->key.shadow && u->key.color_pa == output && u->key.width == width &&
+            u->key.height == height && u->key.color_format == out_format && u->key.scale == source->key.scale &&
+            u->key.flip == source->key.flip && u->color.image && (!t || u->used > t->used))
+            t = u;
+    }
+    if (!t) return;
+    uint32_t scale = source->key.scale;
+    uint32_t push[11] = {width, height, scale, source->key.height, first, in_format, out_format, hs, vs, flip,
+                         source->key.flip};
+    end_rendering(); /* the dispatch is not recorded inside a target's pass */
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    snx_ctr_vk_barrier(cb);
+    if (!scaled_fill(&g.scaled_transfer, source->color.view, t->color.view, push, sizeof push, width * scale,
+                     height * scale))
+        return;
+    snx_ctr_vk_barrier(cb);
+    set_color(t, true, false); /* its blocks hold what memory holds, up to rounding: clean, so no store rewrites them */
+    t->used = snx_ctr_vk_serial();
 }
 /* the texture formats that read a depth buffer's words as texels: a D24S8 word as RGBA8, a D24 one as RGB8, a D16
    one as RGB5A1, RGB565 or RGBA4 (the 16-bit formats that pixel.glsl decodes)
@@ -1456,6 +1522,19 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
        a texture); the textures made from that memory before went stale when the target was drawn into */
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (g.made && !store_over(pa[f], bytes)) return AGAIN;
+    /* a 2D shadow map that is a scaled shadow target's whole image: its words are read from that image, whose size the
+       shadow lookup takes; the barrier orders the shadow pass's writes before this draw */
+    Target* words_of = shadow && !cube && levels == 1 ? shadow_source(pa[0], width, height, format) : NULL;
+    if (words_of) {
+        /* the barrier orders a shadow pass's writes before the read: after a read there are none to order */
+        if (words_of->pass == RENDERING_SHADOW) {
+            end_rendering();
+            snx_ctr_vk_barrier(snx_ctr_vk_commands());
+        }
+        words_of->pass = RENDERING_READ; /* the next pass into the map waits for this read (write after read) */
+        *image = &words_of->color;
+        return SNX_CTR_PICA_OK;
+    }
     /* a scaled target that is the texture's whole image: the texture is then made from its image, not from memory. A
        colour target's colour comes first, then a depth target's depth buffer */
     const Target* source = scaled_source(pa[0], width, height, format, levels, cube, shadow);
@@ -1506,7 +1585,10 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
         if (from_depth) {
             if (!scaled_depth_fill(source, t->image.levels[0], format)) return AGAIN;
         } else {
-            if (!scaled_fill(source, t->image.levels[0], width, height, scale)) return AGAIN;
+            uint32_t push[5] = {width, height, source->key.color_format, source->key.flip, scale};
+            if (!scaled_fill(&g.scaled_texture, source->color.view, t->image.levels[0], push, sizeof push,
+                             width * scale, height * scale))
+                return AGAIN;
         }
         snx_ctr_vk_barrier(cb);
         for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) gpu_uses(pa[f], bytes, false);
@@ -2482,13 +2564,13 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     snx_ctr_fs_config(p, &fs);
     const char* why = NULL;
     if (fs.shadow_rendering) {
-        /* a shadow pass (Azahar's IsShadowRendering): the colour buffer's words only, no depth buffer, and no render
-           scale, since a store averages a scaled image's blocks, which would mix the words */
+        /* a shadow pass (Azahar's IsShadowRendering): the colour buffer's words only, no depth buffer. Above scale 1
+           its target is a key of its own, and its store takes each block's centre texel: an average mixes the words */
         if (!snx_ctr_vk()->fragment_stores) return stop(p, "shadow rendering needs fragmentStoresAndAtomics");
         if (key.color_format != SNX_CTR_PIX_RGBA8) return stop(p, "shadow rendering into a colour buffer not RGBA8");
         key.depth_format = NO_DEPTH;
         key.depth_pa = 0;
-        key.scale = 1;
+        key.shadow = (uint8_t)(key.scale > 1);
     }
     PipeKey k;
     SnxCtrVsConfig vs;
@@ -2618,7 +2700,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     if (g.rendering != kind) end_rendering();
     if (!g.rendering) {
         /* the two kinds of pass write the colour image as an attachment and as storage: a barrier between them, also
-           when passes into other targets or a submission came between */
+           when passes into other targets or a submission came between, and before a pass after a read of its words */
         if (t->pass && t->pass != kind) snx_ctr_vk_barrier(cb);
         t->pass = kind;
         VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -2683,15 +2765,16 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
         vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
-    /* drawn into: newer than memory, which is the GPU's until the target is stored, and what was kept of that memory
-       (textures, display transfer copies) stale */
+    /* drawn into: newer than memory, which is the GPU's until the target is stored, and the textures made from that
+       memory stale. A display transfer's copy stays: the draw changed the target's image and not memory, and the
+       presenter syncs memory from the dirty targets over a copy before it compares the copy's bytes with memory */
     t->used = snx_ctr_vk_serial();
     if ((k.color_mask || k.shadow) && !t->color_dirty) {
-        drop_kept(t->key.color_pa, color_span(&t->key));
+        drop_textures(t->key.color_pa, color_span(&t->key));
         set_color(t, t->color_valid, true);
     }
     if (depth && k.depth_write && ((om >> 12 & 1) || k.stencil_on) && !t->depth_dirty) {
-        drop_kept(t->key.depth_pa, depth_span(&t->key));
+        drop_textures(t->key.depth_pa, depth_span(&t->key));
         set_depth(t, t->depth_valid, true);
     }
     return SNX_CTR_PICA_OK;
@@ -3007,6 +3090,7 @@ void snx_ctr_vk_render_free(void) {
     snx_ctr_vk_compute_free(&g.texture);
     snx_ctr_vk_compute_free(&g.scaled_texture);
     snx_ctr_vk_compute_free(&g.scaled_depth_texture);
+    snx_ctr_vk_compute_free(&g.scaled_transfer);
     free(g.vs);
     free(g.fs);
     free(g.pipes);

@@ -476,6 +476,17 @@ if(TARGET snx_ctr_board)
     # two targets over one depth buffer at the scale: the second takes the first's depth, not the 1x reload
     add_test(NAME 3ds_vk_draw_scaled_shared_depth COMMAND snx-test-3ds-vk-draw --scaled-shared-depth)
     set_tests_properties(3ds_vk_draw_scaled_shared_depth PROPERTIES SKIP_RETURN_CODE 77)
+    # a display transfer of a scaled target into a destination target: the destination keeps the render scale, and a
+    # target at the same scale samples it. At scale 1 the destination is the transfer's own result
+    add_test(NAME 3ds_vk_draw_scaled_transfer_into_target COMMAND snx-test-3ds-vk-draw --scaled-transfer-into-target)
+    set_tests_properties(3ds_vk_draw_scaled_transfer_into_target PROPERTIES SKIP_RETURN_CODE 77)
+    # shadow maps drawn and read at the render scale, plus flipped 1x fallback and centre-texel store
+    add_test(NAME 3ds_vk_draw_shadow_scaled COMMAND snx-test-3ds-vk-draw --shadow-scaled)
+    set_tests_properties(3ds_vk_draw_shadow_scaled PROPERTIES SKIP_RETURN_CODE 77)
+    # a display transfer into a destination over a scaled target's first rows, and no row it reads: the copy is kept,
+    # and a draw into the target after it is checked the same way
+    add_test(NAME 3ds_vk_draw_scaled_transfer_overlap COMMAND snx-test-3ds-vk-draw --scaled-transfer-overlap)
+    set_tests_properties(3ds_vk_draw_scaled_transfer_overlap PROPERTIES SKIP_RETURN_CODE 77)
     # the screens laid out at the console's proportions whatever each render scale: a top screen at 2x above a bottom
     # one at 1x, and a press on the bottom screen's pixel (160, 220) landing on it
     add_test(NAME 3ds_vk_draw_scaled_layout COMMAND snx-test-3ds-vk-draw --scaled-layout)
@@ -505,11 +516,19 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_draw_scaled_shared_depth_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-shared-depth)
+        add_test(NAME 3ds_vk_draw_scaled_transfer_into_target_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-transfer-into-target)
+        add_test(NAME 3ds_vk_draw_scaled_transfer_overlap_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-transfer-overlap)
         set_tests_properties(3ds_vk_draw_scaled_transfer_validation 3ds_vk_draw_scaled_rotating_validation
                              3ds_vk_draw_scaled_verify_validation PROPERTIES SKIP_RETURN_CODE 77)
         set_tests_properties(3ds_vk_draw_scaled_texture_from_target_validation
                              3ds_vk_draw_scaled_texture_from_depth_validation
-                             3ds_vk_draw_scaled_shared_depth_validation PROPERTIES SKIP_RETURN_CODE 77)
+                             3ds_vk_draw_scaled_shared_depth_validation
+                             3ds_vk_draw_scaled_transfer_into_target_validation
+                             3ds_vk_draw_scaled_transfer_overlap_validation PROPERTIES SKIP_RETURN_CODE 77)
         # the window's rendering, with the screens drawn by a copy and through the effects, under Khronos validation
         foreach(snx_mode scaled-layout scaled-layout-effects)
             string(REPLACE "-" "_" snx_name "${snx_mode}")
@@ -551,9 +570,9 @@ if(TARGET snx_ctr_board)
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
             3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation
             3ds_vk_draw_after_submit_validation 3ds_vk_draw_async_validation
-            3ds_vk_draw_shadow_validation)
+            3ds_vk_draw_shadow_validation 3ds_vk_draw_shadow_scaled_validation)
         set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy
-            --draw-after-submit --async --shadow)
+            --draw-after-submit --async --shadow --shadow-scaled)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -611,7 +630,8 @@ if(TARGET snx_ctr_board)
             list(APPEND snx_tests ${snx_test}_new3ds${snx_suffix})
         endforeach()
     endforeach()
-    foreach(snx_mode present after-draw texture-after-draw draw-after-index-copy draw-after-submit async shadow)
+    foreach(snx_mode present after-draw texture-after-draw draw-after-index-copy draw-after-submit async shadow
+            shadow-scaled)
         string(REPLACE "-" "_" snx_name "${snx_mode}")
         add_test(NAME 3ds_vk_draw_${snx_name}_new3ds COMMAND snx-test-3ds-vk-draw --new3ds --${snx_mode})
         list(APPEND snx_tests 3ds_vk_draw_${snx_name}_new3ds)

@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A display transfer's destination target at a render scale above 1, filled from its source target's scaled image:
+// one invocation per scaled texel of the destination. Each texel is the transfer's 2:1 or 2x2 mean of the source's
+// scaled texels, truncated as display_transfer.comp truncates it: each texel is quantised through the input format
+// first, the mean through the output format (pixel.glsl's pack16 and unpack16). Image row y is memory row y when flip
+// is set, else height * scale - 1 - y (color.comp's rows); the transfer reverses the rows when its FLIP flag is set.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D from;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D image;
+layout(push_constant) uniform Transfer {
+    uint width, height, scale, source_height, first, in_format, out_format, hs, vs, reversed, flip;
+};
+#define NO_ENCODE
+#define NO_DECODE
+#include "pixel.glsl"
+uvec4 texel_at(uint x, uint r) {
+    uint row = flip != 0u ? r : source_height * scale - 1u - r;
+    vec4 color = imageLoad(from, ivec2(int(x), int(row)));
+    return quantise(in_format, uvec4(round(color * 255.0)));
+}
+void main() {
+    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
+    uint out_w = width * scale, out_h = height * scale;
+    if (x >= out_w || y >= out_h) return;
+    uint r = flip != 0u ? y : out_h - 1u - y;
+    uint p = reversed != 0u ? out_h - 1u - r : r;
+    uint column = x << hs, row = first * scale + (p << vs);
+    uvec4 c = uvec4(0u);
+    for (uint j = 0u; j <= vs; ++j)
+        for (uint i = 0u; i <= hs; ++i) c += texel_at(column + i, row + j);
+    c /= (hs + 1u) * (vs + 1u);
+    imageStore(image, ivec2(int(x), int(y)), vec4(quantise(out_format, c)) / 255.0);
+}
