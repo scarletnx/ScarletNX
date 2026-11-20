@@ -82,7 +82,8 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
     }
     else if (prefix(s, "Ready "))
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
-    else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1) {
+    else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1 &&
+             strchr(s, ',')) { /* sscanf counts the number alone, with or without the comma after it */
         char number[16];
         const char *name = strchr(s, ','), *from = strstr(s, "(ExecuteProgram from program ");
         size_t n;
