@@ -1064,6 +1064,10 @@ static int nvidia_or_amd(uint32_t id, uint32_t system) {
     return id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || id == VK_DRIVER_ID_MESA_NVK || id == VK_DRIVER_ID_AMD_PROPRIETARY ||
            id == VK_DRIVER_ID_AMD_OPEN_SOURCE || id == VK_DRIVER_ID_MESA_RADV;
 }
+static int nvidia_only(uint32_t id, uint32_t system) {
+    (void)system;
+    return id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+}
 static void check_choices(void) {
     static const struct {
         const char* key;
@@ -1071,6 +1075,7 @@ static void check_choices(void) {
         int (*was)(uint32_t id, uint32_t system);
     } rules[] = {
         {"VK_EXT_fragment_shader_interlock.fragmentShaderPixelInterlock", 1, nvidia_or_amd},
+        {"Location", 1, nvidia_only},
     };
     static const uint32_t systems[] = {0,
                                        SNX_VK_BAN_LINUX,

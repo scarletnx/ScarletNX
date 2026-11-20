@@ -1434,8 +1434,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
 #else
     snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
 #endif
-    if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-        LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
+    /* the drivers whose own interpolation of a clipped primitive's inputs is the console's take no varying pass
+       (render.c's draw_varying): the extension bans' prefer lines on Location */
+    g_vk.host_varying = vk_prefer("Location", 1, ban_say) != 0;
+    if (g_vk.host_varying)
+        LOG("vulkan: fragment inputs are the driver's interpolation, which keeps the console's precision\n");
     else if (g_vk.has_barycentric)
         LOG("vulkan: an unculled quad draw's fragment inputs are interpolated from its vertices' values "
             "(VK_KHR_fragment_shader_barycentric), another draw's position inputs read from the fragment's place\n");
