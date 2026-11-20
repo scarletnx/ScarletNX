@@ -2619,6 +2619,10 @@ endif()
 add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
          "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/system_sdl3_test.cmake")
+# a cross build's generators run on the machine that builds: a test of one names no emulator of the target
+add_test(NAME host_tools_emulator COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/host-tools-emulator-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/host_tools_emulator_test.cmake")
 # libcurl's cached build is looked up by the same key from every build tree
 add_test(NAME curl_cache_key COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/curl-cache-key-test" "-DGENERATOR=${CMAKE_GENERATOR}"
