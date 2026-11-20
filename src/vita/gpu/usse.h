@@ -13,7 +13,7 @@
    program's (storage buffers of 32-bit words, laid out as UsseShader.buffers says), bindings 2 to 17 the fragment
    program's textures (combined image samplers, by sampler index). A vertex program's attributes are inputs at the
    locations UsseShader.attribute_location gives; its outputs and a fragment program's inputs meet at fixed locations
-   (color0 1, color1 2, fog 3, texcoord0 to 9 4 to 13); a fragment program writes location 0. Push constants (16 bytes,
+   (color0 1, color1 2, fog 3, texcoord0 to 9 4 to 13); a fragment program writes location 0. Push constants (20 bytes,
    the vertex stage's): the viewport's state, UssePush */
 #define USSE_ATTRIBUTES 16u
 #define USSE_BUFFERS    16u
