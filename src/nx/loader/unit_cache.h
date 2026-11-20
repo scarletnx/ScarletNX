@@ -65,6 +65,13 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
    when it cannot be read, or why it is not whole */
 unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, size_t* size, char* error,
                                    size_t error_size);
+/* An object read by a known key, with the same reuse bookkeeping as snx_unit_cache_object: held out of trimming and
+   its time renewed. NULL with why in error when the object is not whole or cannot be read. */
+unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, size_t* size, char* error,
+                                    size_t error_size);
+/* A digest of this cache's identity: LLVM, opt, tuning, ABI and object version. Keys recorded under one identity must
+   not be used under another. */
+int snx_unit_cache_identity_digest(const SnxUnitCache* cache, char out[65]);
 /* The cache's files in folder (its .o, and the .tmp a write left) held to limit bytes, the oldest by their time (the
    last write or reuse) removed first, then by name; 0 for no limit. Each file it cannot remove is said on stderr. 0, or
    -1 with why in error when the folder cannot be listed */

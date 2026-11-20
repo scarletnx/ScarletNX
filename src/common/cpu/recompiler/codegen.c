@@ -820,13 +820,21 @@ static void explored_add(SnxCodegen* codegen, size_t* explored, const Addresses*
     }
 }
 
+int snx_codegen_attach_images(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count) {
+    if (module_count) {
+        codegen->modules = (SnxCodeImage*)snx_alloc(module_count * sizeof(*modules));
+        if (!codegen->modules) return -1;
+        memcpy(codegen->modules, modules, module_count * sizeof(*modules));
+    }
+    codegen->module_count = module_count;
+    return 0;
+}
+
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
                         size_t hint_count, int quiet, SnxU64 features) {
     *codegen = (SnxCodegen){0};
     codegen->features = features;
-    codegen->modules = (SnxCodeImage*)snx_alloc(module_count * sizeof(*modules));
-    memcpy(codegen->modules, modules, module_count * sizeof(*modules));
-    codegen->module_count = module_count;
+    if (snx_codegen_attach_images(codegen, modules, module_count)) return -1;
     size_t* explored = explored_new(codegen);
     Addresses work = {0}, inner = {0};
     AddressSet known = {0}, seen_seed = {0}, extra = {0}, hint_set = {0}, seeds = {0}, fde_starts = {0};
@@ -1126,11 +1134,16 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
 }
 
 void snx_codegen_free(SnxCodegen* codegen) {
-    for (size_t i = 0; i < codegen->function_count; ++i) {
-        free(codegen->functions[i].addresses);
-        free(codegen->functions[i].leaders);
+    if (codegen->arrays_block) {
+        /* the functions array and every address and leader array are carved from this one block */
+        free(codegen->arrays_block);
+    } else {
+        for (size_t i = 0; i < codegen->function_count; ++i) {
+            free(codegen->functions[i].addresses);
+            free(codegen->functions[i].leaders);
+        }
+        free(codegen->functions);
     }
-    free(codegen->functions);
     free(codegen->modules);
     free(codegen->read_block);
     *codegen = (SnxCodegen){0};
