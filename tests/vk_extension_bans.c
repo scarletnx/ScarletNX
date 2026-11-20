@@ -854,7 +854,10 @@ static void check_shipped(void) {
     }
     /* this machine's drivers, RADV and lavapipe: the "off" lines that hold are the ones named here; RADV's warnings
        are the lifted bans, and its prefer lines the ways it takes */
-    static const char* const off_here[] = {"maxPushConstantsSize"}; /* lavapipe's windows of constant buffers */
+    static const char* const off_here[] = {
+        "maxPushConstantsSize",                                   /* lavapipe's windows of constant buffers */
+        "VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT", /* RADV's imports, dear on amdgpu */
+    };
     static const struct {
         uint32_t id, v;
     } here[] = {{VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u)}, {VK_DRIVER_ID_MESA_LLVMPIPE, MESA(26u, 2u, 6u)}};
@@ -1084,6 +1087,10 @@ static int lavapipe_only(uint32_t id, uint32_t system) {
     (void)system;
     return id == VK_DRIVER_ID_MESA_LLVMPIPE;
 }
+static int amdgpu_drivers(uint32_t id, uint32_t system) {
+    return id == VK_DRIVER_ID_MESA_RADV || id == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+           (id == VK_DRIVER_ID_AMD_PROPRIETARY && system == SNX_VK_BAN_LINUX);
+}
 static void check_choices(void) {
     static const struct {
         const char* key;
@@ -1095,6 +1102,7 @@ static void check_choices(void) {
         {"OpGroupNonUniformShuffleXor", 1, radv_only},
         {"VK_MEMORY_PROPERTY_HOST_CACHED_BIT", 1, anv_only},
         {"maxPushConstantsSize", 0, lavapipe_only},
+        {"VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT", 0, amdgpu_drivers},
     };
     static const uint32_t systems[] = {0,
                                        SNX_VK_BAN_LINUX,

@@ -68,6 +68,9 @@ typedef struct {
     u32 api_cap;           /* the most it takes, 0 for 1.3: vk_api=1.2 runs the 1.2 way on a newer device */
     u32 driver_id;         /* VkDriverId: whose driver runs, which keeps a shader cache of its own (pipeline.c) */
     char driver_name[256]; /* its own name for itself (VkPhysicalDeviceDriverProperties) */
+    /* the driver takes every import's pages again at each submission (uma.c's vk_uma_imports_dear; the extension
+       bans' off lines on VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT) */
+    int imports_dear;
     /* the extension bans' line that holds for the constant buffers' windows on this driver, 0 for none (pipeline.c,
        cb_windows.h; maxPushConstantsSize) */
     u32 cb_windows_ban;
