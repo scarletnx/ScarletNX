@@ -378,9 +378,17 @@ typedef struct {
     float gain;
     i16 stereo[2 * 1024]; /* a frame is at most 1024 samples (audren_state_new); only the clock's thread */
 } HleAudren;
-/* audren's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+/* what a renderer's host output still held at each frame of the clock since the log's last line about it: the bytes
+   at their least and most and summed, the frames that found it empty while playing, and those dropped at the bound */
+typedef struct {
+    u32 frames, least, most, empty, dropped;
+    u64 sum;
+} AudrenQueued;
+/* audren's host side: locks and condition variables, which a save state never holds (hle.h's g_host), and each
+   renderer's queue as the clock found it, by the renderer's slot */
 typedef struct {
     PMutex lk;
+    AudrenQueued queued[SNX_AUDREN_MAX];
 } HostAudren;
 
 /* ---- ldr.c */
