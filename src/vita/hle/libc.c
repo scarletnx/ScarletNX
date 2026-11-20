@@ -782,14 +782,16 @@ static uint32_t lc_fclose(VitaProcess* p, VitaThread* t) {
 static uint32_t lc_fread(VitaProcess* p, VitaThread* t) {
     FILE* f = stream(p, arg(p, t, 3));
     uint32_t size = arg(p, t, 1), count = arg(p, t, 2), buffer = arg(p, t, 0);
-    if (!f || !size || !count || !vita_mapped(p, buffer, (uint32_t)((uint64_t)size * count))) return 0;
-    vita_watch_release(buffer, (uint32_t)((uint64_t)size * count)); /* the system writes it (watch.h) */
+    uint64_t bytes = (uint64_t)size * count; /* past 4 GiB for some sizes and counts: no buffer of a game's is */
+    if (!f || !bytes || bytes > UINT32_MAX || !vita_mapped(p, buffer, (uint32_t)bytes)) return 0;
+    vita_watch_release(buffer, (uint32_t)bytes); /* the system writes it (watch.h) */
     return (uint32_t)fread(host(p, buffer), size, count, f);
 }
 static uint32_t lc_fwrite(VitaProcess* p, VitaThread* t) {
     FILE* f = stream(p, arg(p, t, 3));
     uint32_t size = arg(p, t, 1), count = arg(p, t, 2), buffer = arg(p, t, 0);
-    if (!f || !size || !count || !vita_mapped(p, buffer, (uint32_t)((uint64_t)size * count))) return 0;
+    uint64_t bytes = (uint64_t)size * count;
+    if (!f || !bytes || bytes > UINT32_MAX || !vita_mapped(p, buffer, (uint32_t)bytes)) return 0;
     return (uint32_t)fwrite(host(p, buffer), size, count, f);
 }
 static uint32_t lc_fseek(VitaProcess* p, VitaThread* t) {

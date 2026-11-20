@@ -458,6 +458,39 @@ static void gxm_texture_transfers(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(gxm, "sceGxmTransferFinish") == 0);
 }
 
+/* a file of the game's memory card, from the host's side */
+static void host_file(VitaProcess* p, const char* name, const void* bytes, size_t size, unsigned times) {
+    assert(!snx_mkdirs(p->ux0));
+    char* path = snx_path_join(p->ux0, name);
+    FILE* f = path ? snx_fopen(path, "wb") : NULL;
+    assert(f);
+    for (unsigned i = 0; i < times; ++i) assert(fwrite(bytes, 1, size, f) == size);
+    assert(!fclose(f));
+    free(path);
+}
+/* SceLibc's fread and fwrite take a size and a count, and 0x10000 times 0x10001 is 0x10000 more than 4 GiB: the bytes
+   the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
+   stream's own block is made first, so the buffer is the last and the page past its end is no one's */
+static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
+    const VitaHle* libc = vita_hle_libc;
+    static unsigned char half[0x10000];
+    memset(half, 0x5a, sizeof half);
+    host_file(p, "two-buffers.bin", half, sizeof half, 2);
+    uint32_t names = vita_alloc(p, &p->user, 0x1000, 0x1000);
+    assert(names);
+    strcpy(vita_ptr(p, names), "ux0:two-buffers.bin"), strcpy(vita_ptr(p, names + 0x40), "r+b");
+    uint32_t file = CALL(libc, "fopen", names, names + 0x40);
+    assert(file);
+    uint32_t buffer = vita_alloc(p, &p->user, 0x10000, 0x1000);
+    assert(buffer && vita_mapped(p, buffer, 0x10000) && !vita_mapped(p, buffer + 0x10000 - 8, 16));
+    unsigned char* bytes = vita_ptr(p, buffer);
+    memset(bytes, 0, 0x10000);
+    assert(CALL(libc, "fread", buffer, 0x10000, 0x10001, file) == 0);
+    assert(CALL(libc, "ftell", file) == 0 && bytes[0] == 0 && bytes[0xffff] == 0);
+    assert(CALL(libc, "fwrite", buffer, 0x10000, 0x10001, file) == 0 && CALL(libc, "ftell", file) == 0);
+    assert(CALL(libc, "fread", buffer, 0x10000, 1, file) == 1 && bytes[0] == 0x5a && bytes[0xffff] == 0x5a);
+    assert(CALL(libc, "fclose", file) == 0);
+}
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
     assert(folder && !snx_mkdirs(folder));
@@ -479,6 +512,8 @@ int main(void) {
     ngs_atrac9_and_extra_busses(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
+    /* this makes blocks of its own after mem, which is the last one no longer */
+    libc_stream_sizes(p, t);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
     free(folder);
