@@ -8986,17 +8986,17 @@ static int run_headless(int argc, char** argv) {
           snx_vk_pipeline_workers(0, 64) == 12);
     CHECK(snx_vk_pipeline_workers(5, 12) == 5 && snx_vk_pipeline_workers(32, 4) == 32 &&
           snx_vk_pipeline_workers(1, 64) == 1);
-    /* how a draw reads a target it writes at its own pixel: the interlock's capture on NVIDIA's and AMD's GPUs that
-       have all it needs, else two draws with dynamic rendering local read, else in place */
-    CHECK(vk_feedback_choice(0x10DE, 1, 1, 1, 1) == VK_FEEDBACK_INTERLOCK &&
-          vk_feedback_choice(0x1002, 1, 1, 1, 1) == VK_FEEDBACK_INTERLOCK &&
-          vk_feedback_choice(0x1002, 1, 1, 1, 0) == VK_FEEDBACK_INTERLOCK);
-    CHECK(vk_feedback_choice(0x8086, 1, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
-          vk_feedback_choice(0x1002, 1, 0, 1, 1) == VK_FEEDBACK_PREDRAW &&
-          vk_feedback_choice(0x1002, 0, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
-          vk_feedback_choice(0x10DE, 1, 1, 0, 1) == VK_FEEDBACK_PREDRAW);
-    CHECK(vk_feedback_choice(0x8086, 1, 1, 1, 0) == VK_FEEDBACK_IN_PLACE &&
-          vk_feedback_choice(0x1002, 1, 0, 1, 0) == VK_FEEDBACK_IN_PLACE);
+    /* how a draw reads a target it writes at its own pixel: the interlock's capture where a prefer line of the
+       extension bans holds for the driver and the device has all it needs, else two draws with dynamic rendering
+       local read, else in place */
+    CHECK(vk_feedback_choice(1, 1, 1, 1, 1) == VK_FEEDBACK_INTERLOCK &&
+          vk_feedback_choice(1, 1, 1, 1, 0) == VK_FEEDBACK_INTERLOCK);
+    CHECK(vk_feedback_choice(0, 1, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(1, 1, 0, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(1, 0, 1, 1, 1) == VK_FEEDBACK_PREDRAW &&
+          vk_feedback_choice(1, 1, 1, 0, 1) == VK_FEEDBACK_PREDRAW);
+    CHECK(vk_feedback_choice(0, 1, 1, 1, 0) == VK_FEEDBACK_IN_PLACE &&
+          vk_feedback_choice(1, 1, 0, 1, 0) == VK_FEEDBACK_IN_PLACE);
 #if defined(__linux__)
     if (vk_rec_threaded()) { /* the workers started with the first draws': two at the main thread's nice, the rest low */
         int n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpu_count()), low, normal, other;

@@ -3317,15 +3317,19 @@ extern u64 g_vk_barriers_merged;
 /* statistics: the guest's fragment barriers and texture data cache invalidations that stayed in the pass, as nothing
    before them needed a barrier from all work (renderer.c vkr_method_barrier) */
 extern u64 g_vk_barriers_in_pass;
-/* g_vk.feedback_mode, from the device's features and vendor (device.c): in place (attachment feedback loops), the
-   two draws of render.c predraw_run, or in place with the pre-draw capture in a fragment interlock (vk/predraw.c) */
+/* g_vk.feedback_mode, from the device's features and the extension bans' prefer lines (device.c): in place
+   (attachment feedback loops), the two draws of render.c predraw_run, or in place with the pre-draw capture in a
+   fragment interlock (vk/predraw.c) */
 #define VK_FEEDBACK_IN_PLACE  0
 #define VK_FEEDBACK_PREDRAW   1
 #define VK_FEEDBACK_INTERLOCK 2
-/* The mode a device takes: the capture on NVIDIA's and AMD's GPUs (vendor) that have the fragment interlock with
-   attachment feedback loops and fragment stores, the two draws on the others with dynamic rendering local read */
-static inline int vk_feedback_choice(u32 vendor, int feedback, int interlock, int stores, int local_read) {
-    const int capture = (vendor == 0x10DE || vendor == 0x1002) && feedback && interlock && stores;
+/* the key of the prefer lines that name the drivers taking the capture (extension_bans.txt) */
+#define VK_FEEDBACK_CAPTURE   "VK_EXT_fragment_shader_interlock.fragmentShaderPixelInterlock"
+/* The mode a device takes: the capture where a prefer line holds for its driver (prefer) and it has the fragment
+   interlock with attachment feedback loops and fragment stores, the two draws on the others with dynamic rendering
+   local read */
+static inline int vk_feedback_choice(int prefer, int feedback, int interlock, int stores, int local_read) {
+    const int capture = prefer && feedback && interlock && stores;
     return capture ? VK_FEEDBACK_INTERLOCK : local_read ? VK_FEEDBACK_PREDRAW : VK_FEEDBACK_IN_PLACE;
 }
 extern u64 g_vk_predraws;        /* feedback draws drawn two times (render.c predraw_run) */

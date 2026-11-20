@@ -852,7 +852,8 @@ static void check_shipped(void) {
             CHECK(vk_ban_find(eden[i].key) == 0, "and a ban nowhere");
         }
     }
-    /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
+    /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans, and its
+       prefer lines the ways it takes */
     static const struct {
         uint32_t id, v;
     } here[] = {{VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u)}, {VK_DRIVER_ID_MESA_LLVMPIPE, MESA(26u, 2u, 6u)}};
@@ -863,7 +864,7 @@ static void check_shipped(void) {
             vk_ban_field(line, VK_BAN_ACTION, action, sizeof action);
             snprintf(what, sizeof what, "line %u holds for %s 26.2.6 as %s", (unsigned)line,
                      vk_ban_driver_name(here[i].id), action);
-            CHECK(!strcmp(action, "warn"), what);
+            CHECK(strcmp(action, "off"), what);
         }
     }
 }
@@ -1054,6 +1055,57 @@ static void check_prefer(void) {
           "where no line on the key holds, the log says that");
 }
 
+/* The ways the code chose by driver or vendor before the table's prefer and off lines took them: for each driver the
+   table names, on each system, the line's answer is the old rule's. A row is a key, how it is asked, and the rule as
+   the code had it, by VkDriverId and system (the vendor of a driver's GPUs where the rule read vendorID) */
+static int nvidia_or_amd(uint32_t id, uint32_t system) {
+    (void)system;
+    /* vendorID 0x10DE: NVIDIA's driver and NVK; 0x1002: AMD's driver, AMDVLK and RADV */
+    return id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || id == VK_DRIVER_ID_MESA_NVK || id == VK_DRIVER_ID_AMD_PROPRIETARY ||
+           id == VK_DRIVER_ID_AMD_OPEN_SOURCE || id == VK_DRIVER_ID_MESA_RADV;
+}
+static void check_choices(void) {
+    static const struct {
+        const char* key;
+        int prefer; /* asked with vk_prefer, else with vk_ban_find */
+        int (*was)(uint32_t id, uint32_t system);
+    } rules[] = {
+        {"VK_EXT_fragment_shader_interlock.fragmentShaderPixelInterlock", 1, nvidia_or_amd},
+    };
+    static const uint32_t systems[] = {0,
+                                       SNX_VK_BAN_LINUX,
+                                       SNX_VK_BAN_ANDROID,
+                                       SNX_VK_BAN_WINDOWS,
+                                       SNX_VK_BAN_MACOS,
+                                       SNX_VK_BAN_IOS,
+                                       SNX_VK_BAN_FREEBSD,
+                                       SNX_VK_BAN_OPENBSD,
+                                       SNX_VK_BAN_NETBSD};
+    char err[512] = "";
+    unsigned drivers = 0;
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
+    for (uint32_t id = 1; id < 64; id++) {
+        const char* name = vk_ban_driver_name(id);
+        if (!name) continue;
+        drivers++;
+        for (size_t s = 0; s < sizeof systems / sizeof *systems; s++)
+            for (size_t r = 0; r < sizeof rules / sizeof *rules; r++) {
+                char what[320];
+                /* a version no line's bounds leave out would hide a line that holds for some: both ends */
+                for (uint32_t v = 0; v < 2; v++) {
+                    device(id, v ? 0xffffffffu : 0u, 0x73df, systems[s]);
+                    g_test.nsaid = 0;
+                    int now = (rules[r].prefer ? vk_prefer(rules[r].key, 1, say) : vk_ban_find(rules[r].key)) != 0;
+                    int was = rules[r].was(id, systems[s]);
+                    snprintf(what, sizeof what, "%s on %s, system %#x, version %#x: the code chose %d, the table %d",
+                             rules[r].key, name, (unsigned)systems[s], v ? 0xffffffffu : 0u, was, now);
+                    CHECK(now == was, what);
+                }
+            }
+    }
+    CHECK(drivers >= 30, "every driver the table names was asked");
+}
+
 /* text as a whole file */
 static int read_table(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -1198,6 +1250,7 @@ int main(int argc, char** argv) {
     check_quiet();
     check_shipped();
     check_prefer();
+    check_choices();
     ini_set_say(say_ini);
     check_ignore();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
