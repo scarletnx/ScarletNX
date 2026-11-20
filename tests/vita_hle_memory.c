@@ -468,6 +468,14 @@ static void host_file(VitaProcess* p, const char* name, const void* bytes, size_
     assert(!fclose(f));
     free(path);
 }
+/* a block of 64 KiB for a case's own names and words. A host commits whole pages of its own, 16 KiB on Apple's ARM and
+   up to 64 KiB on Linux's, at an address that is a multiple of them: a block of the Vita's 4 KiB would leave the next
+   one made (SceLibc's heap, at the first fopen) at an address such a host refuses */
+static uint32_t words_block(VitaProcess* p) {
+    uint32_t block = vita_alloc(p, &p->user, 0x10000, 0x10000);
+    assert(block && !(block & 0xffff));
+    return block;
+}
 /* SceLibc's fread and fwrite take a size and a count, and 0x10000 times 0x10001 is 0x10000 more than 4 GiB: the bytes
    the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
    stream's own block is made first, so the buffer is the last and the page past its end is no one's */
@@ -476,8 +484,7 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
     static unsigned char half[0x10000];
     memset(half, 0x5a, sizeof half);
     host_file(p, "two-buffers.bin", half, sizeof half, 2);
-    uint32_t names = vita_alloc(p, &p->user, 0x1000, 0x1000);
-    assert(names);
+    uint32_t names = words_block(p);
     strcpy(vita_ptr(p, names), "ux0:two-buffers.bin"), strcpy(vita_ptr(p, names + 0x40), "r+b");
     uint32_t file = CALL(libc, "fopen", names, names + 0x40);
     assert(file);
@@ -505,9 +512,7 @@ static void fios_archive_unmount(VitaProcess* p, VitaThread* t) {
     psarc[93] = 8, psarc[95] = 16;                                 /* each block stored whole */
     memcpy(psarc + 96, "data.bin", 8), memcpy(psarc + 104, data, 16);
     host_file(p, "one-file.psarc", psarc, sizeof psarc, 1);
-    uint32_t names = vita_alloc(p, &p->user, 0x1000, 0x1000), mount = names + 0x200, file = names + 0x204,
-             buffer = names + 0x300;
-    assert(names);
+    uint32_t names = words_block(p), mount = names + 0x200, file = names + 0x204, buffer = names + 0x300;
     strcpy(vita_ptr(p, names), "ux0:one-file.psarc"), strcpy(vita_ptr(p, names + 0x40), "ux0:packed");
     strcpy(vita_ptr(p, names + 0x80), "ux0:packed/data.bin");
     assert(CALL(io, "sceFiosArchiveMountSync", 0, mount, names, names + 0x40, 0, 0, 0) == 0);
