@@ -29,6 +29,13 @@ void pfs0_process(pfs0_ctx_t *ctx) {
         exit(EXIT_FAILURE);
     }
     pfs0_header_from_le(ctx->header, 1);
+    uint32_t bad_name = pfs0_first_bad_name(ctx->header);
+    if (bad_name != ctx->header->num_files) {
+        fprintf(stderr, "Error: PFS0 is corrupt: file %"PRIu32"'s name, from byte %"PRIu32" of a string table of "
+                "%"PRIu32" bytes, does not end in it!\n", bad_name,
+                pfs0_get_file_entry(ctx->header, bad_name)->string_table_offset, ctx->header->string_table_size);
+        exit(EXIT_FAILURE);
+    }
 
     /* Weak file validation. */
     uint64_t max_size = 0x1ULL;
