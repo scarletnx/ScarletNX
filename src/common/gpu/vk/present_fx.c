@@ -681,7 +681,6 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache,
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->weight_set[i]))) goto failed;
         ai.pSetLayouts = &fx->dsl2;
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->blend_set[i]))) goto failed;
-        ai.pSetLayouts = &fx->dsl2;
         ai.pSetLayouts = &fx->dsl_nis;
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->nis_set[i]))) goto failed;
         ai.pSetLayouts = &fx->dsl_sgsr;
