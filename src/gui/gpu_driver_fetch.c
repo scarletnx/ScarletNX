@@ -157,14 +157,18 @@ int gui_adreno_model(const char* gpu_name) {
     return *p && *p != ' ' ? 0 : model;
 }
 int gui_gpu_model(const char* gpu_name) {
-    static const char* const family[] = {"Mali-G", "Samsung Xclipse "};
-    for (int f = 0; f < 2; ++f) {
-        size_t n = strlen(family[f]);
+    /* each family's name and its models' base: an Immortalis is a Mali, named so where it leads */
+    static const struct {
+        const char* name;
+        int base;
+    } family[] = {{"Mali-G", 10000}, {"Immortalis-G", 10000}, {"Samsung Xclipse ", 20000}};
+    for (size_t f = 0; f < sizeof family / sizeof *family; ++f) {
+        size_t n = strlen(family[f].name);
         int model = 0;
-        if (strncmp(gpu_name, family[f], n)) continue;
+        if (strncmp(gpu_name, family[f].name, n)) continue;
         for (const char* p = gpu_name + n; snx_is_digit((unsigned char)*p) && model < 1000; ++p)
             model = model * 10 + (*p - '0');
-        return model ? (f + 1) * 10000 + model : 0;
+        return model ? family[f].base + model : 0;
     }
     return gui_adreno_model(gpu_name);
 }

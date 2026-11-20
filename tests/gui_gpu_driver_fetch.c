@@ -166,6 +166,9 @@ int main(void) {
         assert(r.count == 2 && r.assets_count == 1 && r.releases[1].latest);
         assert(!strcmp(gui_driver_recommended(10925), "PanVK G925") &&
                gui_driver_recommended_release(10925, 12, &r) == 1);
+        /* named either way: Mali-G925-Immortalis or Immortalis-G925 */
+        assert(gui_gpu_model("Mali-G925-Immortalis MC12") == 10925 && gui_gpu_model("Immortalis-G925 MC12") == 10925 &&
+               gui_gpu_model("Immortalis-") == 0);
         gui_driver_releases_free(&r);
     }
     /* GitHub's own error, said; what is no list of releases, said by its size */

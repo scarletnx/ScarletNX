@@ -55,7 +55,8 @@ int gui_driver_proprietary(const char* repo_path, const char* asset_name);
 /* the Adreno model of a GPU's Vulkan name ("Adreno (TM) 830": 830, "Adreno (TM) A32": 32), 0 for another GPU */
 int gui_adreno_model(const char* gpu_name);
 /* a GPU's model as the recommendation numbers it, from its Vulkan name: an Adreno's, a Mali's plus 10000 ("Mali-G615
-   MC6": 10615), an Xclipse's plus 20000 ("Samsung Xclipse 940": 20940), 0 for another GPU */
+   MC6": 10615, "Immortalis-G925 MC12": 10925), an Xclipse's plus 20000 ("Samsung Xclipse 940": 20940), 0 for another
+   GPU */
 int gui_gpu_model(const char* gpu_name);
 /* the driver Eden recommends for that model, as its page says it ("GameHub Adreno 8xx"), "Unsupported" for none */
 const char* gui_driver_recommended(int model);
