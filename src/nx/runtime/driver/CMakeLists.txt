@@ -23,11 +23,6 @@ target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module
 if(WIN32)
     target_link_libraries(snx_driver PUBLIC advapi32)
 endif()
-if(APPLE)
-    # setup.c's weak snx_menu_language, the menu's (src/gui): ld64 refuses an undefined symbol, weak or not, unless
-    # told it is resolved at run time
-    target_link_options(snx_driver INTERFACE "LINKER:-U,_snx_menu_language")
-endif()
 if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx_driver PRIVATE SNX_WITH_RUNTIME)
 endif()
