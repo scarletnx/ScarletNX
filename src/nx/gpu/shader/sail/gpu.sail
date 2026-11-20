@@ -189,3 +189,9 @@ val BitsU : (bits(32), bits(32), bits(32)) -> bits(32)
 val BitsS : (bits(32), bits(32), bits(32)) -> bits(32)
 /* a SPIR-V capability the instruction needs */
 val Capability : int -> unit
+
+/* ---- a subgroup's lanes ---- */
+/* the value of lane, of the invocation's subgroup (OpGroupNonUniformShuffle) */
+val Shuffle : (bits(32), bits(32)) -> bits(32)
+/* the reduction (a SPIR-V OpGroupNonUniform opcode: IAdd, UMin, BitwiseAnd...) of x over clusters of 32 lanes */
+val ClusterReduce32 : (int, bits(32)) -> bits(32)

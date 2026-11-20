@@ -197,10 +197,12 @@ static inline SgV sg_sext(SgG* g, int from, int to, SgV a) {
         a = sg_v(x, SGT_I32);
         if (to <= 32) return sg_trim(g, to, sg_v(sg_u32(g, a), SGT_U32));
     }
-    if (sg_wide(to) && !sg_wide(from))
-        return sg_trim(g, to, sg_v(spv_emit_int_convert(s->e, s->t_u64(g),
-                                                        spv_emit_int_convert(s->e, spv_emit_type_int64(s->e, 1), sg_as(g, a, SGT_I32), 1), 0),
+    if (sg_wide(to) && !sg_wide(from)) { /* the i32's SConvert to an i64, bitcast */
+        uint32_t i = sg_as(g, a, SGT_I32), t = s->t_u64(g);
+        return sg_trim(g, to, sg_v(spv_emit_unary(s->e, SPV_OP_BITCAST, t,
+                                                  SPV(s->e, SPV_OP_S_CONVERT, spv_emit_type_int64(s->e, 1), i)),
                                    SGT_U64));
+    }
     return a;
 }
 /* a @ b: the low word b and the high word a of a u64 (b's UConvert, then a's and its shift); in a u32 a's shift */
@@ -370,6 +372,19 @@ static inline SgV sg_BitsS(SgG* g, SgV x, SgV at, SgV n) {
     SgSpv* s = sg_spv(g);
     uint32_t a = sg_as(g, x, SGT_I32);
     return sg_v(spv_emit_ternary(s->e, SPV_OP_BIT_FIELD_S_EXTRACT, s->t_i32, a, sg_u32(g, at), sg_u32(g, n)), SGT_I32);
+}
+static inline SgV sg_Shuffle(SgG* g, SgV x, SgV lane) {
+    SgSpv* s = sg_spv(g);
+    uint32_t v = sg_u32(g, x), l = sg_u32(g, lane);
+    return sg_v(SPV(s->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, s->t_u32, sg_const(g, 32, SPV_SCOPE_SUBGROUP).id, v, l),
+                SGT_U32);
+}
+static inline SgV sg_ClusterReduce32(SgG* g, int64_t op, SgV x) {
+    SgSpv* s = sg_spv(g);
+    uint32_t scope = sg_const(g, 32, SPV_SCOPE_SUBGROUP).id, v = sg_u32(g, x);
+    return sg_v(SPV(s->e, (uint32_t)op, s->t_u32, scope, SPV_GROUP_OPERATION_CLUSTERED_REDUCE, v,
+                    sg_const(g, 32, 32).id),
+                SGT_U32);
 }
 /* a capability the instruction needs: declared once */
 static inline void sg_Capability(SgG* g, int64_t cap) { spv_emit_capability(sg_spv(g)->e, (uint32_t)cap); }

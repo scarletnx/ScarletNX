@@ -695,3 +695,312 @@ function execute_F2FP() -> unit = {
         else D_write(PackHalf(Half2(lo, hi)))
     }
 }
+
+/* ---- the rest of the integer ALU, the uniform registers and the system registers ---- */
+
+/* the register after the operand's (its pair's high word), of its kind; the zero register's is itself */
+val SrcNext : Operand -> bits(32)
+/* the destination's next register (a pair's high word), of its kind; whether it has one (it is no zero register) */
+val D_writeNext : bits(32) -> unit
+val DstHasNext : unit -> bool
+/* the operand is a constant buffer's word */
+val SrcIsCbuf : Operand -> bool
+/* uniform register r (URZ reads 0), and written */
+val U_write : (int, bits(32)) -> unit
+/* the Int64 capability and the u64 type, made where the instruction makes them first */
+val Int64 : unit -> unit
+/* a system register (S2R's, S2UR's numbering) as the program reads it */
+val ProgramSr : int -> bits(32)
+/* the ballot of the predicate over the invocation's 32 lanes */
+val Ballot32 : bool -> bits(32)
+/* the instruction's index in the program */
+val InsnIndex : unit -> int
+/* the program's stage (shader.h's ST_*), and a geometry program asks for passthrough */
+val Stage : unit -> int
+val Passthrough : unit -> bool
+/* a geometry program's vertex emitted (with its outputs), and its primitive ended */
+val GsEmit : unit -> unit
+val EndPrimitive : unit -> unit
+/* the device scope's barrier of buffer, workgroup and image memory, acquire and release */
+val MemoryBarrierDevice : unit -> unit
+
+let URZ : int = 63
+let ST_GS : int = 3
+
+/* IMAD.WIDE and UIMAD.WIDE: NAK's OpIMad64, a * b (bit 73 signed) + the pair at c, into the pair at the destination.
+   The carry out of the 64-bit sum goes to the predicate at 81-83 as IADD3's first (nvdisasm: IMAD.WIDE.U32 R14, P0,
+   R10, R19, R14): one game's 64-bit division chains IMAD.WIDE ..., P0 into IMAD.X. With .X (bit 74; nvdisasm:
+   IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum */
+function execute_IMAD_WIDE() -> unit = {
+    let is_signed = Field(73, 1) == 0b1;
+    Int64();
+    let a32 = SrcInt(A);
+    let b32 = SrcInt(B);
+    let a64 = if is_signed then SignExtend(a32, 64) else ZeroExtend(a32, 64);
+    let b64 = if is_signed then SignExtend(b32, 64) else ZeroExtend(b32, 64);
+    if SrcIsImm(C) | SrcIsCbuf(C) then throw(Unsupported("%s with c an immediate or a constant", OpName()));
+    let chi = SrcNext(C);
+    let product = a64 * b64;
+    let clo = SrcBits(C);
+    var sum : bits(64) = product + (chi @ clo);
+    var carry : bool = UInt(sum) < UInt(product);
+    if Field(74, 1) == 0b1 then {
+        let more = sum + CarryIn(87);
+        carry = (if carry then true else UInt(more) < UInt(sum));
+        sum = more
+    };
+    PredWrite(UInt(Field(81, 3)), carry, Uniform());
+    D_write(sum[31 .. 0]);
+    if DstHasNext() then D_writeNext(sum[63 .. 32])
+}
+
+/* IMAD.HI: the high word of a * b + c (bit 73 signed): the addend goes into the 64-bit product, below the word that is
+   kept, and with .X the carry predicate at 87-90 with it; the carry out of the 64 bits goes to the predicate at 81-83.
+   One game's 64-bit division is written that way (IMAD.HI R8, R7, R11, R8 adds the middle column's low word and hands
+   its carry to P1): with the addend added to the high word instead, 4239360 / 20480 came out 728513, and with this 207
+   (tools/div_model.py) */
+function execute_IMAD_HI() -> unit = {
+    let is_signed = Field(73, 1) == 0b1;
+    Int64();
+    let a32 = SrcInt(A);
+    let b32 = SrcInt(B);
+    let product = if is_signed then SignExtend(a32, 64) * SignExtend(b32, 64) else ZeroExtend(a32, 64) * ZeroExtend(b32, 64);
+    let c32 = SrcInt(C);
+    let addend = if is_signed then SignExtend(c32, 64) else ZeroExtend(c32, 64);
+    var sum : bits(64) = product + addend;
+    var carry : bool = UInt(sum) < UInt(product);
+    if Field(74, 1) == 0b1 then {
+        let more = sum + CarryIn(87);
+        carry = (if carry then true else UInt(more) < UInt(sum));
+        sum = more
+    };
+    PredWrite(UInt(Field(81, 3)), carry, Uniform()); /* signed too: its 64 bits' carry, as IMAD.WIDE's */
+    D_write(sum[63 .. 32])
+}
+
+/* SGXT and USGXT: the low b bits (at most 32) of a, sign (bit 73) or zero extended; 0 bits give 0 */
+function execute_SGXT() -> unit = {
+    let n = to_bits(32, Min(UInt(SrcBits(B)), 32));
+    let a = SrcBits(A);
+    let v = if Field(73, 1) == 0b1 then Bits32(BitsS(a, 0x00000000, n)) else BitsU(a, 0x00000000, n);
+    D_write(if n == 0x00000000 then 0x00000000 else v)
+}
+
+/* PRMT and UPRMT, the index mode (72-74 = 0): output byte k is byte (sel >> 4k) & 7 of c:a, its sign spread with
+   bit 3 */
+function execute_PRMT() -> unit = {
+    if Field(72, 3) != 0b000 then throw(Unsupported("PRMT mode %u", Field(72, 3)));
+    let a = SrcBits(A);
+    let sel = SrcBits(B);
+    let hi = SrcBits(C);
+    var v : bits(32) = 0x00000000;
+    foreach (k from 0 to 3) {
+        let nib = BitsU(sel, to_bits(32, 4 * k), 0x00000004);
+        let from_c = (nib & 0x00000004) != 0x00000000;
+        let word = if from_c then hi else a;
+        let shift = (nib & 0x00000003) << 3;
+        let byte = BitsU(word, shift, 0x00000008);
+        let spread = (nib & 0x00000008) != 0x00000000;
+        let sign = if (byte & 0x00000080) != 0x00000000 then 0x000000ff else 0x00000000;
+        let b = if spread then sign else byte;
+        v = v | (b << (8 * k))
+    };
+    D_write(v)
+}
+
+/* P2R and UP2UR: P2R Rd, PR, Ra, mask: Ra with the masked bits (at byte 76-77) from P0-P6, PT the bit 7 */
+function execute_P2R() -> unit = {
+    let byte = UInt(Field(76, 2));
+    if not_bool(SrcIsImm(B)) then throw(Unsupported("%s with a register mask", OpName()));
+    let mask = SrcImm(B);
+    var bits : bits(32) = 0x00000080;
+    foreach (i from 0 to 6) {
+        if MOD(DIV(mask, 2 ^ i), 2) == 1 then {
+            bits = bits | (if PredRead(i, 0, if Uniform() then 1 else 0) then to_bits(32, 2 ^ i) else 0x00000000)
+        }
+    };
+    let pr = bits & to_bits(32, MOD(mask, 256));
+    let keep = SrcBits(A) & not_vec(to_bits(32, MOD(mask, 256) * 2 ^ (8 * byte)));
+    D_write(keep | (pr << (8 * byte)))
+}
+
+/* R2P: the masked bits of a (at byte 76-77: nvdisasm's .B1 sets bit 76, .B2 bit 77) into P0-P6 */
+function execute_R2P() -> unit = {
+    let byte = UInt(Field(76, 2));
+    if not_bool(SrcIsImm(B)) then throw(Unsupported("R2P with a register mask"));
+    let mask = SrcImm(B);
+    let x = SrcBits(A);
+    foreach (i from 0 to 6) {
+        if MOD(DIV(mask, 2 ^ i), 2) == 1 then PredWrite(i, (x & to_bits(32, 2 ^ (i + 8 * byte))) != 0x00000000, 0)
+    }
+}
+
+/* PSETP as a vertex's cull test (sm86.decode): how it combines its predicates isn't known, and in the programs seen
+   the predicate it writes only ends the vertex program early, its outputs unwritten. Never culled, the vertex is drawn
+   as without the test, and the rasterizer clips what is outside. Refused, every draw of such a program was skipped */
+function execute_PSETP() -> unit = {
+    let p = UInt(Field(81, 3));
+    let q = UInt(Field(84, 3));
+    if p < PT then PredWrite(p, false, 0);
+    if q < PT then PredWrite(q, false, 0)
+}
+
+/* CS2R of SRZ: zero, into a pair with bit 80 */
+function execute_CS2R() -> unit = {
+    if Field(72, 8) != 0xff then throw(Unsupported("CS2R of system register 0x%x", Field(72, 8)));
+    R_write(Dst(), 0x00000000);
+    if Field(80, 1) == 0b1 & Dst() < RZ then R_write(Dst() + 1, 0x00000000)
+}
+function execute_S2R() -> unit = R_write(Dst(), ProgramSr(UInt(Field(72, 8))))
+/* the register is the same in each invocation: its value as it is */
+function execute_R2UR() -> unit = U_write(UInt(Field(16, 6)), R_read(UInt(Field(24, 8))))
+function execute_S2UR() -> unit = U_write(UInt(Field(16, 6)), ProgramSr(UInt(Field(72, 8))))
+function execute_UMOV() -> unit = U_write(Dst(), SrcBits(B))
+
+/* SHFL: PTX's shfl.sync. c's bits 8-12 split the 32 lanes into segments, its bits 0-4 clamp the lane. Mode (58-59) 0
+   IDX, 1 UP, 2 DOWN, 3 BFLY. The lane is at 53-57 (an immediate) or 32 (a register), c at 40-52 (an immediate) or 64
+   (a register: SHFL (imm, reg) 0x989 and SHFL (reg, reg) 0x389, as CuAssembler's sm_86 records "SHFL.UP PT, R7, R8,
+   0x1, RZ" and "SHFL.DOWN P1, R32, R33, R32, R31" show). One game's prefix sums are SHFL.UP P0, R12, R19, 0x1, RZ.
+   UP is in range from the clamp's lane on, as PTX's j >= maxLane */
+function Shfl(b_imm : bool, c_reg : bool) -> unit = {
+    let mode = UInt(Field(58, 2));
+    let cc = UInt(Field(40, 13));
+    let creg = if c_reg then R_read(UInt(Field(64, 8))) else 0x00000000;
+    let b = if b_imm then to_bits(32, UInt(Field(53, 5))) else R_read(UInt(Field(32, 8)));
+    let id = SystemValue(0);
+    let lane = id & 0x0000001f;
+    /* c's fields as the immediate's, at run time */
+    let seg = if c_reg then (creg >> 8) & 0x0000001f else to_bits(32, MOD(DIV(cc, 256), 32));
+    let not_seg_reg = if c_reg then not_vec(seg) & 0x0000001f else 0x00000000;
+    let min_lane = lane & seg;
+    let clamp_bits = if c_reg then creg & not_seg_reg else to_bits(32, cc) & not_vec(to_bits(32, DIV(cc, 256))) & 0x0000001f;
+    let max_lane = min_lane | clamp_bits;
+    let j : bits(32) = match mode {
+        0 => min_lane | (b & (if c_reg then not_seg_reg else not_vec(to_bits(32, DIV(cc, 256))) & 0x0000001f)),
+        1 => lane - b,
+        2 => lane + b,
+        _ => EOR(lane, b)
+    };
+    let ok = if mode == 1 then SInt(j) >= SInt(max_lane) else UInt(j) <= UInt(max_lane);
+    Capability(65);
+    /* the lane in the invocation's own 32, on a subgroup of 32 or 64 */
+    let source = (id & 0xffffffe0) | (j & 0x0000001f);
+    let value = R_read(UInt(Field(24, 8)));
+    let got = Shuffle(value, source);
+    R_write(Dst(), if ok then got else value);
+    PredWrite(UInt(Field(81, 3)), ok, 0)
+}
+function execute_SHFL_II() -> unit = Shfl(true, false)
+function execute_SHFL_RI() -> unit = Shfl(false, false)
+function execute_SHFL_IR() -> unit = Shfl(true, true)
+function execute_SHFL_RR() -> unit = Shfl(false, true)
+
+/* VOTE and UVOTE: NAK's OpVote, the ballot of the predicate at 87-90 into the destination, and ALL (0), ANY (1) or EQ
+   (2, bits 72-73) of it into the predicate at 81-83. The ballot, and the vote, are of the invocation's 32 lanes, from
+   the ballots of the predicate and of the active lanes: a vote of the subgroup takes both warps of a subgroup of 64 */
+function Vote(u : bool) -> unit = {
+    let pred = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
+    let how = UInt(Field(72, 2));
+    Capability(64);
+    let ballot = Ballot32(pred);
+    if u then U_write(UInt(Field(16, 6)), ballot) else R_write(Dst(), ballot);
+    if how > 2 then throw(Unsupported("VOTE mode %u", how));
+    let active = Ballot32(true);
+    let all = ballot == active;
+    let none = ballot == 0x00000000;
+    let vote = match how { 0 => all, 1 => not_bool(none), _ => all | none };
+    PredWrite(UInt(Field(81, 3)), vote, if u then 1 else 0)
+}
+function execute_VOTE() -> unit = Vote(false)
+function execute_UVOTE() -> unit = Vote(true)
+
+/* MATCH: NAK's OpMatch, the lanes of the invocation's 32 whose value (a pair with bit 73) is the same. ANY (bit 79)
+   gives them; ALL gives all the active lanes when they all are, else 0, and the predicate */
+function execute_MATCH() -> unit = {
+    let any = Field(79, 1) == 0b1;
+    let pair = Field(73, 1) == 0b1;
+    let r = UInt(Field(24, 8));
+    let lo = R_read(r);
+    let hi = if pair then R_read(if r >= RZ then r else r + 1) else 0x00000000;
+    let base = SystemValue(0) & 0xffffffe0;
+    Capability(65);
+    Capability(64);
+    var mask : bits(32) = 0x00000000;
+    foreach (j from 0 to 31) {
+        let lane = base | to_bits(32, j);
+        let same_lo = Shuffle(lo, lane) == lo;
+        let same = if pair then same_lo & (Shuffle(hi, lane) == hi) else same_lo;
+        mask = mask | (if same then to_bits(32, 2 ^ j) else 0x00000000)
+    };
+    let active = Ballot32(true);
+    let m = mask & active;
+    if any then R_write(Dst(), m) else {
+        let all = m == active;
+        R_write(Dst(), if all then m else 0x00000000);
+        PredWrite(UInt(Field(81, 3)), all, 0)
+    }
+}
+
+/* REDUX: NAK's OpRedux, of the source over the invocation's 32 lanes, into a uniform register: 78-80 0 and, 1 or, 2
+   xor, 3 sum, 4 min, 5 max, bit 73 signed. A clustered reduction of 32 keeps it to those lanes */
+function execute_REDUX() -> unit = {
+    let how = UInt(Field(78, 3));
+    if how > 5 then throw(Unsupported("REDUX operation %u", how));
+    let is_signed = Field(73, 1) == 0b1;
+    /* OpGroupNonUniform BitwiseAnd 359, BitwiseOr 360, BitwiseXor 361, IAdd 349, UMin 354, UMax 357, SMin 353, SMax 356 */
+    let opcode = match how {
+        0 => 359,
+        1 => 360,
+        2 => 361,
+        3 => 349,
+        4 => if is_signed then 353 else 354,
+        _ => if is_signed then 356 else 357
+    };
+    Capability(63);
+    Capability(67);
+    U_write(UInt(Field(16, 6)), ClusterReduce32(opcode, R_read(UInt(Field(24, 8)))))
+}
+
+/* the instructions that only manage the warp's convergence or wait for scoreboards: nothing is computed. BREAK takes
+   its lanes out of a convergence barrier and goes on: the BRA after it leaves */
+function execute_NOP() -> unit = ()
+
+/* MEMBAR: the device scope, for every scope */
+function execute_MEMBAR() -> unit = MemoryBarrierDevice()
+
+/* LEPC: the instruction's address, which only the exit stub's setup reads (STUB_SET) */
+function execute_LEPC() -> unit = {
+    if Dst() < RZ then R_write(Dst(), to_bits(32, 16 * InsnIndex()));
+    if Dst() + 1 < RZ then R_write(Dst() + 1, 0x00000000)
+}
+
+/* STUB_SET and STUB_END: a geometry program's exit stub: STUB_SET sets where EXIT goes on, and the stub's OUT finishes
+   the output. An invocation here has nothing left to finish when it ends (SPIR-V ends each primitive at the
+   invocation's end), so EXIT ends it and the stub does not run */
+function execute_STUB() -> unit = if Stage() != ST_GS then throw(Unsupported("%s outside a geometry program", OpName()))
+
+/* OUT: bits 78-79 emit (1), cut (2) or both, 0 the final one (nothing here); the new output handle Rd is the old one,
+   Ra (nxnative's notes) */
+function execute_OUT() -> unit = {
+    if Stage() != ST_GS then throw(Unsupported("OUT outside a geometry program"));
+    let kind = UInt(Field(78, 2));
+    if kind != 0 & Passthrough() then throw(Unsupported("OUT emits in a passthrough geometry program"));
+    if MOD(kind, 2) == 1 then GsEmit();
+    if kind >= 2 then EndPrimitive();
+    if Dst() < RZ then R_write(Dst(), SrcInt(A))
+}
+
+/* BMOV.32 R, B reads a convergence barrier, which the structured translation does not keep. Into RZ (a BMOV.32.CLEAR
+   RZ, B0 before the BSSY B0 of an NVN vertex program) it changes nothing computed */
+function execute_BMOV_R() -> unit = if Dst() != RZ then throw(Unsupported("BMOV (to register) into R%u", Dst()))
+
+/* A write of a convergence barrier, whose value the structured translation does not keep (BSSY's writes neither), and
+   which no translated instruction reads. The debug variants of the driver's programs start with BMOV.32 B0,
+   0xffffffff, BMOV.32 B1, B0 to BMOV.32 B15, B14 and BMOV.32 B15, 0x0. A state register (28-29 set, for BMOV.32 B, B at
+   16-23) is refused */
+function Bmov(at : int) -> unit = {
+    let to = UInt(Field(at, 8));
+    if to >= 16 then throw(Unsupported("%s into state register %u", OpName(), to))
+}
+function execute_BMOV_BI() -> unit = Bmov(24)
+function execute_BMOV_BL() -> unit = Bmov(16)
