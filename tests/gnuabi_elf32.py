@@ -72,7 +72,14 @@ def main() -> int:
             thumb = name.startswith('thumb')
             path = pathlib.Path(directory) / f'{name}.elf'
             path.write_bytes(elf32(code, thumb))
-            result = subprocess.run([args.runner, str(path)], capture_output=True, timeout=60)
+            # a program of four instructions ends at once, by its exit or by its fault, which waits for no core of the
+            # runtime (process/spawn.c)
+            try:
+                result = subprocess.run([args.runner, str(path)], capture_output=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                print(f'FAIL {name}: still running after 20 s')
+                failures += 1
+                continue
             errors = result.stderr.decode(errors='replace')
             if result.returncode != status or says not in errors:
                 print(f'FAIL {name}: exit {result.returncode}, expected {status}' + (f' and "{says}"' if says else ''))
