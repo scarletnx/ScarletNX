@@ -68,6 +68,9 @@ typedef struct {
     u32 api_cap;           /* the most it takes, 0 for 1.3: vk_api=1.2 runs the 1.2 way on a newer device */
     u32 driver_id;         /* VkDriverId: whose driver runs, which keeps a shader cache of its own (pipeline.c) */
     char driver_name[256]; /* its own name for itself (VkPhysicalDeviceDriverProperties) */
+    /* a fragment input is the driver's own interpolation: no varying pass (render.c's draw_varying; the extension
+       bans' prefer lines on Location) */
+    int host_varying;
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
     /* VK_KHR_copy_memory_indirect with device addresses: many buffer copies in one command, from a list the GPU reads

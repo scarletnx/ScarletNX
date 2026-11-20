@@ -5032,7 +5032,7 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
     return 1;
 }
 /* The varying pass of a draw with shaders sh (ShaderInfo.varying, the fragment program's key): none where the host
-   interpolates as the console does (NVIDIA's driver, which Eden leaves alone too). A pass needs the fragment program
+   interpolates as the console does (g_vk.host_varying: NVIDIA's driver, which Eden leaves alone too). A pass needs the fragment program
    straight after the vertex program, whose position is the rasterizer's as written (no swizzle the program applies,
    the viewport transform on) in viewport 0, and triangles drawn filled. The per-vertex pass (per_vertex: the draw may
    take it) is for a draw of quads, the game's own topology, that culls no face, and captures nothing: the huge
@@ -5042,7 +5042,7 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
    draw takes the position pass, and so does a quad draw the device can do no better for */
 static u32 draw_varying(const DsState* ds, const DrawShaders* sh, int per_vertex) {
     const VkSh *vs = sh->vs, *fs = sh->fs0;
-    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs ||
+    if (g_vk.host_varying || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs ||
         vk_host_programs(&ds->prog)) /* a host program interpolates as its GLSL asks, as the device does */
         return 0;
     if (vs->si.writes_viewport || sh->window_xy || sh->swizzle || sh->topology < 4 || sh->topology > 9 ||

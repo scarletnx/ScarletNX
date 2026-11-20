@@ -76,6 +76,10 @@ shaderFloat16 | off | amd-proprietary | * | any | * | gets FP16 math wrong from 
 shaderDenormPreserveFloat16 | off | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
 shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14); Eden's driver bug list:32 | new:amberlith:64-bit integer arithmetic in a shader | never | -
 
+# Fragment inputs (render.c's draw_varying: a draw's position generic is read from the fragment's own place, and an
+# unculled quad's inputs from its vertices' values, on every driver but those below, whose own interpolation is taken)
+Location | prefer | nvidia | * | any | * | interpolates the inputs of a huge primitive it clips with the position's precision, as the console does, where AMD's, Intel's and Arm's GPUs lose a generic that holds the position by more than a pixel: it needs no varying pass, which cost two games 4 and 7 points of GPU time on every draw | Eden PR 4575 (position_varying_pass.cpp, vk_pipeline_cache.cpp); ScarletNX 153da38c63 (2026-11-10) | headless: | never | -
+
 # Integer to float conversion (shader.h's g_spirv_translate.i2f_nearest: I2F.F32 of a 32-bit integer converts its two
 # halves, each exact, and adds them)
 OpConvertSToF | off | turnip | * | any | * | truncates a 32-bit signed integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | amberlith:intmath: a signed integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
