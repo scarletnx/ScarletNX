@@ -25,6 +25,7 @@ void hle_init(void) {
     pm_init(&g_host.acc.pic_lk);
     pm_init(&g_host.acc.users_lk);
     pm_init(&g_host.audio.lk);
+    pm_init(&g_host.tvmr_jpeg.lk);
     pm_init(&g_host.audren.lk);
     pm_init(&g_host.ldr.lock);
     pm_init(&g_host.misc.mm_lock);

@@ -40,7 +40,8 @@
    or the @version(...) line alone before the hook's. It holds comparisons (>=, >, <=, <, ==) of one key's version,
    joined by commas, all of which hold. The key comes first and is sdk when there is none: sdk is the nnSdk version
    of the module's SDK label (x.y.z, each at most 255, packed x << 16 | y << 8 | z), nvn the NVN API version the
-   runtime reads (major.minor, the minor at most 65535, packed major << 16 | minor). Missing parts are 0. A module
+   runtime reads (major.minor, the minor at most 65535, packed major << 16 | minor), movie the version of the movie
+   library's label in the module (NintendoSDK_movie-x_y_z, packed as sdk's). Missing parts are 0. A module
    whose version is unknown (0) runs only the unversioned hooks. One symbol may be declared several times with
    versions that don't overlap, each with its own handler, all of one key; an unversioned declaration is its symbol's
    only one.
@@ -200,9 +201,9 @@ static const struct {
              {"f64", "f64", "double", 8},   {"usize", "u64", "uint64_t", 8}, {"isize", "i64", "int64_t", 8}};
 
 /* the version keys, as hook.h numbers them */
-enum { K_ANY, K_SDK, K_NVN };
-static const char* const key_name[] = {"any", "sdk", "nvn"};
-static const char* const key_macro[] = {"HOOK_ANY", "HOOK_SDK", "HOOK_NVN"};
+enum { K_ANY, K_SDK, K_NVN, K_MOVIE };
+static const char* const key_name[] = {"any", "sdk", "nvn", "movie"};
+static const char* const key_macro[] = {"HOOK_ANY", "HOOK_SDK", "HOOK_NVN", "HOOK_MOVIE"};
 /* a result's kind for verify mode (verify.h), by Kind */
 static const char* const ret_macro[] = {"HOOK_RET_VOID", "HOOK_RET_BOOL", "HOOK_RET_X8",   "HOOK_RET_X16",
                                         "HOOK_RET_X32",  "HOOK_RET_X64",  "HOOK_RET_X8",   "HOOK_RET_X16",
@@ -625,7 +626,7 @@ static const char* version(const char* p, int key, unsigned long* v, int line) {
     char text[64];
     const char* s = text;
     unsigned long part[3] = {0, 0, 0};
-    int nparts = 0, most = key == K_SDK ? 3 : 2;
+    int nparts = 0, most = key == K_NVN ? 2 : 3;
     size_t n = 0;
     p = skip_space(p);
     while (isalnum((unsigned char)*p) || *p == '.' || *p == '_') {
@@ -648,9 +649,9 @@ static const char* version(const char* p, int key, unsigned long* v, int line) {
         if (!*s) break;
         if (*s++ != '.') fail(line, "malformed version '%s'", text);
     }
-    if (key == K_SDK) {
+    if (key != K_NVN) { /* an sdk or a movie label's x_y_z */
         if (part[0] > 255 || part[1] > 255 || part[2] > 255)
-            fail(line, "malformed version '%s': an sdk version's parts are at most 255", text);
+            fail(line, "malformed version '%s': an %s version's parts are at most 255", text, key_name[key]);
         *v = part[0] << 16 | part[1] << 8 | part[2];
     } else {
         if (part[0] > 255) fail(line, "malformed version '%s': an nvn major version is at most 255", text);
@@ -678,8 +679,10 @@ static const char* parse_version(const char* p, Range* r, int line) {
             r->key = K_SDK;
         else if (!strcmp(key, "nvn"))
             r->key = K_NVN;
+        else if (!strcmp(key, "movie"))
+            r->key = K_MOVIE;
         else
-            fail(line, "unknown version key '%s' (sdk or nvn)", key);
+            fail(line, "unknown version key '%s' (sdk, nvn or movie)", key);
     }
     for (;;) {
         unsigned long v;
@@ -1128,7 +1131,7 @@ static void range_text(const Range* r, char* buf, size_t n) {
     v[0] = r->lo, v[1] = r->hi;
     for (i = 0; i < 2; i++) {
         char* t = i ? hi : lo;
-        if (r->key == K_SDK)
+        if (r->key != K_NVN)
             snprintf(t, sizeof lo, "%lu.%lu.%lu", v[i] >> 16, v[i] >> 8 & 255, v[i] & 255);
         else
             snprintf(t, sizeof lo, "%lu.%lu", v[i] >> 16, v[i] & 0xFFFF);
