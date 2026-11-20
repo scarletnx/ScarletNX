@@ -831,6 +831,10 @@ static void parse_top(void) {
             name = take();
             d = def_add(D_FUNCTION, tok_str(&name), t.line, t.start);
             g_parse.defs[d].params = parse_param_list();
+            if (at("->")) { /* function f(x : T) -> R = ...: the result's type, which a val gives in sail-arm */
+                take();
+                parse_type();
+            }
         }
         expect("=");
         g_parse.defs[d].body = parse_expr();
