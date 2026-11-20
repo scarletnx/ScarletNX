@@ -3924,9 +3924,22 @@ static int coop_frag_find(Ctx* c, u32 b, u32 first, u32 n, u32 shape) {
     }
     return -1;
 }
-/* the matrices of a staged fragment kept for this block, whatever moved the slot after them */
+/* the matrices of a staged fragment kept for this block, whatever moved the slot after them. A full cache first drops
+   the fragments whose registers were written since, which no HMMA can find again (coop_gen only counts up within a
+   block): a straight-line block stages more than COOP_FRAGS of them, and without this its cache stays full of dead
+   entries after the first ones, so every HMMA after that stages both its fragments again */
 static void coop_frag_hold(Ctx* c, u32 b, u32 first, u32 n, u32 shape, const u32* mat, u32 nmat) {
-    if (c->nfrags == COOP_FRAGS) return;
+    if (c->nfrags == COOP_FRAGS) {
+        u32 keep = 0;
+        for (u32 i = 0; i < c->nfrags; i++) {
+            const CoopFrag* f = &c->coop_frags[i];
+            u32 k = 0;
+            while (k < f->n && f->gen[k] == c->coop_gen[f->first + k]) k++;
+            if (k == f->n) c->coop_frags[keep++] = *f;
+        }
+        c->nfrags = keep;
+        if (keep == COOP_FRAGS) return;
+    }
     CoopFrag* f = &c->coop_frags[c->nfrags++];
     f->b = b, f->first = first, f->n = n, f->shape = shape, f->nmat = nmat;
     for (u32 k = 0; k < n; k++) f->gen[k] = c->coop_gen[first + k];
