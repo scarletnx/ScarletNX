@@ -1109,7 +1109,13 @@ void nca_process_ivfc_section(nca_section_ctx_t *ctx) {
         ivfc_level_ctx_t *cur_level = &ctx->romfs_ctx.ivfc_levels[i];
         cur_level->data_offset = sb->ivfc_header.level_headers[i].logical_offset;
         cur_level->data_size = sb->ivfc_header.level_headers[i].hash_data_size;
-        cur_level->hash_block_size = 1 << sb->ivfc_header.level_headers[i].block_size;
+        /* ScarletNX: the size's power of two is the dump's word, and one that passes the size's 32 bits is no size */
+        if (sb->ivfc_header.level_headers[i].block_size >= 32) {
+            fprintf(stderr, "Error: IVFC level %u's block size is 2^%"PRIu32", past 2^31!\n", i + 1,
+                    sb->ivfc_header.level_headers[i].block_size);
+            exit(EXIT_FAILURE);
+        }
+        cur_level->hash_block_size = UINT32_C(1) << sb->ivfc_header.level_headers[i].block_size;
 
         if (i != 0) {
             /* Hash table is previous level's data. */
@@ -1281,7 +1287,13 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
             ivfc_level_ctx_t *cur_level = &ctx->bktr_ctx.ivfc_levels[i];
             cur_level->data_offset = sb->ivfc_header.level_headers[i].logical_offset;
             cur_level->data_size = sb->ivfc_header.level_headers[i].hash_data_size;
-            cur_level->hash_block_size = 1 << sb->ivfc_header.level_headers[i].block_size;
+            /* ScarletNX: the size's power of two is the dump's word, and one that passes the size's 32 bits is no size */
+            if (sb->ivfc_header.level_headers[i].block_size >= 32) {
+                fprintf(stderr, "Error: IVFC level %u's block size is 2^%"PRIu32", past 2^31!\n", i + 1,
+                        sb->ivfc_header.level_headers[i].block_size);
+                exit(EXIT_FAILURE);
+            }
+            cur_level->hash_block_size = UINT32_C(1) << sb->ivfc_header.level_headers[i].block_size;
 
             if (i != 0) {
                 /* Hash table is previous level's data. */
