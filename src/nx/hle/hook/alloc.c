@@ -282,9 +282,11 @@ static void* own_block(u64 a, const char* by) {
     return NULL;
 }
 static u64 guest(const void* p) { return p ? (u64)((const u8*)p - g_mem) : 0; }
+/* the power of two that is align or the next above it, 63 at most: operator new's alignment is whatever the game
+   passes, and above 2^63 there is no power of two to reach */
 static int lg(u64 align) {
     int l = 0;
-    while (((u64)1 << l) < align) l++;
+    while (l < 63 && ((u64)1 << l) < align) l++;
     return l;
 }
 /* the alignment of a block of size bytes: align, 16 at least as the guest's malloc gives, and a page for a page or

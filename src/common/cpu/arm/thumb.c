@@ -4,8 +4,8 @@
    decode-t32.inc, sort an instruction into its pattern, and each pattern's trans_ function fills the SnxThumb the
    emitter reads (arm.h), or refuses the encoding (len 0). A T32 instruction that is an A32 one in another encoding is
    built as that A32 word, which a32.c's decoder judges (TH_A32). The coprocessor, VFP and Advanced SIMD space is the
-   A32 vector decoder's, which the decode tries first. tests/arm_decode.c checks every T16 halfword and every T32 pair
-   against the hand-written decoder this one replaced (tests/support/arm_decode_ref_thumb.c). */
+   A32 vector decoder's, which the decode tries first. tests/arm_decode_tree.c checks every T16 halfword and every T32
+   pair against the hand-written decoder this one replaced (tests/support/arm_decode_ref_thumb.c). */
 #include "common/cpu/arm/arm.h"
 #include "common/cpu/arm/simd.h"
 

@@ -4,7 +4,7 @@
    decode-a32.inc and decode-a32-uncond.inc, sort a word into its instruction, and each instruction's trans_ function
    gives its SnxA32Kind, or SNX_A32_UNDEFINED for an encoding the backend refuses (UNPREDICTABLE operands, and the
    instructions it does not run). VFP and Advanced SIMD words are vector_decode.c's, which the decode tries first.
-   tests/arm_decode.c checks every word against the hand-written decoder this one replaced
+   tests/arm_decode_tree.c checks every word against the hand-written decoder this one replaced
    (tests/support/arm_decode_ref_a32.c). */
 #include "common/cpu/arm/arm.h"
 #include "common/cpu/arm/simd.h"

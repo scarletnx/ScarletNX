@@ -1750,13 +1750,13 @@ static unsigned usable_cpus(void) {
     return snx_cpu_count();
 }
 /* the compile threads when the config leaves it open: every CPU the process may use but two, from one up to
-   SNX_JIT_THREADS. They run below the game's threads (thread_priority), so a compile only gets a CPU the guest
+   SNX_JIT_THREADS_AUTO. They run below the game's threads (thread_priority), so a compile only gets a CPU the guest
    threads, the GPU thread and audio leave idle; the miss thread is not one of them and takes no CPU from the game: it
    compiles while the thread it compiles for waits. Keeping six CPUs for the game left one compile thread on
    hosts with up to 7 CPUs and two on 8, which fell minutes behind Ender Magnolia's misses */
 static unsigned default_threads(void) {
     unsigned cpus = usable_cpus();
-    return cpus >= SNX_JIT_THREADS + 2 ? SNX_JIT_THREADS : cpus > 3 ? cpus - 2 : 1;
+    return cpus >= SNX_JIT_THREADS_AUTO + 2 ? SNX_JIT_THREADS_AUTO : cpus > 3 ? cpus - 2 : 1;
 }
 
 SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size_t error_size) {

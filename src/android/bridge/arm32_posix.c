@@ -113,7 +113,7 @@ HANDLER(f_opendir) {
     if (i == MAX_DIRS || !g) {
         closedir(d);
         arm32_free(g);
-        R(0) = fail(24); /* EMFILE */
+        (void)fail(24); /* EMFILE in errno, and no directory */
         R(0) = 0;
         return;
     }

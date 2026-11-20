@@ -400,7 +400,7 @@ def settings_keys(path):
             continue
         word, _, rest = line.partition(' ')
         rest = rest.strip()
-        if word in ('table', 'section', 'include', 'list', 'repeat', 'end'):
+        if word in ('table', 'section', 'include', 'list', 'repeat', 'end', 'needs'):
             done()
             current = None
             if word == 'table':

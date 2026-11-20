@@ -39,8 +39,8 @@ static size_t load_dump(const char* dir, struct snx_code_range* ranges, size_t c
         unsigned long long base, size, image;
         char* bin;
         size_t length = 0;
-        if (sscanf(line, "module %255s %llx %llx %llx", name, &base, &size, &image) != 4) continue;
-        strcat(name, ".bin");
+        if (sscanf(line, "module %251s %llx %llx %llx", name, &base, &size, &image) != 4) continue;
+        strcat(name, ".bin"); /* which the 251 leave room for */
         bin = snx_path_join(dir, name);
         ranges[n].code = snx_read_file(bin, &length);
         free(bin);

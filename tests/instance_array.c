@@ -24,7 +24,7 @@ typedef struct {
 } Draw;
 static Draw draws[8];
 static int ndraws;
-static int barriers[8], nbarriers, signals;
+static int barriers[8], nbarriers, signals, clears;
 static void record_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     (void)ds, (void)o;
     if (ndraws < 8)
@@ -32,7 +32,10 @@ static void record_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
                                dc->base_vertex,  dc->base_instance, dc->instances};
     ndraws++;
 }
-static void no_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) { (void)ds, (void)c, (void)o; }
+static void no_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
+    (void)ds, (void)c, (void)o;
+    clears++;
+}
 static void record_barrier(int kind) {
     if (nbarriers < 8) barriers[nbarriers++] = kind;
 }
@@ -238,6 +241,16 @@ int main(void) {
     /* neither the texture cache invalidation nor WAIT_FOR_IDLE lands shader results: the game observes neither */
     if (ndraws != 1 || nbarriers != 7 || memcmp(barriers, (int[]){0, 1, 2, 2, 3, 3, 4}, sizeof(int) * 7) || signals) {
         fprintf(stderr, "FAIL: Maxwell barriers or idle were not dispatched in stream order\n");
+        failures++;
+    }
+
+    /* a clear names its colour target in 4 bits, and RT_CONTROL maps 8 targets in 3 bits each from its bit 4: a clear
+       of target 14 under a count of 15 reaches the renderer with no field read past the word's 32 bits (the
+       sanitizers' build stops on that shift) */
+    maxwell3d_method(&ch, 0x487, 0xF, 1);
+    maxwell3d_method(&ch, 0x674, 14u << 6 | 0xFu << 2, 1); /* CLEAR_SURFACE */
+    if (clears != 1) {
+        fprintf(stderr, "FAIL: a clear of colour target 14 reached the renderer %d times, expected 1\n", clears);
         failures++;
     }
 

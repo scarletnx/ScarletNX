@@ -498,6 +498,44 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
     assert(CALL(libc, "fread", buffer, 0x10000, 1, file) == 1 && bytes[0] == 0x5a && bytes[0xffff] == 0x5a);
     assert(CALL(libc, "fclose", file) == 0);
 }
+/* the calls that fill a structure of the game's answer an error for a pointer to no memory of its own, and write
+   nothing: a semaphore's and the free memory's, a module's, a stat's, the controller's and the touch panel's */
+static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* kernel = vita_hle_kernel;
+    strcpy(vita_ptr(p, mem), "sema");
+    uint32_t sema = CALL(kernel, "sceKernelCreateSema", mem, 0, 1, 10, 0);
+    assert(sema && !(sema & 0x80000000u));
+    assert(CALL(kernel, "sceKernelGetSemaInfo", sema, UNMAPPED, 0x3c) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
+    assert(CALL(kernel, "sceKernelGetSemaInfo", sema, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x100) == 0x3c);
+    assert(CALL(kernel, "sceKernelGetFreeMemorySize", UNMAPPED) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
+    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
+    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
+    strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
+    assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
+    assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
+    /* a semaphore's count and a signal are any 32 bits: a signal past the most, or past what a count holds, is the
+       overflow, and the count stays */
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 9) == 0);
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 1) == SCE_KERNEL_ERROR_SEMA_OVF);
+    uint32_t free_run = CALL(kernel, "sceKernelCreateSema", mem, 0, 2, 0, 0); /* no most */
+    assert(CALL(kernel, "sceKernelSignalSema", free_run, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
+    assert(CALL(kernel, "sceKernelGetSemaInfo", free_run, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x12c) == 2);
+    /* a path's parts are parted by a backslash too where the host parts them so: ".." between two names no file */
+    strcpy(vita_ptr(p, mem), "ux0:..\\..\\outside.txt"), strcpy(vita_ptr(p, mem + 0x40), "wb");
+    assert(CALL(vita_hle_libc, "fopen", mem, mem + 0x40) == 0);
+}
+/* a field's width from an argument is any 32 bits, and its digits any number: the widest field is 4096, to the left
+   for a negative width, the most negative one too */
+static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* libc = vita_hle_libc;
+    uint32_t out = words_block(p);
+    char* text = vita_ptr(p, out);
+    strcpy(vita_ptr(p, mem), "%*d");
+    assert(CALL(libc, "sprintf", out, mem, 0x80000000u, 5) == 4096 && text[0] == '5' && text[4095] == ' ');
+    strcpy(vita_ptr(p, mem), "%99999999999d");
+    assert(CALL(libc, "sprintf", out, mem, 5) == 4096 && text[4095] == '5' && text[0] == ' ');
+}
 /* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
    would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry
    and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
@@ -549,6 +587,8 @@ int main(void) {
     gxm_texture_transfers(p, t, mem);
     /* these make blocks of their own after mem, which is the last one no longer */
     libc_stream_sizes(p, t);
+    unmapped_outputs(p, t, mem);
+    libc_field_widths(p, t, mem);
     fios_archive_unmount(p, t);
     vita_process_free(p);
     assert(!snx_remove_tree(root));

@@ -4,6 +4,7 @@
    move in it, the registers (the divider, the square root, the timers, DMA, the card), the BIOS's routines, the
    ARM7's answers over the FIFO, the firmware's Wi-Fi connections, and the geometry engine's commands. No game's
    data. */
+#include "nds/audio/spu.h"
 #include "nds/bios/bios.h"
 #include "nds/board/nds.h"
 #include "nds/cartridge/rom.h"
@@ -371,6 +372,41 @@ static void test_vectors(NdsBoard* board) {
     gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
 }
 
+/* a box whose corners the clip matrix puts at x = z = 0x60000000 with w = -0x60000000, and the reverse: w - z passes
+   int's range where an edge between them meets the far side of the view volume (kept, by the polygon's bit 12), and
+   keeps its 32 bits. The sanitizers' build stops on the overflow; the answer is the wrapped one's */
+static void test_clip(NdsBoard* board) {
+    gx(board, 0x10, 0);
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x16, k == 0 || k == 2 ? 0x60000000u : k == 3 ? 0xA0000000u : 0);
+    gx(board, 0x10, 2), gx(board, 0x15, 0);
+    gx(board, 0x29, 0x001F10C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+    nds_io_write(board, IO + 0x5C0, 4, 0xF000);        /* x = -1.0, y = 0 */
+    nds_io_write(board, IO + 0x5C0, 4, 0x2000u << 16); /* z = 0, width 2.0 */
+    nds_io_write(board, IO + 0x5C0, 4, 0);             /* no height, no depth */
+    uint32_t answer = nds_io_read(board, IO + 0x600, 4) & 2;
+    nds_io_write(board, IO + 0x5C0, 4, 0xF000), nds_io_write(board, IO + 0x5C0, 4, 0x2000u << 16);
+    nds_io_write(board, IO + 0x5C0, 4, 0);
+    CHECK((nds_io_read(board, IO + 0x600, 4) & 2) == answer); /* and the same again */
+    gx(board, 0x10, 0), gx(board, 0x15, 0), gx(board, 0x10, 2);
+    gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
+}
+
+/* a PSG channel's low half is -0x7FFF, which its volume's divider multiplies and never shifts: the sanitizers' build
+   stops on a negative value shifted left. Half the samples of a 50% square are below zero */
+static void test_spu(NdsBoard* board) {
+    int16_t out[64 * 2];
+    uint32_t below = 0, n;
+    nds_spu_write(board, 0x04000500, 2, 0x807F);                                      /* the mixer on, full volume */
+    nds_spu_write(board, 0x04000488, 2, 0x10000 - 0x800);                             /* channel 8's timer */
+    nds_spu_write(board, 0x04000480, 4, 0xE0000000u | 3u << 24 | 0x40u << 16 | 0x7F); /* PSG, duty 3, centre, on */
+    board->cycles += 64 * 1024;
+    nds_spu_run(board);
+    n = nds_spu_take(board, out, 64);
+    for (uint32_t i = 0; i < n; ++i) below += out[i * 2] < 0;
+    CHECK(n >= 32 && below && below < n);
+    nds_spu_write(board, 0x04000480, 4, 0);
+}
+
 /* the sound driver's volumes are bytes a game sets whole, and its table of them holds 128 levels: a sequence at
    volume 255 that is stopped, which reads its tracks' volumes, reads inside the table. Nothing of the read shows
    without a note playing: it is the sanitizers' build that stops on one past the table */
@@ -383,6 +419,25 @@ static void test_sound(NdsBoard* board) {
         for (uint32_t k = 0; k < 6; ++k) nds_write32(board, list + i * 0x18 + k * 4, commands[i][k]);
     nds_sound_request(board, list);
     nds_sound_request(board, 0);
+}
+
+/* SDK 2.0's first builds number the driver's commands their own way, through a table of 30: a command numbered past
+   it names none, and reads nothing past the table (the sanitizers' build stops on that read) */
+static void test_sound_early(NdsRom* rom) {
+    char error[512] = "";
+    const uint32_t list = 0x02050000;
+    const uint32_t commands[2][6] = {{list + 0x18, 30, 0, 0, 0, 0}, {0, 0xFFFFFFFFu, 0, 0, 0, 0}};
+    uint32_t sdk = rom->sdk_version;
+    rom->sdk_version = 0x02001000;
+    NdsBoard* board = calloc(1, sizeof *board);
+    CHECK(board && nds_board_init(board, rom, error, sizeof error));
+    for (uint32_t i = 0; i < 2; ++i)
+        for (uint32_t k = 0; k < 6; ++k) nds_write32(board, list + i * 0x18 + k * 4, commands[i][k]);
+    nds_sound_request(board, list);
+    nds_sound_request(board, 0);
+    nds_board_free(board);
+    free(board);
+    rom->sdk_version = sdk;
 }
 
 int main(void) {
@@ -410,9 +465,12 @@ int main(void) {
     test_geometry(board);
     test_matrices(board);
     test_vectors(board);
+    test_clip(board);
+    test_spu(board);
     test_sound(board);
     nds_board_free(board);
     free(board);
+    test_sound_early(&rom);
     nds_rom_close(&rom);
     (void)snx_remove_tree(dir);
     free(image);

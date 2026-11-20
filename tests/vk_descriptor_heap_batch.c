@@ -143,7 +143,7 @@ static void exact_keys_and_limit(void) {
 }
 static void compact_keys(void) {
     check(sizeof(VkDescriptorHeapResourceEntry) == 32 && sizeof(VkDescriptorHeapSamplerEntry) == 16,
-          "resource and sampler entries retain all fields in exactly32 and16 bytes");
+          "resource and sampler entries retain all fields in exactly 32 and 16 bytes");
     VkDescriptorHeapResourceEntry a = {.object = UINT64_MAX, .offset = 0x1234567887654321ull,
         .range = 0xabcdef0123456789ull, .tag = 1, .heap_offset = 0};
     VkDescriptorHeapResourceEntry b = a;

@@ -998,8 +998,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define GUI_RECENT_SHOWN 3 /* the recent games Games shows before a row that shows the rest */
 /* what the screens say to press: a phone has a finger, the back button and the system's file picker, nothing to drop;
    a computer has the picker too (on Linux the desktop's portal, else zenity), on a screen of its own as the keys' */
-#ifdef SDL_PLATFORM_ANDROID
 #ifdef SNX_TOUCH_UI
+#ifdef SDL_PLATFORM_ANDROID
 #define SAY_MENU SNX_TR_KEYS("Tap: select. Refresh. Back.")
 #else
 #define SAY_MENU SNX_TR_KEYS("Tap: select. Refresh.")

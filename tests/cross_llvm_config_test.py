@@ -65,6 +65,18 @@ def main():
                     f'want {want!r}'
                 )
                 failed += 1
+        # an llvm-config that fails under its qemu (or a qemu that is not there): the script's status says so
+        header = bytearray(64)
+        header[:6] = b'\x7fELF' + bytes([2, 1])
+        header[18:20] = struct.pack('<H', 243)
+        config.write_bytes(bytes(header))
+        executable(bin_dir / 'qemu-riscv64', '#!/bin/sh\necho "no such library" >&2\nexit 3\n')
+        out = subprocess.run(['sh', str(SCRIPT), '--libdir'], env=env, capture_output=True, text=True)
+        if out.returncode != 3 or out.stdout:
+            print(
+                f'FAIL: a failing llvm-config: status {out.returncode}, output {out.stdout!r}, want status 3 and none'
+            )
+            failed += 1
     if failed:
         return 1
     print(f'PASS cross-llvm-config.sh: {len(CASES)} machines')

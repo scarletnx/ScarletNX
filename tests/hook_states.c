@@ -9,6 +9,7 @@
 #include "nx/hle/hook/hook.c"
 #include "nx/hle/hook/family.c"
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 #define CODE 0x1000u
@@ -85,7 +86,12 @@ GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler) {
     return (void)symbol, (void)sdk, (void)handler, NULL;
 }
 void fatal(const char* fmt, ...) {
-    fprintf(stderr, "fatal: %s\n", fmt);
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("fatal: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
     exit(1);
 }
 int alloc_ready(void) { return 0; }

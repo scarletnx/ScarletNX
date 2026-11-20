@@ -97,6 +97,11 @@ int main(void) {
     assert(q >= WINDOW && g_mem[q] == 0xAB && g_mem[q + 99] == 0xAB);
     u64 a = alloc_new_aligned(&c, 64, 4096);
     assert(a >= WINDOW && !(a & 4095));
+    /* an alignment no block has (past 2^63, and no power of two) ends: the arena gives none, and the game's own
+       operator new answers */
+    int originals = g_original;
+    assert(alloc_new_aligned(&c, 64, 0x8000000000000001ull) == 777 && g_original == originals + 1);
+    g_original = originals;
     /* a page or more starts at a page, as the SDK's allocator gives it: the kernel's transfer memory takes no other
        (jemalloc alone offsets a large block within its first page) */
     u64 big[4];

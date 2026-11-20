@@ -96,6 +96,10 @@ int main(void) {
     assert(libc_div(c, 7, 0) == (u64)7 << 32 && libc_div(c, INT32_MIN, -1) == (u32)INT32_MIN);
     assert(libc_ldiv(c, -9, 0) == 0 && c->x[1] == (u64)-9);
     assert(libc_ldiv(c, INT64_MIN, -1) == INT64_MIN && c->x[1] == 0);
+    /* abs: the game's long is 64 bits on every host, and the lowest value comes back as it is */
+    assert(libc_abs(c, -7) == 7 && libc_abs(c, INT32_MIN) == INT32_MIN);
+    assert(libc_labs(c, -0x100000001ll) == 0x100000001ll && libc_labs(c, INT64_MIN) == INT64_MIN);
+    assert(libc_llabs(c, -0x100000001ll) == 0x100000001ll && libc_llabs(c, INT64_MIN) == INT64_MIN);
     assert(libc_htonl(c, 0x11223344) == 0x44332211 && libc_htons(c, 0x1122) == 0x2211);
     /* qsort and bsearch through the guest's comparison */
     i32 v[6] = {5, -1, 3, 9, 0, 3};
@@ -148,6 +152,12 @@ int main(void) {
     c->x[3] = 5;
     assert(libc_snprintf(c, 0x9400, 1024, put(0x8180, "%600d|")) == 601 && g_mem[0x9400 + 598] == ' ' &&
            !strcmp((char*)g_mem + 0x9400 + 599, "5|"));
+    /* a width given as an argument: a negative one pads to the left, and the lowest int, which has no opposite, is
+       an error */
+    c->x[3] = (u64)-4, c->x[4] = 5;
+    assert(libc_snprintf(c, 0x9400, 64, put(0x81c0, "%*d|")) == 5 && !strcmp((char*)g_mem + 0x9400, "5   |"));
+    c->x[3] = (u64)INT32_MIN, c->x[4] = 5;
+    assert(libc_snprintf(c, 0x9400, 64, put(0x81c0, "%*d|")) == -1);
     /* truncated to the size, the whole length returned */
     assert(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")) == 5 && !strcmp((char*)g_mem + 0x9100, "hel"));
     /* vsnprintf, through a va_list record: two ints from the general registers' save area, a double from the vector

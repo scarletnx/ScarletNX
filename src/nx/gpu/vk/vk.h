@@ -709,7 +709,6 @@ void vk_stage_report(void);
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
-void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
@@ -1975,10 +1974,9 @@ u32 vk_bc7_build(u32 w, u32 h, u32 d);
 /* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
    points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
    the encoder writes changes other than through its SPIR-V (which the file's version holds), as a level's choice of
-   build does. VK_BC7_CACHE_MAX: the file's bound, after which it starts over: one Ounce game's demo alone holds
-   3.3 GB of BC7, so 4 GB went over as more of it was played */
+   build does. The file's bound, after which it starts over, is the setting bc7_cache_gb (8 GB by default: one Ounce
+   game's demo alone holds 3.3 GB of BC7, so 4 GB went over as more of it was played) */
 #define VK_BC7_ENCODER_VERSION 1
-#define VK_BC7_CACHE_MAX       (8ull << 30)
 /* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
 void vk_bc7_content(u64 content[2], const void* p, u64 n);
 /* what else changes a level's blocks: its size, its slices (depth) or layers, the footprint, the sRGB decode mode and
@@ -1991,6 +1989,7 @@ void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
    no cache (another process holds the file, or it cannot be written) */
 int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
 void vk_bc7_cache_close(void);
+u64 vk_bc7_cache_max(void); /* the bound the cache was opened with */
 /* 1 while the cache is open and held no level as it opened: every ASTC level is encoded as it first loads */
 int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
@@ -3083,14 +3082,6 @@ extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because th
 /* the submission a unified memory dispatch was left in for the stream's end to submit (vk_release_submit), and how many
    were left so (statistics) */
 extern u64 g_vk_cs_open, g_vk_cs_left;
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
@@ -3140,14 +3131,15 @@ int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
-/* An indirect draw of quads, its record at record_at of record (16 bytes of a draw of vertices, 20 of one of indices),
-   made the indexed record of their triangles at *arguments_at of *arguments, on the GPU. size 0: quads of vertices,
-   drawn with the renderer's quad indices of vertex numbers, which hold limit quads. Else quads of indices of size
-   bytes, limit of them from indices_at of indices on: their triangles' 32-bit indices are made at *made_at of
-   *arguments. last: the quad's last vertex provokes. A record past limit draws the quads limit allows. 0 when it
-   can't be made */
-int vk_indirect_quads(VkBuffer record, u64 record_at, u32 size, VkBuffer indices, u64 indices_at, u32 limit, int last,
-                      VkBuffer* arguments, u64* arguments_at, u64* made_at);
+/* An indirect draw of quads, its records from record_at of record on, stride bytes apart (16 bytes each of a draw
+   of vertices, 20 of one of indices), made the indexed records of their triangles, 20 bytes apart from *arguments_at
+   of *arguments on, on the GPU. size 0: quads of vertices, drawn with the renderer's quad indices of vertex numbers,
+   which hold limit quads. Else quads of indices of size bytes, limit of them from indices_at of indices on: their
+   triangles' 32-bit indices are made from *made_at of *arguments on, for a record that starts at any index, and that
+   is where the draw binds its index buffer. last: the quad's last vertex provokes. A record past limit draws the
+   quads limit allows. 0 when they can't be made */
+int vk_indirect_quads(VkBuffer record, u64 record_at, u32 stride, u32 records, u32 size, VkBuffer indices,
+                      u64 indices_at, u32 limit, int last, VkBuffer* arguments, u64* arguments_at, u64* made_at);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
@@ -3452,14 +3444,5 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */
 extern u64 g_rec_barriers_synced;               /* record.c: barriers with a pNext chain, after the ring drained */
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
-
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 #endif

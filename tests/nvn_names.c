@@ -402,7 +402,7 @@ static void test_command_buffer(void) {
     nvn_CommandBufferSetPatchSize(NULL, CMDBUF, -1);
     nvn_CommandBufferSetPatchSize(NULL, CMDBUF, 33);
     check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == patch_free,
-          "patch sizes outside1..32 record nothing");
+          "patch sizes outside 1..32 record nothing");
     nvn_CommandBufferSetAlphaRef(NULL, CMDBUF, 0.375f);
     nvn_CommandBufferSetPointSize(NULL, CMDBUF, 3.0f);
     nvn_CommandBufferSetDepthBounds(NULL, CMDBUF, 1, 0.125f, 0.875f);
@@ -435,11 +435,11 @@ static void test_command_buffer(void) {
     memory_before = nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF);
     nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 3, 8);
     check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 128,
-          "precision bias accounts for all16 viewport commands");
+          "precision bias accounts for all 16 viewport commands");
     nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 9, 0);
     nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 0, -1);
     check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 128,
-          "precision bias outside0..8 records nothing");
+          "precision bias outside 0..8 records nothing");
     check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
     nvn_ProgramSetSampleShading(NULL, PROGRAM, 1);
     nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
@@ -626,9 +626,9 @@ static void test_tessellation_metadata(void) {
     for (u32 i = 0; i < 1153; i++)
         check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a program update past the former metadata limit");
     check(g_nvn.object.ntess > 1024 && g_nvn.object.ntess <= g_nvn.object.tess_capacity,
-          "tessellation metadata grows beyond1024 program updates");
+          "tessellation metadata grows beyond 1024 program updates");
     check(g_nvn.object.nxfb > 1024 && g_nvn.object.nxfb <= g_nvn.object.xfb_capacity,
-          "transform feedback metadata grows beyond1024 program updates");
+          "transform feedback metadata grows beyond 1024 program updates");
     for (u32 i = 0; i < g_nvn.object.ntess; i++) {
         NvnTessStage found[2] = {{0}};
         const NvnTessEntry* entry = &g_nvn.object.tess[i];

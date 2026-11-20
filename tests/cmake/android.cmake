@@ -125,12 +125,12 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-android-gles1-samplers PRIVATE -UNDEBUG)
     add_test(NAME android_gles1_samplers COMMAND snx-test-android-gles1-samplers)
     # the bridge's start where the LLVM backend cannot target the host, snx_recompiler_new wrapped at link time; and
-    # a lookup in the linker's libraries while another thread's load is held in its read, plat_pread_fd wrapped
+    # a lookup in the linker's libraries while another thread's load is held in its read, libc's pread wrapped
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
         add_executable(snx-test-android-linker-lock "${PROJECT_SOURCE_DIR}/tests/android_linker_lock.c")
         target_link_libraries(snx-test-android-linker-lock PRIVATE
                               "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>" Threads::Threads)
-        target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=plat_pread_fd")
+        target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread")
         set_target_properties(snx-test-android-linker-lock PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
         target_compile_options(snx-test-android-linker-lock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
         add_test(NAME android_linker_lock COMMAND snx-test-android-linker-lock)

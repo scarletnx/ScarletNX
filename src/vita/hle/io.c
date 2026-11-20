@@ -33,6 +33,7 @@
 #define ENOENT 2u
 #define EBADF  9u
 #define EACCES 13u
+#define EFAULT       14u
 #define EEXIST 17u
 #define ENOTDIR 20u
 #define EISDIR 21u
@@ -142,8 +143,9 @@ static char* host_path_of(VitaProcess* p, char* path, bool* writable) {
     while (*rest == '/') ++rest;
     /* each part relative and not ".." */
     for (const char* q = rest; *q;) {
-        const char* slash = strchr(q, '/');
-        size_t n = slash ? (size_t)(slash - q) : strlen(q);
+        /* a backslash parts a path too where the host takes one (Windows) */
+        size_t n = strcspn(q, "/\\");
+        const char* slash = q[n] ? q + n : NULL;
         if (n == 2 && q[0] == '.' && q[1] == '.') return NULL;
         if (!slash) break;
         q = slash + 1;
@@ -491,6 +493,7 @@ static uint32_t io_getstat(VitaProcess* p, VitaThread* t) {
     /* try a mounted archive first, with the same device defaulting the FIOS2 path uses (app0: when the game gives no
        device); fall through to the host filesystem when nothing is mounted at that path */
     char name[1100];
+    if (!vita_mapped(p, vita_arg(p, t, 1), 88)) return SCE_ERRNO(EFAULT); /* the SceIoStat written */
     if (vita_string(p, vita_arg(p, t, 0), name, sizeof name)) {
         char full[1100];
         snprintf(full, sizeof full, strchr(name, ':') ? "%s" : "app0:%s", name);
@@ -513,6 +516,7 @@ static uint32_t io_getstat(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t io_getstat_by_fd(VitaProcess* p, VitaThread* t) {
     uint32_t fd = vita_arg(p, t, 0), out = vita_arg(p, t, 1);
+    if (!vita_mapped(p, out, 88)) return SCE_ERRNO(EFAULT);
     if (tty_slot(fd) >= 0) {
         /* a character device: no size, mode SCE_S_IFCHR */
         memset(vita_ptr(p, out), 0, 88);

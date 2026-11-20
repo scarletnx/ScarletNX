@@ -6,7 +6,6 @@
 /* Small integer helpers every part of the program had its own copy of: rounding to a multiple, clamping, 128-bit
    products and quotients, byte swaps and bit counts, and the FNV-1a hash the caches key their entries with. */
 
-#include "common/utilities/bits.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

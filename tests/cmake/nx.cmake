@@ -375,13 +375,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         SKIP_REGULAR_EXPRESSION "draws go through pipelines:"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;refused a shader object")
-    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
-    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)
     add_test(NAME vulkan_gpuprof_pool COMMAND snx-test-vulkan -H --vk-gpu-profile=1 --vk-validation=1)
     set_tests_properties(vulkan_gpuprof_pool PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_GPUPROF_POOL_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
+    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk-validation=1)
     set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
@@ -531,8 +531,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_vendor_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
-    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
-                                                      Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
+    # snx_settings_runtime: the graphics table, whose bc7_cache_gb the cache's bound case reads
+    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags snx_settings_runtime scarletnx-filesystem snx_xxhash
+                                                      snx_vk_common Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()

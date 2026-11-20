@@ -111,7 +111,11 @@ list(APPEND snx_curl_args
      -DCURL_DISABLE_TFTP=ON
      -DCURL_DISABLE_WEBSOCKETS=ON)
 
-snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_hash}" "configure: ${snx_curl_args}"
+# The install prefix stays out of the key, as OpenSSL's does: it is this tree's folder, in no byte of libcurl.a or of
+# the headers, and with it no two trees shared a build
+set(snx_curl_key_args ${snx_curl_args})
+list(FILTER snx_curl_key_args EXCLUDE REGEX "^-DCMAKE_INSTALL_PREFIX=")
+snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_hash}" "configure: ${snx_curl_key_args}"
                 "openssl: ${snx_openssl_hash}")
 if(snx_curl_cache_FOUND)
     set(snx_curl_prefix "${snx_curl_cache_DIR}")

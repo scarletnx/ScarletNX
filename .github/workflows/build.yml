@@ -1491,6 +1491,14 @@ jobs:
           path: .cache/deps
           key: deps-${{ github.job }}-${{ github.run_id }}
           restore-keys: deps-${{ github.job }}-
+      # the plugin graph of the APK: AGP 9 and the Kotlin plugin that comes with it, which Gradle fetches into its home
+      # on every cold run. A fetch that fails stops the APK after the native build has passed, and nothing else in this
+      # job needs Maven Central, so the downloads stay between runs
+      - uses: actions/cache@v5
+        with:
+          path: .cache/gradle/caches
+          key: gradle-android-${{ hashFiles('dist/android/**') }}
+          restore-keys: gradle-android-
       - name: Set up the caches
         shell: bash
         run: |
@@ -1501,6 +1509,7 @@ jobs:
             echo "CCACHE_NOHASHDIR=true"
             # the NDK is installed afresh on each run: its version, not its files' dates, says which compiler it is
             echo "CCACHE_COMPILERCHECK=string:$ANDROID_NDK_ROOT"
+            echo "GRADLE_USER_HOME=$ws/.cache/gradle"
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"

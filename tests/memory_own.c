@@ -51,7 +51,7 @@ static void test_fail(const char* expr, int line) {
 }
 #define CHECK(expr)                                                                                                    \
     do {                                                                                                               \
-        (atomic_fetch_add_explicit(&checks, 1, memory_order_relaxed) + 1);                                             \
+        atomic_fetch_add_explicit(&checks, 1, memory_order_relaxed);                                                   \
         if (!(expr)) test_fail(#expr, __LINE__);                                                                       \
     } while (0)
 

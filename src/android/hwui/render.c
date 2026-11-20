@@ -110,7 +110,7 @@ typedef struct {
     bool used;
 } Glyph;
 
-/* android_render_set_options': the program's options, before the renderer starts */
+/* android_render_set_options: the program's options, before the renderer starts */
 static struct {
     bool headless;
     const char* shot;
@@ -1768,7 +1768,6 @@ static void draw_bitmap_pass(VkCommandBuffer cb, const Pass* p) {
     texture_readable(cb, t);
 }
 
-/* the frame's passes and draws recorded and submitted, and presented to the window */
 /* ---- the layer over an app's own Vulkan ---- */
 
 /* Whether the frame's draws leave anything visible in the layer, without reading it back: each draw that colors the
@@ -1923,6 +1922,7 @@ static intptr_t render_layer_handle(unsigned index, uint64_t generation) {
     return handle;
 }
 
+/* the frame's passes and draws recorded and submitted, and presented to the window */
 static void render_frame(void) {
     VkExtent2D want = snx_vk_window_extent(&r.host, (VkExtent2D){(uint32_t)r.width, (uint32_t)r.height});
     if (want.width != r.extent.width || want.height != r.extent.height ||

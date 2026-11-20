@@ -2,6 +2,7 @@
    Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 #include "agb/cartridge/cartridge.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,7 +53,7 @@ int agb_cartridge_load(AgbCartridge* cartridge, const void* image, size_t size, 
         return -1;
     }
     /* the branch target as a ROM offset: 8 past the branch word, plus the sign extended imm24 shifted left 2 */
-    cartridge->entry_to = 8u + (uint32_t)((int32_t)(cartridge->entry << 8) >> 6);
+    cartridge->entry_to = 8u + snx_asr32(cartridge->entry << 8, 6);
     if (bytes[0xB2] != 0x96) {
         snprintf(error, error_size, "ROM header's byte 0xB2 is 0x%02X, not the fixed 0x96", bytes[0xB2]);
         return -1;

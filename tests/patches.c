@@ -117,6 +117,11 @@ static void ipswitch(void) {
                        "line 1: @nsobid-XYZ: the build ID is up to 64 hex digits after @nsobid-"));
     assert(failed_with(pchtxt("@flag offset_shift -0x20\n@enabled\n00000010 AA\n", image, error), error,
                        "line 3: 00000010 AA: offset 0x10 with offset_shift -32 is below 0"));
+    /* an offset and a shift whose sum no 63 bits hold: said as that, not added */
+    assert(failed_with(pchtxt("@flag offset_shift 0x7fffffffffffffff\n@enabled\n00000010 AA\n", image, error), error,
+                       "line 3: 00000010 AA: offset 0x10 with offset_shift 9223372036854775807 is past 2^63"));
+    assert(failed_with(pchtxt("@enabled\nFFFFFFFFFFFFFFFF AA\n", image, error), error,
+                       "line 2: FFFFFFFFFFFFFFFF AA: offset 0xFFFFFFFFFFFFFFFF with offset_shift 0 is past 2^63"));
     puts("PASS IPSwitch: its build ID, flags, comments, strings, disabled patches, a long line, @stop, refusals");
 }
 

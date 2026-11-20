@@ -3,6 +3,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/ppu/ppu.h"
 #include "agb/board/board.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <math.h>
 #include <string.h>
@@ -79,7 +80,7 @@ static void reference_write(AgbPpu* ppu, uint32_t offset, uint16_t value) {
     int32_t* written = y_axis ? &ppu->bgy[index] : &ppu->bgx[index];
     int32_t* line = y_axis ? &ppu->bgy_line[index] : &ppu->bgx_line[index];
     uint32_t combined = ((uint32_t)*written & ~(0xFFFFu << shift)) | ((uint32_t)value << shift);
-    *written = (int32_t)(combined << 4) >> 4;
+    *written = (int32_t)snx_asr32(combined << 4, 4);
     *line = *written;
 }
 

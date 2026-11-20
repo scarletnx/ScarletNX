@@ -1664,7 +1664,6 @@ u8* plat_alias_host(u64 off, u64 size) {
     return p == MAP_FAILED ? NULL : (u8*)p;
 }
 void plat_alias_host_free(u8* p, u64 size) { munmap(p, (size_t)size); }
-static u64 g_alias_size;
 void plat_thread_where(u32 tid, char* out, size_t n) {
     snprintf(out, n, "?");
 #if defined(__linux__)
