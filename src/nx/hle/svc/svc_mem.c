@@ -18,6 +18,7 @@
 
 /* the MemoryState flags the checks below test (k_memory_block.h, Switchbrew's MemoryState) */
 #define MSF_CAN_REPROTECT   (1u << 8)
+#define MSF_CODE            (1u << 14)
 #define MSF_CAN_ALIAS       (1u << 15)
 #define MSF_CAN_TRANSFER    (1u << 17)
 #define MSF_CAN_MAP_PROCESS (1u << 23)
@@ -282,7 +283,23 @@ static int attr_blocked(u64 addr, u64 size, MemBlock* b) {
     return 0;
 }
 /* ============================================================ the owners of a lock */
-/* A view's dst is mapped in the stack state, or in normal memory inside the alias region (check_map_memory's choice) */
+/* svcMapProcessCodeMemory's view: the code states its dst has, and svcSetProcessMemoryPermission's read-write form */
+static int code_view(u32 state) { return state == MS_ALIASCODE || state == MS_ALIASCODEDATA; }
+/* whether [a, a + size) is a whole code view, no gap, whose attribute is one the unmap takes (the console's
+   CheckMemoryStateContiguous for FlagCanCodeAlias: every block AliasCode or AliasCodeData, and nothing of the
+   attribute but PermissionLocked, which the unmap drops), as svcUnmapProcessCodeMemory finds its dst */
+static int code_view_ok(u64 a, u64 size) {
+    u64 end = a + size;
+    while (a < end) {
+        MemBlock b;
+        mem_query(a, &b);
+        if (b.addr > a || b.addr + b.size <= a || !code_view(b.state) || (b.attr & ~MA_PERMISSION_LOCKED)) return 0;
+        a = b.addr + b.size;
+    }
+    return 1;
+}
+/* A view's dst is mapped in the stack state, or in normal memory inside the alias region (check_map_memory's choice),
+   or as a code view (svcMapProcessCodeMemory's) */
 static u32 view_state(u64 dst, u64 size) {
     if (can_contain(dst, size, MS_STACK)) return MS_STACK;
     if (ALIAS_SIZE && in_region(dst, size, ALIAS_BASE, ALIAS_SIZE)) return MS_NORMAL;
@@ -292,7 +309,7 @@ static u32 view_state(u64 dst, u64 size) {
    owner left */
 static int view_live(const KMapView* v) {
     u32 state = view_state(v->dst, v->size);
-    return state && range_ok(v->dst, v->size, state, 0, ANY, ~0u, 0);
+    return (state && range_ok(v->dst, v->size, state, 0, ANY, ~0u, 0)) || code_view_ok(v->dst, v->size);
 }
 /* forget the views whose dst is no longer mapped: an unmap that got as far as the dst but not as far as its source's
    lock leaves one behind */
@@ -307,23 +324,30 @@ static void views_prune(void) {
         }
     }
 }
-/* a view of src at dst, under map_lk: a stale view's slot is taken before one past the end is reported */
-static void map_view_add(u64 dst, u64 src, u64 size) {
+/* a free slot for a view, under map_lk, a stale view's taken before one past the end is reported: -1 when none is */
+static int map_view_slot(void) {
     u32 i;
     for (i = 0; i < KMAPVIEW_MAX; i++)
-        if (!g_hle.svcmem.maps[i].size) break;
-    if (i == KMAPVIEW_MAX) {
-        views_prune();
-        for (i = 0; i < KMAPVIEW_MAX && g_hle.svcmem.maps[i].size; i++) {}
-    }
-    if (i == KMAPVIEW_MAX) {
+        if (!g_hle.svcmem.maps[i].size) return (int)i;
+    views_prune();
+    for (i = 0; i < KMAPVIEW_MAX; i++)
+        if (!g_hle.svcmem.maps[i].size) return (int)i;
+    return -1;
+}
+/* the view of src at dst in a slot map_view_slot gave, under map_lk */
+static void map_view_set(int i, u64 dst, u64 src, u64 size) {
+    g_hle.svcmem.maps[i].dst = dst;
+    g_hle.svcmem.maps[i].src = src;
+    g_hle.svcmem.maps[i].size = size;
+}
+static void map_view_add(u64 dst, u64 src, u64 size) {
+    int i = map_view_slot();
+    if (i < 0) {
         WARN_LIMIT(4, "kernel: more than %d MapMemory views at once: their sources' locks have no owner to name\n",
                    KMAPVIEW_MAX);
         return;
     }
-    g_hle.svcmem.maps[i].dst = dst;
-    g_hle.svcmem.maps[i].src = src;
-    g_hle.svcmem.maps[i].size = size;
+    map_view_set(i, dst, src, size);
 }
 static void map_view_del(u64 dst) {
     u32 i;
@@ -567,6 +591,159 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     pm_unlock(&g_host.svcmem.views_lk);
     R_SUCCEED();
 }
+
+/* ============================================================ code memory of the process */
+/* svcSetProcessMemoryPermission, svcMapProcessCodeMemory and svcUnmapProcessCodeMemory (0x73, 0x77 and 0x78), the
+   trio a JIT uses. MapProcessCodeMemory makes an AliasCode view of the caller's own normal read-write memory and
+   locks the source, as the console's KPageTable::MapCodeMemory does: the source becomes kernel-read and unmapped to
+   the guest, the view is unmapped until SetProcessMemoryPermission gives it read-execute, and UnmapProcessCodeMemory
+   puts the source back to read-write. The view is the source's same pages with the alias pool (a copy of them without
+   one, written back at the unmap), so no guard page is needed around it: the console maps exactly the range it was
+   given, where ldr:ro's mem_map_code keeps one on each side */
+/* the permission SetProcessMemoryPermission takes: none, read, read-write, execute and read-execute, as the console's
+   MemoryPermission has them (write alone is not one) */
+static int code_perm(u32 perm) {
+    return perm == PERM_NONE || perm == PERM_R || perm == PERM_RW || perm == PERM_X || perm == PERM_RX;
+}
+/* the state of a code block that takes the permission perm: a read-write one is code data, and the console's FlagCode
+   is gone from it, so the call sets execute once per mapping (map, unmap, write, map again) */
+static u32 code_state(u32 state, u32 perm) {
+    if (!(perm & PERM_W)) return state;
+    return state == MS_CODE ? MS_CODEDATA : MS_ALIASCODEDATA;
+}
+/* the permission of each code block of [a, a + size), and read-write the state its data form */
+static void set_code_perm(u64 a, u64 size, u32 perm) {
+    u64 end = a + size;
+    while (a < end) {
+        MemBlock b;
+        u64 hi;
+        mem_query(a, &b);
+        hi = b.addr + b.size < end ? b.addr + b.size : end;
+        mem_set_state(a, hi - a, code_state(b.state, perm), perm);
+        a = hi;
+    }
+}
+/* a code view may go anywhere the process's address space leaves free outside the heap, the alias region and the
+   kernel's pages, as the console's CanContain(AliasCode) has it */
+static int can_contain_code(u64 a, u64 size) {
+    return can_contain(a, size, MS_ALIASCODE) && !overlaps(a, size, KERN_BASE, KERN_END - KERN_BASE);
+}
+/* both addresses page-aligned, the size whole pages, neither range wrapping (InvalidAddress, InvalidSize,
+   InvalidCurrentMemory) */
+static u32 check_code_range(u64 dst, u64 src, u64 size) {
+    R_UNLESS(!((dst | src) & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(dst + size > dst && src + size > src, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_SUCCEED();
+}
+/* svcSetProcessMemoryPermission: none, read, read-write, execute or read-execute on the process's code, whose blocks
+   must carry FlagCode and no attribute (the console checks the state and the attribute; a read-write result is code
+   data, and no longer takes this call) */
+u32 svc_set_process_mem_perm(u32 process, u64 addr, u64 size, u32 perm) {
+    KObj* p;
+    u32 r = 0;
+    R_TRY(check_range(addr, size));
+    R_UNLESS(code_perm(perm), SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
+    p = h_get_ref(process, KO_PROCESS);
+    R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
+    kobj_unref(p);
+    pm_lock(&g_host.svcmem.map_lk);
+    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CODE, ANY, ~0u, 0))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else
+        set_code_perm(addr, size, perm);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+/* svcMapProcessCodeMemory: the process's normal read-write memory at src becomes the AliasCode view at dst, with no
+   permission, and src is locked and unmapped to the guest until the view goes. The dst must be free, in the address
+   space outside the heap, the alias region and the kernel's pages; src keeps the view's pages (the alias pool). The
+   views a run keeps at once are this runtime's table (KMAPVIEW_MAX): past it the call is refused rather than made
+   with nothing to record its source */
+u32 svc_map_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
+    KObj* p;
+    int slot;
+    u32 r = 0;
+    R_TRY(check_code_range(dst, src, size));
+    p = h_get_ref(process, KO_PROCESS);
+    R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
+    kobj_unref(p);
+    pm_lock(&g_host.svcmem.map_lk);
+    slot = map_view_slot();
+    /* the console's order: the source is in the address space, the destination's region takes code, the source is
+       normal read-write memory, and the destination is free */
+    if (!in_region(src, size, 0, AS_END))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (!can_contain_code(dst, size))
+        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
+    else if (!range_ok(src, size, MS_NORMAL, 0, PERM_RW, ~0u, 0))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (!range_ok(dst, size, MS_FREE, 0, ANY, ~0u, 0))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (slot < 0) {
+        WARN_LIMIT(4,
+                   "svcMapProcessCodeMemory: all %d views are in use, the game gets OutOfResource (%#x): a code view "
+                   "would have no source to give its pages back to\n",
+                   KMAPVIEW_MAX, SNX_RC_SVC_OUT_OF_RESOURCE);
+        r = SNX_RC_SVC_OUT_OF_RESOURCE;
+    } else {
+        r = mem_result(mem_alias_begin(src, size));
+        if (!r) {
+            r = mem_result(mem_alias_map(dst, src, size, MS_ALIASCODE, PERM_NONE));
+            if (r) mem_alias_end(src, size);
+        }
+        if (!r) {
+            set_perm(src, size, PERM_NONE);
+            mem_set_attr(src, size, MA_LOCKED, MA_LOCKED);
+            map_view_set(slot, dst, src, size);
+        }
+    }
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+/* svcUnmapProcessCodeMemory: the view at dst goes, and src goes back to read-write and unlocked. Every page of dst
+   must be one of src's, which the runtime keeps from the map (the console compares the page group); src keeps what
+   was written through the view when the host has no pool, as the console's same pages would */
+u32 svc_unmap_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
+    KObj* p;
+    int slot = -1, i;
+    u32 r = 0;
+    R_TRY(check_code_range(dst, src, size));
+    p = h_get_ref(process, KO_PROCESS);
+    R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
+    kobj_unref(p);
+    pm_lock(&g_host.svcmem.map_lk);
+    for (i = 0; i < KMAPVIEW_MAX; i++)
+        if (g_hle.svcmem.maps[i].size && g_hle.svcmem.maps[i].dst == dst && g_hle.svcmem.maps[i].src == src &&
+            g_hle.svcmem.maps[i].size == size) {
+            slot = i;
+            break;
+        }
+    /* the console's order: the source is in the address space, the destination's region takes code, the source is
+       the locked normal memory of a view, the destination is a code view, and the view is the source's */
+    if (!in_region(src, size, 0, AS_END))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (!can_contain_code(dst, size))
+        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
+    else if (!range_ok(src, size, MS_NORMAL, 0, PERM_NONE, ~0u, MA_LOCKED))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (!code_view_ok(dst, size))
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
+    else if (slot < 0)
+        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
+    else {
+        r = mem_result(mem_alias_unmap(dst, size, src));
+        if (!r) {
+            mem_alias_end(src, size);
+            mem_set_attr(src, size, MA_LOCKED, 0);
+            set_perm(src, size, PERM_RW);
+            map_view_del(dst);
+        }
+    }
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+
 /* A line a flush names through a view or in the code it shows changed when its bytes differ from a view's
    snapshot. A mod may flush its whole view after a few writes (exlaunch's RwPages), as a cache line that didn't
    change costs the console nothing: here such a line keeps its compiled code.
