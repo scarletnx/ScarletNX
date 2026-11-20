@@ -275,7 +275,7 @@ static void set_play_state(SnxCtrProcess* p, unsigned channel, bool play) {
 static void update_state(SnxCtrProcess* p, const SnxCtrCsndClient* k) {
     SnxCtrCsnd* cs = &p->csnd;
     write32(p, k, k->master_state_offset, cs->hw.channel_mask & k->channel_mask);
-    write32(p, k, k->master_state_offset + 4, cs->hw.channel_mask & k->capture_mask);
+    write32(p, k, k->master_state_offset + 4, cs->hw.capture_mask & k->capture_mask);
     uint32_t index = 0;
     for (unsigned ch = 0; ch < SNX_CTR_CSND_CHANNELS; ++ch) {
         if (!(k->channel_mask >> ch & 1)) continue;
