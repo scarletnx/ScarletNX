@@ -1991,6 +1991,10 @@ static void fragment_inputs(T* t) {
                 fail(t, "point sprite texture reads");
                 return;
             }
+            if (coord_index >= sizeof coords / sizeof *coords) {
+                fail(t, "texture coordinate %u", (unsigned)coord_index);
+                return;
+            }
             if (resource >= USSE_TEXTURES) {
                 fail(t, "sampler %u", (unsigned)resource);
                 return;

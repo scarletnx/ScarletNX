@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A GXP program whose words name more than it holds: each table the translator walks by a count of the game's
-   (parameters, containers, uniform buffers, dependent samplers, literals) ending past the program's bytes is refused
-   by what it is, the translator reading nothing outside the program */
+   (parameters, containers, uniform buffers, dependent samplers, literals) ending past the program's bytes, and a
+   texture read whose coordinate index is past the eleven a fragment program has, are refused by what they are, the
+   translator reading and writing nothing outside the program and its own arrays */
 #include "vita/gpu/gxp.h"
 #include "vita/gpu/usse.h"
 #include <stdio.h>
 #include <string.h>
 
-enum { SIZE = 256 };
+enum { PROGRAM = 216, VARYINGS = PROGRAM, DESCRIPTOR = VARYINGS + 24, SIZE = DESCRIPTOR + 16 };
 
 /* tests/vita_usse_cube.c's fragment program, one cube sampler read through a dependent sampler, with room after it */
 static void program(unsigned char* gxp) {
@@ -86,5 +87,18 @@ int main(void) {
     program(gxp);
     snx_st_le32(gxp + GXP_LITERALS, SIZE), snx_st_le32(gxp + GXP_LITERALS_COUNT, 1);
     ok &= refused(gxp, "1 literals, from byte 372", "literals past the end");
+    /* a texture read into PA through coordinate 11, and through 0x401: its descriptor after the program */
+    for (unsigned i = 0; i < 2; ++i) {
+        char want[64];
+        const uint32_t index = i ? 0x401 : 11;
+        program(gxp);
+        snx_st_le32(gxp + GXP_VARYINGS, VARYINGS - GXP_VARYINGS);
+        snx_st_le16(gxp + VARYINGS + 12, 1);
+        snx_st_le32(gxp + VARYINGS + 16, DESCRIPTOR - (VARYINGS + 16));
+        snx_st_le32(gxp + DESCRIPTOR, 0xf000u | index); /* no varying, a texture read */
+        snx_st_le32(gxp + DESCRIPTOR + 12, 3u << 4);    /* float components */
+        snprintf(want, sizeof want, "texture coordinate %u", (unsigned)index);
+        ok &= refused(gxp, want, "coordinate index");
+    }
     return ok ? 0 : 1;
 }
