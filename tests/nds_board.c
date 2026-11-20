@@ -4,6 +4,7 @@
    move in it, the registers (the divider, the square root, the timers, DMA, the card), the BIOS's routines, the
    ARM7's answers over the FIFO, the firmware's Wi-Fi connections, and the geometry engine's commands. No game's
    data. */
+#include "nds/audio/spu.h"
 #include "nds/bios/bios.h"
 #include "nds/board/nds.h"
 #include "nds/cartridge/rom.h"
@@ -371,6 +372,22 @@ static void test_vectors(NdsBoard* board) {
     gx(board, 0x15, 0), gx(board, 0x29, 0x001F00C0), gx(board, 0x40, 0), gx(board, 0x41, 0);
 }
 
+/* a PSG channel's low half is -0x7FFF, which its volume's divider multiplies and never shifts: the sanitizers' build
+   stops on a negative value shifted left. Half the samples of a 50% square are below zero */
+static void test_spu(NdsBoard* board) {
+    int16_t out[64 * 2];
+    uint32_t below = 0, n;
+    nds_spu_write(board, 0x04000500, 2, 0x807F);                                      /* the mixer on, full volume */
+    nds_spu_write(board, 0x04000488, 2, 0x10000 - 0x800);                             /* channel 8's timer */
+    nds_spu_write(board, 0x04000480, 4, 0xE0000000u | 3u << 24 | 0x40u << 16 | 0x7F); /* PSG, duty 3, centre, on */
+    board->cycles += 64 * 1024;
+    nds_spu_run(board);
+    n = nds_spu_take(board, out, 64);
+    for (uint32_t i = 0; i < n; ++i) below += out[i * 2] < 0;
+    CHECK(n >= 32 && below && below < n);
+    nds_spu_write(board, 0x04000480, 4, 0);
+}
+
 /* the sound driver's volumes are bytes a game sets whole, and its table of them holds 128 levels: a sequence at
    volume 255 that is stopped, which reads its tracks' volumes, reads inside the table. Nothing of the read shows
    without a note playing: it is the sanitizers' build that stops on one past the table */
@@ -429,6 +446,7 @@ int main(void) {
     test_geometry(board);
     test_matrices(board);
     test_vectors(board);
+    test_spu(board);
     test_sound(board);
     nds_board_free(board);
     free(board);

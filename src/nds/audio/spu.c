@@ -173,7 +173,7 @@ static int32_t run(const NdsBoard* board, Channel* c, unsigned index) {
         next_sample(board, c, format, index);
         if (!(c->cnt >> 31)) break;
     }
-    return ((int32_t)c->current << c->volume_shift) * c->volume;
+    return c->current * (1 << c->volume_shift) * c->volume; /* a negative sample is not shifted: it is multiplied */
 }
 
 void nds_spu_run(NdsBoard* board) {
