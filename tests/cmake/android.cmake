@@ -130,7 +130,11 @@ if(BUILD_TESTING)
         add_executable(snx-test-android-linker-lock "${PROJECT_SOURCE_DIR}/tests/android_linker_lock.c")
         target_link_libraries(snx-test-android-linker-lock PRIVATE
                               "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>" Threads::Threads)
-        target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux") # glibc's pread is pread64 under 64-bit offsets
+            target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread,--wrap=pread64")
+        else()
+            target_link_options(snx-test-android-linker-lock PRIVATE "LINKER:--wrap=pread")
+        endif()
         set_target_properties(snx-test-android-linker-lock PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
         target_compile_options(snx-test-android-linker-lock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
         add_test(NAME android_linker_lock COMMAND snx-test-android-linker-lock)
