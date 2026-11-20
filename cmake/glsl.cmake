@@ -17,7 +17,10 @@ if(CMAKE_HOST_WIN32)
 else()
     set(snx_host_exe "")
 endif()
-if(NOT SNX_GLSLANG)
+# A path this file found is found again at each configure (snx_glslang_found keeps it apart from one the user named):
+# once the pin moves, the release is in another folder, and the old one's glslangValidator is still a file
+if(NOT SNX_GLSLANG OR SNX_GLSLANG STREQUAL "${snx_glslang_found}")
+    unset(snx_glslang_path CACHE)
     set(snx_glslang_host "")
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         set(snx_glslang_host linux-x86_64)
@@ -41,6 +44,7 @@ if(NOT SNX_GLSLANG)
     endif()
     set(SNX_GLSLANG "${snx_glslang_path}" CACHE FILEPATH
         "glslangValidator to compile shaders with (empty: the pinned release, or PATH)" FORCE)
+    set(snx_glslang_found "${snx_glslang_path}" CACHE INTERNAL "the glslangValidator cmake/glsl.cmake found itself")
 endif()
 
 # spirv-opt and spirv-val: SPIRV-Tools' release the build pins, or the ones SNX_SPIRV_OPT and SNX_SPIRV_VAL name
