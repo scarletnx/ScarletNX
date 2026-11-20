@@ -197,9 +197,12 @@ static uint32_t poll_sema(VitaProcess* p, VitaThread* t) {
 static uint32_t signal_sema(VitaProcess* p, VitaThread* t) {
     VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_SEMA);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
-    int32_t n = (int32_t)arg(p, t, 1);
-    if (o->u.sema.max > 0 && o->u.sema.count + n > o->u.sema.max) return SCE_KERNEL_ERROR_SEMA_OVF;
-    o->u.sema.count += n;
+    /* the count and the signal are any 32 bits: their sum is taken wide, and one past the most or past a count's own
+       range is the overflow */
+    int64_t sum = (int64_t)o->u.sema.count + (int32_t)arg(p, t, 1);
+    if ((o->u.sema.max > 0 && sum > o->u.sema.max) || sum > INT32_MAX || sum < INT32_MIN)
+        return SCE_KERNEL_ERROR_SEMA_OVF;
+    o->u.sema.count = (int32_t)sum;
     return 0;
 }
 /* the threads waiting on the semaphore uid */
