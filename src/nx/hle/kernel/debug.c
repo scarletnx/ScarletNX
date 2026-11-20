@@ -353,7 +353,9 @@ static const char* word_at(u64 a, char* s, size_t n) {
 static const char* thread_state(const KThread* t, char* s, size_t n) {
     char v1[24], v2[24];
     if (t->state == 0) return "not started";
-    switch (t->woken ? 0 : t->wait_kind) {
+    switch (t->woken                                                 ? 0
+            : atomic_load_explicit(&t->arb_in, memory_order_relaxed) ? 4 /* an address wait (sync.c) */
+                                                                     : t->wait_kind) {
         case 1:
             if (t->wait_tid)
                 snprintf(s, n, "waiting on %s (thread %lu)", t->wait_name[0] ? t->wait_name : "objects",

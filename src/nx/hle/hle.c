@@ -15,6 +15,8 @@ void hle_init(void) {
     int i;
     /* every lock: PMUTEX_INIT's value isn't all zero on every platform */
     pm_init(&g_host.kernel.klock);
+    for (i = 0; i < (int)(sizeof g_host.kernel.arb_lk / sizeof *g_host.kernel.arb_lk); i++)
+        pm_init(&g_host.kernel.arb_lk[i]);
     pm_init(&g_host.kernel.pool_lk);
     pm_init(&g_host.svcmem.views_lk);
     pm_init(&g_host.svcmem.map_lk);

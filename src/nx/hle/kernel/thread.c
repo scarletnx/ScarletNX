@@ -476,6 +476,7 @@ void core_yield(KThread* t, int migrate) {
 void core_set_prio(KThread* t, int prio) {
     pm_lock(&g_host.thread.core_lk);
     t->prio = prio;
+    atomic_store_explicit(&t->arb_prio, prio, memory_order_relaxed);
     if (atomic_load_explicit(&t->on_core, memory_order_relaxed) == -2) {
         int k = core_of(t);
         t->core_ticket = ++g_hle.thread.core_ticket;
@@ -591,6 +592,7 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
     atomic_store_explicit(&g_host.thread.handed[kt_ix(t) - 1], 0, memory_order_relaxed);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
+    atomic_store_explicit(&t->arb_prio, prio, memory_order_relaxed);
     t->core = core;
     atomic_store_explicit(&t->ideal_core, core, memory_order_relaxed);
     atomic_store_explicit(&t->affinity, 1ull << core, memory_order_relaxed);

@@ -74,6 +74,8 @@ void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns);
 void klock_unlock(void);
 void kobj_signal_nl(KObj* o);
 int sleep_nl(KThread* t, i64 timeout);
+/* sleep_nl's wait with held in place of g_klock: an address wait's, under its bucket lock */
+int sleep_held(KThread* t, PMutex* held, i64 timeout);
 
 /* ---- thread.c: threads and the guest cores */
 int kthread_live_count(void);
@@ -188,7 +190,10 @@ typedef struct {
 } HleKernel;
 /* kernel's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {
-    PMutex klock;   /* g_klock: every list a waiter or signaller touches */
+    PMutex klock; /* g_klock: every list a waiter or signaller touches, but the address waits' */
+    /* an address wait's lock, by the bucket of its word (sync.c, WAIT_BUCKETS of them): the arbwait list, and the
+       wait's thread while it is in it. Taken after g_klock when both are held (a priority change) */
+    PMutex arb_lk[256];
     PMutex pool_lk; /* the kernel objects' pools, here and in thread.c, svc.c and svc_mem.c */
     /* the threads that name an object in their waits (nwaits > 0), by slot, under g_klock: where a signal looks for
        its waiters, never all KTHREAD_MAX threads. Derived from the threads, so a save state never holds it: a load
@@ -285,7 +290,8 @@ typedef struct {
 typedef struct {
     u32 mwait;                      /* wait_kind 2: on the mutex at wait_addr, for lock_owner to hand it over */
     u32 cvwait[WAIT_BUCKETS];       /* 3: on the condition variable wait_key, to take the mutex at wait_addr */
-    u32 arbwait[WAIT_BUCKETS];      /* 4: on the address wait_addr */
+    u32 arbwait[WAIT_BUCKETS];      /* an address wait, on wait_addr: under that bucket's arb_lk, not g_klock */
+    _Atomic u64 arb_ticket;         /* the last wait_ticket given */
     u32 bad_waits;                  /* the bad handles waited on, logged the first 20 times and every 65536th after */
 } HleSync;
 /* debug.c */
