@@ -1241,6 +1241,7 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_DELETE_OLD, UI_ATTR_DANGER},
                 {GUI_ASK_OVERWRITE, UI_ATTR_CAUTION},
                 {GUI_ASK_SAVES, UI_ATTR_CAUTION},
+                {GUI_ASK_PACK, 0},
                 {GUI_ASK_ERROR, 0}};
     GuiConfirm was = app->confirm;
     assert(SDL_arraysize(asks) == GUI_ASK_ERROR + 1);
@@ -1519,8 +1520,6 @@ static void test_start_scale(App* app) {
     puts("PASS a start without a UI scale in app.ini writes the one it takes");
 }
 
-/* name set (NULL: unset) where getenv reads it as well as SDL: on Windows the C runtime keeps a copy of its own, which
-   SDL_setenv_unsafe leaves naming the real user's folders */
 /* the F8's answer for its game's process on 2026-11-12, as MainActivity.exitFields writes it */
 #define F8_LOW_MEMORY                                                                                                  \
     "reason=3\nsaid=low memory\nprocess=org.scarletnx:game\nstatus=0\nimportance=100 foreground\npss=5138022\n"        \
@@ -1741,6 +1740,8 @@ static void test_last_run(App* app) {
     puts("PASS Last Run: a game Android stopped, Run Amberlith's Continue and Not Now, its summary's box");
 }
 
+/* name set (NULL: unset) where getenv reads it as well as SDL: on Windows the C runtime keeps a copy of its own, which
+   SDL_setenv_unsafe leaves naming the real user's folders */
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
     assert(!_putenv_s(name, value ? value : ""));

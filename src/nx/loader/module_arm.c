@@ -386,9 +386,11 @@ static void unlock(Queue* q) {
 #endif
 }
 
-static int save_ir(SnxIr* ir, const char* dir, const char* name) {
+/* name's IR kept in dir (--keep-ir): nonzero, with error saying which and where, when it could not be written */
+static int save_ir(SnxIr* ir, const char* dir, const char* name, char* error, size_t error_size) {
     char *text = snx_ir_text(ir), *file = snx_format("%s.ll", name), *path = snx_path_join(dir, file);
     int rc = snx_write_file(path, text, strlen(text));
+    if (rc) snprintf(error, error_size, "cannot save the IR of %s in %s", name, dir);
     LLVMDisposeMessage(text);
     free(file);
     free(path);
@@ -520,8 +522,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         snx_ir_free(ir);
         return -1;
     }
-    rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
-    if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
+    rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
         rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, error, error_size);
     else if (!rc)
@@ -799,7 +800,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     start = snx_seconds();
     ir = snx_ir_new("module", build->opt, error, sizeof(error));
     if (!ir || emit_descriptor(ir, d.blocks, d.count, options, loaded, error, sizeof(error)) ||
-        (build->keep_ir && save_ir(ir, build->keep_ir, "module")) ||
+        (build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
         snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;

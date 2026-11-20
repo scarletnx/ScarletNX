@@ -391,7 +391,7 @@ static uint64_t ticks(const AVStream* st, int64_t ts) {
 static uint32_t get_next_unit(VitaProcess* p, VitaThread* t) {
     Mp4* m = file_of(p, arg(p, t, 0));
     uint32_t unit = arg(p, t, 1);
-    if (!m || !unit) return 0x80000000u;
+    if (!m || !unit || !vita_mapped(p, unit, 0x38)) return 0x80000000u;
     unsigned k = 0;
     int r = next_unit(m, &k);
     m->has_unit = r == 0;

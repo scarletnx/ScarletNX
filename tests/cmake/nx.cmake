@@ -168,8 +168,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
-    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
-                                                  ${CMAKE_DL_LIBS})
+    target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver snx_glslc FFmpeg::avutil
+                                                  Threads::Threads ${CMAKE_DL_LIBS})
     target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu"
                                                        "${PROJECT_SOURCE_DIR}/tests/glsl")
     set_target_properties(snx-test-vulkan PROPERTIES LINKER_LANGUAGE CXX)
@@ -188,6 +188,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # src/common/gpu/vk/extension_bans.txt. vulkan_headless draws them too where no ban holds
     add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on)
     set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the same draws with the task and mesh stages in one submission (vk_mesh_path=native): the native path is still
+    # the one a measured device takes, and the check draws through both
+    add_test(NAME vulkan_headless_mesh_native COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-mesh-path=native)
+    set_tests_properties(vulkan_headless_mesh_native PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # an Ounce fragment program's colour into integer targets (tests/vulkan_ounce_int_targets.inc) under the validation
     # layer when it is installed, which reports a float output in an integer attachment
@@ -313,6 +318,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk-validation=1)
     set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # vk_api=1.1 on a device with more, which runs as auto: the setting takes in only a Vulkan 1.1 device
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini" "[Debug]\nvk_api=1.1\n")
+    add_test(NAME vulkan_headless_vk11 COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk11.ini")
+    set_tests_properties(vulkan_headless_vk11 PROPERTIES TIMEOUT 120 FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
     # every check again on a device made again without VK_EXT_depth_clamp_control and VK_EXT_conditional_rendering,
     # whose commands vk_debug_hide_commands has the check of each extension's commands take as missing (gpu/vk/device.c):
     # each extension off, the log saying the command and the driver (tests/vulkan_hidden_commands.inc). A driver that
@@ -365,13 +375,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         SKIP_REGULAR_EXPRESSION "draws go through pipelines:"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;refused a shader object")
-    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
-    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)
     add_test(NAME vulkan_gpuprof_pool COMMAND snx-test-vulkan -H --vk-gpu-profile=1 --vk-validation=1)
     set_tests_properties(vulkan_gpuprof_pool PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_GPUPROF_POOL_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
+    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
     add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk-validation=1)
     set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
@@ -422,6 +432,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write-tracking=1 --write-tracking-hot=1)
     set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with draw_state_check=1: a kept state that differs when it is made again fails it, and so does
+    # a read past the count a draw has of its buffers or images, which hold a pattern there (draw_storage_read)
+    add_test(NAME vulkan_headless_draw_state_check COMMAND snx-test-vulkan -H --draw-state-check=1)
+    set_tests_properties(vulkan_headless_draw_state_check PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;draw_state_check=1: a draw that kept")
     # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
     # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)
     add_test(NAME vulkan_uma_hot COMMAND snx-test-vulkan -H --vk-memory=2 --write-tracking=1 --write-tracking-hot=1)
@@ -516,8 +531,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_vendor_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
-    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
-                                                      Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
+    # snx_settings_runtime: the graphics table, whose bc7_cache_gb the cache's bound case reads
+    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags snx_settings_runtime scarletnx-filesystem snx_xxhash
+                                                      snx_vk_common Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()

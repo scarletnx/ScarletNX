@@ -1131,16 +1131,20 @@ static void test_delete_user(void) {
           !snx_write_file(DIR "/users/" UID3 ".jpg", jpeg, sizeof jpeg));
     CHECK(!snx_write_file(DIR "/saves-of-2/slot.bin", "save", 4));
     CHECK(!snx_write_file(DIR "/saves-of-2.version", "note", 4)); /* the note beside it (fs.c's save_note) */
+    CHECK(!snx_mkdirs(DIR "/more-saves-of-2") && !snx_write_file(DIR "/more-saves-of-2/slot.bin", "more", 4));
     CHECK(snx_users_load(users, 1, why, sizeof why) == 0 && g_user_count == 3);
     snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", users);
     uid_of(UID2, &uid);
     CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
     /* user 2 deleted */
     snprintf(test_saves[0], sizeof test_saves[0], "%s", DIR "/saves-of-2");
-    test_saves_count = 1;
+    snprintf(test_saves[1], sizeof test_saves[1], "%s",
+             DIR "/more-saves-of-2"); /* a second one, after one with a note */
+    test_saves_count = 2;
     request(&r, 203);
     memcpy(r.raw, uid.v, 16);
     call(su, &r);
+    test_saves_count = 1;
     CHECK(g_user_count == 2 && !strcmp(g_users[1].nickname, "Afugo") && snx_users_selected_number() == 1);
     CHECK(test_saves_held == 1 && !test_users_held); /* the saves taken under acc's lock */
     now = (char*)snx_read_file(path, &count);
@@ -1166,6 +1170,9 @@ static void test_delete_user(void) {
         free(section);
         section = snx_format("%s/save.1.version", trash);
         CHECK(snx_is_file(section));
+        free(section);
+        section = snx_format("%s/save.2/slot.bin", trash);
+        CHECK(snx_is_file(section) && !snx_is_dir(DIR "/more-saves-of-2"));
         free(section);
     }
     /* its profile: gone, its picture the default */

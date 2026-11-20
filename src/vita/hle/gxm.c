@@ -247,7 +247,7 @@ static uint32_t destroy_render_target(VitaProcess* p, VitaThread* t) {
 static uint32_t color_surface_init(VitaProcess* p, VitaThread* t) {
     uint32_t surface = arg(p, t, 0), width = arg(p, t, 5), height = arg(p, t, 6), stride = arg(p, t, 7);
     uint32_t data = arg(p, t, 8);
-    if (!surface) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (!surface || !vita_mapped(p, surface, 12 * 4)) return SCE_GXM_ERROR_INVALID_POINTER;
     if (!width || !height || width > 4096 || height > 4096 || stride < width) return SCE_GXM_ERROR_INVALID_VALUE;
     if (data & 3) return SCE_GXM_ERROR_INVALID_ALIGNMENT;
     uint32_t words[12] = {arg(p, t, 3) /* scale mode: downscale */, width, height, stride, data, arg(p, t, 1),

@@ -53,7 +53,7 @@ foreach(snx_spirv_tool opt val dis)
 endforeach()
 
 # Each tool's path, and where it came from for the configure's line. The tools run on the machine doing the build
-set(snx_spirv_exe "${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+set(snx_spirv_exe "${snx_host_exe}") # cmake/glsl.cmake's, which includes this file
 foreach(snx_spirv_tool opt val dis)
     string(TOUPPER "${snx_spirv_tool}" snx_spirv_key)
     set(snx_spirv_${snx_spirv_tool} "${SNX_SPIRV_${snx_spirv_key}}")

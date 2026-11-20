@@ -275,6 +275,7 @@ const char* ini_only_words(int flags) {
         case INI_ONLY_ANDROID: return SNX_TR_NOOP("Android only");
         case INI_ONLY_LINUX: return SNX_TR_NOOP("Linux and Android only");
         case INI_ONLY_ARM64_LINUX: return SNX_TR_NOOP("arm64 Linux and Android only");
+        case INI_ONLY_NONE: return SNX_TR_NOOP("Not offered");
         default: return NULL;
     }
 }
@@ -400,6 +401,8 @@ static const struct {
                       {"ctr_separate_windows", "now ctr_screen_layout=4"},
                       {"mesh_draws", "the mesh draws are on where the driver has VK_EXT_mesh_shader and no ban holds: "
                                      "vk_ext_mesh_shader=off skips them"},
+                      {"hmma_astat", "went with hmma_mode, which takes its default, 0 (Auto)"},
+                      {"gl_layer", "the GL layer always takes a 64-bit game's own GL driver; a 32-bit game keeps it"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

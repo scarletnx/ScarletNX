@@ -459,8 +459,6 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
     free(ex);
     return rc;
 }
-/* the played mods' patches (common/utilities/patches.h) written over each NSO module of program they are made for,
-   every one said: 0, else nonzero with the patch that could not be applied said */
 /* NCE (the setting nce, on an AArch64 Linux host): the game's code runs natively on the host's CPU, so the module
    holds no code made ahead of time (as --jit-only). The analysis finds here the words that the runtime patches
    (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave pools for the stubs
@@ -522,6 +520,8 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
     return r;
 }
 
+/* the played mods' patches (common/utilities/patches.h) written over each NSO module of program they are made for,
+   every one said: 0, else nonzero with the patch that could not be applied said */
 static int patch_modules(SnxProgram* program, const char* mods, const char* own, const char* off, int quiet) {
     char error[1024], **patches;
     size_t count = snx_mods_patches_of(mods, own, off, &patches), i, j;

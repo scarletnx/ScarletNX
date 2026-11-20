@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 BOUNDARIES = {
-    'common': {'common'},
+    # glslc too: the shared GL layer compiles a guest's shaders with it (common/gpu/gl/gl_program.c)
+    'common': {'common', 'glslc'},
     'nx': {'nx', 'common'},
     'gnuabi': {'gnuabi', 'common'},
     '3ds': {'3ds', 'common'},
@@ -219,6 +220,37 @@ def check_environment(repo):
                 'src/nx/runtime/settings.txt, or a command-line option of a driver with no settings table (CLAUDE.md, '
                 '"Settings, not environment variables, in src/")'
             )
+    return errors
+
+
+THREAD32_STUB = re.compile(
+    r'(?<![A-Za-z0-9_])(arm_cpu|hook_a32_cpu)\s*\(\s*(?:CPU|SnxArmCPU)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{([^}]*)\}'
+)
+
+
+def check_test_threads(repo):
+    """a test that gives the handlers a 32-bit thread's registers (its arm_cpu returns some) finds them from the CPU,
+    and the CPU from the registers (its hook_a32_cpu), as the runtime does in one KThread: an A32 adapter holds the
+    registers through a restrict pointer, and registers that are an object of the test's own, returned whatever the
+    argument, are not that pointer's to the compiler, which then moves the adapter's reads past the handler's writes
+    (hook_install_a32 on Windows on Arm with ThinLTO returned to a stale lr)"""
+    errors = []
+    for path in sorted((repo / 'tests').rglob('*.c')):
+        shown = path.relative_to(repo).as_posix()
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        stubs = {m.group(1): m for m in THREAD32_STUB.finditer(source)}
+        registers = stubs.get('arm_cpu')
+        if not registers or re.search(r'return\s+(?:\(void\)\s*\w+\s*,\s*)?(?:NULL|0|nullptr)\s*;', registers.group(3)):
+            continue  # no registers for a handler to reach
+        for name, match in sorted(stubs.items()):
+            if re.search(r'\(void\)\s*' + re.escape(match.group(2)) + r'\b', match.group(3)):
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f"{shown}:{line}: {name} returns an object of the test's whatever its argument, and arm_cpu gives "
+                    "the handlers a thread's registers: an A32 adapter holds them through a restrict pointer, so find "
+                    'the registers from the CPU and the CPU from the registers, in one struct, as '
+                    "tests/hook_install_a32.c's Thread32 (src/nx/runtime/arm.c does it in KThread)"
+                )
     return errors
 
 
@@ -598,6 +630,52 @@ def check_device_makers(repo):
     return errors
 
 
+WEAK = re.compile(r'\[\[[^\]]*\bgnu::weak\b[^\]]*\]\]|__attribute__\s*\(\(\s*weak\s*\)\)')
+# what no program of ours defines: another library's (jemalloc), the ELF linker's, and ours that only Apple's programs
+# have or that no build links yet
+WEAK_DECLARED = {
+    'mallocx',
+    'rallocx',
+    'dallocx',
+    'sallocx',
+    'mallctl',
+    '__ehdr_start',
+    'snx_apple_power_watch',
+    'snx_module_static',
+}
+
+
+def check_weak_declarations(repo):
+    """no function or object of ours is declared weak and left for the program to define or not: where the program
+    defines it, LLVM reads the declaration's address on Windows on Arm through a GOT slot, which COFF has not, so the
+    load reads the function's own first words (lld's "misaligned ldr/str offset" when it starts at an odd word, and a
+    test for null that is always true otherwise). The default is a weak definition beside its caller, which the
+    program's own takes the place of (driver.c's snx_setting_known); WEAK_DECLARED names what no program defines"""
+    errors = []
+    for path in sorted((repo / 'src').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc', '.m', '.mm'}:
+            continue
+        shown = path.relative_to(repo).as_posix()
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        for match in WEAK.finditer(source):
+            ends = re.search(r'[;{=]', source[match.end() :])
+            if not ends or ends.group(0) != ';':
+                continue  # a definition: a body or a value
+            declared = source[match.end() : match.end() + ends.start()]
+            name = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(|\[|$)', declared.strip())
+            if name and name.group(1) in WEAK_DECLARED:
+                continue
+            line = source.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{shown}:{line}: {name.group(1) if name else declared.strip()} is declared weak with no definition: '
+                'where the program defines it, LLVM reads it on Windows on Arm through a GOT slot COFF has not, the '
+                'function\'s own first words (lld: "misaligned ldr/str offset"). Give its default as a weak definition '
+                "beside its caller, as src/nx/runtime/driver/driver.c's snx_setting_known, or name it in "
+                'WEAK_DECLARED (tests/architecture.py) when no program of ours defines it'
+            )
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -659,7 +737,15 @@ def check_graph(graph):
         ('snx_agb_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_driver', 'snx_nx_module')),
         (
             'scarletnx-nds',
-            ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_driver', 'snx_nx_module'),
+            (
+                'scarletnx-nx',
+                'scarletnx-gnuabi',
+                'scarletnx-3ds',
+                'scarletnx-agb',
+                'snx_ctr_board',
+                'snx_driver',
+                'snx_nx_module',
+            ),
         ),
         (
             'snx_nds_program',
@@ -1110,12 +1196,14 @@ def main():
         check_sources(args.repo.resolve())
         + check_include_flags(args.repo.resolve())
         + check_environment(args.repo.resolve())
+        + check_test_threads(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
         + check_packages(args.repo.resolve())
         + check_cmake_versions(args.repo.resolve())
         + check_device_makers(args.repo.resolve())
+        + check_weak_declarations(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'

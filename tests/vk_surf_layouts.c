@@ -29,6 +29,11 @@ typedef struct {
     u32 barriers, ends;               /* barriers, and pass ends */
     VkImageLayout copy_src, copy_dst; /* the layouts that the last copy named */
     VkImage copy_src_img, copy_dst_img;
+    int open;    /* a rendering pass with work in it is open (vk_render_begun) */
+    u32 counted; /* copies counted (vk_rt_copy_count), the last one's arguments below */
+    int why, ended;
+    u64 bytes;
+    VkFormat from, to;
 } Model;
 static Model g_m;
 static void clear(void) { g_m = (Model){0}; }
@@ -43,6 +48,17 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
 void vk_render_end_at(const char* file, int line) {
     (void)file, (void)line;
     g_m.ends++;
+    g_m.open = 0;
+}
+int vk_render_begun(void) { return g_m.open; }
+/* texture.c's count of a target's copy by why it was made */
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) {
+    g_m.counted++;
+    g_m.why = why;
+    g_m.ended = ended;
+    g_m.bytes = bytes;
+    g_m.from = from;
+    g_m.to = to;
 }
 VkCommandBuffer vk_cmd(void) { return CMD; }
 void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
@@ -194,6 +210,8 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
 int vk_tex_can_coarsen(const Surf* t) { STUB(); }
 u64 vk_tex_coarser(Surf* t) { STUB(); }
 u64 vk_tex_demote(Surf* t) { STUB(); }
+void vk_devmem_budgets(DevMemBudget* b) { STUB(); }
+u32 vk_mem_owner_prio(u32 owner) { STUB(); }
 void vk_tex_evicted(const Surf* t) { STUB(); }
 int vk_tex_finer(Surf* t) { STUB(); }
 void vk_tex_later_forget(Surf* s) { STUB(); }
@@ -312,7 +330,12 @@ static void take_pixels(void) {
     vk_surf_use(CMD, &from, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL), VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     clear();
+    to.f.vk = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    /* a draw's pass is open: the copy ends it, and is counted as a target taking another's pixels */
+    g_m.open = 1;
     CHECK(rt_take_pixels(&to, &from, 1) == 1);
+    CHECK(g_m.counted == 1 && g_m.why == VK_RT_COPY_TAKE && g_m.ended == 1 && g_m.bytes == 64 * 32 * 4);
+    CHECK(g_m.from == VK_FORMAT_R8G8B8A8_UNORM && g_m.to == VK_FORMAT_A2B10G10R10_UNORM_PACK32 && !g_m.open);
     CHECK(g_m.copy_src_img == from.img && g_m.copy_dst_img == to.img);
     CHECK(from.layout == want_src && to.layout == want_dst);
     CHECK(g_m.copy_src == want_src && g_m.copy_dst == want_dst);

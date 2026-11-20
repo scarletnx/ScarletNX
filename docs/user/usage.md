@@ -144,7 +144,9 @@ place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-contai
 An extracted game's folder, one whose `exefs/` holds the game's `main` (beside its `romfs/` and `control.nacp` when it
 has them, as `-x` or hactool lays one out), plays and prepares as a dump does: `./build/scarletnx "Game/"`, or
 `-r "Game/"`. The game is named by the title ID of its `exefs/main.npdm`, and shown by its `control.nacp`'s name, else
-by that ID. Nothing of it is copied: the `.ini` records the folder as `source=`, and each run reads the ExeFS and
+by that ID, with the `icon.jpg` beside its `exefs/` when it has one (each run copies it into the game's data folder
+when it changed, so a cover put there later shows from the next run). Nothing else of it is copied: the `.ini` records
+the folder as `source=`, and each run reads the ExeFS and
 RomFS from it, on whatever disk it is, `--extract-container` or not (its RomFS can take gigabytes a copy doubles; what
 an older version copied into the game's data folder is taken away at the next run). `--tmpfs` copies it into tmpfs, as
 it extracts a dump; `-x --out DIR -- "Game/"` copies it alone. Moving or deleting the
@@ -430,6 +432,25 @@ Remaining examples: POSIX.
   ([key filtering and cleanup](../../src/nx/runtime/driver/extract.c)).
   Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
   area all extract, through what [`storage.c`](../../src/nx/runtime/driver/hactool/storage.c) ports from LibHac.
+- **Pack plain NCAs:** `scarletnx --pack FOLDER [--xci] [--out FILE]` packs a folder of NCAs (an NSP's files, or an
+  XCI's secure partition, as a tool unpacked them; `.tik` files in it give title keys) into an ordinary NSP (PFS0) or
+  XCI (HEAD) whose NCAs are plain: each header and section decrypted where it lies, everything else, the header's
+  signatures included, unchanged. It is not a DNSP or DXCI: the container and NCA magics are the usual ones, and a
+  reader tells a plain NCA by its header, with no keys. An XCI, NSP, DXCI or DNSP can be given in place of the folder.
+  NCAs plain already need no keys; tickets are left out. The output goes beside the input by default
+  (`FOLDER.nsp`, `DUMP.decrypted.nsp`). The launcher's menu has it as Pack extracted as dXCI/dNSP
+  ([pack.c](../../src/nx/runtime/driver/pack.c)).
+
+  An extracted game's folder (`exefs/` with `main.npdm`, `romfs/`, and `control.nacp` and `icon.jpg` when it has
+  them, as `-x` leaves it) has no NCAs to pack, so `--pack` fabricates them
+  ([fabricate.c](../../src/nx/runtime/driver/fabricate.c)): a Program NCA (the ExeFS as a hashed PFS0, the RomFS
+  rebuilt as the runtime builds an image of `romfs/`, under its IVFC hashes), a Control NCA and a Meta NCA, each a
+  plain NCA3 whose sections are not encrypted. What the folder lacks is a stub: the headers' signatures are zero, a
+  missing `control.nacp` gets one titled `--name NAME` (else the folder's name) with a user required at startup and
+  64 MiB account and device saves, the content meta is made up, and each content ID is the SHA-256 of its NCA's
+  header. Each file is read once: the hashes before the data are written as zeros, and written over once the data
+  behind them is read. `--plan` says what it would make, reading only `main.npdm` and the files' sizes. The
+  `.listing` files that wget leaves in a mirror of an FTP folder are left out.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot-threads=N`) the threads

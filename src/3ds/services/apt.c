@@ -411,7 +411,9 @@ static void applet_utility(SnxCtrIpc* c) {
         return;
     }
     unsigned char input[4] = {0}, descriptor[8];
-    if (snx_ctr_read_ram(p->space, c->in[5], input, input_size < 4 ? input_size : 4) != SNX_CTR_MEM_OK ||
+    /* a utility that takes no input gives none: nothing is read then */
+    if ((input_size &&
+         snx_ctr_read_ram(p->space, c->in[5], input, input_size < 4 ? input_size : 4) != SNX_CTR_MEM_OK) ||
         snx_ctr_read_ram(p->space, p->cpu.state.cpu.tpidruro + 0x180, descriptor, 8) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
         return;

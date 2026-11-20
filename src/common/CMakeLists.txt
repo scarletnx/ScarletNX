@@ -59,6 +59,17 @@ else()
     target_link_libraries(scarletnx-common PUBLIC m)
 endif()
 
+# the GL layer that translates a guest's GL to Vulkan, shared by the Android bridge and the console (gpu/gl/gl_state.h):
+# its state machine, flat records a save state holds as they are; glslc compiles its shaders (gpu/gl/gl_program.h)
+add_library(snx_gl STATIC gpu/gl/gl_state.c gpu/gl/gl_program.c gpu/gl/gl_object.c gpu/gl/gl_format.c
+                           gpu/gl/gl_texture.c gpu/gl/gl_framebuffer.c
+                           gpu/gl/gl_sync.c)
+set_target_properties(snx_gl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_compile_options(snx_gl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
+                                      -Werror=missing-variable-declarations)
+target_include_directories(snx_gl PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx_gl PRIVATE snx_glslc)
+
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)
 add_library(snx_demangle STATIC utilities/demangle.c)
@@ -125,6 +136,20 @@ elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)
     target_link_libraries(scarletnx-net PUBLIC resolv)
 endif()
 
+# The DS's and the 3DS's online services through their communities' replacements (online/, its README.md): the WFC
+# services and the DS firmware's connection slot, a DNS resolver, NASC's login on Pretendo Network and the 3DS
+# console's files. Strict C99 on the host's own sockets
+if(SNX_BUILD_NDS OR SNX_BUILD_3DS OR BUILD_TESTING)
+    add_library(snx_online STATIC online/wfc.c online/dns.c online/resolve.c online/socket.c online/nasc.c
+        online/ctr.c online/hosts.c)
+    set_target_properties(snx_online PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(snx_online PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
+    if(WIN32)
+        target_link_libraries(snx_online PUBLIC ws2_32)
+    endif()
+endif()
+
 # Local wireless for nx's ldn and bsd (network/net_ldn.h): over the LAN, or through an Eden room (network/net_room.h),
 # which is ENet and zstd, fetched for the NX build and the tests
 if(TARGET snx_enet)
@@ -189,6 +214,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                    DEFINES NIS_OUTPUT_RGBA8)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.vert NAME fx_sgsr_vert_spv HEADER common/gpu/vk/fx_spv.h)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
+    # SMAA's area texture, which tools/areatexgen writes (cmake/areatex.cmake)
+    include("${PROJECT_SOURCE_DIR}/cmake/areatex.cmake")
+    target_sources(snx_vk_common PRIVATE "${snx_areatex_h}")
     # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
     # The GPU driver a run asks for (gpu/vk/gpu_driver_load.h), which the window's instance and surface are made through:

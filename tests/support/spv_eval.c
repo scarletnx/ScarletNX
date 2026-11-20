@@ -420,6 +420,18 @@ static const char* run(Ev* e) {
             case 62: /* OpStore */
                 if (!store(e, e->ids[e->ids[in[1]].type].a, e->ids[in[1]].v.c[0], &e->ids[in[2]].v)) return "store";
                 break;
+            case 239: { /* OpAtomicUMax: one invocation, so its result is what it read */
+                uint32_t pointee = e->ids[e->ids[in[3]].type].a;
+                Val was;
+                if (!load(e, t, e->ids[in[3]].v.c[0], &was)) return "atomic load";
+                if (e->ids[in[6]].v.c[0] > was.c[0] &&
+                    !store(e, pointee, e->ids[in[3]].v.c[0], &e->ids[in[6]].v))
+                    return "atomic store";
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = was;
+                break;
+            }
             case 65:
             case 66: { /* OpAccessChain */
                 uint64_t ptr = e->ids[in[3]].v.c[0];

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The letters a game's title is written in that the menu draws whatever its languages show: GNU Unifont's glyphs of
-   every code point of scripts/build-glyphs.py's TITLE_RANGES, the CJK and Hangul blocks (src/gui/unifont-titles.hex,
-   compiled in by that script; src/gui/FONT-NOTICE.txt). Most are 16x16, two columns wide as wide.h's; the halfwidth
-   forms are 8x16 */
+   every code point of scripts/build-glyphs.py's TITLE_RANGES, the CJK and Hangul blocks, which that script compiles in
+   from the Unifont the build downloads (cmake/dependencies.cmake; src/gui/FONT-NOTICE.txt). Most are 16x16, two
+   columns wide as wide.h's; the halfwidth forms are 8x16 */
 #ifndef SNX_GUI_TITLES_H
 #define SNX_GUI_TITLES_H
 #include <stdint.h>

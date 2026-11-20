@@ -528,12 +528,16 @@ static void predraw_prologue(DirectCtx* c, u64 slots, u32 i32, u32 vec4, u32 fra
     for (u32 j = 0; j < k; j++) stored[j] = spv_emit_image_read(e, uvec4, side_type, side[j], xy);
     spv_emit_branch(e, done);
     spv_emit_label(e, done);
+    /* every slot's phi before the first cast: a block's phis come before its other instructions, and a driver that
+       takes the module as it is (RADV) fell in its compile on a second slot's phi after the first one's cast */
+    u32 bits[SH_PREDRAW_MAX];
+    for (u32 j = 0; j < k; j++) bits[j] = spv_emit_phi2(e, uvec4, fetched[j], take, stored[j], keep);
     k = 0;
     for (int slot = 0; slot < SH_MAXTEX; slot++) {
         if (!(slots >> slot & 1)) continue;
-        u32 bits = spv_emit_phi2(e, uvec4, fetched[k], take, stored[k], keep);
+        c->predraw[slot] =
+            texture_vec4[slot] == uvec4 ? bits[k] : spv_emit_unary(e, SPV_OP_BITCAST, texture_vec4[slot], bits[k]);
         k++;
-        c->predraw[slot] = texture_vec4[slot] == uvec4 ? bits : spv_emit_unary(e, SPV_OP_BITCAST, texture_vec4[slot], bits);
     }
     spv_emit_void_op(e, SPV_OP_END_INVOCATION_INTERLOCK_EXT, NULL, 0);
 }
@@ -3438,6 +3442,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     memcpy(next.chosen_why, chosen_why, sizeof next.chosen_why);
     if (has_flow && !structure) memcpy(next.flow_why, flow_why, sizeof next.flow_why);
     next.flow_base = si->flow_base;
+    next.cb_window = si->cb_window; /* told as the push block was made: the renderer places the windows by it */
     next.advanced_blend = si->advanced_blend;
     next.advanced_blend_mask = si->advanced_blend_mask;
     next.coverage_to_color = si->coverage_to_color;

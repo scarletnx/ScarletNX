@@ -941,7 +941,8 @@ static void check_atoms(u64 atom) {
     for (u32 r = 0; r < 4000; r++) {
         if (n < CAP && (!n || rnd() % 5 < 3)) {
             DevMemWant want = {.at = rnd() % 2 ? DM_HOST : DM_CACHED, .mapped = 1};
-            CHECK(make(0, 1 + rnd() % (300 * KIB), 1ull << rnd() % 9, ~0u, 0, want, &held[n]) == VK_SUCCESS);
+            const u64 size = 1 + rnd() % (300 * KIB), align = 1ull << rnd() % 9; /* in this order on every compiler */
+            CHECK(make(0, size, align, ~0u, 0, want, &held[n]) == VK_SUCCESS);
             CHECK(held[n].info.offset % atom == 0 && held[n].info.type == (want.at == DM_HOST ? 1u : 2u));
             n++;
         } else {

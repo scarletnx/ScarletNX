@@ -419,6 +419,347 @@ static int life_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* A draw's fragment key kept from the draw before while compute results are pending (render.c's fs_key): a dispatch
+   on the compute queue stores one word through a storage buffer, its result pending; the first draw after it makes its
+   key again (a result was added), the second keeps it. A store of 1.0 into the texture's texel 0 makes the next draw's
+   key again too, and its resolve lands the result: red 1.0, where the texture read 0.75. The draws into one target,
+   cleared once (a clear is a GPU-side write, after which a key is made again). Drawn as it is and with
+   draw_state_check=1, which makes a kept key again and finds no difference */
+#define PENDING_CB   (MEMO_GPU + 0x3e800) /* the dispatch's constant buffer 0, its storage buffer at 0x110 */
+#define PENDING_CODE (MEMO_GPU + 0x11400)
+static int pending_dispatch(u64 word_at) {
+    const u64 program[] = {0x4c98078004470000ull,                       /* MOV R0, c[0][0x110] */
+                           0x4c98078004570001ull,                       /* MOV R1, c[0][0x114] */
+                           0x0100000000071002ull | 0x3f800000ull << 20, /* MOV32I R2, 1.0 */
+                           0xeedc200000070002ull,                       /* STG.E [R0], R2 */
+                           0xe30000000007000full};
+    u8 code[64] = {0}, descriptor[16] = {0};
+    u32 at = 0;
+    for (u32 i = 0; i < sizeof program / sizeof *program; i++) {
+        if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+        snx_st_le64(code + 8 * at++, program[i]);
+    }
+    CHECK(!gmem_write(PENDING_CODE, code, sizeof code));
+    snx_st_le32(descriptor, (u32)word_at);
+    snx_st_le32(descriptor + 4, (u32)(word_at >> 32));
+    snx_st_le32(descriptor + 8, 4);
+    CHECK(!gmem_write(PENDING_CB + 0x110, descriptor, sizeof descriptor));
+    u32 qmd[64] = {0};
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1;
+    qmd[QMD_CONST_BUFFER_CONFIG] = (u32)PENDING_CB;
+    qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(PENDING_CB >> 32) | 0x200u << 15;
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    if (!ch) return 1;
+    u64 dispatches = g_vk_dispatches;
+    vk_lock();
+    /* the CPU read the word lately: the dispatch runs on the compute queue, its result pending until it lands, not
+       kept on the GPU */
+    vk_own_cpu_touched(MEMO_CPU + (word_at - MEMO_GPU), 4);
+    DispatchState d;
+    mx_dispatch_state(qmd, ch->rcomp, PENDING_CODE, &d);
+    vk_dispatch(&d);
+    vk_unlock();
+    free(ch);
+    CHECK(g_vk_dispatches == dispatches + 1);
+    return 0;
+}
+/* one draw of the texture program into the first target: its pixel, and whether its fragment key was the draw
+   before's */
+static int pending_draw(GpuChannel* channel, u8 px[4], int* kept) {
+    u32* r = channel->r3d;
+    const u64 target = MEMO_GPU + 0x20000;
+    VkDrawCounts before, after;
+    vk_draw_counts(&before);
+    vk_lock();
+    r[0x851] = LIFE_TEX_PROGRAM;
+    r[0x458] = 0 | 1u << 21 | 7u << 27;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    Surf* t = vk_rt_find(target);
+    CHECK(t);
+    if (t) CHECK(!read_pixel_at(t, 0, 0, px));
+    vk_unlock();
+    vk_draw_counts(&after);
+    *kept = after.fs[VK_FS_KEPT] == before.fs[VK_FS_KEPT] + 1;
+    return 0;
+}
+static int compute_pending_cases(GpuChannel* channel) {
+    if (vk_uma()) {
+        puts("SKIP fragment keys under pending compute results: memory is shared with the CPU, where a dispatch writes "
+             "in place");
+        return 0;
+    }
+    u32* r = channel->r3d;
+    CHECK(!life_headers(0, 0)); /* the 2x1 R32F texture of 0 and 1, sampled linearly at 5/8: red 0.75 */
+    u8 texels[8] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    int saved_check = g_settings.draw_state_check;
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+        vk_ww_new_epoch();
+        vk_lock();
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        vk_unlock();
+        VkDrawCounts before, after;
+        vk_draw_counts(&before);
+        u8 px[4][4];
+        int kept[4], pending[2];
+        CHECK(!pending_draw(channel, px[0], &kept[0]));
+        CHECK(!pending_dispatch(MEMO_GPU + 0x3f000)); /* a word no draw reads */
+        CHECK(!pending_draw(channel, px[1], &kept[1]));
+        CHECK(!pending_draw(channel, px[2], &kept[2]));
+        pending[0] = atomic_load_explicit(&g_cs_any, memory_order_relaxed);
+        CHECK(!pending_dispatch(LIFE_POOL + 0x400)); /* the texture's texel 0: 1.0 */
+        pending[1] = atomic_load_explicit(&g_cs_any, memory_order_relaxed);
+        CHECK(!pending_draw(channel, px[3], &kept[3]));
+        vk_draw_counts(&after);
+        static const u8 three[4] = {191, 0, 0, 255}, one[4] = {255, 0, 0, 255};
+        int ok = !kept[1] && kept[2] && !kept[3] && pending[0] && pending[1] && after.differs == before.differs;
+        for (int i = 0; i < 4; i++) ok &= life_near(px[i], i < 3 ? three : one);
+        if (!ok)
+            fprintf(stderr,
+                    "fragment keys under pending compute results%s: kept %d %d %d (expected 0 1 0), pending %d %d, "
+                    "pixels %u %u %u %u (expected 191 191 191 255 red), %llu differences\n",
+                    check ? " with draw_state_check=1" : "", kept[1], kept[2], kept[3], pending[0], pending[1],
+                    px[0][0], px[1][0], px[2][0], px[3][0], (unsigned long long)(after.differs - before.differs));
+        CHECK(ok);
+        vk_lock();
+        vk_compute_land();
+        vk_finish();
+        vk_unlock();
+    }
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    vk_ww_new_epoch();
+    g_settings.draw_state_check = saved_check;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    return 0;
+}
+
+/* A draw's fragment key kept from the draw before where its texture lies over a render target without being it
+   (render.c's fs_key, TexOver): the texture's header reads the 4x4 RGBA8 target at OVER_TARGET as R32F, the same bytes
+   in another format, so the draws sample a copy of the target. The second draw of a pair keeps the first one's key.
+   Then another program draws into that target and the game's submission ends, after which a copy is made again:
+   the next pair's first draw makes the copy and the key again (the target's write generation is all that moved), its
+   second keeps the key. A key made again after another program's draw finds the texture without the memo, and a
+   draw into the sampled target itself keeps no key. Drawn as it is and with draw_state_check=1, which makes a kept
+   key again and finds no difference */
+#define OVER_TARGET (MEMO_GPU + 0x34000)
+/* the 4x4 RGBA8 target at gva bound as the first color target, as rt_clear binds it, with no clear */
+static void over_bind(GpuChannel* channel, u64 gva) {
+    u32* r = channel->r3d;
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = r[0x203] = MEMO_SIDE;
+    r[0x204] = 0xD5;
+    r[0x205] = 0;
+    r[0x206] = 1;
+    r[0x207] = 0;
+}
+static int over_target_cases(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    u32 tic[8];
+    u8 bytes[32];
+    CHECK(!life_headers(0, 0));
+    life_tic(tic, 0);
+    tic[1] = (u32)OVER_TARGET;
+    tic[2] = (u32)(OVER_TARGET >> 32) | 3u << 21;
+    tic[4] = (MEMO_SIDE - 1) | 1u << 23;
+    tic[5] = (MEMO_SIDE - 1) | 1u << 31;
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    int saved_check = g_settings.draw_state_check;
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        VkDrawCounts before, after;
+        vk_draw_counts(&before);
+        u8 px[4][4];
+        int kept[4];
+        u64 copies[3];
+        vk_ww_new_epoch();
+        copies[0] = g_vk_rt_copy_writes;
+        rt_clear(channel, OVER_TARGET, MEMO_SIDE, MEMO_SIDE, 0, 1);
+        vk_release_submit(); /* a submission of the game's ended: the copy is made again in each run */
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0); /* the draws' target, bound again */
+        CHECK(!pending_draw(channel, px[0], &kept[0]));
+        CHECK(!pending_draw(channel, px[1], &kept[1]));
+        copies[1] = g_vk_rt_copy_writes;
+        /* a color program's draw into the sampled target, and the submission's end that lets a copy be made again */
+        u64 drawn = g_vk_drawn;
+        vk_lock();
+        over_bind(channel, OVER_TARGET);
+        r[0x851] = MEMO_GREEN;
+        r[0x458] = 0 | 1u << 21 | 7u << 27;
+        channel->r3d_dirty = ~0u;
+        mx_draw_state_sync(channel);
+        DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+        vk_render_draw(&channel->ds, &call, &channel->owner);
+        vk_render_end();
+        over_bind(channel, MEMO_GPU + 0x20000);
+        vk_unlock();
+        vk_release_submit();
+        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(!pending_draw(channel, px[2], &kept[2]));
+        CHECK(!pending_draw(channel, px[3], &kept[3]));
+        copies[2] = g_vk_rt_copy_writes;
+        /* the color program's draw into the draws' own target: the texture program's next draw makes its key again
+           (another program drew), and finds its texture with no lookup through the memo, as nothing of the texture's
+           moved. With draw_state_check=1 every lookup goes through it */
+        vk_lock();
+        r[0x851] = MEMO_GREEN;
+        channel->r3d_dirty = ~0u;
+        mx_draw_state_sync(channel);
+        vk_render_draw(&channel->ds, &call, &channel->owner);
+        vk_render_end();
+        vk_unlock();
+        VkDrawCounts memo0, memo1;
+        int kept_after, kept_own[2];
+        u8 unused[4];
+        vk_draw_counts(&memo0);
+        CHECK(!pending_draw(channel, unused, &kept_after));
+        vk_draw_counts(&memo1);
+        u64 through = memo1.tex[VK_TEX_MEMO] - memo0.tex[VK_TEX_MEMO];
+        /* the texture program's draws into the target they sample a copy of: each moves that target's write
+           generation, so the second one's key is made again */
+        vk_lock();
+        over_bind(channel, OVER_TARGET);
+        vk_unlock();
+        CHECK(!pending_draw(channel, unused, &kept_own[0]));
+        CHECK(!pending_draw(channel, unused, &kept_own[1]));
+        vk_lock();
+        over_bind(channel, MEMO_GPU + 0x20000);
+        vk_unlock();
+        vk_draw_counts(&after);
+        int ok = !kept[0] && kept[1] && !kept[2] && kept[3] && copies[1] > copies[0] && copies[2] > copies[1] &&
+                 after.differs == before.differs && !memcmp(px[0], px[1], 4) && !memcmp(px[2], px[3], 4) &&
+                 !kept_after && (check ? through > 0 : !through) && !kept_own[1];
+        if (kept_after || (check ? !through : through) || kept_own[1])
+            fprintf(stderr,
+                    "fragment keys over a copy of a target%s: after another program's draw the key was kept %d "
+                    "(expected 0) with %llu lookups through the memo (expected %s); the second draw into the sampled "
+                    "target kept its key %d (expected 0)\n",
+                    check ? " with draw_state_check=1" : "", kept_after, (unsigned long long)through,
+                    check ? "1 or more" : "0", kept_own[1]);
+        if (!ok)
+            fprintf(stderr,
+                    "fragment keys over a copy of a target%s: kept %d %d %d %d (expected 0 1 0 1), %llu and %llu "
+                    "copies of the target written (1 or more each expected), pixels' red %u %u and %u %u (each pair "
+                    "the same expected), %llu differences\n",
+                    check ? " with draw_state_check=1" : "", kept[0], kept[1], kept[2], kept[3],
+                    (unsigned long long)(copies[1] - copies[0]), (unsigned long long)(copies[2] - copies[1]), px[0][0],
+                    px[1][0], px[2][0], px[3][0], (unsigned long long)(after.differs - before.differs));
+        CHECK(ok);
+    }
+    g_settings.draw_state_check = saved_check;
+    CHECK(!life_headers(0, 0));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    return 0;
+}
+
+/* Inline constant blocks, as NVN's front end gives them (DsInline, its per-block generations DsState.inl_gen): the
+   constant buffer program reads its color from slot 3, the fragment stage's bank 2 block. A draw's new base vertex
+   moves every stage's bank 0 block and the inline generation, not bank 2: the next draw keeps bank 2's staged copy.
+   A new color in bank 2 is staged again and drawn */
+static void inline_set(DsState* ds, int bank0, const float* color) {
+    if (bank0)
+        for (int s = 0; s < DS_GFX_STAGES; s++) {
+            snx_st_le32(ds->inl.bank0[s] + SH_CB0_BASE_VERTEX, (u32)(19 + s));
+            ds->inl_gen[0][s] = ds_generation_next();
+        }
+    if (color) {
+        life_floats(ds->inl.bank2[4], color, 4);
+        ds->inl_gen[1][4] = ds_generation_next();
+    }
+    ds->gen[DS_INLINE] = ds_generation_next();
+}
+static int inline_draw(GpuChannel* channel, u8 px[4], u64* kept, u64* staged) {
+    u32* r = channel->r3d;
+    const u64 target = MEMO_GPU + 0x20000;
+    VkDrawCounts before, after;
+    vk_draw_counts(&before);
+    vk_lock();
+    rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    r[0x851] = LIFE_CB_PROGRAM;
+    r[0x458] = 0 | 1u << 21 | 7u << 27;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    channel->ds.bind.cb_inline[4][3] = DS_CB_BANK2;
+    channel->ds.gen[DS_BIND] = ds_generation_next();
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    u64 drawn = g_vk_drawn;
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    CHECK(g_vk_drawn == drawn + 1);
+    Surf* t = vk_rt_find(target);
+    CHECK(t);
+    if (t) CHECK(!read_pixel_at(t, 0, 0, px));
+    vk_unlock();
+    vk_draw_counts(&after);
+    *kept = after.inl[2][0] - before.inl[2][0];
+    *staged = after.inl[2][1] - before.inl[2][1];
+    return 0;
+}
+static int inline_block_cases(GpuChannel* channel) {
+    DsState* ds = &channel->ds;
+    int saved_check = g_settings.draw_state_check;
+    static const u8 green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        VkDrawCounts before, after;
+        vk_draw_counts(&before);
+        u8 px[3][4];
+        u64 kept[3], staged[3];
+        inline_set(ds, 0, g_life_green);
+        CHECK(!inline_draw(channel, px[0], &kept[0], &staged[0]));
+        inline_set(ds, 1, NULL); /* a new base vertex in every bank 0 */
+        CHECK(!inline_draw(channel, px[1], &kept[1], &staged[1]));
+        inline_set(ds, 0, g_life_blue);
+        CHECK(!inline_draw(channel, px[2], &kept[2], &staged[2]));
+        vk_draw_counts(&after);
+        int ok = staged[0] == 1 && kept[1] == 1 && !staged[1] && staged[2] == 1 && life_near(px[0], green) &&
+                 life_near(px[1], green) && life_near(px[2], blue) && after.differs == before.differs;
+        if (!ok)
+            fprintf(stderr,
+                    "inline blocks%s: bank 2 kept %llu %llu %llu, staged %llu %llu %llu (expected staged, kept, "
+                    "staged); pixels %u,%u,%u %u,%u,%u %u,%u,%u (green, green, blue); %llu differences\n",
+                    check ? " with draw_state_check=1" : "", (unsigned long long)kept[0], (unsigned long long)kept[1],
+                    (unsigned long long)kept[2], (unsigned long long)staged[0], (unsigned long long)staged[1],
+                    (unsigned long long)staged[2], px[0][0], px[0][1], px[0][2], px[1][0], px[1][1], px[1][2], px[2][0],
+                    px[2][1], px[2][2], (unsigned long long)(after.differs - before.differs));
+        CHECK(ok);
+    }
+    g_settings.draw_state_check = saved_check;
+    /* the channel's slot 3 back in guest memory and its blocks zero, under generations nothing staged holds */
+    ds->bind.cb_inline[4][3] = DS_CB_MEMORY;
+    memset(&ds->inl, 0, sizeof ds->inl);
+    ds_generations_renew(ds);
+    return 0;
+}
+
 /* Headers that name no texture, sampled by the fragment program of the texture cases (slot 0, its handle in constant
    buffer 2): an empty one, all eight words nought; one whose word 0 alone is nought, a texture's address, size and
    layout after it; and one of a format the renderer has no Vulkan format for. Word 0's four component sources (bits 19
@@ -848,13 +1189,17 @@ static int check_draw_memo(void) {
     const MemoDraw recode[] = {{MEMO_GREEN, 0, 0, 0}, {MEMO_BLUE, 0, 0, 0}, {MEMO_GREEN, 0, 0, 1}};
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
+    CHECK(!compute_pending_cases(channel));
+    CHECK(!over_target_cases(channel));
+    CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
     free(channel);
     puts("PASS draw memo: A, B, A and a state in two vertex formats take the table, a new epoch and new code make the "
          "state again; constant buffers kept past submissions, views, samplers and a stage's last set kept in the "
          "frame, and CPU, 3D engine and storage result writes, header writes and presents between draws drawn as "
-         "without them; draw_state_check=1 finds no difference; headers that name no texture read zeros, their "
-         "draws drawn and each header said once");
+         "without them; draw_state_check=1 finds no difference; an inline block kept while another changes, staged "
+         "again when it does; a fragment key kept over a copy of a target and made again with the copy; headers that "
+         "name no texture read zeros, their draws drawn and each header said once");
     return 0;
 }

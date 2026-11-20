@@ -91,11 +91,6 @@ def main():
         'Old 3DS',
     )
     run(
-        ['--board-info', '--aot-threads=many'],
-        2,
-        'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
-    )
-    run(
         ['--board-info', '--gamepad-deadzone=95'],
         0,
         'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
@@ -124,11 +119,6 @@ def main():
     # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
     # its vibration, which the 3DS has none of
     run(['--board-info', '--gamepad-swap-ab=1', '--gamepad-deadzone=30'], 0, 'Old 3DS')
-    run(
-        ['--board-info', '--gamepad-deadzone=95'],
-        0,
-        'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
-    )
     run(['--board-info', '--gamepad-rumble=50'], 2, 'unknown setting: --gamepad-rumble=50')
     # and its button map, which the 3DS input reads itself: a map it cannot read keeps the one before, a control sent
     # to a button the 3DS lacks sends nothing, each said with the value

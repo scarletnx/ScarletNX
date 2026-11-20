@@ -30,6 +30,13 @@ void hfs0_process(hfs0_ctx_t *ctx) {
         exit(EXIT_FAILURE);
     }
     hfs0_header_from_le(ctx->header, 1);
+    uint32_t bad_name = hfs0_first_bad_name(ctx->header);
+    if (bad_name != ctx->header->num_files) {
+        fprintf(stderr, "Error: HFS0 is corrupt: file %"PRIu32"'s name, from byte %"PRIu32" of a string table of "
+                "%"PRIu32" bytes, does not end in it!\n", bad_name,
+                hfs0_get_file_entry(ctx->header, bad_name)->string_table_offset, ctx->header->string_table_size);
+        exit(EXIT_FAILURE);
+    }
 
     /* Weak file validation. */
     uint64_t max_size = 0x1ULL;

@@ -139,8 +139,10 @@ static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
     (*accessor)->destroy = am_accessor_destroy;
     R_SUCCEED();
 }
+/* the storage of CreateHandleStorage alone, as the console opens the others (CreateTransferMemoryStorage's too) by
+   Open */
 static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) {
-    R_UNLESS(((StorageData*)self->data)->guest, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
+    R_UNLESS(((StorageData*)self->data)->handle_only, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
     *accessor = nn_am_service_ITransferStorageAccessor_new_data(g_hle.am.accessors, g_hle.am.accessor_next,
                                                                   "am storage accessors");
     svcobj_ref(self);
@@ -151,6 +153,19 @@ static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** acc
 
 static int nn_am_service_IStorageAccessor_GetSize(SvcObj* self, i64* size) {
     *size = (i64)((StorageData*)((AmAccessor*)self->data)->storage->data)->size;
+    R_SUCCEED();
+}
+static int nn_am_service_ITransferStorageAccessor_GetSize(SvcObj* self, i64* size) {
+    *size = (i64)((StorageData*)((AmAccessor*)self->data)->storage->data)->size;
+    R_SUCCEED();
+}
+/* the storage's transfer memory, a handle of the game's own to it, with the size the storage was made with: what the
+   SDK's GetHandle hands an applet's code to map (OpenTransferStorage opens no storage that has none) */
+static int nn_am_service_ITransferStorageAccessor_GetHandle(SvcObj* self, i64* size, u32* transfer_memory) {
+    StorageData* s = (StorageData*)((AmAccessor*)self->data)->storage->data;
+    *size = (i64)s->size;
+    *transfer_memory = h_new(kobj_at(s->tmem));
+    R_UNLESS(*transfer_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf data) {

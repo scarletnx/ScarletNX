@@ -3,10 +3,13 @@
 /* glslc on shader files, for the tests: each file's stage from its extension (.vert, .frag, .comp), and with -o
    (one file only) its module written to OUT; with -m, through a binding map that puts each kind of resource in a set
    of its own (samplers 0, images 1, uniform blocks 2, buffer blocks 3), at the binding the source gives, else from
-   binding 32 on; with -f, gl_FragCoord and gl_PointCoord read through GlslcOptions.flip_y. Prints FILE:LINE:COLUMN:
-   ERROR for each file refused, the first warning of each file with warnings, and exits 1 when a file was refused.
+   binding 32 on; with -f, gl_FragCoord and gl_PointCoord read through GlslcOptions.flip_y; with -d, as a desktop GL
+   context's shader (GlslcOptions.desktop); with -w (and -m's map, the default block placed too), every uniform block
+   read through a window (GlslcOptions.block), the n-th one's offset at push constant bit 1024 + 16 n; with -s, every
+   uniform block read as a read-only storage buffer. Prints FILE:LINE:COLUMN: ERROR for each file refused, the first
+   warning of each file with warnings, and exits 1 when a file was refused.
 
-       snx-glslc-cli [-m] [-f] [-o OUT.spv] FILE... */
+       snx-glslc-cli [-m] [-f] [-d] [-w | -s] [-o OUT.spv] FILE... */
 #include "glslc/glslc.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +22,10 @@ typedef struct {
     GlslcWorkspace workspace; /* every file's */
     int map;                  /* -m */
     int flip;                 /* -f: GlslcOptions.flip_y */
+    int desktop;              /* -d: GlslcOptions.desktop */
+    int read;                 /* -w SNX_GLSLC_BLOCK_WINDOW, -s SNX_GLSLC_BLOCK_STORAGE, else 0 */
     uint32_t next[4];         /* -m's next binding of each set */
+    uint32_t windows;         /* -w's windows given so far */
 } Cli;
 
 static Cli g_cli;
@@ -32,6 +38,11 @@ static int map_by_kind(void* user, const GlslcResource* r, uint32_t* set, uint32
     return 0;
 }
 
+static int read_by_flag(void* user, uint32_t set, uint32_t binding, uint32_t* offset_bit) {
+    (void)user, (void)set, (void)binding;
+    if (g_cli.read == SNX_GLSLC_BLOCK_WINDOW) *offset_bit = 1024 + 16 * g_cli.windows++;
+    return g_cli.read;
+}
 /* 0 compiled, 1 refused, 2 not read or written */
 static int compile_file(const char* path, const char* out) {
     const char* ext = strrchr(path, '.');
@@ -55,7 +66,15 @@ static int compile_file(const char* path, const char* out) {
     fclose(f);
     GlslcResult* r = &g_cli.result;
     memset(g_cli.next, 0, sizeof g_cli.next); /* each file's bindings from 32 */
-    if (snx_glslc_compile(&g_cli.workspace, &(GlslcOptions){stage, g_cli.map ? map_by_kind : NULL, g_cli.next, 0, g_cli.flip},
+    g_cli.windows = 0;
+    if (snx_glslc_compile(&g_cli.workspace,
+                          &(GlslcOptions){.stage = stage,
+                                          .bind = g_cli.map || g_cli.read ? map_by_kind : NULL,
+                                          .bind_user = g_cli.next,
+                                          .map_default = g_cli.read != 0,
+                                          .flip_y = g_cli.flip,
+                                          .desktop = g_cli.desktop,
+                                          .block = g_cli.read ? read_by_flag : NULL},
                           g_cli.source, size, g_cli.words, SNX_GLSLC_MAX_WORDS, r)) {
         printf("%s:%u:%u: %s\n", path, r->line, r->column, r->error);
         return 1;
@@ -74,8 +93,15 @@ static int compile_file(const char* path, const char* out) {
 int main(int argc, char** argv) {
     const char* out = NULL;
     int first = 1;
-    while (argc > 1 && (!strcmp(argv[1], "-m") || !strcmp(argv[1], "-f"))) {
+    while (argc > 1 && (!strcmp(argv[1], "-m") || !strcmp(argv[1], "-f") || !strcmp(argv[1], "-d") ||
+                        !strcmp(argv[1], "-w") || !strcmp(argv[1], "-s"))) {
         if (argv[1][1] == 'm') g_cli.map = 1;
+        else if (argv[1][1] == 'd')
+            g_cli.desktop = 1;
+        else if (argv[1][1] == 'w')
+            g_cli.read = SNX_GLSLC_BLOCK_WINDOW;
+        else if (argv[1][1] == 's')
+            g_cli.read = SNX_GLSLC_BLOCK_STORAGE;
         else g_cli.flip = 1;
         argv++;
         argc--;
@@ -85,7 +111,7 @@ int main(int argc, char** argv) {
         first = 3;
     }
     if (first >= argc || (out && argc - first != 1)) {
-        fprintf(stderr, "usage: %s [-m] [-f] [-o OUT.spv] FILE... (-o with one file)\n", argv[0]);
+        fprintf(stderr, "usage: %s [-m] [-f] [-d] [-w | -s] [-o OUT.spv] FILE... (-o with one file)\n", argv[0]);
         return 2;
     }
     size_t workspace_size = snx_glslc_workspace_size();

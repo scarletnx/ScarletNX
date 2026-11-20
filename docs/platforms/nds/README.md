@@ -12,6 +12,7 @@
 * [The compiled module](#the-compiled-module)
 * [The memory map](#the-memory-map)
 * [The ARM7's services](#the-arm7s-services)
+  * [WFC](#wfc)
 * [The HLE BIOS](#the-hle-bios)
 * [The display on the GPU](#the-display-on-the-gpu)
 * [Sound](#sound)
@@ -199,7 +200,7 @@ names a service in its low five bits, and each service answers with a word of it
 | Service | Answered with |
 | --- | --- |
 | The handshake over IPCSYNC | each count with the next, as the two sides start |
-| Firmware | a flash image the board makes, with the user's settings in it: reads, the write-enable latch and writes, kept for the run |
+| Firmware | a flash image the board makes, with the user's settings and the three Wi-Fi connections in it: reads, the write-enable latch and writes, kept for the run. The first connection is set to the WFC service `nds_wfc` names ([WFC](#wfc)) |
 | Clock | the host's local date and time |
 | Touch screen | the pen from the window, a sample at a time or by the line, at the place in main memory the SDK reads |
 | Sound | [Sound](#sound) |
@@ -210,6 +211,18 @@ names a service in its low five bits, and each service answers with a word of it
 
 The keys the ARM9 has no register for (X, Y and the hinge) are kept where the ARM7 keeps them in main memory, a line
 at a time.
+
+### WFC
+
+A DS game goes online through the firmware's Wi-Fi connections: the first one that works, and the DNS server it names.
+The original WFC service is closed; the community's replacements each run a DNS server that answers the service's
+names (`nas.nintendowifi.net`, `conntest.nintendowifi.net`, the GameSpy names) with their own servers, and a player
+sets that server in the connection by hand. The board's firmware has its first connection set that way: the network
+`ScarletNX`, open, its address from DHCP, both DNS servers the service's that `nds_wfc` picks ([Settings](../../user/settings.md#online)),
+from `src/common/online`'s list, or with `auto` the one whose server answers first
+as the game starts; `off`, the default, leaves the three connections unset. The
+run's log names the server. A game's Wi-Fi settings show the connection; the game cannot connect through it, as the
+wireless service has no answer yet.
 
 ## The HLE BIOS
 

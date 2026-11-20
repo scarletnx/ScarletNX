@@ -742,8 +742,9 @@ static int filter_accepts(const SnxLdnScanFilter* f, const SnxLdnNetworkInfo* i)
         (f->session_id[0] != i->session_id[0] || f->session_id[1] != i->session_id[1]))
         return 0;
     if ((flag & SNX_LDN_FILTER_NETWORK_TYPE) && snx_le32(f->network_type) != i->network_type) return 0;
-    if ((flag & SNX_LDN_FILTER_SSID) &&
-        (f->ssid_length != i->ssid_length || memcmp(f->ssid, i->ssid, f->ssid_length)))
+    /* the lengths are bytes of the game's and of the network's host: one past the field names no SSID */
+    if ((flag & SNX_LDN_FILTER_SSID) && (f->ssid_length != i->ssid_length || f->ssid_length > sizeof f->ssid ||
+                                         memcmp(f->ssid, i->ssid, f->ssid_length)))
         return 0;
     if ((flag & SNX_LDN_FILTER_SCENE_ID) && f->scene_id != i->scene_id) return 0;
     return 1;

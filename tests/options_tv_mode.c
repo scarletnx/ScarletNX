@@ -439,7 +439,8 @@ static void test_dropped_keys_old(void) {
                                       "astc_background_threads=4",
                                       "press=10",
                                       "press_at=2000",
-                                      "mesh_draws=0"};
+                                      "mesh_draws=0",
+                                      "hmma_astat=1"};
     char *text, file[1024] = "[Debug]\n", key[64], line[256];
     size_t i;
     for (i = 0; i < sizeof old / sizeof old[0]; ++i)
@@ -453,9 +454,9 @@ static void test_dropped_keys_old(void) {
         snprintf(line, sizeof line, "\n; %s: %s\n%s\n", key, ini_deprecated(key), old[i]);
         CHECK(strstr(text, line) && strstr(text, "\n[Deprecated]\n") < strstr(text, line));
     }
-    CHECK(strstr(g_test.said, "keeps 10 keys this version does not use (nvn_direct, nvn_verify, nvn_trace, mme_hle, "
-                              "mme_jit, mme_verify, astc_background_threads, press, press_at, mesh_draws), under "
-                              "[Deprecated]"));
+    CHECK(strstr(g_test.said, "keeps 11 keys this version does not use (nvn_direct, nvn_verify, nvn_trace, mme_hle, "
+                              "mme_jit, mme_verify, astc_background_threads, press, press_at, mesh_draws, "
+                              "hmma_astat), under [Deprecated]"));
     free(text);
     g_test.write = 0;
 }

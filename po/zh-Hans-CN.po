@@ -1812,6 +1812,14 @@ msgstr "覆盖"
 msgid "Import"
 msgstr ""
 
+#: src/gui/main.c
+msgid "NSP"
+msgstr ""
+
+#: src/gui/main.c
+msgid "XCI"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -3320,8 +3328,8 @@ msgid "Download Driver"
 msgstr "下载驱动"
 
 #: src/gui/main.c
-msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
-msgstr "来自 GitHub 发布版本的驱动：Adreno 用 Turnip 和 GPU 厂商自己的驱动（厂商的标为专有、无许可证），Mali 用 NX-Mali 和 FristOneRR 的 PanVK，Xclipse 用 RADV。选中的会被下载，并像「添加驱动」添加 zip 一样添加"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali, MaliSX2 and PanVK builds for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
+msgstr "来自 GitHub 发布版本的驱动：Adreno 用 Turnip 和 GPU 厂商自己的驱动（厂商的标为专有、无许可证），Mali 用 NX-Mali、MaliSX2 和 PanVK 的构建，Xclipse 用 RADV。选中的会被下载，并像「添加驱动」添加 zip 一样添加"
 
 #: src/gui/main.c
 msgid "Add Driver"
@@ -5146,6 +5154,20 @@ msgid "The Recompiled Library's Main is off and no Extra of it can take a game: 
 msgstr "已重编译游戏库的主文件夹已关闭，且没有可放入游戏的另外的文件夹：请在「设置 > 应用 > 文件夹」中对其主文件夹使用「添加到游戏库」，或为其添加文件夹"
 
 #: src/gui/main.c
+#, c-format
+msgid "Pack: the folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Pack"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Pack the NCAs of %s, decrypted, into an NSP or an XCI?"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Run Amberlith: no state folder to run in"
 msgstr "运行 Amberlith：没有可用的状态文件夹"
 
@@ -5990,6 +6012,10 @@ msgstr "把日志保存为一个 zip 或 scarletnx.log，放在打开的文件�
 msgid "Where the app keeps each kind of its files, and the libraries: each folder opened or changed"
 msgstr "应用存放各类文件的位置，以及游戏库：每个文件夹都可打开或更改"
 
+#: src/gui/model.c
+msgid "Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an XCI whose NCAs are decrypted, which needs no keys to read"
+msgstr ""
+
 #: src/gui/process_posix.c
 #, c-format
 msgid "Cannot start the run: %s"
@@ -6817,6 +6843,10 @@ msgstr "载入 Android APK/XAPK"
 msgid "Install Keys"
 msgstr "安装密钥"
 
+#: src/gui/ui.txt
+msgid "Pack extracted as dXCI/dNSP"
+msgstr ""
+
 #: src/common/utilities/setup.c
 msgid "Game settings"
 msgstr "游戏设置"
@@ -7080,6 +7110,10 @@ msgstr "仅 Linux 和 Android"
 #: src/nx/runtime/ini.c
 msgid "arm64 Linux and Android only"
 msgstr "仅 arm64 Linux 和 Android"
+
+#: src/nx/runtime/ini.c
+msgid "Not offered"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"

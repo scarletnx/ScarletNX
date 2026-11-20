@@ -5,8 +5,9 @@
    byte land the owner first, the CPU's bytes on a page it shares with an owner stay, a neighbour writing during the
    move into the pool loses nothing, a system call fails on owned memory until it is acquired, dropping and unmapping
    land nothing, a view of owned memory lands it first, a fault on the thread holding the producer's lock ends the
-   process, the write watch's scan skips owned spans, and threads faulting at once on many pages while owners come
-   and go read every owner's bytes. Skips (77) where the host has no traps. Debug settings come as the runtime takes
+   process, the write watch's scan skips owned spans, a thread asleep on a page that is armed again before its let_go
+   wakes and lands the new owner, and threads faulting at once on many pages while owners come and go read every
+   owner's bytes. Skips (77) where the host has no traps. Debug settings come as the runtime takes
    them, --key=value (--write_tracking=1, --memory_traps=1: the protection's paths); with memory_traps=2, or 1 and no
    pool, it checks only that the log says why there are no traps.
    On Windows (platform/plat_win32.c) the traps are page protection and a vectored exception handler on the
@@ -50,7 +51,7 @@ static void test_fail(const char* expr, int line) {
 }
 #define CHECK(expr)                                                                                                    \
     do {                                                                                                               \
-        (atomic_fetch_add_explicit(&checks, 1, memory_order_relaxed) + 1);                                             \
+        atomic_fetch_add_explicit(&checks, 1, memory_order_relaxed);                                                   \
         if (!(expr)) test_fail(#expr, __LINE__);                                                                       \
     } while (0)
 
@@ -146,10 +147,21 @@ static u32 busy_tid(void) { return g_busy_tid; }
 static _Atomic int g_resolves; /* atomic */
 static void* g_resolve_res;
 static u64 g_resolve_lo, g_resolve_size;
+static _Atomic int g_resolve_gate, g_resolve_faults; /* atomic: test_rearm_sleeper's */
+static _Atomic int g_producer_waiting;               /* atomic: threads in producer_lock that don't hold it yet */
 static void resolve(u64 addr, u64 size) {
     (void)addr;
     (void)size;
     atomic_fetch_add_explicit(&g_resolves, 1, memory_order_relaxed);
+    /* test_rearm_sleeper: the trap thread has taken the reader's fault and waits for the producer's lock */
+    for (int waited_ms = 0; atomic_load_explicit(&g_resolve_gate, memory_order_acquire) &&
+                            (own_faults() == (u64)atomic_load_explicit(&g_resolve_faults, memory_order_acquire) ||
+                             !atomic_load_explicit(&g_producer_waiting, memory_order_acquire));
+         waited_ms++) {
+        if (waited_ms == 10000) test_fail("the reader's fault waited for the producer's lock within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    atomic_store_explicit(&g_resolve_gate, 0, memory_order_release);
     if (g_resolve_res) CHECK(own_begin(g_resolve_lo, g_resolve_size, g_resolve_res, 0) == 0);
 }
 /* the producer's answer before owners land (OwnHooks' refresh): g_refresh_res published over
@@ -163,12 +175,23 @@ static void refresh(u64 addr, u64 size) {
     atomic_fetch_add_explicit(&g_refreshes, 1, memory_order_relaxed);
     if (g_refresh_res) CHECK(own_begin(g_refresh_lo, g_refresh_size, g_refresh_res, 0) == 0);
 }
-/* the producer's lock: recursive, as the renderer's */
+/* the producer's lock: recursive, as the renderer's. test_rearm_sleeper's waits look at who waits for it and who
+   lets it go */
 static pthread_mutex_t g_producer;
-static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
+static _Atomic u32 g_sleeper_tid[2];   /* atomic: test_rearm_sleeper's acquiring thread and main thread */
+static _Atomic int g_sleeper_unlocked; /* atomic: a third thread (the trap thread's landing) let go of the lock */
+static void producer_lock(void) {
+    atomic_fetch_add_explicit(&g_producer_waiting, 1, memory_order_acq_rel);
+    pthread_mutex_lock(&g_producer);
+    atomic_fetch_sub_explicit(&g_producer_waiting, 1, memory_order_acq_rel);
+}
 static void producer_unlock(void) {
     u32 self = plat_tid();
     pthread_mutex_unlock(&g_producer);
+    if (atomic_load_explicit(&g_sleeper_tid[0], memory_order_acquire) &&
+        self != atomic_load_explicit(&g_sleeper_tid[0], memory_order_acquire) &&
+        self != atomic_load_explicit(&g_sleeper_tid[1], memory_order_acquire))
+        atomic_store_explicit(&g_sleeper_unlocked, 1, memory_order_release);
     if (!atomic_compare_exchange_strong_explicit(&g_hold_tid, &self, 0, memory_order_acq_rel, memory_order_acquire))
         return;
     for (int waited_ms = 0; !atomic_load_explicit(&g_republished, memory_order_acquire); waited_ms++) {
@@ -802,6 +825,81 @@ static void test_two_step(void) {
     res_free(r2);
 }
 
+/* A thread asleep in a fault on a page that is armed again before the let_go that would wake it: a landing in two
+   steps (thread A, an own_acquire of a watch's first page) holds the producer's lock while its resolve publishes an
+   owner there, and the trap thread, landing the reader's fault on the watch's second page, waits for that lock. Then
+   the watch goes, its pages kept for A's let_go at its end, and with the lock let go for A's copy the trap thread
+   finds nothing on the reader's page, so it leaves the page to A. Before A's copy ends, the page is watched again:
+   arming it unregisters it, which wakes no minor fault, and A's let_go keeps it trapped for the new watch. The
+   reader's fault was taken already: unless the arming wakes it to fault again, it sleeps for good */
+static u64 g_sleeper_at;
+static _Atomic int g_sleeper_read; /* atomic: the reader's byte + 1, once it has it */
+static void* sleeper_acquire(void* unused) {
+    (void)unused;
+    atomic_store_explicit(&g_sleeper_tid[0], plat_tid(), memory_order_release);
+    own_acquire(g_sleeper_at + 0x1000, 0x100);
+    return NULL;
+}
+static void* sleeper_reader(void* unused) {
+    (void)unused;
+    atomic_store_explicit(&g_sleeper_read, GP(g_sleeper_at)[0x2100] + 1, memory_order_release);
+    return NULL;
+}
+static void test_rearm_sleeper(void) {
+    u64 a = region(R0 + 0x1200000, 0x4000);
+    Res* r = res_new(0x100, 0x50);
+    pthread_t acquirer, reader;
+    g_sleeper_at = a;
+    g_own.hooks.land_start = two_start;
+    g_own.hooks.land_end = two_end;
+    atomic_store_explicit(&g_two_in, 0, memory_order_release);
+    atomic_store_explicit(&g_two_go, 0, memory_order_release);
+    atomic_store_explicit(&g_sleeper_read, 0, memory_order_release);
+    atomic_store_explicit(&g_sleeper_unlocked, 0, memory_order_release);
+    atomic_store_explicit(&g_sleeper_tid[1], plat_tid(), memory_order_release);
+    producer_lock();
+    CHECK(own_watch(a + 0x1000, 0x2000) == 0); /* the pages a + 0x1000 and a + 0x2000 */
+    producer_unlock();
+    g_resolve_res = r; /* A's resolve publishes r over the first page's first bytes */
+    g_resolve_lo = a + 0x1000;
+    g_resolve_size = 0x100;
+    atomic_store_explicit(&g_resolve_faults, (int)own_faults(), memory_order_release);
+    int resolves = atomic_load_explicit(&g_resolves, memory_order_acquire);
+    atomic_store_explicit(&g_resolve_gate, 1, memory_order_release);
+    pthread_create(&acquirer, NULL, sleeper_acquire, NULL);
+    for (int waited_ms = 0; atomic_load_explicit(&g_resolves, memory_order_acquire) == resolves; waited_ms++) {
+        if (waited_ms == 10000) test_fail("the acquire reached its resolve within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    pthread_create(&reader, NULL, sleeper_reader, NULL); /* faults on the watch's second page */
+    /* A's copy under way with the lock let go, and the trap thread's landing of the reader's page done with it */
+    for (int waited_ms = 0; !atomic_load_explicit(&g_two_in, memory_order_acquire) ||
+                            !atomic_load_explicit(&g_sleeper_unlocked, memory_order_acquire);
+         waited_ms++) {
+        if (waited_ms == 10000) test_fail("the two landings reached A's copy within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    g_resolve_res = NULL; /* the new watch's resolve publishes nothing: the reader then reads the CPU's byte */
+    CHECK(!atomic_load_explicit(&g_sleeper_read, memory_order_acquire));
+    producer_lock();
+    CHECK(own_watch(a + 0x2000, 0x1000) == 0); /* the reader's page, armed again */
+    producer_unlock();
+    atomic_store_explicit(&g_two_go, 1, memory_order_release);
+    pthread_join(acquirer, NULL);
+    for (int waited_ms = 0; !atomic_load_explicit(&g_sleeper_read, memory_order_acquire); waited_ms++) {
+        if (waited_ms == 3000) test_fail("the reader woke from its fault on the page armed again within 3 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+    pthread_join(reader, NULL);
+    atomic_store_explicit(&g_sleeper_tid[0], 0, memory_order_release);
+    g_own.hooks.land_start = NULL;
+    g_own.hooks.land_end = NULL;
+    CHECK(atomic_load_explicit(&g_sleeper_read, memory_order_acquire) == (u8)(0x11 + 0x2100) + 1);
+    CHECK(GP(a)[0x1010] == (u8)(0x50 + 0x10) && refs(r) == 0 && !own_trapped(a, 0x4000));
+    CHECK(mem_unmap(a, 0x4000) == 0);
+    res_free(r);
+}
+
 /* the producer's lock holder faulting on a page that is armed with no entry on it (a landing's, cut and not let go
    yet) goes on: nothing has to land there */
 static void test_busy_unowned(void) {
@@ -1256,6 +1354,7 @@ int main(int argc, char** argv) {
     test_release_order();
     test_republish_after_landing();
     test_two_step();
+    test_rearm_sleeper();
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();

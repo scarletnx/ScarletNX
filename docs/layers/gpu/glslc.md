@@ -35,7 +35,7 @@ if (snx_glslc_workspace_init(&workspace, malloc(bytes), bytes, &result) != 0)
     fprintf(stderr, "%s\n", result.error);
 
 /* then for each shader; bind, a binding map, is optional */
-GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user, 0, 0};
+GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user, 0, 0, 0};
 if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
@@ -127,6 +127,12 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
   `GL_OES_texture_cube_map_array`, `GL_OES_texture_storage_multisample_2d_array`, `GL_EXT_shader_io_blocks` and
   `GL_OES_shader_io_blocks` for 3.10; and `GL_OES_sample_variables`. Another one is refused with `require` and gives
   a warning with `enable` or `warn`.
+- A desktop OpenGL context's shaders, with `GlslcOptions.desktop`: desktop GLSL 1.10 and 1.20 compile as GLSL ES 1.00
+  (1.20 with the `f` suffix), 3.30 (`core` or no profile) as 3.00, and a shader without `#version` as 1.10. Such a
+  shader has no `GL_ES`, its own `__VERSION__`, an `OpSource` of GLSL and its version, and every type highp by
+  default in every stage (a `sampler3D` too); a `precision` statement is taken and changes nothing. GLSL ES shaders compile as they are,
+  as a desktop GL 4.3 context takes them. The GL layer (`src/common/gpu/gl/gl_program.c`) compiles a desktop
+  context's shaders this way.
 
 ## OpenGL ES on Vulkan
 
@@ -190,7 +196,9 @@ Each of these is refused with an error that names it, or is a name the shader ca
 - the preprocessor's `#` and `##`, which GLSL ES does not have either, and a line continuation inside a name or
   number;
 - an array size from a constant expression glslc does not fold, such as a built-in function's result;
-- `samplerExternalOES`, framebuffer fetch, and the extensions not listed above.
+- `samplerExternalOES`, framebuffer fetch, and the extensions not listed above;
+- desktop GLSL's other versions (1.30 to 1.50, 4.00 and later), its implicit conversions (an `int` where a `float`
+  goes) and array constructors in 1.20, and the `compatibility` profile.
 
 ## Where it differs from glslangValidator
 

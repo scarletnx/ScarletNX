@@ -75,7 +75,7 @@ int gui_aot_cache_info(const char* path, GuiAotInfo* info) {
     }
     key[length] = 0;
     field = strstr(key, " opt=");
-    if (!field || !strchr("0123sz", field[5])) {
+    if (!field || !field[5] || !strchr("0123sz", field[5])) { /* strchr finds the string's own end too */
         free(key);
         return 0;
     }

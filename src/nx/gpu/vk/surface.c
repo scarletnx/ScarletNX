@@ -533,7 +533,9 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     return s;
 }
 
-int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
+/* s's image made again where want places it and copied there on cb, as vk_rt_move says; the attachment view made
+   again, and the owner set where the memory is the GPU's own (DM_DEVICE), which blocks are emptied of */
+static int rt_move(VkCommandBuffer cb, Surf* s, const DevMemWant* want, u64* bytes) {
     if (vk_gfx_image_holds(s)) return -1; /* a storage result of it still lands in memory from its image */
     VkImageCreateInfo ii;
     VkViewFormats vf;
@@ -547,10 +549,9 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     if (!info_ok) return -1;
     DevMemInfo was_info, info;
     vk_devmem_info(s->mem, &was_info);
-    const DevMemWant want = {.at = DM_DEVICE, .image = 1, .existing = 1};
     VkImage img;
     DevMem mem;
-    if (vk_devmem_image(&ii, &want, &img, &mem) != VK_SUCCESS) return 0;
+    if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
     vk_devmem_info(mem, &info);
     vk_mem_track(mem, was_info.tag ? was_info.tag - 1 : VK_OWN_TARGET);
     *bytes = info.size;
@@ -586,8 +587,89 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     s->stage = copied ? VK_PIPELINE_STAGE_2_COPY_BIT : 0;
     s->access = copied ? VK_ACCESS_2_TRANSFER_WRITE_BIT : 0;
     surf_att_create(s, usage, storage_format);
-    vk_devmem_owner(mem, s);
+    if (want->at == DM_DEVICE) vk_devmem_owner(mem, s);
     if (copied && was != VK_LAYOUT(TRANSFER_DST_OPTIMAL)) vk_surf_use(cb, s, was, stage, access);
+    return 1;
+}
+int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
+    const DevMemWant want = {.at = DM_DEVICE, .image = 1, .existing = 1};
+    return s->demoted ? -1 : rt_move(cb, s, &want, bytes);
+}
+
+/* Render targets the caches would let go with pixels memory lacks. Such a target lost them as it went: memory has older
+   ones, and writing them there as it goes put older pixels over newer ones (surf_reclaim says why). It stays instead
+   (rt_give_way). Where the GPU has memory of its own, its image moves into system memory, copied bit for bit, as a
+   texture's does (texture.c's second tier): the GPU still draws to it and samples it there, more slowly, and it goes
+   back into the GPU's memory once it is used again and there is room (vk_rt_sys_frame). Where the GPU shares the
+   system's memory a move frees nothing: the target stays where it is until the budget's pressure takes it, never for
+   its age. Either way it stays a live target that whatever asks for its address finds, and memory the guest wrote
+   while it was set aside is newer than its pixels: its next use loads that, as a target made after an eviction would
+   (rt_aside) */
+static struct {
+    u64 out, back;        /* targets moved into system memory, and back, so far */
+    u64 n, bytes;         /* those there now, and their bytes */
+    u64 lost, lost_bytes; /* targets that went with pixels memory lacks, so far */
+    u64 kept, reloads;    /* targets set aside so far (rt_aside), and those loaded again at their next use */
+    u32 heap;             /* the heap they went to, plus one: 0 before the first */
+} g_rt_sys;
+void vk_rt_sys_stats(VkRtSysStats* st) {
+    *st = (VkRtSysStats){.out = g_rt_sys.out,
+                         .back = g_rt_sys.back,
+                         .n = g_rt_sys.n,
+                         .bytes = g_rt_sys.bytes,
+                         .lost = g_rt_sys.lost,
+                         .lost_bytes = g_rt_sys.lost_bytes,
+                         .kept = g_rt_sys.kept,
+                         .reloads = g_rt_sys.reloads};
+}
+/* s's image moved into system memory (the frame's command buffer: a rendering pass open ends): the bytes of the GPU's
+   memory it lets go, or 0, with why in *no */
+static u64 rt_demote(Surf* s, const char** no) {
+    if (g_vk.mem_model == VK_MEM_UMA) {
+        *no = "the GPU shares the system's memory, so a move frees none of it";
+        return 0;
+    }
+    if (!s->mem) {
+        *no = "its image is in pieces";
+        return 0;
+    }
+    const DevMemWant want = {.at = DM_SYSTEM, .image = 1};
+    const u64 was = s->bytes;
+    u64 bytes;
+    vk_render_end();
+    const int moved = rt_move(vk_cmd(), s, &want, &bytes);
+    if (moved <= 0) {
+        *no = moved < 0 ? "a storage result of it still lands" : "no system memory took its image";
+        return 0;
+    }
+    DevMemInfo info;
+    vk_devmem_info(s->mem, &info);
+    g_rt_sys.heap = vk_devmem_props()->memoryTypes[info.type].heapIndex + 1;
+    vk_surf_bytes(s, 0); /* none of the GPU's memory: the budget's bytes are those */
+    s->demoted = 1;
+    s->sys_bytes = bytes;
+    g_rt_sys.out++;
+    g_rt_sys.n++;
+    g_rt_sys.bytes += bytes;
+    return was;
+}
+/* s out of system memory: moved back, or freed */
+static void rt_sys_left(Surf* s) {
+    if (!s->is_rt || !s->demoted) return;
+    s->demoted = 0;
+    g_rt_sys.n--;
+    g_rt_sys.bytes -= s->sys_bytes;
+    s->sys_bytes = 0;
+}
+/* s's image back in the GPU's memory: 1 when it went */
+static int rt_promote(Surf* s) {
+    const DevMemWant want = {
+        .at = DM_DEVICE, .image = 1, .moves = 1, .low = vk_mem_owner_prio(VK_OWN_TARGET) == DM_PRIO_LOW};
+    u64 bytes;
+    vk_render_end();
+    if (rt_move(vk_cmd(), s, &want, &bytes) <= 0) return 0;
+    rt_sys_left(s);
+    g_rt_sys.back++;
     return 1;
 }
 /* SET_SRGB_WRITE selects the attachment view, leaving the image's stored bytes and sampling format intact. */
@@ -2244,6 +2326,7 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
         from->bd != to->bd || from->pitch != to->pitch || from->layers != to->layers ||
         from->layer_size != to->layer_size || from->volume || to->volume || from->msaa != to->msaa)
         return 0;
+    const int open = vk_render_begun();
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, from, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -2255,6 +2338,8 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
                      .extent = {to->sw, to->sh, 1}};
     rec_CmdCopyImage(cb, from->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), to->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                      1, &c);
+    vk_rt_copy_count(VK_RT_COPY_TAKE, open, (u64)to->sw * to->sh * to->layers * to->f.bpp * (u64)vk_surf_samples(to),
+                     from->f.vk, to->f.vk);
     LOG_LIMIT(10, "vulkan: the %ux%u render target at %llx in format %x takes the pixels of the one in format %x\n",
               to->w, to->h, (unsigned long long)to->gva, to->fkey, from->fkey);
     vk_surf_wrote(to);
@@ -2365,9 +2450,11 @@ Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 laye
                      0, msaa);
 }
 
+static void rt_aside_check(Surf* s);
 void vk_rt_note_read(Surf* s) {
     vk_surf_touch(s);
     if (!s->is_rt) return;
+    if (s->aside) rt_aside_check(s);
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
     if (s->gw == gpu_mem_generation()) return;
@@ -2468,11 +2555,10 @@ static int drawn_lower(u64 a) {
 static PendPages g_drawn_pages;
 /* Read backing memory directly: asking gmem_read to land pending output here could submit a draw mid-setup. A run of
    pages contiguous in host memory is hashed at once, eight bytes at a time (vk_hash) */
-static u64 rt_mem_hash(const Surf* s) {
+static u64 mem_hash(u64 gva, u64 size) {
     u64 h = 1469598103934665603ull;
-    u64 size = rt_bytes(s);
     for (u64 o = 0; o < size;) {
-        u64 a = s->gva + o, cpu = gmmu_translate(a), n = 0x1000 - (a & 0xFFF);
+        u64 a = gva + o, cpu = gmmu_translate(a), n = 0x1000 - (a & 0xFFF);
         if (n > size - o) n = size - o;
         while (cpu && o + n < size && gmmu_translate(a + n) == cpu + n) /* the next page follows in host memory */
             n += size - o - n < 0x1000 ? size - o - n : 0x1000;
@@ -2482,6 +2568,7 @@ static u64 rt_mem_hash(const Surf* s) {
     }
     return h;
 }
+static u64 rt_mem_hash(const Surf* s) { return mem_hash(s->gva, rt_bytes(s)); }
 /* Pitch-linear color targets drawn since the last release. A target's pixels reach guest memory only when something
    asks for them, and the CPU can't ask. Reading back on the CPU what the GPU drew is what pitch-linear targets are
    mostly for, and they are few: one game draws its ambient light's spherical harmonics into seven 8x8 RGBA32F targets
@@ -2769,6 +2856,7 @@ static void surf_free(Surf* s) {
         row_drop(s);
     }
     if (s->is_rt) rt_pages(s, -1);
+    rt_sys_left(s);
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
@@ -2813,6 +2901,69 @@ static u64 tex_give_way(Surf* s, u64 want) {
     const u64 moved = want != ~0ull ? vk_tex_demote(s) : 0;
     return moved ? moved : surf_evict(s);
 }
+/* the CPU's writes to runs of guest memory since a write-tracking clock: written 1 at the first (or where the run's
+   writes can't be told) */
+typedef struct {
+    u32 since;
+    int written;
+} RunsWritten;
+static void run_written(void* user, u64 at, u8* host, u64 n) {
+    RunsWritten* r = user;
+    (void)at;
+    if (!r->written && vk_written_since(host, n, r->since) != 0) r->written = 1;
+}
+/* s kept where the caches would have let it go, with pixels memory lacks (rt_give_way): the guest's memory as of now,
+   which its next use asks about (rt_aside_check). Taken once until that use */
+static void rt_aside(Surf* s) {
+    if (s->aside) return;
+    const u64 at = s->gva & ~(1ull << 63), size = rt_bytes(s);
+    int tracked = 0;
+    span_runs(at, size, run_take, &tracked);
+    if (tracked) span_runs(at, size, run_cool, NULL);
+    s->aside_wseen = tracked ? vk_ww_now() : 0;
+    s->aside_hash = tracked ? 0 : mem_hash(at, size);
+    s->aside = 1;
+    g_rt_sys.kept++;
+}
+/* s's first use since it was set aside: memory the guest wrote since then is newer than its pixels, which load from
+   it again (vk_rt_reload), as a target made after an eviction does. A parked one is asked once it holds its address
+   again. The GPU's writes are vk_rt_note_read's own question */
+static void rt_aside_check(Surf* s) {
+    if (s->gva >> 63) return;
+    s->aside = 0;
+    int written;
+    if (s->aside_wseen) {
+        RunsWritten r = {s->aside_wseen, 0};
+        span_runs(s->gva, rt_bytes(s), run_written, &r);
+        written = r.written;
+    } else
+        written = rt_mem_hash(s) != s->aside_hash;
+    if (!written) return;
+    g_rt_sys.reloads++;
+    vk_rt_reload(s->gva);
+}
+/* a render target where an eviction would take it: under the budget's pressure (lossy VK_RECLAIM_ANY), or unused for
+   minutes (VK_RECLAIM_IDLE). One memory can give again goes. One whose pixels exist only here moves into system
+   memory (rt_demote) and stays there, where it frees none of the GPU's memory. One that can't move stays for its age,
+   and goes under the pressure with its pixels, said */
+static u64 rt_give_way(Surf* s, int lossy) {
+    if (lossless(s)) return surf_evict(s);
+    if (s->demoted) return 0;
+    const char* no = "";
+    const u64 moved = rt_demote(s, &no);
+    if (moved || lossy != VK_RECLAIM_ANY) {
+        rt_aside(s);
+        return moved;
+    }
+    g_rt_sys.lost++;
+    g_rt_sys.lost_bytes += s->bytes;
+    LOG_LIMIT(
+        8,
+        "vulkan: the %ux%u render target at %llx (format %x, %llu KB) goes under the budget's pressure with pixels "
+        "memory lacks, as it can't move into system memory: %s\n",
+        s->w, s->h, (unsigned long long)(s->gva & ~(1ull << 63)), s->fkey, (unsigned long long)(s->bytes >> 10), no);
+    return surf_evict(s);
+}
 static u64 surf_evict(Surf* s) {
     if (s->row && lru_kind(s->row) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later counts */
     if (s->is_rt && !(s->gva >> 63)) rtx_del(s->gva);
@@ -2832,14 +2983,16 @@ static u64 surf_evict(Surf* s) {
 static u64 g_left_big, g_left_back;
 /* keep_back: textures that came back stay where they are */
 static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int keep_back) {
-    /* A render target goes with its contents: guest memory has them as of its last write-back. They aren't written to
-       memory as they go: memory is shared by targets the GPU drew over one another, parked and freed ones among them,
-       and by textures and buffers that copied from them on the GPU, and the renderer doesn't know them all. Writing an
-       evicted target's pixels, as a game's Mii icons wanted (drawn at boot, shown a minute later), put older pixels
-       over newer ones in another: a black block over the player character, and red and green blocks over its
-       textures. So a target memory doesn't hold goes only under the budget's pressure once nothing lossless is left
-       (vk_mem_trim), or after minutes unused (vk_tex_frame), and then not one holding a draw a texture made at its
-       address later would take (keeps_drawn), which only the budget's pressure takes.
+    /* A render target that goes takes its contents with it: guest memory has them as of its last write-back. They
+       aren't written to memory as they go: memory is shared by targets the GPU drew over one another, parked and freed
+       ones among them, and by textures and buffers that copied from them on the GPU, and the renderer doesn't know them
+       all. Writing an evicted target's pixels, as a game's Mii icons wanted (drawn at boot, shown a minute later), put
+       older pixels over newer ones in another: a black block over the player character, and red and green blocks over
+       its textures. So a target memory doesn't hold is let go only under the budget's pressure once nothing lossless
+       is left (vk_mem_trim), or after minutes unused (vk_tex_frame), and then not one holding a draw a texture made at
+       its address later would take (keeps_drawn), which only the budget's pressure takes. Where the GPU has memory of
+       its own it moves into system memory then, with its pixels (rt_give_way); elsewhere its age leaves it, and the
+       pressure takes it.
 
        From the least recently used on, up to the first used since `before`: with lossy, the aged list first, as it
        holds the oldest of those. A storage image's result still to land holds its surface: those are passed over,
@@ -2864,7 +3017,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int
             if (vk_gfx_image_holds(s))
                 passed++;
             else
-                freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
+                freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : rt_give_way(s, lossy);
         }
     for (u32 r = g_rows.lists[kind].head, n; r && freed < want && passed < 512; r = n) {
         n = g_rows.lru[r].next;
@@ -2882,7 +3035,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int
         else if (vk_gfx_image_holds(s))
             passed++;
         else
-            freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
+            freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : rt_give_way(s, lossy);
     }
     return freed;
 }
@@ -3133,6 +3286,22 @@ void vk_tex_refine_frame(void) {
    GPU's memory never had any in a racing game's race, and the textures its frames used stayed in system memory,
    sampled over the bus. The use counted is less what waits to be freed: what a swap lets go is the GPU's again when
    the frame is done, and the move back that finds no memory now is tried again at the next present */
+/* room within high for bytes more of the GPU's memory, its use *use: textures no present used since cold moved into
+   system memory, the least recently used first, from row *coldr on (0: none). 1 when it fits */
+static int room_for(u64* use, u64 bytes, u64 high, u32* coldr, u32 cold) {
+    while (*use + bytes > high && *coldr) {
+        Surf* c = g_rows.surf[*coldr];
+        *coldr = g_rows.lru[*coldr].next;
+        if ((i32)((u32)c->last_used - cold) >= 0) {
+            *coldr = 0; /* the rest were used lately */
+            break;
+        }
+        if (c->demoted || vk_gfx_image_holds(c)) continue;
+        const u64 got = vk_tex_demote(c);
+        *use = *use > got ? *use - got : 0;
+    }
+    return *use + bytes <= high;
+}
 void vk_tex_promote_frame(void) {
     if (!g_settings.texture_system_memory) return;
     u64 usage, budget;
@@ -3146,22 +3315,59 @@ void vk_tex_promote_frame(void) {
         Surf* t = g_rows.surf[r];
         if ((i32)((u32)t->last_used - hot) < 0) break;
         if (!t->demoted) continue;
-        /* room for it: cold textures out, from the least recently used on */
-        while (use + t->sys_bytes > high && coldr) {
-            Surf* c = g_rows.surf[coldr];
-            coldr = g_rows.lru[coldr].next;
-            if ((i32)((u32)c->last_used - cold) >= 0) {
-                coldr = 0; /* the rest were used lately */
-                break;
-            }
-            if (c->demoted || vk_gfx_image_holds(c)) continue;
-            const u64 got = vk_tex_demote(c);
-            use = use > got ? use - got : 0;
-        }
-        if (use + t->sys_bytes > high) break;
+        if (!room_for(&use, t->sys_bytes, high, &coldr, cold)) break;
         const u64 b = t->sys_bytes;
         if (vk_tex_promote(t)) moved += b, use += b;
     }
+}
+/* Once a present, the render targets in system memory (rt_demote): those the last two presents used go back into the
+   GPU's memory as the demoted textures do (vk_tex_promote_frame), the most recently used first, while it has room.
+   Every 30 presents, while the heap they went to is past its own budget less a head, the least recently used of the
+   rest go, their pixels with them: that memory is the system's, which the texture tier and the mirror's granules
+   take too, and the targets would otherwise keep all of it */
+void vk_rt_sys_frame(void) {
+    if (!g_rt_sys.n) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    const u64 head = trim_head(budget), high = budget > head ? budget - head : 0, pending = vk_deferred_bytes();
+    u64 use = usage > pending ? usage - pending : 0, moved = 0;
+    const u32 hot = vk_present_before(0, 2), cold = vk_present_before(0, 30);
+    u32 looked = 0, coldr = g_settings.texture_system_memory ? g_rows.lists[VK_LRU_TEX].head : 0;
+    for (u32 r = g_rows.lists[VK_LRU_RT].tail, p; r && looked < 256 && moved < (16ull << 20); r = p, looked++) {
+        p = g_rows.lru[r].prev;
+        Surf* s = g_rows.surf[r];
+        if ((i32)((u32)s->last_used - hot) < 0) break;
+        if (!s->demoted || vk_gfx_image_holds(s)) continue;
+        if (!room_for(&use, s->sys_bytes, high, &coldr, cold)) break;
+        const u64 b = s->sys_bytes;
+        if (rt_promote(s)) moved += b, use += b;
+    }
+    if (g_vk_present % 30 || !g_rt_sys.heap) return;
+    DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(heaps);
+    const DevMemBudget* sys = &heaps[g_rt_sys.heap - 1];
+    const u64 sys_high = sys->budget - trim_head(sys->budget);
+    if (sys->usage <= sys_high) return;
+    const u64 over = sys->usage - sys_high;
+    u64 freed = 0;
+    u32 went = 0;
+    for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < over; lru -= LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head, n; r && freed < over; r = n) {
+            n = g_rows.lru[r].next;
+            Surf* s = g_rows.surf[r];
+            if (!s->demoted || (i32)((u32)s->last_used - hot) >= 0 || vk_gfx_image_holds(s)) continue;
+            freed += s->sys_bytes;
+            went++;
+            g_rt_sys.lost++;
+            g_rt_sys.lost_bytes += s->sys_bytes;
+            surf_evict(s);
+        }
+    if (went)
+        LOG_LIMIT(8,
+                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less a head: %u "
+                  "render targets moved there went, %llu MB, with pixels memory lacks\n",
+                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
+                  went, (unsigned long long)(freed >> 20));
 }
 /* vk_surf_reclaim with the most bytes an entry may have */
 static u64 trim_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int keep_back) {

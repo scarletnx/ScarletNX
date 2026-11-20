@@ -974,7 +974,9 @@ static int hle_check(const Hle* h) {
         if (o->data) { /* a slot of its service's pool, whose first u32 names it (svcobj_new_data) */
             uintptr_t off = (uintptr_t)o->data - HLE_LO;
             u32 id;
-            if ((uintptr_t)o->data < HLE_LO || o->datasize < 4 || off > sizeof(Hle) - o->datasize) return -1;
+            if ((uintptr_t)o->data < HLE_LO || o->datasize < 4 || o->datasize > sizeof(Hle) ||
+                off > sizeof(Hle) - o->datasize)
+                return -1;
             memcpy(&id, (const u8*)h + off, 4);
             if (id != i + 1) return -1;
         }
@@ -1051,7 +1053,9 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
         heap->at += n;
         switch (kind) {
             case HEAP_STORAGE:
+                /* its bytes, as many as the storage says it holds (one for an empty one, as they were written) */
                 if (slot >= AM_STORAGES || ld->am.storages[slot].d ||
+                    n != (ld->am.storages[slot].size ? ld->am.storages[slot].size : 1) ||
                     !(ld->am.storages[slot].d = (u8*)malloc((size_t)(n ? n : 1))))
                     goto bad;
                 memcpy(ld->am.storages[slot].d, p, (size_t)n);

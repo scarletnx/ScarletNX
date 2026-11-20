@@ -200,7 +200,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)
         made = vkCreateSemaphore(v->device, &semaphore, NULL, &v->rendered[i]) == VK_SUCCESS;
     if (!made) {
-        snprintf(error, error_size, "cannot make the Vulkan device's command pool");
+        snprintf(error, error_size, "cannot make the Vulkan device's command buffers, descriptor pools and semaphores");
         vita_vk_free();
         return false;
     }

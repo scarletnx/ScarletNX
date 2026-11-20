@@ -4,8 +4,11 @@
    over (rt_superseded). Such a target holds no one's pixels, and a trim takes it before anything else. Where the
    driver moves memory by priority (g_vk.has_pageable), a trim for headroom leaves it for a second and eight presents,
    as the sweep every 30 presents does: targets have the highest priority, and the driver moves textures first. A trim
-   for an allocation (force), or one where the driver does not move memory, takes it after two presents. No Vulkan
-   loader, device or GPU is used: the rest of the renderer is stubs, and a call that the trim must not make aborts */
+   for an allocation (force), or one where the driver does not move memory, takes it after two presents. A target
+   whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
+   pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
+   system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). No Vulkan loader, device or GPU is used:
+   the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,15 +41,32 @@ u8* gmem_ptr(u64 gva, u64 size) { stub_hit("gmem_ptr"); }
 int gmem_read(u64 gva, void* dst, u64 size) { stub_hit("gmem_read"); }
 int gmem_write(u64 gva, const void* src, u64 size) { stub_hit("gmem_write"); }
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) { stub_hit("gmmu_aliases"); }
-u64 gmmu_run(u64 gva, u64 max, u64* cpu) { stub_hit("gmmu_run"); }
-u64 gmmu_translate(u64 gva) { stub_hit("gmmu_translate"); }
+/* the guest memory behind a target set aside (rt_aside), for the checks that ask: 1 none mapped, 2 the GPU's
+   [GUEST_GPU, +GUEST_SIZE) mapped at guest address 0x1000 (g_mem), with no write tracking; 0 for the trim, which
+   asks nothing of it */
+#define GUEST_GPU  0x70000000ull
+#define GUEST_SIZE 0x2000ull
+static int g_guest;
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    if (!g_guest) stub_hit("gmmu_run");
+    if (g_guest != 2 || gva < GUEST_GPU || gva >= GUEST_GPU + GUEST_SIZE) return 0;
+    *cpu = 0x1000 + (gva - GUEST_GPU);
+    return max < GUEST_GPU + GUEST_SIZE - gva ? max : GUEST_GPU + GUEST_SIZE - gva;
+}
+u64 gmmu_translate(u64 gva) {
+    if (!g_guest) stub_hit("gmmu_translate");
+    return g_guest == 2 && gva >= GUEST_GPU && gva < GUEST_GPU + GUEST_SIZE ? 0x1000 + (gva - GUEST_GPU) : 0;
+}
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { stub_hit("gpu_mem_dirty_since"); }
 u64 gpu_mem_generation(void) { stub_hit("gpu_mem_generation"); }
 void gpu_mem_written(u64 gva, u64 size) { stub_hit("gpu_mem_written"); }
 int gpu_texture_live(u64 gva) { stub_hit("gpu_texture_live"); }
 u64 gpu_textures_added(void) { stub_hit("gpu_textures_added"); }
 int own_covered(u64 addr, u64 size) { stub_hit("own_covered"); }
-int own_hash(u64 addr, u64 size, u64* h) { stub_hit("own_hash"); }
+int own_hash(u64 addr, u64 size, u64* h) {
+    if (!g_guest) stub_hit("own_hash");
+    return 0; /* no page the GPU holds */
+}
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { stub_hit("own_lookup"); }
 int own_owed_take(u64* addr, u64* size) { stub_hit("own_owed_take"); }
 int own_traps(void) { stub_hit("own_traps"); }
@@ -109,7 +129,12 @@ const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) { stub_hit("vk_dev
 void vk_finish_at(const char* file, int line) { stub_hit("vk_finish_at"); }
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) { stub_hit("vk_guest_read"); }
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) { stub_hit("vk_guest_read_device"); }
-u64 vk_hash(const void* p, u64 size) { stub_hit("vk_hash"); }
+u64 vk_hash(const void* p, u64 size) {
+    if (!g_guest) stub_hit("vk_hash");
+    u64 h = 1469598103934665603ull;
+    for (u64 i = 0; i < size; i++) h = (h ^ ((const u8*)p)[i]) * 1099511628211ull;
+    return h;
+}
 int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem) { stub_hit("vk_image_create"); }
 int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, VkResult* res) {
     stub_hit("vk_image_create_r");
@@ -139,6 +164,8 @@ VkFormat vk_raw_format(u32 bpp) { stub_hit("vk_raw_format"); }
 u8* vk_readback_buffer(u64 size, VkBuffer* buf) { stub_hit("vk_readback_buffer"); }
 void vk_readback_ready(void) { stub_hit("vk_readback_ready"); }
 void vk_render_end_at(const char* file, int line) { stub_hit("vk_render_end_at"); }
+int vk_render_begun(void) { stub_hit("vk_render_begun"); }
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) { stub_hit("vk_rt_copy_count"); }
 void vk_result_begin(void) { stub_hit("vk_result_begin"); }
 void vk_result_end(void) { stub_hit("vk_result_end"); }
 VkFmt vk_rt_format(u32 fmt) { stub_hit("vk_rt_format"); }
@@ -158,6 +185,7 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
 int vk_tex_can_coarsen(const Surf* t) { stub_hit("vk_tex_can_coarsen"); }
 u64 vk_tex_coarser(Surf* t) { stub_hit("vk_tex_coarser"); }
 u64 vk_tex_demote(Surf* t) { stub_hit("vk_tex_demote"); }
+u32 vk_mem_owner_prio(u32 owner) { stub_hit("vk_mem_owner_prio"); }
 void vk_tex_evicted(const Surf* t) { stub_hit("vk_tex_evicted"); }
 int vk_tex_finer(Surf* t) { stub_hit("vk_tex_finer"); }
 void vk_tex_note_writeback(Surf* s) { stub_hit("vk_tex_note_writeback"); }
@@ -169,7 +197,10 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) { stub_h
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     stub_hit("vk_written_runs");
 }
-int vk_written_since(const u8* host, u64 len, u32 since) { stub_hit("vk_written_since"); }
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    if (!g_guest) stub_hit("vk_written_since");
+    return -1; /* no write tracking */
+}
 void vk_ww_cool(const u8* host, u64 len) { stub_hit("vk_ww_cool"); }
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) { stub_hit("vk_ww_landed"); }
 u32 vk_ww_now(void) { stub_hit("vk_ww_now"); }
@@ -195,6 +226,13 @@ void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {}
 void pend_add_va(PendPages* t, u64 gva, u64 size, int delta) {}
 void vk_devmem_reserve_use(int on) {}
 
+/* the system heap's use and budget as the driver tells them (devmem.c), heap 0 here */
+static u64 g_sys_use, g_sys_budget;
+void vk_devmem_budgets(DevMemBudget* b) {
+    memset(b, 0, sizeof *b * VK_MAX_MEMORY_HEAPS);
+    b[0].usage = g_sys_use;
+    b[0].budget = g_sys_budget;
+}
 /* what the trim reads: the heap's use and budget, and the presents before now (memory.c) */
 static u64 g_use, g_budget, g_deferred;
 void vk_mem_use(u64* usage, u64* budget) {
@@ -267,6 +305,83 @@ static int trim_takes(int pageable, int force, u32 ago) {
     return held == 1;
 }
 
+/* A target whose pixels exist only on the GPU, where its image can't move into system memory (in pieces here: no
+   memory of its own) or where the GPU shares the system's memory (VK_MEM_UMA): the age's walk (VK_RECLAIM_IDLE) keeps
+   it and sets it aside, the pressure's (VK_RECLAIM_ANY) takes it, counted as lost. 1 when that held */
+static int aside_or_lost(int model) {
+    g_vk.mem_model = model;
+    g_vk_present += 1000;
+    Surf* s = target(0x50000000, 1 << 20, 1);
+    s->last_used = g_vk_present - 100;
+    CHECK(!lossless(s) && !keeps_drawn(s));
+    const u64 kept = g_rt_sys.kept, lost = g_rt_sys.lost;
+    g_guest = 1;
+    vk_surf_reclaim(VK_LRU_RT, g_vk_present, ~0ull, VK_RECLAIM_IDLE);
+    g_guest = 0;
+    const int stayed = targets_held() == 1 && s->aside && g_rt_sys.kept == kept + 1 && g_rt_sys.lost == lost;
+    g_deferred = 0;
+    vk_surf_reclaim(VK_LRU_RT, g_vk_present, 1, VK_RECLAIM_ANY);
+    const int went =
+        targets_held() == 0 && g_deferred == 1 << 20 && g_rt_sys.lost == lost + 1 && g_rt_sys.lost_bytes >= 1 << 20;
+    g_vk.mem_model = VK_MEM_SMALL_BAR;
+    return stayed && went;
+}
+/* Without write tracking a target set aside keeps its memory's hash (rt_aside), and its next use loads memory again
+   once a byte of it changed (rt_aside_check). 1 when no change loaded nothing and a change loaded it */
+static int aside_hash(void) {
+    static u8 mem[0x1000 + GUEST_SIZE];
+    for (u32 i = 0; i < sizeof mem; i++) mem[i] = (u8)(i * 7);
+    g_mem = mem;
+    g_guest = 2;
+    Surf* s = target(GUEST_GPU, GUEST_SIZE, 1);
+    const u64 reloads = g_rt_sys.reloads;
+    rt_aside(s);
+    const int hashed = s->aside && !s->aside_wseen;
+    rt_aside_check(s);
+    const int unchanged = !s->aside && g_rt_sys.reloads == reloads;
+    rt_aside(s);
+    mem[0x1000 + GUEST_SIZE - 1] ^= 1; /* its last byte */
+    rt_aside_check(s);
+    const int changed = !s->aside && g_rt_sys.reloads == reloads + 1;
+    g_guest = 0;
+    g_mem = NULL;
+    surf_evict(s);
+    return hashed && unchanged && changed;
+}
+/* Targets in system memory (rt_demote) while the system heap they went to is past its budget less a head: every 30
+   presents the least recently used go until it is within, their pixels with them; one the last two presents used
+   stays, however far past the heap is. 1 when the oldest alone went for an excess within its size, and the other old
+   one, not the one used lately, for an excess past all three */
+static int sys_heap_short(void) {
+    g_vk_present = (g_vk_present / 30 + 1) * 30 + 30; /* a present the check runs at */
+    Surf* s[3];
+    for (int i = 0; i < 3; i++) {
+        s[i] = target(0x60000000 + (u64)i * 0x1000000, 1 << 20, 1);
+        s[i]->last_used = g_vk_present - (i < 2 ? 100 - (u32)i : 0); /* the first the oldest, the last used now */
+        s[i]->demoted = 1;
+        s[i]->sys_bytes = 4u << 20;
+        vk_surf_bytes(s[i], 0);
+        g_rt_sys.n++;
+        g_rt_sys.bytes += 4u << 20;
+    }
+    g_rt_sys.heap = 1;
+    g_sys_budget = 1ull << 30;
+    g_sys_use = g_sys_budget - trim_head(g_sys_budget) + (2u << 20); /* 2 MiB past: the oldest's 4 MiB covers it */
+    g_use = g_budget;                                                /* no room in the GPU's memory: none goes back */
+    const u64 lost = g_rt_sys.lost;
+    vk_rt_sys_frame();
+    const int oldest = targets_held() == 2 && g_rt_sys.lost == lost + 1 && g_rt_sys.n == 2 &&
+                       g_rt_sys.bytes == 8u << 20 && g_rows.surf[g_rows.lists[VK_LRU_RT].head] == s[1];
+    g_vk_present += 30;
+    s[2]->last_used = g_vk_present;
+    g_sys_use = g_sys_budget - trim_head(g_sys_budget) + (64u << 20); /* past them all */
+    vk_rt_sys_frame();
+    const int hot_stays = targets_held() == 1 && g_rt_sys.lost == lost + 2 && g_rt_sys.n == 1 &&
+                          g_rows.surf[g_rows.lists[VK_LRU_RT].head] == s[2] && s[2]->demoted;
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    return oldest && hot_stays && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -275,6 +390,13 @@ int main(void) {
     CHECK(trim_takes(1, 1, 5) && !trim_takes(1, 1, 1)); /* for an allocation: taken after two presents */
     /* where the driver does not page: taken after two presents */
     CHECK(trim_takes(0, 0, 5) && !trim_takes(0, 0, 1) && trim_takes(0, 1, 5));
-    printf("vk_mem_trim: the trims kept and took the targets drawn over as they should\n");
+    /* a target with pixels memory lacks: kept for its age, taken by the pressure, where it can't move */
+    CHECK(aside_or_lost(VK_MEM_UMA) && aside_or_lost(VK_MEM_SMALL_BAR));
+    CHECK(aside_hash());
+    CHECK(sys_heap_short());
+    printf(
+        "vk_mem_trim: the trims kept and took the targets drawn over as they should; a target with pixels memory "
+        "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
+        "changed meanwhile, and targets in system memory went oldest first while the system heap was short\n");
     return 0;
 }

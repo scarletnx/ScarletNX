@@ -554,6 +554,249 @@ static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 in
     return 0;
 }
 
+/* Indirect draws whose indices Vulkan can't read as they are, which the renderer makes on the GPU from the whole
+   index buffer (render.c's indirect_indices_made), the record unchanged: strips of every index size whose restart
+   index is 2 (one green triangle; taken for a vertex it draws red), with and without 8-bit indices on the device, and
+   an 8-bit list from first index 1 on a device without them, whose index 0 is a vertex outside the buffer. Without
+   the conversion none of them was drawn */
+static int indirect_made_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 strip[5] = {4, 5, 7, 2, 4}, list[7] = {9, 4, 5, 7, 5, 6, 7}, list0[6] = {0, 1, 3, 1, 2, 3};
+    /* count, instances, first index, base vertex, base instance */
+    const u32 strip_record[5] = {5, 1, 0, 0, 0}, list_record[5] = {6, 1, 1, 0, 0};
+    const int had8 = g_vk.has_index8;
+    DrawCall call = {
+        .topology = 5, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 20};
+    CHECK(!put_words(args, strip_record, 5));
+    for (int index8 = had8; index8 >= 0; index8--) {
+        g_vk.has_index8 = index8;
+        for (u32 isz = 1; isz <= 4; isz *= 2) {
+            CHECK(!index_buffer(channel, indices, strip, 5, isz, 2));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_half_green(&px))
+                fprintf(stderr,
+                        "indirect strip of %u byte indices restarting at 2, 8-bit indices %s: %u green, %u "
+                        "blue, %u red\n",
+                        isz, index8 ? "on the device" : "widened", px.green, px.blue, px.red);
+            CHECK(index_half_green(&px));
+        }
+    }
+    g_vk.has_index8 = 0;
+    CHECK(!put_words(args, list_record, 5));
+    CHECK(!index_buffer(channel, indices, list, 7, 1, ~0u));
+    call.topology = 4;
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect list of widened 8-bit indices from index 1: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    g_vk.has_index8 = had8;
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: 8-bit indices widened and restart indices made Vulkan's on the GPU, the records unchanged");
+    return 0;
+}
+
+/* Indirect draws of quads, whose record a compute pass makes the indexed record of their triangles (render.c's
+   indirect_quads, indirect_quads.comp): the green quad's vertices; the red quad then the green one over it, two
+   quads of one record; quads of 1, 2 and 4-byte indices from first index 1, through a base vertex, and with a
+   count past the buffer's end, which draws the one quad the buffer holds. None of them was drawn before */
+static int indirect_quads_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 quad[5] = {9, 4, 5, 6, 7}, quad0[4] = {0, 1, 2, 3}, list0[6] = {0, 1, 3, 1, 2, 3};
+    /* count, instances, first vertex, base instance */
+    const u32 green[4] = {4, 1, 4, 0}, both[4] = {8, 1, 0, 0};
+    /* count, instances, first index, base vertex, base instance */
+    const u32 from1[5] = {4, 1, 1, 0, 0}, based[5] = {4, 1, 0, 4, 0}, past[5] = {8, 1, 1, 0, 0};
+    DrawCall call = {.topology = 7, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 16};
+    CHECK(!put_words(args, green, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads of vertices: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    CHECK(!put_words(args, both, 4));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads, two of a record: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    call.indexed = 1;
+    call.stride = 20;
+    for (u32 isz = 1; isz <= 4; isz *= 2) {
+        const struct {
+            const u32* indices;
+            u32 count;
+            const u32* record;
+            const char* what;
+        } cases[3] = {{quad, 5, from1, "from index 1"},
+                      {quad0, 4, based, "through a base vertex"},
+                      {quad, 5, past, "with a count past the buffer"}};
+        for (u32 c = 0; c < 3; c++) {
+            CHECK(!index_buffer(channel, indices, cases[c].indices, cases[c].count, isz, ~0u));
+            CHECK(!put_words(args, cases[c].record, 5));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_all_green(&px))
+                fprintf(stderr, "indirect quads of %u byte indices %s: %u green, %u red\n", isz, cases[c].what,
+                        px.green, px.red);
+            CHECK(index_all_green(&px));
+        }
+    }
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: quads of vertices and of indices made triangles on the GPU, their records too");
+    return 0;
+}
+
+/* What indirect draws of quads and of converted indices left out at first: several records (stride bytes apart, the
+   bytes between them not the draw's), records under a count buffer, a record past 65536 quads, and an index buffer
+   past 16,777,216 indices. A red quad's record before the green one's draws green, and the other order red, so both
+   records and their order show; under a count of one only the first draws. The long cases fill guest memory of
+   their own (INDIRECT_BIG, its host bytes clear of the other checks'): 65537 quads of which the last alone is green,
+   as 16-bit indices and as vertices of two streams, and 8-bit indices whose only triangles are past index
+   16,777,216, widened */
+#define INDIRECT_BIG      0x47a000000ull
+#define INDIRECT_BIG_CPU  (HEAP_BASE + 0x33000000)
+#define INDIRECT_BIG_SIZE 0x2000000ull
+static u64 positions_of(const GpuChannel* channel) { return (u64)channel->r3d[0x701] << 32 | channel->r3d[0x702]; }
+static u64 colors_of(const GpuChannel* channel) { return (u64)channel->r3d[0x705] << 32 | channel->r3d[0x706]; }
+static void index_registers(GpuChannel* channel, u64 at, u64 bytes, u32 isz) {
+    u32* r = channel->r3d;
+    r[0x5F2] = (u32)(at >> 32);
+    r[0x5F3] = (u32)at;
+    r[0x5F4] = (u32)((at + bytes - 1) >> 32);
+    r[0x5F5] = (u32)(at + bytes - 1);
+    r[0x5F6] = isz == 1 ? 0 : isz == 2 ? 1 : 2;
+    r[0x591] = 0;
+}
+static int indirect_rest_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    /* count, instances, first vertex, base instance, and two words that are no record's */
+    const u32 red_green[12] = {4, 1, 0, 0, 77, 77, 4, 1, 4, 0, 77, 77};
+    const u32 green_red[12] = {4, 1, 4, 0, 77, 77, 4, 1, 0, 0, 77, 77};
+    /* count, instances, first index, base vertex, base instance: the red quad from index 1 and the green one from
+       index 6, a table apart, then the other order */
+    const u32 quads[10] = {9, 0, 1, 2, 3, 9, 4, 5, 6, 7}, list0[6] = {0, 1, 3, 1, 2, 3};
+    const u32 i_red_green[10] = {4, 1, 1, 0, 0, 4, 1, 6, 0, 0}, i_green_red[10] = {4, 1, 6, 0, 0, 4, 1, 1, 0, 0};
+    const u32 one = 1, both = 2;
+    DrawCall call = {.topology = 7, .count = 1, .instances = 1, .indirect = args, .draw_count = 2, .stride = 24};
+    CHECK(!put_words(args, red_green, 12));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect quads, two records: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    CHECK(!put_words(args, green_red, 12));
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (px.red != 16) fprintf(stderr, "indirect quads, the red record last: %u green, %u red\n", px.green, px.red);
+    CHECK(px.red == 16);
+    if (g_vk.has_draw_indirect_count) {
+        call.indirect_count = args + 0x40;
+        CHECK(!put_words(args + 0x40, &one, 1));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (!index_all_green(&px))
+            fprintf(stderr, "indirect quads under a count of one: %u green, %u red\n", px.green, px.red);
+        CHECK(index_all_green(&px));
+        CHECK(!put_words(args + 0x40, &both, 1));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (px.red != 16) fprintf(stderr, "indirect quads under a count of two: %u green, %u red\n", px.green, px.red);
+        CHECK(px.red == 16);
+        call.indirect_count = 0;
+    }
+    call.indexed = 1;
+    call.stride = 20;
+    for (u32 isz = 1; isz <= 4; isz *= 2) {
+        CHECK(!index_buffer(channel, indices, quads, 10, isz, ~0u));
+        CHECK(!put_words(args, i_red_green, 10));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (!index_all_green(&px))
+            fprintf(stderr, "indirect quads of %u byte indices, two records: %u green, %u red\n", isz, px.green,
+                    px.red);
+        CHECK(index_all_green(&px));
+        CHECK(!put_words(args, i_green_red, 10));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (px.red != 16)
+            fprintf(stderr, "indirect quads of %u byte indices, the red record last: %u green, %u red\n", isz, px.green,
+                    px.red);
+        CHECK(px.red == 16);
+        if (g_vk.has_draw_indirect_count) {
+            call.indirect_count = args + 0x40;
+            CHECK(!put_words(args + 0x40, &one, 1));
+            CHECK(!index_draw(channel, target, &call, &px));
+            if (!index_all_green(&px))
+                fprintf(stderr, "indirect quads of %u byte indices under a count of one: %u green, %u red\n", isz,
+                        px.green, px.red);
+            CHECK(index_all_green(&px));
+            call.indirect_count = 0;
+        }
+    }
+    /* 65537 quads of 16-bit indices in one record: the red quad 65536 times, then the green one */
+    const u32 many = 65537, vertices = many * 4;
+    const u64 big_indices = INDIRECT_BIG, big_positions = INDIRECT_BIG + 0x400000, big_colors = INDIRECT_BIG + 0x900000,
+              long_indices = INDIRECT_BIG + 0xE00000;
+    const u32 long_first = (1u << 24) + 2, long_count = long_first + 6;
+    u8* bytes = malloc(long_count);
+    CHECK(bytes);
+    CHECK(mem_map(INDIRECT_BIG_CPU, INDIRECT_BIG_SIZE, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(INDIRECT_BIG, INDIRECT_BIG_CPU, INDIRECT_BIG_SIZE);
+    for (u32 i = 0; i < vertices; i++) snx_st_le16(bytes + 2 * (size_t)i, (u16)((i & 3) + (i < vertices - 4 ? 0 : 4)));
+    CHECK(!gmem_write(big_indices, bytes, 2 * (size_t)vertices));
+    index_registers(channel, big_indices, 2 * (u64)vertices, 2);
+    const u32 all_indices[5] = {vertices, 1, 0, 0, 0}, all_vertices[4] = {vertices, 1, 0, 0};
+    CHECK(!put_words(args, all_indices, 5));
+    call.draw_count = 1;
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect quads, %u of indices in a record: %u green, %u red\n", many, px.green, px.red);
+    CHECK(index_all_green(&px));
+    /* the same as vertices: two streams of 262148 vertices, the last four the green quad's */
+    u32 streams[8];
+    u32* r = channel->r3d;
+    for (u32 stream = 0; stream < 2; stream++) {
+        const u64 from = stream ? colors_of(channel) : positions_of(channel), to = stream ? big_colors : big_positions;
+        u8 quad[8 * 16];
+        CHECK(!gmem_read(from, quad, sizeof quad));
+        for (u32 v = 0; v < vertices; v++)
+            memcpy(bytes + 16 * (size_t)v, quad + 16 * ((v & 3) + (v < vertices - 4 ? 0 : 4)), 16);
+        CHECK(!gmem_write(to, bytes, 16 * (size_t)vertices));
+        streams[stream * 4] = r[0x701 + stream * 4];
+        streams[stream * 4 + 1] = r[0x702 + stream * 4];
+        streams[stream * 4 + 2] = r[0x7c0 + stream * 2];
+        streams[stream * 4 + 3] = r[0x7c1 + stream * 2];
+        r[0x701 + stream * 4] = (u32)(to >> 32);
+        r[0x702 + stream * 4] = (u32)to;
+        r[0x7c0 + stream * 2] = (u32)((to + 16 * (u64)vertices - 1) >> 32);
+        r[0x7c1 + stream * 2] = (u32)(to + 16 * (u64)vertices - 1);
+    }
+    CHECK(!put_words(args, all_vertices, 4));
+    call.indexed = 0;
+    call.stride = 16;
+    CHECK(!index_draw(channel, target, &call, &px));
+    for (u32 stream = 0; stream < 2; stream++) {
+        r[0x701 + stream * 4] = streams[stream * 4];
+        r[0x702 + stream * 4] = streams[stream * 4 + 1];
+        r[0x7c0 + stream * 2] = streams[stream * 4 + 2];
+        r[0x7c1 + stream * 2] = streams[stream * 4 + 3];
+    }
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect quads, %u of vertices in a record: %u green, %u red\n", many, px.green, px.red);
+    CHECK(index_all_green(&px));
+    /* 8-bit indices widened, the green quad's two triangles from index 16,777,218 on and index 0 before them */
+    const u8 list[6] = {4, 5, 7, 5, 6, 7};
+    const int had8 = g_vk.has_index8;
+    memset(bytes, 0, long_first);
+    memcpy(bytes + long_first, list, 6);
+    CHECK(!gmem_write(long_indices, bytes, long_count));
+    free(bytes);
+    index_registers(channel, long_indices, long_count, 1);
+    const u32 far_list[5] = {6, 1, long_first, 0, 0};
+    CHECK(!put_words(args, far_list, 5));
+    call = (DrawCall){
+        .topology = 4, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 20};
+    g_vk.has_index8 = 0;
+    CHECK(!index_draw(channel, target, &call, &px));
+    g_vk.has_index8 = had8;
+    if (!index_all_green(&px))
+        fprintf(stderr, "indirect list of widened 8-bit indices from index %u: %u green, %u red\n", long_first,
+                px.green, px.red);
+    CHECK(index_all_green(&px));
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u)); /* as indirect_cases left it */
+    puts("indirect draws: quads of several records and under a count, 65537 quads of a record, and 8-bit indices past "
+         "16,777,216 widened");
+    return 0;
+}
+
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
    add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
@@ -1916,6 +2159,9 @@ static int check_index_draws(void) {
     CHECK(!index_list_restart_cases(channel, target, indices));
     g_vk.has_list_restart = had_list_restart;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_made_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_quads_cases(channel, target, indices, address + 0x16000));
+    CHECK(!indirect_rest_cases(channel, target, indices, address + 0x16000));
     CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));

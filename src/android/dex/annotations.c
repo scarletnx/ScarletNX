@@ -49,14 +49,19 @@ uint32_t dex_parameter_annotations(const DexAnnotations* a, uint32_t method_idx)
 
 /* ---- element values ---- */
 static bool write_annotation(CfPool* pool, CfBuffer* out, const Dex* dex, const unsigned char** p,
-                             const unsigned char* end);
+                             const unsigned char* end, unsigned depth);
 
-/* one encoded_value as an element_value; false for a value an element cannot hold (null, a method), which is
-   skipped */
+/* one encoded_value as an element_value, depth arrays and annotations inside the one asked for; false for a value an
+   element cannot hold (null, a method, an array or an annotation DEX_VALUE_DEPTH levels in), which is skipped */
 static bool write_element(CfPool* pool, CfBuffer* out, const Dex* dex, const unsigned char** p,
-                          const unsigned char* end) {
+                          const unsigned char* end, unsigned depth) {
     const unsigned char* at = *p;
     DexValue v = dex_read_value(p, end);
+    if ((v.type == DEX_VALUE_ARRAY || v.type == DEX_VALUE_ANNOTATION) && depth == DEX_VALUE_DEPTH) {
+        *p = at;
+        dex_skip_value(p, end);
+        return false;
+    }
     switch (v.type) {
     case DEX_VALUE_BYTE: cf_u1(out, 'B'); cf_u2(out, cf_integer(pool, (uint32_t)v.bits)); return true;
     case DEX_VALUE_SHORT: cf_u1(out, 'S'); cf_u2(out, cf_integer(pool, (uint32_t)v.bits)); return true;
@@ -84,13 +89,11 @@ static bool write_element(CfPool* pool, CfBuffer* out, const Dex* dex, const uns
         cf_u2(out, 0);
         unsigned written = 0;
         for (uint32_t i = 0; i < n && *p < end; ++i)
-            if (write_element(pool, out, dex, p, end)) ++written;
+            if (write_element(pool, out, dex, p, end, depth + 1)) ++written;
         cf_put_u2(out, count_at, written);
         return true;
     }
-    case DEX_VALUE_ANNOTATION:
-        cf_u1(out, '@');
-        return write_annotation(pool, out, dex, p, end);
+    case DEX_VALUE_ANNOTATION: cf_u1(out, '@'); return write_annotation(pool, out, dex, p, end, depth + 1);
     default:
         *p = at;
         dex_skip_value(p, end);
@@ -100,7 +103,7 @@ static bool write_element(CfPool* pool, CfBuffer* out, const Dex* dex, const uns
 
 /* an encoded_annotation at *p as an annotation structure; its elements that cannot be one are left out */
 static bool write_annotation(CfPool* pool, CfBuffer* out, const Dex* dex, const unsigned char** p,
-                             const unsigned char* end) {
+                             const unsigned char* end, unsigned depth) {
     uint32_t type = dex_uleb(p, end), n = dex_uleb(p, end);
     cf_u2(out, cf_utf8(pool, dex_type(dex, type)));
     size_t count_at = out->size;
@@ -110,7 +113,8 @@ static bool write_annotation(CfPool* pool, CfBuffer* out, const Dex* dex, const 
         uint32_t name = dex_uleb(p, end);
         size_t mark = out->size;
         cf_u2(out, cf_utf8(pool, dex_string(dex, name)));
-        if (write_element(pool, out, dex, p, end)) ++written;
+        if (write_element(pool, out, dex, p, end, depth))
+            ++written;
         else out->size = mark;
     }
     cf_put_u2(out, count_at, written);
@@ -137,7 +141,7 @@ static unsigned write_visible(CfPool* pool, CfBuffer* out, const Dex* dex, uint3
     for (uint32_t i = 0; i < n; ++i) {
         const unsigned char* p;
         if (annotation_at(dex, u4(dex, set_off + 4 + 4 * i), &p) != VISIBILITY_RUNTIME) continue;
-        write_annotation(pool, out, dex, &p, end);
+        write_annotation(pool, out, dex, &p, end, 0);
         ++written;
     }
     cf_put_u2(out, count_at, written);
@@ -239,7 +243,7 @@ unsigned cf_annotation_default(CfPool* pool, CfBuffer* out, const Dex* dex, uint
                 continue;
             }
             size_t mark = out->size, at = begin_attribute(pool, out, "AnnotationDefault");
-            if (!write_element(pool, out, dex, &p, end)) {
+            if (!write_element(pool, out, dex, &p, end, 0)) {
                 out->size = mark;
                 return 0;
             }

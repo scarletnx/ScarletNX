@@ -120,7 +120,7 @@ def game_name(game):
 
 
 def report(game, hooked, libc, only='main', quiet=False):
-    os.environ.setdefault('SNX_SCARLETNX', os.path.join(REPO, 'build', 'rel', 'scarletnx'))
+    os.environ.setdefault('SNX_SCARLETNX', os.path.join(REPO, 'build', 'scarletnx'))
     folder = moduledump._dump(game)
     defined, imported, types = [], [], {}
     with open(os.path.join(folder, 'modules.txt'), encoding='utf-8') as f:
@@ -180,7 +180,7 @@ def report(game, hooked, libc, only='main', quiet=False):
 
 
 def extract(args):
-    tool = os.environ.get('SNX_SCARLETNX', os.path.join(REPO, 'build', 'rel', 'scarletnx'))
+    tool = os.environ.get('SNX_SCARLETNX', os.path.join(REPO, 'build', 'scarletnx'))
     dumps = [os.path.join(args.dumps, f) for f in os.listdir(args.dumps)
              if f.lower().endswith(('.nsp', '.xci')) and os.path.isfile(os.path.join(args.dumps, f))]
     dumps.sort(key=os.path.getsize)

@@ -262,7 +262,7 @@ static int create_instance(void) {
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
                               .extension_count = next,
-                              .api_version = g_vk.api_cap,
+                              .api_version = g_vk.api_cap == VK_API_VERSION_1_2 ? g_vk.api_cap : 0, /* 1.1's: auto's */
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .gpu_assisted = g_settings.vulkan_validation_layer == 2,
                               .portability = true,
@@ -343,18 +343,37 @@ u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size) {
     }
     return n;
 }
+/* what the 1.2 way takes on a Vulkan 1.1 device beside vk12_extensions, where 1.2 made it core: a timeline
+   semaphore and the driver's identity. How many of those and of vk12_extensions e lacks, their names in out as
+   vk_1_2_missing writes them */
+u32 vk_1_1_missing(const SnxVkExtensions* e, char* out, size_t size) {
+    static const char* const core12[] = {VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+                                         VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME};
+    char rest[512];
+    u32 n = 0, more = vk_1_2_missing(e, rest, sizeof rest);
+    size_t at = 0;
+    if (size) out[0] = 0;
+    for (u32 i = 0; i < sizeof core12 / sizeof *core12; i++) {
+        if (snx_vk_extensions_has(e, core12[i])) continue;
+        if (at < size) at += (size_t)snprintf(out + at, size - at, "%s%s", n ? ", " : "", core12[i]);
+        n++;
+    }
+    if (more && at < size) snprintf(out + at, size - at, "%s%s", n ? ", " : "", rest);
+    return n + more;
+}
 int vk_api_setting(const char* text, u32* cap, char* why, size_t n) {
-    if (!strcmp(text, "auto") || !strcmp(text, "1.2")) {
-        *cap = text[0] == 'a' ? 0 : VK_API_VERSION_1_2;
+    if (!strcmp(text, "auto") || !strcmp(text, "1.2") || !strcmp(text, "1.1")) {
+        *cap = text[0] == 'a' ? 0 : text[2] == '2' ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
         return 1;
     }
-    snprintf(why, n, "vk_api=%s is not auto or 1.2", text);
+    snprintf(why, n, "vk_api=%s is not auto, 1.2 or 1.1", text);
     return 0;
 }
 
-/* the version the renderer runs a device of api at: the device's, up to 1.3 (or api_cap) */
+/* the version the renderer runs a device of api at: the device's, up to 1.3 (or vk_api's 1.2). vk_api=1.1 holds no
+   device back: it names what the 1.2 way lacks on a 1.1 one, which no device then runs (start_failure_devices) */
 static u32 vk_api_for(u32 api) {
-    u32 most = g_vk.api_cap ? g_vk.api_cap : VK_API_VERSION_1_3;
+    u32 most = g_vk.api_cap == VK_API_VERSION_1_2 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3;
     return api < most ? api : most;
 }
 
@@ -401,7 +420,7 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
    listed by a GPU driver package, the package and the GPU it does not drive */
 static void start_failure_devices(void) {
     VkPhysicalDevice devices[8];
-    u32 n = 8;
+    u32 n = 8, elevens = 0;
     size_t at = 0;
     if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
     if (!n && backend_vk_no_device(g_vk.start_failure, sizeof g_vk.start_failure)) {
@@ -413,14 +432,19 @@ static void start_failure_devices(void) {
         char lacks[512] = "";
         vkGetPhysicalDeviceProperties(devices[i], &p);
         u32 api = vk_api_for(p.apiVersion);
-        if (api >= VK_API_VERSION_1_2 && api < VK_API_VERSION_1_3) {
+        /* vk_api=1.1 asks what the 1.2 way lacks on a 1.1 device too: the extensions 1.2 made core with the others */
+        int eleven = g_vk.api_cap == VK_API_VERSION_1_1 && api >= VK_API_VERSION_1_1 && api < VK_API_VERSION_1_2;
+        if ((api >= VK_API_VERSION_1_2 && api < VK_API_VERSION_1_3) || eleven) {
             SnxVkExtensions e;
             char names[400];
             if (!snx_vk_device_extensions(devices[i], &e))
                 snprintf(lacks, sizeof lacks, " (its extensions could not be listed)");
-            else if (vk_1_2_missing(&e, names, sizeof names))
+            else if (eleven ? vk_1_1_missing(&e, names, sizeof names) : vk_1_2_missing(&e, names, sizeof names))
                 snprintf(lacks, sizeof lacks, " without %s", names);
+            else if (eleven)
+                snprintf(lacks, sizeof lacks, " with every extension the 1.2 way takes");
             snx_vk_extensions_free(&e);
+            elevens += eleven;
         }
         WARN("vulkan: %s has Vulkan %u.%u.%u%s, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
              VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), lacks, p.driverVersion);
@@ -434,9 +458,14 @@ static void start_failure_devices(void) {
     const char* hint = "";
 #endif
     if (at < sizeof g_vk.start_failure)
+        at += (size_t)snprintf(
+            g_vk.start_failure + at, sizeof g_vk.start_failure - at,
+            "%sScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in, and a %s queue%s",
+            n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+    if (elevens && at < sizeof g_vk.start_failure)
         snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at,
-                 "%sScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in, and a %s queue%s",
-                 n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+                 ". vk_api=1.1 named what the 1.2 way lacks on a Vulkan 1.1 device, which the renderer has no way for "
+                 "yet: its shaders are SPIR-V 1.5, its features read through Vulkan 1.1's and 1.2's structs");
 }
 
 /* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
@@ -515,8 +544,21 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_output_bytes_max = mp.maxMeshOutputMemorySize;
     g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
     g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
+    /* The path a draw with a task program takes (vk_mesh_path). The native task and mesh stages in one submission is
+       the shape that faulted NVIDIA's driver and that hangs RADV on RDNA4 (docs/layers/gpu/driver-quirks.md): Auto
+       takes the compute-task path, which runs the task program as a compute dispatch (sm86.h), and Native keeps the
+       two stages together for a device whose path is measured to work. The task program's lanes are a warp's, so its
+       compute pipeline needs a subgroup of 32, whole (has_cs_warp32) */
+    g_vk.mesh_task_compute = g_vk.has_task && g_vk.has_cs_warp32 && g_settings.mesh_task_path != 1;
     if (why)
         LOG("vulkan: mesh draws are skipped: %s\n", why);
+    else if (g_vk.mesh_task_compute)
+        LOG("vulkan: mesh draws use VK_EXT_mesh_shader, with a task program as a compute dispatch (vk_mesh_path=%s)\n",
+            g_settings.mesh_task_path == 2 ? "compute" : "auto");
+    else if (g_vk.has_task && g_settings.mesh_task_path != 1)
+        LOG("vulkan: mesh draws keep their task and mesh stages together: a compute dispatch of the task program needs "
+            "subgroups of 32 (vk_mesh_path=%d)\n",
+            g_settings.mesh_task_path);
     else
         LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
             g_vk.has_task ? " with task shaders" : ", without task shaders");
@@ -1405,13 +1447,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             has_barycentric ? "VK_KHR_fragment_shader_barycentric without its feature"
                             : "no VK_KHR_fragment_shader_barycentric");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
-    mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
         VkPhysicalDeviceSubgroupSizeControlProperties sizes = subgroup_sizes(core13 || has_size_control, NULL);
         g_vk.has_cs_warp32 = q13.subgroupSizeControl && q13.computeFullSubgroups && sizes.minSubgroupSize <= 32 &&
                              sizes.maxSubgroupSize >= 32 &&
                              (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
+    /* after has_cs_warp32: the compute-task path's task program needs it (mesh_choose) */
+    mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
            drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
@@ -1649,6 +1692,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    /* the compute-task path's task program binds its set with descriptor sets or buffers: a heap's bind is the
+       graphics pipeline's (descriptors.c's vk_descriptors_bind) */
+    if (g_vk.has_descriptor_heaps && g_vk.mesh_task_compute) {
+        g_vk.mesh_task_compute = 0;
+        LOG("vulkan: mesh draws keep their task and mesh stages together: the compute-task path needs descriptor sets or "
+            "buffers, and this device's graphics descriptors are heaps (vk_mesh_path=%d)\n",
+            g_settings.mesh_task_path);
+    }
     g_vk.cb_address = g_settings.constant_buffers_by_address;
     /* the copies name device addresses: the device's memory gets them for these too (bufferDeviceAddress) */
     g_vk.has_copy_indirect =
@@ -1756,18 +1807,14 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "after the program's\n", names);
     }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
-    /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
-       faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
-       lanes, which no feature or property tells, so the table does */
+    /* HMMA off the matrix unit, by the rules: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench
+       ran 9.7% faster), and A and B through shared memory where the driver loops for a shuffle whose index differs
+       between lanes, which no feature or property tells, so the table does. hmma_mode settles the way before the
+       first translation (vk_hmma_pick), Auto by the bench, keeping the rules' where it cannot run */
     int compute_subgroups = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
-    shader_hmma_choose(compute_subgroups, p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32,
-                       vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0,
-                       (int)g_vk.props.limits.maxComputeSharedMemorySize);
-    if (compute_subgroups) {
-        char way[256];
-        shader_hmma_way(way, sizeof way);
-        LOG("vulkan: an SM86 compute program's HMMA: %s\n", way);
-    }
+    g_vk.hmma_rule = shader_hmma_rule(compute_subgroups, p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32,
+                                      vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0);
+    shader_hmma_take(g_vk.hmma_rule, (int)g_vk.props.limits.maxComputeSharedMemorySize);
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
     if (vk_ban("shaderDenormPreserveFloat16", p12.shaderDenormPreserveFloat16, ban_say))
@@ -2445,7 +2492,11 @@ static int create_device(void) {
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
     gpu_pstate_hold(pstate, d.has_drm, d.boost_lacks);
-    if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
+    if (g_vk.api_cap == VK_API_VERSION_1_1)
+        LOG("vulkan: vk_api=1.1 on a Vulkan %u.%u device, which runs as auto would: the setting takes in only a 1.1 "
+            "one\n",
+            VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
+    else if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
         LOG("vulkan: vk_api=1.2 runs the Vulkan 1.2 way on this %u.%u device\n",
             VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
     else if (g_vk.api_cap)
@@ -2468,30 +2519,37 @@ static int create_device(void) {
         : second                               ? " (a second queue)"
                                                : " (the graphics queue)");
     /* A draw that writes a target it samples at its own pixel gets the value from before the draw on the console.
-       In place, a later primitive of the draw can read what an earlier one wrote. On NVIDIA's GPUs with fragment
-       shader interlock, a capture in an interlock at the program's start saves the old pixel (vk/predraw.c). On the
-       others with dynamic rendering local read, the renderer draws the draw two times in one pass (render.c
-       predraw_run). Without both, the draw stays in place: a copy of the target before each such draw costs too much
-       (5 ms a frame outdoors on a desktop GPU).
+       In place, a later primitive of the draw can read what an earlier one wrote. On NVIDIA's and AMD's GPUs with
+       fragment shader interlock, a capture in an interlock at the program's start saves the old pixel
+       (vk/predraw.c). On the others with dynamic rendering local read, the renderer draws the draw two times in one
+       pass (render.c predraw_run). Without both, the draw stays in place: a copy of the target before each such draw
+       costs too much (5 ms a frame outdoors on a desktop GPU).
 
        Each feedback draw drawn two times takes one by-region barrier, which a GPU that renders in tiles keeps in its
        tile memory with the save attachment. Measured in one game's room of G-buffer blend draws, GPU busy and
        G-buffer pass a frame:
          RTX 4090:          in place (specks) 8.1 / 2.00 ms, interlock 8.45 / 2.28 ms, two draws 9.2 / 3.23 ms
          AMD's iGPU (26.10.1): in place (specks) 47.5 / 13.1 ms, interlock 59.1 / 27.7 ms, two draws 55.3 / 18.4 ms
-       AMD's interlock waits on more than the fragments that overlap, and costs more there than the barriers */
-    int nvidia = g_vk.props.vendorID == 0x10DE;
-    int interlock = nvidia && g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics;
-    g_vk.feedback_mode = interlock             ? VK_FEEDBACK_INTERLOCK
-                         : g_vk.has_local_read ? VK_FEEDBACK_PREDRAW
-                                               : VK_FEEDBACK_IN_PLACE;
+       On that iGPU, with AMD's own driver, the interlock waits on more than the fragments that overlap, and costs
+       more than the barriers. A desktop GPU that waits on its CPU measured the other way: in an open-world game's
+       870 feedback draws of 7100 a frame, the renderer's thread busy and the GPU's queue busy a frame:
+         RX 6700 XT (RADV 26.2): interlock 34.8 / 4.8 ms, two draws 39.6 / 12.2 ms
+       A draw drawn two times is set up three times on the CPU (the draw that finds it, the save draw, the guest's).
+       So AMD's GPUs take the interlock as NVIDIA's do; a device it serves worse gets the two draws back with
+       VK_EXT_fragment_shader_interlock's setting off */
+    const int theirs = g_vk.props.vendorID == 0x10DE || g_vk.props.vendorID == 0x1002;
+    g_vk.feedback_mode = vk_feedback_choice(g_vk.props.vendorID, g_vk.has_feedback, g_vk.has_fragment_interlock,
+                                            g_vk.feat.fragmentStoresAndAtomics, g_vk.has_local_read);
     LOG("vulkan: a draw that samples a target it writes at its own pixel %s (vendor %04x%s, fragment shader interlock "
         "%s, dynamic rendering local read %s)\n",
         g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK ? "reads the pixel as it was before the draw, from a capture in "
                                                       "a fragment interlock"
         : g_vk.feedback_mode == VK_FEEDBACK_PREDRAW ? "is drawn two times, the first saving the target"
                                                     : "reads the target in place",
-        g_vk.props.vendorID, nvidia ? ", NVIDIA: interlock where it has it" : ", not NVIDIA: two draws where it can",
+        g_vk.props.vendorID,
+        g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK ? ", NVIDIA's or AMD's: the interlock"
+        : theirs ? ", NVIDIA's or AMD's without all the interlock's capture needs: two draws where it can"
+                 : ", neither NVIDIA's nor AMD's: two draws where it can",
         g_vk.has_fragment_interlock ? "yes" : "no", g_vk.has_local_read ? "yes" : "no");
     if (g_vk.has_feedback)
         LOG("vulkan: draws sample the color targets they render to in place (attachment feedback loops, %s, %s)\n",
@@ -2646,6 +2704,10 @@ static int hdr_surface(u32 space, VkSurfaceFormatKHR* fmt) {
     return found;
 }
 
+void vk_swapchain_failure(char* out, size_t size, const char* device, const char* driver, VkResult r) {
+    snprintf(out, size, "the swapchain could not be made on %s (%s): %s (%d)", device,
+             driver[0] ? driver : "its driver", snx_vk_result_str(r), (int)r);
+}
 int vk_swapchain_create(int kind) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
@@ -2764,7 +2826,12 @@ int vk_swapchain_create(int kind) {
     pm_lock(&g_vk.sc_lock); /* until the new swapchain is g_vk's: the old one is retired from here */
     cr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc);
     if (cr != VK_SUCCESS) { /* tried again on each present while it fails: said a few times */
-        WARN_LIMIT(4, "vulkan: the swapchain could not be made: %s (%d)\n", snx_vk_result_str(cr), (int)cr);
+        char said[sizeof g_vk.start_failure];
+        vk_swapchain_failure(said, sizeof said, g_vk.props.deviceName, g_vk.driver_name, cr);
+        WARN_LIMIT(4, "vulkan: %s\n", said);
+        /* the first one, at the start, is why the run cannot start (renderer_failed) */
+        if (!g_vk.swapchain && !old && !g_vk.start_failure[0])
+            snprintf(g_vk.start_failure, sizeof g_vk.start_failure, "%s", said);
         if (cr == VK_ERROR_SURFACE_LOST_KHR) g_vk.sc_lost = 1;
         if (old) swapchain_retire();
         pm_unlock(&g_vk.sc_lock);
@@ -2894,7 +2961,8 @@ int vk_init(void) {
     if (!create_instance()) return 0;
     backend_vk_check(); /* the instance opened the driver: the one asked for, or the run ends */
     if (!g_opt_headless && !backend_vk_surface(g_vk.instance, &g_vk.surface)) {
-        WARN("vulkan: the window backend could not create a surface\n");
+        snprintf(g_vk.start_failure, sizeof g_vk.start_failure, "the window backend could not create a Vulkan surface");
+        WARN("vulkan: %s\n", g_vk.start_failure);
         return 0;
     }
     if (!create_device()) return start_failed();

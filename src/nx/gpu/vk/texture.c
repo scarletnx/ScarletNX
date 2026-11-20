@@ -2736,13 +2736,91 @@ static int rt_copy_guest(Surf* rt, Surf* c, u32 sw, u32 sh) {
 }
 
 u64 g_vk_rt_copy_writes;
+/* the copies of targets by why they were made, since the last stats line (vk_rt_copy_log); the draws and dispatches
+   recorded at the last copy, plus 1 (0 before any), which tells a copy made for the same draw as the one before; and
+   the copies and the passes they ended in the present being drawn */
+static struct {
+    VkRtCopyCounts n;
+    u64 work;
+    u64 present, present_ended;
+} g_copy_stats;
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) {
+    VkRtCopyCounts* n = &g_copy_stats.n;
+    const u64 work = g_vk_drawn + g_vk_dispatches + 1;
+    n->written[why]++;
+    n->ended[why] += ended != 0;
+    n->bytes[why] += bytes;
+    if (g_copy_stats.work == work) {
+        n->again++;
+        n->again_ended += ended != 0;
+    }
+    g_copy_stats.work = work;
+    g_copy_stats.present++;
+    g_copy_stats.present_ended += ended != 0;
+    if (from == to) return;
+    for (u32 i = 0; i < VK_RT_COPY_PAIRS; i++)
+        if (!n->pair[i].n || (n->pair[i].from == (u32)from && n->pair[i].to == (u32)to)) {
+            n->pair[i].from = (u32)from;
+            n->pair[i].to = (u32)to;
+            n->pair[i].n++;
+            return;
+        }
+    n->pairs_past++;
+}
+void vk_rt_copy_counts(VkRtCopyCounts* out) { *out = g_copy_stats.n; }
+/* at each present: the most copies and pass ends one present had */
+static void rt_copy_present(void) {
+    VkRtCopyCounts* n = &g_copy_stats.n;
+    n->presents++;
+    if (g_copy_stats.present > n->most) n->most = g_copy_stats.present;
+    if (g_copy_stats.present_ended > n->most_ended) n->most_ended = g_copy_stats.present_ended;
+    g_copy_stats.present = g_copy_stats.present_ended = 0;
+}
+void vk_rt_copy_log(void) {
+    static const char* const why[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = "another format",
+                                                  [VK_RT_COPY_CROP] = "a corner",
+                                                  [VK_RT_COPY_FORMAT_CROP] = "a corner in another format",
+                                                  [VK_RT_COPY_FEEDBACK] = "a draw sampling its target",
+                                                  [VK_RT_COPY_GUEST] = "the guest's size",
+                                                  [VK_RT_COPY_TAKE] = "a target taking another's pixels"};
+    const VkRtCopyCounts* n = &g_copy_stats.n;
+    const double presents = n->presents ? (double)n->presents : 1;
+    u64 all = 0;
+    for (int i = 0; i < VK_RT_COPY_N; i++) all += n->written[i];
+    if (all) {
+        char line[768];
+        int at = 0;
+        for (int i = 0; i < VK_RT_COPY_N && at < (int)sizeof line; i++)
+            at += snprintf(line + at, sizeof line - (size_t)at, "%s %.2f for %s (%.2f ending a pass, %.0f KB)",
+                           i ? ";" : "", (double)n->written[i] / presents, why[i], (double)n->ended[i] / presents,
+                           (double)n->bytes[i] / 1024.0 / presents);
+        LOG("vulkan: copies of render targets a present over the last %llu presents:%s. %.2f a present came after "
+            "another for the same draw or dispatch (%.2f ending a pass); one present had %llu copies at most, and "
+            "%llu passes ended by them\n",
+            (unsigned long long)n->presents, line, (double)n->again / presents, (double)n->again_ended / presents,
+            (unsigned long long)n->most, (unsigned long long)n->most_ended);
+        at = 0;
+        line[0] = 0;
+        for (u32 i = 0; i < VK_RT_COPY_PAIRS && n->pair[i].n && at < (int)sizeof line; i++)
+            at += snprintf(line + at, sizeof line - (size_t)at, "%s format %u to %u %.2f", i ? "," : "",
+                           n->pair[i].from, n->pair[i].to, (double)n->pair[i].n / presents);
+        if (at)
+            LOG("vulkan: those copies between formats, a present (Vulkan's format numbers):%s; %.2f more of other "
+                "pairs\n",
+                line, (double)n->pairs_past / presents);
+    }
+    g_copy_stats.n = (VkRtCopyCounts){0};
+}
+/* the bytes of c's texels, every sample and layer */
+static u64 copy_bytes(const Surf* c) { return (u64)c->sw * c->sh * c->layers * c->f.bpp * (u64)vk_surf_samples(c); }
 /* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats). The
-   copy has the target's scale, or with guest the guest's size (rt_copy_guest): then NULL when it can't be made.
-   Without pixels the copy is returned as it is, the target's pixels not brought into it: for a program that only
-   asks its size. With reuse, a copy made since the last point that makes draws' writes visible to texture reads
+   copy has the target's scale, or for why VK_RT_COPY_GUEST the guest's size (rt_copy_guest): then NULL when it can't
+   be made. Without pixels the copy is returned as it is, the target's pixels not brought into it: for a program that
+   only asks its size. With reuse, a copy made since the last point that makes draws' writes visible to texture reads
    (g_vk_texture_epoch) is returned as it is though the target was drawn to since (vk_rt_snapshot) */
-static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pixels, int reuse) {
+static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixels, int reuse) {
+    const int guest = why == VK_RT_COPY_GUEST;
     Surf* c = NULL;
     VkFmt f = as ? *as : rt->f;
     /* the same region of the scaled target */
@@ -2813,12 +2891,15 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
     c->last_used = g_vk_present;
     if (!pixels) return c;
     if (guest && c->crop_gen != rt->wgen) {
+        const int open = vk_render_begun();
         if (!rt_copy_guest(rt, c, sw, sh)) return NULL; /* asked for again at its next use */
         c->crop_gen = rt->wgen;
         g_vk_rt_copy_writes++;
+        vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }
     u64 epoch = atomic_load_explicit(&g_vk_texture_epoch, memory_order_relaxed);
     if (c->crop_gen != rt->wgen && !(reuse && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
+        const int open = vk_render_begun();
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
         vk_surf_use(cb, rt, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -2843,6 +2924,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
         c->crop_gen = rt->wgen;
         c->crop_epoch = epoch;
         g_vk_rt_copy_writes++;
+        vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }
     return c;
 }
@@ -2850,7 +2932,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
    width), or its bytes in another format. The copy is made again only after a texture barrier, as vk_rt_snapshot's:
    one game's full-screen pass read its 800x448 target as 792x448 through each of its draws to it, and the copy before
    each draw (210 a frame) took about 10 ms of the GPU. Its GPU timer then held its render size down there */
-static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 1); }
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
+    const int why = !as ? VK_RT_COPY_CROP : w == rt->w && h == rt->h ? VK_RT_COPY_FORMAT : VK_RT_COPY_FORMAT_CROP;
+    return rt_copy(rt, w, h, as, why, 1, 1);
+}
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     for (const Surf* x = rt->crop; x; x = x->next)
         if (x == t) return 1;
@@ -2872,7 +2957,7 @@ static int rb_twins(const VkFmt* f, const VkFmt* t) {
    not NULL. NULL for a multisampled or depth target, a format that can't be blitted or a copy that found no memory,
    said once: the caller takes the scaled image */
 static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
-    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1, 1, 0);
+    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, VK_RT_COPY_GUEST, 1, 0);
     if (!c)
         LOG_LIMIT(1,
                   "vulkan: a compute, vertex, tessellation, geometry or mesh program reads the %ux%u render target at "
@@ -2891,7 +2976,7 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
    copy before each, 92 % of them with no texture barrier since the copy before */
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels, 1);
+    return rt_copy(rt, rt->w, rt->h, NULL, VK_RT_COPY_FEEDBACK, pixels, 1);
 }
 
 /* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the
@@ -4529,13 +4614,16 @@ void vk_tex_frame(void) {
        a second kept 600 presents' worth, 100 seconds, of the targets it made every frame); textures come back from
        memory if they are needed again. Those whose pixels would be lost (vk_surf_reclaim) go before five minutes
        only under the budget's pressure (vk_mem_trim), and a target holding a draw a texture would take stays until
-       then. The recency lists hand out the oldest first, so this costs what goes. The lossy pass looks every 600
+       then; a render target of them moves into system memory instead, or stays where the GPU has no memory of its
+       own. The recency lists hand out the oldest first, so this costs what goes. The lossy pass looks every 600
        presents: it passes over the targets it keeps, and asking whether one holds such a draw can hash its memory.
        Render targets later ones drew all over hold nothing: every 30 presents those unused for a second and eight
        presents go (a game at a dynamic resolution makes its scene's targets again each frame) */
     u32 before = vk_present_before(20000000000ull, 120);
+    rt_copy_present();
     vk_surf_ended_frame(); /* those the game ended go sooner */
     vk_tex_refine_frame(); /* levels shed for room come back while there is some */
+    vk_rt_sys_frame();     /* render targets moved into system memory, into the GPU's, first: they are drawn to */
     vk_tex_promote_frame(); /* and textures moved into system memory, into the GPU's */
     vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);

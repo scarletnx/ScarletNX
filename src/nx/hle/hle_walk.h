@@ -66,6 +66,11 @@
     X(NnfsMount, (h).nnfs.mounts[0])                                                                                   \
     X(NnfsFile, (h).nnfs.files[0])                                                                                     \
     X(NnfsDir, (h).nnfs.dirs[0])                                                                                       \
+    X(GsvNativeImage, (h).gsv.native_images[0])                                                                        \
+    X(GsvGpuMemory, (h).gsv.gpu_memory[0])                                                                             \
+    X(GsvSyncWait, (h).gsv.sync_waits[0])                                                                              \
+    X(Vi2Client, (h).gsv.vi2_clients[0])                                                                               \
+    X(Vi2Display, (h).gsv.vi2_displays[0])                                                                             \
     X(NativeVideoPool, (h).native_video.pools[0])                                                                      \
     X(NativeVideoMap, (h).native_video.maps[0])                                                                        \
     X(NativeVideoContext, (h).native_video.contexts[0])                                                                \
@@ -88,6 +93,7 @@
     X(ldr, (h).ldr)                                                                                                    \
     X(misc, (h).misc)                                                                                                  \
     X(nvdrv, (h).nvdrv)                                                                                                \
+    X(gsv, (h).gsv)                                                                                                    \
     X(native_video, (h).native_video)                                                                                  \
     X(pl, (h).pl)                                                                                                      \
     X(prepo, (h).prepo)                                                                                                \

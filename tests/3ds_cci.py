@@ -4,6 +4,7 @@
 """A cartridge image or a bare NCCH read where it lies against its extraction: the same images accepted and
 refused, the same bytes read, and a cartridge's update partition played as the update."""
 
+import hashlib
 import io
 import os
 import random
@@ -76,6 +77,15 @@ def main():
 
         # the plain cartridge, its compressed code, and one without a RomFS
         assert both(ncsd(), 'plain')[0] == 0
+        # with no output given the folder is named by the image's own hash, which the extraction checks again at its end
+        named = root / 'named.cci'
+        named.write_bytes(ncsd())
+        p = subprocess.run(
+            [probe, str(named), '--named', str(root / 'named-work')], capture_output=True, text=True, timeout=20
+        )
+        assert p.returncode == 0 and p.stdout.strip().endswith('-' + hashlib.sha256(ncsd()).hexdigest()), p.stdout
+        shutil.rmtree(root / 'named-work')
+        named.unlink()
         assert both(ncsd(ncch(compressed=True)), 'compressed')[0] == 0
         assert both(ncsd(ncch(with_romfs=False)), 'no-romfs')[0] == 0
         # the .3ds name of the same image, and a bare NCCH as a .cxi, an .app and homebrew's .hbb
@@ -160,6 +170,14 @@ def main():
         assert status == 3 and 'holds no game' in text, text
         status, text = both(tar(('game.cci', ncsd()), ('game.cci', ncsd())), 'bundle-duplicate', extension='bcci')
         assert status == 1 and 'two entries named' in text, text
+        # a name with a prefix is kept whole, longer than the name field alone: its second entry is still told from
+        # the entry between them, and a bundle's last entry of the 50 a reader takes has room for its own
+        deep = 'd' * 150 + '/game.cci'
+        status, text = both(tar((deep, ncsd()), ('note.txt', b'a note'), (deep, ncsd())), 'bundle-deep-duplicate',
+                            extension='bcci')
+        assert status == 1 and 'two entries named' in text, text
+        many = [(f'{i:02d}' + 'd' * 148 + '/note.txt', b'a note') for i in range(49)] + [(deep, ncsd())]
+        assert both(tar(*many), 'bundle-deep-last', extension='bcci')[0] == 0
 
         def break_checksum(blob):
             blob[148] = (blob[148] + 1) % 128
@@ -210,6 +228,11 @@ def main():
         assert files(root / 'zcci-game') == want, text
         assert (root / 'zcci-game.unpacked.cci').read_bytes() == plain_image, text
         alone(z3ds(plain_image), 'zcci-game', 'zcci', message='Using the unpacked game')
+        # a game in several frames, as every game larger than one frame is kept: each frame ends a decompressor's
+        # call, with the frames after it still in the chunk that was read
+        _, text = alone(z3ds(plain_image, frames=3), 'zcci-frames', 'zcci', message='Unpacked')
+        assert files(root / 'zcci-frames') == want, text
+        assert (root / 'zcci-frames.unpacked.cci').read_bytes() == plain_image, text
         # an encrypted one is unpacked, then decrypted, and without the keys it is the decryption that refuses
         if enc_image is not None:
             alone(z3ds(enc_image), 'zcci-encrypted', 'zcci', status=3, message='no 3DS keys')

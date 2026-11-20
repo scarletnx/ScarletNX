@@ -11,6 +11,7 @@
    The driver's state is this file's: a process runs one board. */
 #include "nds/hle/pxi.h"
 #include "nds/audio/spu.h"
+#include "common/utilities/bits.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -729,7 +730,9 @@ static void init_track(SndTrack* track)
 
 static void release_track(SndTrack* track, SndSequence* seq, bool flag)
 {
-    int volbase3 = base_volume_table[seq->volume] + base_volume_table[track->volume] + base_volume_table[track->expression];
+    /* the three are bytes a game's sequence and commands set whole: the table holds a volume's 128 levels */
+    int volbase3 = base_volume_table[seq->volume & 0x7F] + base_volume_table[track->volume & 0x7F] +
+                   base_volume_table[track->expression & 0x7F];
     if (volbase3 < -0x8000) volbase3 = -0x8000;
 
     int volbase1 = track->track_unk0_a + seq->seq_unk06;
@@ -970,7 +973,8 @@ static void process_commands(void)
             if (version == 1)
             {
                 // COMMAND TRANSLATE for SM64DS (early sound engine version)
-                cmd = cmd_trans_early[cmd];
+                /* a number past the table names no command */
+                cmd = cmd < sizeof cmd_trans_early / sizeof *cmd_trans_early ? cmd_trans_early[cmd] : UINT32_MAX;
             }
             else if (version == 2)
             {
@@ -1977,10 +1981,13 @@ static int update_track(SndTrack* track, SndSequence* seq, int id, bool process)
                         wr16(paramaddr, (int16_t)rd16(paramaddr) / param);
                         break;
                     case 0xB5: // shift
+                        /* the variable's 16 bits, shifted as a signed 32-bit word's: a count of 16 or more leaves
+                           none of them (0 to the left, the sign to the right) */
                         if (param >= 0)
-                            wr16(paramaddr, (int16_t)rd16(paramaddr) << param);
+                            wr16(paramaddr, param < 16 ? (uint16_t)((uint32_t)rd16(paramaddr) << param) : 0);
                         else
-                            wr16(paramaddr, (int16_t)rd16(paramaddr) >> (-param));
+                            wr16(paramaddr, (uint16_t)snx_asr32((uint32_t)(int16_t)rd16(paramaddr),
+                                                                param > -31 ? (unsigned)-param : 31));
                         break;
                     case 0xB6: //
                         {

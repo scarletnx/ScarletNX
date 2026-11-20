@@ -11,7 +11,7 @@
 errors: every case of errors.glsl is refused with its line, column and message, and glslangValidator refuses it too,
 but where the case says glslang accepts it (an error glslang only finds when it links), which is checked as well.
 shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.1, also through the CLI's
-binding map; glslangValidator takes the
+binding map (a desktop*.vert or .frag as a desktop GL context's, -d); glslangValidator takes the
 shader too (or refuses it where its first lines say so), and for GLSL ES 3.10 and later lays out every block, member
 by member, as glslc does, with the same interface decorations, but where a line "// glslang -V: WHY" says its
 module is no reference. keywords: every word glslc's table knows is a name, a keyword or a reserved word in the
@@ -175,8 +175,9 @@ def check_shaders(args, failures):
     with tempfile.TemporaryDirectory(prefix='snx-glslc-shaders-') as directory:
         for shader in shaders:
             source = shader.read_text(encoding='utf-8')
+            desktop = ['-d'] if shader.name.startswith('desktop') else []
             spv = Path(directory) / (shader.name + '.spv')
-            result = run([args.cli, '-o', str(spv), str(shader)])
+            result = run([args.cli, *desktop, '-o', str(spv), str(shader)])
             if result.returncode != 0:
                 failures.append(f'{shader.name}: glslc refuses it: {result.stdout.strip()}')
                 continue
@@ -184,13 +185,22 @@ def check_shaders(args, failures):
             if valid.returncode != 0:
                 failures.append(f'{shader.name}: spirv-val refuses the module: {(valid.stdout + valid.stderr).strip()}')
             mapped = Path(directory) / (shader.name + '.mapped.spv')  # through a binding map: each kind its own set
-            result = run([args.cli, '-m', '-o', str(mapped), str(shader)])
+            result = run([args.cli, '-m', *desktop, '-o', str(mapped), str(shader)])
             valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(mapped)])
             if result.returncode != 0 or valid.returncode != 0:
                 failures.append(f'{shader.name}: with a binding map: {result.stdout.strip()} {valid.stdout.strip()}')
+            # every uniform block, the default one too, read through a window, then as a read-only storage buffer
+            for flag, what in (('-w', 'windows'), ('-s', 'storage')):
+                read = Path(directory) / (shader.name + f'.{what}.spv')
+                result = run([args.cli, flag, *desktop, '-o', str(read), str(shader)])
+                valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(read)])
+                if result.returncode != 0 or valid.returncode != 0:
+                    failures.append(
+                        f'{shader.name}: {what}: {result.stdout.strip()} {(valid.stdout + valid.stderr).strip()}'
+                    )
             if shader.suffix == '.frag':  # gl_FragCoord and gl_PointCoord through the push constant's flip
                 flipped = Path(directory) / (shader.name + '.flipped.spv')
-                result = run([args.cli, '-f', '-o', str(flipped), str(shader)])
+                result = run([args.cli, '-f', *desktop, '-o', str(flipped), str(shader)])
                 valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(flipped)])
                 if result.returncode != 0 or valid.returncode != 0:
                     failures.append(f'{shader.name}: flipped: {result.stdout.strip()} {valid.stdout.strip()}')
@@ -198,7 +208,10 @@ def check_shaders(args, failures):
                 continue
             note = re.search(r'^// glslang: rejects \((.*)\)$', source, re.MULTILINE)
             # a line "// glslang -V: WHY" keeps glslang to the language: its Vulkan module is no reference there
-            vulkan = version_of(source) >= 310 and not re.search(r'^// glslang -V: ', source, re.MULTILINE)
+            # desktop GLSL is checked as OpenGL's: glslang's Vulkan modules of it are no reference for GLSL ES's
+            vulkan = (
+                version_of(source) >= 310 and not desktop and not re.search(r'^// glslang -V: ', source, re.MULTILINE)
+            )
             ref_spv = Path(directory) / (shader.name + '.ref.spv')
             reference = run(glslang_command(args.glslang, shader, ref_spv if vulkan else None))
             if note and reference.returncode == 0:

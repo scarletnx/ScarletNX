@@ -1261,6 +1261,15 @@ static void driver_files(void) {
     CHECK(!strcmp(tag_b, "d18-5143-44050001-mainline_turnip_V32"));
     snx_vk_driver_tag(small, sizeof small, 18, 0x5143, 0x44050001, "pkg");
     CHECK(strlen(small) == sizeof small - 1);
+    /* a buffer the driver's part fills to its last byte: the package finds no room, and nothing is written past it */
+    char exact[20];
+    memset(exact, 0x7f, sizeof exact);
+    snx_vk_driver_tag(exact, 18, 18, 0x5143, 0x44050001, "pkg");
+    CHECK(!strcmp(exact, "d18-5143-44050001") && exact[18] == 0x7f && exact[19] == 0x7f);
+    snx_vk_driver_tag(exact, 19, 18, 0x5143, 0x44050001, "pkg");
+    CHECK(!strcmp(exact, "d18-5143-44050001") && exact[19] == 0x7f);
+    snx_vk_driver_tag(exact, 20, 18, 0x5143, 0x44050001, "pkg");
+    CHECK(!strcmp(exact, "d18-5143-44050001-p"));
     snx_vk_driver_path(a, sizeof a, ".", "pipeline_file_test", tag_a, ".vkshaders");
     snx_vk_driver_path(b, sizeof b, ".", "pipeline_file_test", tag_b, ".vkshaders");
     snx_vk_driver_path(c, sizeof c, ".", "pipeline_file_test", "d3-1002-000073df", ".vkshaders");

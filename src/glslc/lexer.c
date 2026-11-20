@@ -117,9 +117,9 @@ static uint32_t number(Glslc* g, uint32_t* pi) {
         }
     }
     if (kind == TK_FLOATCONST && (at(g, i) == 'f' || at(g, i) == 'F')) {
-        if (g->vi == GLSLC_V100 && !skipping(g))
-            glslc_fail(g, start, "'%.*s': the suffix f needs GLSL ES 3.00 or later", (int)(i + 1 - start),
-                       g->src + start);
+        if (g->vi == GLSLC_V100 && g->desktop_version < 120 && !skipping(g))
+            glslc_fail(g, start, "'%.*s': the suffix f needs GLSL ES 3.00 or later%s", (int)(i + 1 - start),
+                       g->src + start, g->desktop ? ", or desktop GLSL 1.20" : "");
         i++;
     } else if (kind == TK_INTCONST && (at(g, i) == 'u' || at(g, i) == 'U')) {
         if (g->vi == GLSLC_V100 && !skipping(g))
@@ -421,6 +421,7 @@ static void predefine(Glslc* g, uint32_t n, const char* text, uint32_t len) {
     for (uint32_t e = 0; e < glslc_extension_count && value == -2; e++)
         if (glslc_extensions[e].len == len && !memcmp(glslc_extensions[e].name, text, len)) value = 1;
     if (value == -2) return;
+    if (g->desktop_version && text[0] == 'G') return; /* GL_ES and GL_FRAGMENT_PRECISION_HIGH are GLSL ES's */
     uint32_t m = new_macro(g, n, g->names[n].text, (uint8_t)(flags | GLSLC_MF_PREDEFINED), 0);
     if (value >= 0) {
         GlslcToken t = {{0, 1}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
@@ -459,7 +460,7 @@ static uint32_t expand_one(Glslc* g, uint32_t m, uint32_t i, uint32_t args_end, 
     }
     if (mc->flags & GLSLC_MF_VERSION) {
         uint32_t at_ = g->nexp;
-        GlslcToken t = synth_number(g, g->version, site);
+        GlslcToken t = synth_number(g, g->desktop_version ? g->desktop_version : g->version, site);
         exp_push(g, &t);
         return at_;
     }
@@ -921,17 +922,31 @@ static void directive_version(Glslc* g, const GlslcToken* hash) {
     GlslcToken n, p;
     if (g->seen_any) glslc_fail(g, hash->site, "#version must come before anything but comments and white space");
     if (!line_next(g, &n) || n.kind != TK_INTCONST)
-        glslc_fail(g, hash->site, "#version needs a number: 100, 300 es, 310 es or 320 es");
+        glslc_fail(g, hash->site, "#version needs a number: 100, 300 es, 310 es or 320 es%s",
+                   g->desktop ? ", or desktop GLSL's 110, 120 or 330" : "");
     uint32_t v = 0;
     if (!glslc_parse_int(text_of(g, &n), n.text.len, &v)) v = 0xffffffffu;
-    int es = line_next(g, &p);
-    if (es && !(is_ident(p.kind) && token_is(g, &p, "es")))
-        glslc_fail(g, p.site, "'#version %u %.*s': GLSL ES's profile is es", v, (int)p.text.len, text_of(g, &p));
-    if (es) {
+    int profile = line_next(g, &p);
+    int es = profile && is_ident(p.kind) && token_is(g, &p, "es");
+    int core = profile && g->desktop && is_ident(p.kind) && token_is(g, &p, "core");
+    if (profile && !es && !core)
+        glslc_fail(g, p.site, "'#version %u %.*s': GLSL ES's profile is es%s", v, (int)p.text.len, text_of(g, &p),
+                   g->desktop ? ", and desktop GLSL's that glslc takes is core" : "");
+    if (profile) {
         GlslcToken x;
         if (line_next(g, &x))
             glslc_fail(g, x.site, "'%.*s' is left over at the end of the #version line", (int)x.text.len,
                        text_of(g, &x));
+    }
+    g->desktop_version = 0;
+    if (g->desktop && (v == 110 || v == 120 || v == 330)) {
+        if (es || (core && v != 330))
+            glslc_fail(g, p.site, "#version %u takes %s", v, v == 330 ? "core or no profile" : "no profile");
+        g->desktop_version = (uint16_t)v;
+        v = v == 330 ? 300 : 100;
+        es = v == 300;
+    } else if (core && (v == 100 || v == 300 || v == 310 || v == 320)) {
+        glslc_fail(g, p.site, "#version %u is GLSL ES, whose profile is es: core is desktop GLSL's", v);
     }
     switch (v) {
         case 100:
@@ -950,8 +965,10 @@ static void directive_version(Glslc* g, const GlslcToken* hash) {
             break;
         default:
             glslc_fail(g, n.site,
-                       "#version %.*s is not a GLSL ES version: glslc compiles 100, 300 es, 310 es and 320 es",
-                       (int)n.text.len, text_of(g, &n));
+                       "#version %.*s is not a GLSL ES version: glslc compiles 100, 300 es, 310 es and 320 es"
+                       "%s",
+                       (int)n.text.len, text_of(g, &n),
+                       g->desktop ? ", and desktop GLSL's 110, 120 and 330 (core)" : "");
     }
     g->version = (uint16_t)v;
     g->explicit_version = 1;

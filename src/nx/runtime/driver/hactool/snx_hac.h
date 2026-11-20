@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 typedef struct SnxHac SnxHac;
 
@@ -84,6 +85,21 @@ int snx_hac_fs_read_romfs(SnxHacFs* fs, uint64_t offset, void* buffer, size_t si
 /* The content meta (a .cnmt file) of a Meta NCA, the one file of its PFS0 section ending in .cnmt, malloc'd into
    *data (size bytes): 0, or -1 when the NCA cannot be read or holds none */
 int snx_hac_cnmt(SnxHac* hac, int container, size_t entry, unsigned char** data, size_t* size);
+
+/* An NCA as a plain one, which a reader opens with no keys: its 0xC00-byte header decrypted, its sections decrypted
+   where they lie, every other byte as the file has it. Nothing else changes: the size, the section table, the FS
+   headers (their encryption types too) and the header's signatures, which cover the plain header, stay. The NCA is
+   [offset, offset + size) of file, which stays open. An NCA plain already (a plain NCA3 or NCA2 header) comes as it
+   is, and a DNCA (the DNSP's and DXCI's) with the NCA3 magic in its place. *plain, when not NULL, says it was plain
+   already. header (0xC00 bytes, NULL to leave it) takes the plain header. write (NULL for the header alone) takes the
+   bytes in order, and returns 0 to go on. 0, else -1 with why in snx_hac_message: keys missing, an NCA0, a sparse
+   section, a write that failed */
+int snx_hac_plain(SnxHac* hac, FILE* file, uint64_t offset, uint64_t size, unsigned char* header,
+                  int (*write)(const void* bytes, size_t size, void* data), void* data, int* plain);
+
+/* an XCI header's gamecard info (0x70 bytes) encrypted as the card has it, AES-128-CBC under xci_header_key with iv
+   (the header's IV, its bytes reversed): 0, or -1 when prod.keys has no xci_header_key */
+int snx_hac_xci_info(SnxHac* hac, const unsigned char iv[16], const unsigned char plain[0x70], unsigned char out[0x70]);
 
 /* tick(written, data) as hactool writes the extraction, written the bytes so far */
 void snx_hac_progress(void (*tick)(uint64_t written, void* data), void* data);

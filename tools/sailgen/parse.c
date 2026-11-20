@@ -207,6 +207,7 @@ static int kind_of_type_name(const char* name) {
 }
 
 static unsigned parse_expr(void);
+static unsigned parse_binary(int min_level);
 
 /* a type: its kind, and for bits(E) the width E as child a; for vector(N, T) the length N as child a and T as child b,
    of kind K_VECTOR when T is bits, K_BITS when it is bit, else K_OTHER. The text is kept as name */
@@ -391,6 +392,25 @@ static unsigned parse_primary(void) {
         unsigned first = 0, last = 0;
         take();
         n = node(N_VEC, t.line);
+        if (!at("]")) {
+            unsigned x = parse_expr();
+            if (at("with")) { /* a vector update: [x with i = v], [x with hi .. lo = v] */
+                take();
+                NODE(n).kind = N_UPDATE;
+                NODE(n).a = x;
+                NODE(n).b = parse_binary(2);
+                if (at("..")) {
+                    take();
+                    NODE(n).c = parse_binary(2);
+                }
+                expect("=");
+                NODE(n).d = parse_expr();
+                expect("]");
+                return n;
+            }
+            last = list_append(&first, last, x);
+            if (at(",")) take();
+        }
         if (!at("]"))
             for (;;) {
                 last = list_append(&first, last, parse_expr());

@@ -37,7 +37,7 @@ static uint32_t result(VitaProcess* p, VitaThread* t, uint32_t kind) {
     uint32_t out = vita_arg(p, t, 0);
     if (p->dialog.kind != kind) return SCE_COMMON_DIALOG_ERROR_NOT_IN_USE;
     if (p->dialog.status != STATUS_FINISHED) return SCE_COMMON_DIALOG_ERROR_NOT_FINISHED;
-    if (!out) return SCE_COMMON_DIALOG_ERROR_NULL;
+    if (!out || !vita_mapped(p, out, RESULT_SIZE)) return SCE_COMMON_DIALOG_ERROR_NULL;
     memset(vita_ptr(p, out), 0, RESULT_SIZE);
     vita_write32(p, out, p->dialog.result);
     return 0;

@@ -10,7 +10,9 @@
      stop NAME     a name not followed and not copied: the state the generator maps (_R, SP_EL0, PSTATE...)
                    and what it lowers itself (gen.c's builtins)
      lower NAME    a function the back end lowers (FPAdd): its val is copied, for the generator to call the back
-                   end's by, and the names the val's types name are followed; its definition is not */
+                   end's by, and the names the val's types name are followed; its definition is not
+   and decoder and fixup lines, which are the generator's (gen.c): a fixup is an overlay's decode function, which the
+   inputs do not have */
 #include "sailgen.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -207,14 +209,18 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
             i += w;
             while (i < e && isspace((unsigned char)roots[i])) ++i;
             w = word_at(roots, i, e);
-            if (!w || (strcmp(word, "root") && strcmp(word, "stop") && strcmp(word, "lower"))) {
+            if (!w || (strcmp(word, "root") && strcmp(word, "stop") && strcmp(word, "lower") &&
+                       strcmp(word, "decoder") && strcmp(word, "fixup"))) {
                 fprintf(stderr,
-                        "%s:%u: error: expected \"root NAME\", \"stop NAME\" or \"lower NAME\", found \"%.*s\"\n",
+                        "%s:%u: error: expected \"root NAME\", \"stop NAME\", \"lower NAME\", \"fixup NAME\" or "
+                        "\"decoder NAME FAMILY...\", found \"%.*s\"\n",
                         roots_path, line_no, (int)(e - i + w), roots + i - w);
                 free(roots);
                 return 1;
             }
-            if (word[0] == 'r')
+            if (word[0] == 'd' || word[0] == 'f')
+                ; /* the generator's */
+            else if (word[0] == 'r')
                 g_extract.roots[g_extract.root_count++] = sg_intern(roots + i, w);
             else if (word[0] == 'l')
                 g_extract.lowers[g_extract.lower_count++] = sg_intern(roots + i, w);
@@ -260,7 +266,9 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
         const char* base = strrchr(inputs[f], '/');
         sg_out("     %s\n", base ? base + 1 : inputs[f]);
     }
-    sg_out("   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: an NX fixup goes in nx.sail */\n\n");
+    sg_out(
+        "   BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay\n"
+        "   (README.md beside this file) */\n\n");
     for (i = 0; i < g_extract.count; ++i) {
         const Piece* p = &g_extract.pieces[i];
         size_t end = p->end;

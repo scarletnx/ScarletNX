@@ -79,6 +79,22 @@ static void hardware(SnxCtrProcess* p, uint32_t pa) {
     snx_ctr_csnd_set_cnt(&hw, 0, PLAYING | ONE_SHOT | PCM16 | SNX_CTR_CSND_INTERPOLATE);
     render(p, &hw, got, 4);
     expect(got, (const int16_t[]){0, 0, 500, 1000}, 4, "interpolated");
+    /* interpolated over the samples' full swing at a 24th of the rate: the step from -32768 to 32767 times the
+       counter, past 2^31 from the 17th output on, is still the line between the two samples */
+    static const int16_t swing[2] = {INT16_MIN, INT16_MAX};
+    put16s(p, pa + 8, swing, 2);
+    snx_ctr_csnd_set_cnt(&hw, 0, 0);
+    ch->start = pa + 8, ch->size = 4, ch->timer = (uint16_t)(0x10000u - 24u * 2048u);
+    snx_ctr_csnd_set_cnt(&hw, 0, PLAYING | ONE_SHOT | PCM16 | SNX_CTR_CSND_INTERPOLATE);
+    for (unsigned i = 0; i < 71; ++i) {
+        render(p, &hw, got, 1);
+        /* the second sample is read at output 47: from there the line, a 24th of the swing each output */
+        int want = i < 24 ? 0 : i < 47 ? -(32768 * ((int)i - 23) / 24) : -32768 + 65535 * ((int)i - 47) / 24;
+        if (got[0] != want) {
+            fprintf(stderr, "interpolated swing: output %u is %d, not %d\n", i, got[0], want);
+            abort();
+        }
+    }
     /* IMA-ADPCM from predictor 0, index 0: the byte 0x07 is +11 (index 8), then +2 (13, index 7) */
     static const unsigned char adpcm[1] = {0x07};
     assert(snx_ctr_phys_write(p->memory, pa + 16, adpcm, 1) == SNX_CTR_MEM_OK);
@@ -152,6 +168,9 @@ int main(void) {
     const uint32_t flush_code[] = {0x00090082, 0x00100000, 0x100, 0, CTR_PROCESS_HANDLE};
     assert(call(p, csnd, flush_heap, 5) == 0x00090040 && !ctr_command_word(p, 1));
     assert(call(p, csnd, flush_code, 5) == 0x00090040 && ctr_command_word(p, 1) == 0xe0e3fff6u);
+    /* nor a range of the heap whose end wraps 32 bits back into it */
+    const uint32_t flush_wrap[] = {0x00090082, 0x1b000000, 0xf9000000, 0, CTR_PROCESS_HANDLE};
+    assert(call(p, csnd, flush_wrap, 5) == 0x00090040 && ctr_command_word(p, 1) == 0xe0e3fff6u);
 
     /* a list: ConfigureChannel on channel 8 (PCM16, one-shot, playing, a sample each output sample, full volume) then
        ApplyMasks and UpdateState */
@@ -167,6 +186,7 @@ int main(void) {
     assert((p->csnd.hw.channel[8].cnt & PLAYING) == PLAYING);
     /* the state: the mask register's channels and the channel's own (8 is the client's first: index 0) */
     assert(block_word(p, block, 0x100) == 0xffffff00u && (block_word(p, block, 0x110) & 0xff) == 1);
+    assert(block_word(p, block, 0x104) == 1); /* and the capture units': the client still holds unit 0 */
     /* the frame it plays reaches the recording alone, as the DSP plays none: two CSND frames, then both go out */
     for (unsigned i = 0; i < 2; ++i) snx_ctr_csnd_update(p, snx_ctr_csnd_deadline(p));
     /* a DSP frame of 100s mixed with nothing waiting */

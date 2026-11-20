@@ -12,6 +12,7 @@
 #include "common/cpu/recompiler/llvm/code_loader_int.h" /* the regions' use, against snx_code_need's */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <llvm-c/Target.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1509,7 +1510,55 @@ static int host_module(void) {
 #endif
 #endif
 
+/* An object no compiler wrote (a cached one a disk damaged): a section whose offset plus its size wraps past 2^64 to
+   inside the file, and a symbol in a section the object has not, are refused by snx_elf_parse, which every reader of
+   its sections and of its symbols' addresses then relies on. The object is a null section, a symbol table of two
+   symbols and its string table */
+static void malformed_objects(void) {
+    struct {
+        Elf64_Ehdr header;
+        Elf64_Shdr sections[3];
+        Elf64_Sym symbols[2];
+        char strings[8];
+    } image, whole = {0};
+    SnxLinkInput input = {(const unsigned char*)&image, sizeof(image), "malformed.o"};
+    SnxElfObject o;
+    char error[256];
+    memcpy(whole.header.e_ident, ELFMAG, SELFMAG);
+    whole.header.e_ident[EI_CLASS] = ELFCLASS64, whole.header.e_ident[EI_DATA] = snx_elf_host_data();
+    whole.header.e_type = ET_REL, whole.header.e_machine = EM_AARCH64;
+    whole.header.e_shentsize = sizeof(Elf64_Shdr), whole.header.e_shnum = 3;
+    whole.header.e_shoff = offsetof(typeof(whole), sections);
+    whole.sections[1] = (Elf64_Shdr){.sh_type = SHT_SYMTAB,
+                                     .sh_offset = offsetof(typeof(whole), symbols),
+                                     .sh_size = sizeof(whole.symbols),
+                                     .sh_link = 2};
+    whole.sections[2] = (Elf64_Shdr){
+        .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(whole), strings), .sh_size = sizeof(whole.strings)};
+    whole.symbols[1] = (Elf64_Sym){.st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT), .st_shndx = 2};
+    for (unsigned kind = 0; kind < 4; ++kind) {
+        static const char* const names[] = {"a whole object", "a section that wraps past 2^64",
+                                            "a symbol in section 8 of 3", "a local common symbol"};
+        static const char* const wants[] = {"", "truncated section", "symbol 1 is in section 8 of 3",
+                                            "symbol 1 is in section 65522 of 3"};
+        unsigned machine = 0, abi = 0;
+        int rc;
+        image = whole;
+        if (kind == 1) image.sections[2].sh_offset = UINT64_MAX - 0xFF, image.sections[2].sh_size = 0x100;
+        if (kind == 2) image.symbols[1].st_shndx = 8;
+        if (kind == 3) image.symbols[1].st_shndx = SHN_COMMON;
+        error[0] = 0;
+        rc = snx_elf_parse(&o, &input, &machine, &abi, error, sizeof(error));
+        if ((rc != 0) != (kind != 0) || !strstr(error, wants[kind])) {
+            printf("FAIL: %s: rc %d, \"%s\" (want \"%s\")\n", names[kind], rc, error, wants[kind]);
+            ++failures;
+        }
+        snx_elf_free(&o);
+    }
+}
+
 int main(void) {
+    malformed_objects();
     data_relocations();
     instruction_relocations();
     veneers();

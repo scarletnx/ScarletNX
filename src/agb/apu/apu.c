@@ -3,6 +3,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/apu/apu.h"
 #include "agb/board/board.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <string.h>
 
@@ -279,7 +280,8 @@ static int channel_sample(AgbBoard* board, int channel) {
         while (apu->phase[3] >= AGB_APU_RATE) {
             uint32_t bit = (apu->noise_lfsr & 1) ^ ((apu->noise_lfsr >> 1) & 1);
             apu->noise_lfsr = (uint16_t)((apu->noise_lfsr >> 1) | (bit << 14));
-            if (apu->cnt_x[3] & 0x80) apu->noise_lfsr = (uint16_t)((apu->noise_lfsr & ~(1u << 6)) | (bit << 6));
+            /* SOUND4CNT_H's bit 3 makes it the 7 bit register; bits 4 to 7 are s */
+            if (apu->cnt_x[3] & 0x8) apu->noise_lfsr = (uint16_t)((apu->noise_lfsr & ~(1u << 6)) | (bit << 6));
             apu->phase[3] -= AGB_APU_RATE;
         }
         int high = !(apu->noise_lfsr & 1);
@@ -312,8 +314,9 @@ static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
     }
     l = (l + bias < 0 ? 0 : l + bias > 0x3FF ? 0x3FF : l + bias) - bias;
     r = (r + bias < 0 ? 0 : r + bias > 0x3FF ? 0x3FF : r + bias) - bias;
-    *left = (int16_t)(l * 48);
-    *right = (int16_t)(r * 48);
+    /* around a SOUNDBIAS below the middle the level reaches 0x3FF, and 48 of it pass a sample's 16 bits */
+    *left = snx_clamp_s16(l * 48);
+    *right = snx_clamp_s16(r * 48);
 }
 
 void agb_apu_timer_overflow(AgbBoard* board, int timer, uint64_t at) {

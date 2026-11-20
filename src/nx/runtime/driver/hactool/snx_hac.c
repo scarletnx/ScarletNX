@@ -556,3 +556,188 @@ int snx_hac_fs_read_romfs(SnxHacFs *fs, uint64_t offset, void *buffer, size_t si
     }
     return storage_read(fs->romfs, fs->romfs_offset + offset, buffer, size) ? 0 : -1;
 }
+
+/* ------------------------------------------------------------------ an NCA as a plain one */
+
+#define PLAIN_CHUNK 0x400000u
+
+/* n bytes of file at offset to write through buffer (PLAIN_CHUNK bytes): 0, or -1 said */
+static int plain_copy(FILE *file, uint64_t offset, uint64_t n, unsigned char *buffer,
+                      int (*write)(const void *, size_t, void *), void *data) {
+    if (n && fseeko64(file, (int64_t)offset, SEEK_SET)) {
+        snx_hac_fprintf(stderr, "Cannot seek to 0x%"PRIx64" in the NCA's file\n", offset);
+        return -1;
+    }
+    while (n) {
+        size_t chunk = n < PLAIN_CHUNK ? (size_t)n : PLAIN_CHUNK;
+        if (fread(buffer, 1, chunk, file) != chunk) {
+            snx_hac_fprintf(stderr, "The NCA's file ends before its 0x%"PRIx64" bytes\n", offset);
+            return -1;
+        }
+        if (write(buffer, chunk, data)) {
+            snx_hac_fprintf(stderr, "Cannot write the plain NCA\n");
+            return -1;
+        }
+        n -= chunk;
+    }
+    return 0;
+}
+
+/* 1 when the 0xC00 bytes of a header are plain already as nca_decrypt_header tells one: a DNCA, or an NCA3 or NCA2
+   magic with the padding at 0x340 zero */
+static int plain_already(const unsigned char *raw) {
+    static const unsigned char zero[0xC0];
+    if (!memcmp(raw + 0x200, "DNCA", 4)) return 1;
+    return (!memcmp(raw + 0x200, "NCA3", 4) || !memcmp(raw + 0x200, "NCA2", 4)) && !memcmp(raw + 0x340, zero, 0xC0);
+}
+
+/* 0 when the keyset opens nca's sections (no key needed when each is unencrypted), else -1 said */
+static int plain_keys(SnxHac *hac, const nca_ctx_t *nca) {
+    static const unsigned char zero[0x10];
+    int generation = nca->header.crypto_type2 > nca->header.crypto_type ? nca->header.crypto_type2 : nca->header.crypto_type;
+    int rights = memcmp(nca->header.rights_id, zero, 0x10) != 0, encrypted = 0;
+    for (unsigned int i = 0; i < 4; i++)
+        encrypted |= nca->header.section_entries[i].media_start_offset && nca->header.fs_headers[i].crypt_type != CRYPT_NONE;
+    if (!encrypted) return 0;
+    if (generation) generation--;
+    if (rights && !settings_has_titlekey(&hac->tool.settings, nca->header.rights_id)) {
+        snx_hac_fprintf(stderr, "No title key for its rights ID: put its ticket (.tik) beside it, or its key in title.keys\n");
+        return -1;
+    }
+    if (generation >= 0x20 || !has_key(hac, nca, rights, generation)) {
+        snx_hac_fprintf(stderr, "prod.keys has no %s for master key %d\n", rights ? "titlekek" : "key area key", generation);
+        return -1;
+    }
+    return 0;
+}
+
+int snx_hac_plain(SnxHac *hac, FILE *file, uint64_t offset, uint64_t size, unsigned char *header,
+                  int (*write)(const void *, size_t, void *), void *data, int *plain) {
+    unsigned char raw[0xC00];
+    unsigned char *buffer = NULL;
+    hactool_ctx_t *tool = NULL;
+    nca_ctx_t *nca = NULL;
+    int rc = -1;
+    io.message[0] = 0;
+    if (plain) *plain = 0;
+    if (size < sizeof raw || fseeko64(file, (int64_t)offset, SEEK_SET) || fread(raw, 1, sizeof raw, file) != sizeof raw) {
+        snx_hac_fprintf(stderr, "The NCA is shorter than its 0xC00-byte header\n");
+        return -1;
+    }
+    if (plain_already(raw)) {
+        if (plain) *plain = 1;
+        if (!memcmp(raw + 0x200, "DNCA", 4)) memcpy(raw + 0x200, "NCA3", 4); /* the plain NCA3 it stands for */
+        if (header) memcpy(header, raw, sizeof raw);
+        if (!write) return 0;
+        if (!(buffer = malloc(PLAIN_CHUNK))) {
+            snx_hac_fprintf(stderr, "Out of memory\n");
+            return -1;
+        }
+        rc = write(raw, sizeof raw, data) ? (snx_hac_fprintf(stderr, "Cannot write the plain NCA\n"), -1)
+                                          : plain_copy(file, offset + sizeof raw, size - sizeof raw, buffer, write, data);
+        free(buffer);
+        return rc;
+    }
+    tool = calloc(1, sizeof *tool);
+    nca = calloc(1, sizeof *nca);
+    if (!tool || !nca) {
+        snx_hac_fprintf(stderr, "Out of memory\n");
+        goto done;
+    }
+    tool->settings = hac->tool.settings;
+    tool->action = 0;
+    nca_init(nca);
+    nca->tool_ctx = tool;
+    nca->file = file;
+    nca->base_offset = offset;
+    nca->file_size = (size_t)size;
+    if (!nca_decrypt_header(nca)) {
+        snx_hac_fprintf(stderr, "Its header cannot be decrypted: prod.keys' header_key is missing or wrong\n");
+        goto done;
+    }
+    if (nca->format_version != NCAVERSION_NCA3 && nca->format_version != NCAVERSION_NCA2) {
+        snx_hac_fprintf(stderr, "An NCA0, which has no plain form\n");
+        goto done;
+    }
+    for (unsigned int i = 0; i < 4; i++)
+        if (nca->header.section_entries[i].media_start_offset && nca->header.fs_headers[i].sparse_info.generation) {
+            snx_hac_fprintf(stderr, "Section %u is sparse, which has no plain form\n", i);
+            goto done;
+        }
+    if (plain_keys(hac, nca)) goto done;
+    if (header) {
+        nca_header_t copy = nca->header;
+        nca_header_swap(&copy); /* as the file has it */
+        memcpy(header, &copy, 0xC00);
+    }
+    if (!write) {
+        rc = 0;
+        goto done;
+    }
+    nca->raw_only = 1;
+    nca_process(nca); /* the header again, then each section's raw storage */
+    {
+        nca_header_t copy = nca->header;
+        uint64_t at = 0xC00;
+        nca_header_swap(&copy);
+        if (!(buffer = malloc(PLAIN_CHUNK))) {
+            snx_hac_fprintf(stderr, "Out of memory\n");
+            goto done;
+        }
+        if (write(&copy, 0xC00, data)) {
+            snx_hac_fprintf(stderr, "Cannot write the plain NCA\n");
+            goto done;
+        }
+        for (;;) { /* the sections in the order they lie, the bytes between them as they are */
+            nca_section_ctx_t *next = NULL;
+            for (unsigned int i = 0; i < 4; i++) {
+                nca_section_ctx_t *s = &nca->section_contexts[i];
+                if (s->is_present && s->offset >= at && (!next || s->offset < next->offset)) next = s;
+            }
+            uint64_t end = next ? next->offset : size;
+            if (end > size) end = size;
+            if (plain_copy(file, offset + at, end - at, buffer, write, data)) goto done;
+            at = end;
+            if (!next) break;
+            if (!next->raw_storage || next->size > size - next->offset) {
+                snx_hac_fprintf(stderr, "Section %"PRIu32" cannot be read\n", next->section_num);
+                goto done;
+            }
+            for (uint64_t done_bytes = 0; done_bytes < next->size;) {
+                uint64_t left = next->size - done_bytes;
+                size_t chunk = left < PLAIN_CHUNK ? (size_t)left : PLAIN_CHUNK;
+                if (!storage_read(next->raw_storage, done_bytes, buffer, chunk)) {
+                    snx_hac_fprintf(stderr, "Section %"PRIu32" cannot be read at 0x%"PRIx64"\n", next->section_num,
+                                    done_bytes);
+                    goto done;
+                }
+                if (write(buffer, chunk, data)) {
+                    snx_hac_fprintf(stderr, "Cannot write the plain NCA\n");
+                    goto done;
+                }
+                done_bytes += chunk;
+            }
+            at += next->size;
+        }
+    }
+    rc = 0;
+done:
+    if (nca) nca_free_section_contexts(nca);
+    if (nca) memset(nca, 0, sizeof *nca); /* its keys */
+    if (tool) memset(tool, 0, sizeof *tool);
+    free(nca);
+    free(tool);
+    free(buffer);
+    return rc;
+}
+
+int snx_hac_xci_info(SnxHac *hac, const unsigned char iv[16], const unsigned char plain[0x70], unsigned char out[0x70]) {
+    static const unsigned char zero[0x10];
+    aes_ctx_t *aes;
+    if (!memcmp(hac->tool.settings.keyset.xci_header_key, zero, 0x10)) return -1;
+    aes = new_aes_ctx(hac->tool.settings.keyset.xci_header_key, 0x10, AES_MODE_CBC);
+    aes_setiv(aes, iv, 0x10);
+    aes_encrypt(aes, out, plain, 0x70);
+    free_aes_ctx(aes);
+    return 0;
+}

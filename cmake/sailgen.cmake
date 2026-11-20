@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# sailgen (tools/sailgen/) generates the A64 instructions' LLVM emitters from the Sail of the Arm architecture in
-# src/common/cpu/aarch64/sail/ (sail-arm's, with the NX's fixups over it). It runs during the build, so a cross build
+# sailgen (tools/sailgen/) generates the A64 and AArch32 instructions' LLVM emitters from the Sail of the Arm
+# architecture in src/common/cpu/aarch64/sail/ and src/common/cpu/arm/sail/ (sail-arm's, with each system's fixups
+# over it). It runs during the build, so a cross build
 # also builds it for the machine doing the build, with that machine's C compiler (SNX_HOST_CC), as swipc.cmake does
 # for swipc
 include_guard(GLOBAL)
@@ -42,15 +43,36 @@ endif()
 # <target> its include root
 function(snx_sailgen_a64 target)
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(core "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h")
     set(backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h")
     set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     add_custom_command(OUTPUT "${out}/a64_sail.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${backend}" --profile "${profile}"
+        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${core}" --backend "${backend}"
+                --profile "${profile}"
                 -o "${out}/a64_sail.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${backend}" "${profile}"
+        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${core}" "${backend}" "${profile}"
         COMMENT "Generating the A64 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_sail.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a32(<target>): generates a32_sail.inc (the AArch32 subsets' emitters, sailgen's back end at its top) into
+# the build folder from a32.roots, a32.sail and arm.sail, with the architectures' a32.profile, and gives <target> its
+# include root
+function(snx_sailgen_a32 target)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(core "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h")
+    set(backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm_arm.h")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    add_custom_command(OUTPUT "${out}/a32_sail.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${core}" --backend "${backend}"
+                --profile "${dir}/a32.profile" -o "${out}/a32_sail.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${core}"
+                "${backend}"
+        COMMENT "Generating the AArch32 emitters from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a32_sail.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()

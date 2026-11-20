@@ -9,7 +9,7 @@ target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
 # the route list (loader/hook_routes.c): the symbols the hooks name, whose calls go through their dispatch slots
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hook_routes(snx_nx_module)
-add_library(snx_driver STATIC driver.c container.c extract.c game_name.c nros.c recompile.c setup.c toolchain.c mcp.c
+add_library(snx_driver STATIC driver.c container.c extract.c game_name.c fabricate.c nros.c pack.c recompile.c setup.c toolchain.c mcp.c
                               mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c ../../loader/relocate.c)
 set_target_properties(snx_driver PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(snx_driver PRIVATE
@@ -22,11 +22,6 @@ target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module
                                         Threads::Threads snx_build_info hactool_lib snx_yyjson snx_demangle snx_settings)
 if(WIN32)
     target_link_libraries(snx_driver PUBLIC advapi32)
-endif()
-if(APPLE)
-    # setup.c's weak snx_menu_language, the menu's (src/gui): ld64 refuses an undefined symbol, weak or not, unless
-    # told it is resolved at run time
-    target_link_options(snx_driver INTERFACE "LINKER:-U,_snx_menu_language")
 endif()
 if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx_driver PRIVATE SNX_WITH_RUNTIME)

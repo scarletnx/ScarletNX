@@ -179,7 +179,8 @@ static void fuzz(uint32_t seed) {
         } else if (op < 6) {
             char name[32];
             snprintf(name, sizeof name, "wait %u", fuzz_next(&s) % 8);
-            SNX_FIBER_ENTER(fuzz_next(&s) % SNX_FIBER_SLOTS, fuzz_next(&s) % SNX_FIBER_KINDS, name);
+            unsigned slot = fuzz_next(&s) % SNX_FIBER_SLOTS, kind = fuzz_next(&s) % SNX_FIBER_KINDS; /* in this order */
+            SNX_FIBER_ENTER(slot, kind, name);
         } else if (op == 6)
             SNX_FIBER_LEAVE();
         else if (op == 7)

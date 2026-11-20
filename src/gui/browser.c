@@ -407,6 +407,10 @@ char* gui_game_icon(const char* path) {
     if (!found && gui_game_program(path) && !snx_path_format(icon, sizeof icon, "%s/icon.png", folder) &&
         snx_is_file(icon))
         found = snx_strdup(icon);
+    /* an extracted game's folder listed with the dumps keeps its icon beside its exefs/, as -x lays one out */
+    if (!found && snx_extracted_game(path) && !snx_path_format(icon, sizeof icon, "%s/icon.jpg", path) &&
+        snx_is_file(icon))
+        found = snx_strdup(icon);
     free(folder);
     return found;
 }

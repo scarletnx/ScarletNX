@@ -48,6 +48,7 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_SAVES: return GUI_MENU_SAVES;
                 case GUI_LOG: return GUI_MENU_LOG;
                 case GUI_FOLDERS: return GUI_MENU_FOLDERS;
+                case GUI_PACK: return GUI_MENU_PACK;
                 case GUI_EXIT: menu->quit = true; break;
                 default: break;
             }
@@ -209,6 +210,9 @@ const char* gui_setting_description(const GuiMenu* menu) {
         case GUI_FOLDERS:
             return snx_tr(
                 "Where the app keeps each kind of its files, and the libraries: each folder opened or changed");
+        case GUI_PACK:
+            return snx_tr("Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an "
+                          "XCI whose NCAs are decrypted, which needs no keys to read");
         default: return "";
     }
 }

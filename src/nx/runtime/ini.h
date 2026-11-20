@@ -35,13 +35,15 @@ enum {
 #endif
 
 /* the systems a setting does something on, where not every one (settings.txt's only): one of these in flags, macOS
-   without iOS, Linux the kernel (Android too), arm64 Linux the same on arm64 (NCE's hosts, nce_host.h). On another
-   system the menus grey its row and say which (ini_only), and its value is read and written as anywhere */
+   without iOS, Linux the kernel (Android too), arm64 Linux the same on arm64 (NCE's hosts, nce_host.h), none for a
+   row of something ScarletNX does not offer, its help saying why. On another system the menus grey its row and say
+   which (ini_only), and its value is read and written as anywhere */
 #define INI_ONLY_MACOS       (1 << 8)
 #define INI_ONLY_WINDOWS     (2 << 8)
 #define INI_ONLY_ANDROID     (3 << 8)
 #define INI_ONLY_LINUX       (4 << 8)
 #define INI_ONLY_ARM64_LINUX (5 << 8)
+#define INI_ONLY_NONE        (6 << 8)
 #define INI_ONLY             (15 << 8)
 
 typedef struct IniOpt IniOpt;

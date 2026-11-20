@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
             list = 1;
         else if (!strcmp(argv[i], "--task") && i + 1 < argc) {
             unsigned t = 0, pl = 0;
-            if (sscanf(argv[++i], "%u,%i", &t, &pl) != 2) return 2;
+            if (sscanf(argv[++i], "%u,%u", &t, &pl) != 2) return 2;
             mesh_stage = ST_TS;
             mesh.threads = (u16)t;
             mesh.payload = (u16)pl;

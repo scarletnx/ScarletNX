@@ -10,7 +10,7 @@ if(BUILD_TESTING)
     set_target_properties(snx_test_nds_image PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     # the board without its CPU: the loader, memory, the registers, the BIOS, the ARM7's answers, the geometry engine
     add_executable(snx-test-nds-board "${PROJECT_SOURCE_DIR}/tests/nds_board.c")
-    target_link_libraries(snx-test-nds-board PRIVATE scarletnx-nds snx_test_nds_image)
+    target_link_libraries(snx-test-nds-board PRIVATE scarletnx-nds snx_test_nds_image snx_online snx_settings)
     target_compile_options(snx-test-nds-board PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-nds-board PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
     add_test(NAME nds_board COMMAND snx-test-nds-board)

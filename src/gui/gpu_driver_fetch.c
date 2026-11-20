@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.h. The repositories, a release's fields and which one is the latest, the newest-first order and
    the recommendation by model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); NX-Mali, FristOneRR's PanVK, radv-xclipse and the proprietary mark are ScarletNX's */
+   parseAdrenoModel); the Mali drivers, radv-xclipse and the proprietary mark are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -21,7 +21,17 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI, 3},
     {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE, 0}, /* its releases share one name */
     /* PanVK on kbase, its zips Add Driver's packages; its release names vary, its tags are the versions */
-    {"FristOneRR PanVK", "FristOneRR/FristOneRR-Panvk-Driver", 1, 0, GUI_DRIVER_MALI, 0}};
+    {"FristOneRR PanVK", "FristOneRR/FristOneRR-Panvk-Driver", 1, 0, GUI_DRIVER_MALI, 0},
+    /* the driver NX-Mali forks, recommended nowhere: it says Vulkan 1.1 (0.5.1), below the 1.2 a device needs */
+    {"MaliSX2", "bmdhacks/malisx2", 0, 0, GUI_DRIVER_MALI, 0},
+    /* Mesa's PanVK on kbase for every Mali from Bifrost v6 to v14, its adrenotools zip alone */
+    {"Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", 0, 0, GUI_DRIVER_MALI, 0},
+    /* PanVK for the Bifrost G52, G72 and G76; its zip for a PS2 emulator left out */
+    {"Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", 0, 0, GUI_DRIVER_MALI, 0},
+    /* PanVK for the G57 MC2 (Helio G99), test builds alone: the newest recommended, by its tag */
+    {"FourFectVK (G57)", "Noysz/panvk-g99-jm", 0, 1, GUI_DRIVER_MALI, 0},
+    /* PanVK for the G925 (Immortalis), its builds named by what each traces */
+    {"PanVK G925", "adesyaefull/panvk-kbase-android-g925", 0, 0, GUI_DRIVER_MALI, 0}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -105,12 +115,15 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
             yyjson_val* bytes = yyjson_obj_get(asset, "size");
             text_of(asset, "name", d->name, sizeof d->name);
             text_of(asset, "browser_download_url", d->url, sizeof d->url);
-            /* none to download: not listed; nor a .txt (a release's checksums or notes), no driver package; nor
-               radv-xclipse's -glibc- and -wayland- zips, for Linux and Bannerlator: its Android one has the version
-               right after its name */
-            if (!d->name[0] || strncmp(d->url, "https://", 8) || ends_nocase(d->name, ".txt") ||
+            /* none to download: not listed; nor a file Add Driver takes no package from, as it takes a zip (a
+               release's checksums and notes, MaliSX2's build for Linux); nor radv-xclipse's -glibc- and -wayland-
+               zips, for Linux and Bannerlator: its Android one has the version right after its name */
+            if (!d->name[0] || strncmp(d->url, "https://", 8) || !ends_nocase(d->name, ".zip") ||
                 (!strcmp(repo->path, "JimVulkan/radv-xclipse") &&
-                 (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))))
+                 (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))) ||
+                (!strcmp(repo->path, "zenithblue-oss/panvk-kbase-android") &&
+                 !ends_nocase(d->name, "-adrenotools.zip")) ||
+                (!strcmp(repo->path, "soulexit/panvk-bifrost-soulexit") && has_nocase(d->name, "-armsx2")))
                 continue;
             d->size = yyjson_is_num(bytes) && yyjson_get_num(bytes) > 0 ? (unsigned long long)yyjson_get_num(bytes) : 0;
             d->proprietary = gui_driver_proprietary(repo->path, d->name);
@@ -144,21 +157,27 @@ int gui_adreno_model(const char* gpu_name) {
     return *p && *p != ' ' ? 0 : model;
 }
 int gui_gpu_model(const char* gpu_name) {
-    static const char* const family[] = {"Mali-G", "Samsung Xclipse "};
-    for (int f = 0; f < 2; ++f) {
-        size_t n = strlen(family[f]);
+    /* each family's name and its models' base: an Immortalis is a Mali, named so where it leads */
+    static const struct {
+        const char* name;
+        int base;
+    } family[] = {{"Mali-G", 10000}, {"Immortalis-G", 10000}, {"Samsung Xclipse ", 20000}};
+    for (size_t f = 0; f < sizeof family / sizeof *family; ++f) {
+        size_t n = strlen(family[f].name);
         int model = 0;
-        if (strncmp(gpu_name, family[f], n)) continue;
+        if (strncmp(gpu_name, family[f].name, n)) continue;
         for (const char* p = gpu_name + n; snx_is_digit((unsigned char)*p) && model < 1000; ++p)
             model = model * 10 + (*p - '0');
-        return model ? (f + 1) * 10000 + model : 0;
+        return model ? family[f].base + model : 0;
     }
     return gui_adreno_model(gpu_name);
 }
 /* the picks by model (gui_gpu_model; Adreno's are Eden's, DriverFetcherFragment.kt), each as the repository its
    release is in and a part of that release's tag, NULL for the repository's latest. 605 to 613 have no multiview in
    hardware: EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. NX-Mali
-   says 1.3 only on its command-stream Malis; radv-xclipse drives every Xclipse so far, at 1.4 */
+   says 1.3 only on its command-stream Malis; Soulexit's PanVK is the Bifrost G52, G72 and G76's it builds for, and
+   each build for one Mali that Mali's; and Zenithblue's PanVK every other Mali's (a row after the others);
+   radv-xclipse drives every Xclipse so far, at 1.4 */
 static const struct {
     int lo, hi;
     const char *driver, *repo, *tag;
@@ -171,6 +190,12 @@ static const struct {
                      {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
                      {10610, 10615, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
                      {10710, 10715, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
+                     {10052, 10052, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
+                     {10072, 10072, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
+                     {10076, 10076, "Soulexit PanVK", "soulexit/panvk-bifrost-soulexit", NULL},
+                     {10057, 10057, "FourFectVK (G57)", "Noysz/panvk-g99-jm", "fourfectvk-g57"},
+                     {10925, 10925, "PanVK G925", "adesyaefull/panvk-kbase-android-g925", NULL},
+                     {10001, 10999, "Zenithblue PanVK", "zenithblue-oss/panvk-kbase-android", NULL},
                      {20530, 20550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
                      {20920, 20960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
 const char* gui_driver_recommended(int model) {

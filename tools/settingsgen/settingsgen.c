@@ -414,9 +414,9 @@ static void add_help(char** help, const char* text) {
 
 /* an only line's system as the flag ini.h has for it (" | INI_ONLY_MACOS"), NULL for a word that is none */
 static const char* only_of(const char* word) {
-    static const char* const systems[][2] = {{"macos", "INI_ONLY_MACOS"},   {"windows", "INI_ONLY_WINDOWS"},
-                                             {"android", "INI_ONLY_ANDROID"}, {"linux", "INI_ONLY_LINUX"},
-                                             {"arm64-linux", "INI_ONLY_ARM64_LINUX"}};
+    static const char* const systems[][2] = {
+        {"macos", "INI_ONLY_MACOS"}, {"windows", "INI_ONLY_WINDOWS"},         {"android", "INI_ONLY_ANDROID"},
+        {"linux", "INI_ONLY_LINUX"}, {"arm64-linux", "INI_ONLY_ARM64_LINUX"}, {"none", "INI_ONLY_NONE"}};
     size_t i;
     for (i = 0; i < sizeof systems / sizeof *systems; i++)
         if (!strcmp(word, systems[i][0])) return systems[i][1];
@@ -480,12 +480,6 @@ static void read_spec(const char* path) {
             if (repeat < 1 || repeat > 64) fail(number, "repeat N takes 1 to 64");
             in_repeat = 1;
             blocks++;
-            s = NULL;
-            o = NULL;
-        } else if (!strcmp(word, "end")) {
-            if (!in_repeat) fail(number, "end without a repeat");
-            in_repeat = 0;
-            repeat = 0;
             s = NULL;
             o = NULL;
         } else if (!strcmp(word, "section")) {
@@ -575,7 +569,8 @@ static void read_spec(const char* path) {
             s->def_if_value[s->def_ifs++] = dup(strcmp(rest, "\"\"") ? rest : "");
         } else if (!strcmp(word, "only")) {
             s->only = only_of(rest);
-            if (!s->only) fail(number, "only %s: the systems are macos, windows, android, linux and arm64-linux", rest);
+            if (!s->only)
+                fail(number, "only %s: the systems are macos, windows, android, linux, arm64-linux and none", rest);
         } else if (!strcmp(word, "once")) {
             s->once = 1;
         } else if (!strcmp(word, "words")) {

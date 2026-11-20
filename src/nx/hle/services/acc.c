@@ -606,13 +606,13 @@ static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, c
         snprintf(note, sizeof note, "%s" SNX_SAVE_NOTE, saves[i]);
         if (snx_is_file(note)) {
             char* to = snx_format("%s" SNX_SAVE_NOTE, place);
-            n = !to || acc_trash_move(note, to, done, &moved);
-            if (n)
+            int failed = !to || acc_trash_move(note, to, done, &moved); /* n counts the saves: not it */
+            if (failed)
                 WARN("acc: user %d is not deleted: %s could not be moved to %s; the game sees those saves again at its "
                      "next start\n",
                      number, note, to ? to : trash);
             free(to);
-            if (n) {
+            if (failed) {
                 free(place);
                 goto back;
             }

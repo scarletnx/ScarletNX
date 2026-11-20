@@ -240,6 +240,10 @@ void nds_pxi_request(NdsBoard* board, uint32_t word);
 void nds_pxi_line(NdsBoard* board, unsigned line);
 /* the sound driver's tick is due (NDS_EVENT_SOUND) */
 void nds_pxi_tick(NdsBoard* board);
+/* The firmware's first Wi-Fi connection set to the network NDS_WFC_NETWORK, its DNS servers both dns, as a player
+   sets a WFC service's on the console: true, or false with why */
+#define NDS_WFC_NETWORK "ScarletNX"
+bool nds_pxi_wfc(NdsBoard* board, const uint8_t dns[4], char* why, size_t size);
 /* a word from the ARM7 into the FIFO the game reads */
 void nds_ipc_reply(NdsBoard* board, uint32_t word);
 #endif

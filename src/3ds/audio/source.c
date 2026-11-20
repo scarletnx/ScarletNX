@@ -28,9 +28,10 @@ static int16_t (*decode_adpcm(const uint8_t* data, size_t sample_count, const in
         for (size_t i = 0; i < 14 && outputi < sample_count; i += 2) {
             for (unsigned half = 0; half < 2; ++half) {
                 int nibble = signed_nibbles[half ? data[datai] & 0xf : data[datai] >> 4];
-                /* y[n] = x[n] + 0.5 + c1 * y[n-1] + c2 * y[n-2], in 11-bit fixed point */
-                int val = (nibble * scale * 2048 + 0x400 + coef1 * yn1 + coef2 * yn2) >> 11;
-                val = val < -32768 ? -32768 : val > 32767 ? 32767 : val;
+                /* y[n] = x[n] + 0.5 + c1 * y[n-1] + c2 * y[n-2], in 11-bit fixed point: a stream's coefficients are
+                   any 16 bits, and two products of 2^30 with the sample's 2^29 pass 32 */
+                int64_t sum = (int64_t)nibble * scale * 2048 + 0x400 + (int64_t)coef1 * yn1 + (int64_t)coef2 * yn2;
+                int val = snx_clamp_s16((int64_t)snx_asr64((uint64_t)sum, 11));
                 yn2 = yn1;
                 yn1 = val;
                 ret[outputi][0] = ret[outputi][1] = (int16_t)val;
@@ -165,7 +166,8 @@ static void filters_process(DspFilters* f, DspFrame frame) {
         for (unsigned n = 0; n < SNX_CTR_DSP_SAMPLES; ++n) {
             /* H(z) = b0 / (1 - a1 z^-1), 15 fractional bits */
             for (unsigned c = 0; c < 2; ++c)
-                frame[n][c] = snx_clamp_s16((f->simple_b0 * frame[n][c] + f->simple_a1 * f->simple_y1[c]) >> 15);
+                frame[n][c] = snx_clamp_s16(
+                    ((int64_t)f->simple_b0 * frame[n][c] + (int64_t)f->simple_a1 * f->simple_y1[c]) >> 15);
             memcpy(f->simple_y1, frame[n], sizeof f->simple_y1);
         }
     if (f->biquad_enabled)
@@ -173,9 +175,10 @@ static void filters_process(DspFilters* f, DspFrame frame) {
             int16_t y0[2];
             /* H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 - a1 z^-1 - a2 z^-2), 14 fractional bits */
             for (unsigned c = 0; c < 2; ++c)
-                y0[c] = snx_clamp_s16(
-                    (f->b0 * frame[n][c] + f->b1 * f->x1[c] + f->b2 * f->x2[c] + f->a1 * f->y1[c] + f->a2 * f->y2[c]) >>
-                    14);
+                y0[c] = snx_clamp_s16((int64_t)snx_asr64(
+                    (uint64_t)((int64_t)f->b0 * frame[n][c] + (int64_t)f->b1 * f->x1[c] + (int64_t)f->b2 * f->x2[c] +
+                               (int64_t)f->a1 * f->y1[c] + (int64_t)f->a2 * f->y2[c]),
+                    14)); /* five products of 2^30 */
             memcpy(f->x2, f->x1, sizeof f->x2);
             memcpy(f->x1, frame[n], sizeof f->x1);
             memcpy(f->y2, f->y1, sizeof f->y2);

@@ -117,9 +117,9 @@ the game's image read from that image.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
   `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose
-  registers' loads and stores, the scalar floating point and the SIMD integer ops of one element per lane
-  `tools/sailgen` generates from the Arm architecture's Sail (`src/common/cpu/aarch64/sail/`), emit each op of the
-  generated decoder, `ir_codegen.c` the functions of `codegen.c`,
+  registers' loads and stores, the scalar floating point and the SIMD integer ops of one element per lane, the
+  pairwise ones and those across lanes `tools/sailgen` generates from the Arm architecture's Sail
+  (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`,
   and `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`, `link_macho.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
   with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF on Windows, or on macOS and iOS a Mach-O dylib

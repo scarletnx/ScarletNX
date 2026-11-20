@@ -1316,6 +1316,7 @@ static int rom_dir_next(CPU* c, NDir* d, u64 out) {
         e = d->next_file;
         d->next_file = rom_file_field(rm, e, 1);
         is_dir = 0;
+        if ((u64)e + ROM_FILE_FIXED > rm->files_size) return 0; /* an entry the table does not hold: no file */
         size = rom_file_u64(rm, e, 16);
     } else
         return 0;

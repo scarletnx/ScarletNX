@@ -40,7 +40,6 @@ static bool more_has(const App* app, const char* key, const char* label) {
 static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, red = {255, 0, 0, 255},
                        pink = {255, 85, 255, 255}, black = {0, 0, 0, 255};
 
-/* the question's box and its choices, as the theme places them (ask_place) */
 /* the file Share Log's message names ("<file> is in <folder>, opened", or "; " and why it did not open), owned; NULL
    for none */
 static char* shared_path(const App* app) {
@@ -92,6 +91,7 @@ static char* console_in(const char* folder) {
     gui_log_console_name(name, sizeof name);
     return snx_path_join(folder, name);
 }
+/* the question's box and its choices, as the theme places them (ask_place) */
 static void ask_boxes(App* app, GuiRect* r, GuiChoices* choices) {
     ask_place(app, choices);
     *r = choices->box;
@@ -103,7 +103,6 @@ static void key(App* app, SDL_Keycode code) {
     assert(SDL_PushEvent(&e));
     while (SDL_PollEvent(&e)) event(app, &e);
 }
-/* a finger down at pixel x, y of the render and lifted at to_x, to_y, as SDL gives it: 0 to 1 across the window */
 /* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder. The box
    says what the zip and the log each take before either goes: the zip holds every game played in GUI_LOG_DAYS days */
 static void share_pick(App* app, int i) {
@@ -166,6 +165,7 @@ static bool refuse_url(const char* url) {
     (void)url;
     return SDL_SetError("no file manager here");
 }
+/* a finger down at pixel x, y of the render and lifted at to_x, to_y, as SDL gives it: 0 to 1 across the window */
 static void swipe_px(App* app, int x, int y, int to_x, int to_y) {
     SDL_Event e = {0};
     float wx, wy;
@@ -4833,9 +4833,6 @@ static void compile_first(App* app, const char* dir) {
     free(got);
     free(dump);
 }
-/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most; whether it was.
-   Windows refuses the removal while the test still has the file open, and a file left there would be the next wait's
-   step too */
 /* whether argv (a string a line, as ran gives it) gives the driver --update and dump */
 static bool updates_with(const char* argv, const char* dump) {
     char* pair = snx_format("--update\n%s\n", dump);
@@ -5141,6 +5138,9 @@ static void relist_keeps_scroll(App* app, const char* dir) {
     free(cache);
     free(cache_was);
 }
+/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most; whether it was.
+   Windows refuses the removal while the test still has the file open, and a file left there would be the next wait's
+   step too */
 static bool wait_taken(const char* path) {
     for (int n = 0; n < 2000; ++n) {
         if (snx_is_file(path) && !remove(path)) return true;
@@ -6719,6 +6719,24 @@ int main(int argc, char** argv) {
         free(home);
     }
 #endif
+    key(&app, SDLK_RIGHT);
+    /* Pack extracted as dXCI/dNSP, after the keys: the folder picked asks NSP or XCI, NSP in focus; Back packs
+       nothing, and no folder says so */
+    assert(app.menu.selected == GUI_PACK);
+    pack_picked(&app, "/nowhere/Game NCAs", NULL, false);
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_PACK && !app.confirm.selected && app.pack_folder);
+    assert(strstr(ask_question(&app), "/nowhere/Game NCAs") != NULL);
+    render(&app);
+    key(&app, SDLK_ESCAPE);
+    assert(!app.confirm.shown && !app.pack_folder && !app.menu.running);
+    pack_picked(&app, NULL, NULL, false);
+    assert(strstr(app.message, "No folder was picked") != NULL && !app.confirm.shown);
+    pack_picked(&app, NULL, "no portal", true);
+    assert(strstr(app.message, "could not open: no portal") != NULL); /* said whole in the box of failures too */
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && strstr(app.error_line, "no portal"));
+    key(&app, SDLK_RETURN);
+    assert(!app.confirm.shown);
+    app.message[0] = 0;
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_SETTINGS);
     /* the keys screen's line for what it could not install stays in the tips once the menu is back (GUI_KEYS_FAILED_MS)
@@ -9518,7 +9536,8 @@ int main(int argc, char** argv) {
             app.groups = 0;
         }
     }
-    key(&app, SDLK_UP);
+    key(&app, SDLK_UP); /* Pack extracted as dXCI/dNSP, then the keys and the loads */
+    key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);

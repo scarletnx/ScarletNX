@@ -192,38 +192,49 @@ def ncsd(game=None, update=None, media_size=None, patch=None):
     return bytes(header + body)
 
 
-def z3ds(blob, patch_header=None):
+def z3ds(blob, patch_header=None, frames=1):
     """A z3ds file of blob, as Azahar's launcher keeps one: the 0x20-byte header, then the game as a zstd seekable
-    stream, its seek table after the frame as the skippable frame the format's footer is."""
+    stream, its seek table after the frames as the skippable frame the format's footer is. The game goes in that
+    many frames of one size (the last the rest), as the writer cuts a game larger than a frame holds."""
     zstd = shutil.which('zstd')
     assert zstd, 'the zstd CLI is not on PATH'
-    run = subprocess.run([zstd, '-q', '-c'], input=blob, capture_output=True, env={**os.environ, 'ZSTD_CLEVEL': '1'})
-    assert run.returncode == 0, run.stderr
-    frames = run.stdout
+    step = max(-(-len(blob) // frames), 1)
+    parts = [blob[at : at + step] for at in range(0, max(len(blob), 1), step)]
+    assert len(parts) == frames, f'{len(blob)} bytes do not make {frames} frames'
+    stream, env = b'', {**os.environ, 'ZSTD_CLEVEL': '1'}
+    for part in parts:
+        run = subprocess.run([zstd, '-q', '-c'], input=part, capture_output=True, env=env)
+        assert run.returncode == 0, run.stderr
+        stream += run.stdout
     header = bytearray(0x20)
     header[0:4] = b'Z3DS'
     header[8] = 1  # the version, reserved after it
     put(header, 0xA, '<H', 0x20)  # the header's own size
     put(header, 0xC, '<I', 0)  # no metadata
-    put(header, 0x10, '<Q', len(frames))
-    put(header, 0x18, '<Q', len(blob))
-    table = struct.pack('<III', 1, len(blob), 1) + struct.pack('<I', 0x8F92EAB1)
+    table = b''.join(struct.pack('<III', 1, len(part), 1) for part in parts) + struct.pack('<I', 0x8F92EAB1)
     footer = struct.pack('<II', 0x184D2A5E, len(table)) + table
     # the header's compressed size is the stream's whole, the seek table's footer with it, as Azahar's writer counts it
-    put(header, 0x10, '<Q', len(frames) + len(footer))
+    put(header, 0x10, '<Q', len(stream) + len(footer))
+    put(header, 0x18, '<Q', len(blob))
     if patch_header:
         patch_header(header)
-    return bytes(header) + frames + footer
+    return bytes(header) + stream + footer
 
 
 def tar(*entries, patch=None):
     """A tar bundle, what Azahar's .bcci/.bcxi/.bcia is: ustar headers of 512 bytes, each entry's data after its
-    header rounded to 512, two zero blocks at the end, every header's checksum set."""
+    header rounded to 512, two zero blocks at the end, every header's checksum set. A name over 100 bytes goes as
+    ustar keeps one: its folders in the prefix field, what follows the last '/' in the name field."""
     out = bytearray()
     for name, blob in entries:
         h = bytearray(512)
-        n = name.encode()[:100]
+        prefix, n = b'', name.encode()
+        if len(n) > 100:
+            prefix, _, n = n.rpartition(b'/')
+            assert 0 < len(prefix) <= 155 and len(n) <= 100, name
+        n = n[:100]
         h[: len(n)] = n
+        h[345 : 345 + len(prefix)] = prefix
         h[100:108] = b'0000644\0'
         h[108:116] = h[116:124] = b'0000000\0'
         h[124:136] = f'{len(blob):011o}\0'.encode()

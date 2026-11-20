@@ -17,6 +17,9 @@ int main(void) {
         {0xe1cf00d8, SNX_A32_EXTRA},
         {0xe8bd8001, SNX_A32_MULTIPLE},
         {0xe12fff3e, SNX_A32_BX},
+        {0xe12fff1f, SNX_A32_BX},        /* BX pc: to the PC, in A32 */
+        {0xe12fff3f, SNX_A32_UNDEFINED}, /* BLX pc: UNPREDICTABLE */
+        {0xe080f211, SNX_A32_UNDEFINED}, /* ADD pc, r0, r1, LSL r2: a register-shifted register's Rd the PC */
         {0xfafffffe, SNX_A32_BLX_IMM},
         {0xe16f3f12, SNX_A32_CLZ},
         {0xe6bf3f32, SNX_A32_REV},

@@ -103,6 +103,13 @@ int64_t plat_pread(FILE* f, void* buf, uint64_t size, uint64_t off) {
     return plat_pread_fd(fileno(f), buf, size, off);
 #endif
 }
+int64_t plat_pwrite(FILE* f, const void* buf, uint64_t size, uint64_t off) {
+#if defined(_WIN32)
+    return plat_pwrite_fd(_fileno(f), buf, size, off);
+#else
+    return plat_pwrite_fd(fileno(f), buf, size, off);
+#endif
+}
 
 #if defined(_WIN32)
 int plat_is_dir(const char* path) {

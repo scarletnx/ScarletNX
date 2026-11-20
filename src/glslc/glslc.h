@@ -42,6 +42,7 @@
 #define SNX_GLSLC_MAX_SCOPES       64u     /* scopes nested in each other */
 #define SNX_GLSLC_MAX_WORDS        262144u /* words of SPIR-V the module may have */
 #define SNX_GLSLC_MAX_REFLECT      256u    /* entries of GlslcResult.reflect */
+#define SNX_GLSLC_MAX_BOOLS        256u    /* entries of GlslcResult.bools */
 
 typedef enum { SNX_GLSLC_VERTEX = 0, SNX_GLSLC_FRAGMENT = 1, SNX_GLSLC_COMPUTE = 2 } GlslcStage;
 
@@ -92,10 +93,16 @@ typedef struct {
     uint16_t version;      /* the GLSL ES version compiled: 100, 300, 310 or 320 */
     uint16_t warnings;     /* how many warnings there were; warning holds the first */
     uint16_t reflect_count;
-    uint16_t pad;
+    uint16_t bool_count;
     char error[256];   /* the error, "" when the compilation worked */
     char warning[256]; /* the first warning, "" without one */
     GlslcReflect reflect[SNX_GLSLC_MAX_REFLECT];
+    /* The members of the module's laid-out structs (a block's, the default uniform block's, a struct's in them) that
+       hold a GLSL bool, a bvec or an array of them, which memory keeps as 32-bit unsigned integers: each the struct's
+       SPIR-V id and the member's index, for a backend that reads the module's types and says a bool uniform is one */
+    struct {
+        uint32_t type, member;
+    } bools[SNX_GLSLC_MAX_BOOLS];
 } GlslcResult;
 
 /* A sampler, image or block as the backend's binding map sees it, in the order the shader declares them */
@@ -114,6 +121,20 @@ typedef struct {
    to refuse the shader. Two resources at one set and binding are an error */
 typedef int (*GlslcBindFn)(void* user, const GlslcResource* resource, uint32_t* set, uint32_t* binding);
 
+/* How the shader reads a uniform block, as a backend that binds them as a translator binds a GPU's constant buffers
+   wants (GlslcBlockFn's answer) */
+enum {
+    SNX_GLSLC_BLOCK_UNIFORM = 0, /* a uniform buffer that holds the block from its start */
+    SNX_GLSLC_BLOCK_STORAGE = 1, /* a read-only storage buffer of the same layout */
+    /* a window: a uniform buffer of up to 64 KiB that holds the block's bytes at an offset, in 16-byte units, that the
+       shader reads from the 16 bits of its push constants from *offset_bit on (a multiple of 16). The block takes no
+       more than 65536 bytes */
+    SNX_GLSLC_BLOCK_WINDOW = 2
+};
+/* The backend's map of how each uniform block it placed (the default one too, with map_default) is read: one of
+   SNX_GLSLC_BLOCK_*, with a window's *offset_bit. Any other answer refuses the shader, saying it */
+typedef int (*GlslcBlockFn)(void* user, uint32_t set, uint32_t binding, uint32_t* offset_bit);
+
 typedef struct {
     GlslcStage stage;
     /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0. The default
@@ -127,6 +148,15 @@ typedef struct {
        flip.w, flip a vec4 at offset 0 of a push constant block. A backend that draws a framebuffer with a negative
        viewport height (GL's origin) gives (-1, height, 1, 0) there, and (1, 0, -1, 1) for one drawn upright */
     int flip_y;
+    /* nonzero: the shader is a desktop OpenGL context's, so it may also be desktop GLSL: #version 110 and 120 compile
+       as GLSL ES 1.00 (120 with the f suffix), 330 and 330 core as GLSL ES 3.00, and no #version as 110. Such a
+       shader has no GL_ES macro, __VERSION__ is its own version, and every type is highp by default in every stage,
+       as desktop GLSL has no precision of its own. GLSL ES versions compile as they are */
+    int desktop;
+    /* NULL: each uniform block a uniform buffer that holds it from its start. Else how each one bind placed is read,
+       bind_user its first argument. A shader with a window reads its offsets from push constants, and so takes no
+       flip_y that reads gl_FragCoord or gl_PointCoord */
+    GlslcBlockFn block;
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing

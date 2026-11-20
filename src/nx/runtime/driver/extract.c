@@ -279,8 +279,6 @@ static void control_nacp(ExtractState* state) {
     free(to);
 }
 
-/* A DLC's RomFS image as aoc:u and OpenDataStorageByDataId find it, <out>/system/archives/<its title ID>.romfs:
-   written beside it, then moved over it */
 /* the game's icon beside control.nacp, icon.jpg, which Games shows on its row: the Control NCA's, a JPEG. A game
    without one shows none there, a line saying why */
 static void control_icon(ExtractState* state) {
@@ -297,6 +295,8 @@ static void control_icon(ExtractState* state) {
     free(icon);
     free(to);
 }
+/* A DLC's RomFS image as aoc:u and OpenDataStorageByDataId find it, <out>/system/archives/<its title ID>.romfs:
+   written beside it, then moved over it */
 static int extract_aoc(ExtractState* state) {
     const SnxNcaRef* aoc = &state->dump.aoc;
     char text[17], *folder = snx_path_join(state->out, "system/archives"), *name, *path = NULL, *tmp = NULL;

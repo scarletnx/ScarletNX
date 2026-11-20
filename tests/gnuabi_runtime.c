@@ -290,6 +290,15 @@ int main(int argc, char** argv) {
     bytes[4] = 3;
     CHECK(gnu_elf_load_image(&p->elf, &p->memory, bytes, sizeof bytes, error, sizeof error) < 0);
     CHECK(!strcmp(error, "ELF class 3 is neither 1 (32-bit) nor 2 (64-bit)"));
+    /* a 64-bit image that ends inside its header: no field past its end is read (in a block of its own size, which
+       the sanitizers' build watches the end of) */
+    executable(bytes, 2);
+    unsigned char* cut = malloc(57);
+    CHECK(cut != NULL);
+    memcpy(cut, bytes, 57);
+    CHECK(gnu_elf_load_image(&p->elf, &p->memory, cut, 57, error, sizeof error) < 0);
+    CHECK(!strcmp(error, "A 64-bit ELF of 57 bytes is shorter than its header's 64"));
+    free(cut);
     executable(bytes, 2);
     put16(bytes + 56, 2); /* PT_LOAD, then PT_INTERP */
     put32(bytes + 120, 3);

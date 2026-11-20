@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
+#include "common/filesystem/romfs_layout.h"
 #include "nx/runtime/driver/container.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/mods.h"
@@ -660,33 +661,9 @@ int fs_sd_write_new(const char* dir, const char* name, const void* data, u64 siz
     return (int)r;
 }
 
-/* The RomFS image's layout (Switchbrew's "RomFS"; the hash and bucket count as Eden's fsmitm_romfsbuild): a header of
-   ten u64s, then the directory hash table, the directory table, the file hash table and the file table, padded to
-   0x200, then the file data. Table entries refer to each other by their offset in their table */
-#define ROM_NONE      0xFFFFFFFFu
-#define ROM_DIR_ENTRY 0x18 /* parent, sibling, first child, first file, next in bucket, name length; the name */
-#define ROM_FILE_ENTRY                                                                                                 \
-    0x20 /* parent, sibling, u64 data offset, u64 size, next in bucket, name length; the name */
+/* The RomFS image's layout: common/filesystem/romfs_layout.h */
 static void put32(u8* p, u32 v) { snx_st_le32(p, v); } /* the image is the guest's: little-endian */
 static void put64(u8* p, u64 v) { snx_st_le64(p, v); }
-/* the bucket of an entry named name in the directory at table offset parent. The name's bytes count unsigned */
-/* The format fixes both the seed (the parent's offset xor 123456789) and the step (rotate right by 5, then xor in the
-   next byte): the game's own tables were built with it */
-static u32 rhash(u32 parent, const char* name) {
-    u32 h = parent ^ 123456789u;
-    const unsigned char* p;
-    for (p = (const unsigned char*)name; *p; p++) h = ((h >> 5) | (h << 27)) ^ *p;
-    return h;
-}
-/* the buckets of a hash table for n entries */
-static u32 hcount(u32 n) {
-    u32 c = n;
-    if (n < 3) return 3;
-    if (n < 19) return n | 1;
-    while (c % 2 == 0 || c % 3 == 0 || c % 5 == 0 || c % 7 == 0 || c % 11 == 0 || c % 13 == 0 || c % 17 == 0) c++;
-    return c;
-}
-static u64 entry_size(u32 fixed, const char* name) { return fixed + ((strlen(name) + 3) & ~(size_t)3); }
 /* A folder or file of the RomFS while its image is laid out: the game's, from the romfs/ folder (node) or from its own
    image (at base in it), or a mod's laid over it. Children in strcmp order, as the index keeps them */
 typedef struct RNode {
@@ -755,11 +732,11 @@ static void scan(const RNode* dir, u32* ndirs, u32* nfiles, u64* dir_bytes, u64*
         if (*ndirs >= INT32_MAX || *nfiles >= INT32_MAX) fatal("RomFS: too many entries in romfs/\n");
         if (c->is_dir) {
             ++*ndirs;
-            *dir_bytes += entry_size(ROM_DIR_ENTRY, c->name);
+            *dir_bytes += snx_romfs_entry_size(SNX_ROMFS_DIR_ENTRY, c->name);
             scan(c, ndirs, nfiles, dir_bytes, file_bytes);
         } else {
             ++*nfiles;
-            *file_bytes += entry_size(ROM_FILE_ENTRY, c->name);
+            *file_bytes += snx_romfs_entry_size(SNX_ROMFS_FILE_ENTRY, c->name);
         }
     }
 }
@@ -777,13 +754,14 @@ typedef struct {
    the next file) */
 static void romfs_build(const RNode* dir, const char* what) {
     u32 ndirs = 1, nfiles = 0, i, nd, nf, dbuckets, fbuckets;
-    u64 dir_bytes = ROM_DIR_ENTRY, file_bytes = 0, dhash, dtab, fhash, ftab, end, data = 0;
+    u64 dir_bytes = SNX_ROMFS_DIR_ENTRY, file_bytes = 0, dhash, dtab, fhash, ftab, end, data = 0;
     RDir* dirs;
     u8* m;
     scan(dir, &ndirs, &nfiles, &dir_bytes, &file_bytes);
-    if (dir_bytes >= ROM_NONE || file_bytes >= ROM_NONE) fatal("RomFS: the tables of romfs/ are too large\n");
-    dbuckets = hcount(ndirs);
-    fbuckets = hcount(nfiles);
+    if (dir_bytes >= SNX_ROMFS_NONE || file_bytes >= SNX_ROMFS_NONE)
+        fatal("RomFS: the tables of romfs/ are too large\n");
+    dbuckets = snx_romfs_buckets(ndirs);
+    fbuckets = snx_romfs_buckets(nfiles);
     dhash = 0x50;
     dtab = dhash + (u64)dbuckets * 4;
     fhash = dtab + dir_bytes;
@@ -805,18 +783,18 @@ static void romfs_build(const RNode* dir, const char* what) {
     dirs[0].off = 0;
     nd = 1;
     {
-        u32 off = ROM_DIR_ENTRY;
+        u32 off = SNX_ROMFS_DIR_ENTRY;
         for (i = 0; i < nd; i++) {
             const RNode* c;
-            dirs[i].child = dirs[i].file = ROM_NONE;
+            dirs[i].child = dirs[i].file = SNX_ROMFS_NONE;
             for (c = dirs[i].node->children; c; c = c->next) {
                 if (!c->is_dir) continue;
-                if (dirs[i].child == ROM_NONE) dirs[i].child = off;
+                if (dirs[i].child == SNX_ROMFS_NONE) dirs[i].child = off;
                 dirs[nd].node = c;
                 dirs[nd].parent = i;
                 dirs[nd].off = off;
                 nd++;
-                off += (u32)entry_size(ROM_DIR_ENTRY, c->name);
+                off += (u32)snx_romfs_entry_size(SNX_ROMFS_DIR_ENTRY, c->name);
             }
         }
     }
@@ -831,19 +809,19 @@ static void romfs_build(const RNode* dir, const char* what) {
                 u32 len = (u32)strlen(c->name), b;
                 if (c->is_dir) continue;
                 if (e) put32(e + 4, off); /* the previous file's sibling */
-                if (dirs[i].file == ROM_NONE) dirs[i].file = off;
+                if (dirs[i].file == SNX_ROMFS_NONE) dirs[i].file = off;
                 data = (data + 15) & ~(u64)15;
                 if (data > (u64)INT64_MAX - c->size) fatal("RomFS: romfs/ is too large\n");
                 e = m + ftab + off;
                 put32(e, dirs[i].off);
-                put32(e + 4, ROM_NONE);
+                put32(e + 4, SNX_ROMFS_NONE);
                 put64(e + 8, data);
                 put64(e + 16, c->size);
-                b = rhash(dirs[i].off, c->name) % fbuckets;
+                b = snx_romfs_hash(dirs[i].off, c->name) % fbuckets;
                 memcpy(e + 24, m + fhash + (u64)b * 4, 4);
                 put32(m + fhash + (u64)b * 4, off);
                 put32(e + 28, len);
-                memcpy(e + ROM_FILE_ENTRY, c->name, len);
+                memcpy(e + SNX_ROMFS_FILE_ENTRY, c->name, len);
                 g_hle.fs.rfiles[nf].node = c->node;
                 g_hle.fs.rfiles[nf].base = c->base;
                 g_hle.fs.rfiles[nf].size = c->size;
@@ -853,7 +831,7 @@ static void romfs_build(const RNode* dir, const char* what) {
                 if (c->node) fs_tree_retain(c->node);
                 nf++;
                 data += c->size;
-                off += (u32)entry_size(ROM_FILE_ENTRY, c->name);
+                off += (u32)snx_romfs_entry_size(SNX_ROMFS_FILE_ENTRY, c->name);
             }
         }
     }
@@ -864,14 +842,14 @@ static void romfs_build(const RNode* dir, const char* what) {
         u32 len = (u32)strlen(name), b, parent = dirs[dirs[i].parent].off;
         int last = i + 1 == nd || dirs[i + 1].parent != dirs[i].parent || !i;
         put32(e, parent);
-        put32(e + 4, last ? ROM_NONE : dirs[i + 1].off);
+        put32(e + 4, last ? SNX_ROMFS_NONE : dirs[i + 1].off);
         put32(e + 8, dirs[i].child);
         put32(e + 12, dirs[i].file);
-        b = rhash(parent, name) % dbuckets;
+        b = snx_romfs_hash(parent, name) % dbuckets;
         memcpy(e + 16, m + dhash + (u64)b * 4, 4);
         put32(m + dhash + (u64)b * 4, dirs[i].off);
         put32(e + 20, len);
-        memcpy(e + ROM_DIR_ENTRY, name, len);
+        memcpy(e + SNX_ROMFS_DIR_ENTRY, name, len);
     }
     free(dirs);
 
@@ -956,20 +934,21 @@ static char* image_name(const u8* p, u32 length) {
 static int image_dir(RImage* im, u32 off, RNode* into, unsigned depth) {
     u32 child, file;
     RNode* last = NULL;
-    if (depth > ROM_DEPTH_MAX || (u64)off + ROM_DIR_ENTRY > im->dir_bytes) return -1;
+    if (depth > ROM_DEPTH_MAX || (u64)off + SNX_ROMFS_DIR_ENTRY > im->dir_bytes) return -1;
     child = snx_ld_le32(im->dirs + off + 8);
     file = snx_ld_le32(im->dirs + off + 12);
-    while (file != ROM_NONE) {
+    while (file != SNX_ROMFS_NONE) {
         const u8* e = im->files + file;
         u64 at, size;
         u32 length;
         char* name;
         RNode* n;
-        if (!im->files_left-- || (u64)file + ROM_FILE_ENTRY > im->file_bytes) return -1;
+        if (!im->files_left-- || (u64)file + SNX_ROMFS_FILE_ENTRY > im->file_bytes) return -1;
         length = snx_ld_le32(e + 28);
         at = snx_ld_le64(e + 8);
         size = snx_ld_le64(e + 16);
-        if (length > im->file_bytes - file - ROM_FILE_ENTRY || !(name = image_name(e + ROM_FILE_ENTRY, length)))
+        if (length > im->file_bytes - file - SNX_ROMFS_FILE_ENTRY ||
+            !(name = image_name(e + SNX_ROMFS_FILE_ENTRY, length)))
             return -1;
         if (at > im->total - im->data || size > im->total - im->data - at) {
             free(name);
@@ -982,14 +961,15 @@ static int image_dir(RImage* im, u32 off, RNode* into, unsigned depth) {
         n->size = size;
         file = snx_ld_le32(e + 4);
     }
-    while (child != ROM_NONE) {
+    while (child != SNX_ROMFS_NONE) {
         const u8* e = im->dirs + child;
         u32 length;
         char* name;
         RNode* n;
-        if (!im->dirs_left-- || (u64)child + ROM_DIR_ENTRY > im->dir_bytes) return -1;
+        if (!im->dirs_left-- || (u64)child + SNX_ROMFS_DIR_ENTRY > im->dir_bytes) return -1;
         length = snx_ld_le32(e + 20);
-        if (length > im->dir_bytes - child - ROM_DIR_ENTRY || !(name = image_name(e + ROM_DIR_ENTRY, length)))
+        if (length > im->dir_bytes - child - SNX_ROMFS_DIR_ENTRY ||
+            !(name = image_name(e + SNX_ROMFS_DIR_ENTRY, length)))
             return -1;
         n = last = rnode_child(into, last, name, 1);
         free(name);
@@ -1011,7 +991,7 @@ static int rnode_image(RNode* root, u64 total) {
     /* the header's size, then each table's offset and size (the folder hash table, the folder table, the file hash
        table, the file table), then where the file data starts */
     if (h[0] != sizeof head || h[3] > total || h[4] > total - h[3] || h[7] > total || h[8] > total - h[7] ||
-        h[9] > total || h[4] < ROM_DIR_ENTRY || h[4] > UINT32_MAX || h[8] > UINT32_MAX)
+        h[9] > total || h[4] < SNX_ROMFS_DIR_ENTRY || h[4] > UINT32_MAX || h[8] > UINT32_MAX)
         return -1;
     dirs = malloc((size_t)h[4]);
     files = malloc(h[8] ? (size_t)h[8] : 1);
@@ -1023,8 +1003,8 @@ static int rnode_image(RNode* root, u64 total) {
         im.file_bytes = h[8];
         im.data = h[9];
         im.total = total;
-        im.dirs_left = h[4] / ROM_DIR_ENTRY;
-        im.files_left = h[8] / ROM_FILE_ENTRY;
+        im.dirs_left = h[4] / SNX_ROMFS_DIR_ENTRY;
+        im.files_left = h[8] / SNX_ROMFS_FILE_ENTRY;
         rc = image_dir(&im, 0, root, 0);
     }
     free(dirs);
@@ -1304,20 +1284,20 @@ int romfs_files(RomfsEach each, void* ctx) {
     for (at = 0; !rc && at < size;) {
         u32 len;
         u64 off, bytes;
-        if (size - at < ROM_FILE_ENTRY) {
+        if (size - at < SNX_ROMFS_FILE_ENTRY) {
             rc = -2; /* an entry cut short: the table ends there */
             break;
         }
         len = snx_ld_le32(t + at + 0x1C);
         off = snx_ld_le64(t + at + 8);
         bytes = snx_ld_le64(t + at + 0x10);
-        if (len >= sizeof name || len > size - at - ROM_FILE_ENTRY) {
+        if (len >= sizeof name || len > size - at - SNX_ROMFS_FILE_ENTRY) {
             rc = -2; /* a name past the table: no entry after it can be found */
             break;
         }
-        memcpy(name, t + at + ROM_FILE_ENTRY, len);
+        memcpy(name, t + at + SNX_ROMFS_FILE_ENTRY, len);
         name[len] = 0;
-        at += ROM_FILE_ENTRY + ((len + 3u) & ~3u);
+        at += SNX_ROMFS_FILE_ENTRY + ((len + 3u) & ~3u);
         if (off > g_hle.fs.rtotal - data || bytes > g_hle.fs.rtotal - data - off) {
             malformed = 1; /* its data past the image: left out, the others listed */
             continue;
@@ -1650,22 +1630,22 @@ i64 fs_root_space(int total) { return total ? 8ll << 30 : 4ll << 30; }
 /* the system archives' stand-in: a RomFS with an empty root folder and nothing else, 0x200 bytes */
 static void emptyrom_init(void) {
     u8* m = g_hle.fs.emptyrom;
-    u32 dbuckets = hcount(1), fbuckets = hcount(0);
-    u64 dtab = 0x50 + (u64)dbuckets * 4, fhash = dtab + ROM_DIR_ENTRY, ftab = fhash + (u64)fbuckets * 4;
+    u32 dbuckets = snx_romfs_buckets(1), fbuckets = snx_romfs_buckets(0);
+    u64 dtab = 0x50 + (u64)dbuckets * 4, fhash = dtab + SNX_ROMFS_DIR_ENTRY, ftab = fhash + (u64)fbuckets * 4;
     memset(m + 0x50, 0xFF, (size_t)(dtab - 0x50));
     memset(m + fhash, 0xFF, (size_t)(ftab - fhash));
-    put32(m + 0x50 + (u64)(rhash(0, "") % dbuckets) * 4, 0); /* the root, at offset 0 */
+    put32(m + 0x50 + (u64)(snx_romfs_hash(0, "") % dbuckets) * 4, 0); /* the root, at offset 0 */
     put32(m + dtab, 0);                                       /* its own parent */
-    put32(m + dtab + 4, ROM_NONE);
-    put32(m + dtab + 8, ROM_NONE);
-    put32(m + dtab + 12, ROM_NONE);
-    put32(m + dtab + 16, ROM_NONE);
+    put32(m + dtab + 4, SNX_ROMFS_NONE);
+    put32(m + dtab + 8, SNX_ROMFS_NONE);
+    put32(m + dtab + 12, SNX_ROMFS_NONE);
+    put32(m + dtab + 16, SNX_ROMFS_NONE);
     put32(m + dtab + 20, 0);
     put64(m, 0x50);
     put64(m + 8, 0x50);
     put64(m + 16, (u64)dbuckets * 4);
     put64(m + 24, dtab);
-    put64(m + 32, ROM_DIR_ENTRY);
+    put64(m + 32, SNX_ROMFS_DIR_ENTRY);
     put64(m + 40, fhash);
     put64(m + 48, (u64)fbuckets * 4);
     put64(m + 56, ftab);
@@ -1715,10 +1695,10 @@ static u32 miimodel_file_write(u32 i, u8* out) { return snx_mii_model_write(i, o
 #define FILESROM_MAX 64u
 static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_room)(u32),
                          u32 (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
-    u32 dbuckets = hcount(1), fbuckets = hcount(count);
+    u32 dbuckets = snx_romfs_buckets(1), fbuckets = snx_romfs_buckets(count);
     u64 dhash = 0x50;
     u64 dtab = dhash + (u64)dbuckets * 4;
-    u64 fhash = dtab + ROM_DIR_ENTRY;
+    u64 fhash = dtab + SNX_ROMFS_DIR_ENTRY;
     u64 ftab = fhash + (u64)fbuckets * 4;
     u64 fsize = 0, room = 0, dsize = 0, fdata, off = 0, at[FILESROM_MAX], sizes[FILESROM_MAX];
     u32 i;
@@ -1728,7 +1708,7 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
         fatal("%s: %u files, more than a synthesized archive holds (%u)\n", what, count, FILESROM_MAX);
     for (i = 0; i < count; i++) {
         file_name(i, name);
-        fsize += entry_size(ROM_FILE_ENTRY, name);
+        fsize += snx_romfs_entry_size(SNX_ROMFS_FILE_ENTRY, name);
         if (!file_same || file_same(i) == i) room = ((room + 15) & ~(u64)15) + file_room(i);
     }
     fdata = (ftab + fsize + 0x1FF) & ~(u64)0x1FF;
@@ -1756,12 +1736,12 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
     memset(m + dhash, 0xFF, (size_t)dbuckets * 4);
     memset(m + fhash, 0xFF, (size_t)fbuckets * 4);
     /* the root folder, its files starting at table offset 0 */
-    put32(m + dhash + (u64)(rhash(0, "") % dbuckets) * 4, 0);
+    put32(m + dhash + (u64)(snx_romfs_hash(0, "") % dbuckets) * 4, 0);
     put32(m + dtab, 0);
-    put32(m + dtab + 4, ROM_NONE);
-    put32(m + dtab + 8, ROM_NONE);
+    put32(m + dtab + 4, SNX_ROMFS_NONE);
+    put32(m + dtab + 8, SNX_ROMFS_NONE);
     put32(m + dtab + 12, 0);
-    put32(m + dtab + 16, ROM_NONE);
+    put32(m + dtab + 16, SNX_ROMFS_NONE);
     put32(m + dtab + 20, 0);
     for (i = 0; i < count; i++) {
         u32 len, b;
@@ -1770,21 +1750,21 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
         len = (u32)strlen(name);
         e = m + ftab + off;
         put32(e, 0); /* the root folder */
-        put32(e + 4, i + 1 < count ? (u32)(off + entry_size(ROM_FILE_ENTRY, name)) : ROM_NONE);
+        put32(e + 4, i + 1 < count ? (u32)(off + snx_romfs_entry_size(SNX_ROMFS_FILE_ENTRY, name)) : SNX_ROMFS_NONE);
         put64(e + 8, at[i]);
         put64(e + 16, sizes[i]);
-        b = rhash(0, name) % fbuckets;
+        b = snx_romfs_hash(0, name) % fbuckets;
         memcpy(e + 24, m + fhash + (u64)b * 4, 4);
         put32(m + fhash + (u64)b * 4, (u32)off);
         put32(e + 28, len);
-        memcpy(e + ROM_FILE_ENTRY, name, len);
-        off += entry_size(ROM_FILE_ENTRY, name);
+        memcpy(e + SNX_ROMFS_FILE_ENTRY, name, len);
+        off += snx_romfs_entry_size(SNX_ROMFS_FILE_ENTRY, name);
     }
     put64(m, 0x50);
     put64(m + 8, dhash);
     put64(m + 16, (u64)dbuckets * 4);
     put64(m + 24, dtab);
-    put64(m + 32, ROM_DIR_ENTRY);
+    put64(m + 32, SNX_ROMFS_DIR_ENTRY);
     put64(m + 40, fhash);
     put64(m + 48, (u64)fbuckets * 4);
     put64(m + 56, ftab);

@@ -118,7 +118,11 @@ static unsigned char* text_of(const unsigned char* o, size_t size, size_t* lengt
     entsize = o[58] | o[59] << 8;
     n = o[60] | o[61] << 8;
     strndx = o[62] | o[63] << 8;
-    names = o + *(const SnxU64*)(const void*)(o + shoff + (SnxU64)strndx * entsize + 24);
+    {
+        SnxU64 names_at; /* the string table's offset, a field of bytes: copied out, not read as a SnxU64 in place */
+        memcpy(&names_at, o + shoff + (SnxU64)strndx * entsize + 24, 8);
+        names = o + names_at;
+    }
     for (i = 0; i < n; ++i) {
         SnxU64 off, len;
         SnxU32 name;

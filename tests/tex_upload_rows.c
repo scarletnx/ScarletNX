@@ -113,7 +113,6 @@ u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, siz
    batch_moves since 1 */
 static u32 bar_state, batch_moves;
 static u8 stage[STAGE];
-static u64 stage_used;
 static u32 copy_bpp = 4, copy_bw = 1, copy_bh = 1; /* the texture's: the bytes of a copy's texel or block */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
     u64 at = (stage_used + align - 1) & ~(align - 1);
@@ -369,13 +368,20 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
     (void)s, (void)w, (void)h, (void)bl, (void)bh, (void)pitch;
     abort();
 }
+/* render.c's pass: open while g_pass_open, which a test sets as a draw's pass would be; a copy's barriers end it, as
+   vk_surf_use ends the pass before a barrier */
+static int g_pass_open;
+u64 g_vk_drawn, g_vk_dispatches;
+int vk_render_begun(void) { return g_pass_open; }
 void vk_render_end_at(const char* file, int line) {
     (void)file;
     (void)line;
+    g_pass_open = 0;
 }
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage_,
                  VkAccessFlags2 access) {
     (void)cb, (void)s, (void)layout, (void)stage_, (void)access;
+    g_pass_open = 0;
 }
 /* surface.c's batch of a copy's two barriers: vk_surf_use records nothing here */
 void vk_surf_batch_begin(void) {}
@@ -669,6 +675,7 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
 void vk_surf_ended_frame(void) {}
 void vk_tex_refine_frame(void) {}
 void vk_tex_promote_frame(void) {}
+void vk_rt_sys_frame(void) {}
 u32 vk_present_before(u64 ago_ns, u32 presents) {
     (void)ago_ns, (void)presents;
     return 0;
@@ -2044,11 +2051,136 @@ static void check_tex_moves(void) {
     vkGetPhysicalDeviceFormatProperties = format_was;
 }
 
+/* The copies of a target counted by why they were made (vk_rt_copy_count, for the stats line vk_rt_copy_log): each
+   written copy once under its reason, with its texels' bytes and whether its barriers ended the open pass; a copy
+   reused as it is counts nothing; a copy for the same draw as the one before counts as again, and ends no pass as the
+   first one did; the formats a copy went between; the most copies of a present; and a stats line counts from 0 again.
+   Every count is checked in full, so a reason counted under another or a pass end lost shows */
+static void blit_format(VkPhysicalDevice p, VkFormat f, VkFormatProperties* out) {
+    (void)p, (void)f;
+    *out =
+        (VkFormatProperties){.optimalTilingFeatures = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT};
+}
+static u32 g_blits;
+static void count_blit(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                       const VkImageBlit* r, VkFilter filter) {
+    (void)cb, (void)src, (void)sl, (void)dst, (void)dl, (void)n, (void)r, (void)filter;
+    g_blits++;
+}
+static void check_copy_counts(void) {
+    Surf rt = tex(800, 448, 1, 1, 4, 2, 0, 1);
+    VkFmt as = rt.f;
+    as.vk = VK_FORMAT_R32_UINT;
+    rt.is_rt = 1;
+    rt.sw = rt.w;
+    rt.sh = rt.h;
+    rt.img = (VkImage)(uintptr_t)0x3C8;
+    rt.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    rt.wgen = 1;
+    PFN_vkGetPhysicalDeviceFormatProperties format_was = vkGetPhysicalDeviceFormatProperties;
+    vkCmdCopyImage = count_copy_image;
+    vkCmdBlitImage = count_blit;
+    vkGetPhysicalDeviceFormatProperties = blit_format;
+    g_crop_images = 1;
+    g_image_copies = g_blits = 0;
+    rt_copy_present(); /* the present of the cases before */
+    vk_rt_copy_log();  /* counted from 0 */
+    VkRtCopyCounts n;
+    vk_rt_copy_counts(&n);
+    CHECK(!memcmp(&n, &(VkRtCopyCounts){0}, sizeof n));
+    /* a draw's pass is open (a draw since the copies of the cases before): its first texture, a corner, ends it; its
+       second, the full target in another format, finds it ended */
+    g_vk_drawn++;
+    g_pass_open = 1;
+    CHECK(rt_crop(&rt, 792, 448, NULL) != &rt && !g_pass_open);
+    CHECK(rt_crop(&rt, 800, 448, &as) != &rt);
+    /* the next draw: a corner in another format with its pass open, then a read of what was copied, reused */
+    g_vk_drawn++;
+    g_pass_open = 1;
+    Surf* both = rt_crop(&rt, 800, 440, &as);
+    CHECK(both && both != &rt && rt_crop(&rt, 800, 440, &as) == both && g_image_copies == 3);
+    /* a draw sampling its target, after a texture barrier; then a dispatch's read of the target scaled 2x at the
+       guest's size, its blit outside the pass */
+    g_vk_drawn++;
+    g_vk_texture_epoch++;
+    rt.wgen++;
+    g_pass_open = 1;
+    CHECK(vk_rt_snapshot(&rt, 1) != &rt && g_image_copies == 4);
+    g_vk_dispatches++;
+    g_pass_open = 1;
+    Surf scaled = rt;
+    scaled.crop = NULL;
+    scaled.img = (VkImage)(uintptr_t)0x3C9;
+    scaled.sw = 2 * rt.w;
+    scaled.sh = 2 * rt.h;
+    Surf* guest = rt_guest(&scaled, 800, 448, NULL);
+    CHECK(guest && guest->sw == 800 && guest->sh == 448 && g_blits == 1 && g_image_copies == 4);
+    vk_rt_copy_counts(&n);
+    const u64 written[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = 1,
+                                       [VK_RT_COPY_CROP] = 1,
+                                       [VK_RT_COPY_FORMAT_CROP] = 1,
+                                       [VK_RT_COPY_FEEDBACK] = 1,
+                                       [VK_RT_COPY_GUEST] = 1};
+    const u64 ended[VK_RT_COPY_N] = {
+        [VK_RT_COPY_CROP] = 1, [VK_RT_COPY_FORMAT_CROP] = 1, [VK_RT_COPY_FEEDBACK] = 1, [VK_RT_COPY_GUEST] = 1};
+    const u64 bytes[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = 800 * 448 * 4,
+                                     [VK_RT_COPY_CROP] = 792 * 448 * 4,
+                                     [VK_RT_COPY_FORMAT_CROP] = 800 * 440 * 4,
+                                     [VK_RT_COPY_FEEDBACK] = 800 * 448 * 4,
+                                     [VK_RT_COPY_GUEST] = 800 * 448 * 4};
+    for (int i = 0; i < VK_RT_COPY_N; i++) {
+        if (n.written[i] != written[i] || n.ended[i] != ended[i] || n.bytes[i] != bytes[i])
+            fprintf(
+                stderr,
+                "copy counts: reason %d: %llu written (%llu wanted), %llu ending a pass (%llu), %llu bytes (%llu)\n", i,
+                (unsigned long long)n.written[i], (unsigned long long)written[i], (unsigned long long)n.ended[i],
+                (unsigned long long)ended[i], (unsigned long long)n.bytes[i], (unsigned long long)bytes[i]);
+        CHECK(n.written[i] == written[i] && n.ended[i] == ended[i] && n.bytes[i] == bytes[i]);
+    }
+    CHECK(n.again == 1 && n.again_ended == 0);
+    CHECK(n.pair[0].from == VK_FORMAT_R8G8B8A8_UNORM && n.pair[0].to == VK_FORMAT_R32_UINT && n.pair[0].n == 2);
+    CHECK(!n.pair[1].n && !n.pairs_past);
+    /* a present: its 5 copies and 4 pass ends are the most of one; the next present has none */
+    CHECK(n.presents == 0 && n.most == 0);
+    rt_copy_present();
+    rt_copy_present();
+    vk_rt_copy_counts(&n);
+    CHECK(n.presents == 2 && n.most == 5 && n.most_ended == 4);
+    /* the stats line says the counts of the presents it covers, then counts from 0 */
+    vk_rt_copy_log();
+    CHECK(strstr(g_log, "those copies between formats, a present (Vulkan's format numbers): format 37 to 98 1.00;"));
+    vk_rt_copy_counts(&n);
+    CHECK(!memcmp(&n, &(VkRtCopyCounts){0}, sizeof n));
+    /* a corner copied again after a barrier, in a present of its own: the line's numbers are that present's */
+    g_vk_drawn++;
+    g_vk_texture_epoch++;
+    rt.wgen++;
+    g_pass_open = 1;
+    CHECK(rt_crop(&rt, 792, 448, NULL) != &rt && g_image_copies == 5);
+    rt_copy_present();
+    vk_rt_copy_log();
+    CHECK(strstr(g_log, "copies of render targets a present over the last 1 presents: 0.00 for another format (0.00 "
+                        "ending a pass, 0 KB); 1.00 for a corner (1.00 ending a pass, 1386 KB);"));
+    CHECK(strstr(g_log, "one present had 1 copies at most, and 1 passes ended by them"));
+    Surf* lists[2] = {&rt, &scaled};
+    for (int i = 0; i < 2; i++)
+        while (lists[i]->crop) {
+            Surf* x = lists[i]->crop;
+            lists[i]->crop = x->next;
+            free(x);
+        }
+    vkGetPhysicalDeviceFormatProperties = format_was;
+    vkCmdCopyImage = NULL;
+    vkCmdBlitImage = NULL;
+    g_crop_images = 0;
+}
+
 int main(void) {
     fill();
     check_take_skip();
     check_tex_moves();
     check_crop_reuse();
+    check_copy_counts();
     g_vk.alloc_cap = 256ull << 20;
     /* the video's picture: 1920 wide in 4 byte pixels, rows of whole pieces, 16 GOBs a block */
     Surf a = tex(1920, 136, 1, 1, 4, 4, 0, 1);

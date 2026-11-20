@@ -224,10 +224,17 @@ typedef struct {
        subgroups for both stages: an Ounce's mesh draws (render.c). mesh_stages: the stage bits that the sets and the
        push constants of the graphics pipelines' layouts add for them (VK_PUSH_STAGES), 0 without */
     int has_mesh, has_task;
+    /* the compute-task path (sm86.h's sm86_mesh_task_cap): a mesh draw with a task program runs the task program as a
+       compute dispatch and draws the mesh program with no task stage, where the native task+mesh gang is not safe on
+       this device (device.c's mesh_choose, vk_mesh_path) */
+    int mesh_task_compute;
     /* compute pipelines can ask for subgroups of 32 (subgroupSizeControl and computeFullSubgroups, 32 within the
        sizes and compute among requiredSubgroupSizeStages): those of the programs that use other lanes' values do
        (compute.c's cs_make) */
     int has_cs_warp32;
+    /* the way an SM86 HMMA takes off the matrix unit by the device's rules (shader_hmma_rule), which hmma_mode's Auto
+       keeps where its bench cannot run (hmma_pick.c) */
+    int hmma_rule;
     VkShaderStageFlags mesh_stages;
     u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
     /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
@@ -301,7 +308,7 @@ typedef struct {
     int has_display_timing;
     /* the device's memory (uma.c): VK_MEM_*, and how guest buffers reach it, VK_MEM_PATH_* (the vk_memory setting) */
     int mem_model, mem_path;
-    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
+    char start_failure[1024]; /* why vk_init found no device it runs on, with each device's Vulkan version */
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
@@ -321,9 +328,14 @@ typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } V
 int vk_init(void);
 /* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
 const char* vk_start_failure(void);
+/* why a swapchain could not be made, into out: the device, its driver ("" for its driver) and r with its number */
+void vk_swapchain_failure(char* out, size_t size, const char* device, const char* driver, VkResult r);
 /* how many of the extensions a Vulkan 1.2 device runs the renderer with (1.3's, device.c) e lacks, their names in out
    (size bytes, may be 0) comma separated */
 u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);
+/* on a Vulkan 1.1 device, what the 1.2 way takes there: a timeline semaphore and the driver's identity, which 1.2
+   made core, and those; how many e lacks, named in out the same way */
+u32 vk_1_1_missing(const SnxVkExtensions* e, char* out, size_t size);
 /* the vk_api setting's text as the most Vulkan version the renderer takes, *cap (0 for auto, the device's up to 1.3):
    1, or 0 with why (n bytes) naming the value and the ones it takes */
 int vk_api_setting(const char* text, u32* cap, char* why, size_t n);
@@ -697,7 +709,6 @@ void vk_stage_report(void);
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
-void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
@@ -1274,9 +1285,16 @@ typedef struct Surf {
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
-    /* textures: its image is in system memory (texture.c vk_tex_demote), bytes 0 while it is: sys_bytes its size */
+    /* its image is in system memory (texture.c vk_tex_demote, a render target's surface.c rt_demote), bytes 0 while it
+       is: sys_bytes its size */
     u8 demoted;
     u64 sys_bytes;
+    /* render targets the caches would have let go with pixels memory lacks, kept (surface.c rt_aside): the guest's
+       memory as of then, its write-tracking clock (aside_wseen, 0 without tracking: aside_hash its bytes' hash), so
+       that its next use loads memory again where the guest wrote it since, as a target made after an eviction would */
+    u8 aside;
+    u32 aside_wseen;
+    u64 aside_hash;
     /* textures sparse for their levels (shed): its finest levels in system memory, the GPU's own having no room
        (vk_tex_coarser with texture_sysmem) */
     u8 sys_levels;
@@ -1572,6 +1590,20 @@ void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
 u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
 /* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
 void vk_tex_promote_frame(void);
+/* surface.c: render targets whose pixels exist only on the GPU, moved into system memory where the caches would let
+   them go (rt_demote). Once a present, those used lately go back while the GPU's memory has room, and the oldest go
+   while the system heap they went to is short */
+void vk_rt_sys_frame(void);
+typedef struct {
+    u64 out, back; /* moved there and back so far */
+    u64 n, bytes;  /* there now, and their bytes */
+    /* targets that went with pixels memory lacks so far: none could move, or the system heap was short */
+    u64 lost, lost_bytes;
+    /* targets kept so far where the caches would have let them go, and those of them loaded again at their next use,
+       as the guest had written their memory meanwhile */
+    u64 kept, reloads;
+} VkRtSysStats;
+void vk_rt_sys_stats(VkRtSysStats* st);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */
 void vk_tex_refine_frame(void);
 /* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */
@@ -1942,10 +1974,9 @@ u32 vk_bc7_build(u32 w, u32 h, u32 d);
 /* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
    points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
    the encoder writes changes other than through its SPIR-V (which the file's version holds), as a level's choice of
-   build does. VK_BC7_CACHE_MAX: the file's bound, after which it starts over: one Ounce game's demo alone holds
-   3.3 GB of BC7, so 4 GB went over as more of it was played */
+   build does. The file's bound, after which it starts over, is the setting bc7_cache_gb (8 GB by default: one Ounce
+   game's demo alone holds 3.3 GB of BC7, so 4 GB went over as more of it was played) */
 #define VK_BC7_ENCODER_VERSION 1
-#define VK_BC7_CACHE_MAX       (8ull << 30)
 /* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
 void vk_bc7_content(u64 content[2], const void* p, u64 n);
 /* what else changes a level's blocks: its size, its slices (depth) or layers, the footprint, the sRGB decode mode and
@@ -1958,18 +1989,20 @@ void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
    no cache (another process holds the file, or it cannot be written) */
 int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
 void vk_bc7_cache_close(void);
+u64 vk_bc7_cache_max(void); /* the bound the cache was opened with */
 /* 1 while the cache is open and held no level as it opened: every ASTC level is encoded as it first loads */
 int vk_bc7_cache_cold(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
-/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped), or the
+   cache's I/O thread is held 250 ms in a read (a slow disk: the record kept) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
-/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
-   and buf) into img, in layout, by copy there when they check out (none when img is VK_NULL_HANDLE): before the
-   commands that cb
-   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
-   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+/* key's blocks, size bytes of them, read on the cache's I/O thread and put into dst on the recording thread, then
+   copied from buf (dst is at off in mem and buf) into img, in layout, by copy there when they check out (none when img
+   is VK_NULL_HANDLE): before the commands that cb gets after this, and before its submission. cb must go through that
+   thread (vk_rec_ring). 1 when it is queued; 0 when they aren't there, or the I/O thread is behind a slow disk (the
+   level is encoded then); -1 when there is no such thread or the file can't be opened again (read them with
    vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out, and the read goes to
-   vk_bc7_cache_take_failed with owner and gva */
+   vk_bc7_cache_take_failed with owner and gva; so does a read the recording thread left as late, its record kept */
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
                             VkImage img, VkImageLayout layout, const VkBufferImageCopy* copy, void* owner, u64 gva);
 /* fn of each read on the recording thread that failed since the last call, with its owner and gva (GPU thread) */
@@ -1979,9 +2012,14 @@ int vk_bc7_cache_failed_pending(void);
 /* how long a read of bytes takes, at the rate of the reads so far: 0 for none, and more than any budget before a read
    was timed */
 u64 vk_bc7_cache_read_ns(u64 bytes);
+/* key's blocks, size bytes at p, kept: in the index at once, written by the cache's I/O thread in its turn; not kept
+   when the writes waiting hold 64 MiB (counted, vk_bc7_cache_late) */
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
+/* the hits whose read was left as late and those not asked while the cache's I/O thread was behind, their levels
+   encoded instead, and the new records not kept for want of room in its queue of writes, in all: a slow disk's */
+void vk_bc7_cache_late(u64* late, u64* skipped, u64* unkept);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
@@ -2295,7 +2333,8 @@ int vk_pages_move_end(void* owner, DevMem a, DevMem to);
 int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes);
 /* surface.c: render target s's image made again in a run of another block and copied there on cb, with its attachment
    view, in the layout it had; the old image and its views go when the frames in flight are done. 1 with *bytes, 0
-   when no run held it, -1 when it cannot move now (a storage result of it still lands) */
+   when no run held it, -1 when it cannot move now (a storage result of it still lands, or its image is in system
+   memory, which no block being emptied holds) */
 int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes);
 /* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */
@@ -2469,7 +2508,6 @@ typedef struct {
    stages, geometry, fragment (ST_VS to ST_FS), then an Ounce's task and mesh stages (DS_TASK, DS_MESH) */
 #define VK_DRAW_STAGES DS_GFX_STAGES
 typedef struct {
-    VkDrawGbuf b[VK_DRAW_STAGES][16];
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
@@ -2478,6 +2516,9 @@ typedef struct {
        the draw's vertex streams */
     u32 attr[32][4];
     u32 divisor[32];
+    /* last: a draw clears what is above and the n[stage] buffers each stage has (render.c's draw_storage_read), not
+       the 5 KiB of all of them. Nothing reads a stage's buffers past its count */
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
 } VkDrawStorage;
 /* whether any stage of the draw reads or writes global memory */
 static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
@@ -2738,6 +2779,10 @@ typedef struct VkSh {
     VkCbReads cbr;
     ShaderInfo si;
     VkShaderModule mod;
+    /* a task program of the compute-task path: its SPIR-V, whose entry point is a compute one, kept for the compute
+       pipeline the draw dispatches it with (render.c's mesh_task_pipe) */
+    u32* spv;
+    u32 nspv;
     int indexed; /* it reads indexed textures: its set needs the texture array bindings (vk_playout) */
     int failed;
     int shipped; /* a program the game ships, translated before a draw asked for it: 2 once one found it */
@@ -2757,6 +2802,9 @@ void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, cons
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
+/* the layout of a compute dispatch's sets: vk_playout's, without the independent sets that a graphics pipeline
+   library's parts use (the compute-task path's task program, render.c) */
+VkPipelineLayout vk_playout_compute(u32 arrays);
 VkShaderStageFlags vk_set_stages(int set); /* the stages that see descriptor set set (pipeline.c) */
 int vk_graphics_playout_is(VkPipelineLayout layout);
 extern int g_vk_preserve_infnan;
@@ -2770,6 +2818,10 @@ void vk_cb_fold_switch(int on);
 /* ftz_probe.c: 1 when the device flushes FP32 subnormals in FADD, FMUL and FFMA as the console's FTZ does, in a module
    that declares no denormal mode (it runs a compute shader and waits for it: at the renderer's start only) */
 int vk_ftz_native(void);
+/* hmma_pick.c: the way an SM86 compute program's HMMA takes off the matrix unit, by hmma_mode: Auto's from the file
+   the HMMA bench keeps in cache_dir for the driver (driver_tag), or from the bench, which it runs and waits for where
+   the file is not this driver's (at the renderer's start only, before any translation) */
+void vk_hmma_pick(const char* cache_dir, const char* driver_tag);
 extern VkShaderStageFlags g_vk_subgroup_stages;
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
@@ -2785,7 +2837,9 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
 #define VK_PUSH_STAGES                                                                                                 \
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |       \
-     g_vk.mesh_stages)
+     g_vk.mesh_stages |                                                                                               \
+     /* the compute-task path's task program, a compute dispatch of the same layout (sm86.h) */                        \
+     VK_SHADER_STAGE_COMPUTE_BIT)
 void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. dc_funcs and unfed, the fragment stage's,
@@ -2813,7 +2867,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
    fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
    program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the
    clip word of its key */
-VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k);
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, u32 payload_stride, int task_compute);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -2892,6 +2946,9 @@ typedef struct {
 /* the overestimation of conservative rasterization of a PipeKey.conservative, within the device's most (pipeline.c) */
 float vk_conservative_extra(u32 conservative);
 #define PIPE_MESH_WHOLE(stage) (2u << ((stage) == ST_TS)) /* PipeKey.mesh's bit of a whole stage's workgroup */
+/* PipeKey.mesh's bit of the compute-task path: the draw's vs is the mesh program and there is no task stage (its task
+   program is dispatched before the draw, render.c's mesh_task_dispatch) */
+#define PIPE_MESH_TASK_COMPUTE 8u
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the key a file of earlier runs' shaders and pipelines must have to be read: the device, the build, and what changes
@@ -3030,14 +3087,6 @@ extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because th
 /* the submission a unified memory dispatch was left in for the stream's end to submit (vk_release_submit), and how many
    were left so (statistics) */
 extern u64 g_vk_cs_open, g_vk_cs_left;
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
@@ -3087,6 +3136,15 @@ int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
+/* An indirect draw of quads, its records from record_at of record on, stride bytes apart (16 bytes each of a draw
+   of vertices, 20 of one of indices), made the indexed records of their triangles, 20 bytes apart from *arguments_at
+   of *arguments on, on the GPU. size 0: quads of vertices, drawn with the renderer's quad indices of vertex numbers,
+   which hold limit quads. Else quads of indices of size bytes, limit of them from indices_at of indices on: their
+   triangles' 32-bit indices are made from *made_at of *arguments on, for a record that starts at any index, and that
+   is where the draw binds its index buffer. last: the quad's last vertex provokes. A record past limit draws the
+   quads limit allows. 0 when they can't be made */
+int vk_indirect_quads(VkBuffer record, u64 record_at, u32 stride, u32 records, u32 size, VkBuffer indices,
+                      u64 indices_at, u32 limit, int last, VkBuffer* arguments, u64* arguments_at, u64* made_at);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
@@ -3150,6 +3208,7 @@ extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsup
 /* draws whose depth the console clips and clamps, and of them those that write depth or take a depth bias (render.c) */
 extern u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */
+extern u64 g_vk_mesh_task_compute; /* of those, the ones whose task program was a compute dispatch */
 /* The ordered capture fallback (render.c capture_draw) records a clear, a draw and a resolve for every primitive: past
    this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */
 #define VK_CAPTURE_PRIMITIVES_MAX 256u
@@ -3161,10 +3220,30 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
    block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
    CPU, a range from the buffer cache, or a range under a pending result (not kept); and of the kept ones, those kept
    past the submission they were made in. A texture slot: its handle kept, resolved again, or past the limits of its
-   pools; and its view and its sampler kept */
+   pools; its view and its sampler kept; and the lookups that went through the memo, kept or not */
 enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
        VK_CB_PAST_SUBMIT, VK_CB_N };
-enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_N };
+enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_MEMO, VK_TEX_N };
+/* A draw's fragment key (render.c's fs_key): the draw before's, or made again for the first of these that held it
+   back, in the order fs_key asks them; then the keys made again that weren't kept for the next draw, and why */
+enum {
+    VK_FS_KEPT,
+    VK_FS_NONE,    /* the draw before kept none */
+    VK_FS_PROGRAM, /* another draw state or program, its slots, the outputs before it or the targets' integer outputs */
+    VK_FS_POOLS,   /* the pools, their limits, the sampler mode or the texture bank */
+    VK_FS_GPU,     /* a GPU-side write */
+    VK_FS_RESULTS, /* a result added, or a write in place */
+    VK_FS_IMAGES,  /* a storage image added */
+    VK_FS_TAKE,    /* a target taken */
+    VK_FS_SURFACES,        /* the surface table */
+    VK_FS_EPOCH,           /* a write tracking epoch */
+    VK_FS_PRESENT,         /* a present */
+    VK_FS_HANDLES,         /* other handle words */
+    VK_FS_QUIET,           /* a slot's target undefined, its texture not quiet now, or the target it is over drawn to */
+    VK_FS_UNKEPT_IMAGES,   /* not kept: the program has images, which image_variant reads each draw */
+    VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
+    VK_FS_N
+};
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3176,7 +3255,10 @@ typedef struct {
     u64 differs; /* the differences draw_state_check=1 found */
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
-    u64 cb[VK_CB_N], tex[VK_TEX_N];
+    u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
+    u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
+                      that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
+                      before them, bank 2, the root tables */
 } VkDrawCounts;
 void vk_draw_counts(VkDrawCounts* c);
 void vk_render_stats_log(void); /* the counts of the last 600 presents in the log (each 600 presents) */
@@ -3188,6 +3270,44 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
+/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
+   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
+   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
+   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
+   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
+   and in rendering passes ended, decides whether targets take other formats' views */
+enum {
+    VK_RT_COPY_FORMAT,
+    VK_RT_COPY_CROP,
+    VK_RT_COPY_FORMAT_CROP,
+    VK_RT_COPY_FEEDBACK,
+    VK_RT_COPY_GUEST,
+    VK_RT_COPY_TAKE,
+    VK_RT_COPY_N
+};
+#define VK_RT_COPY_PAIRS 8
+typedef struct {
+    u64 written[VK_RT_COPY_N]; /* copies whose pixels were copied (a copy reused as it is counts nothing) */
+    u64 ended[VK_RT_COPY_N];   /* of those, the ones whose barriers ended a rendering pass with work in it */
+    u64 bytes[VK_RT_COPY_N];   /* their texels' bytes, every sample and layer */
+    /* copies made after another with no draw or dispatch recorded between them (one draw's textures), and of those the
+       ones that ended a pass: one pass ended for several copies is already the case where this is 0 */
+    u64 again, again_ended;
+    u64 presents;         /* presents counted in (vk_tex_frame) */
+    u64 most, most_ended; /* the most copies, and passes they ended, of one present */
+    /* the formats the copies that read another one went between (from the target's, to the copy's), the first
+       VK_RT_COPY_PAIRS seen with their counts, and the copies of the pairs past them */
+    struct {
+        u32 from, to; /* VkFormat */
+        u64 n;
+    } pair[VK_RT_COPY_PAIRS];
+    u64 pairs_past;
+} VkRtCopyCounts;
+/* a copy for why (VK_RT_COPY_*) written: ended, its barriers ended a pass with work in it (vk_render_begun before them
+   and not after); bytes its texels'; from and to the formats it went between */
+void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to);
+void vk_rt_copy_counts(VkRtCopyCounts* out); /* since the last stats line */
+void vk_rt_copy_log(void);                   /* a stats line of them, a present, then counted again from 0 */
 /* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
    (renderer.c vkr_method_barrier) */
 extern u64 g_vk_barriers_merged;
@@ -3199,6 +3319,12 @@ extern u64 g_vk_barriers_in_pass;
 #define VK_FEEDBACK_IN_PLACE  0
 #define VK_FEEDBACK_PREDRAW   1
 #define VK_FEEDBACK_INTERLOCK 2
+/* The mode a device takes: the capture on NVIDIA's and AMD's GPUs (vendor) that have the fragment interlock with
+   attachment feedback loops and fragment stores, the two draws on the others with dynamic rendering local read */
+static inline int vk_feedback_choice(u32 vendor, int feedback, int interlock, int stores, int local_read) {
+    const int capture = (vendor == 0x10DE || vendor == 0x1002) && feedback && interlock && stores;
+    return capture ? VK_FEEDBACK_INTERLOCK : local_read ? VK_FEEDBACK_PREDRAW : VK_FEEDBACK_IN_PLACE;
+}
 extern u64 g_vk_predraws;        /* feedback draws drawn two times (render.c predraw_run) */
 extern u64 g_vk_predraw_refused; /* and those that stayed in place, which the log says why of */
 void vk_predraw_report(void);   /* logs the counts of each reason (render.c) */
@@ -3296,6 +3422,7 @@ enum {
     VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */
     VK_PROF_VIC,             /* a VIC composition (vic.c) */
     VK_PROF_XFB_INDIRECT,    /* a transform feedback counter's draw arguments (xfb_indirect.comp) */
+    VK_PROF_INDIRECT_QUADS,  /* an indirect draw of quads made one of triangles (indirect_quads.comp) */
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
@@ -3322,14 +3449,5 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */
 extern u64 g_rec_barriers_synced;               /* record.c: barriers with a pNext chain, after the ring drained */
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
-
-/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
-void vk_uma_init(void); /* after it */
-int vk_uma(void);       /* guest ranges are read in place where they can be */
-int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
-u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
-void vk_uma_frame(void);
-void vk_uma_forget_all(void);
 
 #endif

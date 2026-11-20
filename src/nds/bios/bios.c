@@ -165,7 +165,7 @@ static void unfilter(NdsBoard* board, uint32_t source, uint32_t destination, uns
         }
     } else {
         uint16_t value = 0;
-        for (uint32_t i = 0; i + 1 < size + 1 && i < size; i += 2) {
+        for (uint32_t i = 0; i < size; i += 2) {
             value = (uint16_t)(value + nds_read16(board, source + i));
             nds_write16(board, destination + i, value);
         }

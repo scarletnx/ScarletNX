@@ -407,7 +407,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                     continue;
                 }
                 if (op == OP_CALL) {
-                    if (j->depth == 9) fatal("nvn: recordings call each other more than 8 deep");
+                    if (j->depth == 9) fatal("nvn: recordings call each other more than 9 deep");
                     level = j->depth++;
                 }
                 j->cursor[level].pc = j->cursor[level].piece = to;

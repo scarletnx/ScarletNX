@@ -699,6 +699,32 @@ server.shutdown()
 spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
 publish_builds = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish_builds)
+
+
+# whether a pushed name is a tag: GitHub's 404 says it is none, and a failure of another kind is raised, not read as
+# "no tag" (which left a release's run unpublished without a word)
+def tag_answer(outcome):
+    hub = object.__new__(publish_builds.Publisher)
+    hub.repo = 'scarletnx/ScarletNX'
+
+    def read(path, repo=None):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    hub.read = read
+    try:
+        return hub.tagged('v1.2.3')
+    except RuntimeError as error:
+        return str(error)
+
+
+check('a ref GitHub has is a tag', tag_answer({'ref': 'refs/tags/v1.2.3'}) is True)
+check('a 404 is no tag', tag_answer(RuntimeError('gh: Not Found (HTTP 404)')) is False)
+check(
+    'a failed lookup is raised, not taken as no tag',
+    tag_answer(RuntimeError('gh: Bad credentials (HTTP 401)')) == 'gh: Bad credentials (HTTP 401)',
+)
 workflow = (SCRIPT.parent.parent / '.github' / 'workflows' / 'build.yml').read_text()
 cross = workflow[workflow.index('\n  appimage-cross:\n') :]
 head = cross[: cross.index('\n    steps:\n')]
@@ -724,6 +750,19 @@ if legs or (skips_pulls and listed):
         getattr(publish_builds, 'NIGHTLY_ONLY', None) == expected and set(NIGHTLY_ONLY) == every_arch - pull_made,
         f'NIGHTLY_ONLY {sorted(getattr(publish_builds, "NIGHTLY_ONLY", ()))}, build.yml {sorted(expected)}',
     )
+
+# what the script publishes is what publish.yml downloads from the run, each artifact by the name the script looks
+# for and into the folder of that name
+publish = (SCRIPT.parent.parent / '.github' / 'workflows' / 'publish.yml').read_text()
+short = '${{ steps.plan.outputs.short }}'
+downloads = dict(re.findall(r'\n          name: ([^\n]+)\n          path: artifacts/([^\n]+)\n', publish))
+wanted = {name.format(short=short) for name in publish_builds.ARTIFACTS}
+check(
+    'publish.yml downloads every artifact publish-builds.py publishes, each into the folder of its name',
+    wanted <= set(downloads) and all(downloads[name] == name for name in wanted & set(downloads)),
+    f'not downloaded: {sorted(wanted - set(downloads))}; elsewhere: '
+    f'{sorted(name for name in wanted & set(downloads) if downloads[name] != name)}',
+)
 
 
 def installed_checks(text):

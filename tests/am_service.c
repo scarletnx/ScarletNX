@@ -386,6 +386,33 @@ static void test_storage_read(void) {
     svcobj_unref(s);
     CHECK(test_objects == 0);
 }
+/* a storage over a transfer memory (CreateHandleStorage) opened as one, which Open refuses: its size, and a handle of
+   the game's own to the memory with the size again, as the SDK's GetHandle reads the two */
+static void test_transfer_storage(void) {
+    SvcObj *s = NULL, *acc = NULL, *plain = NULL;
+    i64 size = 0;
+    u32 handle = 0;
+    CHECK(nn_am_service_ILibraryAppletCreator_CreateHandleStorage(NULL, 0x4000, TEST_TMEM_HANDLE, &s) == 0);
+    CHECK(nn_am_service_IStorage_Open(s, &plain) == SNX_RC_AM_OPENED_AS_WRONG_TYPE);
+    CHECK(nn_am_service_IStorage_OpenTransferStorage(s, &acc) == 0);
+    CHECK(nn_am_service_ITransferStorageAccessor_GetSize(acc, &size) == 0 && size == 0x4000);
+    size = 0;
+    CHECK(nn_am_service_ITransferStorageAccessor_GetHandle(acc, &size, &handle) == 0 && size == 0x4000);
+    CHECK(handle >= 0x100 && test_handles[handle - 0x100] == &test_tmem.o);
+    close_handles();
+    svcobj_unref(acc);
+    svcobj_unref(s);
+    CHECK(test_objects == 0 && test_tmem.o.refs == 1);
+    /* a storage over the game's memory to read and write (CreateTransferMemoryStorage) is opened by Open, and is none
+       to open as a transfer storage */
+    CHECK(nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(NULL, 1, 0x4000, TEST_TMEM_HANDLE, &s) == 0);
+    acc = NULL;
+    CHECK(nn_am_service_IStorage_OpenTransferStorage(s, &acc) == SNX_RC_AM_OPENED_AS_WRONG_TYPE && !acc);
+    CHECK(nn_am_service_IStorage_Open(s, &plain) == 0);
+    svcobj_unref(plain);
+    svcobj_unref(s);
+    CHECK(test_objects == 0 && test_tmem.o.refs == 1);
+}
 /* VR mode: on and off as the game turns it, by SetVrModeEnabled or by BeginVrModeEx and EndVrModeEx */
 static void test_vr_mode(void) {
     u8 on = 0xee;
@@ -1105,6 +1132,7 @@ int main(void) {
     test_previous_program();
     test_execute_program();
     test_storage_read();
+    test_transfer_storage();
     test_vr_mode();
     test_inline();
     modern_packet = 1;

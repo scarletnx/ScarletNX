@@ -8,6 +8,7 @@
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "nx/runtime/driver/extract.h"
+#include "nx/runtime/driver/pack.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/recompile.h"
 #include "nx/runtime/driver/setup.h"
@@ -92,6 +93,9 @@ static void usage(void) {
          "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
          "                         an XCI or NSP of a game or an update is read in place, with the\n"
          "                         keys of the data folder (--data)");
+    puts("  --pack FOLDER|DUMP     Pack a folder of NCAs (or a dump's) into an NSP, or with --xci an XCI,\n"
+         "                         whose NCAs are decrypted: an ordinary NSP or XCI, not a DNSP or DXCI\n"
+         "                         (--pack -h)");
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
@@ -116,6 +120,25 @@ static void usage(void) {
 #else
          " ~/.local/share/scarletnx.");
 #endif
+}
+/* The game made from an extracted game's folder (its .ini's source=) gets the icon.jpg beside the folder's exefs/, as
+   -x lays one out, in <base>_data/ where Games shows it, whenever the two differ: a cover put there later shows from
+   the game's next run. A game made from a dump has its dump's instead (extract.c) */
+static void folder_icon(const char* folder, const char* name, const char* base) {
+    char *source = snx_game_source(folder, name, NULL), *from = NULL, *to = NULL;
+    unsigned char* jpeg = NULL;
+    size_t size = 0;
+    if (source && snx_extracted_game(source) && (from = snx_path_join(source, "icon.jpg")) != NULL &&
+        snx_is_file(from)) {
+        to = snx_format("%s_data/icon.jpg", base);
+        jpeg = snx_read_file(from, &size);
+        if (!to || !jpeg || snx_write_changed(to, jpeg, size))
+            printf("Games shows no icon for the game: %s could not be copied to %s\n", from, to ? to : base);
+    }
+    free(jpeg);
+    free(to);
+    free(from);
+    free(source);
 }
 static int is_nro_path(const char* path) {
     const char* ext = strrchr(path, '.');
@@ -1370,6 +1393,7 @@ made:
             goto done;
         }
     }
+    if (!nro && !addon && folder && name) folder_icon(folder, name, base); /* the game plays without it, said why */
     /* made from the extraction --out keeps: its dump recorded all the same, which its update's RomFS is read over and
        Extract dump off reads it from */
     if (out && !nro && snx_record_source(folder, name, dump)) {
@@ -1513,8 +1537,10 @@ static int takes_value(const char* arg) {
         if (!strcmp(arg, names[i])) return 1;
     return 0;
 }
-/* a setting the runtime knows */
-static int setting_known(const char* key) { return snx_setting_known && snx_setting_known(key); }
+/* the driver alone has no runtime and so no setting: the runtime's snx_setting_known (options.c) takes this one's
+   place. A definition and not a weak declaration tested for null: where the program defines the function, LLVM reads
+   that test on Windows on Arm through a slot COFF has not, the function's own first words */
+[[gnu::weak]] int snx_setting_known(const char* key) { return (void)key, 0; }
 static int container_path(const char* path) {
     const char* ext = strrchr(path, '.');
     char lower[6];
@@ -1537,6 +1563,21 @@ static int data_folder(const char* given, const char* program_dir, int make, con
     if (make && *found && snx_mkdirs(*found)) return snx_error("cannot create the data folder %s", *found);
     *folder = *found ? *found : ".";
     return 0;
+}
+/* scarletnx --pack ARGS (pack.c): the keys are looked for in the data folder of this program, unless --data, which
+   pack.c reads itself, names one */
+static int pack_run(int argc, char** argv) {
+    SnxPaths paths = {0};
+    char *self = snx_executable(argv[0]), *dir = self ? snx_dirname(self) : NULL, *found = NULL;
+    const char* repo = NULL;
+    int rc = data_folder(NULL, dir, 0, &repo, &found); /* only its keys are read: nothing is made */
+    snx_tool_console();
+    paths.repo = repo;
+    if (!rc) rc = snx_pack(argc - 2, argv + 2, &paths);
+    free(found);
+    free(dir);
+    free(self);
+    return rc;
 }
 /* --dump-modules PROGRAM DIR [--data DIR]: each module's image and symbols, at the bases the runtime gives them
    (loader.h's snx_dump_program has the format). Tools read game code through it. An XCI or NSP is read in place, with
@@ -1626,6 +1667,10 @@ int snx_driver(int argc, char** argv) {
     }
     if (!strcmp(argv[1], "--scan-log")) {
         result = snx_logscan_main(argc - 1, argv + 1, snx_demangle);
+        goto done;
+    }
+    if (!strcmp(argv[1], "--pack")) {
+        result = pack_run(argc, argv);
         goto done;
     }
     /* --game DIR and the run's settings given apart are joined into the --key=value the runtime reads */
@@ -1802,7 +1847,7 @@ int snx_driver(int argc, char** argv) {
             if (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=')) {
                 char key[64];
                 const char* value = settings_arg(rest[i], key, sizeof key);
-                int recompiles = value && snx_recompile_setting(key), plays = value && setting_known(key);
+                int recompiles = value && snx_recompile_setting(key), plays = value && snx_setting_known(key);
                 if (!recompiles && !plays) {
                     result = snx_error("unknown option: %s", rest[i]);
                     goto done;
@@ -1883,7 +1928,8 @@ int snx_driver(int argc, char** argv) {
                 !strncmp(rest[i], "--game=", 7))
                 continue;
             char key[64];
-            if (!input && (!strcmp(rest[i], "-v") || (settings_arg(rest[i], key, sizeof key) && setting_known(key))))
+            if (!input &&
+                (!strcmp(rest[i], "-v") || (settings_arg(rest[i], key, sizeof key) && snx_setting_known(key))))
                 continue;
             if (rest[i][0] == '-' && rest[i][1] && strcmp(rest[i], "--tmpfs") && strcmp(rest[i], "-h") &&
                 strcmp(rest[i], "--help") && strcmp(rest[i], "--hook-direct-calls")) {

@@ -199,6 +199,62 @@ static void adpcm_and_linear(SnxCtrMemory* m) {
     snx_ctr_dsp_free(dsp);
 }
 
+/* A stream's ADPCM coefficients and a source's biquad coefficients are any 16 bits: the sums of their products with
+   full-scale samples pass 32 bits, and clamp as the wide sum does */
+static void wide_sums(SnxCtrMemory* m) {
+    SnxCtrDsp* dsp = initialized(m);
+    /* frame 1, scale 4096 with c1 = 1.0: nibbles of -8 hold -32768. Frame 2, scale 32768 with c1 = c2 = -16.0 and
+       nibbles of 7: 7 * 2^26 + 2^30 + 2^30 is 32767 clamped */
+    uint8_t adpcm[16] = {0x0c, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88,
+                         0x1f, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    put(m, SAMPLES, adpcm, sizeof adpcm);
+    counters(m, 2, 1);
+    DspSourceConfig config = source(SAMPLES, 28, DSP_ADPCM, DSP_NONE, 1.0f);
+    config.dirty |= DSP_ADPCM_COEFFICIENTS_DIRTY;
+    int16_t coeffs[16] = {2048, 0, -32768, -32768};
+    put(m, R0 + DSP_SOURCE_CONFIGS, &config, sizeof config);
+    put(m, R0 + DSP_ADPCM_COEFFS, coeffs, sizeof coeffs);
+    master(m, R0);
+    int16_t frame[SNX_CTR_DSP_SAMPLES][2];
+    assert(snx_ctr_dsp_tick(dsp, frame) && snx_ctr_dsp_tick(dsp, frame)); /* the first dequeues */
+    assert(frame[15][0] == -32768 && frame[16][0] == 32767);
+    snx_ctr_dsp_free(dsp);
+
+    /* the biquad with every coefficient 32767 / 16384 over full-scale samples: the second output's sum is three
+       products of 2^30 */
+    dsp = initialized(m);
+    int16_t pcm[8];
+    for (unsigned k = 0; k < 8; ++k) pcm[k] = 32767;
+    put(m, SAMPLES, pcm, sizeof pcm);
+    counters(m, 2, 1);
+    config = source(SAMPLES, 8, DSP_PCM16, DSP_NONE, 1.0f);
+    config.dirty |= DSP_FILTERS_ENABLED_DIRTY | DSP_BIQUAD_FILTER_DIRTY;
+    config.filters_enabled = 2;
+    config.biquad_b0 = config.biquad_b1 = config.biquad_b2 = config.biquad_a1 = config.biquad_a2 = 32767;
+    put(m, R0 + DSP_SOURCE_CONFIGS, &config, sizeof config);
+    master(m, R0);
+    assert(snx_ctr_dsp_tick(dsp, frame) && snx_ctr_dsp_tick(dsp, frame));
+    for (unsigned n = 2; n < 10; ++n) assert(frame[n][0] == 32767);
+    snx_ctr_dsp_free(dsp);
+
+    /* the simple filter with b0 = a1 = -1.0: an output is the opposite of the sample plus the last output. The lowest
+       sample gives the highest output, the highest sample after it the lowest, and the lowest again a sum of two
+       products of 2^30, which is 65536 clamped and not the lowest again */
+    dsp = initialized(m);
+    const int16_t swing[8] = {-32768, 32767, -32768};
+    put(m, SAMPLES, swing, sizeof swing);
+    counters(m, 2, 1);
+    config = source(SAMPLES, 8, DSP_PCM16, DSP_NONE, 1.0f);
+    config.dirty |= DSP_FILTERS_ENABLED_DIRTY | DSP_SIMPLE_FILTER_DIRTY;
+    config.filters_enabled = 1;
+    config.simple_b0 = config.simple_a1 = -32768;
+    put(m, R0 + DSP_SOURCE_CONFIGS, &config, sizeof config);
+    master(m, R0);
+    assert(snx_ctr_dsp_tick(dsp, frame) && snx_ctr_dsp_tick(dsp, frame));
+    assert(frame[2][0] == 32767 && frame[3][0] == -32768 && frame[4][0] == 32767); /* after two of history */
+    snx_ctr_dsp_free(dsp);
+}
+
 /* ---- the binary pipe's AAC decoder ---- */
 
 #define AAC_INPUT (FCRAM + 0x200000u)
@@ -427,6 +483,7 @@ int main(void) {
     pipes_and_regions(m);
     pcm16_source(m);
     adpcm_and_linear(m);
+    wide_sums(m);
     aac_pipe(m);
     snx_ctr_memory_free(m);
     service();

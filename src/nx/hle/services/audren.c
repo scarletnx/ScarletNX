@@ -120,8 +120,6 @@ void audren_tick(void) {
         /* nothing left on the device while the renderer is playing: the sound stopped for as long as the host took
            to give it the next frame, which a stalled run's audio shows as a click */
         SNX_PLOT("audio underruns", r->out_started && !queued ? 1.0 : 0.0);
-        SNX_PLOT("audio queued ms", (double)queued / ((double)r->s->rate * 4.0) * 1000.0); /* stereo s16 */
-        SNX_PLOT("audio underruns", r->out_started && !queued ? 1.0 : 0.0); /* the play nothing left to give it */
         if (queued > r->s->rate * 4 / 1000 * AUDREN_MAX_QUEUED_MS) continue;
         snx_le16_array(stereo, (size_t)r->s->frame * 2); /* the host plays little-endian samples, as audout's are */
         plat_audio_queue(r->out, stereo, bytes);

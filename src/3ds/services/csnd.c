@@ -275,7 +275,7 @@ static void set_play_state(SnxCtrProcess* p, unsigned channel, bool play) {
 static void update_state(SnxCtrProcess* p, const SnxCtrCsndClient* k) {
     SnxCtrCsnd* cs = &p->csnd;
     write32(p, k, k->master_state_offset, cs->hw.channel_mask & k->channel_mask);
-    write32(p, k, k->master_state_offset + 4, cs->hw.channel_mask & k->capture_mask);
+    write32(p, k, k->master_state_offset + 4, cs->hw.capture_mask & k->capture_mask);
     uint32_t index = 0;
     for (unsigned ch = 0; ch < SNX_CTR_CSND_CHANNELS; ++ch) {
         if (!(k->channel_mask >> ch & 1)) continue;
@@ -547,7 +547,7 @@ void snx_ctr_csnd_dispatch(SnxCtrIpc* c) {
         case 0x0b: /* InvalidateDataCache(address, size, process): within the linear heap or the FCRAM's mirror */
             if (!snx_ctr_ipc_expect(c, 2, 2)) return;
             {
-                uint32_t address = c->in[1], end = address + c->in[2];
+                uint64_t address = c->in[1], end = address + c->in[2]; /* a size that wraps 32 bits ends outside */
                 bool heap =
                     0x14000000u <= address && address <= 0x1c000000u && 0x14000000u <= end && end <= 0x1c000000u;
                 bool mirror =

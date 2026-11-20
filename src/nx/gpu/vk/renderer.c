@@ -27,6 +27,7 @@
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
+#include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/ledger.h"
@@ -260,6 +261,12 @@ static void vkr_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     vk_lock();
     vk_render_draw(ds, dc, o);
     vk_unlock();
+}
+static u32 vkr_host_program(int stage, const u32* spirv, size_t words, const ShaderInfo* si) {
+    vk_lock();
+    u32 id = vk_host_program(stage, spirv, words, si);
+    vk_unlock();
+    return id;
 }
 static void vkr_samples_reset(u32 owner) {
     vk_lock();
@@ -859,14 +866,16 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
             u64 cs_skipped = vk_cs_skipped(cs_why, sizeof cs_why);
-            LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped); %llu dispatches in %llu batches "
+            LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped, %llu with a compute task); %llu "
+                "dispatches in %llu batches "
                 "(%llu ms waiting, %llu stood in for a network's pass), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
                 "%llu draws kept an earlier one's shaders and pipeline (%llu checked), %llu the last one's targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
-                (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
+                (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_mesh_task_compute,
+                (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
                 (unsigned long long)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) / 1000000),
                 (unsigned long long)g_cs_standins, (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
@@ -988,7 +997,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         "and it took %llu new; its file holds %llu MB (started over %llu times at %llu MB)\n",
                         (unsigned long long)bc7_hits, (unsigned long long)vk_astc_bc7_copies(),
                         (unsigned long long)cache_stored, (unsigned long long)(cache_file >> 20),
-                        (unsigned long long)cache_restarts, (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
+                        (unsigned long long)cache_restarts, (unsigned long long)(vk_bc7_cache_max() >> 20));
+                u64 cache_late, cache_skipped, cache_unkept;
+                vk_bc7_cache_late(&cache_late, &cache_skipped, &cache_unkept);
+                if (cache_late || cache_skipped || cache_unkept)
+                    LOG("vulkan: the BC7 cache on a slow disk: %llu reads came too late and %llu were not tried, their "
+                        "levels encoded instead; %llu new levels were not kept\n",
+                        (unsigned long long)cache_late, (unsigned long long)cache_skipped,
+                        (unsigned long long)cache_unkept);
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)
@@ -1073,6 +1089,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_rt_copies, (unsigned long long)g_vk_rt_copy_writes,
                 (unsigned long long)g_vk_barriers_merged, (unsigned long long)g_vk_barriers_in_pass);
             vk_predraw_report();
+            vk_rt_copy_log();
             if (g_vk_capture_draws || g_vk_capture_capped)
                 LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
                     "primitives\n",
@@ -1531,6 +1548,7 @@ const Renderer vk_renderer = {
     .ready = vk_frame_ready,
     .clear = vkr_clear,
     .draw_texture = vkr_draw_texture,
+    .host_program = vkr_host_program,
     .discard = vkr_discard,
     .draw = vkr_draw,
     .xfb_control = vkr_xfb_control,

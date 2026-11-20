@@ -125,6 +125,15 @@ jobs:
           path: artifacts/ScarletNX-windows-x86_64-${{ steps.plan.outputs.short }}
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download the Windows on Arm build
+        if: steps.plan.outputs.run
+        continue-on-error: true # its job may fail without failing the run: the notes say not built
+        uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-windows-aarch64-${{ steps.plan.outputs.short }}
+          path: artifacts/ScarletNX-windows-aarch64-${{ steps.plan.outputs.short }}
+          run-id: ${{ steps.plan.outputs.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Android APK
         if: steps.plan.outputs.run
         continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
