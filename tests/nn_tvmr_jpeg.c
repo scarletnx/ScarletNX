@@ -35,7 +35,7 @@ static void test_fail(const char* expression, int line) {
 static u8 test_mem[GUEST_HI];
 #define OBJECTS   0x10000u /* kmem_alloc's */
 #define SCRATCH   0x20000u /* surfaces, fences, buffer lists */
-#define OUT       0x40000u /* GetBits' destination */
+#define DEST      0x40000u /* GetBits' destination */
 #define STREAM    0x300000u
 #define HANDLE_A  1u /* nvmap handles: their memory */
 #define HANDLE_B  2u
@@ -194,9 +194,9 @@ static void encode_source(u64 s, u8 q) {
     jpeg_n = snx_ld_le32(G(bytes));
     CHECK(jpeg_n > 600 && jpeg_n < 0x10000);
     snx_st_le32(G(bytes), 0);
-    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, OUT, 0) == ST_OK);
+    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, DEST, 0) == ST_OK);
     CHECK(snx_ld_le32(G(bytes)) == jpeg_n);
-    memcpy(jpeg, G(OUT), jpeg_n);
+    memcpy(jpeg, G(DEST), jpeg_n);
     CHECK(tvmrjpeg_encoder_bits_available(c, enc, bytes, 0, 0) == ST_NONE); /* read */
     tvmrjpeg_encoder_destroy(c, enc);
     CHECK(!obj_of(enc, TVMRJPEG_ENCODER));
@@ -210,7 +210,7 @@ static u64 stream(const Abi* a, const u8* j, u32 n) {
     return list;
 }
 
-static int near(int a, int b, int tolerance) { return a - b <= tolerance && b - a <= tolerance; }
+static int close_to(int a, int b, int tolerance) { return a - b <= tolerance && b - a <= tolerance; }
 
 static void test_encode(void) {
     u32 len;
@@ -243,26 +243,26 @@ static void test_encode(void) {
     CHECK(tvmrjpeg_encoder_feed_frame64(c, enc, SCRATCH, 0, 0, 90) == ST_OK);
     CHECK(tvmrjpeg_encoder_feed_frame64(c, enc, SCRATCH, 0, 0, 90) == ST_FULL);
     CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, 0, 0) == ST_FULL); /* no destination */
-    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, OUT, 1) == ST_OK);
-    CHECK(snx_ld_le32(G(bytes)) == jpeg_n - 2 && !memcmp(G(OUT), jpeg + 2, jpeg_n - 2));
+    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, DEST, 1) == ST_OK);
+    CHECK(snx_ld_le32(G(bytes)) == jpeg_n - 2 && !memcmp(G(DEST), jpeg + 2, jpeg_n - 2));
     /* GetBitsEx over two buffers, the first too small for it all; then buffers too small, which keep the frame */
     CHECK(tvmrjpeg_encoder_feed_frame64(c, enc, SCRATCH, 0, 0, 90) == ST_OK);
     u64 list = SCRATCH + 0xe80;
-    snx_st_le64(G(list), OUT + 0x8000);
+    snx_st_le64(G(list), DEST + 0x8000);
     snx_st_le32(G(list + 8), 100);
-    snx_st_le64(G(list + 16), OUT + 0x9000);
+    snx_st_le64(G(list + 16), DEST + 0x9000);
     snx_st_le32(G(list + 24), 50);
     CHECK(tvmrjpeg_encoder_get_bits_ex64(c, enc, bytes, 2, list, 0) == ST_FULL);
     CHECK(tvmrjpeg_encoder_bits_available(c, enc, bytes, 0, 0) == ST_OK); /* still there */
     snx_st_le32(G(list + 24), 0x2000);
     CHECK(tvmrjpeg_encoder_get_bits_ex64(c, enc, bytes, 2, list, 0) == ST_OK);
-    CHECK(!memcmp(G(OUT + 0x8000), jpeg, 100) && !memcmp(G(OUT + 0x9000), jpeg + 100, jpeg_n - 100));
+    CHECK(!memcmp(G(DEST + 0x8000), jpeg, 100) && !memcmp(G(DEST + 0x9000), jpeg + 100, jpeg_n - 100));
     /* the caller's own tables, and a frame lost to a save state's load (the host's bytes are another frame's) */
     memset(G(SCRATCH + 0xc00), 1, 128);
     CHECK(tvmrjpeg_encoder_feed_frame_quant64(c, enc, SCRATCH, 0, 0, SCRATCH + 0xc00, 0) == ST_BAD);
     CHECK(tvmrjpeg_encoder_feed_frame_quant64(c, enc, SCRATCH, 0, 0, SCRATCH + 0xc00, SCRATCH + 0xc40) == ST_OK);
     g_host.tvmr_jpeg.serial[obj_index(obj_of(enc, TVMRJPEG_ENCODER))][0]++;
-    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, OUT, 0) == ST_FULL);
+    CHECK(tvmrjpeg_encoder_get_bits64(c, enc, bytes, DEST, 0) == ST_FULL);
     CHECK(tvmrjpeg_encoder_bits_available(c, enc, bytes, 0, 0) == ST_NONE);
     /* a type the encoder doesn't take, and movie 7's GetBits with no destination, which drops the frame */
     snx_st_le32(G(SCRATCH), 1);
@@ -335,22 +335,25 @@ static void test_decode(const Abi* a, int movie7) {
         for (u32 x = 0; x < W; x++) err += (u32)abs((int)G(MEM_B)[y * 72 + x] - (int)pic_y(x, y));
     CHECK(err / (W * H) <= 2);
     /* the surface's second plane takes Cr, its third Cb */
-    CHECK(near(G(MEM_B + 0x5000)[3 * 40 + 5], pic_cb(5, 3), 3) && near(G(MEM_B + 0x4000)[3 * 40 + 5], pic_cr(5, 3), 3));
+    CHECK(close_to(G(MEM_B + 0x5000)[3 * 40 + 5], pic_cb(5, 3), 3) &&
+          close_to(G(MEM_B + 0x4000)[3 * 40 + 5], pic_cr(5, 3), 3));
     /* shrunk by 2: half the sides */
     memset(G(MEM_B), 0, 0x8000);
     CHECK(yuv(c, dec, dst, 1, 1, list, 0, post, 0) == ST_OK);
-    CHECK(near(G(MEM_B)[10 * 72 + 10], pic_y(21, 21), 12) && G(MEM_B)[30 * 72 + 40] == 0);
+    CHECK(close_to(G(MEM_B)[10 * 72 + 10], pic_y(21, 21), 12) && G(MEM_B)[30 * 72 + 40] == 0);
     /* NV12 */
     PlaneDesc nv[2] = {{HANDLE_B, 0, 64, W, H}, {HANDLE_B, 0x4000, 64, W / 2, H / 2}};
     surface(a, dst, 6, W, H, nv, 2);
     CHECK(yuv(c, dec, dst, 0, 1, list, 0, post, 0) == ST_OK);
-    CHECK(near(G(MEM_B + 0x4000)[3 * 64 + 10], pic_cb(5, 3), 3) && near(G(MEM_B + 0x4000)[3 * 64 + 11], pic_cr(5, 3), 3));
+    CHECK(close_to(G(MEM_B + 0x4000)[3 * 64 + 10], pic_cb(5, 3), 3) &&
+          close_to(G(MEM_B + 0x4000)[3 * 64 + 11], pic_cr(5, 3), 3));
     /* YUYV, 4:2:2 from 4:2:0 */
     PlaneDesc yuyv = {HANDLE_B, 0, 2 * W, W, H};
     surface(a, dst, 12, W, H, &yuyv, 1);
     CHECK(yuv(c, dec, dst, 0, 1, list, 0, post, 0) == ST_OK);
-    CHECK(near(G(MEM_B)[6 * 2 * W + 2 * 20], pic_y(20, 6), 6) && near(G(MEM_B)[6 * 2 * W + 2 * 20 + 1], pic_cb(10, 3), 3) &&
-          near(G(MEM_B)[6 * 2 * W + 2 * 20 + 3], pic_cr(10, 3), 3));
+    CHECK(close_to(G(MEM_B)[6 * 2 * W + 2 * 20], pic_y(20, 6), 6) &&
+          close_to(G(MEM_B)[6 * 2 * W + 2 * 20 + 1], pic_cb(10, 3), 3) &&
+          close_to(G(MEM_B)[6 * 2 * W + 2 * 20 + 3], pic_cr(10, 3), 3));
     /* what NVJPG refuses: 4:4:4 from 4:2:0, a block linear surface, flags, types it doesn't write, a surface too
        small, a bitstream larger than the decoder's, a progressive JPEG */
     surface(a, dst, 3, W, H, p, 3);
@@ -390,8 +393,8 @@ static void test_decode(const Abi* a, int movie7) {
     CHECK(snx_ld_le32(G(post)) == NO_FENCE);
     const u8* px = G(MEM_B) + 20 * (4 * W + 32) + 4 * 20; /* in the block: Y 200 */
     int y = 200, cb = pic_cb(10, 10) - 128, cr = pic_cr(10, 10) - 128;
-    CHECK(near(px[0], y + (int)(1.402 * cr), 6) && near(px[1], y - (int)(0.344 * cb + 0.714 * cr), 6) &&
-          near(px[2], snx_clamp_int(y + (int)(1.772 * cb), 0, 255), 6) && px[3] == 0xff);
+    CHECK(close_to(px[0], y + (int)(1.402 * cr), 6) && close_to(px[1], y - (int)(0.344 * cb + 0.714 * cr), 6) &&
+          close_to(px[2], snx_clamp_int(y + (int)(1.772 * cb), 0, 255), 6) && px[3] == 0xff);
     output_surface(a, dst, a->rgba + 1u, &rgba); /* another byte order */
     CHECK(render_any(a, movie7, dec, dst, list, post) == ST_UNSUPPORTED);
     output_surface(a, dst, a->rgba + 4u, &rgba); /* past them: RGBA, as NVJPG's default */
@@ -410,11 +413,11 @@ static void test_encode32(void) {
     CHECK(tvmrjpeg_encoder_feed_frame32(c, enc, SCRATCH, 0, 0, 90) == ST_OK);
     CHECK(tvmrjpeg_encoder_feed_frame32(c, enc, SCRATCH, 0, 0, 90) == ST_OK); /* two buffers */
     u64 list = SCRATCH + 0xe80;
-    snx_st_le32(G(list), OUT);
+    snx_st_le32(G(list), DEST);
     snx_st_le32(G(list + 4), 0x10000);
     CHECK(tvmrjpeg_encoder_get_bits_ex32(c, enc, bytes, 1, list, 0) == ST_OK);
-    CHECK(snx_ld_le32(G(bytes)) == n64 && !memcmp(G(OUT), j64, n64));
-    CHECK(tvmrjpeg_encoder_get_bits32(c, enc, bytes, OUT, 0) == ST_OK && !memcmp(G(OUT), j64, n64));
+    CHECK(snx_ld_le32(G(bytes)) == n64 && !memcmp(G(DEST), j64, n64));
+    CHECK(tvmrjpeg_encoder_get_bits32(c, enc, bytes, DEST, 0) == ST_OK && !memcmp(G(DEST), j64, n64));
     tvmrjpeg_encoder_destroy(c, enc);
 }
 
