@@ -513,6 +513,14 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
     assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
     assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
+    /* a semaphore's count and a signal are any 32 bits: a signal past the most, or past what a count holds, is the
+       overflow, and the count stays */
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 9) == 0);
+    assert(CALL(kernel, "sceKernelSignalSema", sema, 1) == SCE_KERNEL_ERROR_SEMA_OVF);
+    uint32_t free_run = CALL(kernel, "sceKernelCreateSema", mem, 0, 2, 0, 0); /* no most */
+    assert(CALL(kernel, "sceKernelSignalSema", free_run, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
+    assert(CALL(kernel, "sceKernelGetSemaInfo", free_run, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x12c) == 2);
 }
 /* a file opened in a mounted archive closes with it: once the archive is unmounted its handle names no file, where it
    would read the archive's freed tables. The archive is a PSARC of one stored file: the header, the manifest's entry
