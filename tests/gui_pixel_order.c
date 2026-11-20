@@ -115,8 +115,7 @@ static void drawn_covers(App* app) {
 }
 
 int main(void) {
-    App app;
-    memset(&app, 0, sizeof app);
+    static App app; /* not on the stack, as snx_gui_main's */
     assert(SDL_Init(SDL_INIT_VIDEO));
     assert(SDL_CreateWindowAndRenderer("pixel order", 256, 256, 0, &app.window, &app.renderer));
     app.theme = *gui_theme_builtin("yorha");

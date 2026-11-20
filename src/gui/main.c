@@ -23285,36 +23285,41 @@ const char* snx_menu_language(int i, const char** name) {
 /* Move Old Files without the menu, to out: each entry and what it does or would, then how many; with apply, done.
    0, or 1 when one could not be moved; 2 when the folders cannot be found */
 static int migrate(const char* self, bool apply, FILE* out) {
-    App app;
+    App* app = (App*)calloc(1, sizeof *app); /* on the heap, as snx_gui_main's */
     char file[4400], what[4400];
     const char* at;
     bool ok;
     int moves, rc;
-    memset(&app, 0, sizeof app);
-    snx_tr_languages(snx_gui_languages, snx_gui_language_count);
-    app.look_only = !apply;
-    if (!paths_start(&app, self)) {
-        fprintf(stderr, "scarletnx: %s\n", SDL_GetError());
-        forget(&app);
+    if (!app) {
+        fprintf(stderr, "scarletnx: no memory for the menu's state (%zu bytes)\n", sizeof *app);
         return 2;
     }
-    open_files(&app); /* the folders the menu picked, which tell where things go */
-    left_behind(&app);
-    moves = move_old(&app, &app.cleaned, NULL, apply, false);
-    for (at = app.cleaned.text; at;) {
+    snx_tr_languages(snx_gui_languages, snx_gui_language_count);
+    app->look_only = !apply;
+    if (!paths_start(app, self)) {
+        fprintf(stderr, "scarletnx: %s\n", SDL_GetError());
+        forget(app);
+        free(app);
+        return 2;
+    }
+    open_files(app); /* the folders the menu picked, which tell where things go */
+    left_behind(app);
+    moves = move_old(app, &app->cleaned, NULL, apply, false);
+    for (at = app->cleaned.text; at;) {
         at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
         fprintf(out, "%s: %s\n", file, what);
     }
-    if (!app.cleaned.count)
+    if (!app->cleaned.count)
         snprintf(what, sizeof what, "%s", snx_tr("Nothing left by an older version"));
     else if (!apply)
         snprintf(what, sizeof what, snx_tr("%d to move, %d staying: --migrate=yes moves them"), moves,
-                 app.cleaned.count - moves);
+                 app->cleaned.count - moves);
     else
-        snprintf(what, sizeof what, snx_tr("%d moved, %d not"), moves, app.cleaned.count - app.cleaned.done);
+        snprintf(what, sizeof what, snx_tr("%d moved, %d not"), moves, app->cleaned.count - app->cleaned.done);
     fprintf(out, "%s\n", what);
-    rc = apply && app.cleaned.done < app.cleaned.count;
-    forget(&app);
+    rc = apply && app->cleaned.done < app->cleaned.count;
+    forget(app);
+    free(app);
     return rc;
 }
 int snx_gui_migrate(const char* self, const char* option) {
@@ -23326,20 +23331,25 @@ int snx_gui_migrate(const char* self, const char* option) {
 }
 #endif
 int snx_gui_main(const char* self) {
-    App app;
-    if (!initialize(&app, self)) {
+    /* on the heap: some 750 KiB, of the 1 MiB of stack Windows gives a program's main thread */
+    App* app = (App*)calloc(1, sizeof *app);
+    if (!app) {
+        fprintf(stderr, "scarletnx: no memory for the menu's state (%zu bytes)\n", sizeof *app);
+        return 1;
+    }
+    if (!initialize(app, self)) {
         char why[1024];
         SDL_strlcpy(why, SDL_GetError(), sizeof why);
 #ifndef SDL_PLATFORM_IOS /* there the folder is known from the start (initialize) */
         { /* the log's folder, as open_files takes it, from the data folder paths_start would find when it did not yet */
             char *drivers = NULL, *data = NULL, *state;
 #ifndef SDL_PLATFORM_ANDROID
-            if (!app.data_dir) {
+            if (!app->data_dir) {
                 drivers = self ? snx_dirname(self) : SDL_GetBasePath() ? snx_strdup(SDL_GetBasePath()) : NULL;
                 data = drivers ? snx_data_dir(drivers) : NULL;
             }
 #endif
-            state = app.data_dir || data ? snx_menu_dir(app.data_dir ? app.data_dir : data, SNX_USER_STATE) : NULL;
+            state = app->data_dir || data ? snx_menu_dir(app->data_dir ? app->data_dir : data, SNX_USER_STATE) : NULL;
             if (state && !snx_mkdirs(state)) gui_log_folder(state);
             free(state);
             free(data);
@@ -23348,41 +23358,44 @@ int snx_gui_main(const char* self) {
 #endif
         gui_log_fatal(why); /* a phone shows no stderr */
 #ifdef SDL_PLATFORM_IOS
-        if (app.window) /* a message box there needs the window, which may be what failed */
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", why, app.window);
+        if (app->window) /* a message box there needs the window, which may be what failed */
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", why, app->window);
 #else
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", why, app.window);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", why, app->window);
 #endif
-        cleanup(&app);
+        cleanup(app);
+        free(app);
         return 1;
     }
-    open_files(&app); /* here, not in initialize(), so the tests keep their own */
-    mark_start(&app, false);
-    last_run_look(&app); /* a run whose end the last start did not see: the setup's first page, Last Run */
-    left_behind(&app);   /* what an older version left: the setup's last pages, Old Files */
-    setup_start(&app);
-    app.games_fresh = true;
-    watch_start(&app);
-    app.dump_icons.live = true; /* the dumps' icons asked on a thread of their own */
-    space_start(&app);          /* the footer's disk */
-    splash_start(&app);
-    while (!app.menu.quit) {
+    open_files(app); /* here, not in initialize(), so the tests keep their own */
+    mark_start(app, false);
+    last_run_look(app); /* a run whose end the last start did not see: the setup's first page, Last Run */
+    left_behind(app);   /* what an older version left: the setup's last pages, Old Files */
+    setup_start(app);
+    app->games_fresh = true;
+    watch_start(app);
+    app->dump_icons.live = true; /* the dumps' icons asked on a thread of their own */
+    space_start(app);            /* the footer's disk */
+    splash_start(app);
+    while (!app->menu.quit) {
         SDL_Event e;
 #ifdef SDL_PLATFORM_ANDROID
         /* behind other apps with no run to read, the queue's neither, the menu waits to show again */
-        if (app.hidden && !app.menu.running && gui_queue_running(&app.queue) < 0 && SDL_WaitEvent(&e)) event(&app, &e);
+        if (app->hidden && !app->menu.running && gui_queue_running(&app->queue) < 0 && SDL_WaitEvent(&e))
+            event(app, &e);
 #endif
-        while (SDL_PollEvent(&e)) event(&app, &e);
-        pads_repeat(&app);
-        pump(&app);
+        while (SDL_PollEvent(&e)) event(app, &e);
+        pads_repeat(app);
+        pump(app);
 #ifdef SDL_PLATFORM_ANDROID
-        if (!app.hidden)
+        if (!app->hidden)
 #endif
-            render(&app);
-        pads_follow(&app);
+            render(app);
+        pads_follow(app);
         SDL_Delay(16);
     }
-    cleanup(&app);
+    cleanup(app);
+    free(app);
 #ifdef SDL_PLATFORM_IOS
     int played = 0;
     if (gui_apple_played(&played)) return 0; /* the game picked runs in this process next, under this mark */
