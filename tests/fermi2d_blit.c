@@ -13,7 +13,16 @@
    pixel conversion and run through its shader's CPU build (blit_convert_cpu.cpp), each pixel held to what the format
    holds: red and blue swapped, red in the top five bits of the 565 word, one as 0x3c00. They copied the bytes (RGBA8
    and BGRA8) or were not done */
+#include <stdlib.h>
+/* fermi2d.c's own allocations, the largest asked kept: one over 64 MiB is refused, as no blit here needs it */
+static size_t most_asked;
+static void* counted_malloc(size_t n) {
+    if (n > most_asked) most_asked = n;
+    return n > ((size_t)64 << 20) ? NULL : malloc(n);
+}
+#define malloc(n) counted_malloc(n)
 #include "nx/gpu/maxwell/fermi2d.c"
+#undef malloc
 #include "support/fermi2d_ref.h"
 #include "support/half.h"
 #include "blit_convert_cpu.h"
@@ -172,6 +181,31 @@ static void window(void) {
         }
 }
 
+/* a rectangle that ends left of the destination, or above it: nothing is drawn, and no table of its 2^32 - 50
+   columns is asked for */
+static void outside(void) {
+    static GpuChannel ch;
+    for (unsigned above = 0; above < 2; above++) {
+        fill();
+        memset(&ch, 0, sizeof ch);
+        surface(&ch, 0x80, DST, DW, DH);
+        surface(&ch, 0x8C, SRC, SW, SH);
+        u32* r = ch.r2d;
+        r[0x223] = 1;
+        r[0x22C] = above ? 0 : (u32)-100;
+        r[0x22D] = above ? (u32)-100 : 0;
+        r[0x22E] = above ? DW : 50;
+        r[0x22F] = above ? 50 : DH;
+        r[0x231] = r[0x233] = 2;
+        blits = reloads = 0;
+        most_asked = 0;
+        fermi2d_method(&ch, 0x237, 0);
+        CHECK(blits == 0 && most_asked == 0);
+        for (u32 y = 0; y < DH; y++)
+            for (u32 x = 0; x < DW; x++) CHECK(at(DST, x, y, DW, DH) == 0xEEEEEEEEu);
+    }
+}
+
 /* a source 37 pixels wide: its rows end 4 bytes into a 16 byte run */
 static void odd_source(void) {
     fill_from(37);
@@ -299,6 +333,7 @@ static void formats(void) {
 int main(void) {
     whole();
     window();
+    outside();
     odd_source();
     halves();
     convert();

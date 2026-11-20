@@ -426,7 +426,9 @@ static void blit_texture(const NvnPCopyT2T* r, const NvnTexture* source, const N
             LOG_LIMIT(4, "nvn: a texture blit from format %#x to %#x isn't replayed\n", s.format, d.format);
             continue;
         }
-        /* the destination rectangle within the destination, each column and row its source's, nearest */
+        /* the destination rectangle within the destination, each column and row its source's, nearest: one that ends
+           left of it or above it has no pixel there, and its end is no coordinate */
+        if ((i64)r->dr.xoffset + r->dr.width <= 0 || (i64)r->dr.yoffset + r->dr.height <= 0) continue;
         GpuBlit b = {0};
         b.x0 = r->dr.xoffset > 0 ? (u32)r->dr.xoffset : 0;
         b.y0 = r->dr.yoffset > 0 ? (u32)r->dr.yoffset : 0;
