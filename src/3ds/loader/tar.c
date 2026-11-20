@@ -13,6 +13,7 @@
 
 #define TAR_HEADER 512u
 #define TAR_ENTRIES_LIMIT 50 /* Azahar's TarArchive reads no more of a bundle than this */
+#define TAR_NAME 202         /* an entry's name with its prefix, the longest taken, and its end */
 /* the game extensions an entry's name may end in, lowercased; the same ones the driver and the launcher take */
 static const char* const game_suffixes[] = {".cia", ".cci", ".3ds", ".cxi", ".app", ".hbb"};
 
@@ -66,7 +67,7 @@ bool ctr_tar_game(CtrReader* r, bool* is_tar) {
     if (r->size < TAR_HEADER || !ctr_read(r, (CtrSpan){0, r->size}, 0, h, sizeof h)) return false;
     if (memcmp(h + 257, "ustar", 5)) return true; /* a bundle is a ustar archive; anything else is a game itself */
     *is_tar = true;
-    char (*names)[101] = calloc(TAR_ENTRIES_LIMIT, sizeof *names);
+    char (*names)[TAR_NAME] = calloc(TAR_ENTRIES_LIMIT, sizeof *names);
     CtrSpan* games = calloc(TAR_ENTRIES_LIMIT, sizeof *games);
     if (!names || !games) {
         free(names);
@@ -115,7 +116,7 @@ bool ctr_tar_game(CtrReader* r, bool* is_tar) {
                 ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "a bundle entry's name has no end in its field");
                 break;
             }
-            char name[202];
+            char name[TAR_NAME];
             size_t prefix = 0;
             while (prefix < 155 && h[345 + prefix]) ++prefix;
             if (prefix && (prefix > 155 || prefix + 1 + n >= sizeof name)) {
