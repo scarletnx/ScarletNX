@@ -306,3 +306,27 @@ sailgen writes is compiled with. `eval.h` runs the same Sail on values, with an 
 run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3's 256 truth tables whole, and each
 fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
 shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.
+
+## The x86-64 back end
+
+A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived when sailgen
+runs from the pseudocode of Intel's manual, so the recompiler pays for choosing instructions at build time and does
+little more than write their bytes at run time.
+
+### The SDM's pages (`--sdm`)
+
+```sh
+pdftotext -layout 325383-093US.pdf sdm.txt
+sailgen --sdm sdm.txt -o sdm.pages [--overlay OVERRIDE.sdm]...
+```
+
+The manual (Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, order number 325383) is not kept
+in the tree. `sdm.c` cuts `pdftotext -layout`'s text of it into its
+instruction pages, each the manual's opcode table, operand encoding table, Operation section and Flags Affected
+section, verbatim apart from the page furniture (running footers, form feeds) and pdftotext's column artefacts (a row
+whose operands a footnote's superscript pushed onto the line above, a footnote's mark after an operand). The format
+is vibe86's (its `tools/sdm/extract.py`, which this ports, gives the same 806 pages of 093US byte for byte), with a
+sixth column for the tables that have one: the CPUID feature flag (`BMI1`, `BMI2`, `LZCNT`). Where the manual is
+wrong, or can't be read as written, an override (a page of only the sections it replaces, `# NAME—Title` first)
+takes their place, so the extracted pages stay the manual's own words and every fix is a file that says why.
+`tests/sailgen/sdm_fixture.txt` is a page written in the manual's layout for the test, `sailgen_sdm`.

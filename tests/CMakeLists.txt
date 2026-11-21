@@ -1357,6 +1357,18 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail"
 add_custom_target(snx_sailgen_extract_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
 add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/extract_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+# --sdm reads pdftotext's layout of an instruction page (a footer's page number, a row whose operands a footnote's
+# superscript pushed onto the line above, the stacked tables with a CPUID column) and puts an override's section in
+# place of the page's; the fixture is written for the test, not the manual's text
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sailgen"
+    COMMAND snx-sailgen --sdm "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_fixture.txt"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages" --overlay "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_override.sdm"
+    DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_fixture.txt"
+            "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_override.sdm" VERBATIM)
+add_custom_target(snx_sailgen_sdm_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
+add_test(NAME sailgen_sdm COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
+         "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_expected.pages" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"

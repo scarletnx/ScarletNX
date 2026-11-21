@@ -8,7 +8,7 @@
 include_guard(GLOBAL)
 set(snx_sailgen_sources "${PROJECT_SOURCE_DIR}/tools/sailgen/main.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/parse.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/extract.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/gen.c"
-                        "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c")
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm.c")
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
     include(ExternalProject)
