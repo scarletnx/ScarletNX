@@ -187,6 +187,7 @@ static void hook(CPU* c, u32 ix, unsigned index) {
     SNX_ZONE_T(z_hook, "nce hook", "%s", guest_stats_family_name(g_nce.family[index]));
     entry = g_nce.entry[index];
     f = atomic_load_explicit(&g_disp[(entry - g_code_lo) >> 2], memory_order_acquire);
+    SNX_ZONE_VALUE(z_hook, f && f != nce_native ? 1 : 0); /* 1 a handler ran, 0 rejected: its own code */
     if (!f || f == nce_native) {
         c->pc = g_nce.original[index];
         SNX_ZONE_END(z_hook); /* no handler: the hook's own code is the outcall */
@@ -301,6 +302,7 @@ static void thread_net(u32 ix) {
         return;
     }
     if (atomic_compare_exchange_strong_explicit(&g_nce.net, &none, -1, memory_order_acq_rel, memory_order_acquire)) {
+        SNX_ZONE_T(z_nonet, "nce net none", "%s", why);
         WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
              why);
         return;
@@ -351,6 +353,8 @@ static int pool_add(u64 addr, u64 size) {
 /* each site's stub and patch. A site whose word is not the one the file names (another module than the recompile's)
    or that no pool reaches would run as it is: an SVC would be a system call of the host. The game cannot run then */
 static void patch_sites(const NceSites* s) {
+    u64 t0 = plat_ns();
+    SNX_ZONE_V(z_patch, "nce patch", (u64)s->count); /* the sites to patch */
     for (size_t i = 0; i < s->count; i++) {
         const NceSite* site = &s->site[i];
         u32 word;
@@ -363,6 +367,8 @@ static void patch_sites(const NceSites* s) {
     }
     for (size_t i = 0; i < g_nce.pools; i++)
         __builtin___clear_cache((char*)g_nce.pool[i].buf, (char*)g_nce.pool[i].buf + g_nce.pool[i].used);
+    SNX_PLOT("rt nce patch ms", (double)(plat_ns() - t0) / 1e6);
+    SNX_PLOT("rt nce patch sites", (double)s->count);
 }
 
 void nce_init(void) {
@@ -437,6 +443,7 @@ void nce_slot_taken(u64 addr, const char* family) {
         if (g_nce.entry[i] == addr) break;
     if (i < n) {
         pm_unlock(&g_nce.lock);
+        SNX_ZONE_T(z_dup, "nce hook duplicate", "%s", family);
         return;
     }
     if (i == NCE_DIVERTS) fatal("NCE: more than %d functions take handlers", NCE_DIVERTS);
@@ -453,6 +460,8 @@ void nce_slot_taken(u64 addr, const char* family) {
                 WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: no pool of stubs "
                      "within a B's reach (128 MiB) of it has room for one more\n",
                      (unsigned long long)addr, family);
+            SNX_ZONE_TV(z_rej, "nce hook rejected", (u64)r, "%s: %s", family,
+                        r == -2 ? "word beyond reach" : "no stub room");
             return;
         }
     }
@@ -464,6 +473,7 @@ void nce_slot_taken(u64 addr, const char* family) {
     atomic_store_explicit(&g_nce.diverts, i + 1, memory_order_release); /* before the entry branches to it */
     code_write(addr, word);
     pm_unlock(&g_nce.lock);
+    SNX_ZONE_TV(z_added, "nce hook added", 1, "%s", family);
 }
 
 void nce_code_added(u64 base, u64 text_size) {

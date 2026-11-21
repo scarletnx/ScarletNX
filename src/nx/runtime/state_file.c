@@ -45,7 +45,8 @@ struct StateWriter {
     SnxStateHeader h;
     Section sec[SECTIONS];
     int n, open, failed;
-    u64 at; /* the file's length so far */
+    u64 at;     /* the file's length so far */
+    u64 copied; /* the section bytes memcpy'd into the ring: what a save copied */
     /* the chunks, the next one sw_put fills and the next one written, their counts since sw_open; and the workers,
        under lk: they wait on cv for a chunk queued, and the writer for one done or a worker gone */
     Chunk ring[RING];
@@ -61,6 +62,7 @@ struct StateReader {
     int ended;                    /* the section's frame has ended (zstd has checked its checksum) */
     u64 in_at, in_left, out_left; /* the current section's next stored byte, its stored bytes not read, and its bytes
                                      not given out */
+    u64 copied; /* the bytes given to callers: what a load copied */
     ZSTD_DCtx* z;
     u8* in;
     size_t insize;
@@ -96,7 +98,13 @@ static void worker(void* arg) {
         }
         c->state = CH_BUSY;
         pm_unlock(&w->lk);
-        c->out_n = z ? ZSTD_compress2(z, c->out, ZSTD_compressBound(CHUNK), c->in, c->in_n) : 0;
+        {
+            SNX_ZONE_CS(z_compress, "state compress", 0);
+            SNX_ZONE_VALUE(z_compress, (u64)c->in_n); /* the input bytes, outside the lock and its wait */
+            c->out_n = z ? ZSTD_compress2(z, c->out, ZSTD_compressBound(CHUNK), c->in, c->in_n) : 0;
+            SNX_ZONE_TEXT(z_compress, "%llu -> %llu bytes", (unsigned long long)c->in_n,
+                          (unsigned long long)c->out_n);
+        }
         pm_lock(&w->lk);
         c->state = !z || ZSTD_isError(c->out_n) ? CH_FAILED : CH_DONE;
         pc_broadcast(&w->cv);
@@ -222,6 +230,7 @@ int sw_put(StateWriter* w, const void* p, u64 n) {
     const u8* b = p;
     if (w->failed || !w->open) return w->failed = 1, -1;
     w->sec[w->n - 1].size += n;
+    w->copied += n;
     while (n) {
         Chunk* c = &w->ring[w->filled % RING];
         size_t k = CHUNK - c->in_n < n ? CHUNK - c->in_n : (size_t)n;
@@ -281,6 +290,8 @@ int sw_finish(StateWriter* w, char* why, size_t whysize) {
         why_set(why, whysize, "the file can't be moved into place");
         remove(w->part);
     }
+    SNX_PLOT("rt state write copied", (double)w->copied);
+    SNX_PLOT("rt state write file", (double)w->at);
     writer_free(w);
     return r;
 }
@@ -390,6 +401,7 @@ int sr_get(StateReader* r, void* p, u64 n) {
         b += k;
         n -= k;
         r->out_left -= k;
+        r->copied += k;
     }
     if (!r->out_left) {
         u8 extra;
@@ -401,6 +413,7 @@ int sr_get(StateReader* r, void* p, u64 n) {
 u64 sr_left(const StateReader* r) { return r->cur < 0 ? 0 : r->out_left; }
 void sr_close(StateReader* r) {
     if (!r) return;
+    SNX_PLOT("rt state read copied", (double)r->copied);
     if (r->f) fclose(r->f);
     ZSTD_freeDCtx(r->z);
     free(r->in);

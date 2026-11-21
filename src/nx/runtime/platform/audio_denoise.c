@@ -10,6 +10,8 @@
    on. Its gain control, voice detection and dereverberation are off in a new state, and are left so (asked to set its
    voice detection, even off, the library prints a warning) */
 #include "nx/runtime/platform/audio_denoise.h"
+#include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/platform/dl.h"
 #include "nx/runtime/platform/log.h"
 #include <math.h>
@@ -78,10 +80,12 @@ SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
     if (method == SNX_DENOISE_OFF || !rate || !block || block > rate) return NULL;
     SnxDenoise* d = calloc(1, sizeof *d);
     if (!d) return NULL;
+    SNX_MEM_ALLOC_D(d, sizeof *d, "audio dsp");
     d->block = block;
     if (method == SNX_DENOISE_NEURAL && rate == SNX_DENOISE_NEURAL_RATE && block == RNNOISE_FRAME &&
         (d->state = rnnoise_create(NULL)) != NULL) {
         d->method = SNX_DENOISE_NEURAL;
+        SNX_MEM_ALLOC_D(d->state, 0, "audio dsp");
         return d;
     }
     if (ready(&g_speex.state, speex_load) && (d->state = g_speex.init((int)block, (int)rate)) != NULL) {
@@ -89,8 +93,13 @@ SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
         g_speex.ctl(d->state, SPEEX_SET_DENOISE, &on);
         g_speex.ctl(d->state, SPEEX_SET_NOISE_SUPPRESS, &suppress);
         d->method = SNX_DENOISE_SPECTRAL;
+        if (method == SNX_DENOISE_NEURAL) { /* a rare decision: the neural method was not available */
+            SNX_ZONE_T(z_denoise_fallback, "audio denoise fallback", "neural unavailable, using spectral");
+        }
+        SNX_MEM_ALLOC_D(d->state, 0, "audio dsp");
         return d;
     }
+    SNX_MEM_FREE_D(d, "audio dsp");
     free(d);
     return NULL;
 }
@@ -101,23 +110,33 @@ uint32_t snx_denoise_delay(const SnxDenoise* d) { return d ? d->block : 0; }
 
 void snx_denoise_run(SnxDenoise* d, int16_t* block) {
     if (!d) return;
+#if defined(SNX_TRACY)
+    uint64_t t0 = plat_ns(); /* only read for the plot, so unused without a client */
+#endif
+    SNX_ZONE(z_denoise, "audio denoise");
+    SNX_ZONE_VALUE(z_denoise, (uint64_t)d->method); /* 1 neural, 2 spectral; no text on every block */
     if (d->method == SNX_DENOISE_SPECTRAL) {
         g_speex.run(d->state, block);
-        return;
+    } else {
+        for (int i = 0; i < RNNOISE_FRAME; i++) d->in[i] = block[i];
+        rnnoise_process_frame(d->state, d->out, d->in);
+        for (int i = 0; i < RNNOISE_FRAME; i++) {
+            float v = d->out[i];
+            block[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+        }
     }
-    for (int i = 0; i < RNNOISE_FRAME; i++) d->in[i] = block[i];
-    rnnoise_process_frame(d->state, d->out, d->in);
-    for (int i = 0; i < RNNOISE_FRAME; i++) {
-        float v = d->out[i];
-        block[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
-    }
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio denoise us", (double)((plat_ns() - t0) / 1000));
+#endif
 }
 
 void snx_denoise_free(SnxDenoise* d) {
     if (!d) return;
+    SNX_MEM_FREE_D(d->state, "audio dsp");
     if (d->method == SNX_DENOISE_SPECTRAL)
         g_speex.destroy(d->state);
     else
         rnnoise_destroy(d->state);
+    SNX_MEM_FREE_D(d, "audio dsp");
     free(d);
 }

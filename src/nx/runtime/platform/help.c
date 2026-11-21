@@ -26,7 +26,7 @@ static const char* const HELP_KEYS =
     "  F8  load the selected slot's state\n"
     "  F9  select the next save state slot\n"
 #if defined(SNX_TRACY)
-    "  F10 record a 60 second Tracy capture\n"
+    "  F10 record a Tracy capture of the configured length\n"
 #endif
     "  Pause  pause the whole game, and resume it\n"
     "  F11 or Alt+Enter  switch fullscreen\n"

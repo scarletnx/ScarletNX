@@ -212,6 +212,13 @@ static void guest_stats_plot(const GstatWindow* w) {
     SNX_PLOT("guest top thread ms",
              largest(w->thread_ns, GSTAT_SLOTS, top, 1) ? (double)w->thread_ns[top[0]] / 1e6 : 0.0);
 #if defined(SNX_TRACY)
+    /* the busiest guest thread, by name and time, beside its plot */
+    if (snx_tracy_attached() && largest(w->thread_ns, GSTAT_SLOTS, top, 1)) {
+        char tname[48];
+        u64 id = kernel_thread_name(top[0], tname, (int)sizeof tname);
+        SNX_ZONE_TV(z_topthread, "runtime: guest top thread", w->thread_ns[top[0]], "thread %llu '%s' %.2f ms",
+                    (unsigned long long)id, tname, (double)w->thread_ns[top[0]] / 1e6);
+    }
     {
         char name[128];
         unsigned n = largest(w->svc, GSTAT_SVCS, top, GSTAT_TOP_SVCS);
@@ -232,6 +239,45 @@ static void guest_stats_plot(const GstatWindow* w) {
     SNX_PLOT("nce trap/s", (double)w->count[GSTAT_NCE_TRAP] / secs);
     SNX_PLOT("nce ticks/s", (double)w->count[GSTAT_NCE_TICKS] / secs);
     SNX_PLOT("nce run/s", (double)w->count[GSTAT_NCE_RUN] / secs);
+    /* the one counter that changed most this window, and which kind it was: the zone's code and the named message say
+       why the top changed, the plot says by how much */
+    if (snx_tracy_attached()) {
+        static const char* const count_name[GSTAT_COUNTS] = {"svc miss", "nce svc outcall", "counter reads",
+                                                             "native run returns", "native runs", "kicks"};
+        u32 which = 0;
+        u64 best = 0;
+        int kind = 0, len;
+        char name[160];
+        if (largest(w->svc, GSTAT_SVCS, top, 1)) {
+            which = top[0];
+            best = w->svc[which]; /* 0: an SVC */
+        }
+        for (unsigned i = 0; i < GSTAT_COUNTS; i++)
+            if (w->count[i] > best) {
+                best = w->count[i];
+                which = i;
+                kind = 1; /* a named count */
+            }
+        if (largest(w->hook, w->families, top, 1) && w->hook[top[0]] > best) {
+            which = top[0];
+            best = w->hook[which];
+            kind = 2; /* a hooked family */
+        }
+        SNX_ZONE_V(z_top, "runtime: gstat top change", (u64)kind);
+        SNX_PLOT("rt gstat top change/s", (double)best / secs);
+        if (kind == 0) {
+            const char* svc = which < SNX_SVC_COUNT ? svc_name(which) : NULL;
+            len = snprintf(name, sizeof name, "svc 0x%02x%s%s", (unsigned)which, svc ? " " : "", svc ? svc : "");
+        } else if (kind == 1) {
+            len = snprintf(name, sizeof name, "%s", which < GSTAT_COUNTS ? count_name[which] : "?");
+        } else {
+            len = snprintf(name, sizeof name, "hook %s", guest_stats_family_name(which));
+        }
+        if (len > 0) {
+            SNX_MSG(name, (size_t)(len < (int)sizeof name ? len : (int)sizeof name - 1));
+            SNX_ZONE_TEXT(z_top, "%.90s %llu", name, (unsigned long long)best);
+        }
+    }
 #endif
 }
 
