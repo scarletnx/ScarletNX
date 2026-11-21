@@ -32,6 +32,10 @@
 
 /* the program's NVN stage (NVN_SHADER_STAGE_*) */
 static inline u32 nvn_section_stage(const u8* s) { return snx_ld_le16(s + 0x56); }
+/* A fragment program's request for its depth and stencil tests before it runs (an early_fragment_tests declaration):
+   its byte at 0x5b, which the game's driver writes into the 3D engine's API_MANDATED_EARLY_Z (method 0x084) when it
+   binds the program, as it writes the byte at 0x5c into the post-depth coverage (method 0x3c7) */
+static inline int nvn_section_early_z(const u8* s) { return s[0x5b] != 0; }
 /* a compute program's shared memory, in bytes: the word the console's driver puts in the QMD. 0 for a program with
    none */
 static inline u32 nvn_section_shared(const u8* s) { return snx_ld_le32(s + 0x64); }

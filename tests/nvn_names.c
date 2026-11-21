@@ -729,6 +729,31 @@ static void test_early_tests(void) {
         check(replay(&draw, handle, OP_DRAW) == 1 && g_ds.prog.early_z == asks,
               "a bind of the fragment program gives the draw its early tests");
     }
+    /* an Ounce fragment program asks at its section's byte 0x5b (nvn_section_early_z), its header at the code's start
+       saying it is a fragment program */
+    gw32(0x900000, 2u | 4u << 5 | 5u << 10);
+    for (u32 asks = 0; asks < 2; asks++) {
+        memset(GP(control), 0, 0xd8);
+        gw32(control, 0x98761234);
+        gw32(control + 4, 0xc9);
+        gw32(control + 8, 11);
+        gw32(control + 0x54, (u32)NVN_SHADER_STAGE_FRAGMENT << 16); /* the stage, the halfword at 0x56 */
+        GP(control)[0x5b] = (u8)asks;
+        GP(control)[0xa6] = 1; /* a byte of another meaning */
+        gw64(pairs, 0x900000);
+        gw64(pairs + 8, control);
+        check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "an Ounce fragment program");
+        check(nvn_program_early_z(NVN_OBJ(const NvnProgram, PROGRAM)->serial) == (int)asks,
+              "SetShaders keeps an Ounce section's early test byte");
+        nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+        nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+        nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+        u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+        memset(GP(control), 0, 0xd8);
+        check(replay(&draw, handle, OP_DRAW) == 1 && g_ds.prog.early_z == asks,
+              "a bind of the Ounce fragment program gives the draw its early tests");
+    }
+    gw32(0x900000, 0);
     /* the fragment program with the byte bound, then a vertex program alone: the fragment stage's flag stays */
     tess_control(control, NVN_SHADER_STAGE_FRAGMENT, 16, (const u32[4]){0}, 0);
     GP(control)[0x718] = 1;
