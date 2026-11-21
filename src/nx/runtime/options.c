@@ -239,7 +239,7 @@ void options_heap_max_set(const IniOpt* o, const char* v) {
 static const IniOpt* find_row(const char* key, int* own) {
     int s, t;
     for (s = 0; s < g_ini_sections_count; s++)
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && g_ini_sections[s].table[t]; t++) {
             const IniOpt* o = ini_find(g_ini_sections[s].table[t], key);
             if (o) {
                 if (own) *own = g_ini_sections[s].own;
@@ -622,7 +622,7 @@ static void apply(const char* key, const char* value) {
 static void apply_all(void) {
     int s, t, i;
     for (s = 0; s < g_ini_sections_count; s++)
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && g_ini_sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = g_ini_sections[s].table[t]; o->key; o++) {
                 const char* v = value_of(o);
@@ -654,7 +654,7 @@ static void put_header(FILE* f) {
     fprintf(f, ";  %s: ScarletNX settings\n", title);
     fprintf(f, ";  Most settings apply while the game runs. These apply when it next starts:\n;   ");
     for (s = 0; s < g_ini_sections_count; s++)
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && g_ini_sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = g_ini_sections[s].table[t]; o->key; o++) {
                 if (!(o->flags & INI_STARTUP)) continue;
@@ -690,7 +690,7 @@ static void put_rows(FILE* f, const IniOpt* o) {
 static int section_set(const IniSection* section) {
     int t;
     const IniOpt* o;
-    for (t = 0; t < 3 && section->table[t]; t++)
+    for (t = 0; t < INI_SECTION_TABLES && section->table[t]; t++)
         for (o = section->table[t]; o->key; o++)
             if (o->def || store_find(o->key)) return 1;
     return 0;
@@ -712,7 +712,7 @@ static int write_file(void) {
     for (s = 0; s < g_ini_sections_count; s++) {
         if (!section_set(&g_ini_sections[s])) continue; /* [Game] of a game made from no dump */
         fprintf(f, "\n[%s]\n", g_ini_sections[s].name);
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && g_ini_sections[s].table[t]; t++) {
             if (g_ini_sections[s].page[t]) fprintf(f, "; -- %s --\n", g_ini_sections[s].page[t]);
             put_rows(f, g_ini_sections[s].table[t]);
         }

@@ -48,9 +48,11 @@ if(SNX_TEST_SANITIZERS)
     cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL snx_test_sanitize
         # the common code: the platform layer, network, filesystems, LZ4, ZBIC and xxHash, the Vulkan setup the
         # frontends share, the GL layer's state, the launcher's HTTPS and the roots it carries, the zip reader of VPKs
-        # and APKs, the glTF reader of a Mii's parts, the DS's and the 3DS's online services
+        # and APKs, the glTF reader of a Mii's parts, the DS's and the 3DS's online services, the Bluetooth LE scan and
+        # its system backend
         scarletnx-common scarletnx-platform scarletnx-net scarletnx-ldn scarletnx-filesystem snx_demangle snx_lz4
-        snx_zbic snx_xxhash snx_vk_common snx_gl snx_https snx_cacert snx_zip snx_cgltf snx_online
+        snx_zbic snx_xxhash snx_vk_common snx_gl snx_https snx_cacert snx_zip snx_cgltf snx_online snx_ble
+        snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
         snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
@@ -2225,7 +2227,8 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
-add_executable(snx-test-am-service am_service.c am_service_stubs.c)
+add_executable(snx-test-am-service am_service.c am_service_stubs.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c")
 snx_test_target(snx-test-am-service gnu23)
 snx_service_swipc(snx-test-am-service hle/services/am.swipc hle/services/vi.swipc) # vi: grc's video proxy
 target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_aoc_base
@@ -2252,7 +2255,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
 endif()
 
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
-add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
+add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c")
 snx_test_target(snx-test-am-nacp gnu23)
 snx_service_swipc(snx-test-am-nacp hle/services/am.swipc hle/services/vi.swipc)
 target_link_libraries(snx-test-am-nacp PRIVATE snx_test_common) # snx_nacp_aoc_base
@@ -2336,6 +2340,8 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as SDL names them
     add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
@@ -2350,6 +2356,17 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
     target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
+    # the controller applet's dialog: its request, cards and gestures, and its pictures drawn on the CPU
+    add_executable(snx-test-ctrl-applet ctrl_applet.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_scan.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" support/ui_raster.c support/ui_shape_ref.c)
+    snx_test_target(snx-test-ctrl-applet gnu23)
+    # the scan's fake alone (ble_scan.h's snx_ble_fake_open): the test never reaches the system's Bluetooth
+    target_link_libraries(snx-test-ctrl-applet PRIVATE scarletnx-common snx_splash snx_ble m SDL3::SDL3)
+    target_include_directories(snx-test-ctrl-applet PRIVATE "${PROJECT_BINARY_DIR}/generated" "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME ctrl_applet COMMAND snx-test-ctrl-applet)
 endif()
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
@@ -2474,14 +2491,31 @@ include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 add_executable(snx-test-connect connect.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c")
 snx_test_target(snx-test-connect c23)
 add_test(NAME connect COMMAND snx-test-connect)
+# the Joy-Con 2's protocol and one controller's setup on made-up bytes, no Bluetooth (runtime/platform/joycon2_*.c)
+add_executable(snx-test-joycon2 joycon2.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_proto.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_session.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_att.c"
+    "${PROJECT_SOURCE_DIR}/src/common/platform/ble_scan.c") # the launcher's advert check, compared
+snx_test_target(snx-test-joycon2 c23)
+target_link_libraries(snx-test-joycon2 PRIVATE m)
+add_test(NAME joycon2 COMMAND snx-test-joycon2)
 
 add_executable(snx-test-gamepad gamepad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_sdl.c")
 snx_test_target(snx-test-gamepad gnu23)
 target_link_libraries(snx-test-gamepad PRIVATE scarletnx-common snx_pad_sdl snx_splash m)
 target_include_directories(snx-test-gamepad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME gamepad COMMAND snx-test-gamepad)
+# a Joy-Con 2 as an SDL virtual gamepad, read back through the gamepads' code (runtime/platform/joycon2_sdl.c)
+add_executable(snx-test-joycon2-sdl joycon2_sdl.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_sdl.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+snx_test_target(snx-test-joycon2-sdl gnu23)
+target_link_libraries(snx-test-joycon2-sdl PRIVATE scarletnx-common snx_pad_sdl snx_splash m)
+target_include_directories(snx-test-joycon2-sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
+add_test(NAME joycon2_sdl COMMAND snx-test-joycon2-sdl)
 
 add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c")
 snx_test_target(snx-test-fatal-screen gnu23)

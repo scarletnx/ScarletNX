@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
@@ -102,7 +103,7 @@ static int entry_rows(int e) {
     return n;
 }
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
-enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
+enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_ASSIGN, P_BACK, P_COUNT }; /* the gamepads' */
 /* the controls page's items */
 enum {
     C_SHOW,
@@ -137,6 +138,7 @@ static const char* const PADS[P_COUNT] = {SNX_GAMEPAD_PLAYERS,
                                           "gamepad_rumble",
                                           "gamepad_background",
                                           SNX_GAMEPAD_MAP,
+                                          "Assign players",
                                           "Back"};
 /* F1's page: the runtime's keys as set (hotkeys.h; backend/sdl3.c's hotkey and menu_event) and the game's buttons on
    the keyboard (its keymap), a row each with the icon the launcher's F1 box gives what it does (src/gui/main.c's
@@ -854,7 +856,9 @@ static int act(int i, int step) {
         page = PAGE_ASK;
         focus = 1; /* Cancel */
         top = 0;
-    } else if (page == PAGE_PADS && i == P_MAP)
+    } else if (page == PAGE_PADS && i == P_ASSIGN)
+        return OVERLAY_CONTROLLERS; /* the controller applet's dialog, the game paused */
+    else if (page == PAGE_PADS && i == P_MAP)
         map_open();
     else /* Back */
         overlay_back();
@@ -2063,6 +2067,12 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         key.users = g_user_count;
         if (!g_menu.laid || memcmp(&key, &g_menu.key, sizeof key) || !watched_same()) menu_lay(sw, sh, &key);
         ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
+    }
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) &&
+        ctrl_dialog_shown()) { /* the controller applet's, under the menu */
+        int px, py, scale;
+        overlay_place(sw, sh, &px, &py, &scale);
+        ctrl_dialog_draw(l, sw, sh, scale);
     }
     toasts_drop(now_ns);
     if (ntoasts) {

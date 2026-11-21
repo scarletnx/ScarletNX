@@ -108,6 +108,22 @@ if(WIN32)
     target_link_libraries(scarletnx-platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
 endif()
 
+# Bluetooth LE adverts a scan hears (platform/ble_scan.h): the scan over its backend, the fake backend and the Joy-Con
+# 2's advert, no OS. The system's backend is a library of its own, snx_ble_system, which only the launcher links (the
+# tests link a fake in its place, tests/support/ble_fake_system.c): BlueZ over libsystemd's sd-bus, opened at run time,
+# on Linux; none elsewhere yet (Windows' designed in ble_none.c)
+add_library(snx_ble STATIC platform/ble_scan.c)
+set_target_properties(snx_ble PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+target_compile_options(snx_ble PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(snx_ble_system STATIC platform/ble_bluez.c)
+else()
+    add_library(snx_ble_system STATIC platform/ble_none.c)
+endif()
+set_target_properties(snx_ble_system PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+target_compile_options(snx_ble_system PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+target_link_libraries(snx_ble_system PUBLIC snx_ble scarletnx-platform)
+
 # The same indexed host filesystem and shared immutable file views (platform/file.h) serve NX
 # and CTR. No guest ABI or runtime/platform dependency enters this target.
 add_library(scarletnx-filesystem STATIC filesystem/tree.c)

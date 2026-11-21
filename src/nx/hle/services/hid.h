@@ -39,9 +39,25 @@ void hid_mode_changed(void);
 int hid_connected_players(u32* first_id);
 /* whether the game plays with its Joy-Con as a mouse now */
 int hid_mouse_mode(void);
+/* the hands of player 1 whose mouse sensor the game started: bit 0 the left, bit 1 the right */
+u32 hid_mouse_hands(void);
+/* The controller applet's dialog (frontend thread), as the console's gestures decide. Split: player p's pair split,
+   its left half kept (or its right one with keep_right) and the other half on the first free Npad the game takes,
+   which it returns (-1 when none, and the pair stays whole). Merge: a left single and a right single as one pair on
+   the lower one's Npad (0, or -1 when they aren't such two). Whole: p's pair whole again and its merge ended. Layout:
+   each player's split (1 + the other half's Npad), which half it keeps, and merge (1 + the other single's player, on
+   the lower one's) */
+int hid_dialog_split(int p, int keep_right);
+/* whether player 1 is the Joy-Cons attached to the console: the TV mode off and not detached. And the Joy-Cons
+   detached or attached again (the handheld Npad goes or comes, the game told) */
+int hid_attached(void);
+void hid_set_detached(int on);
+int hid_dialog_merge(int left, int right);
+void hid_dialog_whole(int p);
 /* ---- HLE state in g_hle (hle.h) */
 #define HID_PADS    8  /* the frontend's players */
 #define HID_ENTRIES 10 /* No1 to No8, Handheld, Other: the shared memory's Npads */
+void hid_dialog_layout(int split[HID_PADS], int keep_right[HID_PADS], int merged[HID_PADS]); /* hid_dialog_split's */
 
 /* a motion sensor's orientation, which hid_motion_sample integrates from one sample to the next */
 typedef struct {
@@ -86,9 +102,19 @@ typedef struct {
     HidVibration vibration[HID_PADS][2];
     HidMouse mouse;
 } HleHid;
-/* hid's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+/* hid's host side: locks and condition variables, and input not yet taken, which a save state never holds (hle.h's
+   g_host) */
 typedef struct {
     PMutex input_lock;
+    /* a real Joy-Con 2's mouse sensors' motion not yet taken (joycon2_mouse), by player and sensor (PadState.motion's),
+       X and Y in the sensor's counts, under input_lock */
+    float pad_mouse[HID_PADS][2][2];
+    /* the players whose sensors are a real Joy-Con 2's, and the ones of them on a surface, a bit per sensor */
+    u8 pad_mouse_real[HID_PADS], pad_mouse_surface[HID_PADS];
+    /* atomic, by player: its controller is a console one (a Pro Controller, Joy-Cons, the runtime's own Pro Controller
+       2 and Joy-Con 2, a pad in their mode), which shows only as its own styles. A generic pad and the keyboard (0)
+       show as the nearest style the game takes */
+    _Atomic u8 pad_native[HID_PADS];
     /* hid's own, under lock */
     PMutex lock;
     /* each player's motors' strongest amplitudes since the frontend last read them (hid_vibrate), low | high << 16:
@@ -96,5 +122,8 @@ typedef struct {
     u32 rumble_peak[HID_PADS][2];
     /* atomic: the input ticks done, and the LIFO states they wrote, which the profiler's rates read */
     _Atomic u64 updates, states;
+    /* atomic, the controller applet's dialog's: the Joy-Cons detached from the console while it isn't docked
+       (tabletop), so the handheld Npad doesn't mirror player 1. The TV mode and the performance mode stay */
+    _Atomic int detached;
 } HostHid;
 #endif

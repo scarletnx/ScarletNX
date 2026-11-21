@@ -320,7 +320,7 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
     l.at = 0;
     if (size) out[0] = 0;
     for (s = 0; s < count; s++)
-        for (t = 0; t < 3 && sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = sections[s].table[t]; o->key; o++) {
                 if (o->help)

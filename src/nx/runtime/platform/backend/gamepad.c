@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_rumble */
 #include "nx/runtime/options.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -54,7 +55,11 @@ static struct {
     int left_type[SNX_GAMEPADS]; /* gamepad_assign=1: the type of the pad a player is kept for (connect.h) */
     int console_paused;          /* gamepad_assign=1: the game paused for a controller that left */
     int console_was;             /* gamepad_assign at gamepad_console's last poll */
+    int console_quiet;           /* the pause's notice not shown: the controller applet's dialog says it */
+    int drop_quiet[SNX_GAMEPADS]; /* the dialog disconnects the slot's controller: its player is not kept for it */
     HdRumble hd[SNX_GAMEPADS];
+    int kind_override[SNX_GAMEPADS]; /* the controller applet's dialog: 1 + the PadKind the game sees, 0 none */
+    u64 identify_ns[SNX_GAMEPADS];   /* its identify's pulse plays until then (plat_ns) */
     SnxGamepadConfig cfg; /* what the settings' maps read into (their values in g_settings) */
     SnxPlayerConfig players[SNX_GAMEPADS];
 } g_gamepad = {.cfg = {{{UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET,
@@ -120,12 +125,62 @@ SnxPlayerConfig* gamepad_player(int player) {
 }
 int gamepad_player_seen(int slot) { return !slot || (slot > 0 && slot < SNX_GAMEPADS && g_settings.player_connected[slot]); }
 int gamepad_player_kind(int slot, int kind) {
-    return slot >= 0 && slot < SNX_GAMEPADS && g_settings.player_type[slot] ? g_settings.player_type[slot] - 1 : kind;
+    if (slot < 0 || slot >= SNX_GAMEPADS) return kind;
+    if (g_gamepad.kind_override[slot]) return g_gamepad.kind_override[slot] - 1;
+    return g_settings.player_type[slot] ? g_settings.player_type[slot] - 1 : kind;
+}
+void gamepad_kind_override(int slot, int kind) {
+    if (slot >= 0 && slot < SNX_GAMEPADS) g_gamepad.kind_override[slot] = kind < 0 ? 0 : kind + 1;
+}
+void gamepad_move(int from, int to) {
+    if (from < 0 || from >= SNX_GAMEPADS || to < 0 || to >= SNX_GAMEPADS || from == to) return;
+    ui_lock();
+    SDL_Gamepad* pad = g_gamepad.pads[from];
+    g_gamepad.pads[from] = g_gamepad.pads[to];
+    g_gamepad.pads[to] = pad;
+    char name[sizeof g_gamepad.names[0]];
+    memcpy(name, g_gamepad.names[from], sizeof name);
+    memcpy(g_gamepad.names[from], g_gamepad.names[to], sizeof name);
+    memcpy(g_gamepad.names[to], name, sizeof name);
+    for (int k = 0; k < 4; k++) {
+        int label = g_gamepad.labels[from][k];
+        g_gamepad.labels[from][k] = g_gamepad.labels[to][k];
+        g_gamepad.labels[to][k] = label;
+    }
+    int symmetric = g_gamepad.symmetric[from], left_type = g_gamepad.left_type[from];
+    g_gamepad.symmetric[from] = g_gamepad.symmetric[to];
+    g_gamepad.symmetric[to] = symmetric;
+    g_gamepad.left_type[from] = g_gamepad.left_type[to];
+    g_gamepad.left_type[to] = left_type;
+    unsigned held = atomic_load_explicit(&g_gamepad.held[from], memory_order_relaxed);
+    atomic_store_explicit(&g_gamepad.held[from], atomic_load_explicit(&g_gamepad.held[to], memory_order_relaxed),
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_gamepad.held[to], held, memory_order_relaxed);
+    HdRumble hd = g_gamepad.hd[from];
+    g_gamepad.hd[from] = g_gamepad.hd[to];
+    g_gamepad.hd[to] = hd;
+    u64 identify = g_gamepad.identify_ns[from];
+    g_gamepad.identify_ns[from] = g_gamepad.identify_ns[to];
+    g_gamepad.identify_ns[to] = identify;
+    ++g_gamepad.names_version;
+    ui_unlock();
+    connect_swap(from, to); /* gamepad_assign=1: each identity follows its controller */
+    for (int i = 0; i < SNX_GAMEPADS; i++)
+        if (g_gamepad.pads[i]) SDL_SetGamepadPlayerIndex(g_gamepad.pads[i], i); /* its player lights */
+}
+void gamepad_drop_quietly(int slot) {
+    if (slot >= 0 && slot < SNX_GAMEPADS) g_gamepad.drop_quiet[slot] = 1;
+}
+void gamepad_identify(int slot) {
+    if (slot < 0 || slot >= SNX_GAMEPADS || !g_gamepad.pads[slot]) return;
+    g_gamepad.identify_ns[slot] = plat_ns() + 300000000ull;
+    SDL_SetGamepadPlayerIndex(g_gamepad.pads[slot], slot);
 }
 int gamepad_ini(const char* key, const char* value) {
     const IniOpt* o = ini_find(g_gamepad_ini, key);
     if (!o) o = ini_find(g_gamepad_map_ini, key);
     if (!o) o = ini_find(g_gamepad_players_ini, key);
+    if (!o) o = ini_find(g_joycon2_ini, key);
     if (o) ini_read(o, value);
     return o != NULL;
 }
@@ -311,6 +366,7 @@ static int slot_for(u32 id) {
 static void who_of(SDL_Gamepad* g, char* out, size_t n) {
     const char* serial = SDL_GetGamepadSerial(g);
     char guid[33];
+    if (joycon2_who(SDL_GetGamepadID(g), out, n)) return; /* a Joy-Con 2 pair keeps its single's player */
     if (serial && *serial) {
         snprintf(out, n, "serial:%s", serial);
         return;
@@ -393,17 +449,22 @@ void gamepad_close(u32 id) {
         if (g_gamepad.pads[i] && SDL_GetGamepadID(g_gamepad.pads[i]) == id) {
             g_gamepad.left_type[i] = SDL_GetGamepadType(g_gamepad.pads[i]);
             g_gamepad.hd[i] = (HdRumble){0};
+            g_gamepad.kind_override[i] = 0; /* the next controller here plays as its own kind */
             SDL_CloseGamepad(g_gamepad.pads[i]);
             g_gamepad.pads[i] = NULL;
             ui_lock();
             if (g_settings.controller_assignment) { /* its player kept for it a while */
                 char said[96];
-                connect_leave(i, plat_ns());
+                if (g_gamepad.drop_quiet[i]) /* the dialog disconnected it: its player waits there, no pause */
+                    connect_forget(i);
+                else
+                    connect_leave(i, plat_ns());
                 snprintf(said, sizeof said, "P%d: %s left", i + 1, g_gamepad.names[i]);
                 pad_toast(said, plat_ns());
             }
             g_gamepad.names[i][0] = 0;
             ++g_gamepad.names_version;
+            g_gamepad.drop_quiet[i] = 0;
             ui_unlock();
         }
     gamepad_open_waiting();
@@ -420,6 +481,8 @@ int gamepad_slot_kept(int slot) { return g_settings.controller_assignment && con
 int gamepad_slot_kept_type(int slot) {
     return slot >= 0 && slot < SNX_GAMEPADS ? g_gamepad.left_type[slot] : SDL_GAMEPAD_TYPE_UNKNOWN;
 }
+int gamepad_console_paused(void) { return g_gamepad.console_paused; }
+void gamepad_console_quiet(int on) { g_gamepad.console_quiet = on; }
 void gamepad_console(int plus, u64 now_ns) {
     char notice[OVERLAY_COLS_MAX + 1], who[64];
     unsigned freed;
@@ -450,7 +513,7 @@ void gamepad_console(int plus, u64 now_ns) {
         g_gamepad.console_paused = 0;
         game_resume();
     }
-    if (notice[0]) { /* the pause's, kept while it lasts */
+    if (notice[0] && !(g_gamepad.console_quiet && g_gamepad.console_paused)) { /* the pause's, kept while it lasts */
         ui_lock();
         pad_toast(notice, now);
         ui_unlock();
@@ -526,6 +589,22 @@ int gamepad_sends_name(u32 id, int bit, char* out, size_t size) {
     snx_pad_labels(g, labels);
     snprintf(out, size, "%s", snx_pad_control_name(control, labels));
     return 1;
+}
+u64 gamepad_slot_sides(int slot) {
+    /* a pair's paddles, SDL_gamepad.h's: the left one's SL and SR, the right one's SR and SL */
+    static const struct {
+        int button, bit;
+    } SIDES[4] = {{SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, 24},
+                  {SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, 25},
+                  {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, 26},
+                  {SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, 27}};
+    u64 bits = 0;
+    if (slot < 0 || slot >= SNX_GAMEPADS || !g_gamepad.pads[slot] ||
+        SDL_GetGamepadType(g_gamepad.pads[slot]) != SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR)
+        return 0;
+    for (int i = 0; i < 4; i++)
+        if (SDL_GetGamepadButton(g_gamepad.pads[slot], (SDL_GamepadButton)SIDES[i].button)) bits |= 1ull << SIDES[i].bit;
+    return bits;
 }
 int gamepad_slot_type(int slot) {
     if (slot < 0 || slot >= SNX_GAMEPADS || !g_gamepad.pads[slot]) return SDL_GAMEPAD_TYPE_UNKNOWN;
@@ -745,8 +824,15 @@ void gamepad_rumble_slot(int slot, u32 left, u32 right, const float hz[4], u64 n
     /* the player muted it, or the game is paused: a vibration that waited is dropped (a stop that the game asked for
        plays it first) */
     if (!strength(slot) || game_paused()) g_gamepad.hd[slot].has_pending = 0;
+    if (now_ns < g_gamepad.identify_ns[slot]) { /* the controller applet's identify: a short pulse */
+        static const float pulse_hz[4] = {160.0f, 320.0f, 160.0f, 320.0f};
+        left = right = 0x4000u | 0x4000u << 16;
+        hz = pulse_hz;
+    }
     left = scaled(left, slot);
     right = scaled(right, slot);
+    /* a Joy-Con 2 (joycon2_sdl.h) takes the amplitudes and frequencies themselves */
+    if (joycon2_rumble(SDL_GetGamepadID(g_gamepad.pads[slot]), left, right, hz)) return;
     if (hd_play(slot, left, right, hz, now_ns)) return;
     /* each motor as the stronger of the two devices' bands: the heavy one low, the light one high */
     u32 lo = (left & 0xFFFF) > (right & 0xFFFF) ? left & 0xFFFF : right & 0xFFFF;

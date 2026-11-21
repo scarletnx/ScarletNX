@@ -816,6 +816,12 @@ msgstr "Toque: aplicar, digitar, remover ou salvar. Voltar."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Tap: search, sync, forget or change. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: use, add or remove."
 msgstr "Toque: usar, adicionar ou remover."
 
@@ -830,6 +836,12 @@ msgstr "Toque: baixar, ou buscar de novo."
 #, snx-keys
 msgid "Tap: apply, type, remove or save."
 msgstr "Toque: aplicar, digitar, remover ou salvar."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: search, sync, forget or change."
+msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1070,6 +1082,12 @@ msgstr "Cima/Baixo: linha. Enter: aplicar, digitar, remover ou salvar. Del: remo
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Up/Down: row. Left/Right: change. Enter: search or sync. Del: forget. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: queue."
 msgstr "Cima/Baixo: fila."
 
@@ -1272,6 +1290,12 @@ msgstr "Direcional: linha. A: baixar, ou buscar de novo. B: voltar."
 #, snx-keys
 msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
 msgstr "Direcional: linha. A: aplicar, digitar, remover ou salvar. X: remover. B: voltar."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row, change. A: search or sync. X: forget. B: back."
+msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1818,6 +1842,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "XCI"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Forget"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -3840,6 +3868,206 @@ msgid "Not saved: %s could not be removed (%s)"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Not nearby"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Nearby"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Waiting to sync"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Connecting"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Ready"
+msgstr "Pronto"
+
+#: src/gui/main.c
+msgid "Known"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Known, nearby"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Pro Controller 2 %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Joy-Con 2 (%s) %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ", %d.%02d V"
+msgstr ""
+
+#: src/gui/main.c
+msgid "known: a game with Joy-Con 2 on connects it as it starts, while it is awake, without pairing it, so it stays paired with its console. Enter or Del forgets it, asked first"
+msgstr ""
+
+#: src/gui/main.c
+msgid "waiting to sync, its sync button held: Enter syncs it, and a game with Joy-Con 2 on connects it from then on, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "paired with a console, which it stays paired with: hold its sync button, on its side, to sync it here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ". Serial %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ". Signal %d dBm"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Joy-Con 2"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mouse scale"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build has no Switch runtime, whose setting it is"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d s left"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Listens 30 s for the Joy-Con 2 nearby, each shown with its state. Hold a controller's sync button, on its side, until its lights run: Enter on it syncs it. Nothing connects or pairs here"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No config folder: controllers cannot be synced here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s does not read"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Joy-Con 2 is Off: games connect no controller until it is On"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search, then hold a controller's sync button: it shows here waiting to sync"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
+msgstr "%s: %s. Um jogo neste sistema roda igual seja qual for o valor, e o ajuste fica %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not taken: %s=%s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The games read it as they start: one playing now keeps what it started with"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search stopped"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A game is running, which connects the controllers itself: Search once it ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No search: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Searching %d s: hold a controller's sync button, then Enter on its row"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forget Pro Controller 2 %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not known: nothing to forget"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not forgotten: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forgotten: Pro Controller 2 %s. Games no longer connect it; it stays paired with its console"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forgotten: Joy-Con 2 (%s) %s. Games no longer connect it; it stays paired with its console"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Paired with a console: hold its sync button, on its side, to sync it here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not synced: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no config folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Synced: Pro Controller 2 %s. A game with Joy-Con 2 on connects it as it starts, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Synced: Joy-Con 2 (%s) %s. A game with Joy-Con 2 on connects it as it starts, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The search stopped: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The search ended: Search again to look for more"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "gamepad_map's \"%s\" is not a control and the button it sends (south:B)"
 msgstr "O \"%s\" de gamepad_map não é um controle e o botão que ele envia (south:B)"
@@ -3897,11 +4125,6 @@ msgstr "Resolução fora do padrão, experimental."
 #, c-format
 msgid "%s is not a nickname: %s"
 msgstr "%s não é um apelido: %s"
-
-#: src/gui/main.c
-#, c-format
-msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
-msgstr "%s: %s. Um jogo neste sistema roda igual seja qual for o valor, e o ajuste fica %s"
 
 #: src/gui/main.c
 #, c-format
@@ -4798,10 +5021,6 @@ msgstr "O programa terminou de forma anormal (status %d)."
 #, c-format
 msgid "The run ended with status %d."
 msgstr "A execução terminou com status %d."
-
-#: src/gui/main.c
-msgid "Ready"
-msgstr "Pronto"
 
 #: src/gui/main.c
 #, c-format

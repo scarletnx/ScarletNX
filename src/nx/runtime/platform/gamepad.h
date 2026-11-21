@@ -22,6 +22,9 @@ int gamepad_slot_kept_type(int slot);
    notice, and its end when the controller returns or + (plus, held on any controller) is let go. now_ns:
    plat_ns's, the clock the gamepads' arrivals and leavings and the overlay's notices are told by */
 void gamepad_console(int plus, u64 now_ns);
+/* whether that pause holds the game now. And its notice left to the controller applet's dialog, which shows instead */
+int gamepad_console_paused(void);
+void gamepad_console_quiet(int on);
 /* enumerate connected SDL joysticks at startup, or inspect one newly attached joystick */
 void gamepad_scan(void);
 void gamepad_detect(u32 id);
@@ -29,6 +32,8 @@ void gamepad_detect(u32 id);
 void gamepad_state(u64* buttons, i32 sticks[4]);
 void gamepad_state_slot(int slot, u64* buttons, i32 sticks[4]);
 int gamepad_slot_type(int slot); /* SDL_GamepadType, or SDL_GAMEPAD_TYPE_UNKNOWN */
+/* a Joy-Con pair's SL and SR as the game's button bits (24 to 27), which its pad map never sends: 0 for any other */
+u64 gamepad_slot_sides(int slot);
 int gamepad_slot_connected(int slot);
 u32 gamepad_slot_id(int slot); /* SDL joystick instance ID, 0 for an empty slot */
 void gamepad_motion(int slot, PadMotion out[2]);
@@ -66,7 +71,8 @@ u32 gamepad_names_version(void);
 /* the i that slot's gamepad (its player's) is in the three above, -1 for none. Under ui_lock */
 int gamepad_of_player(int slot);
 /* their tables (settings.h): g_gamepad_ini, keys gamepad_*; g_gamepad_map_ini, gamepad_map, the player's map that
-   SNX_GAMEPAD_MAP's screen sets; g_gamepad_players_ini, gamepad_p<N>_*, their page in the menus */
+   SNX_GAMEPAD_MAP's screen sets; g_gamepad_players_ini, gamepad_p<N>_*, their page in the menus; g_joycon2_ini,
+   joycon2*, the Joy-Con 2's (Bluetooth) */
 #define SNX_GAMEPAD_PAGE "Controllers"   /* their page in the game's menu and the launcher's Settings */
 #define SNX_GAMEPAD_MAP  "Button map"    /* and the screen of what each button sends */
 /* each player's own, as Eden has them, in the game's .ini as gamepad_p<N>_* (N from 1); one left at its default takes
@@ -81,6 +87,15 @@ typedef struct {
 SnxPlayerConfig* gamepad_player(int player); /* 0 to SNX_GAMEPADS - 1 */
 int gamepad_player_seen(int slot);           /* whether the game sees the player whose pad is in slot */
 int gamepad_player_kind(int slot, int kind); /* the PadKind it sees for that player: its type's, else kind */
+/* the controller applet's dialog (ctrl_applet.h): the PadKind the game sees for slot's player whatever its settings
+   say (-1: none, as they say), a controller moved from one player to another (the two swapped), and a player's
+   controller identified with a short pulse and its player lights */
+void gamepad_kind_override(int slot, int kind);
+void gamepad_move(int from, int to);
+void gamepad_identify(int slot);
+/* the slot's controller is about to go because the dialog disconnects it: when it goes, its player is not kept for it
+   (gamepad_assign=1), so no pause and no notice waits for it */
+void gamepad_drop_quietly(int slot);
 #define SNX_GAMEPAD_PLAYERS "Player"
 int gamepad_ini(const char* key, const char* value); /* a key of the game's .ini: applied, 1; not one of these, 0 */
 
