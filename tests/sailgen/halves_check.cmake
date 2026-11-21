@@ -1,9 +1,9 @@
-# sailgen_halves: generates halves.sail's root (SAILGEN, CORE and BACKEND, DIR, OUT) and says what its call of the
+# sailgen_halves: generates halves.sail's root (SAILGEN, BITS, CORE and BACKEND, DIR, OUT) and says what its call of the
 # function that calls itself on each half of its bits became: one reduction of the lanes (reduce), or anything else
 # (other)
 get_filename_component(out_dir "${OUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${out_dir}")
-execute_process(COMMAND "${SAILGEN}" --generate "${DIR}/halves.roots" --backend "${CORE}" --backend "${BACKEND}"
+execute_process(COMMAND "${SAILGEN}" --generate "${DIR}/halves.roots" --backend "${BITS}" --backend "${CORE}" --backend "${BACKEND}"
                 -o "${OUT}" "${DIR}/halves.sail" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "sailgen_halves: snx-sailgen exited ${rc} on halves.sail")

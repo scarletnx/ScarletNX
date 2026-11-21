@@ -9,7 +9,8 @@
      sailgen --generate ROOTS --backend FILE... [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
          writes OUT, C that builds each decode function ROOTS names as LLVM IR (gen.c), from INPUT and the overlays,
          whose definitions take the place of INPUT's of the same name (a platform's fixups), with the back end's files
-         (core.h, the lowering of Sail's builtins, then a machine's state: llvm.h for A64, llvm_arm.h for AArch32)
+         (bits.h, the values known while recompiling, core.h, the lowering of Sail's builtins, then a machine's state:
+         llvm.h for A64, llvm_arm.h for AArch32)
          copied at its top in their order. A feature the profile's feature lines do not name is one no guest has:
          IsFeatureImplemented of it is false when sailgen runs; its since lines give an encoding's architecture
      sailgen --gpu ROOTS --backend FILE... -o OUT INPUT... [--overlay FILE]...

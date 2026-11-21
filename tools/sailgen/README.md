@@ -9,7 +9,8 @@ where from and how to update them). Strict C23 with no dependency, built and run
 
 ```sh
 sailgen --extract ROOTS -o OUT INPUT...
-sailgen --generate ROOTS --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
+sailgen --generate ROOTS --backend bits.h --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT...
+        [--overlay FILE]...
 ```
 
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
@@ -24,7 +25,8 @@ clause that is no root and stays unread); one an earlier clause covers whole and
 overlay's definitions take the place of the inputs' of the same name: a system's fixups (`nx.sail`, `arm.sail`). With
 `--profile`, a feature the profile names in none of its `feature` lines is one no guest has, and a root its `since
 VERSION ROOT...` lines name (`a32.profile`) is tried only where the back end's `sg_ArchVersion` is that version or
-later. The back end's files are copied at the top of the output in their order: `core.h`, then a machine's
+later. The back end's files are copied at the top of the output in their order: `bits.h` (the values known while it
+recompiles, which every back end shares), `core.h`, then a machine's
 (`llvm.h` for A64, which the back end's `sg_emit` wraps the dispatcher with and
 `src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16` and `sg_emit_a32`,
 which `src/common/cpu/arm/llvm_thumb.inc` includes).
@@ -98,7 +100,7 @@ in a loop from 1, or leaves the loop with an element's value rather than the vec
 as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
 emitter's (`sailgen_lanes` holds each outcome).
 
-## The back end (`core.h`, then `llvm.h` or `llvm_arm.h`)
+## The back end (`bits.h`, `core.h`, then `llvm.h` or `llvm_arm.h`)
 
 `llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared
 functions sailgen does not inline, and the bit map: a DYN bits value is, until something computes with it, which
