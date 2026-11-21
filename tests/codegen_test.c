@@ -577,6 +577,28 @@ static void copy_word_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* snx_codegen_words_current: an update of a word the codegen read leaves it stale; one that puts the word back,
+   writes the same bytes again or changes a word no function reads does not */
+static void copy_current_test(void) {
+    _Atomic SnxU32 copy[COPY_WORDS];
+    _Atomic SnxU64 generation;
+    SnxCodeImage module;
+    SnxCodegen codegen;
+    SnxU64 hint = COPY_BASE;
+    copy_setup(copy, &generation, &module);
+    check(!snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, 0), "analyze a copy an update can change");
+    check(snx_codegen_words_current(&codegen), "a copy nothing updated is current");
+    atomic_store_explicit(&copy[COPY_FAR], copy_word(0xD2800021UL /* mov x1,#1 */), memory_order_relaxed);
+    check(snx_codegen_words_current(&codegen), "a word of the copy no function reads changed: still current");
+    atomic_store_explicit(&copy[COPY_FLIP], copy_word(0xD503201FUL), memory_order_relaxed);
+    check(snx_codegen_words_current(&codegen), "a word the codegen read written again with its bytes: still current");
+    atomic_store_explicit(&copy[COPY_FLIP], copy_word(0xB5FFFFFFUL /* cbnz xzr,.-4 */), memory_order_relaxed);
+    check(!snx_codegen_words_current(&codegen), "a word the codegen read changed: stale");
+    atomic_store_explicit(&copy[COPY_FLIP], copy_word(0xD503201FUL), memory_order_relaxed);
+    check(snx_codegen_words_current(&codegen), "that word put back as the codegen read it: current again");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1541,6 +1563,7 @@ int main(void) {
     jump_table_anchor_branch_test();
     large_range_test();
     copy_word_test();
+    copy_current_test();
     semantics_test();
     poll_test();
     cpu_extensions_test();
