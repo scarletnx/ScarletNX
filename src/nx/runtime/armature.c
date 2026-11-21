@@ -114,6 +114,12 @@ void armature_stats(ArmatureStats* out);
 #define ARMA_BRK        (0xD4200000u | (0xA4D7u << 5)) /* what a diverted function's first word reads as */
 #define ARMA_SVC_EXIT   0x0Au                          /* svcExitThread */
 
+/* a thread's counts, on a line of their own: by kt_ix, each written by its thread alone */
+typedef struct {
+    alignas(64) _Atomic u64 svcs;
+    _Atomic u64 hooks, originals, interrupts;
+} ArmaCounts;
+
 static struct {
     int on;
     ArmatureTranslator* tr;
@@ -127,7 +133,8 @@ static struct {
     u32 stub[ARMA_DIVERTS][ARMA_STUB_WORDS];
     _Atomic u64 key[ARMA_HASH]; /* a diverted entry, 0 for none, published after its index */
     u32 index[ARMA_HASH];
-    _Atomic u64 svcs, hooks, originals, interrupts, kicks;
+    ArmaCounts count[KTHREAD_MAX + 1];
+    alignas(64) _Atomic u64 kicks; /* the kernel's, from any thread */
 } g_armature = {.lock = PMUTEX_INIT};
 
 /* how deep this thread is in armature: 1 in its own run, more inside a callback's guest calls */
@@ -364,6 +371,7 @@ void arma_slot_taken(u64 addr) {
 static void run(CPU* c, ArmatureContext* x, u64 pc);
 
 static u8* native_of(ArmatureContext* x) { return armature_context_native(x); }
+static ArmaCounts* counts_of(const CPU* c) { return &g_armature.count[kt_ix((const KThread*)c->thread)]; }
 
 /* SVC #imm, as nce.c's dispatch answers its outcall. svcExitThread in the thread's own run stops it, and thread_run
    then ends the thread outside armature's frames */
@@ -374,7 +382,7 @@ static void on_svc(void* host, ArmatureContext* x, u64 addr, i32 imm) {
     _mm_setcsr(ARMA_MXCSR_HOST);
     state_out(s, c);
     c->pc = addr + 4;
-    atomic_fetch_add_explicit(&g_armature.svcs, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&counts_of(c)->svcs, 1, memory_order_relaxed);
     if (n == ARMA_SVC_EXIT && t_armature.depth == 1) {
         armature_context_stop_running(x);
         _mm_setcsr(csr);
@@ -407,10 +415,10 @@ static void on_break(void* host, ArmatureContext* x, u64 addr, i32 imm) {
     }
     f = atomic_load_explicit(&g_disp[(addr - g_code_lo) >> 2], memory_order_acquire);
     if (!f || f == arma_native) {
-        atomic_fetch_add_explicit(&g_armature.originals, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&counts_of(c)->originals, 1, memory_order_relaxed);
         next = stub_at(i);
     } else {
-        atomic_fetch_add_explicit(&g_armature.hooks, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&counts_of(c)->hooks, 1, memory_order_relaxed);
         c->pc = addr;
         f(c, addr);
         next = c->pc;
@@ -448,7 +456,7 @@ static void on_interrupt(void* host, ArmatureContext* x) {
     u8* s = native_of(x);
     u32 csr = _mm_getcsr();
     _mm_setcsr(ARMA_MXCSR_HOST);
-    atomic_fetch_add_explicit(&g_armature.interrupts, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&counts_of(c)->interrupts, 1, memory_order_relaxed);
     state_out(s, c);
     if (atomic_load_explicit(&c->poll, memory_order_relaxed)) c->rt->poll(c);
     state_in(c, s);
@@ -614,19 +622,24 @@ void arma_init(void) {
 
 void arma_report(void) {
     ArmatureStats st;
+    u64 svcs = 0, hooks = 0, originals = 0, interrupts = 0;
     if (!g_armature.on) return;
     armature_stats(&st);
+    for (u32 i = 0; i <= KTHREAD_MAX; i++) {
+        svcs += atomic_load_explicit(&g_armature.count[i].svcs, memory_order_relaxed);
+        hooks += atomic_load_explicit(&g_armature.count[i].hooks, memory_order_relaxed);
+        originals += atomic_load_explicit(&g_armature.count[i].originals, memory_order_relaxed);
+        interrupts += atomic_load_explicit(&g_armature.count[i].interrupts, memory_order_relaxed);
+    }
     LOG("armature: %llu functions translated by tier 1 (%llu instructions, %llu with an instruction it has no code "
         "for), %llu by tier 2's SSA compiler; %.3f s in tier 1, %.3f s in tier 2, %.3f s mapping (0 without "
         "ARMATURE_PASS_TIME); %llu SVCs, %llu hook calls, %llu calls of a hooked function's own code, %u diverts, "
         "%llu kicks, %llu interrupts\n",
         (unsigned long long)st.translated, (unsigned long long)st.instructions, (unsigned long long)st.with_undefined,
         (unsigned long long)st.lifted, (double)st.tier1_ns / 1e9, (double)st.tier2_ns / 1e9, (double)st.map_ns / 1e9,
-        (unsigned long long)atomic_load_explicit(&g_armature.svcs, memory_order_relaxed),
-        (unsigned long long)atomic_load_explicit(&g_armature.hooks, memory_order_relaxed),
-        (unsigned long long)atomic_load_explicit(&g_armature.originals, memory_order_relaxed),
+        (unsigned long long)svcs, (unsigned long long)hooks, (unsigned long long)originals,
         atomic_load_explicit(&g_armature.diverts, memory_order_relaxed),
         (unsigned long long)atomic_load_explicit(&g_armature.kicks, memory_order_relaxed),
-        (unsigned long long)atomic_load_explicit(&g_armature.interrupts, memory_order_relaxed));
+        (unsigned long long)interrupts);
 }
 #endif
