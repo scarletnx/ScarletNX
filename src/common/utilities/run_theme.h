@@ -9,6 +9,9 @@
 
 /* how a step's progress reads, as a theme's [run] progress says (src/gui/steps.h's GuiProgress, the same numbers) */
 enum { SNX_RUN_PROGRESS_AMOUNT, SNX_RUN_PROGRESS_PERCENT, SNX_RUN_PROGRESS_TIME };
+/* where the turning ring goes, as a theme's [run] ring says (src/gui/theme.h's GuiRing, the same numbers): none, left of
+   the title, at the right edge, or after the name */
+enum { SNX_RUN_RING_NONE, SNX_RUN_RING_LEFT, SNX_RUN_RING_RIGHT, SNX_RUN_RING_NEAR_TEXT };
 typedef struct {
     uint32_t page, ink, soft, dim; /* 0xRRGGBB. All zero (ink as page) when the launcher couldn't say */
     char name[64];                 /* the theme's, as its [theme] name says */
@@ -16,6 +19,7 @@ typedef struct {
     int steps;                     /* layout = steps: labelled steps; console: the lines as printed */
     int texture;                   /* faint lines over the page */
     int progress;                  /* a step's progress: SNX_RUN_PROGRESS_* */
+    int ring;                      /* SNX_RUN_RING_* */
     int text_size; /* app.ini's [app] ui_scale, the launcher's letters as 8x16 pixels times it (1 to 4); 0 when it
                       has no number, which the launcher takes as twice the display's scale (its Auto) */
     /* [transitions] fade_in_ms and fade_out_ms: how long what comes in from black and what goes out to it fade, 0 for

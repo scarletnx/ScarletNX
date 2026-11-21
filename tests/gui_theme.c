@@ -151,21 +151,22 @@ static void run_theme(void) {
     SnxRunTheme out;
     write(themes, "mine",
           "[theme]\nname = Mine\nbase = default\n[run]\nlayout = steps\npage = #102030\nink = #405060\n"
-          "progress = time\n[transitions]\nfade_in_ms = 120\nfade_out_ms = 340\n");
+          "progress = time\nring = left\n[transitions]\nfade_in_ms = 120\nfade_out_ms = 340\n");
     write(picked_themes, "there", "[theme]\nname = There\nbase = default\n[run]\npage = #0A0B0C\nink = #FFFFFF\n");
     app_ini(config, "[app]\ntheme = mine\n");
     gui_run_theme(game, &out);
     assert(!strcmp(out.name, "Mine") && out.page == 0x102030 && out.ink == 0x405060 && out.steps &&
-           out.progress == SNX_RUN_PROGRESS_TIME);
+           out.progress == SNX_RUN_PROGRESS_TIME && out.ring == SNX_RUN_RING_LEFT);
     assert(out.fade_in_ms == 120 && out.fade_out_ms == 340); /* the game's notification fades as its screens */
     snprintf(text, sizeof text, "[app]\ntheme = there\n[folders]\ndata = %s\n", picked);
     app_ini(config, text);
     gui_run_theme(game, &out);
-    assert(!strcmp(out.name, "There") && out.page == 0x0A0B0C);
+    assert(!strcmp(out.name, "There") && out.page == 0x0A0B0C && out.ring == SNX_RUN_RING_NONE); /* the default's */
     assert(!out.fade_in_ms && !out.fade_out_ms); /* the default's, its base: none */
     app_ini(config, "[app]\ntheme = ../.scarletnx/themes/mine\n");
     gui_run_theme(game, &out);
     assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.ink != out.page);
+    assert(out.ring == SNX_RUN_RING_RIGHT && out.ring == (int)gui_theme_builtin("yorha")->ring); /* YoRHa's ring */
     assert(out.fade_in_ms == gui_theme_builtin("yorha")->fade_in_ms && out.fade_in_ms == 250 &&
            out.fade_out_ms == gui_theme_builtin("yorha")->fade_out_ms && out.fade_out_ms == 500);
     app_ini(config, "[app]\ntheme = gone\n");
@@ -519,6 +520,7 @@ int main(void) {
     assert((yorha->run == GUI_RUN_STEPS) == SNX_GUI_THEME_YORHA_RUN_STEPS);
     assert(yorha->texture == SNX_GUI_THEME_YORHA_RUN_TEXTURE);
     assert((int)yorha->progress == SNX_GUI_THEME_YORHA_RUN_PROGRESS);
+    assert((int)yorha->ring == SNX_GUI_THEME_YORHA_RUN_RING && (int)def->ring == SNX_GUI_THEME_DEFAULT_RUN_RING);
     /* and its fades, which the game's notification takes then */
     assert(yorha->fade_in_ms == SNX_GUI_THEME_YORHA_FADE_IN_MS &&
            yorha->fade_out_ms == SNX_GUI_THEME_YORHA_FADE_OUT_MS);

@@ -938,6 +938,114 @@ static void units_held(void) {
     remove(PATH);
 }
 
+#if !defined(_WIN32) /* where pf_save packs on threads, which the stop test below needs */
+/* the raw bytes of the file's units from at on, as their PfUnit says, and their count */
+static u64 units_raw(const u8* d, size_t n, size_t at, int* count) {
+    u64 raw = 0;
+    *count = 0;
+    while (n - at >= PF_REC) {
+        if (pf_get32(d + at) == PF_UNIT) {
+            raw += pf_get32(d + at + PF_REC);
+            ++*count;
+        }
+        at += PF_REC + pf_get32(d + at + 4);
+    }
+    return raw;
+}
+static void* save_thread(void* pf) {
+    pf_save(pf);
+    return NULL;
+}
+#endif
+/* A save says how far it is (pf_saving): 0 of 0 before one, and once done every byte packed and written. A stop asked
+   before it starts writes nothing, the log saying the bytes not kept, and every save after it writes nothing either.
+   A stop asked once some bytes are packed, wherever it lands, writes the units packed whole in their order and no
+   other: the file reads back as their shaders and pipelines, the bytes kept are theirs, and the log says them and
+   those not kept */
+static void units_stop(void) {
+    PFile pf;
+    u32 loaded[2];
+    u64 total, packed, kept;
+    size_t header;
+    remove(PATH);
+    unit_open(&pf, 0x10, loaded);
+    header = (size_t)pf.size;
+    pf_saving(&pf, &total, &packed, &kept);
+    CHECK(!total && !packed && !kept);
+    unit_add(&pf, 0, UNIT_N, 0);
+    const u64 held = pf.held_n;
+    pf_save(&pf);
+    pf_saving(&pf, &total, &packed, &kept);
+    CHECK(total == held && packed == held && kept == held && pf.size == pf.open && file_size() > (long)header);
+    close_file(&pf);
+    /* stopped before it starts */
+    remove(PATH);
+    unit_open(&pf, 0x10, loaded);
+    unit_add(&pf, 0, UNIT_N, 0);
+    const u64 held2 = pf.held_n;
+    pf_save_stop(&pf);
+    logged[0] = 0;
+    pf_save(&pf);
+    pf_saving(&pf, &total, &packed, &kept);
+    CHECK(total == held2 && !packed && !kept && file_size() == (long)header && pf.size == header);
+    {
+        char want[160];
+        snprintf(want, sizeof want, "the save was stopped: 0.0 of the %.1f MiB", (double)held2 / 1048576.0);
+        CHECK(strstr(logged, want) && strstr(logged, "(0 of ") && strstr(logged, "not kept for the next run"));
+    }
+    unit_add(&pf, UNIT_N, UNIT_N + 10, 0x100000 + UNIT_N - 1);
+    close_file(&pf); /* a save after the stop */
+    CHECK(file_size() == (long)header);
+    unit_open(&pf, 0x500, loaded);
+    CHECK(!loaded[0] && !loaded[1]);
+    close_file(&pf);
+#if !defined(_WIN32)
+    /* stopped as it packs: on a thread of its own, packing on that one alone, the stop asked once a step into the
+       round'th unit (or once the save is over) */
+    cpus = 1;
+    for (int round = 0; round < 4; round++) {
+        pthread_t th;
+        int units;
+        remove(PATH);
+        unit_open(&pf, 0x10, loaded);
+        unit_add(&pf, 0, UNIT_N + 40, 0);
+        const u64 held3 = pf.held_n;
+        logged[0] = 0;
+        CHECK(!pthread_create(&th, NULL, save_thread, &pf));
+        do pf_saving(&pf, &total, &packed, &kept);
+        while (packed < (u64)round * PF_UNIT_BYTES + PF_SAVE_STEP && !kept);
+        pf_save_stop(&pf);
+        pthread_join(th, NULL);
+        pf_saving(&pf, &total, &packed, &kept);
+        CHECK(total == held3 && kept <= held3 && kept <= packed);
+        size_t n;
+        u8* d = file_bytes(&n);
+        CHECK(units_raw(d, n, header, &units) == kept);
+        free(d);
+        if (kept < held3) {
+            char want[160];
+            snprintf(want, sizeof want, "the save was stopped: %.1f of the %.1f MiB", (double)kept / 1048576.0,
+                     (double)held3 / 1048576.0);
+            CHECK(strstr(logged, want));
+            snprintf(want, sizeof want, "the other %.1f MiB not kept", (double)(held3 - kept) / 1048576.0);
+            CHECK(strstr(logged, want));
+        } else
+            CHECK(strstr(logged, "MiB of shaders and pipelines this session made saved as"));
+        close_file(&pf);
+        unit_open(&pf, 0x900, loaded);
+        /* the shaders of the units written, and their pipelines: each shader's but the first's, and the last one's
+           when a unit ended between that shader and its pipeline */
+        CHECK(loaded[0] == (u32)ug.nsh && loaded[1] == (u32)ug.npipe);
+        CHECK(ug.nsh ? ug.npipe == ug.nsh - 1 || ug.npipe == ug.nsh - 2 : !ug.npipe);
+        unit_check(ug.nsh, ug.npipe);
+        CHECK(kept == held3 ? ug.nsh == UNIT_N + 40 : ug.nsh < UNIT_N + 40);
+        close_file(&pf);
+    }
+    cpus = 8;
+#endif
+    remove(PATH);
+}
+
 /* a file opened to be written as it is appended to (PFile.pack 0, as an older version's with nothing packed): no
    unit is made; a file with units is read whole and what is appended after its units is written as it is; opened to
    hold and save again, the unpacked records stay where they are and what the session makes is saved as a unit
@@ -1569,6 +1677,7 @@ int main(void) {
     large_checks();
     units_round_trip();
     units_held();
+    units_stop();
     units_off();
     units_cut();
     units_bad();

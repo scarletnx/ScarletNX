@@ -1834,14 +1834,70 @@ static void keyboard_sync(void) {
     }
     if (answer >= 0) am_keyboard_answered(ticket, answer, text);
 }
+/* another thread's fatal error, left for this thread to show: shown, and the process ends */
+static void fatal_left_show(void) {
+    char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+    if (!left) return;
+    atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
+    if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_sdl3.win);
+    plat_exit_now(1);
+}
+/* what the window's own events say of it (its size, its safe part, whether it is seen, its display): taken as they
+   come, whatever else the poll does with the input */
+static void window_event(const SDL_Event* e) {
+    switch (e->type) {
+        case SDL_EVENT_WINDOW_MINIMIZED:
+        case SDL_EVENT_WINDOW_OCCLUDED: atomic_store_explicit(&g_sdl3.minimized, 1, memory_order_release); break;
+        case SDL_EVENT_WINDOW_RESTORED:
+        case SDL_EVENT_WINDOW_MAXIMIZED:
+        case SDL_EVENT_WINDOW_EXPOSED:
+        case SDL_EVENT_WINDOW_SHOWN: atomic_store_explicit(&g_sdl3.minimized, 0, memory_order_release); break;
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            if (e->window.windowID == SDL_GetWindowID(g_sdl3.win)) wsize_set(e->window.data1, e->window.data2);
+            wsafe_set();
+            break;
+        case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
+        case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+        case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refresh_set(); break;
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+            overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
+            break;
+        case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+            g_sdl3.fullscreen = 1;
+            wsafe_set();
+            break;
+        case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+            g_sdl3.fullscreen = 0;
+            wsafe_set();
+            break;
+        default: break;
+    }
+}
+/* the events while the player waits on a screen with nothing to do (the save as the game closes): the window's own
+   taken, the rest dropped; the closes among them (a quit: the window's close, Alt+F4, SIGTERM, the system's) */
+int backend_poll_closes(void) {
+    SDL_Event e;
+    int closes = 0;
+    fatal_left_show();
+    while (!g_opt_headless && SDL_PollEvent(&e)) {
+        if (e.type < SDL_EVENT_KEY_DOWN) atomic_fetch_add_explicit(&g_sdl3.window_changes, 1, memory_order_release);
+        if (e.type == SDL_EVENT_QUIT) closes++;
+        window_event(&e);
+    }
+    return closes;
+}
+void backend_presses_drop(void) {
+    static const Uint32 presses[] = {
+        SDL_EVENT_KEY_DOWN,    SDL_EVENT_TEXT_INPUT,  SDL_EVENT_TEXT_EDITING,        SDL_EVENT_MOUSE_BUTTON_DOWN,
+        SDL_EVENT_MOUSE_WHEEL, SDL_EVENT_FINGER_DOWN, SDL_EVENT_GAMEPAD_BUTTON_DOWN, SDL_EVENT_JOYSTICK_BUTTON_DOWN,
+        SDL_EVENT_PEN_DOWN};
+    if (g_opt_headless) return;
+    SDL_PumpEvents();
+    for (size_t i = 0; i < sizeof presses / sizeof *presses; i++) SDL_FlushEvent(presses[i]);
+}
 void video_poll(void) {
     SDL_Event e;
-    char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
-    if (left) { /* another thread's fatal error, left for this thread to show */
-        atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-        if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_sdl3.win);
-        plat_exit_now(1);
-    }
+    fatal_left_show();
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
@@ -1855,22 +1911,6 @@ void video_poll(void) {
         if (overlay_event(&e, action)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
-            case SDL_EVENT_WINDOW_MINIMIZED:
-            case SDL_EVENT_WINDOW_OCCLUDED: atomic_store_explicit(&g_sdl3.minimized, 1, memory_order_release); break;
-            case SDL_EVENT_WINDOW_RESTORED:
-            case SDL_EVENT_WINDOW_MAXIMIZED:
-            case SDL_EVENT_WINDOW_EXPOSED:
-            case SDL_EVENT_WINDOW_SHOWN: atomic_store_explicit(&g_sdl3.minimized, 0, memory_order_release); break;
-            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                if (e.window.windowID == SDL_GetWindowID(g_sdl3.win)) wsize_set(e.window.data1, e.window.data2);
-                wsafe_set();
-                break;
-            case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
-            case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
-            case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refresh_set(); break;
-            case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-                overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
-                break;
             case SDL_EVENT_FINGER_DOWN:
                 /* a touch screen SDL only learns of as it is touched */
                 if (!g_touch_seen && SDL_GetTouchDeviceType(e.tfinger.touchID) == SDL_TOUCH_DEVICE_DIRECT) {
@@ -1889,14 +1929,6 @@ void video_poll(void) {
                 if (!g_sdl3.mouse_held) touch_mouse(&e);
                 break;
             case SDL_EVENT_MOUSE_WHEEL: game_mouse(&e); break;
-            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
-                g_sdl3.fullscreen = 1;
-                wsafe_set();
-                break;
-            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
-                g_sdl3.fullscreen = 0;
-                wsafe_set();
-                break;
             case SDL_EVENT_KEY_DOWN:
                 /* a runtime key is no button of the game's. A repeat does neither: a key held as the menu closed (which
                    cleared g_sdl3.keys_held) stays from the game until it is let go, and the Esc that closed the menu
@@ -1930,6 +1962,7 @@ void video_poll(void) {
                 press_pads_held();
                 controls_auto();
                 break;
+            default: window_event(&e); break;
         }
     }
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be

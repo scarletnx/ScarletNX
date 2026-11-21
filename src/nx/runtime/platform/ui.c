@@ -203,6 +203,19 @@ void ui_shape(SnxUiList* l, float x, float y, float w, float h, int kind, const 
     quad(l, x, y, w, h, kind, (int)(c0 | c1 << 8), 0x8000 | flags, edge < 1 ? 1 : edge, rgba, 0, UI_SHARP, UI_SHAPE,
          0);
 }
+void ui_loading_ring(SnxUiList* l, float cx, float cy, int scale, u64 now_ms, int still, u32 dim, u32 soft, u32 ink) {
+    /* the launcher's strokes are a line a pixel in from each whole pixel of their width: 1.5 at 1x takes two */
+    const float s = (float)scale, r = 7.0f * s, inner = r * 0.62f, thick = ceilf(s * 1.5f);
+    const float mid = inner - thick / 2, from = still ? 0.0f : (float)(now_ms / 4 % 360);
+    const int edge = (int)ceilf(s * 0.5f);
+    ui_shape(l, cx - r, cy - r, 2 * r, 2 * r, UI_SHAPE_CIRCLE, NULL, 0, edge, dim);
+    ui_shape(l, cx - inner, cy - inner, 2 * inner, 2 * inner, UI_SHAPE_CIRCLE, NULL, 0, (int)thick, soft);
+    for (int i = 0; i < UI_RING_BAR_DOTS; ++i) { /* dots a stroke wide, overlapping along the bar */
+        const float a = (from + 70.0f * (float)i / (UI_RING_BAR_DOTS - 1)) * 3.14159265f / 180.0f;
+        ui_shape(l, cx + mid * cosf(a) - thick / 2, cy + mid * sinf(a) - thick / 2, thick, thick, UI_SHAPE_CIRCLE, NULL,
+                 UI_SHAPE_FILLED, 1, ink);
+    }
+}
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
     float x0 = x;
     for (; *s; ++s, x += 8.0f * (float)scale) {

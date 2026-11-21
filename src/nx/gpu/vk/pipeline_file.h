@@ -118,6 +118,10 @@ typedef struct {
     u32 nsh;
     PfMod* map;
     u32 cap, nmap;
+    /* pf_save's, for other threads while it runs (pf_saving, pf_save_stop): the bytes of the records it packs, those
+       packed so far and, once it is done, those written; and a stop asked */
+    _Atomic u64 save_total, save_packed, save_kept;
+    _Atomic int save_stop;
 } PFile;
 /* What reading a file hands back. shader: a record, with its reads and SPIR-V, made into a module; the module's u64
    (its handle's bits), or 0 when it couldn't be made. pipe: a record whose shaders were all made, with their modules'
@@ -145,6 +149,14 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
 /* a PF_PACK_UNITS file's records held in memory written to it, packed into units at zstd's highest level: when the game
    closes (any thread; records appended meanwhile are held for the next call). The log says the bytes and the time */
 void pf_save(PFile* pf);
+/* the save under way, from any thread: the bytes of the records it packs, those packed so far, and those it wrote once
+   it is done (all of them but after a stop, or a write that failed); 0 of 0 before the first save */
+void pf_saving(PFile* pf, u64* total, u64* packed, u64* kept);
+/* from any thread: the save under way ends after the step of PF_SAVE_STEP bytes each of its threads is packing, the
+   units packed whole up to the first that isn't written and the rest not, which the log says with their bytes; a save
+   after it writes nothing, as the records it holds are numbered after those left out */
+void pf_save_stop(PFile* pf);
+#define PF_SAVE_STEP (128u << 10) /* zstd's largest block */
 /* a shader record for module (made from spv; 0 for none), whose number pf_pipe then refers to; skipped once the file
    is full. With src (its reads src_cbr, its program code, xfb with PF_SRC_XFB), a PF_SOURCE record right before it.
    Where the shader record starts in the file (pf_open_mapped's: pf_open's records move as they are packed), 0 when it

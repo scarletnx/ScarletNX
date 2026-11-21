@@ -3,8 +3,11 @@
 /* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
+#include <math.h>
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/wait_screen.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/gamepad.h"
@@ -1092,6 +1095,186 @@ static void finger_rows(void) {
     assert(!overlay_shown() && s == 2);
 }
 
+/* the turning ring's quads in l (ui_loading_ring's: two circles and UI_RING_BAR_DOTS filled ones), and where the
+   first is centred */
+static int ring_in(const SnxUiList* l, float* cx, float* cy) {
+    int n = 0;
+    for (int i = 0; i < l->n; ++i) {
+        const SnxUiQuadView v = qv(&l->q[i]);
+        if (v.ink != UI_SHAPE || l->q[i].u != UI_SHAPE_CIRCLE) continue;
+        if (!n++) {
+            *cx = v.x + v.w / 2;
+            *cy = v.y + v.h / 2;
+        }
+    }
+    return n;
+}
+/* The screen's ring where the theme puts it, as the launcher's: at the right edge (YoRHa's), left of the title, which
+   then starts three columns on, after the name and its dots' whole width, or none; 7 pixels a scale step in radius,
+   its inner circle's edge 1.5 times the scale rounded up, its bar's dots on that edge, going round with the time and
+   still once every step is done */
+static void prepare_screen_ring(void) {
+    static SnxUiQuad q[4096];
+    SnxUiList l = {q, 0, 4096};
+    SnxPrepareStep st[1] = {{0}};
+    SnxRunTheme t;
+    char row[160];
+    float cx = 0, cy = 0, dx[2][UI_RING_BAR_DOTS];
+    st[0].label = "PREPARING SHADERS";
+    st[0].value = 1;
+    st[0].total = 2;
+    prepare_screen_theme(NULL, &t); /* YoRHa's: its ring at the right */
+    assert(t.ring == SNX_RUN_RING_RIGHT && t.steps);
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    prepare_screen_draw(&l, 1280, 720, NULL, 100); /* 2x */
+    assert(ring_in(&l, &cx, &cy) == 2 + UI_RING_BAR_DOTS && cx == 1280 - 16 * 2 && cy == 32 * 1.5f);
+    for (int i = 0, k = 0; i < l.n; ++i) {
+        const SnxUiQuadView v = qv(&q[i]);
+        if (v.ink != UI_SHAPE || q[i].u != UI_SHAPE_CIRCLE) continue;
+        if (k == 0) assert(v.w == 28 && q[i].vh == 1 && !(q[i].uw & UI_SHAPE_FILLED)); /* 7 x 2, its edge 1 */
+        if (k == 1) { /* its size a place in quarter pixels */
+            assert(fabsf(v.w - 28 * 0.62f) <= 0.25f && q[i].vh == 3 && v.rgba == ui_rgba(UI_RGB(t.soft)));
+        }
+        if (k >= 2) { /* on the inner circle's edge, 1.5 pixels in, in ink */
+            const float ox = v.x + v.w / 2 - cx, oy = v.y + v.h / 2 - cy, r = 28 * 0.62f / 2 - 1.5f;
+            assert((q[i].uw & UI_SHAPE_FILLED) && v.w == 3 && v.rgba == ui_rgba(UI_RGB(t.ink)));
+            assert(fabsf(sqrtf(ox * ox + oy * oy) - r) <= 0.5f);
+            dx[0][k - 2] = v.x;
+        }
+        ++k;
+    }
+    /* 100 ms on: the bar went round 25 degrees */
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1100);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    for (int i = 0, k = 0; i < l.n; ++i)
+        if (qv(&q[i]).ink == UI_SHAPE && q[i].u == UI_SHAPE_CIRCLE && k++ >= 2) dx[1][k - 3] = qv(&q[i]).x;
+    assert(memcmp(dx[0], dx[1], sizeof dx[0]));
+    /* every step done: still, its bar from 3 o'clock whatever the time */
+    st[0].done = 1;
+    st[0].value = 2;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1100);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    for (int i = 0, k = 0; i < l.n; ++i)
+        if (qv(&q[i]).ink == UI_SHAPE && q[i].u == UI_SHAPE_CIRCLE && k++ == 2)
+            assert(qv(&q[i]).y + qv(&q[i]).h / 2 == cy && qv(&q[i]).x > cx);
+    /* left: the title three columns on, the ring two in */
+    t.ring = SNX_RUN_RING_LEFT;
+    snprintf(t.title, sizeof t.title, "%s", "BOOTING");
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(ring_in(&l, &cx, &cy) == 2 + UI_RING_BAR_DOTS && cx == 16 * 2);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, "    BOOTING GAME..."));
+    /* after the name: its dots' columns and one more, then the ring's radius */
+    t.ring = SNX_RUN_RING_NEAR_TEXT;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(ring_in(&l, &cx, &cy) == 2 + UI_RING_BAR_DOTS && cx == 16 * (1 + 8 + 4 + 4) + 14);
+    /* at 1x (the launcher's UI scale 1): the inner circle's edge and the bar's dots 2 pixels, the 1.5 rounded up as the
+       launcher's lines take it, the outer edge 1 */
+    t.ring = SNX_RUN_RING_RIGHT;
+    t.text_size = 1;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    for (int i = 0, k = 0; i < l.n; ++i) {
+        if (qv(&q[i]).ink != UI_SHAPE || q[i].u != UI_SHAPE_CIRCLE) continue;
+        assert(k == 0 ? q[i].vh == 1 && qv(&q[i]).w == 14 : k == 1 ? q[i].vh == 2 : qv(&q[i]).w == 2);
+        ++k;
+    }
+    t.text_size = 0;
+    t.ring = SNX_RUN_RING_NONE;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(ring_in(&l, &cx, &cy) == 0);
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+}
+/* The game closing's screen (main.c's save at exit) as the screen before the game draws it: its row says the MiB
+   packed of the save's and the seconds since it began, its progress as the theme says it (the MiB for an amount), and
+   the bar the share packed */
+static void closing_screen(void) {
+    static SnxUiQuad q[4096];
+    SnxUiList l = {q, 0, 4096};
+    SnxClosing w = {.began_ms = 10000};
+    SnxPrepareStep st;
+    SnxRunTheme t;
+    char row[160];
+    const u64 total = 166408602, packed = 100663296; /* 158.7 and 96.0 MiB */
+    prepare_screen_theme(NULL, &t);
+    snprintf(t.title, sizeof t.title, "%s", "CLOSING");
+    snx_closing_step(&w, 14200, total, packed, &st);
+    prepare_screen_set(&t, "GAME", &st, 1, NULL, 0, "FOOT", 14200);
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " CLOSING GAME...")); /* 14200 ms: three dots */
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " SAVING THE SHADER CACHE: 96.0 OF 158.7 MIB, 4 S 60%..."));
+    prepare_row(&l, 32.0f * 19, 2, row, sizeof row);
+    assert(strstr(row, " 60%"));
+    t.steps = 0;
+    t.progress = SNX_RUN_PROGRESS_AMOUNT;
+    prepare_screen_set(&t, "GAME", &st, 1, NULL, 0, "FOOT", 14200);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " SAVING THE SHADER CACHE 96.0 of 158.7 MiB, 4 s: 96.0 / 158.7 MiB"));
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+}
+/* A save state's box (overlay_loading): nothing before it; then the whole picture shaded black, its alpha coming in
+   from 0 to the launcher's 128 over OVERLAY_LOADING_FADE_MS, the first faded span; over it the box with the save
+   states' head, its words and the slot's, and the ring at their right. It stays as the load ends well until the game's
+   first frame after that, and goes at once when the load fails */
+static void loading_box(void) {
+    SnxUiFade fades[SNX_UI_FADES];
+    const u64 t0 = 5000000000ull;
+    float x, y, cx = 0, cy = 0;
+    int n;
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0, fades);
+    assert(n == 0 && !shows("Loading the save state"));
+    overlay_loading("Slot 2", t0);
+    assert(overlay_loading_shown());
+    n = draw_fades(t0, fades);
+    {
+        const SnxUiQuadView shade = qv(&list.q[fades[0].first]);
+        assert(n == 1 && fades[0].end == fades[0].first + 1 && fades[0].alpha == 0);
+        assert(shade.x == 0 && shade.y == 0 && shade.w == SW && shade.h == SH && (shade.rgba & 0xFFFFFFu) == 0);
+    }
+    n = draw_fades(t0 + 75000000ull, fades);
+    assert(n == 1 && fades[0].alpha == 64);
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 1 && fades[0].alpha == 128);
+    assert(shows("SCARLETNX  /  SAVE STATES") && shows("Loading the save state") && shows("Slot 2"));
+    assert(text_xy("Loading the save state", &x, &y));
+    {
+        SnxUiList shown = list;
+        int s, px, py;
+        overlay_place(SW, SH, &px, &py, &s);
+        assert(ring_in(&shown, &cx, &cy) == 2 + UI_RING_BAR_DOTS);
+        assert(cy == y + 16.0f * (float)s && cx > x + 8.0f * (float)s * (float)strlen("Loading the save state"));
+    }
+    overlay_game_drew(); /* the game's frames while it loads leave it */
+    assert(overlay_loading_shown());
+    overlay_loading_done();
+    assert(overlay_loading_shown());
+    overlay_game_drew();
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 0 && !shows("Loading the save state"));
+    /* a load that failed: gone at once */
+    overlay_loading("The auto slot", t0);
+    draw_fades(t0, fades);
+    assert(shows("The auto slot"));
+    overlay_loading_end();
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 0 && !shows("The auto slot"));
+}
 int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
@@ -1103,6 +1286,9 @@ int main(void) {
     prepare_screen_steps_from();
     prepare_screen_cut();
     prepare_screen_switching();
+    prepare_screen_ring();
+    closing_screen();
+    loading_box();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());
