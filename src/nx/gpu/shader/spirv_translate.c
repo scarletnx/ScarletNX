@@ -147,267 +147,6 @@ ShCaps g_spirv_translate = {.tex_array = SNX_TEX_ARRAY,
                             .quad_compute = 1,
                             .tessellation = 1};
 
-/* the family of instructions whose branches take each opcode, FAM_NONE for one no branch takes (refused by
-   the prescan, or one that writes nothing): a family's function is the only one with branches for its opcodes */
-enum { FAM_NONE, FAM_FLOW, FAM_IO, FAM_THREAD, FAM_INT, FAM_FLOAT, FAM_MEMORY, FAM_TEXTURE };
-static int op_family(int op) {
-    switch (op) {
-        case O_JCAL:
-        case O_JMP:
-        case O_JMX:
-        case O_BRA:
-        case O_BRX:
-        case O_SSY:
-        case O_SYNC:
-        case O_PBK:
-        case O_BRK:
-        case O_PCNT:
-        case O_CONT:
-        case O_EXIT:
-        case O_KIL:
-        case O_CAL:
-        case O_RET:
-        case O_PRET:
-        case O_PEXIT:
-        case O_IDE:
-        case O_CCTL:
-        case O_CCTLL:
-        case O_BPT: return FAM_FLOW;
-        case O_IPA:
-        case O_ALD:
-        case O_AST:
-        case O_OUT_R:
-        case O_OUT_C:
-        case O_OUT_I:
-        case O_ISBERD:
-        case O_AL2P:
-        case O_PIXLD: return FAM_IO;
-        case O_S2R:
-        case O_CS2R:
-        case O_BAR:
-        case O_MEMBAR:
-        case O_VOTE:
-        case O_SHFL: return FAM_THREAD;
-        case O_I2I_R:
-        case O_I2I_C:
-        case O_I2I_I:
-        case O_MOV_R:
-        case O_MOV_C:
-        case O_MOV_I:
-        case O_MOV32I:
-        case O_IADD_R:
-        case O_IADD_C:
-        case O_IADD_I:
-        case O_IADD32I:
-        case O_IADD3_R:
-        case O_IADD3_C:
-        case O_IADD3_I:
-        case O_ISCADD_R:
-        case O_ISCADD_C:
-        case O_ISCADD_I:
-        case O_ISCADD32I:
-        case O_IMNMX_R:
-        case O_IMNMX_C:
-        case O_IMNMX_I:
-        case O_ISETP_R:
-        case O_ISETP_C:
-        case O_ISETP_I:
-        case O_ISET_R:
-        case O_ISET_C:
-        case O_ISET_I:
-        case O_ICMP_R:
-        case O_ICMP_RC:
-        case O_ICMP_CR:
-        case O_ICMP_I:
-        case O_LOP_R:
-        case O_LOP_C:
-        case O_LOP_I:
-        case O_LOP32I:
-        case O_LOP3_R:
-        case O_LOP3_C:
-        case O_LOP3_I:
-        case O_SHL_R:
-        case O_SHL_C:
-        case O_SHL_I:
-        case O_SHR_R:
-        case O_SHR_C:
-        case O_SHR_I:
-        case O_SHF_LR:
-        case O_SHF_LI:
-        case O_SHF_RR:
-        case O_SHF_RI:
-        case O_BFE_R:
-        case O_BFE_C:
-        case O_BFE_I:
-        case O_BFI_R:
-        case O_BFI_RC:
-        case O_BFI_CR:
-        case O_BFI_I:
-        case O_SEL_R:
-        case O_SEL_C:
-        case O_SEL_I:
-        case O_POPC_R:
-        case O_POPC_C:
-        case O_POPC_I:
-        case O_FLO_R:
-        case O_FLO_C:
-        case O_FLO_I:
-        case O_PRMT_R:
-        case O_PRMT_RC:
-        case O_PRMT_CR:
-        case O_PRMT_I:
-        case O_XMAD_R:
-        case O_XMAD_RC:
-        case O_XMAD_CR:
-        case O_XMAD_I:
-        case O_IMUL_R:
-        case O_IMUL_C:
-        case O_IMUL_I:
-        case O_IMUL32I:
-        case O_IMAD_R:
-        case O_IMAD_RC:
-        case O_IMAD_CR:
-        case O_IMAD_I:
-        case O_IMAD32I:
-        case O_LEA_HR:
-        case O_LEA_HC:
-        case O_LEA_LR:
-        case O_LEA_LC:
-        case O_LEA_LI:
-        case O_PSETP:
-        case O_PSET:
-        case O_P2R_R:
-        case O_P2R_C:
-        case O_P2R_I:
-        case O_R2P_R:
-        case O_R2P_C:
-        case O_R2P_I:
-        case O_CSET:
-        case O_CSETP:
-        case O_VMNMX:
-        case O_VMAD:
-        case O_VSETP:
-        case O_VADD:
-        case O_VABSDIFF:
-        case O_VSET:
-        case O_VSHL:
-        case O_VSHR: return FAM_INT;
-        case O_FADD_R:
-        case O_FADD_C:
-        case O_FADD_I:
-        case O_FADD32I:
-        case O_FMUL_R:
-        case O_FMUL_C:
-        case O_FMUL_I:
-        case O_FMUL32I:
-        case O_FFMA_R:
-        case O_FFMA_RC:
-        case O_FFMA_CR:
-        case O_FFMA_I:
-        case O_FFMA32I:
-        case O_FMNMX_R:
-        case O_FMNMX_C:
-        case O_FMNMX_I:
-        case O_FSETP_R:
-        case O_FSETP_C:
-        case O_FSETP_I:
-        case O_FSET_R:
-        case O_FSET_C:
-        case O_FSET_I:
-        case O_FCMP_R:
-        case O_FCMP_RC:
-        case O_FCMP_CR:
-        case O_FCMP_I:
-        case O_MUFU:
-        case O_RRO_R:
-        case O_RRO_C:
-        case O_RRO_I:
-        case O_F2F_R:
-        case O_F2F_C:
-        case O_F2F_I:
-        case O_F2I_R:
-        case O_F2I_C:
-        case O_F2I_I:
-        case O_I2F_R:
-        case O_I2F_C:
-        case O_I2F_I:
-        case O_FSWZADD:
-        case O_FCHK_R:
-        case O_FCHK_C:
-        case O_FCHK_I:
-        case O_HADD2_R:
-        case O_HADD2_C:
-        case O_HADD2_I:
-        case O_HADD2_32I:
-        case O_HMUL2_R:
-        case O_HMUL2_C:
-        case O_HMUL2_I:
-        case O_HMUL2_32I:
-        case O_HFMA2_R:
-        case O_HFMA2_RC:
-        case O_HFMA2_CR:
-        case O_HFMA2_I:
-        case O_HFMA2_32I:
-        case O_HSETP2_R:
-        case O_HSETP2_C:
-        case O_HSETP2_I:
-        case O_HSET2_R:
-        case O_HSET2_C:
-        case O_HSET2_I:
-        case O_DADD_R:
-        case O_DADD_C:
-        case O_DADD_I:
-        case O_DMUL_R:
-        case O_DMUL_C:
-        case O_DMUL_I:
-        case O_DFMA_R:
-        case O_DFMA_RC:
-        case O_DFMA_CR:
-        case O_DFMA_I:
-        case O_DSET_R:
-        case O_DSET_C:
-        case O_DSET_I:
-        case O_DSETP_R:
-        case O_DSETP_C:
-        case O_DSETP_I:
-        case O_DMNMX_R:
-        case O_DMNMX_C:
-        case O_DMNMX_I: return FAM_FLOAT;
-        case O_LDC:
-        case O_LDG:
-        case O_STG:
-        case O_LDS:
-        case O_STS:
-        case O_LDL:
-        case O_STL:
-        case O_ATOM:
-        case O_ATOMS:
-        case O_RED:
-        case O_ATOM_CAS:
-        case O_ATOMS_CAS: return FAM_MEMORY;
-        case O_TEX:
-        case O_TEX_B:
-        case O_TEXS:
-        case O_TLD:
-        case O_TLD_B:
-        case O_TLDS:
-        case O_TLD4:
-        case O_TLD4_B:
-        case O_TLD4S:
-        case O_TXQ:
-        case O_TXQ_B:
-        case O_TMML:
-        case O_TMML_B:
-        case O_TXD:
-        case O_TXD_B:
-        case O_SULD:
-        case O_SUST:
-        case O_SURED:
-        case O_SUATOM: return FAM_TEXTURE;
-        default: return FAM_NONE;
-    }
-}
-
 /* A conservative source-invariance proof for portable coverage reduction. Only these pure register, uniform
    constant and control operations may contribute to the source color. In particular, FSWZADD, PIXLD, input loads,
    clocks, subgroup operations, derivatives, texture reads and memory accesses do not inherit this property from
@@ -822,8 +561,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             si->unsupported = 1;
             return NULL;
         }
-        /* an opcode taken here that no family writes (op_family) would be dropped: refused, the no-ops aside */
-        if (!op_family(op->id) && op->id != O_NOP && op->id != O_DEPBAR && op->id != O_VOTE_VTG) {
+        /* an opcode taken here that no root of sail/sm53.sail writes would be dropped: refused, the no-ops aside */
+        if (!sm53_sail_takes(op->id) && op->id != O_NOP && op->id != O_DEPBAR && op->id != O_VOTE_VTG) {
             snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s %016llx: no family writes it", op->name,
                      (unsigned long long)insn[i]);
             si->unsupported = 1;
@@ -1812,7 +1551,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
        subgroups in the fragment stage, runs each invocation as one lane alone too, the lane of its place in its 2x2
        quad (DirectCtx.quad_lane, from FragCoord): its ballot is that lane's bit, the votes are its predicate,
        FSWZADD takes the mode of its place, a SHFL within the quad reads the other pixel's register through fine
-       derivatives (emit_thread.c's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
+       derivatives (sail/sm53_thread_spirv.h's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
        SHFL keeps its own value. Those reads take every pixel of the quad in step, as derivatives do */
     int quad_lane = stage == ST_FS && !can_subgroup && (votes || swizzle_lanes || lane_used);
     int lone_lane = quad_lane ||
@@ -3356,16 +3095,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 spv_emit_label(&c->emit, execute);
             }
         }
-        /* the instruction to the family whose branches take its opcode */
-        switch (op_family(op)) {
-            case FAM_FLOW: emit_flow(&tr, i, w, op, d, a, b); break;
-            case FAM_IO: emit_io(&tr, i, w, op, d, a, b); break;
-            case FAM_THREAD: emit_thread(&tr, i, w, op, d, a, b); break;
-            case FAM_INT: emit_int(&tr, i, w, op, d, a, b); break;
-            case FAM_FLOAT: emit_float(&tr, i, w, op, d, a, b); break;
-            case FAM_MEMORY: emit_memory(&tr, i, w, op, d, a, b); break;
-            case FAM_TEXTURE: emit_texture(&tr, i, w, op, d, a, b); break;
-        }
+        /* the instruction, from its Sail (sm53_sail.c, sail/sm53.sail): one no root takes was refused before */
+        sm53_sail_emit(&tr, i, w, op, d, a, b);
         /* no texture is sparse, so every texel a fetch reads is resident */
         pred_write(c, shader_sparse_predicate(w, op), c->false_value);
         c->guard = 0;

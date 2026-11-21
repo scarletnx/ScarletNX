@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The SM53 instructions spirv_translate.c emits from Sail (sailgen --gpu, sm53.sail): each family's roots are its own
+# file, included here. "op FN OPCODE..." runs execute_FN for each of the decoder's opcodes (translator.h's SM53_OPS,
+# O_<NAME>), their place in the line its Form()
+prefix sg53
+static Field Form Dst RegA RegB
+include sm53_thread.roots
+include sm53_flow.roots
+include sm53_io.roots
+include sm53_memory.roots
+include sm53_int.roots
+include sm53_float.roots
+include sm53_texture.roots

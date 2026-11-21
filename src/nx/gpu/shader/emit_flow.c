@@ -34,30 +34,6 @@ void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 ki
     }
 }
 
-/* Relative CAL through cbuf counts bytes from the next instruction. Absolute JCAL/JMP/JMX count from the
-   shader pool. flow_base is the GPU address represented by the translator's word0, including compute's fake SPH. */
-static u32 indirect_target(const Tr* t, u32 i, u64 w, int op, u32 a) {
-    DirectCtx* c = t->c;
-    u32 value;
-    if (B(w, 5, 1)) {
-        u32 offset = shader_u32(c, B(w, 20, 16));
-        if (op == O_JMX) offset = spv_emit_iadd_u32(&c->emit, c->u32_type, offset, reg_read(c, a));
-        value = shader_cbuf_read_dynamic(c, B(w, 36, 5), offset);
-    } else
-        value = shader_u32(c, B(w, 20, 32));
-    if (op == O_JMX) value = spv_emit_iadd_u32(&c->emit, c->u32_type, value, reg_read(c, a));
-    u32 base = shader_u32(c, op == O_CAL ? (i + 1) * 8 : t->si->flow_base);
-    value = op == O_CAL ? spv_emit_iadd_u32(&c->emit, c->u32_type, value, base)
-                        : spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, value, base);
-    u32 target = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, value, shader_u32(c, 3));
-    u32 schedule = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type,
-                                   spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, target, shader_u32(c, 3)),
-                                   shader_u32(c, 2));
-    return spv_emit_iadd_u32(
-        &c->emit, c->u32_type, target,
-        spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, schedule, shader_u32(c, 1), c->zero));
-}
-
 static void se_branch(DirectCtx* c, StructEmit* se, u32 label) {
     spv_emit_branch(&c->emit, label);
     se->open = 0;
@@ -268,16 +244,17 @@ int shader_structure_step(DirectCtx* c, StructEmit* se) {
 }
 
 /* the branches, calls, returns, the control stack's pushes and pops, KIL and EXIT */
-void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
+/* EXIT's end of the program: the pops of a PEXIT, the passthrough geometry's outputs, the transform feedback's, the
+   vertex position's fix, a fragment's colors, coverage, sample mask, depth and alpha test, and the lane's end or its
+   discard (sail/sm53_flow.sail's EXIT) */
+void shader_exit(const Tr* t, u32 i, u64 w) {
+    (void)i, (void)w;
     ShaderInfo* si = t->si;
     int stage = t->stage;
-    u32 n = t->n;
     u32 target = t->target;
     int passthrough = t->passthrough;
     u32 in_vertices = t->in_vertices;
     int has_pexit = t->has_pexit;
-    u32* pop_targets = t->pop_targets;
-    int dynamic_stack = t->dynamic_stack;
     DirectCtx* c = t->c;
     u32 i32_type = t->i32_type;
     u32 vec4 = t->vec4;
@@ -290,7 +267,6 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32* output_attrs = t->output_attrs;
     u32 point_size = t->point_size;
     u32 layer_output = t->layer_output;
-    u8* attr_private = t->attr_private;
     int xfb_on = t->xfb_on;
     u32 clip_output = t->clip_output;
     u32 clip_count = t->clip_count;
@@ -304,213 +280,114 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 push_pointer = t->push_pointer;
     u32 stack_ptr = t->stack_ptr;
     u32* stack = t->stack;
-    u32 call_ptr = t->call_ptr;
-    u32* call_stack = t->call_stack;
     u32 pc = t->pc;
     ShStructure* structure = t->structure;
-    if ((op == O_PRET || op == O_RET) && !call_ptr) {
-        /* the CRS stack's static walk followed the program's returns: a PRET pushes nothing at run time, and a RET goes
-           to its PRET's target, or ends the program where it found none */
-        if (op == O_RET)
-            spv_emit_store(&c->emit, pc, shader_u32(c, pop_targets && pop_targets[i] ? pop_targets[i] : UINT32_MAX));
-    } else if (op == O_CAL || op == O_JCAL || op == O_PRET) {
-        /* CAL pushes the instruction after it and jumps. PRET only pushes its target, where a later RET returns */
-        u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
-        u32 room = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, sp, shader_u32(c, 32));
-        u32 address = spv_emit_constant_u32(&c->emit, c->u32_type,
-                                            op == O_PRET ? bra_target(w, i) : shader_next_instruction(i, n));
-        for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, sp, shader_u32(c, k));
-            u32 old = spv_emit_load(&c->emit, c->u32_type, call_stack[k]);
-            spv_emit_store(&c->emit, call_stack[k],
-                           spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, address, old));
-        }
-        spv_emit_store(
-            &c->emit, call_ptr,
-            spv_emit_iadd_u32(&c->emit, c->u32_type, sp,
-                              spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room, shader_u32(c, 1), c->zero)));
-        if (op == O_CAL || op == O_JCAL)
-            spv_emit_store(&c->emit, pc,
-                           spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room,
-                                            op == O_JCAL || B(w, 5, 1) ? indirect_target(t, i, w, op, a)
-                                                                       : shader_u32(c, bra_target(w, i)),
-                                            shader_u32(c, UINT32_MAX)));
-    } else if (op == O_RET) {
-        u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
-        u32 has_entry = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, c->zero, sp);
-        u32 index = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, sp, shader_u32(c, 1));
-        u32 destination = shader_u32(c, UINT32_MAX);
-        for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, index, shader_u32(c, k));
-            u32 old = spv_emit_load(&c->emit, c->u32_type, call_stack[k]);
-            destination = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, old, destination);
-        }
-        spv_emit_store(&c->emit, call_ptr,
-                       spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, has_entry, index, c->zero));
-        spv_emit_store(&c->emit, pc, destination);
-    } else if (dynamic_stack && (op == O_SSY || op == O_PBK || op == O_PCNT || op == O_PEXIT)) {
-        u32 sp = spv_emit_load(&c->emit, c->u32_type, stack_ptr);
-        u32 token = shader_u32(c, bra_target(w, i) | (u32)CRS_KIND(op) << 16);
-        for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, sp, shader_u32(c, k));
-            u32 old = spv_emit_load(&c->emit, c->u32_type, stack[k]);
-            spv_emit_store(&c->emit, stack[k], spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, token, old));
-        }
-        u32 room = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, sp, shader_u32(c, 32));
-        u32 inc = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room, shader_u32(c, 1), c->zero);
-        spv_emit_store(&c->emit, stack_ptr, spv_emit_iadd_u32(&c->emit, c->u32_type, sp, inc));
-    } else if (dynamic_stack && (op == O_SYNC || op == O_BRK || op == O_CONT)) {
+    u32 pexit_merge = 0;
+    if (has_pexit) {
         u32 found, destination, new_sp;
-        shader_dynamic_pop(c, stack_ptr, stack, CRS_KIND(op), spv_emit_load(&c->emit, c->u32_type, pc), &found,
-                           &destination, &new_sp);
+        u32 branch_label = spv_emit_id(&c->emit), exit_label = spv_emit_id(&c->emit);
+        pexit_merge = spv_emit_id(&c->emit);
+        shader_dynamic_pop(c, stack_ptr, stack, CRS_KIND(O_PEXIT), c->zero, &found, &destination, &new_sp);
+        spv_emit_selection_merge(&c->emit, pexit_merge);
+        spv_emit_branch_conditional(&c->emit, found, branch_label, exit_label);
+        spv_emit_label(&c->emit, branch_label);
         spv_emit_store(&c->emit, pc, destination);
         spv_emit_store(&c->emit, stack_ptr, new_sp);
-    } else if (op == O_BRA || op == O_SYNC || op == O_BRK || op == O_CONT) {
-        u32 target_index = op == O_BRA ? bra_target(w, i) : pop_targets ? pop_targets[i] : 0;
-        u32 destination = shader_u32(c, target_index);
-        spv_emit_store(&c->emit, pc, destination);
-    } else if (op == O_JMP || op == O_JMX) {
-        spv_emit_store(&c->emit, pc, indirect_target(t, i, w, op, a));
-    } else if (op == O_BRX) {
-        u32 offset = spv_emit_constant_u32(&c->emit, i32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
-        u32 signed_index = spv_emit_iadd_u32(&c->emit, i32_type, reg_read_as(c, a, i32_type), offset);
-        u32 words = spv_emit_binary(&c->emit, SPV_OP_S_DIV, i32_type, signed_index,
-                                    spv_emit_constant_u32(&c->emit, i32_type, 8));
-        u32 target = spv_emit_iadd_u32(
-            &c->emit, c->u32_type, spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, words), shader_u32(c, i + 1));
-        u32 after_ten = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, target, shader_u32(c, 10));
-        u32 aligned = spv_emit_binary(
-            &c->emit, SPV_OP_I_EQUAL, c->bool_type,
-            spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, after_ten, shader_u32(c, 3)), c->zero);
-        u32 in_range =
-            spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type,
-                           spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, target, shader_u32(c, 10)));
-        u32 needs_skip = spv_emit_bool_binary(&c->emit, c->bool_type, 0, aligned, in_range);
-        target = spv_emit_iadd_u32(
-            &c->emit, c->u32_type, target,
-            spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, needs_skip, shader_u32(c, 1), c->zero));
-        if (structure)
-            c->branch_target = target; /* the structure's SHS_SWITCH */
-        else
-            spv_emit_store(&c->emit, pc, target);
-    } else if (op == O_CCTL || op == O_CCTLL || op == O_IDE || op == O_BPT) {
-        /* These cache and breakpoint hints have no shader-visible result. */
-    } else if (op == O_KIL) {
-        /* the lane goes on as a helper, so that its quad's derivatives stay defined, and nothing it writes
-           lands: what the hardware gives, and what Eden does. Inside the flow loop it goes on as a lane that
-           only remembers it, and is discarded after the loop (DirectCtx.discarded) */
-        if (c->discarded)
-            spv_emit_store(&c->emit, c->discarded, c->true_value);
-        else
-            spv_emit_demote(&c->emit);
-    } else if (op == O_EXIT) {
-        u32 pexit_merge = 0;
-        if (has_pexit) {
-            u32 found, destination, new_sp;
-            u32 branch_label = spv_emit_id(&c->emit), exit_label = spv_emit_id(&c->emit);
-            pexit_merge = spv_emit_id(&c->emit);
-            shader_dynamic_pop(c, stack_ptr, stack, CRS_KIND(O_PEXIT), c->zero, &found, &destination, &new_sp);
-            spv_emit_selection_merge(&c->emit, pexit_merge);
-            spv_emit_branch_conditional(&c->emit, found, branch_label, exit_label);
-            spv_emit_label(&c->emit, branch_label);
-            spv_emit_store(&c->emit, pc, destination);
-            spv_emit_store(&c->emit, stack_ptr, new_sp);
-            spv_emit_branch(&c->emit, pexit_merge);
-            spv_emit_label(&c->emit, exit_label);
-        }
-        if (passthrough)
-            shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
-                                        point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
-                                        primitive_id_out, position_fix, push, push_pointer);
-        if (xfb_on && stage != ST_GS) shader_xfb_store(c, t->xfb_out);
-        if (position_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
-            shader_vertex_position_fix(c, position, push, push_pointer, vec4);
-        } else if (stage == ST_FS) {
-            u32 reg = 0, output = 0, alpha = zero_f;
-            u32 coverage_mode = si->advanced_blend_mask & SH_COVERAGE_R1
-                ? si->advanced_blend_mask >> SH_COVERAGE_R1_MODE_SHIFT & 3 : 0;
-            u32 coverage_components = (coverage_mode & 1 ? 7u : 0) | (coverage_mode & 2 ? 8u : 0);
-            for (u32 rt = 0; rt < 8; rt++) {
-                u32 mask = (target >> (rt * 4)) & 15;
-                if (!mask) continue;
-                u32 components[4];
-                int integer = !!(si->rt_int_mask & (1u << rt));
-                int signed_color = !!(si->rt_sint_mask & (1u << rt));
-                u32 color_type = integer ? signed_color ? vec4_i32 : vec4_u32 : vec4;
-                for (u32 k = 0; k < 4; k++, reg++) {
-                    /* a float target takes the register as the float it holds, with no bits made on the way */
-                    u32 on = mask & (1u << k), raw = integer && on ? reg_read(c, reg) : c->zero;
-                    components[k] = integer
-                                        ? signed_color ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, raw) : raw
-                                    : on ? reg_read_as(c, reg, c->f32_type)
-                                         : zero_f;
-                    if (rt == 0 && k == 3) alpha = on ? reg_read_as(c, reg, c->f32_type) : zero_f;
-                }
-                /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
-                   color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */
-                if (!integer && !(si->rt_int_mask & 1u) && (si->advanced_blend_mask & SH_ALPHA_TO_ONE))
-                    components[3] = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-                if (!integer && coverage_components) {
-                    u32 factor16 = si->advanced_blend_mask >> SH_COVERAGE_R1_FACTOR_SHIFT & 31;
-                    u32 factor = spv_emit_constant_f32(&c->emit, c->f32_type, (float)factor16 / 16.0f);
-                    for (u32 k = 0; k < 4; k++)
-                        if (coverage_components & (1u << k))
-                            components[k] = SPV(&c->emit, SPV_OP_F_MUL, c->f32_type, components[k], factor);
-                }
-                u32 color = spv_emit_vec4_construct(&c->emit, color_type, components);
-                spv_emit_store(&c->emit, outputs[output++], color);
-            }
-            if (t->coverage_output) {
-                u32 bits = spv_emit_load(&c->emit, c->u32_type,
-                                         spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->u32_type,
-                                                                           t->coverage, 0, c->zero));
-                u32 values[4] = {bits, c->zero, c->zero, c->zero};
-                u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
-                if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
-                    color = spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_i32, color);
-                spv_emit_store(&c->emit, t->coverage_output, color);
-            }
-            if (sample_mask_output) {
-                u32 mask = t->guest_sample_mask ? reg_read(c, reg) : 0;
-                if (si->advanced_blend_mask & SH_ALPHA_COVERAGE) {
-                    u32 samples = si->advanced_blend_mask >> 8 & 63;
-                    if (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER) {
-                        u32 coordinate = spv_emit_load(&c->emit, vec4, t->fragcoord);
-                        u32 x = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 0);
-                        u32 y = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 1);
-                        mask = shader_alpha_coverage_dither_spirv(&c->emit, c->f32_type, c->u32_type,
-                            c->bool_type, alpha, samples, mask, x, y);
-                    } else
-                        mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type,
-                            alpha, samples, mask);
-                }
-                spv_emit_store(&c->emit,
-                               spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->u32_type,
-                                                                 sample_mask_output, 0, c->zero),
-                               mask);
-            }
-            if (depth_output) spv_emit_store(&c->emit, depth_output, reg_read_as(c, reg + 1, c->f32_type));
-            if (push && (target & 15)) shader_alpha_test(c, push, push_pointer, alpha);
-        }
-        if (c->discarded && !structure &&
-            pc) { /* the lane leaves the flow loop, and a discarded one is discarded after it */
-            spv_emit_store(&c->emit, pc, shader_u32(c, UINT32_MAX));
-            if (has_pexit) spv_emit_branch(&c->emit, pexit_merge);
-        } else {
-            if (c->discarded && !c->blend_end) { /* structured: a discarded lane is discarded as it ends */
-                u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
-                u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
-                spv_emit_selection_merge(&c->emit, kept);
-                spv_emit_branch_conditional(&c->emit, discard, kill_label, kept);
-                spv_emit_label(&c->emit, kill_label);
-                spv_emit_kill(&c->emit);
-                spv_emit_label(&c->emit, kept);
-            }
-            if (c->blend_end)
-                spv_emit_branch(&c->emit, c->blend_end);
-            else
-                spv_emit_return(&c->emit);
-        }
-        if (has_pexit) spv_emit_label(&c->emit, pexit_merge);
+        spv_emit_branch(&c->emit, pexit_merge);
+        spv_emit_label(&c->emit, exit_label);
     }
+    if (passthrough)
+        shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
+                                    point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
+                                    primitive_id_out, position_fix, push, push_pointer);
+    if (xfb_on && stage != ST_GS) shader_xfb_store(c, t->xfb_out);
+    if (position_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
+        shader_vertex_position_fix(c, position, push, push_pointer, vec4);
+    } else if (stage == ST_FS) {
+        u32 reg = 0, output = 0, alpha = zero_f;
+        u32 coverage_mode = si->advanced_blend_mask & SH_COVERAGE_R1
+            ? si->advanced_blend_mask >> SH_COVERAGE_R1_MODE_SHIFT & 3 : 0;
+        u32 coverage_components = (coverage_mode & 1 ? 7u : 0) | (coverage_mode & 2 ? 8u : 0);
+        for (u32 rt = 0; rt < 8; rt++) {
+            u32 mask = (target >> (rt * 4)) & 15;
+            if (!mask) continue;
+            u32 components[4];
+            int integer = !!(si->rt_int_mask & (1u << rt));
+            int signed_color = !!(si->rt_sint_mask & (1u << rt));
+            u32 color_type = integer ? signed_color ? vec4_i32 : vec4_u32 : vec4;
+            for (u32 k = 0; k < 4; k++, reg++) {
+                /* a float target takes the register as the float it holds, with no bits made on the way */
+                u32 on = mask & (1u << k), raw = integer && on ? reg_read(c, reg) : c->zero;
+                components[k] = integer
+                                    ? signed_color ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, raw) : raw
+                                : on ? reg_read_as(c, reg, c->f32_type)
+                                     : zero_f;
+                if (rt == 0 && k == 3) alpha = on ? reg_read_as(c, reg, c->f32_type) : zero_f;
+            }
+            /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
+               color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */
+            if (!integer && !(si->rt_int_mask & 1u) && (si->advanced_blend_mask & SH_ALPHA_TO_ONE))
+                components[3] = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
+            if (!integer && coverage_components) {
+                u32 factor16 = si->advanced_blend_mask >> SH_COVERAGE_R1_FACTOR_SHIFT & 31;
+                u32 factor = spv_emit_constant_f32(&c->emit, c->f32_type, (float)factor16 / 16.0f);
+                for (u32 k = 0; k < 4; k++)
+                    if (coverage_components & (1u << k))
+                        components[k] = SPV(&c->emit, SPV_OP_F_MUL, c->f32_type, components[k], factor);
+            }
+            u32 color = spv_emit_vec4_construct(&c->emit, color_type, components);
+            spv_emit_store(&c->emit, outputs[output++], color);
+        }
+        if (t->coverage_output) {
+            u32 bits = spv_emit_load(&c->emit, c->u32_type,
+                                     spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->u32_type,
+                                                                       t->coverage, 0, c->zero));
+            u32 values[4] = {bits, c->zero, c->zero, c->zero};
+            u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
+            if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
+                color = spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_i32, color);
+            spv_emit_store(&c->emit, t->coverage_output, color);
+        }
+        if (sample_mask_output) {
+            u32 mask = t->guest_sample_mask ? reg_read(c, reg) : 0;
+            if (si->advanced_blend_mask & SH_ALPHA_COVERAGE) {
+                u32 samples = si->advanced_blend_mask >> 8 & 63;
+                if (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER) {
+                    u32 coordinate = spv_emit_load(&c->emit, vec4, t->fragcoord);
+                    u32 x = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 0);
+                    u32 y = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 1);
+                    mask = shader_alpha_coverage_dither_spirv(&c->emit, c->f32_type, c->u32_type,
+                        c->bool_type, alpha, samples, mask, x, y);
+                } else
+                    mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type,
+                        alpha, samples, mask);
+            }
+            spv_emit_store(&c->emit,
+                           spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->u32_type,
+                                                             sample_mask_output, 0, c->zero),
+                           mask);
+        }
+        if (depth_output) spv_emit_store(&c->emit, depth_output, reg_read_as(c, reg + 1, c->f32_type));
+        if (push && (target & 15)) shader_alpha_test(c, push, push_pointer, alpha);
+    }
+    if (c->discarded && !structure &&
+        pc) { /* the lane leaves the flow loop, and a discarded one is discarded after it */
+        spv_emit_store(&c->emit, pc, shader_u32(c, UINT32_MAX));
+        if (has_pexit) spv_emit_branch(&c->emit, pexit_merge);
+    } else {
+        if (c->discarded && !c->blend_end) { /* structured: a discarded lane is discarded as it ends */
+            u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
+            u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
+            spv_emit_selection_merge(&c->emit, kept);
+            spv_emit_branch_conditional(&c->emit, discard, kill_label, kept);
+            spv_emit_label(&c->emit, kill_label);
+            spv_emit_kill(&c->emit);
+            spv_emit_label(&c->emit, kept);
+        }
+        if (c->blend_end)
+            spv_emit_branch(&c->emit, c->blend_end);
+        else
+            spv_emit_return(&c->emit);
+    }
+    if (has_pexit) spv_emit_label(&c->emit, pexit_merge);
 }

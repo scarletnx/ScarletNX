@@ -12,6 +12,10 @@
          (core.h, the lowering of Sail's builtins, then a machine's state: llvm.h for A64, llvm_arm.h for AArch32)
          copied at its top in their order. A feature the profile's feature lines do not name is one no guest has:
          IsFeatureImplemented of it is false when sailgen runs; its since lines give an encoding's architecture
+     sailgen --gpu ROOTS --backend FILE... -o OUT INPUT... [--overlay FILE]...
+         GPU mode, apart from the CPUs' (gpu.c): writes OUT, C that emits each instruction of a GPU's ISA that ROOTS
+         names from its Sail (src/nx/gpu/shader/sail/), and the fusions of instructions ROOTS names, with a
+         shader translator's back end (spirv.h, then the ISA's state)
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -130,7 +134,8 @@ static int usage(const char* why) {
             "sailgen: %s\n"
             "usage: sailgen --extract ROOTS -o OUT INPUT...\n"
             "       sailgen --generate ROOTS --backend FILE [--backend FILE]... [--profile PROFILE] -o OUT INPUT...\n"
-            "               [--overlay FILE]...\n",
+            "               [--overlay FILE]...\n"
+            "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n",
             why);
     return 2;
 }
@@ -139,20 +144,20 @@ int main(int argc, char** argv) {
     const char* mode = NULL;
     const char* roots = NULL;
     const char* out = NULL;
-    const char* backends[4];
+    const char* backends[16];
     int backend_count = 0;
     const char* profile = NULL;
     const char* inputs[16];
     int overlays[16], count = 0, i;
     for (i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate")) {
-            if (mode) return usage("--extract and --generate are one or the other");
-            if (i + 1 >= argc) return usage("--extract and --generate take the roots file");
+        if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate") || !strcmp(argv[i], "--gpu")) {
+            if (mode) return usage("--extract, --generate and --gpu are one or another");
+            if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file");
             mode = argv[i];
             roots = argv[++i];
         } else if (!strcmp(argv[i], "--backend")) {
             if (i + 1 >= argc) return usage("--backend takes the back end's file");
-            if (backend_count == 4) return usage("more than 4 back end files");
+            if (backend_count == 16) return usage("more than 16 back end files");
             backends[backend_count++] = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
             if (i + 1 >= argc) return usage("--profile takes the decoder's profile (a64.profile)");
@@ -171,7 +176,7 @@ int main(int argc, char** argv) {
             return usage("see the options below");
         }
     }
-    if (!mode) return usage("give --extract or --generate");
+    if (!mode) return usage("give --extract, --generate or --gpu");
     if (!out) return usage("give -o OUT");
     if (!count) return usage("give the input files");
     if (!strcmp(mode, "--extract")) {
@@ -180,7 +185,12 @@ int main(int argc, char** argv) {
         if (profile) return usage("--profile is --generate's");
         return sg_extract(roots, out, inputs, count);
     }
-    if (!backend_count) return usage("--generate needs the back end's files (--backend core.h --backend llvm.h)");
+    if (!backend_count) return usage("--generate and --gpu need the back end's files (--backend FILE)");
     for (i = 0; i < count; ++i) sg_parse_file(inputs[i], overlays[i]);
+    if (!strcmp(mode, "--gpu")) {
+        /* a GPU's ISA: no CPU profile, and none of the CPU generator's state */
+        if (profile) return usage("--profile is the CPUs' (--generate), not --gpu's");
+        return sg_gpu_generate(roots, backends, backend_count, out);
+    }
     return sg_generate(roots, backends, backend_count, profile, out);
 }

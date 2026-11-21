@@ -230,3 +230,79 @@ optimized IR, or the same instructions in another order, or another IR no longer
 when both run, the floating point from FPCRs and operands chosen for its paths. `tests/arm_sail_ir.c` does the same for
 AArch32's T16 halfwords against the emitters written by hand (`snx_thumb_llvm_block_t16_reference`), on every profile
 and memory mode, alone and in an IT block.
+
+## GPU mode (`--gpu`)
+
+```sh
+sailgen --gpu ROOTS --backend spirv.h --backend ISA_spirv.h [--backend ISA_FAMILY_spirv.h]... -o OUT INPUT...
+```
+
+The shader translators' instruction emitters, from Sail written for a GPU's ISA (`src/nx/gpu/shader/sail/`): a mode of
+its own, `gpu.c`, which shares the parse with the CPUs' generator and nothing else. No CPU specification is read in it,
+and none of the GPU's in `--generate`: `gen.c`'s decode clauses, PSTATE, element loops and LLVM back ends are the
+CPUs', `gpu.c`'s roots, times and SPIR-V back end the GPUs'. Every instruction of SM86 (`sm86.sail`) and of SM53
+(`sm53.sail` and its families' `sm53_<family>.sail`) is emitted so: `sm86_translate.c`'s `emit_insn` and
+`spirv_translate.c`'s to_spirv run the generated dispatcher, and refuse an opcode no root takes.
+
+The decoders stay `tools/decodetree`'s (`sm53.decode`, `sm86.decode`): the Sail says what each decoded instruction
+computes. The roots file names them:
+
+- `prefix NAME`: the generated functions' prefix (`sg86`, `sg53`);
+- `include FILE`: another roots file beside this one (a family's);
+- `static FN...`: the back end's functions whose values the translator knows (an instruction's fields, whether an
+  operand is the zero register): C values, made once where the Sail asks for them, which the Sail's `if`s and
+  `match`es on them become;
+- `op FN OPCODE...`: `execute_FN`, a Sail function of no parameters, runs for each of the decoder's opcodes; the
+  opcode's place in the line is handed to the back end (`sg_set_form`), which an instruction of several forms (SM53's
+  `_R`, `_C`, `_I`) reads as `Form()`;
+- `fuse FN OPCODE...`: the fusion `FN` of those opcodes in a row, where its guard `FN_ok` holds.
+
+Each value is known when the translator runs (STATIC: fields, immediates, what only they make) or when the program
+runs (DYN: a value of the back end, `SgV`). The Sail's functions are inlined; an `if` or a `match` on a STATIC value is
+C, the locals the arms set merged after it; an `if` on a DYN value runs both arms and selects each local they set
+differently (no arm may change state there); a `foreach` of STATIC bounds is a C loop whose locals' times settle
+before it is written. A function with no Sail body is the back end's `sg_NAME`: its val's `int` and enum parameters
+take C values, its `bits` and `bool` ones `SgV`s, a type the Sail does not know (`half2`, `f64`, `i64`, `wordptr`) an
+opaque `SgV` that the Sail binds, passes and chooses and nothing else; its result is DYN unless the roots name it
+static. `throw(E(...))` calls `sg_throw_E` with its arguments and ends the instruction (the translator's refusal).
+Sail's operators on bits and the comparisons of `UInt` and `SInt` are the back end's `sg_add`, `sg_ult`... with the
+width; `UInt` and `SInt` of DYN bits are only compared, chosen, passed to `Min`, `Max`, `Abs` or made bits again
+(`to_bits`); `DIV`, `MOD` and `^` are of ints known when the translator runs. Statements are written in the Sail's
+order, left to right as C's arguments were, and a binary operator's constant left operand is made before its
+run-time right one, so a moved instruction makes its constants and instructions in the order it made them.
+
+The output is one C function per root (`PREFIX_FN`), one per fusion and its guard, `PREFIX_emit(g, op)` (the root of
+an opcode, 0 for none), `PREFIX_takes(op)`, `PREFIX_fuse(g, ops, avail)` (at the first of `avail` instructions whose
+opcodes are `ops`, the first fusion whose opcodes and guard they meet, run: how many it took) and
+`PREFIX_fuse_starts(op)`.
+
+**What stays C.** The Sail holds each instruction's logic: its fields, forms, refusals, choices and arithmetic. What
+carries a translator's own work is called from the Sail as the hand-written emitter called it, through the back end:
+the register caches (SM53's `reg_read`, `reg_read_as`, `reg_copy`), the FTZ and rounding helpers, the constant buffer
+windows, the global buffers' binding and write-back marks, the interface variables of the attributes, the CAS loops
+of the stores and atomics SPIR-V has not, the textures' and surfaces' binding (SM86's `texture()` and `surface()`,
+SM53's `shader_tex_*`), the tensor cores' matrices (`hmma`, `ldsm`), and the long typed conversions (SM53's
+`shader_f2f`, `shader_f2i`, `shader_i2f`) and EXIT's end of the program (`shader_exit`).
+
+**Fusion.** A fusion replaces instructions in a row by what they compute together, with every architectural write
+they make (each register, predicate and flag, in their order), so that it changes nothing a later instruction or the
+program's outputs see. Its guard reads the instructions' fields (`FieldAt(k, ...)`), and must hold only where that
+is so: the registers the first instructions write are not ones the later ones still read as they were. The translator
+offers only instructions that run as the first does (unguarded) and that no branch lands on. Each fusion is held to
+its instructions run one after another by the tests (below), which is what keeps a fusion from changing execution.
+
+**Back ends.** `spirv.h` makes SPIR-V (`common/utilities/spirv_emit.h`): bits of up to 32 a u32, of 33 to 64 a u64,
+an f32 or an i32 kept so until an operation wants another type, each operator the one instruction the hand-written
+emitters make for it; `gpu.sail`'s vals are its floats, halves, subgroup operations and truth tables. Two switches
+follow the translators: `fold`, whose booleans' operations and selects fold the true and false constants out (SM53's
+`cc_and`, `shader_select`), and `fresh_casts`, which bitcasts a value each time an operation takes it as another type
+(SM53's families) instead of once an instruction (SM86's). The ISA's files after it (`sm86_spirv.h`, `sm53_spirv.h`
+and a family's `sm53_<family>_spirv.h`) define `struct SgG` and give the state and the helpers above, which the file
+sailgen writes is compiled with. `eval.h` runs the same Sail on values, with an ISA's state file
+(`sm86_eval_state.h`) and the roots of the instructions it can run (`sm86_eval.roots`), and says where an instruction
+`spirv.h` would make is undefined in SPIR-V (a shift by the width or more), which the tests fail on.
+
+**Tests.** `tests/shader_sail_sm86.c` runs `sm86.sail`'s integer instructions on values against `sm86_eval` (the CPU's
+run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3's 256 truth tables whole, and each
+fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
+shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.

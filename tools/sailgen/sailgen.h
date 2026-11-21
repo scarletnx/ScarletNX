@@ -134,6 +134,8 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
 /* the generator: C for the decode functions roots names (gen.c), with the back end's files copied at its top */
 int sg_generate(const char* roots_path, const char* const* backend_paths, int backend_count, const char* profile_path,
                 const char* out_path);
+/* GPU mode (gpu.c): C for the roots' instructions and fusions of a GPU's ISA, apart from the CPUs' generator */
+int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, int backend_count, const char* out_path);
 /* the output buffer, written only when it changes */
 void sg_out(const char* fmt, ...);
 int sg_flush(const char* path);

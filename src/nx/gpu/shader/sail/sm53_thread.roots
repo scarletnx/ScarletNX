@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# SM53's system registers, votes, shuffles and barriers (sm53_thread.sail), which were emit_thread.c's
+static Stage LaneModel LaneIsInvocation QuadLaneModel Between InVertices QuadShfl QuadShflOperand QuadShflLanes
+op S2R O_S2R
+op VOTE O_VOTE
+op SHFL O_SHFL
+op BAR O_BAR
+op CS2R O_CS2R
+op MEMBAR O_MEMBAR

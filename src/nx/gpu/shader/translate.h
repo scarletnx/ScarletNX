@@ -90,7 +90,7 @@ typedef struct {
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
     /* A fragment program run as one lane alone, where the stage has no subgroup: its place in its 2x2 quad (x's parity
        in bit 0, y's in bit 1, from FragCoord, as Vulkan groups the pixels of a fine derivative) and, for each axis,
-       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (emit_thread.c's
+       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (sail/sm53_thread_spirv.h's
        quad_read). 0 in other programs */
     u32 quad_lane, quad_sign[2];
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
@@ -555,7 +555,7 @@ static inline u32* direct_reject_with_buffers(ShaderInfo* si, const char* reason
     return direct_reject(si, reason);
 }
 /* What to_spirv sets up before it writes the program's instructions and each family's function reads
-   (emit_flow, emit_io...): the types, the interface variables, the resource slots and the facts its prescan
+   (sm53_sail.c's instructions): the types, the interface variables, the resource slots and the facts its prescan
    found, each named as to_spirv names it, an array by its first element */
 typedef struct {
     ShaderInfo* si;
@@ -672,12 +672,31 @@ typedef struct {
     u8* block_start;
     ShStructure* structure;
 } Tr;
-/* each family of instructions: writes the instruction i (its word w, opcode op, and fields d, a, b) when one of its branches takes it; op_family (spirv_translate.c) sends each opcode to its family */
-void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
-void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+/* emit_memory.c's, which sail/sm53_memory_spirv.h's instructions take: the constant buffer word of a bank picked at run
+   time from first on, a global slot's bytes written at a byte offset (for its write-back), a shared word's pointer */
+u32 shader_cbuf_read_bank(DirectCtx* c, u32 first, u32 bank, u32 address);
+void shader_log_written(DirectCtx* c, int stage, u32 slot, u32 offset, u32 bytes);
+u32 shader_shared_pointer(DirectCtx* c, const Tr* t, u32 index);
+/* the instruction from SM53's Sail (sm53_sail.c, sail/sm53.sail): 1 when a root of it takes the opcode */
+int sm53_sail_emit(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+/* whether a root of sail/sm53.sail takes the opcode: one none takes is refused */
+int sm53_sail_takes(int op);
+/* What the instructions of sail/sm53_<family>.sail run of the families' files, each as it was a branch of the family's
+   emitter: the instruction i (its word w, opcode op, and fields d, a, b) */
+/* EXIT's end of the program (emit_flow.c), which sail/sm53_flow.sail's EXIT runs */
+void shader_exit(const Tr* t, u32 i, u64 w);
+/* F2F's, F2I's and I2F's conversions (emit_float.c), which sail/sm53_float.sail's instructions run */
+void shader_f2f(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_f2i(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_i2f(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+/* the texture and surface instructions' lowerings (emit_texture.c), which sail/sm53_texture.sail's run */
+void shader_tex_tld(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_surface(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_tlds(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_texs(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_tex(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_txd(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_txq(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_tmml(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
+void shader_tex_tld4(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b);
 #endif
