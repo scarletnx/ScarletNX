@@ -6,7 +6,7 @@
      pass: a copy of the CPU's bytes into a buffer nothing before it reads, so it need not end the pass
    - a range two copy engine results hold, read by the second draw (buffer.c buf_get_owned): written in an earlier
      submission, the copy of them need not end the pass either, whether the test submitted them or the first draw's
-     frame check did after a millisecond of recording; written in this one, it has to come after their writes, and
+     frame check did (vk_submit_every); written in this one, it has to come after their writes, and
      the pass ends there
    - a write of the guest between two draws over a big buffer of its own, which takes the written pages (patch_own):
      the first draw reads the old bytes and the second the new, so that copy stays between them and the pass ends */
@@ -85,8 +85,7 @@ static int pb_halves(u64 target, char half[2]) {
 /* a frame: a new epoch (the guest's submission), the target cleared, red over its left half and the colors at second
    over its right half; the halves' colors, the passes the two draws took, and the submission the first was recorded
    in (first, unless NULL). 0 passes when a submit came between the draws, which ends the pass whatever they do: the
-   GPU thread's own after a millisecond of recording (cmd.c frame_check), which a slow driver or a validation layer
-   reaches */
+   GPU thread's own once vk_submit_every's work was recorded (cmd.c frame_check) */
 static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun, u64* first, char half[2]) {
     g_renderer->mem_may_have_changed();
     rt_clear(ch, target, 4, 4, 0, 1);
@@ -142,9 +141,8 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
 }
 
 /* how pb_owners_case's copies reach the GPU: with the draws' submission, submitted before the draws, or sent by the
-   first draw's frame check after a wait of over a millisecond of recording (cmd.c frame_check) */
+   first draw's frame check, with vk_submit_every at 1 (cmd.c frame_check) */
 enum { PB_WITH_DRAWS, PB_SUBMITTED, PB_FRAME_CHECK };
-#define PB_WAIT_NS 1500000 /* over the millisecond of recording a submission holds at most (cmd.c SUBMIT_EVERY_NS) */
 /* Green colors a copy engine wrote in two halves, two owners the GPU holds, drawn over the right half after the red
    draw began the pass. Copies submitted before the draws were recorded, whatever submitted them, let the copy of their
    bytes for the draw run before the pass; otherwise it follows them, and the pass ends before the green draw */
@@ -169,11 +167,13 @@ static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 c
     copied = vk_submit_number(); /* the submission the copies were recorded in */
     if (how == PB_SUBMITTED) vk_submit_recorded();
     vk_unlock();
-    if (how == PB_FRAME_CHECK) plat_sleep_ns(PB_WAIT_NS);
+    const int every = g_settings.submit_every;
+    if (how == PB_FRAME_CHECK) g_settings.submit_every = 1;
     u64 landings = own_landings();
     CHECK(!pb_frame(ch, target, red, copy, &begun, &first, half));
-    /* the first draw's frame check sends the copies without the wait too, where a slow driver or a validation layer
-       takes a millisecond from the last submit to it */
+    g_settings.submit_every = every;
+    /* the first draw's frame check sends the copies in the other cases too, once vk_submit_every's work came since
+       the last submit */
     int before = first != copied;
     if (owned && how == PB_SUBMITTED && !before)
         fprintf(stderr,
@@ -182,9 +182,9 @@ static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 c
                 (unsigned long long)copied);
     if (owned && how == PB_FRAME_CHECK && !before)
         fprintf(stderr,
-                "two owners: the copies' submission %llu was still recording at the first draw, after a wait "
-                "of %d us (cmd.c frame_check submits after 1000)\n",
-                (unsigned long long)copied, PB_WAIT_NS / 1000);
+                "two owners: the copies' submission %llu was still recording at the first draw, with "
+                "vk_submit_every at 1 (cmd.c frame_check)\n",
+                (unsigned long long)copied);
     CHECK(!owned || how == PB_WITH_DRAWS || before);
     u64 want = owned && !before ? 2 : 1;
     if (half[0] != 'r' || half[1] != 'g' || (owned && begun && begun != want))

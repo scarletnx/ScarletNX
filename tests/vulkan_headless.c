@@ -4204,7 +4204,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmit
 }
 static void sc_waited(u64 t0, u64 timeout) {
     if (!timeout) return; /* a look, no wait */
-    if (plat_tid() == vk_timeline_tid()) return; /* the thread that follows the timeline waits on it by design */
     atomic_fetch_add_explicit(&g_sc.n.waits, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_sc.n.wait_ns, plat_ns() - t0, memory_order_relaxed);
 }
@@ -5869,7 +5868,7 @@ static int check_dma_bands_frames(void) {
            (unsigned long long)(grown >> 10));
     CHECK(!failed && bands1 - bands0 >= 8);
     /* the frames the bands end, with the stream or without it (vk_stream_ring=0). The submissions are not theirs to
-       count: one comes after a millisecond of recording, which a fast GPU leaves none of here, and the stream's own
+       count: one comes after vk_submit_every bands of work, which the count since an earlier one decides, and the stream's own
        comes at a frame's worth of its bytes since the last submission of any kind, which one of those can put off.
        The rings' growth below is what must hold */
     CHECK(ended >= 2);

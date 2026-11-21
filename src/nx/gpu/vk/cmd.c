@@ -144,7 +144,9 @@ static u64 g_frame_id;
 static VkSemaphore g_gsem; /* graphics timeline: submission n signals n */
 static _Atomic u64 g_gval; /* the last submission */
 static u64 g_landed;       /* submissions whose storage results vk_buf_frame_done has landed */
-static u64 g_sub_ns;       /* when the last submission was made */
+static u32 g_work;         /* draws, dispatches and copy bands recorded since the last submission (frame_check) */
+static u64 g_work_rings;   /* the frame's ring bytes (frame_rings) at the last submission */
+static u64 frame_rings(const Frame* f);
 static VkSemaphoreSubmitInfo g_after[2]; /* vk_submit_after's wait and signal, for the next submission (semaphore 0: none) */
 u32 g_vk_present;
 
@@ -1181,7 +1183,8 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     atomic_store_explicit(&g_gval, atomic_load_explicit(&g_gval, memory_order_relaxed) + 1,
                           memory_order_relaxed); /* read by the stall report too */
     g_cmd.submits[why]++;
-    g_sub_ns = plat_ns();
+    g_work = 0;
+    g_work_rings = frame_rings(f);
     f->recording = 0;
     f->icb++;
     SNX_ZONE_VALUE(z_submit, f->icb);
@@ -1377,66 +1380,27 @@ void vk_frame_next(void) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_FRAME);
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
+    g_work_rings = 0; /* the next frame's rings count from 0 (frame_rings) */
     g_frame_id++;
     const Frame* f = &g_fr[g_cur];
     atomic_store_explicit(&g_recycle_at, f->last > f->hold ? f->last : f->hold, memory_order_release);
 }
-/* the GPU thread's recording time a submission holds at most */
-#define SUBMIT_EVERY_NS 1000000
-/* The last graphics submission the GPU has done, as a thread that waits on the timeline publishes it (atomic): the
-   submit below asks it at the start of each draw, where vkGetSemaphoreCounterValue is a call into the kernel each time.
-   The thread waits for the next value whether or not it is submitted yet (a timeline's wait before its signal), in
-   slices of a second, and stops on a lost device, which the other waits report */
-static _Atomic u64 g_gdone;
-static int g_gwatch;     /* the thread started: the GPU thread's */
-static _Atomic u32 g_gwatch_tid; /* its thread: vk_timeline_tid */
-static void gdone_watch(void* arg) {
-    u64 done = 0;
-    (void)arg;
-    SNX_THREAD_NAME("Vulkan timeline");
-    atomic_store_explicit(&g_gwatch_tid, plat_tid(), memory_order_release);
-    for (;;) {
-        u64 want = done + 1;
-        VkSemaphoreWaitInfo wi = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &want};
-        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
-        if (r == VK_TIMEOUT) continue;
-        if (r != VK_SUCCESS || vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) != VK_SUCCESS) return;
-        atomic_store_explicit(&g_gdone, done, memory_order_release);
-    }
-}
-/* Whether the GPU is on the last submission it has, or has none: what is recorded then goes to it, so it has the next
-   work queued before it runs out. While it has more than that, a submission made now only waits behind them, and costs
-   its own call into the kernel, on the recording thread. On a Steam Deck each took about 150 us and some 12 us more
-   for each MB of guest memory imported, which amdgpu takes again at each submission. One game's race holds about
-   180 MB of imports: it made 56 submissions a present, 41 of them for the millisecond alone, the recording thread
-   spent 87% of its time in the kernel, and the GPU stood idle 100 ms of each 180 ms present waiting for them. Without
-   the thread, every millisecond is a submission, as before */
-u32 vk_timeline_tid(void) { return atomic_load_explicit(&g_gwatch_tid, memory_order_acquire); }
-static int gpu_short_of_work(void) {
-    if (!g_gwatch) {
-        g_gwatch = 1;
-        if (plat_thread(gdone_watch, NULL, (size_t)256 << 10)) {
-            char why[256];
-            WARN("vulkan: could not start the thread that follows the GPU's timeline (%s): a submission each "
-                 "millisecond of recording\n",
-                 snx_os_error(why, sizeof why));
-            g_gwatch = -1;
-        }
-    }
-    return g_gwatch < 0 || atomic_load_explicit(&g_gdone, memory_order_acquire) + 1 >=
-                               atomic_load_explicit(&g_gval, memory_order_relaxed);
-}
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions, descriptor pools or descriptor tables ends here, at the start of a draw or dispatch, before
-   anything is set up (a draw's setup must not submit). Otherwise what was recorded goes to the GPU once it holds a
-   millisecond of the GPU thread's work. Submissions came only when something needed results, so in one game the GPU
-   sat idle through the first 12 ms of the frame's 21 ms on the GPU thread, got all of it in a burst at the end and
+   anything is set up (a draw's setup must not submit). Otherwise what was recorded goes to the GPU once it holds
+   vk_submit_every draws, dispatches and copy bands (g_work), as Eden's renderer submits every 4096 draws: by the
+   amount of work, not by a clock. Or once it wrote a ring chunk's worth to the frame's rings and the stream since the
+   last submission (g_work_rings, stream_since): copies with no draw between them (a game's load, 256 MiB in copies of 512 KiB) take
+   staging that comes free only as the submissions that read it end, and a count of them alone held them all. Submissions came only when something needed results, so in one game the GPU sat
+   idle through the first 12 ms of the frame's 21 ms on the GPU thread, got all of it in a burst at the end and
    finished 6 ms after the GPU thread, while the game waited for that frame's fence before submitting the next (34.7
-   fps, 40.3 with these). Earlier submissions also land their storage results sooner, so the pending results a draw's
-   buffers are looked up in stay fewer. 2 ms and 0.5 ms were both slower. The limit on submissions leaves room for
-   these in a slow frame: one that reaches it records the rest in the other slot, and its present then waits for this
-   one's work.
+   fps, 40.3 with a submission each millisecond of recording). Earlier submissions also land their storage results
+   sooner, so the pending results a draw's buffers are looked up in stay fewer. A count gives a frame a known number of
+   submissions, each with work for the GPU: the millisecond gave a slow host more of them and a fast one fewer, and
+   needed a thread that followed the GPU's timeline to keep them off a GPU that had work queued (a Steam Deck spent
+   about 150 us in the kernel on each, and one game's race made 41 a present for the millisecond alone). The limit on
+   submissions leaves room for these in a slow frame: one that reaches it records the rest in the other slot, and its
+   present then waits for this one's work.
    A frame's chunks and big buffers come back only with its slot, so it also ends once it has written
    VK_FRAME_RING_CAPS allocations' worth to them: a game's load that drew without a present for 8 s kept every ring it
    made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit. The bands of a
@@ -1475,6 +1439,7 @@ static void frame_check(void) {
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
        would only move on to the slot whose work was just submitted, and wait for it */
     if (f->fresh) return;
+    g_work++;
     /* the cap that the stream's bytes are held to counts them too: they are memory the caches budget as the rings
        are, and a frame whose bytes all go through the stream has rings below the two chunks that ask the budget */
     u64 rings = frame_rings(f), cap = frame_ring_cap(rings + g_cmd.stream_since);
@@ -1495,7 +1460,8 @@ static void frame_check(void) {
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
         if (stream_busy(&oldest) >= 2 * cap && oldest) vk_wait_submit(oldest);
     }
-    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS && gpu_short_of_work())
+    else if (f->recording && ((g_settings.submit_every && g_work >= (u32)g_settings.submit_every) ||
+                              rings + g_cmd.stream_since >= g_work_rings + chunk_size()))
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
 void vk_frame_check(void) {

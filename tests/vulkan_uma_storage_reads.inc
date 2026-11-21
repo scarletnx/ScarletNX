@@ -47,9 +47,9 @@ static int usr_draw(GpuChannel* channel) {
     CHECK(g_vk_drawn == drawn + 1);
     return 0;
 }
-/* about 4 GiB of fills in two submissions, which the GPU runs while the next store and load are recorded: with two
-   submissions not done, recording makes no submission each millisecond (cmd.c's frame_check and gpu_short_of_work),
-   which would put a submission between them */
+/* about 4 GiB of fills in two submissions, which the GPU runs while the next store and load are recorded: the two
+   submissions start the count of work a submission holds again (cmd.c's frame_check, vk_submit_every), so no
+   submission comes between the store and the load */
 static int usr_busy(void) {
     VkBuffer b;
     u64 at;
