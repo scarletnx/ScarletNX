@@ -641,7 +641,8 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
             value = (int64_t)(SnxU32)value;
         else if (table.ext == 2)
             value = (int64_t)(int32_t)value;
-        target = table.absolute ? (SnxU64)value : table.anchor + (SnxU64)(value * ((int64_t)1 << table.scale));
+        target = table.absolute ? (SnxU64)value
+                                : table.anchor + (SnxU64)value * ((SnxU64)1 << table.scale);
         if ((target & 3) || !snx_codegen_module(codegen, target)) {
             if (limit) continue; /* not code: the switch's default, or the next table's word */
             break;               /* no bound: the table ends where the code does */
@@ -821,6 +822,10 @@ static void explored_add(SnxCodegen* codegen, size_t* explored, const Addresses*
 }
 
 int snx_codegen_attach_images(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count) {
+    free(codegen->modules);
+    codegen->modules = NULL;
+    codegen->module_count = 0;
+    codegen->last_module = NULL;
     if (module_count) {
         codegen->modules = (SnxCodeImage*)snx_alloc(module_count * sizeof(*modules));
         if (!codegen->modules) return -1;
@@ -988,9 +993,7 @@ int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_
                          size_t region_limit, size_t overflow_limit) {
     *codegen = (SnxCodegen){0};
     codegen->features = features;
-    codegen->modules = (SnxCodeImage*)snx_alloc((module_count ? module_count : 1) * sizeof(*modules));
-    memcpy(codegen->modules, modules, module_count * sizeof(*modules));
-    codegen->module_count = module_count;
+    if (snx_codegen_attach_images(codegen, modules, module_count)) return -1;
     Addresses work = {0}, inner = {0};
     AddressSet local = {0}, seen_seed = {0}, entries = {0}, inside = {0}, none = {0};
     Known stop = {&local, known, user};
@@ -1070,9 +1073,7 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
                              void* context, SnxU64 features) {
     *codegen = (SnxCodegen){0};
     codegen->features = features;
-    codegen->modules = (SnxCodeImage*)snx_alloc(module_count * sizeof(*modules));
-    memcpy(codegen->modules, modules, module_count * sizeof(*modules));
-    codegen->module_count = module_count;
+    if (snx_codegen_attach_images(codegen, modules, module_count)) return -1;
     Addresses work = {0};
     AddressSet known = {0}, seen = {0}, extra = {0}, hint_set = {0};
     Known stop = {&known, NULL, NULL};

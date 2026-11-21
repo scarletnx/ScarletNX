@@ -315,7 +315,11 @@ unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, size_t
                                     size_t error_size) {
     char *name = snx_format("%s.o", key), *path = snx_path_join(snx_unit_cache_folder(cache), name), why[512];
     size_t file_size = 0, object_size = 0;
-    unsigned char* file = snx_read_file(path, &file_size);
+    unsigned char* file;
+    *size = 0;
+    /* hold before the read: another worker's room() can trim the file while snx_read_file runs */
+    hold(cache, key);
+    file = snx_read_file(path, &file_size);
     free(name);
     if (!file)
         snprintf(error, error_size, "cannot read %s: %s", path, snx_os_error(why, sizeof why));
@@ -324,10 +328,20 @@ unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, size_t
         free(file);
         file = NULL;
     } else {
-        hold(cache, key);
         if (snx_set_file_time(path, (SnxU64)time(NULL))) {
-            if (!cache->stale++) snprintf(cache->stale_why, sizeof cache->stale_why, "%s: %s", path,
-                                          snx_os_error(why, sizeof why));
+            char reason[256];
+            snprintf(reason, sizeof reason, "%s", snx_os_error(why, sizeof why));
+#ifdef _WIN32
+            EnterCriticalSection(&cache->lock);
+#else
+            pthread_mutex_lock(&cache->lock);
+#endif
+            if (!cache->stale++) snprintf(cache->stale_why, sizeof cache->stale_why, "%s: %s", path, reason);
+#ifdef _WIN32
+            LeaveCriticalSection(&cache->lock);
+#else
+            pthread_mutex_unlock(&cache->lock);
+#endif
         }
         *size = object_size;
     }

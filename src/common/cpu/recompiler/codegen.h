@@ -23,8 +23,9 @@ typedef struct {
     /* SVC #imm below SNX_SVC_COUNT calls RtAPI.svcs[imm], the SVC's own entry, instead of RtAPI.svc (the NX modules) */
     int direct_svc;
     SnxFunction* functions;
-    /* one block holding this codegen's address and leader arrays, when the analysis cache made them. NULL when each
-       array owns its own allocation, as snx_codegen_analyze leaves them. */
+    /* one block holding the functions array and every address and leader array, when the analysis cache made them.
+       NULL when each array owns its own allocation, as snx_codegen_analyze leaves them. A loaded codegen is immutable:
+       add_function would realloc the carved functions pointer and break the single-owner free. */
     void* arrays_block;
     size_t function_count, function_capacity, instruction_count;
     SnxCodeImage* last_module;

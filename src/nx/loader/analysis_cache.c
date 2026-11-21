@@ -5,6 +5,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
 #include <openssl/evp.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,6 +74,10 @@ SnxAnalysisCache* snx_analysis_cache_open(const char* folder, const SnxAnalysisI
         snprintf(error, error_size, "missing folder or identity");
         return NULL;
     }
+    if (strlen(folder) >= sizeof cache->folder) {
+        snprintf(error, error_size, "cache folder is too long");
+        return NULL;
+    }
     if (snx_mkdirs(folder)) {
         snprintf(error, error_size, "cannot make the folder %s: %s", folder, snx_os_error(reason, sizeof reason));
         return NULL;
@@ -82,7 +87,7 @@ SnxAnalysisCache* snx_analysis_cache_open(const char* folder, const SnxAnalysisI
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
-    memset(cache, 0, sizeof *cache);
+    *cache = (SnxAnalysisCache){0};
     cache->identity = *identity;
     snprintf(cache->folder, sizeof cache->folder, "%s", folder);
     return cache;
@@ -130,30 +135,36 @@ int snx_analysis_cache_key(const SnxAnalysisCache* cache, const SnxCodeImage* mo
     EVP_MD_CTX* ctx;
     unsigned char dig[32];
     size_t i;
-    if (!cache || !key) return -1;
+    int ok = 1;
+    if (!cache || !key || (module_count && !modules) || (hint_count && !hints)) return -1;
     ctx = EVP_MD_CTX_new();
     if (!ctx || EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
         if (ctx) EVP_MD_CTX_free(ctx);
         return -1;
     }
-    field(ctx, "snx-analysis-cache", 18);
-    field(ctx, &cache->identity.version, sizeof cache->identity.version);
-    field(ctx, &cache->identity.features, sizeof cache->identity.features);
-    field(ctx, &module_count, sizeof module_count);
+    ok &= field(ctx, "snx-analysis-cache", 18);
+    ok &= field(ctx, &cache->identity.version, sizeof cache->identity.version);
+    ok &= field(ctx, &cache->identity.features, sizeof cache->identity.features);
+    ok &= field(ctx, &module_count, sizeof module_count);
     for (i = 0; i < module_count; ++i) {
         const SnxCodeImage* m = &modules[i];
-        field(ctx, &m->base, sizeof m->base);
-        field(ctx, &m->text_off, sizeof m->text_off);
-        field(ctx, &m->text_size, sizeof m->text_size);
-        field(ctx, &m->image_size, sizeof m->image_size);
-        if (m->image_size && m->image) field(ctx, m->image, m->image_size);
-        field(ctx, m->functions, m->function_count * sizeof(SnxU64));
-        field(ctx, m->relptrs, m->relptr_count * sizeof(SnxU64));
-        field(ctx, m->routed, m->routed_count * sizeof(SnxU64));
-        field(ctx, m->fde, m->fde_count * sizeof(SnxFde));
+        if ((m->function_count && !m->functions) || (m->relptr_count && !m->relptrs) ||
+            (m->routed_count && !m->routed) || (m->fde_count && !m->fde)) {
+            ok = 0;
+            break;
+        }
+        ok &= field(ctx, &m->base, sizeof m->base);
+        ok &= field(ctx, &m->text_off, sizeof m->text_off);
+        ok &= field(ctx, &m->text_size, sizeof m->text_size);
+        ok &= field(ctx, &m->image_size, sizeof m->image_size);
+        if (m->image_size && m->image) ok &= field(ctx, m->image, m->image_size);
+        ok &= field(ctx, m->functions, m->function_count * sizeof(SnxU64));
+        ok &= field(ctx, m->relptrs, m->relptr_count * sizeof(SnxU64));
+        ok &= field(ctx, m->routed, m->routed_count * sizeof(SnxU64));
+        ok &= field(ctx, m->fde, m->fde_count * sizeof(SnxFde));
     }
-    field(ctx, hints, hint_count * sizeof(SnxU64));
-    if (EVP_DigestFinal_ex(ctx, dig, NULL) != 1) {
+    if (ok) ok &= field(ctx, hints, hint_count * sizeof(SnxU64));
+    if (!ok || EVP_DigestFinal_ex(ctx, dig, NULL) != 1) {
         EVP_MD_CTX_free(ctx);
         return -1;
     }
@@ -197,9 +208,9 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
     }
     if (fseek(f, 0, SEEK_END) || (size = (size_t)ftell(f)) == (size_t)-1 || fseek(f, 0, SEEK_SET)) {
         fclose(f);
-        free(path);
         cache->misses++;
         snprintf(error, error_size, "cannot size %s", path);
+        free(path);
         return -1;
     }
     if (size < SNX_ANALYSIS_TRAILER + 8) {
@@ -213,9 +224,9 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
     if (!file || fread(file, 1, size, f) != size) {
         free(file);
         fclose(f);
-        free(path);
         cache->misses++;
         snprintf(error, error_size, "cannot read %s: %s", path, snx_os_error(reason, sizeof reason));
+        free(path);
         return -1;
     }
     fclose(f);
@@ -249,7 +260,13 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         snprintf(error, error_size, "analysis payload is too large");
         return -1;
     }
-    block = (unsigned char*)snx_alloc(bytes + size + 1);
+    if (size > SIZE_MAX - bytes - (size_t)nfunc * 8 - 1) {
+        free(file);
+        cache->misses++;
+        snprintf(error, error_size, "analysis payload is too large");
+        return -1;
+    }
+    block = (unsigned char*)snx_alloc(bytes + size + (size_t)nfunc * 8 + 1);
     if (!block) {
         free(file);
         cache->misses++;
@@ -281,6 +298,7 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         if (alen) {
             size_t j;
             if (fn->count > (size - off) / 8) goto truncated;
+            while ((size_t)(cursor - block) % 8) ++cursor;
             fn->addresses = (SnxU64*)cursor;
             cursor += fn->count * sizeof(SnxU64);
             for (j = 0; j < fn->count; ++j) {
@@ -331,8 +349,16 @@ int snx_analysis_cache_load_unit_keys(const SnxAnalysisCache* cache, const char*
     free(path);
     if (!file) return -1;
     if (size >= 72 && !memcmp(file, options, 64) && get64(file + 64) == count && size >= 72 + count * 64) {
-        for (i = 0; i < count; ++i) memcpy(unit_keys[i], file + 72 + i * 64, 64);
-        rc = 0;
+        int valid = 1;
+        for (i = 0; i < count; ++i) {
+            size_t j;
+            for (j = 0; j < 64; ++j)
+                if (!isxdigit(file[72 + i * 64 + j])) valid = 0;
+            memcpy(unit_keys[i], file + 72 + i * 64, 64);
+            unit_keys[i][64] = 0;
+        }
+        if (valid) rc = 0;
+        else memset(unit_keys, 0, count * 65);
     }
     free(file);
     return rc;
@@ -512,7 +538,7 @@ int snx_analysis_cache_load_link_stamp(const SnxAnalysisCache* cache, const char
     off += 8;
     if (length > file_size - off || length != strlen(output) || memcmp(file + off, output, length)) goto done;
     off += length;
-    if (off + 8 + 8 + 32 + 32 > file_size) goto done;
+    if (off + 8 + 8 + 64 + 32 > file_size) goto done;
     *size = get64(file + off);
     off += 8;
     *mtime = get64(file + off);
