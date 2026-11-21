@@ -103,6 +103,7 @@ static char* strip_comments(const char* text, unsigned char* signs, unsigned max
             if (!--depth && line < max_line) {
                 if (comment_says(text + start, i - start, "unsigned divide")) signs[line] = 2;
                 else if (comment_says(text + start, i - start, "signed divide") ||
+                         comment_says(text + start, i - start, "signed division") ||
                          comment_says(text + start, i - start, "signed multiplication"))
                     signs[line] = 1;
             }

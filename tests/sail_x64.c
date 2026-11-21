@@ -27,6 +27,11 @@
 
 #define TARGET SNX_A64_TARGET_OUNCE
 #define CODE_MAX 4096
+/* guest memory for the loads and stores, as llvm_sail_ir.c's: each side's own, guest address 0 MEMORY_ZERO bytes in,
+   the same random bytes, every access below MEMORY_TOUCHED (the address registers point at 0x1000 to 0x1ff0) */
+#define MEMORY_SIZE    (4u << 20)
+#define MEMORY_ZERO    (2u << 20)
+#define MEMORY_TOUCHED 0x14000u
 
 static struct {
     u64 seed;
@@ -34,6 +39,8 @@ static struct {
     int verbose;
     sigjmp_buf jump;
     int jumping;
+    unsigned char* memory[3]; /* the LLVM side's, the x86-64 side's, the bytes both start from */
+    unsigned sev, wfe;
 } g_test;
 
 static u64 rnd(void) {
@@ -67,11 +74,45 @@ static void on_abort(int signal_number) {
     if (g_test.jumping) siglongjmp(g_test.jump, 1);
 }
 
+static void on_sev(void) { ++g_test.sev; }
+static void on_wfe(CPU* c) {
+    (void)c;
+    ++g_test.wfe;
+}
 static void on_undef(CPU* c, u64 pc, u32 word) {
     (void)c;
     (void)pc;
     (void)word;
     ++g_test.undef;
+}
+
+/* a load's or a store's: the address registers into the memory, and for a store-exclusive an armed monitor half the
+   time (as llvm_sail_ir.c's ldst_start) */
+static int is_ldst(u32 word) {
+    const char* n = op_name(word);
+    return n && (!strncmp(n, "LD", 2) || !strncmp(n, "ST", 2) || !strncmp(n, "CAS", 3) || !strncmp(n, "SWP", 3) ||
+                 !strncmp(n, "PRF", 3));
+}
+static void ldst_start(CPU* c, u32 word, unsigned s) {
+    SnxA64Insn insn;
+    u64 address;
+    snx_a64_decode_word(word, TARGET, &insn);
+    c->x[31] = 0x1000 + (rnd() & 0xff0);
+    c->x[insn.args.rn] = 0x1000 + (rnd() & 0xff0);
+    c->x[insn.args.rm] = 0x1000 + (rnd() & 0xff0);
+    if (insn.op == SNX_A64_OP_LDAPR_i || insn.op == SNX_A64_OP_STLR_i)
+        c->x[insn.args.rn] -= (c->x[insn.args.rn] + (u64)(int64_t)insn.args.imm) & ((1u << insn.args.sz) - 1);
+    address = c->x[insn.args.rn];
+    c->excl_on = 0;
+    if (!(s & 1)) return;
+    if (insn.op == SNX_A64_OP_STXR || (insn.op == SNX_A64_OP_STXP && insn.args.sz == 3)) {
+        c->excl_on = 1;
+        c->excl_addr = address;
+        memcpy(&c->excl_val, g_test.memory[2] + MEMORY_ZERO + address, 8);
+        memcpy(&c->excl_val2, g_test.memory[2] + MEMORY_ZERO + address + 8, 8);
+        if (s & 2) c->excl_val = ~c->excl_val;
+        c->excl_size = insn.op == SNX_A64_OP_STXP ? 0x13 : (u32)insn.args.sz;
+    }
 }
 
 typedef u64 (*Step)(CPU* c);
@@ -86,7 +127,7 @@ int main(int argc, char** argv) {
     size_t (*offset)[2];
     LlvmSteps set;
     char error[1024];
-    RtAPI rt = {.undef = on_undef};
+    RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     struct sigaction sa;
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
@@ -98,6 +139,8 @@ int main(int argc, char** argv) {
             sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))
             g_test.verbose = 1;
+        else if (!strcmp(argv[i], "--trace"))
+            g_test.verbose = 2; /* each word named before it runs: a crash's */
         else if (!strcmp(argv[i], "--dump") && i + 1 < (unsigned)argc) {
             /* the words' x86-64 code as one block on this host's features, as hex bytes (for a disassembler) */
             unsigned char buf[CODE_MAX];
@@ -124,6 +167,13 @@ int main(int argc, char** argv) {
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_abort;
     sigaction(SIGABRT, &sa, NULL);
+    for (k = 0; k < 3; ++k) {
+        g_test.memory[k] = (unsigned char*)mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (g_test.memory[k] == MAP_FAILED) return 1;
+    }
+    for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
+    memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
+    memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
     code = (unsigned char*)mmap(NULL, code_cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (code == MAP_FAILED) {
         fprintf(stderr, "FAIL: no memory for the code\n");
@@ -214,15 +264,27 @@ int main(int argc, char** argv) {
                 start.vf = rnd() & 1;
                 start.rt = &rt;
                 start.pc = 0x1000;
+                if (is_ldst(words[i])) ldst_start(&start, words[i], s);
                 end[0] = start;
                 end[1] = start;
-                g_test.undef = 0;
+                end[0].mem = g_test.memory[0] + MEMORY_ZERO;
+                end[1].mem = g_test.memory[1] + MEMORY_ZERO;
+                g_test.undef = g_test.sev = g_test.wfe = 0;
+                if (g_test.verbose == 2) fprintf(stderr, "run %s %08x (%s host) state %u\n", op_name(words[i]),
+                                                 (unsigned)words[i], k ? "a plain" : "this", s);
                 next[0] = set.steps[i](&end[0]);
-                undef[0] = g_test.undef;
-                g_test.undef = 0;
+                undef[0] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
+                g_test.undef = g_test.sev = g_test.wfe = 0;
                 next[1] = x64(&end[1]);
-                undef[1] = g_test.undef;
+                undef[1] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 ++compared;
+                {
+                    int memory = memcmp(g_test.memory[0] + MEMORY_ZERO, g_test.memory[1] + MEMORY_ZERO, MEMORY_TOUCHED);
+                    end[0].mem = end[1].mem = NULL;
+                    if (memory || end[0].excl_on != end[1].excl_on) next[1] = ~next[0]; /* a difference */
+                    memcpy(g_test.memory[0] + MEMORY_ZERO, g_test.memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
+                    memcpy(g_test.memory[1] + MEMORY_ZERO, g_test.memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
+                }
                 if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
                     end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf) {
                     ++failures;
@@ -256,7 +318,10 @@ int main(int argc, char** argv) {
         for (q = 0; q < sequences; ++q) {
             Seq* sq = &seq[nseq];
             size_t len = 2 + rnd() % 3, got, j;
-            for (j = 0; j < len; ++j) sq->w[j] = words[rnd() % n];
+            for (j = 0; j < len; ++j)
+                do
+                    sq->w[j] = words[rnd() % n];
+                while (is_ldst(sq->w[j])); /* their registers would point anywhere after another word */
             sq->count = len;
             g_test.jumping = 1;
             if (sigsetjmp(g_test.jump, 1)) {
@@ -308,12 +373,12 @@ int main(int argc, char** argv) {
                 start.pc = 0x1000;
                 end[0] = start;
                 end[1] = start;
-                g_test.undef = 0;
+                g_test.undef = g_test.sev = g_test.wfe = 0;
                 for (j = 0; j < seq[q].count; ++j) next[0] = set.steps[seq[q].first + j](&end[0]);
-                undef[0] = g_test.undef;
-                g_test.undef = 0;
+                undef[0] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
+                g_test.undef = g_test.sev = g_test.wfe = 0;
                 next[1] = x64(&end[1]);
-                undef[1] = g_test.undef;
+                undef[1] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 ++compared;
                 if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
                     end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf) {
@@ -327,9 +392,9 @@ int main(int argc, char** argv) {
                             if (end[0].x[r] != end[1].x[r])
                                 fprintf(stderr, "  x%u: llvm %016llx x64 %016llx\n", r,
                                         (unsigned long long)end[0].x[r], (unsigned long long)end[1].x[r]);
-                        fprintf(stderr, "  nzcv: llvm %u%u%u%u x64 %u%u%u%u; next: llvm %llx x64 %llx\n", end[0].n,
-                                end[0].z, end[0].cf, end[0].vf, end[1].n, end[1].z, end[1].cf, end[1].vf,
-                                (unsigned long long)next[0], (unsigned long long)next[1]);
+                        fprintf(stderr, "  nzcv: llvm %u%u%u%u x64 %u%u%u%u; next: llvm %llx x64 %llx; undef %u %u\n",
+                                end[0].n, end[0].z, end[0].cf, end[0].vf, end[1].n, end[1].z, end[1].cf, end[1].vf,
+                                (unsigned long long)next[0], (unsigned long long)next[1], undef[0], undef[1]);
                     }
                     break;
                 }

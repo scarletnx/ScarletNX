@@ -25,6 +25,9 @@ struct SgCtx {
     SgB taken;
     int gpr[32];     /* the virtual register of each X register the block knows, 0 for none */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
+    int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
+    int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
+    SnxU64 (*resolve)(const char* sym); /* a helper's address, where the code calls it absolutely (a test's) */
     int start;       /* the instructions before this word's */
 };
 
@@ -152,6 +155,262 @@ static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
     return sgx_bool(x, SGX_B_CC, g->origin, cc);
 }
 
+/* ---- the machine's instructions: calls, fences ---- */
+
+enum { SGX_M_CALL = 1, SGX_M_CALL_RT, SGX_M_FENCE, SGX_M_PAUSE };
+/* the arguments' registers after the state's (RDI) */
+static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
+
+/* a call of the helper sym (x86_64_helpers.c's) or of the runtime's function at rt_offset in RtAPI, the state first
+   where state: args its other arguments; its result (RAX) */
+static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, SgD* args, int nargs, int result_w) {
+    SgX* x = sgx(g);
+    int regs[5], k;
+    SgXIns* i;
+    if (nargs > 5 - (state ? 0 : 0)) sg_fail("a call of more than five arguments", nargs, 0);
+    for (k = 0; k < nargs; ++k) regs[k] = sgx_reg(x, &args[k]);
+    i = sgx_append(x, SGX_K_MACHINE);
+    i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
+    i->sym = sym;
+    i->disp = rt_offset;
+    i->w = (unsigned char)state;
+    i->calls = 1;
+    for (k = 0; k < nargs; ++k) {
+        i->in[k] = regs[k];
+        i->fixed[k] = sgx_arg_regs[k + (state ? 1 : 0)];
+    }
+    if (result_w) i->def = sgx_vreg(x, x->n - 1, 64);
+    /* a call changes the flags; the guest's registers the helpers and the runtime's hints leave as they are */
+    x->flags_ins = -1;
+    return result_w ? sgx_val((unsigned)result_w, i->def) : sgx_const(1, 0);
+}
+static inline void sgx_simple(SgCtx* g, int op) {
+    SgXIns* i = sgx_append(sgx(g), SGX_K_MACHINE);
+    i->op = (unsigned char)op;
+}
+
+/* ---- guest memory: CPU.mem plus the address ---- */
+
+static inline int sgx_mem(SgCtx* g) {
+    if (!g->mem) {
+        SgX* x = sgx(g);
+        SgXIns* i = sgx_append(x, SGX_K_LOAD);
+        i->w = 64;
+        i->disp = (int)offsetof(CPU, mem);
+        i->def = sgx_vreg(x, x->n - 1, 64);
+        g->mem = i->def;
+    }
+    return g->mem;
+}
+/* the candidate of table whose r/m operand is its input (a load: rm_out 0) or its result (a store) */
+static inline const SgXSel* sgx_mem_form(const SgXSel* t, unsigned n, int rm_out) {
+    unsigned k;
+    for (k = 0; k < n; ++k)
+        if (t[k].rm >= 0 && !t[k].feature && !t[k].zero && (rm_out ? t[k].out == t[k].rm : t[k].in[0] == t[k].rm))
+            return &t[k];
+    sg_fail("no form of a load or a store", (long long)n, rm_out);
+}
+static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
+    SgX* x = sgx(g);
+    const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_zext8_32, sgx_sel_zext8_32_n, 0)
+                      : bytes == 2 ? sgx_mem_form(sgx_sel_zext16_32, sgx_sel_zext16_32_n, 0)
+                      : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 0)
+                                   : sgx_mem_form(sgx_sel_mov_64, sgx_sel_mov_64_n, 0);
+    int a = sgx_reg(x, &address), m = sgx_mem(g);
+    SgXIns* i = sgx_append(x, SGX_K_SEL);
+    i->sel = s;
+    i->fsel = s;
+    i->w = (unsigned char)(bytes == 8 ? 64 : 32);
+    i->mplace = s->in[0];
+    i->in[5] = m;
+    i->in[6] = a;
+    i->mdisp = disp;
+    i->def = sgx_vreg(x, x->n - 1, (unsigned)(8 * bytes));
+    return sgx_val((unsigned)(8 * bytes), i->def);
+}
+static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD value) {
+    SgX* x = sgx(g);
+    const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_mov_8, sgx_sel_mov_8_n, 1)
+                      : bytes == 2 ? sgx_mem_form(sgx_sel_mov_16, sgx_sel_mov_16_n, 1)
+                      : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 1)
+                                   : sgx_mem_form(sgx_sel_mov_64, sgx_sel_mov_64_n, 1);
+    int v = sgx_reg(x, &value), a = sgx_reg(x, &address), m = sgx_mem(g);
+    SgXIns* i = sgx_append(x, SGX_K_SEL);
+    i->sel = s;
+    i->fsel = s;
+    i->w = (unsigned char)(bytes == 8 ? 64 : 32);
+    i->mplace = s->out;
+    i->in[0] = v;
+    i->in[5] = m;
+    i->in[6] = a;
+    i->mdisp = disp;
+    i->side = 1; /* a store: kept though nothing reads a result */
+}
+
+/* GuestMemRead(address, size, acquire): an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with
+   other loads, nor stores with older loads); 16 bytes are two of 8 */
+static inline SgD sg_GuestMemRead(SgCtx* g, SgD address, long long size, int acquire) {
+    (void)acquire;
+    if (address.w != 64) sg_fail("a guest address of other than 64 bits", address.w, 64);
+    if (size == 16) return sg_d_concat(g, sgx_load(g, address, 8, 8), sgx_load(g, address, 8, 0));
+    if (size != 1 && size != 2 && size != 4 && size != 8) sg_fail("a guest access of this size", size, 0);
+    return sgx_load(g, address, (int)size, 0);
+}
+/* GuestMemWrite(address, size, release, value): a release store is MFENCE after it, as the sequentially consistent
+   store the LLVM back end makes (Arm's store-release orders it with a later load-acquire, which x86's store buffer
+   alone would not) */
+static inline void sg_GuestMemWrite(SgCtx* g, SgD address, long long size, int release, SgD value) {
+    if (address.w != 64) sg_fail("a guest address of other than 64 bits", address.w, 64);
+    if (value.w != 8u * (unsigned)size) sg_fail("a guest write of a value of another size", size, value.w);
+    if (size == 16) {
+        sgx_store(g, address, 8, 0, sg_d_slice(g, value, 63, 0));
+        sgx_store(g, address, 8, 8, sg_d_slice(g, value, 127, 64));
+    } else
+        sgx_store(g, address, (int)size, 0, value);
+    if (release) sgx_simple(g, SGX_M_FENCE);
+}
+
+static inline int sgx_log2(long long size) { return size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3; }
+static inline void sg_GuestLoadExclusive(SgCtx* g, SgD address, long long size) {
+    SgD args[2];
+    args[0] = address;
+    if (size == 16) {
+        args[1] = sgx_const(32, 3);
+        g->exclusive[0] = sgx_call(g, "snx_x64_ldxp", 0, 1, args, 2, 64).v;
+        {
+            SgXIns* i = sgx_append(sgx(g), SGX_K_LOAD);
+            i->w = 64;
+            i->disp = (int)offsetof(CPU, excl_val2);
+            i->def = sgx_vreg(sgx(g), sgx(g)->n - 1, 64);
+            g->exclusive[1] = i->def;
+        }
+        g->exclusive_count = 2;
+    } else {
+        args[1] = sgx_const(32, (SnxU64)sgx_log2(size));
+        g->exclusive[0] = sgx_call(g, "snx_x64_ldx", 0, 1, args, 2, 64).v;
+        g->exclusive_count = 1;
+    }
+    g->exclusive_next = 0;
+}
+static inline SgD sg_GuestExclusiveValue(SgCtx* g, SgD address, long long size) {
+    (void)address;
+    if (g->exclusive_next >= g->exclusive_count) sg_fail("an exclusive read with no load-exclusive before it", size, 0);
+    return sg_d_slice(g, sgx_val(64, g->exclusive[g->exclusive_next++]), 8 * size - 1, 0);
+}
+static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size, SgD value) {
+    SgD args[4];
+    args[0] = address;
+    if (size == 16) {
+        args[1] = sgx_const(32, 3);
+        args[2] = sg_d_slice(g, value, 63, 0);
+        args[3] = sg_d_slice(g, value, 127, 64);
+        g->status = sgx_call(g, "snx_x64_stxp", 0, 1, args, 4, 32).v;
+    } else {
+        args[1] = sgx_const(32, (SnxU64)sgx_log2(size));
+        args[2] = sg_d_zext(g, value, 64);
+        g->status = sgx_call(g, "snx_x64_stx", 0, 1, args, 3, 32).v;
+    }
+    sgx(g)->v[g->status].zab = 1;
+}
+static inline SgD sg_GuestExclusiveStatus(SgCtx* g) {
+    if (!g->status) sg_fail("an exclusive status with no store-exclusive before it", 0, 0);
+    return sgx_val(1, g->status);
+}
+static inline SgD sgx_rmw(SgCtx* g, int op, SgD address, SgD v) {
+    SgD args[3];
+    unsigned w = v.w;
+    args[0] = address;
+    args[1] = sg_d_zext(g, v, 64);
+    args[2] = sgx_const(32, (SnxU64)(op << 2 | sgx_log2(w / 8)));
+    return sg_d_slice(g, sgx_call(g, "snx_x64_rmw", 0, 1, args, 3, 64), w - 1, 0);
+}
+static inline SgD sg_GuestAtomicAdd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 0, a, v); }
+static inline SgD sg_GuestAtomicAnd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 1, a, v); }
+static inline SgD sg_GuestAtomicXor(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 2, a, v); }
+static inline SgD sg_GuestAtomicOr(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 3, a, v); }
+static inline SgD sg_GuestAtomicSMax(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 4, a, v); }
+static inline SgD sg_GuestAtomicSMin(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 5, a, v); }
+static inline SgD sg_GuestAtomicUMax(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 6, a, v); }
+static inline SgD sg_GuestAtomicUMin(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 7, a, v); }
+static inline SgD sg_GuestAtomicSwap(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 8, a, v); }
+static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD desired) {
+    SgD args[5];
+    unsigned w = expected.w;
+    args[0] = address;
+    if (w == 128) {
+        SgD lo, hi;
+        SgXIns* i;
+        args[1] = sg_d_slice(g, expected, 63, 0);
+        args[2] = sg_d_slice(g, expected, 127, 64);
+        args[3] = sg_d_slice(g, desired, 63, 0);
+        args[4] = sg_d_slice(g, desired, 127, 64);
+        lo = sgx_call(g, "snx_x64_cas128", 0, 1, args, 5, 64);
+        i = sgx_append(sgx(g), SGX_K_LOAD);
+        i->w = 64;
+        i->disp = (int)offsetof(CPU, excl_val2);
+        i->def = sgx_vreg(sgx(g), sgx(g)->n - 1, 64);
+        hi = sgx_val(64, i->def);
+        return sg_d_concat(g, hi, lo);
+    }
+    args[1] = sg_d_zext(g, expected, 64);
+    args[2] = sg_d_zext(g, desired, 64);
+    args[3] = sgx_const(32, (SnxU64)sgx_log2(w / 8));
+    return sg_d_slice(g, sgx_call(g, "snx_x64_cas", 0, 1, args, 4, 64), w - 1, 0);
+}
+
+/* ---- the machine's actions ---- */
+
+enum { SG_MBReqTypes_Reads, SG_MBReqTypes_Writes, SG_MBReqTypes_All };
+/* x86's ordering (Vol. 3A, 10.2.2) is all Arm's barriers ask but that a store waits for no later load: a barrier of
+   loads alone or of stores alone is nothing, a full one MFENCE */
+static inline void sg_DataMemoryBarrier(SgCtx* g, long long domain, long long types) {
+    (void)domain;
+    if (types == SG_MBReqTypes_All) sgx_simple(g, SGX_M_FENCE);
+}
+static inline void sg_DataSynchronizationBarrier(SgCtx* g, long long domain, long long types, long long nxs) {
+    (void)domain, (void)nxs;
+    if (types == SG_MBReqTypes_All) sgx_simple(g, SGX_M_FENCE);
+}
+static inline void sg_SpeculativeStoreBypassBarrierToVA(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
+static inline void sg_SpeculativeStoreBypassBarrierToPA(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
+static inline void sg_InstructionSynchronizationBarrier(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
+static inline void sg_ConsumptionOfSpeculativeDataBarrier(SgCtx* g) { (void)g; }
+static inline void sg_SynchronizeErrors(SgCtx* g) { (void)g; }
+static inline void sg_TakeUnmaskedSErrorInterrupts(SgCtx* g) { (void)g; }
+static inline void sg_Hint_DGH(SgCtx* g) { (void)g; }
+static inline void sg_Hint_CLRBHB(SgCtx* g) { (void)g; }
+static inline void sg_ProfilingSynchronizationBarrier(SgCtx* g) { (void)g; }
+static inline void sg_TraceSynchronizationBarrier(SgCtx* g) { (void)g; }
+/* YIELD: PAUSE; WFE: the runtime's rt->wfe(state); SEV and SEVL: rt->sev(); WFI goes on */
+static inline void sg_Hint_Yield(SgCtx* g) { sgx_simple(g, SGX_M_PAUSE); }
+static inline void sg_Hint_WFE(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, wfe), 1, NULL, 0, 0); }
+static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
+static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, sev), 0, NULL, 0, 0); }
+static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
+/* CLREX: the local monitor, CPU.excl_on, 0 */
+static inline void sg_ClearExclusiveLocal(SgCtx* g) {
+    SgX* x = sgx(g);
+    SgD z = sgx_const(32, 0);
+    int r = sgx_reg(x, &z);
+    SgXIns* st = sgx_append(x, SGX_K_STORE);
+    st->w = 32;
+    st->in[0] = r;
+    st->disp = (int)offsetof(CPU, excl_on);
+}
+static inline void sg_BTypeCompatible_write(SgCtx* g, SgB v) {
+    (void)g;
+    (void)v;
+}
+/* CRC32 and CRC32C: the helper's reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say) */
+static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
+    SgD args[4];
+    args[0] = sg_d_zext(g, acc_bits, 64);
+    args[1] = sg_d_zext(g, value_bits, 64);
+    args[2] = sgx_const(32, (SnxU64)(size / 8));
+    args[3] = sgx_const(32, poly.v == 0x1EDC6F41u);
+    return sg_d_slice(g, sgx_call(g, "snx_x64_crc32", 0, 0, args, 4, 64), 31, 0);
+}
+
 /* BranchTo(target, ...): where the instruction goes, under the run-time condition when (0: always) */
 static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
     if (g->branched) sg_fail("an instruction that branches twice", (long long)g->word, 0);
@@ -229,7 +488,49 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         sgx_epilogue(a);
         sgx_byte(b, 0xC3); /* ret */
         break;
-    default: sgx_machine_op(a, at, r); break;
+    case SGX_K_MACHINE:
+        switch (i->op) {
+        case SGX_M_FENCE:
+            sgx_byte(b, 0x0F); /* mfence */
+            sgx_byte(b, 0xAE);
+            sgx_byte(b, 0xF0);
+            return;
+        case SGX_M_PAUSE:
+            sgx_byte(b, 0xF3); /* pause */
+            sgx_byte(b, 0x90);
+            return;
+        case SGX_M_CALL:
+        case SGX_M_CALL_RT:
+            if (i->w) {
+                sgx_byte(b, 0x48); /* mov rdi, rbx: the state */
+                sgx_byte(b, 0x89);
+                sgx_byte(b, 0xDF);
+            }
+            if (i->op == SGX_M_CALL_RT) {
+                sgx_byte(b, 0x48); /* mov rax, [rbx + rt] */
+                sgx_byte(b, 0x8B);
+                sgx_byte(b, 0x83);
+                sgx_imm(b, (long long)offsetof(CPU, rt), 4);
+                sgx_byte(b, 0xFF); /* call [rax + offset] */
+                sgx_byte(b, 0x90);
+                sgx_imm(b, i->disp, 4);
+            } else if (a->reloc) {
+                sgx_byte(b, 0xE8); /* call rel32, which the object's relocation fills */
+                a->reloc(a->machine, b->n, i->sym, -4);
+                sgx_imm(b, 0, 4);
+            } else {
+                SnxU64 at_ = a->resolve ? a->resolve(i->sym) : 0;
+                if (!at_) sg_fail("a helper nothing resolves", 0, 0);
+                sgx_byte(b, 0x48); /* mov rax, imm64; call rax */
+                sgx_byte(b, 0xB8);
+                sgx_imm(b, (long long)at_, 8);
+                sgx_byte(b, 0xFF);
+                sgx_byte(b, 0xD0);
+            }
+            return;
+        default: sgx_machine_op(a, at, r); return;
+        }
+    default: break;
     }
     (void)r;
 }
@@ -257,7 +558,9 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     SgXIns* r;
     size_t i;
     int pool = g->x.pool;
+    SnxU64 (*resolve)(const char*) = g->resolve;
     memset(g, 0, sizeof *g);
+    g->resolve = resolve;
     g->features = features;
     g->origin = -1;
     g->x.features = host_features;
@@ -293,8 +596,10 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     b.n = 0;
     b.cap = cap;
     b.disp = 0;
+    b.index = -1;
     memset(&a, 0, sizeof a);
     a.b = &b;
+    a.resolve = g->resolve;
     sgx_prologue(&a);
     sgx_assemble_region(&a, &g->x);
     sgx_patch_frame(&a);

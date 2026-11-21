@@ -378,11 +378,19 @@ become one comparison of the operands, which is how the selection finds that SUB
 SBCS's carry in the negation of SBB's (`CF=NOT carry`), and HI the condition code A. A pair of terms the identities miss
 compares unequal: that costs a selection, never makes a wrong one.
 
+A primitive may declare what the recompiler makes hold (`ASSUME`), so a form that faults is selected where it faults
+exactly where that fails (UDIV's DIV: the divisor 0); its outputs are compared where it holds (a choice whose
+condition it decides takes that way). Integer division is exact quotient and remainder terms with ranges, so DIV's
+'quotient doesn't fit' folds away with RDX zeroed, and a truncated signed quotient is past the signed range exactly
+for the most negative value over -1 (an identity, which IDIV's fault becomes). An input may be a function of
+another (`hi H:A`, IDIV's RDX: the high half of A's sign extension). Ranges past 128 bits are unknown and decide no
+comparison.
+
 **What it selects** (`--report` lists every candidate, and every form it couldn't read): ADD, SUB, AND, OR, XOR,
 NOT, NEG, ANDN (BIC), ADC and SBB with their flags, CMP and TEST, IMUL and MUL (MUL, UMULH and SMULH through RDX), SHL,
 SHR, SAR and ROR by an immediate and by CL (x86's count mask is Arm's `MOD datasize`), SHLX, SHRX, SARX and RORX, LZCNT
 (CLZ), TZCNT, BSWAP (REV), MOVZX and MOVSX(D), MOV of registers and immediates (a 32-bit MOV for a 64-bit constant below
-2^32: its zero extension is derived), CMOVcc (CSEL) and SETcc on a zeroed register (CSET), each with the bits of an
+2^32: its zero extension is derived), CMOVcc (CSEL) and SETcc on a zeroed register (CSET), DIV (UDIV) with RDX zeroed and IDIV (SDIV), each with the bits of an
 input the form reads (an input the form reads only the low bits of may hold anything above them), whether its result is
 zero extended, the immediate it fits (`imm8` sign extended), the flags it writes and Arm's conditions as condition codes.
 
@@ -444,8 +452,19 @@ a register once a block, stores each write at once, and writes only the ABI's ow
 the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one word a function `u64 step(CPU*)`, and
 `sg_x64_block` words in a row one (up to a branch or an UNDEF), one SSA: CMP then B.HI is `cmp` then `cmova` of the
 two pcs, the condition code the selection derived for HI on CMP's flags, with no flag stored and read back between.
-`a64_x64.roots` is the subset it makes: the integer data processing and the branch operands but for the carries in, the
-conditional compares, the divisions, CRC32, PAuth, CLS, RBIT and the flag manipulations.
+`a64_x64.roots` is a64.roots' integer part whole: the data processing, the branch operands, the hints and barriers, and
+the loads and stores of the general-purpose registers. Guest memory is `CPU.mem` plus the address, a memory operand
+`[M + address + disp]` of the same MOV and MOVZX forms (a byte's and a halfword's store MOV r/m8 and r/m16, the 16-bit
+forms taking the operand-size prefix the opcode column leaves out); an x86 load is already an acquire one, a release
+store is MFENCE after it, a barrier of all accesses MFENCE and one of loads or stores alone nothing (x86's ordering,
+Vol. 3A 10.2.2). The exclusive monitor, the LSE atomics, CAS and CASP, CRC32 and CRC32C call
+`src/common/cpu/recompiler/x64/x64_helpers.c` (cpu.h's ldx, stx, ldxp, stxp and C11 atomics), which the runtime
+library links, through a relocation in an object and at its address in the test; a call spills every value to its
+home first and loads each argument from there into its register. ADCS's and SBCS's carry in is x86's CF, made by the
+flags of ADD #-1 or CMP #1 on the carry, whichever the selection gives the polarity ADC or SBB reads; UDIV and SDIV are
+DIV and IDIV of 64 bits, the divisor 1 where it is 0 or -1 under the most negative value (their selection's ASSUME);
+CLS and RBIT are compositions (CLZ of `(x XOR x << 1) OR 1`; BSWAP and three swaps of masks); NZCV read as bits
+(CCMP's choice) is four SETcc.
 
 **The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
 (again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and

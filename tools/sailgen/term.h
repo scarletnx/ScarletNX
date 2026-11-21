@@ -79,6 +79,10 @@ enum {
     TK_UINT,   /* the bits arg[0] as an unsigned integer */
     TK_SINT,
     TK_IMUL,   /* two integers' exact product, sorted */
+    TK_IUDIV,  /* integers: arg[0] / arg[1] of nonnegative ones; truncated toward zero of signed ones; the remainders */
+    TK_ISDIV,
+    TK_IUREM,
+    TK_ISREM,
     TK_UNKNOWN, /* a value the evaluation could not give (a flag a loop leaves, the manual's 'undefined'): w bits.
                    Every one is new, so nothing compares equal to it */
     TK_COUNT
@@ -142,6 +146,10 @@ unsigned t_isub(unsigned a, unsigned b);
 unsigned t_ineg(unsigned a);
 unsigned t_imul(unsigned a, unsigned b);
 unsigned t_trunc(unsigned i, unsigned w); /* the integer i modulo 2^w, as bits */
+unsigned t_iudiv(unsigned a, unsigned b);
+unsigned t_isdiv(unsigned a, unsigned b);
+unsigned t_iurem(unsigned a, unsigned b);
+unsigned t_isrem(unsigned a, unsigned b);
 
 /* t with each from[i] (a variable) replaced by to[i] */
 unsigned t_subst(unsigned t, const unsigned* from, const unsigned* to, unsigned n);
