@@ -873,7 +873,8 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
     u8* a = g_wp_base + (i << g_wp_shift);
     u64 k, add = 0, len = n << g_wp_shift;
     u8 to;
-    int shed = 0;
+    int shed = 0, prot_ok = 0, failed = 0;
+    SNX_ZONE(z_protect, "plat page protect");
     for (k = i; k < i + n; k++)
         if (!(atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[k], memory_order_relaxed) &
               WP_PROT))
@@ -884,8 +885,14 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
         /* it may have changed part of the run: held, but written, so a fault opens it and the next scan tries again */
         to = WP_MAPPED | WP_PROT;
         shed = errno == ENOMEM;
-    } else
+        failed = !shed;
+    } else {
         to = WP_MAPPED | WP_PROT | WP_CLEAN;
+        prot_ok = 1;
+    }
+    /* 2: ENOMEM shed, 3: mprotect failed, 1: read only, 0: left writable */
+    SNX_ZONE_VALUE(z_protect, shed ? 2 : failed ? 3 : to ? 1 : 0);
+    if (prot_ok && n) SNX_PLOT("plat pages protected", (double)n);
     for (k = i; k < i + n; k++)
         wp_unlock(k, to ? to
                         : (u8)(atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[k],
@@ -1027,7 +1034,9 @@ void plat_ww_open(u8* p, u64 size) {
        the old pages, which the move has copied already. The thread that moves it writes at once, as its write is the
        move's own (plat_alias_read into the pages a failed move left), and waiting for its own thaw would never end */
     mine = t_plat_posix.freezing;
-    if (!mine) frozen_until_thaw(p, p + size);
+    if (!mine) frozen_until_thaw(p, p + size); /* the wait stays out of the zone */
+    SNX_ZONE(z_wwopen, "plat ww open");
+    SNX_ZONE_TEXT(z_wwopen, mine ? "own move" : "other thread");
     for (i = lo; i <= hi; i++) {
         /* every page locked, not only those held now: a scan that locked one before the range was published may be
            about to protect it, and holds it until it has */
@@ -1044,6 +1053,7 @@ void plat_ww_open(u8* p, u64 size) {
         if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE | g_vm_exec)) {
             atomic_fetch_sub_explicit(&g_wp_held, n, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_wp_opened, 1, memory_order_seq_cst);
+            SNX_PLOT("plat pages opened", (double)n);
             for (k = run; k < run + n; k++)
                 wp_unlock(k, (u8)((atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[k],
                                                         memory_order_relaxed) &
@@ -2430,6 +2440,8 @@ static void trap_watched(u8* p, u64 size) {
     if (atomic_load_explicit(&g_pagemap, memory_order_acquire) >= 0) ww_remapped(p, size);
 }
 int plat_trap_arm(u8* p, u64 size) {
+    SNX_ZONE_T(z_arm, "plat trap arm",
+               atomic_load_explicit(&g_trap_signal, memory_order_acquire) ? "signal" : "uffd minor");
     if (atomic_load_explicit(&g_trap_signal, memory_order_acquire)) return trap_signal_arm(p, size);
 #if SNX_UFFD_MINOR
     struct uffdio_register reg;
@@ -2461,6 +2473,7 @@ int plat_trap_arm(u8* p, u64 size) {
 }
 int plat_trap_continue(u8* p, u64 size) {
     if (atomic_load_explicit(&g_trap_signal, memory_order_acquire)) {
+        SNX_ZONE_T(z_cont_sig, "plat trap continue", "signal");
         trap_watched(p, size);
         trap_open(p, size);
         return 0;
@@ -2477,8 +2490,9 @@ int plat_trap_continue(u8* p, u64 size) {
             none = 0;
             sched_yield();
         }
-        while (atomic_load_explicit(&g_ww_scans, memory_order_seq_cst)) sched_yield();
+        while (atomic_load_explicit(&g_ww_scans, memory_order_seq_cst)) sched_yield(); /* waits stay out of the zone */
     }
+    SNX_ZONE_T(z_cont_uffd, "plat trap continue", "uffd minor");
     while (at < end) {
         struct uffdio_continue c;
         struct uffdio_range w;

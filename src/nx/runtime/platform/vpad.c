@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/stats.h"
 #include "gui/icons.h"
@@ -554,14 +555,19 @@ static struct {
 static void controls_draw(SnxUiList* l, const int safe[4]);
 static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale);
 void vpad_draw(SnxUiList* l, const int safe[4], int scale) {
+    SNX_ZONE(z_vpad, "plat vpad draw");
     placed();
     if (scale < 1) scale = 1;
     if (scale != g_scale) { /* the bar's letters another size: laid out again */
         g_scale = scale;
         ++g_version;
     }
-    if (!on() && !g_edit) return;
+    if (!on() && !g_edit) {
+        SNX_ZONE_VALUE(z_vpad, 2); /* hidden */
+        return;
+    }
     if (!g_drawn.laid || g_drawn.drawn != g_version || memcmp(g_drawn.safe, safe, sizeof g_drawn.safe)) {
+        SNX_ZONE_VALUE(z_vpad, 1); /* laid out again */
         SnxUiList kept = {g_drawn.q, 0, KEPT_QUADS};
         controls_draw(&kept, safe);
         g_drawn.n = kept.n;
@@ -569,8 +575,10 @@ void vpad_draw(SnxUiList* l, const int safe[4], int scale) {
         g_drawn.drawn = g_version;
         g_drawn.laid = 1;
         ++g_drawn.version;
-    }
+    } else
+        SNX_ZONE_VALUE(z_vpad, 0); /* kept quads */
     ui_append_kept(l, &(SnxUiList){g_drawn.q, g_drawn.n, KEPT_QUADS}, g_drawn.version, &g_drawn, NULL);
+    SNX_PLOT("plat vpad quads", (double)g_drawn.n);
 }
 static void controls_draw(SnxUiList* l, const int safe[4]) {
     int c;
@@ -662,11 +670,16 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
 }
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4];
-    if (vpad_showcase_box(safe, box) < 0) return;
+    SNX_ZONE(z_show, "plat vpad showcase draw");
+    if (vpad_showcase_box(safe, box) < 0) {
+        SNX_ZONE_VALUE(z_show, 2); /* hidden: the setting is off */
+        return;
+    }
     if (atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed))
         fps = -1; /* the stats panel says it already */
     if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps || g_shown.scale != scale ||
         memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
+        SNX_ZONE_VALUE(z_show, 1); /* laid out again */
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
         showcase_draw(&kept, safe, fps, scale);
         g_shown.n = kept.n;
@@ -676,8 +689,10 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
         g_shown.drawn = g_show_version;
         g_shown.laid = 1;
         ++g_shown.version;
-    }
+    } else
+        SNX_ZONE_VALUE(z_show, 0); /* kept quads */
     ui_append_kept(l, &(SnxUiList){g_shown.q, g_shown.n, g_shown.n}, g_shown.version, &g_shown, NULL);
+    SNX_PLOT("plat vpad showcase quads", (double)g_shown.n);
 }
 static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4], x0, y0, w, h, r[4];

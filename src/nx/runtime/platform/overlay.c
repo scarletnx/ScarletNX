@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/ctrl_applet.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
@@ -157,7 +158,7 @@ static const struct {
             {GUI_ICON_SAVE, HOTKEY_SAVE_STATE, NULL, "save to the slot"},
             {GUI_ICON_ROTATE_CCW, HOTKEY_LOAD_STATE, NULL, "load the slot"},
             {GUI_ICON_LAYERS, HOTKEY_NEXT_SLOT, NULL, "the next slot"},
-            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy, 60 s"}, /* a build with SNX_TRACY has its key */
+            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy capture"}, /* a build with SNX_TRACY has its key */
             {GUI_ICON_PLAY, HOTKEY_PAUSE, NULL, "pause, resume"},
             {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
             {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
@@ -2039,6 +2040,7 @@ static float toast_width(int i, float cw) {
 static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, int span[OVERLAY_TOASTS + 1]) {
     int px, py, s, i, right = 0;
     float cw, ch, x, y, w = 0, h;
+    SNX_ZONE_V(z_toast, "plat overlay toast lay", (u64)ntoasts);
     overlay_place(sw, sh, &px, &py, &s);
     s = stats_scale(s);
     cw = 8.0f * (float)s;
@@ -2133,6 +2135,7 @@ static int watched_same(void) {
 }
 static void menu_lay(int sw, int sh, const MenuKey* key) {
     static DialogRows rows_of; /* the renderer's */
+    SNX_ZONE_TV(z_menu, "plat overlay menu lay", (u64)key->what, "dialog %d", (int)key->what);
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     SnxUiList l = {g_menu.q, 0, MENU_QUADS};
     Dialog d;
@@ -2187,6 +2190,8 @@ static void loading_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
 }
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
+    int before = l->n; /* the list's quads before this overlay's, so the plot counts only the overlay's own */
+    SNX_ZONE(z_draw, "plat overlay draw");
     if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
         pm_lock(&notice_lock);
         if (notice[0]) overlay_toast(notice_icon, notice, now_ns);
@@ -2198,6 +2203,8 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
         map_draw(l, sw, sh);
         g_menu.laid = 0;
+        SNX_ZONE_VALUE(z_draw, 3); /* button map */
+        SNX_PLOT("plat overlay quads", (double)(l->n - before));
         return;
     }
     memset(&key, 0, sizeof key);
@@ -2206,6 +2213,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     key.what = atomic_load_explicit(&shown, memory_order_relaxed)                ? MENU_PAGE
                : atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed) ? MENU_KB
                                                                                  : MENU_NONE;
+    SNX_ZONE_VALUE(z_draw, key.what); /* 0: toasts only, 1: menu, 2: keyboard, 3: map */
     key.changes = atomic_load_explicit(&g_changes, memory_order_acquire);
     if (key.what != MENU_NONE) {
         key.hotkeys = hotkeys_version();
@@ -2245,6 +2253,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         for (i = 0; i < ntoasts; ++i) /* as one fades: its quads the same, their alpha moving; whole, no span */
             ui_fade_set(first + g_toast.span[i], first + g_toast.span[i + 1], (unsigned)overlay_toast_alpha(i, now_ns));
     }
+    SNX_PLOT("plat overlay quads", (double)(l->n - before));
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;

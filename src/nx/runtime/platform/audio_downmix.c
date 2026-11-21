@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/audio_downmix.h"
+#include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 
 static int16_t downmix_sample(int32_t front, int32_t shared, int32_t back) {
@@ -10,6 +12,11 @@ static int16_t downmix_sample(int32_t front, int32_t shared, int32_t back) {
 }
 
 void snx_audio_downmix_51(void* stereo, const void* surround, uint32_t frames) {
+#if defined(SNX_TRACY)
+    uint64_t t0 = plat_ns(); /* only read for the plot, so unused without a client */
+#endif
+    SNX_ZONE(z_downmix, "audio downmix 5.1");
+    SNX_ZONE_VALUE(z_downmix, frames); /* the 5.1 frames in this pass, not single samples */
     const unsigned char* in = surround;
     unsigned char* out = stereo;
     uint32_t i;
@@ -22,4 +29,7 @@ void snx_audio_downmix_51(void* stereo, const void* surround, uint32_t frames) {
         snx_st_le16(out, (uint16_t)downmix_sample(s[0], shared, s[4]));
         snx_st_le16(out + 2, (uint16_t)downmix_sample(s[1], shared, s[5]));
     }
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio downmix us", (double)((plat_ns() - t0) / 1000));
+#endif
 }

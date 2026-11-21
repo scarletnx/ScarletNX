@@ -1027,6 +1027,7 @@ static int fatal_screen(const char* msg) {
     Uint64 since;
     if (!g_sdl3.win) return 0;
     atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
+    /* no zones here: the fatal path closes the client before this screen, so no capture can receive them */
     if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
     if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
     shown_msg = fatal_shown(msg);
@@ -2272,7 +2273,16 @@ void video_poll(void) {
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown() || ctrl_dialog_shown();
     if (!g_opt_headless) mouse_hold_update();
     joycon2_poll(); /* a Joy-Con 2 that became ready or left: its gamepad's added or removed event comes below */
-    while (!g_opt_headless && SDL_PollEvent(&e)) {
+    int events = 0;
+    while (!g_opt_headless) {
+        int got;
+        { /* the zone times the pump only, not the dispatch or a gamepad's open below */
+            SNX_ZONE(z_pump, "plat SDL event pump");
+            got = SDL_PollEvent(&e);
+            SNX_ZONE_VALUE(z_pump, (u64)got); /* 1 an event, 0 the queue is drained */
+        }
+        if (!got) break;
+        ++events;
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
         if (e.type < SDL_EVENT_KEY_DOWN) atomic_fetch_add_explicit(&g_sdl3.window_changes, 1, memory_order_release);
@@ -2335,6 +2345,7 @@ void video_poll(void) {
             default: window_event(&e); break;
         }
     }
+    SNX_PLOT("plat SDL events", events);
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
     u64 s = unattended_buttons(), k = g_sdl3.keys_held | s;
@@ -2554,6 +2565,7 @@ const char* backend_pressed(void) {
 void frontend_frame(void) {
     char p[1200];
     int full = log_full_take();
+    SNX_ZONE(z_frame, "plat frontend frame");
     g_sdl3.press.listening = 0; /* the game's first thread runs: its presses are its own */
     g_sdl3.press.kind = PRESS_NONE;
     if (full) { /* the log's first cut (log.c), said over the game once */
@@ -2562,13 +2574,16 @@ void frontend_frame(void) {
     }
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
-    if (g_renderer->refresh && (overlay_shown() || overlay_keyboard_shown() || ctrl_dialog_shown() || vpad_shown() ||
-                                game_paused() || overlay_toasting(plat_ns()) ||
-                                atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed) ||
-                                atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)))
-        g_renderer->refresh();
+    int refresh = g_renderer->refresh &&
+                  (overlay_shown() || overlay_keyboard_shown() || ctrl_dialog_shown() || vpad_shown() ||
+                   game_paused() || overlay_toasting(plat_ns()) ||
+                   atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed) ||
+                   atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed));
+    SNX_ZONE_VALUE(z_frame, refresh); /* 1: the picture is drawn again, 0: no refresh */
+    if (refresh) g_renderer->refresh();
     if (g_sdl3.shot_req) {
         g_sdl3.shot_req = 0;
+        SNX_ZONE_T(z_shot, "plat screenshot", "hotkey");
         time_t now = time(NULL);
         struct tm t;
 #ifdef _WIN32
@@ -2583,8 +2598,12 @@ void frontend_frame(void) {
         g_renderer->screenshot(p);
         toast(HOTKEY_SCREENSHOT, "Screenshot saved in captures");
     }
-    if (unattended_periodic_shot(p, sizeof p)) g_renderer->screenshot(p);
+    if (unattended_periodic_shot(p, sizeof p)) {
+        SNX_ZONE_T(z_shot_periodic, "plat screenshot", "periodic");
+        g_renderer->screenshot(p);
+    }
     if (unattended_done()) {
+        SNX_ZONE_T(z_shot_final, "plat screenshot", "final");
         /* the size of the image the renderer saved isn't known here: the window's would be a different one */
         unattended_exit(g_renderer->screenshot(unattended_shot()), 0, 0);
     }

@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/cpu/recompiler/image.h"
 #include "common/cpu/recompiler/variants.h"
+#include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/jit_service.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
@@ -181,27 +182,49 @@ static GuestFn variant_resolve(SnxU64 pc) {
    shows which of the two it was. */
 static _Thread_local struct {
     int named;
+    int miss_thread; /* the miss thread compiles only batches a guest thread waits for */
+    unsigned index;  /* which compile thread, from the service's thread callback */
     unsigned long cached, batches, hits, misses;
 } t_jit_plot;
 
 static void jit_report_plots(const SnxJitReport* r) {
     SnxJitStats stats;
     if (!snx_tracy_enter()) return; /* no client: a batch's numbers go nowhere */
+    SNX_FRAME_SCOPED(f_batch, "jit"); /* one discontinuous frame per compile batch */
     if (!t_jit_plot.named) {
         t_jit_plot.named = 1;
         SNX_THREAD_NAME("jit compile"); /* the system's name is set where the thread starts (jit_service.c) */
+    }
+    /* the batch's headline: which thread made it, what it compiled, how long it took, and who waited */
+    {
+        SNX_ZONE_V(z_batch, "jit compile batch", r->instructions);
+        if (t_jit_plot.miss_thread)
+            SNX_ZONE_TEXT(z_batch, "miss thread: %lu fns, %lu ins, %.1f ms, game waited",
+                          (unsigned long)r->functions, (unsigned long)r->instructions, r->seconds * 1000.0);
+        else
+            SNX_ZONE_TEXT(z_batch, "compile thread %u: %lu fns, %lu ins, %.1f ms", t_jit_plot.index,
+                          (unsigned long)r->functions, (unsigned long)r->instructions, r->seconds * 1000.0);
     }
     /* the service's sums: read under its lock, which this thread does not hold (the report comes outside them) */
     if (g_jit) {
         snx_jit_stats(g_jit, &stats);
         unsigned long cached = (unsigned long)stats.cached, batches = (unsigned long)stats.batches;
         [[maybe_unused]] unsigned long queued = (unsigned long)stats.queued; /* the client's plot only */
-        SNX_PLOT("jit cache loads", (double)(cached - t_jit_plot.cached));
+        unsigned long loaded = cached - t_jit_plot.cached;
+        SNX_PLOT("jit cache loads", (double)loaded);
         SNX_PLOT("jit batches", (double)(batches - t_jit_plot.batches));
         t_jit_plot.cached = cached;
         t_jit_plot.batches = batches;
         SNX_PLOT("jit queue depth", (double)queued);
         SNX_PLOT("jit code KiB", (double)(stats.bytes >> 10));
+        /* a cache load or a miss: units loaded from the file instead of compiled since the last batch */
+        {
+            SNX_ZONE_V(z_cache, "jit cache load", loaded);
+            if (loaded)
+                SNX_ZONE_TEXT(z_cache, "%lu units loaded from cache", loaded);
+            else
+                SNX_ZONE_TEXT(z_cache, "no cache load, units compiled fresh");
+        }
     }
     SNX_PLOT("jit compile ms", r->seconds * 1000.0);
     SNX_PLOT("jit batch size", (double)r->pcs);
@@ -211,16 +234,24 @@ static void jit_report_plots(const SnxJitReport* r) {
     {
         unsigned long hits = atomic_load_explicit(&g_jit_hits, memory_order_relaxed);
         unsigned long misses = atomic_load_explicit(&g_jit_misses, memory_order_relaxed);
-        SNX_PLOT("jit variant hits", (double)(hits - t_jit_plot.hits));
-        SNX_PLOT("jit variant misses", (double)(misses - t_jit_plot.misses));
+        unsigned long nh = hits - t_jit_plot.hits, nm = misses - t_jit_plot.misses;
+        SNX_PLOT("jit variant hits", (double)nh);
+        SNX_PLOT("jit variant misses", (double)nm);
         t_jit_plot.hits = hits;
         t_jit_plot.misses = misses;
+        {
+            SNX_ZONE_TV(z_variant, "jit variant hit", nh, "%lu variant hits, %lu misses", nh, nm);
+        }
     }
-    if (r->dropped)
+    /* a failure or a dropped batch says why, beside the plot's single event */
+    if (r->dropped) {
+        SNX_ZONE_TV(z_drop, "jit dropped batch", r->pcs, "%lu pcs queued again: guest memory changed",
+                    (unsigned long)r->pcs);
         SNX_PLOT("jit dropped batches", 1);
-    else if (r->error)
+    } else if (r->error) {
+        SNX_ZONE_TV(z_fail, "jit compile failure", r->pcs, "%lu pcs: %.90s", (unsigned long)r->pcs, r->error);
         SNX_PLOT("jit failures", 1);
-    else
+    } else
         SNX_PLOT("jit compiled pcs", (double)r->pcs);
     snx_tracy_leave();
 }
@@ -243,6 +274,8 @@ static void jit_log(const SnxJitReport* r) {
 /* on the thread it tells of, once */
 static void jit_thread_log(const SnxJitThread* t) {
     char name[32];
+    t_jit_plot.miss_thread = t->misses != 0;
+    t_jit_plot.index = t->index;
     if (t->misses)
         snprintf(name, sizeof(name), "the miss thread");
     else
@@ -264,6 +297,8 @@ void jit_init(void) {
     u64* hints;
     size_t hint_count, warm = 0;
     u32 i;
+    /* perf names the JIT's code in CPU samples as GDB does in a debug session (gdb_jit.c), when asked */
+    snx_gdb_jit_perf_map(g_settings.perf_map != 0);
     g_jit_images = (SnxCodeImage*)calloc(g_mod->nmods ? g_mod->nmods : 1, sizeof(*g_jit_images));
     if (!g_jit_images) {
         snprintf(g_jit_error, sizeof(g_jit_error), "out of memory");
@@ -447,6 +482,12 @@ const char* jit_failure(void) {
 }
 
 int jit_code_added(u64 base, u64 text_size, u64 size) {
+#if defined(SNX_TRACY)
+    /* the code's address is known only here: a transient zone copies its name, so it needs no interned slot */
+    char transient_name[48];
+    snprintf(transient_name, sizeof transient_name, "jit add %llx", (unsigned long long)base);
+    SNX_ZONE_TRANSIENT(z_add, transient_name);
+#endif
     SnxCodeImage image;
     size_t i, slot = SNX_JIT_IMAGES;
     if (!g_jit_images) return -1;
@@ -827,4 +868,7 @@ void jit_report(void) {
     } else {
         LOG("jit: no JIT: %s\n", g_jit_error[0] ? g_jit_error : "not started");
     }
+    /* Append the lines loads recorded but did not emit; a load that was freed keeps its name for the samples
+       perf took while it ran. */
+    snx_gdb_jit_perf_map_snapshot();
 }

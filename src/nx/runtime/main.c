@@ -902,8 +902,10 @@ static void rate_plots(const RatePlot* p, unsigned n, u64 now_ns) {
     static u64 was[RATE_PLOTS];
     static u64 last_ns;
     double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+    /* a back-to-back pair of ticks only microseconds apart would divide one event by a near zero span and show a
+       rate far above the whole run's count; below a frame's time the window has no meaning */
     for (unsigned i = 0; i < n; i++) {
-        if (secs > 0) SNX_PLOT(p[i].name, (double)(p[i].now - was[i]) / p[i].per / secs);
+        if (secs >= 0.01) SNX_PLOT(p[i].name, (double)(p[i].now - was[i]) / p[i].per / secs);
         was[i] = p[i].now;
     }
     last_ns = now_ns;
@@ -938,14 +940,14 @@ static void frontend_loop(void) {
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
         int shown, paused;
-        SNX_ZONE(z_frontend, "frontend tick");
+        SNX_ZONE_V(z_frontend, "runtime: frontend tick", tick);
         video_poll();
         options_tv_mode_update();
         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest. The vsync
            due at this tick comes after the input; those between ticks come in vsync_until */
         paused = game_paused();
         if (!paused) {
-            SNX_ZONE(z_hid, "hid update");
+            SNX_ZONE(z_hid, "hle: hid update");
             [[maybe_unused]] u64 states = hid_update();
             SNX_ZONE_VALUE(z_hid, states);
             SNX_ZONE_END(z_hid);
@@ -1060,6 +1062,7 @@ static void prepare_wait(const char* title) {
     u32 was = 0;
     int shown = 0, themed = 0, n = 0, stalls = 0;
     char ended[96] = "", how[96];
+    SNX_SECTION_SCOPED_C(snx_shader_prepare, "shader preparation", 2);
     if (g_settings.prepare_shaders != 2 || !g_renderer->prepare) return;
     g_renderer->prepare(&p);
     if (p.done) { /* nothing to make (shaders are recorded, or the renderer makes none) */
@@ -1625,6 +1628,7 @@ int snx_main(int argc, char** argv) {
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
     {
+        SNX_SECTION_SCOPED_C(snx_game_load, "game load", 1);
         int loaded = loader_load();
         if (loaded == -2)
             fatal_code(SNX_EXIT_REMAKE,

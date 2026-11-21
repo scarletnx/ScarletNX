@@ -12,6 +12,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/utilities/ascii.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/script.h"
 #include <errno.h>
 #include <limits.h>
@@ -283,11 +284,12 @@ static void tas_apart(int record, int replay) {
 static void tas_record_open(int frame) {
     Tas* t = &g_unattended.tas;
     char path[sizeof g_exedir + sizeof g_exename + 64], folder[sizeof g_exedir + 8], msg[600];
-    unsigned char* old;
     size_t size, count = 0;
     int last = -1, e;
     tas_path(path, sizeof path, t->record_slot);
-    old = snx_read_file(path, &size);
+    unsigned char* old = snx_read_file(path, &size); /* a blocking read, out of the zone */
+    SNX_ZONE(z_rec, "plat input record open");
+    SNX_ZONE_TEXT(z_rec, old ? "replaces old" : "new");
     if (old) {
         if (!tas_lines((const char*)old, size, NULL, &count, &last, msg, sizeof msg))
             LOG("input_record: slot %d replaces %s, which is no recording: %s\n", t->record_slot, path, msg);
@@ -413,8 +415,11 @@ u64 unattended_buttons(void) {
     u64 now = plat_ns(), held = 0, len_ns = (u64)g_settings.press_length * 1000000u, ms;
     int frames = frames_now();
     size_t i;
+    SNX_ZONE(z_script, "plat scripted input");
     if (!g_unattended.t0) g_unattended.t0 = now;
     ms = (now - g_unattended.t0) / 1000000u;
+    SNX_ZONE_VALUE(z_script, ms);
+    SNX_ZONE_TEXT(z_script, "frame %d, %llu ms", frames, (unsigned long long)ms);
     for (i = 0; i < g_unattended.script.n; i++) {
         ScriptPress* p = &g_unattended.script.press[i];
         if (!p->at_present) {
@@ -424,13 +429,19 @@ u64 unattended_buttons(void) {
         if (p->done) continue;
         /* from the first look at or after present N, even when the presents went past it between two looks: the
            game advances a step per present, so a time in ms could come too early on a slow machine */
-        if (!p->held_since && frames >= 0 && (u32)frames >= p->at) p->held_since = now;
+        if (!p->held_since && frames >= 0 && (u32)frames >= p->at) {
+            p->held_since = now;
+            SNX_MSG("script press begins", sizeof("script press begins") - 1);
+        }
         if (!p->held_since) continue;
-        if (now - p->held_since < len_ns)
+        if (now - p->held_since < len_ns) {
             held |= p->mask;
-        else
+        } else {
             p->done = 1;
+            SNX_MSG("script press ends", sizeof("script press ends") - 1);
+        }
     }
+    SNX_PLOT("plat script held bits", (double)snx_popcount64(held));
     return held;
 }
 

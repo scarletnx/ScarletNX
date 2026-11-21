@@ -7,6 +7,7 @@
 #include "nx/runtime/nce/nce_patch.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +49,18 @@ const char* nce_kind_name(NceKind kind) {
                                                  "MRS CNTFRQ_EL0", "an exclusive",  "a hooked entry"};
     return (unsigned)kind < NCE_KINDS ? names[kind] : "?";
 }
+
+#if defined(SNX_TRACY)
+/* which pattern fired as a site and which got rejected as data or outside a function, by the kind's name */
+static const char* const g_pattern_fired_plot[NCE_KINDS] = {
+    "rt nce pat none fired",         "rt nce pat svc fired",         "rt nce pat tpidrro fired",
+    "rt nce pat tpidr fired",        "rt nce pat tpidr set fired",   "rt nce pat ticks fired",
+    "rt nce pat freq fired",         "rt nce pat excl fired",        "rt nce pat hook fired"};
+static const char* const g_pattern_reject_plot[NCE_KINDS] = {
+    "rt nce pat none rejected",      "rt nce pat svc rejected",      "rt nce pat tpidrro rejected",
+    "rt nce pat tpidr rejected",     "rt nce pat tpidr set rejected", "rt nce pat ticks rejected",
+    "rt nce pat freq rejected",      "rt nce pat excl rejected",     "rt nce pat hook rejected"};
+#endif
 
 /* ---- the scan ---- */
 
@@ -240,6 +253,8 @@ void nce_find_sites(const SnxCodegen* cg, NceSites* out) {
     size_t n = cg->module_count;
     Text* texts = (Text*)snx_alloc((n ? n : 1) * sizeof *texts);
     Stack todo = {0};
+    size_t fired[NCE_KINDS] = {0}, rejected[NCE_KINDS] = {0};
+    SNX_ZONE(z_scan, "nce scan");
     *out = (NceSites){0};
     for (size_t i = 0; i < n; i++) {
         const SnxCodeImage* m = &cg->modules[i];
@@ -282,13 +297,17 @@ void nce_find_sites(const SnxCodegen* cg, NceSites* out) {
             SnxU32 w = word_at(&texts[i], a);
             NceKind kind = nce_kind(w, &reg, &imm);
             if (kind == NCE_NONE) continue;
-            if (state == W_CODE)
+            if (state == W_CODE) {
+                fired[kind]++; /* the flow reached it: a site that fires */
                 add_site(out, a, w, kind, reg, imm, 1);
-            else if (state != W_UNKNOWN)
+            } else if (state != W_UNKNOWN) {
+                rejected[kind]++; /* code reads the word as data */
                 out->data++;
-            else if (function_at(cg, a) && snx_a64_flow(w, cg->features) != SNX_A64_FLOW_UNDEF)
+            } else if (function_at(cg, a) && snx_a64_flow(w, cg->features) != SNX_A64_FLOW_UNDEF) {
+                fired[kind]++; /* unproven, but inside a function and code */
                 add_site(out, a, w, kind, reg, imm, 0);
-            else {
+            } else {
+                rejected[kind]++; /* outside every function, or not code */
                 out->outside++;
                 out->outside_kind[kind]++;
             }
@@ -299,6 +318,15 @@ void nce_find_sites(const SnxCodegen* cg, NceSites* out) {
     }
     free(texts);
     free(todo.v);
+#if defined(SNX_TRACY)
+    SNX_ZONE_VALUE(z_scan, (u64)out->count); /* the sites the scan kept */
+    SNX_ZONE_TEXT(z_scan, "%zu sites; %zu rejected as data, %zu outside functions", out->count, out->data,
+                  out->outside);
+    for (unsigned k = 1; k < NCE_KINDS; k++) {
+        SNX_PLOT(g_pattern_fired_plot[k], (double)fired[k]);
+        SNX_PLOT(g_pattern_reject_plot[k], (double)rejected[k]);
+    }
+#endif
 }
 
 void nce_sites_free(NceSites* sites) {
@@ -686,6 +714,7 @@ size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out) {
 int nce_refused(char* why, size_t size, int is64, unsigned aspace, int android, int api) {
     if (!is64) {
         snprintf(why, size, "the game is 32-bit (its NPDM's is64 is 0), and NCE runs only 64-bit code");
+        SNX_ZONE_T(z_refuse, "nce refused", "%s", why);
         return -1;
     }
     if (android && api < NCE_ANDROID_API) {
@@ -693,12 +722,14 @@ int nce_refused(char* why, size_t size, int is64, unsigned aspace, int android, 
                  "Android's API level is %d, and NCE needs %d (Android 10), where the app owns the thread's "
                  "word that its stubs read (TLS_SLOT_APP)",
                  api, NCE_ANDROID_API);
+        SNX_ZONE_T(z_refuse, "nce refused", "%s", why);
         return -1;
     }
     if (android && aspace == 1) {
         snprintf(why, size,
                  "the game's address space is the 36-bit one (its NPDM's type 1), which has to lie below "
                  "64 GiB with its code at 128 MiB, and NCE on Android moves the guest's addresses above 64 GiB");
+        SNX_ZONE_T(z_refuse, "nce refused", "%s", why);
         return -1;
     }
     return 0;
@@ -737,6 +768,8 @@ static int place(const NceRange* ranges, size_t n, const NceSites* s, SnxU64* mi
     NcePool* pools = (NcePool*)snx_alloc((n ? n : 1) * sizeof *pools);
     SnxU64 trap;
     int r = 0;
+    SNX_ZONE(z_place, "nce stub place");
+    SNX_ZONE_VALUE(z_place, (u64)s->count); /* the sites to emit */
     for (size_t i = 0; i < n; i++) {
         pools[i].buf = (unsigned char*)snx_alloc((size_t)ranges[i].size);
         pools[i].addr = ranges[i].addr;
@@ -746,12 +779,14 @@ static int place(const NceRange* ranges, size_t n, const NceSites* s, SnxU64* mi
     if (nce_trap(pools, n, &env, NCE_TRAP, &trap)) {
         *miss = 0;
         r = -1;
+        SNX_ZONE_TEXT(z_place, "no pool for the trap stub");
     }
     for (size_t i = 0; i < s->count && !r; i++) {
         SnxU32 word;
         if (nce_emit(pools, n, &env, &s->site[i], &word)) {
             *miss = s->site[i].addr;
             r = -1;
+            SNX_ZONE_TEXT(z_place, "no pool reaches %#llx", (unsigned long long)s->site[i].addr);
         }
     }
     for (size_t i = 0; i < n; i++) free(pools[i].buf);
@@ -767,6 +802,8 @@ int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRang
     size_t n = 0;
     *pools = NULL;
     *pool_count = 0;
+    SNX_ZONE(z_layout, "nce layout");
+    SNX_ZONE_VALUE(z_layout, (u64)sites->count); /* the sites the layout must reach */
     for (size_t i = 0; i < count; i++) {
         SnxU64 b = mods[i].base, m = mods[i].size, image = page_up(m), all = nce_pool_size(sites, b, b + m);
         SnxU64 first = first_site(sites, b, b + m) - b, cut = 0, pre = 0, post;
@@ -788,6 +825,7 @@ int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRang
             snprintf(why, size,
                      "its %zu modules and their pools of stubs end at %#llx, past the code region's end at %#llx",
                      count, (unsigned long long)cursor, (unsigned long long)end);
+            SNX_ZONE_TEXT(z_layout, "%.127s", why);
             free(to);
             free(out);
             return -1;
@@ -808,6 +846,7 @@ int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRang
             "and recompile it, which makes its code ahead of time",
             (unsigned long long)(miss - to[k].base + mods[k].base), (unsigned long long)(mods[k].size >> 20),
             (unsigned long long)mods[k].base);
+        SNX_ZONE_TEXT(z_layout, "%.127s", why);
         free(to);
         free(out);
         return 1;
