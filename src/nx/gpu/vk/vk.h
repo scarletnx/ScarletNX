@@ -1289,6 +1289,7 @@ typedef struct Surf {
     u32 row;
     u64 bytes; /* the device memory its image takes */
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    u64 took_wseq;  /* textures: the surfaces' write count (wseq) at its last take of a target's pixels (vk_tex_took) */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
        Bytes that owner still holds are the image's own (texture.c pieces_published) */
     u64 pub_serial;
@@ -1573,6 +1574,11 @@ VkImageAspectFlags vk_aspect(const VkFmt* f);
 u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
+/* the textures that took pixels from targets and whose memory later targets drew all over since, last used before
+   `before`, up to `want` bytes */
+u64 vk_tex_reclaim_superseded(u32 before, u64 want);
+/* t took pixels from a target now: only targets drawn after this cover its memory (vk_tex_reclaim_superseded) */
+void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
