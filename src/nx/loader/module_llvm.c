@@ -884,8 +884,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     q.codegen = &codegen;
     q.build = build;
     /* the x86-64 back end for this host's module (x64_codegen.h), LLVM making what it can't: not for another
-       machine's, nor where the IR is kept or every call goes through the table */
-    q.x64 = snx_x64_available() && !build->triple && !build->keep_ir && !options->hook_direct_calls;
+       machine's, nor where the IR is kept, counted (ir_stats) or every call goes through the table, nor with a
+       --layout (each function's own hot section is LLVM's) */
+    q.x64 = snx_x64_available() && !build->triple && !build->keep_ir && !options->hook_direct_calls &&
+            !build->layout_count && !snx_ir_stats_on();
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
        through CPU.disp (--hook-direct-calls) none is bound */
     if (options->bound_count && !options->hook_direct_calls) {
