@@ -100,3 +100,33 @@ static int check_shader_read_windows(void) {
     puts("PASS shader read windows: forward/indirect flow, BRX lookahead, boundaries and adjacent programs exact=1");
     return 0;
 }
+
+/* An SM86 fragment program longer than 512 KiB, its header, 0x90000 bytes of MOVs, an EXIT and the BRA to itself,
+   found whole in the window vk_shader_get reads (SH_CODE): with the window of 512 KiB it had no end, and was left
+   untranslated */
+static int check_sm86_long_window(void) {
+    const u32 movs = 0x90000 / 16, insns = movs + 2, bytes = 128 + insns * 16;
+    CHECK(bytes <= SH_CODE);
+    u8* window = calloc(1, SH_CODE);
+    CHECK(window != NULL);
+    if (!window) return 1;
+    snx_st_le32(window, 2u | 4u << 5 | 5u << 10); /* SPH word 0: a fragment program's, version 4 */
+    const u64 hi = 7ull << 46 | 7ull << 49;       /* no barriers */
+    for (u32 i = 0; i < movs; i++) {              /* MOV R3, RZ */
+        snx_st_le64(window + 128 + 16 * i, 0x202ull | 7ull << 12 | 3ull << 16 | 255ull << 24 | 255ull << 32);
+        snx_st_le64(window + 128 + 16 * i + 8, hi);
+    }
+    snx_st_le64(window + 128 + 16 * movs, 0x94dull | 7ull << 12); /* EXIT */
+    snx_st_le64(window + 128 + 16 * movs + 8, hi | 7ull << 23);
+    const u64 self = (1ull << 48) - 4; /* the BRA to itself: -4 in the 48-bit offset at bit 34 */
+    snx_st_le64(window + 128 + 16 * (movs + 1), 0x947ull | 7ull << 12 | (self & 0x3fffffffull) << 34);
+    snx_st_le64(window + 128 + 16 * (movs + 1) + 8, hi | 7ull << 23 | self >> 30);
+    const int sm86_was = g_shader_sm86;
+    g_shader_sm86 = 1;
+    u32 length = 0;
+    vk_shader_hash(window, SH_CODE, &length, NULL);
+    g_shader_sm86 = sm86_was;
+    free(window);
+    CHECK(length == bytes);
+    return length != bytes;
+}
