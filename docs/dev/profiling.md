@@ -466,8 +466,11 @@ grep 'vulkan: GPU' ~/.local/state/scarletnx/recompiled/<id>/<id>.log   # the 10-
 ```
 
 It works in every build, with no external tool, on every platform with timestamps (Android included). Off, it costs
-a branch per pass. It is the first GPU tool to reach for: a pass that owns most of the frame, or a gap full of copies
-(that is how 955 MB of buffer copies a frame were found), says where to look next.
+a branch per pass. `--log=3` asks for the same counters, and adds the CPU's time per resource category every 600
+presents, so a steady scene's CPU cost needs no setting of its own. It is the first GPU tool to reach for: a pass that
+owns most of the frame, a pass of milliseconds at a few hundred pixels (the slowest passes are listed with the draws,
+copies, barriers and dispatches they held), or a gap full of copies (that is how 955 MB of buffer copies a frame were
+found), says where to look next.
 
 ### The GPU track in Tracy
 

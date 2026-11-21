@@ -606,7 +606,8 @@ static const char* const g_resource_name[VK_RESOURCE_N] = {
     [VK_RESOURCE_RT_RELOAD] = "target reload",
     [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
     [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
-    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build",
+    [VK_RESOURCE_CMD_RESET] = "command resets"};
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
 static void gpu_memory_plots(void) {
@@ -636,7 +637,8 @@ static const char* const g_resource_plot[VK_RESOURCE_N] = {
     [VK_RESOURCE_RT_RELOAD] = "vk resource: target reload ms",
     [VK_RESOURCE_SURFACE_RECLAIM] = "vk resource: surface reclaim ms",
     [VK_RESOURCE_BUFFER_MAINTENANCE] = "vk resource: buffer maintenance ms",
-    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "vk resource: buffer cache build ms"};
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "vk resource: buffer cache build ms",
+    [VK_RESOURCE_CMD_RESET] = "vk resource: command resets ms"};
 static const char* const g_wait_plot[VK_WAIT_N] = {"gpu wait: finish ms", "gpu wait: recycle ms",
                                                    "gpu wait: submit ms"};
 static void resource_plots(const VkResourceStats* is, const VkResourceStats* was) {
@@ -654,6 +656,8 @@ static void resource_plots(const VkResourceStats* is, const VkResourceStats* was
 static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transform, int game, u64 released_ns,
                  u64 period_ns, u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
+    static u32 res_mark;           /* the present the CPU resource window began at */
+    static int res_have;           /* the first window only starts the count: what ran before it is not a steady frame */
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, kind = src ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
@@ -821,6 +825,24 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 }
             }
             if (d > slowest_ns) slowest_ns = d;
+        }
+        /* log_level 3: the CPU work a resource category takes over 600 presents, which is where a steady scene's
+           time goes: a slow frame's line only says what one frame did. The window is counted from a mark rather than
+           by the present's number, so no window is longer than a steady 600: the first one would otherwise hold what
+           ran before it, and a window the setting was off for would count its presents too */
+        if (g_vk_present + 1u - res_mark >= 600) {
+            static VkResourceStats res_was;
+            const u32 span = g_vk_present + 1u - res_mark; /* unsigned: a wrapped present's number still counts on */
+            if (g_settings.log_level >= 3 && res_have) {
+                for (u32 k = 0; k < VK_RESOURCE_N; k++) {
+                    u64 ns = resource_is.ns[k] - res_was.ns[k], n = resource_is.calls[k] - res_was.calls[k];
+                    if (ns < 10000000 || !n) continue;
+                    LOG("vulkan: CPU a frame over %u presents: %s %.2f ms (%llu calls, %.3f ms each)\n", span,
+                        g_resource_name[k], (double)ns / 1e6 / (double)span, (unsigned long long)n,
+                        (double)ns / 1e6 / (double)n);
+                }
+            }
+            res_mark = g_vk_present + 1u, res_was = resource_is, res_have = 1;
         }
         memcpy(was, is, sizeof was);
         resource_was = resource_is;
