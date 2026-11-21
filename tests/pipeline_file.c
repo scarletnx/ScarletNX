@@ -966,7 +966,7 @@ static void units_stop(void) {
     PFile pf;
     u32 loaded[2];
     u64 total, packed, kept;
-    size_t n, header;
+    size_t header;
     remove(PATH);
     unit_open(&pf, 0x10, loaded);
     header = (size_t)pf.size;
@@ -1018,6 +1018,7 @@ static void units_stop(void) {
         pthread_join(th, NULL);
         pf_saving(&pf, &total, &packed, &kept);
         CHECK(total == held3 && kept <= held3 && kept <= packed);
+        size_t n;
         u8* d = file_bytes(&n);
         CHECK(units_raw(d, n, header, &units) == kept);
         free(d);
