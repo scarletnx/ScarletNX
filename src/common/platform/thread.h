@@ -112,6 +112,12 @@ void plat_thread_exit(void); /* ends the calling thread (one plat_thread started
 int plat_cpus(int* ids, int max);
 /* the calling thread runs only on the n host CPUs in ids: 0, or -1 with errno */
 int plat_thread_cpus(const int* ids, int n);
+/* the calling thread runs on all of the process's host CPUs (plat_cpus), as a thread plat_thread starts does, and so do
+   the threads it starts from then on: a library starts its workers on the CPUs of the thread that calls it, which for a
+   game thread are its core's share (FFmpeg's and dav1d's, in a codec's open). Its own CPUs before, at most max of them,
+   into ids, and their count, for plat_thread_cpus(ids, n) to put back: 0 where the runtime doesn't choose CPUs, or the
+   thread ran on all of them already */
+int plat_thread_cpus_widen(int* ids, int max);
 /* the calling thread runs only where a CPU has nothing else to run: background work the game must not wait for (the
    BC7 encodes of nx/gpu/vk/astc.c). Linux's and Android's SCHED_IDLE, macOS's and iOS's background QoS class, Windows'
    idle priority, nothing elsewhere: 0, or -1 with errno (GetLastError on Windows) */

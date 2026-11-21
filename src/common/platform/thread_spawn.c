@@ -83,6 +83,11 @@ int plat_thread_cpus(const int* ids, int n) {
     (void)n;
     return 0;
 }
+int plat_thread_cpus_widen(int* ids, int max) {
+    (void)ids;
+    (void)max;
+    return 0;
+}
 int plat_thread_idle(void) { return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) ? 0 : -1; }
 #else
 /* below this a thread is a small helper that gets no alternate signal stack */
@@ -197,6 +202,14 @@ int plat_thread_cpus(const int* ids, int n) {
     for (i = 0; i < n; i++) CPU_SET(ids[i], &s);
     return sched_setaffinity(0, sizeof s, &s) ? -1 : 0;
 }
+int plat_thread_cpus_widen(int* ids, int max) {
+    cpu_set_t own;
+    int c, n = 0;
+    if (!CPU_COUNT(&g_all_cpus) || sched_getaffinity(0, sizeof own, &own) || CPU_EQUAL(&own, &g_all_cpus)) return 0;
+    for (c = 0; c < CPU_SETSIZE && n < max; c++)
+        if (CPU_ISSET(c, &own)) ids[n++] = c;
+    return n && !sched_setaffinity(0, sizeof g_all_cpus, &g_all_cpus) ? n : 0;
+}
 #else
 int plat_cpus(int* ids, int max) {
     (void)ids;
@@ -206,6 +219,11 @@ int plat_cpus(int* ids, int max) {
 int plat_thread_cpus(const int* ids, int n) {
     (void)ids;
     (void)n;
+    return 0;
+}
+int plat_thread_cpus_widen(int* ids, int max) {
+    (void)ids;
+    (void)max;
     return 0;
 }
 #endif
