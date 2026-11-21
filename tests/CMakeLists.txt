@@ -3769,9 +3769,11 @@ target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompil
 snx_test_sanitize(snx-test-recompiler-library-cpp) # this target is not made through snx_test_target
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
 # the x86-64 back end against LLVM, function by function (recompiler_backends.c)
-add_executable(snx-test-recompiler-backends recompiler_backends.c)
+add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c)
 snx_test_target(snx-test-recompiler-backends gnu23)
+target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
+snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
