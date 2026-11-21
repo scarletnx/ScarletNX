@@ -1034,8 +1034,9 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         break;
     default: break; /* ERET, an exception: none comes out of a decode */
     }
-    if (!terminal && (!snx_function_contains(f, next) ||
-                      (index + 1 < f->count && snx_function_address(f, index + 1) != next))) {
+    /* off the end, or the next instruction not the function's (its addresses are sorted: next is the following
+       index's where the function has it) */
+    if (!terminal && !(index + 1 < f->count && snx_function_address(f, index + 1) == next)) {
         flush(u);
         call_target(u, next, 1);
     }

@@ -972,7 +972,14 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (!options->quiet)
         printf("%s: %lu code unit%s and the module descriptor\n", q.x64 ? "x86-64 back end (LLVM where it can't)" : "LLVM",
                (unsigned long)q.count, q.count == 1 ? "" : "s");
-    if (q.count) run(&q, build->jobs, build->jobs_open);
+    /* the x86-64 back end's units are quick and small: their threads all at once, not opened one a second as for
+       LLVM's (the memory a unit of LLVM's takes is what the opening waits on) */
+    if (q.count && q.x64 && build->jobs_open && !options->quiet) {
+        unsigned n = build->jobs < 1 ? 1 : build->jobs;
+        if (n > q.count) n = (unsigned)q.count;
+        printf("aot_threads=0 (Auto): %u thread%s at once, the x86-64 back end's units\n", n, n == 1 ? "" : "s");
+    }
+    if (q.count) run(&q, build->jobs, q.x64 ? 0 : build->jobs_open);
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
         goto done;

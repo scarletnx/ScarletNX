@@ -180,6 +180,7 @@ typedef struct {
 } SgXBool;
 
 #define SGX_MAXI 4096
+#define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
 #define SGX_MAXV 8192
 #define SGX_MAXB 4096
 
@@ -1458,30 +1459,53 @@ static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
 /* the instructions nothing reads are dropped; one whose result nothing reads but whose flags something does becomes
    its flags-only form (SUBS's result to the zero register: CMP) */
 static inline void sgx_optimize(SgX* x) {
-    unsigned char* vlive = (unsigned char*)calloc((size_t)x->nv + 1, 1);
-    unsigned char* flive = (unsigned char*)calloc((size_t)x->n + 1, 1);
+    /* the thread's scratch, the region's part cleared (no allocation a region) */
+    static _Thread_local unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
     int i, k;
-    if (!vlive || !flive) sg_fail("out of memory", 0, 0);
-    /* a store a later one to the same place overwrites, with no load of it and no call of the runtime (which reads the
-       state) between, is dropped: a flag an instruction of the block set and a later one set again, a register
-       written twice */
-    for (i = 0; i < x->n; ++i) {
-        SgXIns* s = &x->ins[i];
-        if (s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
-        for (k = i + 1; k < x->n; ++k) {
-            SgXIns* t = &x->ins[k];
-            if (t->kind == SGX_K_UNDEF || t->kind == SGX_K_MACHINE || (t->kind == SGX_K_LOAD && t->disp == s->disp) ||
-                (t->kind == SGX_K_VEC && t->mstate) || t->kind == SGX_K_COLD)
-                break;
-            if ((t->kind == SGX_K_STORE || t->kind == SGX_K_STORE_FLAG) && t->disp == s->disp &&
-                (t->kind == SGX_K_STORE_FLAG ? 32 : t->w) >= (s->kind == SGX_K_STORE_FLAG ? 32 : s->w)) {
+    memset(vlive, 0, (size_t)x->nv + 1);
+    memset(flive, 0, (size_t)x->n + 1);
+    /* a store later ones to the same place overwrite, with no load of it and no call of the runtime (which reads the
+       state) between, is dropped: a flag an instruction of the block set and a later one set again, a register written
+       twice. One pass backward, each 4-byte word of the state marked while a later store covers it (a load of it, a
+       vector access of the state, a call or the machine's own instruction ends every mark) */
+    {
+        static _Thread_local unsigned stamp[SGX_STATE_WORDS];
+        static _Thread_local unsigned now = 1;
+        if (++now == 0) {
+            memset(stamp, 0, sizeof stamp);
+            now = 1;
+        }
+        for (i = x->n - 1; i >= 0; --i) {
+            SgXIns* s = &x->ins[i];
+            unsigned w0, nw;
+            if (s->dead) continue;
+            if (s->kind == SGX_K_UNDEF || s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD ||
+                (s->kind == SGX_K_VEC && s->mstate)) {
+                if (++now == 0) {
+                    memset(stamp, 0, sizeof stamp);
+                    now = 1;
+                }
+                continue;
+            }
+            if (s->kind != SGX_K_LOAD && s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
+            w0 = (unsigned)s->disp >> 2;
+            nw = s->kind != SGX_K_STORE_FLAG && s->w == 64 ? 2 : 1;
+            if (w0 + nw > SGX_STATE_WORDS) continue;
+            if (s->kind == SGX_K_LOAD) {
+                stamp[w0] = 0;
+                if (nw == 2) stamp[w0 + 1] = 0;
+                continue;
+            }
+            if (stamp[w0] == now && (nw == 1 || stamp[w0 + 1] == now)) {
                 s->kind = SGX_K_SEL; /* dead: what made its value is dropped too where nothing else reads it */
                 s->sel = NULL;
                 s->dead = 1;
                 s->in[0] = 0;
                 s->flags_from = -1;
-                break;
+                continue;
             }
+            stamp[w0] = now;
+            if (nw == 2) stamp[w0 + 1] = now;
         }
     }
     for (i = x->n - 1; i >= 0; --i) {
@@ -1566,8 +1590,6 @@ static inline void sgx_optimize(SgX* x) {
         for (k = 0; k < 7; ++k)
             if (x->ins[i].in[k]) x->v[x->ins[i].in[k]].last = i;
     }
-    free(vlive);
-    free(flive);
 }
 
 /* the host registers values may be in: those a call may change (RAX RCX RDX RSI RDI R8-R11); RBX holds the state's
@@ -1795,8 +1817,7 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     int k, out_reg = -1, tied_in = s->tied ? s->tied - 1 : -1;
     unsigned c, fixed = s->clobber, held;
     int zero_place = -1;
-    for (k = 0; k < 32 && zero_place < 0; ++k)
-        if (s->zero & (1u << k)) zero_place = k;
+    if (s->zero) zero_place = __builtin_ctz(s->zero);
     if (zero_place >= 16) fixed |= 1u << (zero_place - 16);
     /* the fixed registers it reads and writes: what is moved out of one goes to none of them */
     for (k = 0; k < 4; ++k)
@@ -1826,8 +1847,8 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
         a->b->disp = i->mdisp;
     }
     /* the fixed registers it writes */
-    for (c = 0; c < 16; ++c)
-        if (s->clobber & (1u << c)) {
+    for (unsigned m = s->clobber; m; m &= m - 1)
+        if ((c = (unsigned)__builtin_ctz(m)), 1) {
             int keep = 0;
             for (k = 0; k < 5; ++k)
                 if (i->in[k] && x->v[i->in[k]].reg == (int)c && x->v[i->in[k]].last == at) keep = 1;
@@ -1865,8 +1886,9 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     }
     s->enc(a->b, r, i->imm, i->cc);
     a->b->index = -1;
-    for (c = 0; c < 16; ++c)
-        if (a->owner[c] == -1) a->owner[c] = 0;
+    if (fixed) /* the copies made into fixed registers for it */
+        for (c = 0; c < 16; ++c)
+            if (a->owner[c] == -1) a->owner[c] = 0;
     if (out_reg >= 0 && i->def) {
         if (a->owner[out_reg] > 0 && a->owner[out_reg] != i->def) a->x->v[a->owner[out_reg]].reg = -1;
         a->owner[out_reg] = i->def;
@@ -2331,8 +2353,10 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         x->v[i].xmm = -1;
     }
     sgx_optimize(x);
-    a->next_call = (int*)malloc(sizeof(int) * (size_t)(x->n + 1));
-    if (!a->next_call) sg_fail("out of memory", 0, 0);
+    {
+        static _Thread_local int next_call[SGX_MAXI + 1];
+        a->next_call = next_call;
+    }
     a->next_call[x->n] = x->n;
     for (i = x->n - 1; i >= 0; --i)
         a->next_call[i] = !x->ins[i].dead && (x->ins[i].calls || x->ins[i].kind == SGX_K_MACHINE) ? i : a->next_call[i + 1];
@@ -2473,7 +2497,6 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         }
         }
     }
-    free(a->next_call);
     a->next_call = NULL;
     x->n = 0;
     x->nv = 1;
