@@ -16,6 +16,10 @@
          GPU mode, apart from the CPUs' (gpu.c): writes OUT, C that emits each instruction of a GPU's ISA that ROOTS
          names from its Sail (src/nx/gpu/shader/sail/), and the fusions of instructions ROOTS names, with a
          shader translator's back end (spirv.h, then the ISA's state)
+     sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...
+         writes PAGES, the instruction pages of Intel's SDM Vol. 2 (opcode table, operand encoding, Operation,
+         Flags Affected) out of TEXT, what `pdftotext -layout` makes of its PDF, each override's sections in place of
+         its page's (sdm.c): what the x86-64 back end's instruction selection reads
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -135,7 +139,8 @@ static int usage(const char* why) {
             "usage: sailgen --extract ROOTS -o OUT INPUT...\n"
             "       sailgen --generate ROOTS --backend FILE [--backend FILE]... [--profile PROFILE] -o OUT INPUT...\n"
             "               [--overlay FILE]...\n"
-            "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n",
+            "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n"
+            "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n",
             why);
     return 2;
 }
@@ -150,9 +155,10 @@ int main(int argc, char** argv) {
     const char* inputs[16];
     int overlays[16], count = 0, i;
     for (i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate") || !strcmp(argv[i], "--gpu")) {
-            if (mode) return usage("--extract, --generate and --gpu are one or another");
-            if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file");
+        if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate") || !strcmp(argv[i], "--gpu") ||
+            !strcmp(argv[i], "--sdm")) {
+            if (mode) return usage("--extract, --generate, --gpu and --sdm are one or another");
+            if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file, --sdm the text");
             mode = argv[i];
             roots = argv[++i];
         } else if (!strcmp(argv[i], "--backend")) {
@@ -176,8 +182,15 @@ int main(int argc, char** argv) {
             return usage("see the options below");
         }
     }
-    if (!mode) return usage("give --extract, --generate or --gpu");
+    if (!mode) return usage("give --extract, --generate, --gpu or --sdm");
     if (!out) return usage("give -o OUT");
+    if (!strcmp(mode, "--sdm")) {
+        /* the SDM's text, and the overrides: no Sail */
+        for (i = 0; i < count; ++i)
+            if (!overlays[i]) return usage("--sdm reads one text; overrides come with --overlay");
+        if (backend_count || profile) return usage("--sdm takes no back end and no profile");
+        return sg_sdm_extract(roots, out, inputs, count);
+    }
     if (!count) return usage("give the input files");
     if (!strcmp(mode, "--extract")) {
         for (i = 0; i < count; ++i)

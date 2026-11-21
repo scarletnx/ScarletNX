@@ -1,0 +1,4 @@
+# TWIDDLE—Twiddle Without Affecting Flags -- override
+# a test of an override: its sections replace the page's, the others stay the manual's
+@operation
+DEST := SRC2 + SRC1;

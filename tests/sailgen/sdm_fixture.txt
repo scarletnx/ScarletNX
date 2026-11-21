@@ -1,0 +1,66 @@
+                     Example Instruction Set Reference, Written for sailgen's Tests
+                                        Order Number: 325383-999US
+
+Table of contents, which no page starts in:
+FROB—Frobnicate. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3-1
+
+FROB—Frobnicate
+Opcode                     Instruction                   Op/    64-Bit       Compat/      Description
+                                                         En     Mode         Leg Mode
+F0 /r                      FROB r/m8, r8                 MR     Valid        Valid        Frobnicate r/m8 with r8.
+                                      1, imm81
+F1 /0 ib                   FROB r/m8                     MI     Valid        Valid        Frobnicate r/m8 with imm8.
+F1 /r                      FROB r/m32, r32               MR     Valid        Valid        Frobnicate r/m32 with r32.
+REX.W + F1 /r              FROB r/m64, r64               MR     Valid        N.E.         Frobnicate r/m64 with r64.
+
+NOTES:
+1. A footnote, which the row above it lost its operands to.
+
+                                                   Instruction Operand Encoding
+  Op/En             Operand 1                      Operand 2                         Operand 3                     Operand 4
+   MR            ModRM:r/m (r, w)                 ModRM:reg (r)                        N/A                             N/A
+    MI           ModRM:r/m (r, w)                  imm8                                N/A                             N/A
+
+Description
+Not read.
+
+FROB—Frobnicate                                                                                                Vol. 2A 3-1
+Operation
+DEST := DEST XOR SRC;
+IF DEST = 0
+    THEN ZF := 1;
+FI;
+
+Flags Affected
+The ZF flag is set according to the result.
+
+Protected Mode Exceptions
+#UD                   Not read.
+
+
+
+
+FROB—Frobnicate                                                                                                Vol. 2A 3-2
+TWIDDLE—Twiddle Without Affecting Flags
+Opcode/                         Op/    64/32-    CPUID         Description
+Instruction                     En     bit       Feature
+                                       Mode      Flag
+VEX.LZ.0F38.W0 F9 /r            RVM    V/V       BMI9          Twiddle r32b into r/m32, store result in r32a.
+TWIDDLE r32a, r32b, r/m32
+VEX.LZ.0F38.W1 F9 /r            RVM    V/N.E.    BMI9          Twiddle r64b into r/m64, store result in r64a.
+TWIDDLE r64a, r64b, r/m64
+
+                                                Instruction Operand Encoding
+  Op/En            Operand 1                    Operand 2                       Operand 3                       Operand 4
+   RVM           ModRM:reg (w)                  VEX.vvvv (r)                   ModRM:r/m (r)                       N/A
+
+Operation
+DEST := SRC1 + SRC2;
+
+Flags Affected
+None.
+
+Other Exceptions
+Not read.
+
+TWIDDLE—Twiddle Without Affecting Flags                                                        Vol. 2B 4-9
