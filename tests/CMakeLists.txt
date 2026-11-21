@@ -1120,6 +1120,12 @@ add_executable(snx-test-nvn-tex-storage nvn_tex_storage.c "${PROJECT_SOURCE_DIR}
 snx_test_target(snx-test-nvn-tex-storage c23)
 target_include_directories(snx-test-nvn-tex-storage PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME nvn_tex_storage COMMAND snx-test-nvn-tex-storage)
+# the render sizes nvn's DLSS stand-in answers (src/nx/gpu/nvn/nvn_dlss_sizes.h): the driver's rule and the setting
+add_executable(snx-test-nvn-dlss-sizes nvn_dlss_sizes.c)
+snx_test_target(snx-test-nvn-dlss-sizes c23)
+target_include_directories(snx-test-nvn-dlss-sizes PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-nvn-dlss-sizes PRIVATE m)
+add_test(NAME nvn_dlss_sizes COMMAND snx-test-nvn-dlss-sizes)
 # the vector FP instructions with fast paths through the LLVM steps against the soft-float helpers, lane by lane,
 # with lanes the host's arithmetic can and can't take in one vector
 add_executable(snx-test-llvm-vfp-lanes llvm_vfp_lanes.c llvm_steps.c
