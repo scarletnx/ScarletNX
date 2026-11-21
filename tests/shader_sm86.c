@@ -1964,8 +1964,8 @@ static void test_resolution_scale(const char* dir) {
         env.builtin[15][1] = f2u(cases[k].fy);
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
-        env.push[4] = cases[k].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit */
-        env.push[8] = cases[k].own;    /* and the one after it: slot 0's target has the size drawn to */
+        env.draw[8] = cases[k].scaled;  /* the frame's block at byte 32: slot 0's bit */
+        env.draw[24] = cases[k].own;    /* and at byte 96: slot 0's target has the size drawn to */
         env.image_size[SNX_VKB_TEX][0] = 32;
         env.image_size[SNX_VKB_TEX][1] = 16;
         const char* why = spv_eval(spv, count, &env);

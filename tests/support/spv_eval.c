@@ -964,6 +964,8 @@ static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* e
             uint32_t k = v->binding - 1;
             if (k == SPV_EVAL_DRAW) /* the per-draw block, read at the draw id (the push constant word 0) */
                 b = new_block(e, env->draw, SPV_EVAL_DRAW_WORDS, 0);
+            else if (k == SPV_EVAL_FRAME) /* the frame's block, the fragment stage's pc[] in a uniform buffer */
+                b = new_block(e, env->draw, SPV_EVAL_DRAW_WORDS, 0);
             else {
                 int bound = k < SPV_EVAL_BINDINGS;
                 b = new_block(e, bound ? env->ubo[k] : NULL, bound ? env->ubo_words[k] : 0, 0);

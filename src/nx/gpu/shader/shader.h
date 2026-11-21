@@ -454,7 +454,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* the per-draw push block (storage buffer), a vertex program's, at its draw id (the push constant word 0): the draw's
    pc[] the renderer writes there in place of the per-draw push constants (SNX_DRAW_WORDS) */
 #define SNX_VKB_DRAW     (SNX_VKB_TEXMAP + 1)
-#define SNX_VKB_END      (SNX_VKB_DRAW + 1)      /* one past the last binding */
+/* the fragment stage's per-draw block's members (SNX_VKB_FRAME), a uniform buffer the renderer writes in place of the
+   fragment stage's push constants: the scaled targets (pc[8..9] and pc[24..25]), the alpha reference, the clip height,
+   a varying pass's viewport, the capture, the constant buffer windows and the texture words, at their push offsets */
+#define SNX_VKB_FRAME    (SNX_VKB_DRAW + 1)
+#define SNX_VKB_END      (SNX_VKB_FRAME + 1)      /* one past the last binding */
 /* Transform feedback by stores (g_spirv_translate.xfb_stores), in the global buffer slots after a program's own (at
    most SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then
    the 4 buffers from where the capture starts */

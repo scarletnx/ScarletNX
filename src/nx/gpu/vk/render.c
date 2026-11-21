@@ -434,8 +434,27 @@ static int draw_ubo(void) {
     vk_mem_track(g_draw_ubo_mem, VK_OWN_MISC);
     return 1;
 }
+/* the fragment stage's block (SNX_VKB_FRAME): the pc[] words a fragment program reads, in a uniform buffer, written by
+   the CPU and flushed at the submit. It holds the same words pc[] does, at the same offsets */
+static VkBuffer g_frame_ubo;
+static DevMem g_frame_ubo_mem;
+static u8* g_frame_ubo_ptr;
+static int frame_ubo(void) {
+    if (g_frame_ubo) return 1;
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = (VkDeviceSize)SNX_DRAW_WORDS * 4,
+                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant aci = {.at = DM_HOST, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_frame_ubo, &g_frame_ubo_mem, &info))) return 0;
+    g_frame_ubo_ptr = info.ptr;
+    vk_mem_track(g_frame_ubo_mem, VK_OWN_MISC);
+    return 1;
+}
 void vk_render_draw_ubo_flush(void) {
     if (g_draw_ubo) vk_devmem_flush(g_draw_ubo_mem, 0, VK_WHOLE_SIZE);
+    if (g_frame_ubo) vk_devmem_flush(g_frame_ubo_mem, 0, VK_WHOLE_SIZE);
 }
 static int xfb_counters(void) {
     if (g_xfb.buf) return 1;
@@ -3936,10 +3955,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
                   draw->map_size[stage]);
-    /* the per-draw push block, read by the vertex program (SNX_VKB_DRAW) */
+    /* the per-draw push block, read by the vertex program (SNX_VKB_DRAW), and the frame's block the fragment program
+       reads (SNX_VKB_FRAME) */
     if (stage == ST_VS && draw_ubo())
         dw_buffer(&d, set, SNX_VKB_DRAW, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_draw_ubo, 0,
                   (VkDeviceSize)SNX_DRAW_WORDS * 4 * SNX_DRAW_MAX);
+    if (stage == ST_FS && frame_ubo())
+        dw_buffer(&d, set, SNX_VKB_FRAME, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, g_frame_ubo, 0,
+                  (VkDeviceSize)SNX_DRAW_WORDS * 4);
     for (u32 b = 0; xfb && xfb->range.declared && b < 5; b++)
         if (b == 4 || xfb->range.declared >> b & 1)
             dw_buffer(&d, set, b == 4 ? SNX_VKB_XFB_PARAMS : SNX_VKB_XFB + b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -7735,14 +7758,12 @@ retry:
             rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 12, pc);
         else {
             /* the vertex program's per-draw block at its draw id (the push constant word 0), and the fragment stage's
-               members in the same block: a vertex program reads its words from the block, so the push holds the draw
-               id in place of the base instance and leaves the depth fix, the params and the window out (they are in
-               the block). One push to all stages, as the one push range asks (VUID-vkCmdPushConstants-offset-01796) */
+               members in the frame's uniform buffer (SNX_VKB_FRAME): a vertex program reads its words from the block,
+               and the fragment stage's from the buffer, so the push is only the draw id to the vertex stage */
             u32 id = (u32)atomic_load_explicit(&g_draw_id, memory_order_relaxed) & (SNX_DRAW_MAX - 1);
             if (draw_ubo()) memcpy(g_draw_ubo_ptr + (u64)id * (SNX_DRAW_WORDS * 4), pc, SNX_DRAW_WORDS * 4);
-            memcpy(&pc[0], &id, 4); /* word 0 is the draw id, the base instance is in the block */
-            pc[1] = pc[2] = pc[3] = 0.0f;
-            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
+            if (frame_ubo()) memcpy(g_frame_ubo_ptr, pc, SNX_DRAW_WORDS * 4);
+            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 4, &id);
         }
     } else
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
