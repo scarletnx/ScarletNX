@@ -3013,6 +3013,17 @@ void vk_pipeline_file_key(char* out, size_t n, size_t* guest);
    pipeline a stand-in names, or h itself) */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k);
 VkPipeline vk_pipeline_resolve(VkPipeline h);
+/* The presents a link of pipeline libraries is drawn in before its optimized pipeline is made. The optimized one is
+   the pipeline compiled again, seconds of a worker for a large program, and a first run queued one for every link,
+   those of a scene drawn once included (a loading screen's, the shader file's that no draw asks for again). A link
+   drawn in three presents is one the game keeps drawing */
+#define PIPE_OPT_PRESENTS 3u
+/* h bound to a graphics command buffer (rec_CmdBindPipeline, under vk_lock): a stand-in of a link counts the presents
+   it is drawn in, and its optimized pipeline is made once they are PIPE_OPT_PRESENTS (pipeline.c) */
+void vk_pipeline_bound(VkPipeline h);
+/* the links whose optimized pipeline was asked for so far: drawn in that many presents, or by a draw that binds the
+   link's own handle (vk_pipeline_get) */
+u64 vk_pipeline_opt_asked(void);
 /* h, resolved (vk_pipeline_resolve or vk_pipeline_now), bound to cb: a pipeline, or a draw's shader objects with the
    state of its key (shader_objects.c) */
 void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h);

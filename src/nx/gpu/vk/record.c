@@ -628,7 +628,10 @@ static void bind_pipeline_run(const void* p) {
     if (pipe) vk_pipeline_bind(x->cb, x->bp, pipe);
 }
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
-    if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) vk_descriptor_heaps_pipeline_state(0);
+    if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+        vk_descriptor_heaps_pipeline_state(0);
+        vk_pipeline_bound(p);
+    }
     if (!rec_on(cb)) {
         VkPipeline pipe = vk_pipeline_resolve(p);
         if (pipe) vk_pipeline_bind(cb, bp, pipe);
