@@ -24,6 +24,11 @@ struct SgCtx {
     SgD target; /* BranchTo's: where, and when (0: always) */
     SgB taken;
     int gpr[32];     /* the virtual register of each X register the block knows, 0 for none */
+    unsigned char gk_known[32]; /* the X registers the block wrote a constant to, and those */
+    SnxU64 gk[32];
+    signed char pin[32]; /* the host register each X register (31: SP) lives in for the whole function, -1 none:
+                            x64_codegen.c's choice (a step's or a block's: none, pinned 0) */
+    int pinned;      /* pin[] is in use */
     int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int vx[32];      /* each SIMD&FP register as an XMM value, where the block has it so (one cache or the other) */
     SgB fp_state[2]; /* the hot paths' check of FPCR and FPSR (sgx_fp_bad), made once a region: without, with IXC */
@@ -60,6 +65,14 @@ static inline void sg_BTypeNext_write(SgCtx* g, SgD v) {
 static inline SgD sg_GPR_read(SgCtx* g, long long n) {
     SgX* x = sgx(g);
     if (n < 0 || n > 31) sg_fail("a GPR this back end does not keep", n, 31);
+    if (g->gk_known[n]) return sgx_const(64, g->gk[n]); /* MOVZ, MOVK...: one constant */
+    if (!g->gpr[n] && g->pinned && g->pin[n] >= 0) {
+        /* a copy of the host register it lives in (an SSA value: the register changes as the guest's does) */
+        SgXIns* i = sgx_append(x, SGX_K_PGET);
+        i->imm = g->pin[n];
+        i->def = sgx_vreg(x, x->n - 1, 64);
+        g->gpr[n] = i->def;
+    }
     if (!g->gpr[n]) {
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
         i->w = 64;
@@ -75,7 +88,17 @@ static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
     int r;
     if (n < 0 || n > 31) sg_fail("a GPR this back end does not keep", n, 31);
     if (v.w != 64) sg_fail("a GPR written from other than 64 bits", v.w, 64);
+    g->gk_known[n] = sgx_is_const(&v) != 0;
+    g->gk[n] = v.k;
     r = sgx_reg(x, &v);
+    if (g->pinned && g->pin[n] >= 0) {
+        i = sgx_append(x, SGX_K_PSET);
+        i->imm = g->pin[n];
+        i->in[0] = r;
+        i->side = 1;
+        g->gpr[n] = r;
+        return;
+    }
     i = sgx_append(x, SGX_K_STORE);
     i->w = 64;
     i->in[0] = r;
@@ -1129,6 +1152,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     switch (i->kind) {
     case SGX_K_UNDEF:
         /* state->pc = pc, then rt->undef(state, pc, word): RDI, RSI, EDX, through RAX = state->rt */
+        if (a->pin_flush) a->pin_flush(a->machine);
         sgx_byte(b, 0x48); /* mov rax, imm64; mov [rbx + pc], rax */
         sgx_byte(b, 0xB8);
         sgx_imm(b, i->imm, 8);

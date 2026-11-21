@@ -886,6 +886,11 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, r, q);
         return 1;
     }
+    case SNX_A64_OP_ADDP_s: /* ADDP Dd, Vn.2D: the two doublewords' sum */
+        if (size != 3) return -1;
+        a = vread(g, rn);
+        vwrite(g, rd, vadd(g, 3, a, sgx_v1(X, &sgx_v_pshufd, a, 0xEE)), 0);
+        return 1;
     /* across the lanes: element 0, the rest of the register cleared */
     case SNX_A64_OP_ADDV:
     case SNX_A64_OP_SMAXV:

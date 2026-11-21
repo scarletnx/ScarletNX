@@ -187,7 +187,7 @@ static const char* const k_vec_ops[] = {
     "FCVTZU_vf", "SCVTF_vf", "UCVTF_vf", "FCVTL_v", "FCVTN_v", "SCVTF_f", "UCVTF_f", "FCVTZS_f", "FCVTZU_f",
     "CMEQ0_s", "CMGT0_s", "CMGE0_s", "CMLE0_s", "CMLT0_s", "SQADD_v", "UQADD_v", "SQSUB_v", "UQSUB_v", "SQXTN_v",
     "UQXTN_v", "SQXTUN_v", "SQSHRN_v", "UQSHRN_v", "SQSHRUN_v", "SQDMULH_v", "SQRDMULH_v", "SQDMULH_vi",
-    "SQRDMULH_vi", "SQSHL_v", NULL};
+    "SQRDMULH_vi", "SQSHL_v", "ADDP_s", NULL};
 static uint32_t* g_rows;
 static size_t g_nrows;
 static uint64_t rnd_for_rows(void) { return rnd(); }
