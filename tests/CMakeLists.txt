@@ -1384,7 +1384,7 @@ add_test(NAME sailgen_isel COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_expected.report" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.sail")
 set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
@@ -1394,7 +1394,7 @@ set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
 foreach(case IN ITEMS register field)
     add_test(NAME sailgen_refused_${case}
              COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
-                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                      --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                      -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_${case}.inc"
                      "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
@@ -1420,7 +1420,7 @@ set_tests_properties(sailgen_refused_mention_field PROPERTIES PASS_REGULAR_EXPRE
 foreach(case IN ITEMS see pin)
     add_test(NAME sailgen_refused_${case}
              COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
-                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                      --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                      -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_${case}.inc"
                      "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
@@ -1433,7 +1433,7 @@ set_tests_properties(sailgen_refused_pin PROPERTIES PASS_REGULAR_EXPRESSION
 # refused at the throw
 add_test(NAME sailgen_refused_unpredictable
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_unpredictable.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_unpredictable.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_unpredictable.sail")
@@ -1442,7 +1442,7 @@ set_tests_properties(sailgen_refused_unpredictable PROPERTIES PASS_REGULAR_EXPRE
 # a struct's field may take a value known when the recompiler runs, not one known only when the guest runs
 add_test(NAME sailgen_refused_struct
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_struct.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_struct.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_struct.sail")
@@ -1464,7 +1464,7 @@ set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
 foreach(case IN ITEMS op more some sides base state)
     add_test(NAME sailgen_refused_halves_${case}
              COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_halves_${case}.roots"
-                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                      --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                      -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_halves_${case}.inc"
                      "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/halves.sail")
@@ -1483,7 +1483,7 @@ set_tests_properties(sailgen_refused_halves_state PROPERTIES PASS_REGULAR_EXPRES
     "halves.sail:62: error: the register GPR written where a function that calls itself joins what it gives for each half")
 add_test(NAME sailgen_halves
          COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>"
-                 "-DCORE=${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 "-DBITS=${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" "-DCORE=${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  "-DBACKEND=${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
                  "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/halves.inc"
@@ -1502,7 +1502,7 @@ add_test(NAME sailgen_extract_lower COMMAND "${CMAKE_COMMAND}" -E compare_files 
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/lower_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail")
 add_test(NAME sailgen_refused_path
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_path.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.sail")
@@ -1512,7 +1512,7 @@ set_tests_properties(sailgen_refused_path PROPERTIES PASS_REGULAR_EXPRESSION
 # element to the next, or whose element is read after it, stays a loop of elements
 add_test(NAME sailgen_lanes
          COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>"
-                 "-DCORE=${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 "-DBITS=${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" "-DCORE=${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  "-DBACKEND=${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
                  "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/lanes.inc"
@@ -1522,7 +1522,7 @@ set_tests_properties(sailgen_lanes PROPERTIES PASS_REGULAR_EXPRESSION
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
                  --profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
@@ -1531,7 +1531,7 @@ add_test(NAME sailgen_a64
 # and the AArch32 ones of src/common/cpu/arm/sail/, with the architectures' profile and fixups
 add_test(NAME sailgen_a32
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.roots"
-                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm_arm.h"
                  --profile "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.profile"
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a32_sail.inc"
