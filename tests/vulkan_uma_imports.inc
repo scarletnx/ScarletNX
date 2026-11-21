@@ -716,6 +716,47 @@ static int check_uma_publish(void) {
     return 0;
 }
 
+/* A host without traps has nothing to own a publish with: the span over memory no import held fell through to
+   own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. The publish now asks bind
+   for the import, which makes it, so the copy is recorded on the GPU like the one over an import and the CPU's read
+   waits in vk_uma_mem_need. Nothing is GPU-owned and nothing lands */
+#define UMA_T  (HEAP_BASE + 0x3e00000) /* no import over it, and no trap to own it with */
+#define UMA_GT 0x4e6000000ull
+static int check_uma_publish_notraps(void) {
+    const u64 src = 0x4e7000000ull, src_cpu = HEAP_BASE + 0x730000; /* in the first heap mapping */
+    u8 bytes[256];
+    if (vk_uma() && !own_traps()) {
+        CHECK(mem_map(UMA_T, 0x200000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(UMA_GT, UMA_T, 0x200000);
+        gmmu_map(src, src_cpu, 0x10000);
+        memset(GP(UMA_T), 0xa0, 0x1000);
+        memset(GP(src_cpu), 0xa2, 0x1000);
+        u64 adds = vk_uma_writes(), waits = vk_uma_out_waits();
+        CHECK(!uma_dma(UMA_GT + 0x100, src + 0x100));
+        int owned = own_lookup(UMA_T + 0x100, 256, NULL, 0) != 0;
+        u32 imported = vk_uma_imports(UMA_T, 0x200000);
+        u64 added = vk_uma_writes() - adds, waited = vk_uma_out_waits() - waits;
+        CHECK(!gmem_read(UMA_GT + 0x100, bytes, sizeof bytes));
+        for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa2);
+        vk_lock();
+        vk_finish();
+        vk_unlock();
+        CHECK(GP(UMA_T)[0x100] == 0xa2 && GP(UMA_T)[0x1ff] == 0xa2 && GP(UMA_T)[0x200] == 0xa0);
+        CHECK(mem_unmap(UMA_T, 0x200000) == 0);
+        if (!imported || owned || !added || waited)
+            fprintf(stderr, "publish without traps: imports %u, owned %d, %llu in-place writes, %llu waits\n",
+                    imported, owned, (unsigned long long)added, (unsigned long long)waited);
+        CHECK(imported && !owned && added && !waited);
+        printf("no traps: a publish over memory no import held makes its import and copies there on the GPU (%u "
+               "imports, %llu in-place writes, %llu waits)\n",
+               imported, (unsigned long long)added, (unsigned long long)waited);
+        return 0;
+    }
+    printf("skip: %s\n", !vk_uma() ? "guest memory is copied on this device (vk_memory)"
+                                   : "traps: a publish owns the span (check_uma_publish)");
+    return 0;
+}
+
 /* A dispatch runs on the graphics queue and writes its storage in place: a compute program stores 0x5eed through an NVN
    descriptor in cbuf 0; no compute result is pending after it, the range is imported, and the CPU reads the store */
 #define UMA_Q  (HEAP_BASE + 0x3800000)
