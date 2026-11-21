@@ -1580,8 +1580,9 @@ setting Guest memory
     help docs/layers/gpu/ownership.md). 1 = copied into the renderer's buffers when they change, and back. 2 = read and written
     help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
-    help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
-    help but never the moves into AHardwareBuffers (unless uma_memory=2), else 1. A 3DS game takes it too, for the
+    help across the bus. 0 = 2 on a GPU that shares system memory, but never the moves into AHardwareBuffers (unless
+    help uma_memory=2), and on a discrete GPU whose host imports cost every submission (amdgpu's) through Linux's
+    help dma-bufs (uma_memory), else 1. A 3DS game takes it too, for the
     help board's RAM: 1 = the GPU works on a copy of it in its own memory, 2 = on the RAM in place
     help (docs/platforms/3ds/README.md)
 setting Guest memory in place
@@ -1605,7 +1606,8 @@ setting Guest buffers copied
     words Auto|In place|Copied
     help Where guest memory is read in place (vk_memory), whether vertices, indices and constant buffers are read there
     help too. 0 = copied on a driver that takes every import's pages again at each submission (amdgpu's: RADV, AMDVLK,
-    help AMD's on Linux), where each import costs every submission, and read in place elsewhere. 1 = read in place.
+    help AMD's on Linux), where each import costs every submission, but read in place on a discrete GPU, which takes
+    help guest memory through dma-bufs only, and read in place elsewhere. 1 = read in place.
     help 2 = copied. A dispatch's storage ranges and what the GPU writes stay in place either way
 setting Buffer copy stats
     key vk_buffer_stats
