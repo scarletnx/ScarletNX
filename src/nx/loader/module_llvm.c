@@ -85,7 +85,7 @@ static int output_sample(const char* path, char out[65]) {
     }
     first = size < HALF ? size : HALF;
     last = size < HALF ? 0 : HALF;
-    if (!fread(buf, 1, first, f) && first) goto out;
+    if (first && fread(buf, 1, first, f) != first) goto out;
     if (last && (fseek(f, -(long)last, SEEK_END) || fread(buf + HALF, 1, last, f) != last)) goto out;
     ok = snx_analysis_cache_digest(buf, first + last, out) == 0;
 out:
@@ -94,11 +94,11 @@ out:
     return ok ? 0 : -1;
 }
 
-static void desc_append(unsigned char* buf, size_t bufsz, size_t* n, const void* data, size_t size) {
-    if (*n + size <= bufsz) {
-        memcpy(buf + *n, data, size);
-        *n += size;
-    }
+static int desc_append(unsigned char* buf, size_t bufsz, size_t* n, const void* data, size_t size) {
+    if (*n + size > bufsz) return -1;
+    memcpy(buf + *n, data, size);
+    *n += size;
+    return 0;
 }
 
 static void lock(Queue* q) {
@@ -1040,8 +1040,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         } blob;
         memset(&blob, 0, sizeof blob);
         memcpy(blob.identity, akey, 64);
-        snx_analysis_cache_digest(options->bound, options->bound_count * sizeof(*options->bound), bound_id);
-        snx_analysis_cache_digest(build->layout, build->layout_count * sizeof(*build->layout), layout_id);
+        snx_analysis_cache_digest(options->bound ? options->bound : (const void*)"",
+                                  options->bound_count * sizeof(*options->bound), bound_id);
+        snx_analysis_cache_digest(build->layout ? build->layout : (const void*)"",
+                                  build->layout_count * sizeof(*build->layout), layout_id);
         snx_analysis_cache_digest(build->triple ? build->triple : "", build->triple ? strlen(build->triple) : 0,
                                   triple_id);
         if (unit_cache) snx_unit_cache_identity_digest(unit_cache, unit_id);
@@ -1066,45 +1068,68 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     /* Everything the module descriptor emits: the analysis, the unit identities, the program's identity and title,
        the hook routes and the AOT-pack records. A shorter key would let one program load another's descriptor. */
     if (analysis && akey[0]) {
-        char npdm_id[65] = {0}, mods_id[65] = {0}, title_key[65] = {0}, routes_id[65] = {0}, jit_id[65] = {0};
+        char npdm_id[65] = {0}, mods_id[65] = {0}, title_key[65] = {0}, routes_id[65] = {0}, jit_id[65] = {0},
+             nros_id[65] = {0};
         size_t routes_n = (size_t)snx_hook_route_count(), n = 0, j;
-        size_t bufsz = 4096 + routes_n * 64 + cache_count * 256 + loaded->module_count * 256;
+        int ok = 0;
+        size_t bufsz = 4096 + routes_n * 64 + cache_count * 256 + (loaded->module_count + options->nro_count) * 256;
         unsigned char *buf = (unsigned char*)snx_alloc(bufsz);
         struct {
-            char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64];
-            SnxU64 packs, abi;
+            char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64], nros[64];
+            SnxU64 packs, abi, nro_end;
         } d;
         memset(&d, 0, sizeof d);
         if (buf) {
-            desc_append(buf, bufsz, &n, &loaded->npdm.title_id, 8);
-            desc_append(buf, bufsz, &n, &loaded->npdm.stack, 4);
-            desc_append(buf, bufsz, &n, &loaded->npdm.prio, 4);
-            desc_append(buf, bufsz, &n, &loaded->npdm.core, 4);
-            desc_append(buf, bufsz, &n, &loaded->npdm.aspace, 4);
-            desc_append(buf, bufsz, &n, &loaded->npdm.is64, 4);
-            desc_append(buf, bufsz, &n, loaded->npdm.name, strlen(loaded->npdm.name) + 1);
-            snx_analysis_cache_digest(buf, n, npdm_id);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.title_id, 8);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.stack, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.prio, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.core, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.aspace, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.is64, 4);
+            ok |= desc_append(buf, bufsz, &n, loaded->npdm.name, strlen(loaded->npdm.name) + 1);
+            ok |= snx_analysis_cache_digest(buf, n, npdm_id) != 0;
             n = 0;
-            for (j = 0; j < loaded->module_count; ++j)
-                desc_append(buf, bufsz, &n, loaded->modules[j].name, strlen(loaded->modules[j].name) + 1);
-            snx_analysis_cache_digest(buf, n, mods_id);
-            snx_analysis_cache_digest(options->title, strlen(options->title ? options->title : ""), title_key);
+            for (j = 0; j < loaded->module_count; ++j) {
+                const SnxModuleImage* m = &loaded->modules[j];
+                ok |= desc_append(buf, bufsz, &n, m->name, strlen(m->name) + 1);
+                ok |= desc_append(buf, bufsz, &n, m->build_id, sizeof m->build_id);
+                ok |= desc_append(buf, bufsz, &n, &m->size, sizeof m->size);
+                ok |= desc_append(buf, bufsz, &n, &m->text_off, sizeof m->text_off);
+                ok |= desc_append(buf, bufsz, &n, &m->text_size, sizeof m->text_size);
+                ok |= desc_append(buf, bufsz, &n, &m->ro_off, sizeof m->ro_off);
+                ok |= desc_append(buf, bufsz, &n, &m->ro_size, sizeof m->ro_size);
+                ok |= desc_append(buf, bufsz, &n, &m->data_off, sizeof m->data_off);
+                ok |= desc_append(buf, bufsz, &n, &m->data_size, sizeof m->data_size);
+                ok |= desc_append(buf, bufsz, &n, &m->bss, sizeof m->bss);
+                ok |= desc_append(buf, bufsz, &n, &m->is_nro, sizeof m->is_nro);
+            }
+            ok |= snx_analysis_cache_digest(buf, n, mods_id) != 0;
+            n = 0;
+            for (j = 0; j < options->nro_count; ++j) {
+                ok |= desc_append(buf, bufsz, &n, options->nros[j].hash, sizeof options->nros[j].hash);
+                ok |= desc_append(buf, bufsz, &n, &options->nros[j].base, sizeof options->nros[j].base);
+                ok |= desc_append(buf, bufsz, &n, &options->nros[j].size, sizeof options->nros[j].size);
+            }
+            ok |= desc_append(buf, bufsz, &n, &options->nro_end, sizeof options->nro_end);
+            ok |= snx_analysis_cache_digest(buf, n, nros_id) != 0;
+            ok |= snx_analysis_cache_digest(options->title ? options->title : "",
+                                            strlen(options->title ? options->title : ""), title_key) != 0;
             n = 0;
             for (j = 0; j < routes_n; ++j) {
                 char h[65];
-                snx_analysis_cache_digest(snx_hook_route_name(j), strlen(snx_hook_route_name(j)), h);
-                desc_append(buf, bufsz, &n, h, 64);
+                ok |= snx_analysis_cache_digest(snx_hook_route_name(j), strlen(snx_hook_route_name(j)), h) != 0;
+                ok |= desc_append(buf, bufsz, &n, h, 64);
             }
-            snx_analysis_cache_digest(buf, n, routes_id);
+            ok |= snx_analysis_cache_digest(buf, n, routes_id) != 0;
             n = 0;
             for (j = 0; j < cache_count; ++j) {
                 const SnxJitCacheRecord* r = snx_jit_cache_record(cache, j);
                 char h[65];
-                desc_append(buf, bufsz, &n, r->name, strlen(r->name) + 1);
-                snx_analysis_cache_digest(r->object, r->object_size, h);
-                desc_append(buf, bufsz, &n, h, 64);
+                ok |= desc_append(buf, bufsz, &n, r->name, strlen(r->name) + 1);
+                ok |= snx_analysis_cache_digest(r->object, r->object_size, h) != 0;
+                ok |= desc_append(buf, bufsz, &n, h, 64);
             }
-            snx_analysis_cache_digest(buf, n, jit_id);
+            ok |= snx_analysis_cache_digest(buf, n, jit_id) != 0;
             free(buf);
             memcpy(d.identity, akey, 64);
             memcpy(d.options, options_id, 64);
@@ -1113,9 +1138,12 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             memcpy(d.title, title_key, 64);
             memcpy(d.routes, routes_id, 64);
             memcpy(d.jit, jit_id, 64);
+            memcpy(d.nros, nros_id, 64);
             d.packs = cache_count;
             d.abi = options->abi;
-            snx_analysis_cache_digest(&d, sizeof d, desc_key);
+            d.nro_end = options->nro_end;
+            ok |= snx_analysis_cache_digest(&d, sizeof d, desc_key) != 0;
+            if (ok) desc_key[0] = 0;
         }
     }
     if (!options->quiet)
@@ -1197,7 +1225,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             snx_analysis_cache_store_descriptor(analysis, desc_key, module_object, module_size, wrapped, entry_count,
                                                  variant_count);
     }
-    }
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
@@ -1206,6 +1233,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     /* If every object still has the key it had when the module was linked, the module on disk is the one they make.
        Check its size, time and a fingerprint of its ends before trusting a stamp; any doubt links again. */
     int linked_from_stamp = 0;
+    /* The stamp must bind the objects this build linked, not the keys the sidecar held before it ran. */
+    if (q.keys)
+        for (i = 0; i < q.count; ++i) memcpy(q.keys[i], q.units[i].key, 65);
     if (analysis && desc_key[0] && q.unit_id[0] && q.keys && !build->triple) {
         SnxU64 stamp_size = 0, stamp_time = 0;
         char stamp_sample[65] = {0}, now_sample[65] = {0};
