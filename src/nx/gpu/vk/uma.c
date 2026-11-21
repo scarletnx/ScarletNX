@@ -322,9 +322,15 @@ int vk_uma(void) { return g_vk.mem_path == VK_MEM_PATH_UMA; }
    dearer copied (5 frames a second). The drivers that take every import's pages again at each submission are the
    extension bans' off lines on VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT (g_vk.imports_dear). uma_copies
    overrides it */
-int vk_uma_imports_dear(void) {
+static int imports_dear(void) {
     if (g_settings.guest_buffers_copied) return g_settings.guest_buffers_copied == 2; /* uma_copies */
     return g_vk.imports_dear;
+}
+/* a discrete GPU reads guest memory in place only through dma-bufs, whose import costs a submission no lookup of its
+   pages: its vertices, indices and constant buffers are read in place too, unless uma_copies copies them */
+int vk_uma_imports_dear(void) {
+    if (!g_settings.guest_buffers_copied && g_uma.dmabuf && g_vk.mem_model != VK_MEM_UMA) return 0;
+    return imports_dear();
 }
 u64 vk_uma_bound(void) { return g_uma.bound; }
 
@@ -673,7 +679,10 @@ static int mem_model(void) {
    again at each. On a Steam Deck a submission took 20 us with 192 MB in three dma-bufs, 346 us with it in 48 host
    pointers, and one game's race held about 180 MB of imports, its recording thread 87% in the kernel */
 int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear) {
-    if (want != 2 && (want != 0 || model != VK_MEM_UMA)) return VK_UMA_WITH_NONE;
+    /* auto reads in place on a device that shares memory, and on a discrete one through dma-bufs where host imports are
+       dear: there an import of a host pointer cost a game's race about 258 ms, and froze its boot for 45 s */
+    const int auto_in_place = model == VK_MEM_UMA || (has_dmabuf && dear && how != 1);
+    if (want != 2 && (want != 0 || !auto_in_place)) return VK_UMA_WITH_NONE;
     if (how == 2) return has_ahb ? VK_UMA_WITH_AHB : has_dmabuf ? VK_UMA_WITH_DMABUF : VK_UMA_WITH_NONE;
     if (how == 0 && has_dmabuf && dear) return VK_UMA_WITH_DMABUF;
     if (has_import) return VK_UMA_WITH_HOST;
@@ -694,9 +703,9 @@ static int dmabuf_importable(void) {
 int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf) {
     int want = g_settings.guest_memory, how = g_settings.guest_memory_in_place, with;
     g_vk.mem_model = mem_model();
-    int dear = vk_uma_imports_dear();
+    int dear = imports_dear();
     /* a region holds whole windows: a dma-buf that can't hold one is none */
-    u64 dmabuf_max = has_dmabuf && g_vk.mem_model == VK_MEM_UMA ? plat_dmabuf_limit() : 0;
+    u64 dmabuf_max = has_dmabuf && (g_vk.mem_model == VK_MEM_UMA || dear) ? plat_dmabuf_limit() : 0;
     int can_dmabuf = dmabuf_max >= UMA_WINDOW && dmabuf_importable();
     with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb, can_dmabuf, dear);
     int ahb_held = with == VK_UMA_WITH_NONE && how == 0 && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
