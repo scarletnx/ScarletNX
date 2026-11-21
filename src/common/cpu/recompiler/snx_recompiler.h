@@ -47,7 +47,8 @@ extern "C" {
 
 /* ---- the recompiler ---- */
 
-/* flags of snx_recompiler_new: the backend. LLVM is the only one */
+/* flags of snx_recompiler_new: the backend. LLVM is the only one to name: the x86-64 back end, where it is built, makes
+   what it can of the code beside it (snx_recompiler_set_backend) */
 #define SNX_RECOMPILER_FLAG_LLVM 1
 
 struct snx_recompiler;
@@ -79,7 +80,10 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 #define SNX_RECOMPILER_A64_ANDROID 2
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
-SNX_RECOMPILER_API void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
+SNX_RECOMPILER_API /* the code generator: 1 the x86-64 back end with LLVM making what it can't (the default where it is built: x86-64,
+   not Windows), 0 LLVM alone. SNX_RECOMPILER_BACKEND=llvm in the environment is 0 too */
+SNX_RECOMPILER_API void snx_recompiler_set_backend(struct snx_recompiler* r, int x64);
+void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* How far a recompile is, for a caller's progress bar: called once with the totals and nothing done, then as each code
    unit finishes, from the thread that compiled it, with the recompiler's queue locked (so it must be quick). The weight
    is the units' instructions plus four per basic block, which follows the work better than the function count. Not called for a module the
@@ -163,6 +167,9 @@ SNX_RECOMPILER_API void snx_recompiled_range(const struct snx_recompiled* m, uin
    callers of earlier versions still link) */
 SNX_RECOMPILER_API size_t snx_recompiled_functions(const struct snx_recompiled* m);
 SNX_RECOMPILER_API size_t snx_recompiled_fallbacks(const struct snx_recompiled* m);
+/* Of the functions, those the x86-64 back end made (snx_recompiler_set_backend), not LLVM: 0 for a module from the
+   cache folder */
+SNX_RECOMPILER_API size_t snx_recompiled_x64_functions(const struct snx_recompiled* m);
 /* Points cpu at the module: its dispatch table and code range (cpu->disp, code_lo, code_hi). cpu->mem and cpu->rt
    are the caller's and must be set before, cpu->rt with svc, undef, brk and miss (snx_runtime_defaults' miss compiles
    what the bound module lacks). 0, or -1 when cpu->rt lacks a hook */

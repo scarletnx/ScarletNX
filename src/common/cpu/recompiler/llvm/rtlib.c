@@ -8,6 +8,8 @@
    arena (jit_service.c) without anything being kept twice */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/cpu_helpers.c"
+/* what the x86-64 back end's code calls (its exclusives, atomics, CRC32): every module links it, whichever made it */
+#include "common/cpu/recompiler/x64/x64_helpers.c"
 
 /* No interpreter here: what a module lacks is compiled by the runtime JIT, and every decoded op has an IR emitter */
 

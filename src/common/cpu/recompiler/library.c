@@ -22,6 +22,7 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
 #include "common/platform/time.h"
@@ -87,6 +88,10 @@ struct snx_recompiler {
     int live_code; /* the modules' JIT reads the caller's code ranges in place, not a copy */
     char* keep_ir;
     char* cache; /* folder of linked modules by the hash of what they were made from (LLVM), NULL for none */
+    /* the x86-64 back end makes what it can (x64_codegen.h): the default where it is built, SNX_RECOMPILER_BACKEND=llvm
+       or snx_recompiler_set_backend taking it back */
+    int x64;
+    size_t x64_made; /* the last module's functions the x86-64 back end made */
     char error[1024];
     /* PowerPC64: the code arena every module of the recompiler is loaded into, with the runtime library once, so all
        of them share one TOC (code_loader.h): a guest's jump from one module's code into another's keeps r2. Made by
@@ -121,6 +126,7 @@ struct snx_recompiled {
     _Atomic GuestFn fallback;
     uint64_t code_lo, code_hi;
     size_t functions;
+    size_t x64_functions; /* of them, the x86-64 back end's (snx_recompiled_x64_functions) */
     /* the code ranges, views and bytes in one block (keep_code), which the JIT reads for as long as the module lives:
        the caller's may go once snx_recompile returns */
     SnxCodeImage* views;
@@ -237,8 +243,11 @@ struct snx_recompiler* snx_recompiler_new(int flags) {
     if (!r) return NULL;
     r->opt = '2';
     r->features = SNX_A64_TARGET_SWITCH;
+    r->x64 = snx_x64_available();
     return r;
 }
+
+void snx_recompiler_set_backend(struct snx_recompiler* r, int x64) { r->x64 = x64 && snx_x64_available(); }
 
 void snx_recompiler_free(struct snx_recompiler* r) {
     if (r) free(r->cache);
@@ -655,6 +664,9 @@ typedef struct {
     size_t weight;      /* its functions' function_weight: the units start largest first, and progress counts it */
     unsigned char* object;
     size_t size;
+    /* the x86-64 back end's object of the unit's functions it made (x64_codegen.h), LLVM's object above the rest */
+    unsigned char* x64;
+    size_t x64_size, x64_made;
 } Unit;
 
 typedef struct {
@@ -672,11 +684,35 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     char name[32];
     int rc = 0;
+    unsigned char* made = NULL;
     snprintf(name, sizeof(name), "code_%03lu", (unsigned long)index);
+    if (q->r->x64 && !q->r->keep_ir && u->last > u->first) {
+        /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
+        SnxX64Options options = {0};
+        made = (unsigned char*)calloc(u->last - u->first, 1);
+        if (!made) {
+            snprintf(error, error_size, "out of memory");
+            return -1;
+        }
+        if (snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error, error_size)) {
+            free(made);
+            return -1;
+        }
+        for (size_t i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
+        if (u->x64_made == u->last - u->first) {
+            free(made);
+            return 0;
+        }
+    }
     SnxIr* ir = snx_ir_new(name, q->r->opt, error, error_size);
-    if (!ir) return -1;
+    if (!ir) {
+        free(made);
+        return -1;
+    }
     if (q->codegen->hook_direct_calls) snx_ir_stale_checks(ir);
-    for (size_t i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    for (size_t i = u->first; i < u->last; ++i)
+        if (!made || !made[i - u->first]) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    free(made);
     if (q->r->keep_ir && snx_save_ir(ir, q->r->keep_ir, name)) {
         snprintf(error, error_size, "cannot save the IR of %s in %s", name, q->r->keep_ir);
         rc = -1;
@@ -828,6 +864,7 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
     key_u64(&k, snx_a64_decoder_hash()); /* what each word decodes to: the decoder and the guest's features */
     key_u64(&k, r->features);
     key_u64(&k, (uint64_t)codegen->hook_direct_calls);
+    key_u64(&k, (uint64_t)r->x64); /* which back end made the functions */
     char* cpu = LLVMGetHostCPUName();
     char* features = snx_ir_host_features();
     key_bytes(&k, cpu, strlen(cpu) + 1);
@@ -1075,7 +1112,7 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         goto done;
     }
     /* link: runtime library, descriptor, units */
-    inputs = (SnxLinkInput*)calloc(count + 2, sizeof(*inputs));
+    inputs = (SnxLinkInput*)calloc(2 * count + 2, sizeof(*inputs));
     if (!inputs) {
         fail(r, "out of memory");
         goto done;
@@ -1087,9 +1124,24 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     inputs[n].size = descriptor_size;
     inputs[n++].name = "descriptor";
     for (i = 0; i < count; ++i) {
-        inputs[n].data = q.units[i].object;
-        inputs[n].size = q.units[i].size;
-        inputs[n++].name = "code unit";
+        if (q.units[i].object) {
+            inputs[n].data = q.units[i].object;
+            inputs[n].size = q.units[i].size;
+            inputs[n++].name = "code unit";
+        }
+        if (q.units[i].x64) {
+            inputs[n].data = q.units[i].x64;
+            inputs[n].size = q.units[i].x64_size;
+            inputs[n++].name = "x86-64 code unit";
+        }
+    }
+    {
+        size_t x64_made = 0;
+        for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made;
+        r->x64_made = x64_made;
+        if (r->x64)
+            report(r, "x86-64 back end: %lu of %lu functions, LLVM the rest\n", (unsigned long)x64_made,
+                   (unsigned long)codegen->function_count);
     }
     const char* exports[1];
     exports[0] = DESCRIPTOR_SYMBOL;
@@ -1127,7 +1179,10 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     }
     rc = 0;
 done:
-    for (i = 0; i < count; ++i) free(q.units[i].object);
+    for (i = 0; i < count; ++i) {
+        free(q.units[i].object);
+        free(q.units[i].x64);
+    }
     free(q.units);
     free(units);
     free(inputs);
@@ -1294,7 +1349,10 @@ static struct snx_recompiled* recompile(struct snx_recompiler* r, struct snx_rec
        processes using the folder share. Without the memory for the path there is no file, and the JIT still works */
     if (r->cache && m->view_count) m->jit_cache_path = snx_path_join(r->cache, "library-jit.cache");
     m->hook_direct_calls = codegen->hook_direct_calls;
-    int rc = recompile_llvm(r, m, codegen);
+    int rc;
+    r->x64_made = 0;
+    rc = recompile_llvm(r, m, codegen);
+    m->x64_functions = r->x64_made;
     if (!rc) rc = keep_invalidation_map(r, m, codegen);
     snx_codegen_free(codegen);
     if (rc) {
@@ -1418,6 +1476,8 @@ void snx_recompiled_range(const struct snx_recompiled* m, uint64_t* code_lo, uin
 }
 
 size_t snx_recompiled_functions(const struct snx_recompiled* m) { return m->functions; }
+size_t snx_recompiled_x64_functions(const struct snx_recompiled* m) { return m->x64_functions; }
+
 size_t snx_recompiled_fallbacks(const struct snx_recompiled* m) {
     (void)m;
     return 0;

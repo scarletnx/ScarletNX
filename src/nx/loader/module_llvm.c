@@ -15,6 +15,7 @@
 #include "common/utilities/bits.h"
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
 #include <stdio.h>
@@ -33,6 +34,10 @@ typedef struct {
     size_t size;
     int reused; /* the object came from the unit cache */
     SnxIrStats stats;
+    /* the x86-64 back end's object of the functions it made (x64_codegen.h); LLVM's (object) has the rest, NULL when
+       there is none */
+    unsigned char* x64;
+    size_t x64_size, x64_made;
     /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
        until then). Empty for one in memory */
     char key[65];
@@ -58,6 +63,7 @@ typedef struct {
     unsigned active;
     SnxU64 held;
     int failed;
+    int x64; /* the x86-64 back end makes what it can */
     char error[1024];
 #ifdef _WIN32
     CRITICAL_SECTION lock;
@@ -217,9 +223,27 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     SnxIr* ir;
     int rc;
     size_t* order;
+    unsigned char* made = NULL;
     sprintf(name, "code_%03lu", (unsigned long)index);
+    if (q->x64) {
+        SnxX64Options options = {0};
+        options.stale = 1;
+        made = (unsigned char*)snx_alloc(u->last - u->first);
+        if (snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error, error_size)) {
+            free(made);
+            return -1;
+        }
+        for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
+        if (u->x64_made == u->last - u->first) {
+            free(made);
+            return 0;
+        }
+    }
     ir = new_ir(q->build, name, error, error_size);
-    if (!ir) return -1;
+    if (!ir) {
+        free(made);
+        return -1;
+    }
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
     if (q->bound_count) {
@@ -233,6 +257,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     order = callees_first(q->codegen, u->first, u->last);
     for (size_t k = u->first; k < u->last; ++k) {
         i = order ? order[k - u->first] : k;
+        if (made && made[i - u->first]) continue;
         snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
         if (q->rank && q->rank[i] != NO_RANK) {
             char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
@@ -241,6 +266,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         }
     }
     free(order);
+    free(made);
     u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
@@ -857,6 +883,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
+    /* the x86-64 back end for this host's module (x64_codegen.h), LLVM making what it can't: not for another
+       machine's, nor where the IR is kept or every call goes through the table */
+    q.x64 = snx_x64_available() && !build->triple && !build->keep_ir && !options->hook_direct_calls;
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
        through CPU.disp (--hook-direct-calls) none is bound */
     if (options->bound_count && !options->hook_direct_calls) {
@@ -915,6 +944,12 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", q.error);
         goto done;
     }
+    if (q.x64 && !options->quiet) {
+        size_t made = 0;
+        for (i = 0; i < q.count; ++i) made += q.units[i].x64_made;
+        printf("x86-64 back end: %lu of %lu functions, LLVM the rest\n", (unsigned long)made,
+               (unsigned long)codegen.function_count);
+    }
     /* the module descriptor */
     start = snx_seconds();
     ir = new_ir(build, "module", error, sizeof(error));
@@ -966,7 +1001,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     /* link: runtime library, descriptor, chunks, the profile cache's units. A module for another machine has no
        runtime library of its own (this host has none for that machine): the app that loads it brings its own */
-    inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + cache_count) * sizeof(*inputs));
+    inputs = (SnxLinkInput*)snx_alloc((2 * q.count + 2 + cache_count) * sizeof(*inputs));
     if (rtlib_object) {
         inputs[n].data = rtlib_object;
         inputs[n].size = rtlib_size;
@@ -976,10 +1011,18 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     inputs[n].size = module_size;
     inputs[n++].name = "module";
     for (i = 0; i < q.count; ++i) {
-        inputs[n].data = q.units[i].object;
-        inputs[n].size = q.units[i].size;
-        inputs[n++].name = "code chunk";
+        if (q.units[i].object || q.units[i].key[0] || !q.units[i].x64) {
+            inputs[n].data = q.units[i].object;
+            inputs[n].size = q.units[i].size;
+            inputs[n++].name = "code chunk";
+        }
     }
+    for (i = 0; i < q.count; ++i)
+        if (q.units[i].x64) {
+            inputs[n].data = q.units[i].x64;
+            inputs[n].size = q.units[i].x64_size;
+            inputs[n++].name = "x86-64 code chunk";
+        }
     for (i = 0; i < cache_count; ++i) {
         const SnxJitCacheRecord* record = snx_jit_cache_record(cache, i);
         inputs[n].data = record->object;
@@ -1033,7 +1076,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (unit_cache) report_units(&q, build, options->quiet);
     rc = 0;
 done:
-    for (i = 0; i < q.count; ++i) free(q.units[i].object);
+    for (i = 0; i < q.count; ++i) {
+        free(q.units[i].object);
+        free(q.units[i].x64);
+    }
     free(q.units);
     free(q.rank);
     free(q.imports);
