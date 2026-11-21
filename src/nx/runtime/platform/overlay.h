@@ -138,6 +138,21 @@ void overlay_state_toast(const char* text, u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows: from any thread */
+/* A save state loading for long (state.c, past wait_screen.h's SNX_WAIT_LOADING_MS): the game under it greyed out as the
+   launcher greys its screen behind a question (black at half over everything, coming in over OVERLAY_LOADING_FADE_MS
+   from shown_ns as its box's shade does), and over it a box in the menu's look, its head the save states' page's, the
+   words "Loading the save state", slot under them (its words, "Slot 2") and the launcher's turning ring at their
+   right. overlay_loading_done: the load ended well, and it goes with the game's first frame after that
+   (overlay_game_drew); overlay_loading_end: it goes now (the load failed, and its notification says why). Under
+   ui_lock; overlay_loading_shown from any thread */
+#define OVERLAY_LOADING_FADE_MS 150 /* the launcher's GUI_FADE_MS */
+void overlay_loading(const char* slot, u64 shown_ns);
+void overlay_loading_done(void);
+void overlay_loading_end(void);
+int overlay_loading_shown(void);
+/* the game's frame is shown (the renderer's present, before it makes the frame's layer): a load's box that ended goes.
+   Under ui_lock */
+void overlay_game_drew(void);
 /* overlay_toast from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as
    the next frame draws it, the last one given before then shown */
 void overlay_notice(unsigned icon, const char* text);

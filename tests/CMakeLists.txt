@@ -2370,7 +2370,8 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
 endif()
 
 # the screens the player waits on (runtime/platform/wait_screen.c): the game closing's from half a second into its
-# save, a close that stops it and the log's line with the MiB not saved, its row's MiB and seconds
+# save, a close that stops it and the log's line with the MiB not saved, its row's MiB and seconds; a save state's box
+# from 0.3 s into its load
 add_executable(snx-test-wait-screen wait_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/wait_screen.c")
 snx_test_target(snx-test-wait-screen gnu23)
 add_test(NAME wait_screen COMMAND snx-test-wait-screen)

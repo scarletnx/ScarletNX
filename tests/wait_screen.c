@@ -3,7 +3,7 @@
 /* What the screens the player waits on decide (runtime/platform/wait_screen.c), on a clock of the test's: the game
    closing's screen from SNX_WAIT_CLOSING_MS into the save and only while the window is seen, the first close stopping
    the save and no later one, the line the log says then with the seconds and the MiB not saved, the row with the MiB
-   packed and the seconds spent */
+   packed and the seconds spent; a save state's box from SNX_WAIT_LOADING_MS into its load */
 #include "nx/runtime/platform/wait_screen.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,9 +73,15 @@ static void closing_row(void) {
     snx_closing_step(&w, 20100, 0, 0, &st);
     CHECK(!st.done && !st.total && !strcmp(st.detail, "0.0 of 0.0 MiB, 0 s"));
 }
+static void loading(void) {
+    CHECK(!snx_loading_shows(1000, 1000) && !snx_loading_shows(1000, 1299));
+    CHECK(snx_loading_shows(1000, 1300) && snx_loading_shows(1000, 60000));
+    CHECK(!snx_loading_shows(1000, 900)); /* a clock behind the start */
+}
 int main(void) {
     closing();
     closing_row();
+    loading();
     printf("wait_screen: %u checks passed\n", checks);
     return 0;
 }

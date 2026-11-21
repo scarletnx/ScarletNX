@@ -1225,6 +1225,56 @@ static void closing_screen(void) {
     assert(!strcmp(row, " SAVING THE SHADER CACHE 96.0 of 158.7 MiB, 4 s: 96.0 / 158.7 MiB"));
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
 }
+/* A save state's box (overlay_loading): nothing before it; then the whole picture shaded black, its alpha coming in
+   from 0 to the launcher's 128 over OVERLAY_LOADING_FADE_MS, the first faded span; over it the box with the save
+   states' head, its words and the slot's, and the ring at their right. It stays as the load ends well until the game's
+   first frame after that, and goes at once when the load fails */
+static void loading_box(void) {
+    SnxUiFade fades[SNX_UI_FADES];
+    const u64 t0 = 5000000000ull;
+    float x, y, cx = 0, cy = 0;
+    int n;
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0, fades);
+    assert(n == 0 && !shows("Loading the save state"));
+    overlay_loading("Slot 2", t0);
+    assert(overlay_loading_shown());
+    n = draw_fades(t0, fades);
+    {
+        const SnxUiQuadView shade = qv(&list.q[fades[0].first]);
+        assert(n == 1 && fades[0].end == fades[0].first + 1 && fades[0].alpha == 0);
+        assert(shade.x == 0 && shade.y == 0 && shade.w == SW && shade.h == SH && (shade.rgba & 0xFFFFFFu) == 0);
+    }
+    n = draw_fades(t0 + 75000000ull, fades);
+    assert(n == 1 && fades[0].alpha == 64);
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 1 && fades[0].alpha == 128);
+    assert(shows("SCARLETNX  /  SAVE STATES") && shows("Loading the save state") && shows("Slot 2"));
+    assert(text_xy("Loading the save state", &x, &y));
+    {
+        SnxUiList shown = list;
+        int s, px, py;
+        overlay_place(SW, SH, &px, &py, &s);
+        assert(ring_in(&shown, &cx, &cy) == 2 + UI_RING_BAR_DOTS);
+        assert(cy == y + 16.0f * (float)s && cx > x + 8.0f * (float)s * (float)strlen("Loading the save state"));
+    }
+    overlay_game_drew(); /* the game's frames while it loads leave it */
+    assert(overlay_loading_shown());
+    overlay_loading_done();
+    assert(overlay_loading_shown());
+    overlay_game_drew();
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 0 && !shows("Loading the save state"));
+    /* a load that failed: gone at once */
+    overlay_loading("The auto slot", t0);
+    draw_fades(t0, fades);
+    assert(shows("The auto slot"));
+    overlay_loading_end();
+    assert(!overlay_loading_shown());
+    n = draw_fades(t0 + 900000000ull, fades);
+    assert(n == 0 && !shows("The auto slot"));
+}
 int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
@@ -1238,6 +1288,7 @@ int main(void) {
     prepare_screen_switching();
     prepare_screen_ring();
     closing_screen();
+    loading_box();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());

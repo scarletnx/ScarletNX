@@ -1886,6 +1886,15 @@ int backend_poll_closes(void) {
     }
     return closes;
 }
+void backend_presses_drop(void) {
+    static const Uint32 presses[] = {
+        SDL_EVENT_KEY_DOWN,    SDL_EVENT_TEXT_INPUT,  SDL_EVENT_TEXT_EDITING,        SDL_EVENT_MOUSE_BUTTON_DOWN,
+        SDL_EVENT_MOUSE_WHEEL, SDL_EVENT_FINGER_DOWN, SDL_EVENT_GAMEPAD_BUTTON_DOWN, SDL_EVENT_JOYSTICK_BUTTON_DOWN,
+        SDL_EVENT_PEN_DOWN};
+    if (g_opt_headless) return;
+    SDL_PumpEvents();
+    for (size_t i = 0; i < sizeof presses / sizeof *presses; i++) SDL_FlushEvent(presses[i]);
+}
 void video_poll(void) {
     SDL_Event e;
     fatal_left_show();
