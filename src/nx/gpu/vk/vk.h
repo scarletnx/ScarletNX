@@ -3112,7 +3112,7 @@ extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before readi
 extern u64 g_vk_cs_waits, g_vk_astc_waits;
 /* record.c: where a submission's time goes on the recording thread (reset by gpuprof.c's report) */
 extern u64 g_submit_end_ns, g_submit_queue_ns, g_submit_uploads, g_submit_count;
-/* record.c: the graphics frame's draw id (SNX_VKB_DRAW's index, the region base plus gl_DrawIndex), bumped per draw */
+/* record.c: the graphics frame's draw id (SNX_VKB_DRAW's index), bumped per draw */
 extern _Atomic u64 g_draw_id;
 /* record.c: the submission's dwell in the ring before the recorder runs it, and the ring backlog (vk_rec_behind) when
    the GPU thread made it: where the "submitted, not started" idle goes (reset by gpuprof.c's report) */

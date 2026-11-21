@@ -1964,7 +1964,7 @@ static void test_resolution_scale(const char* dir) {
         env.builtin[15][1] = f2u(cases[k].fy);
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
-        env.draw[8] = cases[k].scaled;  /* the frame's block at byte 32: slot 0's bit */
+        env.draw[8] = cases[k].scaled;  /* the per-draw block at byte 32: slot 0's bit */
         env.draw[24] = cases[k].own;    /* and at byte 96: slot 0's target has the size drawn to */
         env.image_size[SNX_VKB_TEX][0] = 32;
         env.image_size[SNX_VKB_TEX][1] = 16;
@@ -4169,8 +4169,8 @@ static void test_mesh(const char* dir) {
         SpvEvalEnv env = {0};
         static u32 first_ubo[4]; /* SNX_VKB_RS, which only an indirect draw's flag reads (test_task) */
         env.builtin[26][0] = 2; /* WorkgroupId.x, after the draw's first group 5 */
-        env.push[0] = 5;
-        env.push[1] = fix_depth ? f2u(1.0f) : 0;
+        env.draw[0] = 5;                         /* the first workgroup (pc[0], read at the draw id) */
+        env.draw[1] = fix_depth ? f2u(1.0f) : 0; /* the depth fix (pc[1]) */
         env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.arrays[32] = position, env.array_words[32] = 40 * 4;
         env.arrays[1] = generic1, env.array_words[1] = 40 * 4;
@@ -4230,8 +4230,8 @@ static void test_task(const char* dir) {
         SpvEvalEnv env = {0};
         u32 first_ubo[4] = {variant == 2 ? first : 0x777, 0, 0, 0};
         env.builtin[26][0] = 2;
-        env.push[0] = variant == 2 ? 99 : first;
-        env.push[2] = variant == 2 ? SH_PUSH_GPU_MESH_FIRST : 0;
+        env.draw[0] = variant == 2 ? 99 : first;                 /* the first workgroup (pc[0]) */
+        env.draw[2] = variant == 2 ? SH_PUSH_GPU_MESH_FIRST : 0; /* the flags (pc[2]) */
         env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.payload[1] = 77;
         const char* why = spv_eval(spv, count, &env);
@@ -4276,7 +4276,7 @@ static void test_mesh_after_task(const char* dir) {
     static u32 position[4], generic0[4];
     SpvEvalEnv env = {0};
     env.builtin[26][0] = 2;
-    env.push[0] = 5;
+    env.draw[0] = 5; /* the first workgroup (pc[0]), which a mesh after a task does not add */
     env.payload[5] = f2u(3.0f);
     env.arrays[32] = position, env.array_words[32] = 4;
     env.arrays[0] = generic0, env.array_words[0] = 4;
