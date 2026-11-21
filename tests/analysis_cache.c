@@ -409,13 +409,20 @@ static int test_key_sensitivity(const char* folder) {
     return 1;
 }
 
-static int test_soft_fail_open(void) {
-    char error[256];
+static int test_soft_fail_open(const char* folder) {
+    char error[256], *file, *path;
     SnxAnalysisIdentity id = {.features = 0, .version = SNX_ANALYSIS_VERSION};
-    /* path that cannot be created as a directory on any reasonable host */
-    SnxAnalysisCache* cache = snx_analysis_cache_open("/proc/analysis_cache_should_fail", &id, error, sizeof error);
+    SnxAnalysisCache* cache;
+    /* a regular file cannot be a parent directory, on any host */
+    file = snx_path_join(folder, "not-a-folder");
+    CHECK(file && !snx_write_file(file, "x", 1));
+    if (!file) return 1;
+    path = snx_format("%s/analysis", file);
+    cache = snx_analysis_cache_open(path, &id, error, sizeof error);
     CHECK(cache == NULL);
     CHECK(error[0] != 0);
+    free(path);
+    free(file);
     return 1;
 }
 
@@ -692,7 +699,7 @@ int main(void) {
     test_analyze_roundtrip(folder);
     test_unit_keys(folder);
     test_link_stamp(folder);
-    test_soft_fail_open();
+    test_soft_fail_open(folder);
     test_miss(folder);
     snx_remove_tree(folder);
     free(folder);
