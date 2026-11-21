@@ -691,6 +691,13 @@ static int image_generations_match(const SnxImageGeneration* generations, size_t
     return 1;
 }
 
+/* the batch's code is still that of the module: no update since its snapshot, or none to a word the batch read. A
+   batch thrown away for any update anywhere in its module never finished while another range of the module, or the
+   same bytes again, was written more often than a batch takes to compile */
+static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* generations, size_t count) {
+    return image_generations_match(generations, count) || snx_codegen_words_current(codegen);
+}
+
 /* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
    runtime library, the host CPU and its features (the code is compiled for them), the -O level, hooked direct calls,
    direct SVCs, SLP vectorization, FPSR flag exactness, volatile guest accesses, the guest's A64 features and the
@@ -921,7 +928,7 @@ static void cache_append(SnxJitService* s, SnxCodegen* codegen, const char* name
         snx_st_le64(head + 4, (SnxU64)body.size);
         out64(&body, h1);
         /* a full file takes no more: past the limit the next run would read only the records before it */
-        if (!image_generations_match(generations, generation_count)) body.failed = 1;
+        if (!batch_current(codegen, generations, generation_count)) body.failed = 1;
         if (!body.failed &&
             (s->cache.size > SNX_JIT_CACHE_MAX - 12 || body.size > SNX_JIT_CACHE_MAX - 12 - s->cache.size))
             body.failed = 1;
@@ -1163,7 +1170,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     size_t budget = s->config.budget;
     size_t live = s->config.live_budget ? s->config.live_budget : SNX_JIT_LIVE_BUDGET;
     if (queue == LIVE && budget > live) budget = live;
-    int source_changed = !generation_snapshot || !image_generations_match(generations, generation_count);
+    int source_changed = !generation_snapshot || !batch_current(&codegen, generations, generation_count);
     int rc = images && !source_changed ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch,
                                                                budget, s->config.features, region_limit, overflow_limit)
                                        : -1;
@@ -1172,7 +1179,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     if (rc && !error[0]) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
     for (size_t i = 0; !rc && i < codegen.function_count; ++i) report.instructions += codegen.functions[i].count;
     report.functions = codegen.function_count;
-    if (!rc && !image_generations_match(generations, generation_count)) {
+    if (!rc && !batch_current(&codegen, generations, generation_count)) {
         rc = -1;
         source_changed = 1;
         snprintf(error, sizeof(error), "instruction image changed during compilation");
@@ -1185,7 +1192,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         while (snx_code_lookup(s->loader, name, &address));
         unlock(&s->load_lock);
         rc = emit_unit(s, &codegen, name, &object, &size, error, sizeof(error));
-        if (!rc && !image_generations_match(generations, generation_count)) {
+        if (!rc && !batch_current(&codegen, generations, generation_count)) {
             rc = -1;
             source_changed = 1;
             snprintf(error, sizeof(error), "instruction image changed during compilation");
@@ -1204,7 +1211,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         size_t used = snx_code_used(s->loader);
         rc = snx_code_load(s->loader, &input, 1, names, 1, &table, error, sizeof(error));
         report.bytes = snx_code_used(s->loader) - used;
-        if (!rc && image_generations_match(generations, generation_count))
+        if (!rc && batch_current(&codegen, generations, generation_count))
             cache_append(s, &codegen, name, object, size, images, image_count, generations, generation_count);
         else if (!rc) {
             rc = -1;
@@ -1228,7 +1235,8 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
        so a thread that loads the address (relaxed, cpu.h: x86-64 keeps loads in order) reaches the code and data
        written before it. A slot something else filled meanwhile (another batch, a wrapper) keeps what it holds */
     lock(&s->lock);
-    if (epoch == s->epoch && image_generations_match(generations, generation_count)) {
+    int current = generation_snapshot && batch_current(&codegen, generations, generation_count);
+    if (epoch == s->epoch && current) {
         for (size_t i = 0; !rc && i < codegen.function_count; ++i) {
             const SnxFunction* f = &codegen.functions[i];
             GuestFn code = unit_function(table, i);
@@ -1254,7 +1262,8 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         }
         if (!rc) span_of_batch(s, &codegen, table);
     }
-    int dropped = !generation_snapshot || epoch != s->epoch || !image_generations_match(generations, generation_count);
+    /* a batch found changed earlier stays dropped though its words came back meanwhile: FAILED would end its pcs */
+    int dropped = epoch != s->epoch || !current || source_changed;
     for (size_t i = 0; i < count; ++i) {
         Entry* e = find(s, pcs[i]);
         const SnxFunction* f = rc ? NULL : snx_codegen_entry(&codegen, pcs[i]);

@@ -765,6 +765,54 @@ static void update_flip64(struct snx_recompiler* r, uint8_t* mem) {
     check(runs && !wrong, "update flip: each run of a function while another thread flips one of its words gives 1");
     snx_recompiled_free(m);
 }
+
+typedef struct {
+    struct snx_recompiled* m;
+    uint8_t* mem;
+    RtAPI* rt;
+    uint64_t x0;
+    _Atomic int done;
+} UpdateRun;
+static void* update_runner(void* arg) {
+    UpdateRun* u = (UpdateRun*)arg;
+    u->x0 = update_call(u->m, u->mem, u->rt);
+    atomic_store_explicit(&u->done, 1, memory_order_release);
+    return NULL;
+}
+/* 1 when UPDATE_FN, invalidated, runs to x0 = 1 within 20 s while two threads write as w says without a pause: two,
+   so that one of them is writing whenever the other is off its CPU */
+static int update_runs_beside(struct snx_recompiled* m, uint8_t* mem, RtAPI* rt, UpdateWriter* w) {
+    UpdateRun u = {.m = m, .mem = mem, .rt = rt};
+    pthread_t writers[2], runner;
+    int started = 0;
+    snx_recompiled_invalidate(m, UPDATE_FN, 16, NULL, NULL);
+    atomic_store_explicit(&w->stop, 0, memory_order_relaxed);
+    while (started < 2 && !pthread_create(&writers[started], NULL, update_writer, w)) ++started;
+    int ran = started == 2 && !pthread_create(&runner, NULL, update_runner, &u);
+    for (long ms = 0; ran && ms < 20000 && !atomic_load_explicit(&u.done, memory_order_acquire); ms += 10) nap(10);
+    int in_time = ran && atomic_load_explicit(&u.done, memory_order_acquire);
+    atomic_store_explicit(&w->stop, 1, memory_order_release); /* a run still waiting gets its code once they stop */
+    while (started) pthread_join(writers[--started], NULL);
+    if (ran) pthread_join(runner, NULL);
+    return in_time && u.x0 == 1;
+}
+
+/* Updates that leave the words a JIT batch read as they were, of another range of the module or the same bytes again,
+   keep the batch: thrown away for any update of the module, no batch finished while a writer never paused, and a run
+   that took milliseconds waited until the writer stopped */
+static void update_elsewhere64(struct snx_recompiler* r, uint8_t* mem) {
+    RtAPI rt;
+    struct snx_recompiled* m = update_module(r, mem, &rt);
+    check(m != NULL, "update elsewhere: a module");
+    if (!m) return;
+    UpdateWriter far = {.m = m, .at = UPDATE_FAR, .words = {NOP_WORD, 0xd2800021u /* mov x1,#1 */}};
+    check(update_runs_beside(m, mem, &rt, &far),
+          "update elsewhere: a function compiles while another word of its module changes without a pause");
+    UpdateWriter same = {.m = m, .at = UPDATE_FLIP, .words = {NOP_WORD, NOP_WORD}};
+    check(update_runs_beside(m, mem, &rt, &same),
+          "update elsewhere: a function compiles while its own word is written again with the bytes it holds");
+    snx_recompiled_free(m);
+}
 #endif
 
 int main(int argc, char** argv) {
@@ -806,6 +854,7 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
         spin64(r, mem);
         update_flip64(r, mem);
+        update_elsewhere64(r, mem);
 #endif
         jit_cache(r, mem, cache);
         run32(r, mem);

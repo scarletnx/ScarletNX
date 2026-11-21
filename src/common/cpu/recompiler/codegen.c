@@ -142,6 +142,20 @@ static SnxU32 image_word_once(SnxCodegen* codegen, const SnxCodeImage* m, size_t
     return word;
 }
 
+int snx_codegen_words_current(const SnxCodegen* codegen) {
+    for (size_t i = 0; i < codegen->read_capacity; ++i) {
+        if (!read_used(codegen)[i]) continue;
+        SnxU64 address = read_addresses(codegen)[i];
+        const SnxCodeImage* m = NULL;
+        for (size_t k = 0; !m && k < codegen->module_count; ++k) {
+            const SnxCodeImage* c = &codegen->modules[k];
+            if (c->generation && address >= c->base && address - c->base + 4 <= c->image_size) m = c;
+        }
+        if (!m || snx_code_image_word(m, (size_t)(address - m->base)) != read_words(codegen)[i]) return 0;
+    }
+    return 1;
+}
+
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word) {
     SnxCodeImage* module = snx_codegen_module(codegen, address);
     if (!module || (address & 3)) return 0;

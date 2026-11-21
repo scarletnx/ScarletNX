@@ -61,6 +61,8 @@ SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address);
 /* the instruction word at address: 1, or 0 outside the text. From a module whose copy can change, the word this codegen
    read there first (read_block) */
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
+/* 1 when every word in read_block is what its module holds now */
+int snx_codegen_words_current(const SnxCodegen* codegen);
 /* conservative discovery targets for a BR's jump table, up to capacity; emitted BR instructions still use their
    register and dispatch at run time */
 size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity);
