@@ -928,13 +928,20 @@ static _Atomic u64 g_cs_refused[CS_REFUSED_MAX];
 static _Atomic u32 g_cs_refused_n;
 static int cs_refused_has(u64 key) {
     u32 n = atomic_load_explicit(&g_cs_refused_n, memory_order_acquire);
+    if (n > CS_REFUSED_MAX) n = CS_REFUSED_MAX; /* the count goes on past the table, whose adds stored nothing */
     for (u32 i = 0; i < n; i++)
         if (atomic_load_explicit(&g_cs_refused[i], memory_order_acquire) == key) return 1;
     return 0;
 }
 static void cs_refused_add(u64 key) {
     u32 i = atomic_fetch_add_explicit(&g_cs_refused_n, 1, memory_order_acq_rel);
-    if (i < CS_REFUSED_MAX) atomic_store_explicit(&g_cs_refused[i], key, memory_order_release);
+    if (i < CS_REFUSED_MAX)
+        atomic_store_explicit(&g_cs_refused[i], key, memory_order_release);
+    else
+        WARN_LIMIT(1,
+                   "vulkan: compute program %llx is refusal %u, past the %d the table keeps: it is compiled again at "
+                   "its next dispatch\n",
+                   (unsigned long long)key, i + 1, CS_REFUSED_MAX);
 }
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
    tables read through read; *blen: the bytes of the window the program takes */
