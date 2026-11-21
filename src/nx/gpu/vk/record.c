@@ -1141,18 +1141,6 @@ static void push_run(const void* p) {
     const PushArgs* x = p;
     vkCmdPushConstants(x->cb, x->layout, x->stages, x->offset, x->size, (const u8*)p + REC_AL(sizeof *x));
 }
-/* The last push constants recorded into the command buffer being recorded (g_last_cb_begun): a draw that pushes the
-   same bytes again, in the same command buffer, needs no second vkCmdPushConstants, as the buffer already holds them.
-   Push constants are undefined in a fresh command buffer, so the record resets with vk_cb_begun. Counted by
-   vk_rec_command_report. */
-static struct {
-    u32 cb_begun;
-    VkPipelineLayout layout;
-    VkShaderStageFlags stages;
-    u32 offset, size;
-    u8 bytes[256];
-} g_last_push;
-u64 g_push_same, g_push_diff;
 void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFlags stages, u32 offset, u32 size,
                           const void* data) {
     if (vk_descriptor_heaps_active() && vk_graphics_playout_is(layout)) {
@@ -1172,19 +1160,6 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
         return;
     }
     const u64 was = g_pending;
-    if (g_last_push.cb_begun == vk_cb_begun() && g_last_push.layout == layout && g_last_push.stages == stages &&
-        g_last_push.offset == offset && g_last_push.size == size && size <= sizeof g_last_push.bytes &&
-        !memcmp(g_last_push.bytes, data, size)) {
-        g_push_same++;
-        return; /* the same bytes were pushed already in this command buffer */
-    }
-    g_push_diff++;
-    g_last_push.cb_begun = vk_cb_begun();
-    g_last_push.layout = layout;
-    g_last_push.stages = stages;
-    g_last_push.offset = offset;
-    g_last_push.size = size;
-    if (size <= sizeof g_last_push.bytes) memcpy(g_last_push.bytes, data, size);
     PushArgs* x = rec_push(push_run, REC_AL(sizeof *x) + size);
     *x = (PushArgs){cb, layout, stages, offset, size};
     memcpy((u8*)x + REC_AL(sizeof *x), data, size);
@@ -2184,17 +2159,11 @@ void vk_rec_command_report(double presents, int count) {
                 at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.0f",
                                at ? "," : "", names[j].name, (double)g_rec_kind[i].n / (presents ? presents : 1.0));
     LOG("vulkan: recording thread commands a present:%s\n", line);
-    LOG("vulkan: recording thread state repeats a present: %.0f push constants byte-identical to the one before (of "
-        "%.0f)\n",
-        (double)g_push_same / (presents ? presents : 1.0),
-        (double)(g_push_same + g_push_diff) / (presents ? presents : 1.0));
     LOG("vulkan: recording thread merged %.0f barriers into an earlier one's call a present\n",
         (double)g_barrier_merged / (presents ? presents : 1.0));
     LOG("vulkan: recording thread batched %.0f descriptor writes into an earlier one's call a present\n",
         (double)atomic_exchange_explicit(&g_desc_merged, 0, memory_order_relaxed) / (presents ? presents : 1.0));
     memset(g_rec_kind, 0, sizeof g_rec_kind);
     g_rec_kind_total = 0;
-    g_push_same = g_push_diff = 0;
     g_barrier_merged = 0;
-    memset(&g_last_push, 0, sizeof g_last_push);
 }

@@ -3114,8 +3114,6 @@ extern u64 g_submit_dwell_ns, g_submit_backlog, g_submit_backlog_max;
 /* record.c: log and reset the command kinds the recording thread drained (the "submitted, not started" idle). count:
    the recording thread counts them until the next report (the GPU profile is on) */
 void vk_rec_command_report(double presents, int count);
-/* record.c: state repeats, reset by vk_rec_command_report */
-extern u64 g_push_same, g_push_diff;
 extern u64 g_barrier_merged; /* barriers that shared a vkCmdPipelineBarrier2 with an earlier one */
 extern _Atomic u64 g_desc_merged; /* descriptor writes that shared a vkUpdateDescriptorSets with an earlier one */
 extern u64 g_vk_dispatches, g_vk_cs_batches;
