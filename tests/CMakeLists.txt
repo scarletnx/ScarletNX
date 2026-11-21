@@ -3454,6 +3454,14 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
                 --setting fps-limit=0 --setting vk_memory=${snx_memory})
         set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
     endforeach()
+    # #2442: the wimsy suite's heavy level after the reference suite, which it needs: after judged frame 1 a compute
+    # texture holds frame 0's texels in some of its pages. Fails on main on RADV every run, on lavapipe now and then
+    add_test(NAME edenprobe_compute_readback
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
+            --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}" --mode "quick hooks game level=3 frames=8"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-compute-readback"
+            --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/compute-readback.txt" --timeout 600)
+    set_tests_properties(edenprobe_compute_readback PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
 endif()
 # the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
 if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
