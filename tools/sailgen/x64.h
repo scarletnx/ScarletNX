@@ -155,6 +155,10 @@ typedef struct {
     signed char vout;
     unsigned char vtied, vzero, mstate, mrip, vflags;
     SnxU64 kv[2];
+    /* SGX_K_COLD of sgx_cold_fp: its call reads and writes the state's 32-bit fields at disp (FPCR) and mdisp (FPSR)
+       alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
+       alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's */
+    unsigned char cstate, cfpcr, ckat, cw32, zacc;
 } SgXIns;
 
 typedef struct {
@@ -1078,6 +1082,57 @@ static inline SgD sgx_cold(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, 
     return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
 }
 
+/* sgx_cold for a floating-point helper sym(state, args..., FPCR, k): FPCR (the state's 32-bit field at fpcr) and the
+   constant k loaded on the cold path alone, at fpcr_at and k_at of the arguments (-1: none); the call reads and writes
+   no state but the fields at fpcr and fpsr (what the store pass knows). zacc bit 7: a zero result is the hot path's
+   still where the state's FPCR has none of zmask's bits and (bits 0-2 not all clear) one of those arguments is a
+   zero, tested on the cold path before the call (the guards' exact zeros, out of the hot code) */
+static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, int nargs, int fpcr_at, int k_at,
+                              long long k, int fpcr, int fpsr, unsigned zacc, SnxU32 zmask) {
+    int regs[5], j, from, cc, t, cls, n = 0, w32 = 0;
+    SgXIns* i;
+    SgXBool* b = &x->b[c];
+    if (!c || (b->kind == SGX_B_CONST && !b->v)) return tied;
+    for (j = 0; j < nargs + (fpcr_at >= 0) + (k_at >= 0); ++j) {
+        if (j == fpcr_at || j == k_at) {
+            regs[j] = 0;
+            continue;
+        }
+        if (n >= nargs) sg_fail("a cold call's arguments", j, 0);
+        if (args[n].x) w32 |= (args[n].w <= 32) << j;
+        regs[j] = args[n].x ? args[n].x : sgx_reg(x, &args[n]);
+        ++n;
+    }
+    if (j > 5) sg_fail("a cold call of more than five arguments", j, 0);
+    cls = tied.x != 0;
+    t = cls ? tied.x : sgx_reg(x, &tied);
+    if (cls && tied.w <= 32) w32 |= 0x80;
+    if (b->kind == SGX_B_CONST) {
+        SgD one = sgx_const(32, 1);
+        c = sgx_bool(x, SGX_B_REG, sgx_reg(x, &one), 0);
+    }
+    cc = sgx_bool_cc(x, c, &from);
+    i = sgx_append(x, SGX_K_COLD);
+    i->cc = (unsigned char)cc;
+    i->flags_from = from;
+    i->sym = sym;
+    i->w = (unsigned char)j;
+    i->in[0] = t;
+    for (n = 0; n < j; ++n) i->in[1 + n] = regs[n];
+    i->side = 1;
+    i->cstate = 1;
+    i->disp = fpcr;
+    i->mdisp = fpsr;
+    i->cfpcr = (unsigned char)(fpcr_at + 1);
+    i->ckat = (unsigned char)(k_at + 1);
+    i->imm = k;
+    i->cw32 = (unsigned char)w32;
+    i->zacc = (unsigned char)zacc;
+    i->kv[0] = zmask;
+    i->def = cls ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
+    return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
+}
+
 /* the vector form of sgx_cold: when c holds, sym(state, &out, &a, &b, &d, desc) on the cold path, the XMM values a,
    b, d (0: a's) passed by their addresses and the result read from out's 16 bytes; else tied's */
 static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc) {
@@ -1518,6 +1573,27 @@ static inline void sgx_optimize(SgX* x) {
             SgXIns* s = &x->ins[i];
             unsigned w0, nw;
             if (s->dead) continue;
+            if (s->kind == SGX_K_COLD && s->cstate) {
+                /* FPCR and FPSR read, nothing else */
+                if ((unsigned)s->disp >> 2 < SGX_STATE_WORDS) stamp[(unsigned)s->disp >> 2] = 0;
+                if ((unsigned)s->mdisp >> 2 < SGX_STATE_WORDS) stamp[(unsigned)s->mdisp >> 2] = 0;
+                continue;
+            }
+            if (s->kind == SGX_K_VEC && s->mstate && (unsigned)(s->mdisp >> 2) + 4 <= SGX_STATE_WORDS) {
+                /* a V register's 16 bytes: MOVDQU to the state (a store later ones may replace) or from it */
+                unsigned q = (unsigned)s->mdisp >> 2, e;
+                if (s->vf == &sgx_v_movdqu_st) {
+                    if (stamp[q] == now && stamp[q + 1] == now && stamp[q + 2] == now && stamp[q + 3] == now) {
+                        s->dead = 1;
+                        s->side = 0;
+                        for (e = 0; e < 7; ++e) s->in[e] = 0;
+                        continue;
+                    }
+                    for (e = 0; e < 4; ++e) stamp[q + e] = now;
+                } else
+                    for (e = 0; e < 4; ++e) stamp[q + e] = 0;
+                continue;
+            }
             if (s->kind == SGX_K_UNDEF || s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD ||
                 (s->kind == SGX_K_VEC && s->mstate)) {
                 if (++now == 0) {
@@ -2210,6 +2286,29 @@ static inline void sgx_cold_room(SgXAsm* a, size_t need) {
 /* SGX_K_COLD at at: the hot code jumps out where its condition holds; the cold code keeps the registers the call
    changes that are read after (and the arguments) in scratch slots of the frame above the region's, calls with the
    arguments from where they are, puts RAX in the result's register, takes the others back and jumps in again */
+/* RAX = a value of the cold path's (v; -1: the result, in reg out, an XMM one where cls), its doubled magnitude's
+   flags then (ADD of itself, 32 bits where w32): RAX was pushed, so a value in RAX is [rsp], a slot 8 further */
+static inline void sgx_cold_zf(SgXAsm* a, int v, int out, int cls, int w32) {
+    SgXBuf* c = a->b;
+    int reg = v < 0 ? out : a->x->v[v].reg, xcls = v < 0 ? cls : a->x->v[v].cls;
+    if (xcls && reg >= 0) {
+        const SgXVForm* f = w32 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
+        unsigned char r[4] = {0, 0, 0, 0};
+        r[(int)f->rm] = 0;
+        r[(int)f->reg] = (unsigned char)reg;
+        f->enc(c, r, 0, 0);
+    } else if (reg == 0)
+        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, 0);
+    else if (reg > 0)
+        sgx_mov_rr(a, 0, reg);
+    else if (!xcls && a->x->v[v].xmm >= 0)
+        sgx_movq(c, 0, a->x->v[v].xmm, 0);
+    else
+        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, 8 + 8 * a->x->v[v].slot);
+    if (!w32) sgx_byte(c, 0x48);
+    sgx_byte(c, 0x01); /* add eax, eax */
+    sgx_byte(c, 0xC0);
+}
 static inline void sgx_assemble_cold(SgXAsm* a, int at) {
     static const signed char args_reg[5] = {6, 2, 1, 8, 9}; /* RSI RDX RCX R8 R9, RDI the state */
     SgX* x = a->x;
@@ -2245,6 +2344,33 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
         size_t back = hot->n;
         a->b = &a->cold;
         c = a->b;
+        if ((i->zacc || i->cfpcr) && x->base != 3) sg_fail("a cold call's state field off RBX", x->base, 3);
+        if (i->zacc & 0x80) {
+            /* a zero result that is exact: back to the hot code without the call */
+            size_t to_call[8];
+            int ncall = 0, nok = 0, j;
+            size_t to_ok[5];
+            sgx_byte(c, 0x50); /* push rax */
+            sgx_cold_zf(a, -1, outreg, cls, i->cw32 >> 7 & 1);
+            sgx_byte(c, 0x75), sgx_byte(c, 0), to_call[ncall++] = c->n; /* jnz call */
+            sgx_byte(c, 0xF7), sgx_byte(c, 0x83), sgx_imm(c, i->disp, 4), sgx_imm(c, (long long)i->kv[0], 4); /* test */
+            sgx_byte(c, 0x75), sgx_byte(c, 0), to_call[ncall++] = c->n;
+            if (i->zacc & 7) {
+                for (j = 0; j < 3; ++j)
+                    if (i->zacc >> j & 1) {
+                        sgx_cold_zf(a, i->in[1 + j], 0, 0, i->cw32 >> j & 1);
+                        sgx_byte(c, 0x74), sgx_byte(c, 0), to_ok[nok++] = c->n; /* jz ok */
+                    }
+                sgx_byte(c, 0xEB), sgx_byte(c, 0), to_call[ncall++] = c->n; /* jmp call */
+            }
+            for (j = 0; j < nok; ++j) c->p[to_ok[j] - 1] = (unsigned char)(c->n - to_ok[j]);
+            sgx_byte(c, 0x58); /* ok: pop rax, back */
+            sgx_byte(c, 0xE9);
+            sgx_cjump(a, c->n, back, 1);
+            sgx_imm(c, 0, 4);
+            for (j = 0; j < ncall; ++j) c->p[to_call[j] - 1] = (unsigned char)(c->n - to_call[j]);
+            sgx_byte(c, 0x58); /* call: pop rax */
+        }
         /* the caller-saved general-purpose registers read after at, or an argument's */
         for (k = 0; k < 16; ++k) {
             int o = a->owner[k], keep = 0, j;
@@ -2305,12 +2431,23 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             int v = i->in[1 + k], dst = args_reg[k];
             SgXV* vv = &x->v[v];
             argslot[k] = -1;
-            if (vv->cls) {
+            if (k + 1 == i->cfpcr) {
+                /* mov dst32, [rbx + disp] */
+                if (dst >= 8) sgx_byte(c, 0x44);
+                sgx_byte(c, 0x8B);
+                sgx_byte(c, (unsigned char)(0x80 | (dst & 7) << 3 | 3));
+                sgx_imm(c, i->disp, 4);
+            } else if (k + 1 == i->ckat) {
+                if (dst >= 8) sgx_byte(c, 0x41); /* mov dst32, imm32 */
+                sgx_byte(c, (unsigned char)(0xB8 | (dst & 7)));
+                sgx_imm(c, i->imm, 4);
+            } else if (vv->cls) {
                 if (vv->reg >= 0) {
+                    const SgXVForm* f = i->cw32 >> k & 1 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
                     unsigned char r[4] = {0, 0, 0, 0};
-                    r[(int)sgx_v_movq_rx.rm] = (unsigned char)dst;
-                    r[(int)sgx_v_movq_rx.reg] = (unsigned char)vv->reg;
-                    sgx_v_movq_rx.enc(c, r, 0, 0);
+                    r[(int)f->rm] = (unsigned char)dst;
+                    r[(int)f->reg] = (unsigned char)vv->reg;
+                    f->enc(c, r, 0, 0);
                 } else
                     sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
             } else if (vv->reg >= 0 && saved_g[vv->reg])
@@ -2433,7 +2570,19 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         case SGX_K_PSET: sgx_mov_rr(a, (int)s->imm, sgx_in_reg(a, s->in[0], i, 0)); break;
         case SGX_K_LOAD: {
             int d = sgx_free_reg(a, i, 0);
-            sgx_mov_mem(a, 1, s->w == 64 ? 64 : 32, d, x->base, s->disp);
+            if (s->w == 8) {
+                /* MOVZX r32, byte [base + disp32]: a flag a SETcc stored (a wider load wouldn't forward from it) */
+                if (d >= 8 || x->base >= 8) sgx_byte(b, (unsigned char)(0x40 | (d >> 3) << 2 | (x->base >> 3)));
+                sgx_byte(b, 0x0F);
+                sgx_byte(b, 0xB6);
+                if ((x->base & 7) == 4) {
+                    sgx_byte(b, (unsigned char)(0x84 | (d & 7) << 3));
+                    sgx_byte(b, 0x24);
+                } else
+                    sgx_byte(b, (unsigned char)(0x80 | (d & 7) << 3 | (x->base & 7)));
+                sgx_imm(b, s->disp, 4);
+            } else
+                sgx_mov_mem(a, 1, s->w == 64 ? 64 : 32, d, x->base, s->disp);
             a->owner[d] = s->def;
             x->v[s->def].reg = (signed char)d;
             break;

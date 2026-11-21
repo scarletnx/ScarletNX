@@ -407,7 +407,7 @@ static void flush(Unit* u) {
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
-    g->fp_state[0] = g->fp_state[1] = 0;
+    g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
     g->mem = 0;
     g->origin = -1;
     g->x.flags_ins = -1;
@@ -769,7 +769,7 @@ static int sys(Unit* u, SnxU32 word) {
         }
         case SYSREG(3, 4, 4, 1): /* FPSR: the bits the A57 keeps (integer.c's A57_FPSR_MASK) */
             sgx_state_store(g, (int)offsetof(CPU, fpsr), 32, sg_d_and(g, sg_d_slice(g, xzr_or(g, rt), 31, 0), sgx_const(32, 0xF800009Fu)));
-            g->fp_state[0] = g->fp_state[1] = 0;
+            g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
             return 1;
         case SYSREG(3, 4, 4, 0): { /* FPCR: the runtime's hook too (snx_msr), a call */
             SgD args[2];
@@ -1109,7 +1109,8 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             SnxU64 t = snx_a64_branch_target(&insn, a);
             if (t <= a && snx_function_contains(f, t)) {
                 size_t j;
-                for (j = index_of(f, t); j <= i; ++j) loop[j] = 1;
+                for (j = index_of(f, t); j <= i; ++j)
+                    if (loop[j] < 3) ++loop[j]; /* the depth of loops, to 3 */
             }
         }
     }
@@ -1117,11 +1118,33 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         SnxU32 w = 0;
         unsigned wt;
         (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
-        wt = loop[i] ? 8 : 1;
+        wt = 1u << (3 * loop[i]);
+        /* the general-purpose register fields by the encoding's group: none in SIMD and FP data processing (bits
+           27-25 111); a load's or store's base, and its registers where V (bit 26) is clear (a pair's second, bits
+           14-10, where bits 29-27 are 101; the register offset, bits 20-16, where bits 29-27 are 111, 24 clear and
+           21 set); the others' Rd, Rn, Rm (and Ra, bits 14-10, of the three-source group, bits 28-24 11011) */
+        if ((w >> 25 & 7) == 7) continue;
+        if ((w >> 25 & 5) == 4) {
+            weight[w >> 5 & 31] += wt;
+            if (!(w >> 26 & 1)) {
+                weight[w & 31] += wt;
+                if ((w >> 27 & 7) == 5) weight[w >> 10 & 31] += wt;
+            }
+            if ((w >> 27 & 7) == 7 && !(w >> 24 & 1) && (w >> 21 & 1) && (w >> 10 & 3) == 2) weight[w >> 16 & 31] += wt;
+            continue;
+        }
+        if ((w >> 26 & 7) == 5) { /* branches: CBZ's and TBZ's Rt, BR's and RET's Rn */
+            if ((w >> 25 & 0x3F) == 0x1A || (w >> 25 & 0x3F) == 0x1B) weight[w & 31] += wt;
+            else if ((w >> 25) == 0x6B)
+                weight[w >> 5 & 31] += wt;
+            continue;
+        }
         weight[w & 31] += wt;
         weight[w >> 5 & 31] += wt;
-        weight[w >> 16 & 31] += wt;
-        weight[w >> 10 & 31] += wt;
+        if ((w >> 25 & 7) == 5) { /* data processing (register) */
+            weight[w >> 16 & 31] += wt;
+            if ((w >> 24 & 31) == 0x1B) weight[w >> 10 & 31] += wt;
+        }
     }
     free(loop);
     for (k = 0; k < 5; ++k) {
