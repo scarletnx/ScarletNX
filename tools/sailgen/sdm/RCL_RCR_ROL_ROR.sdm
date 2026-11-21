@@ -1,0 +1,97 @@
+# RCL/RCR/ROL/ROR—Rotate -- override
+# Errata S-1 to S-4 (README.md here), each a line of the manual's text mended and nothing else:
+# S-1  the page's Operation is the four instructions' code one after another, told apart only by comments
+#      ('(* ROR Instruction Operation *)'), so read as written every form runs all four: each is under
+#      'IF instruction is ...' here;
+# S-2  RCR's and ROR's loops take 'tempCF := LSB(SRC)', the count operand's bit, where the rotated value's is meant:
+#      LSB(tempDEST);
+# S-3  '(tempCF * 2SIZE)' is 2 to a power whose superscript the PDF's text lost, and the power is SIZE - 1 for ROR
+#      (the bit rotated out of bit 0 goes into the top bit; 2^SIZE is past the operand and truncates to 0) and SIZE for
+#      RCR (whose rotation is SIZE + 1 bits wide, through CF); written as a shift of the bit;
+# S-4  'MSB − 1(tempDEST)', the bit below the top: tempDEST[SIZE - 2]; and two stray 'ELIHW;' lines dropped.
+@operation
+SIZE := OperandSize;
+CASE (determine count) OF
+    SIZE := 8:   tempCOUNT := (COUNT AND 1FH) MOD 9;
+    SIZE := 16:  tempCOUNT := (COUNT AND 1FH) MOD 17;
+    SIZE := 32:  tempCOUNT := COUNT AND 1FH;
+    SIZE := 64:  tempCOUNT := COUNT AND 3FH;
+ESAC;
+IF OperandSize = 64
+    THEN COUNTMASK := 3FH;
+    ELSE COUNTMASK := 1FH;
+FI;
+IF instruction is RCL
+THEN
+    (* RCL Instruction Operation *)
+    tempDEST := DEST;
+    WHILE (tempCOUNT ≠ 0)
+        DO
+            tempCF := MSB(tempDEST);
+            tempDEST := (tempDEST ∗ 2) + CF;
+            CF := tempCF;
+            tempCOUNT := tempCOUNT – 1;
+        OD;
+    IF (COUNT & COUNTMASK) = 1
+        THEN OF := MSB(tempDEST) XOR CF;
+        ELSE OF is undefined;
+    FI;
+    DEST := tempDEST;
+FI;
+IF instruction is RCR
+THEN
+    (* RCR Instruction Operation *)
+    tempDEST := DEST;
+    IF (COUNT & COUNTMASK) = 1
+        THEN OF := MSB(tempDEST) XOR CF;
+        ELSE OF is undefined;
+    FI;
+    WHILE (tempCOUNT ≠ 0)
+        DO
+            tempCF := LSB(tempDEST);
+            tempDEST := (tempDEST / 2) + (ZeroExtend(CF) << (SIZE - 1));
+            CF := tempCF;
+            tempCOUNT := tempCOUNT – 1;
+        OD;
+    DEST := tempDEST;
+FI;
+IF instruction is ROL
+THEN
+    (* ROL Instruction Operation *)
+    tempCOUNT := (COUNT & COUNTMASK) MOD SIZE;
+    tempDEST := DEST;
+    WHILE (tempCOUNT ≠ 0)
+        DO
+            tempCF := MSB(tempDEST);
+            tempDEST := (tempDEST ∗ 2) + tempCF;
+            tempCOUNT := tempCOUNT – 1;
+        OD;
+    IF (COUNT & COUNTMASK) ≠ 0
+        THEN CF := LSB(tempDEST);
+    FI;
+    IF (COUNT & COUNTMASK) = 1
+        THEN OF := MSB(tempDEST) XOR CF;
+        ELSE OF is undefined;
+    FI;
+    DEST := tempDEST;
+FI;
+IF instruction is ROR
+THEN
+    (* ROR Instruction Operation *)
+    tempCOUNT := (COUNT & COUNTMASK) MOD SIZE;
+    tempDEST := DEST;
+    WHILE (tempCOUNT ≠ 0)
+        DO
+            tempCF := LSB(tempDEST);
+            tempDEST := (tempDEST / 2) + (ZeroExtend(tempCF) << (SIZE - 1));
+            tempCOUNT := tempCOUNT – 1;
+        OD;
+    IF (COUNT & COUNTMASK) ≠ 0
+        THEN CF := MSB(tempDEST);
+    FI;
+    IF (COUNT & COUNTMASK) = 1
+        THEN OF := MSB(tempDEST) XOR tempDEST[SIZE - 2];
+        ELSE OF is undefined;
+    FI;
+    DEST := tempDEST;
+FI;

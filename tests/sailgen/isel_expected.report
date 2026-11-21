@@ -1,0 +1,42 @@
+# sailgen --isel: the forms the SDM's pages give and what each primitive selects
+forms: 11, evaluated: 10
+
+## condition codes (SETcc's rows)
+cc  0 -    none
+cc  1 -    none
+cc  2 B    CF.in'1
+cc  3 AE   xor'1(CF.in'1, 1'1)
+cc  4 E    ZF.in'1
+cc  5 NE   xor'1(ZF.in'1, 1'1)
+cc  6 -    none
+cc  7 A    and'1(xor'1(CF.in'1, 1'1), xor'1(ZF.in'1, 1'1))
+cc  8 -    none
+cc  9 -    none
+cc 10 -    none
+cc 11 -    none
+cc 12 L    xor'1(SF.in'1, OF.in'1)
+cc 13 -    none
+cc 14 -    none
+cc 15 -    none
+
+## primitives
+add 64:
+  ADD r/m64, r64               -      A=op1 B=op2 -> op1
+  ADD r/m64, r64               -      A=op2 B=op1 -> op1
+subs 64:
+  SUB r/m64, r64               -      A=op1 B=op2 -> op1 N=SF Z=ZF C=!CF V=OF cc: EQ=E CS=AE CC=B HI=A LT=L
+cmp 64:
+  SUB r/m64, r64               -      A=op1 B=op2 N=SF Z=ZF C=!CF V=OF cc: EQ=E CS=AE CC=B HI=A LT=L
+  CMP r/m64,r64                -      A=op1 B=op2 N=SF Z=ZF C=!CF V=OF cc: EQ=E CS=AE CC=B HI=A LT=L
+lslv 64:
+  SHL r/m64, CL                -      A=op1 B=RCX -> op1
+cset 64:
+  SETB r/m8                    -      P=cc -> op1 zeroed:1
+  SETAE r/m8                   -      P=cc -> op1 zeroed:1
+  SETE r/m8                    -      P=cc -> op1 zeroed:1
+  SETNE r/m8                   -      P=cc -> op1 zeroed:1
+  SETA r/m8                    -      P=cc -> op1 zeroed:1
+  SETL r/m8                    -      P=cc -> op1 zeroed:1
+
+## forms not evaluated
+FROB r/m64, r64                  the function Frobnicate

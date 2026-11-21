@@ -152,11 +152,13 @@ int main(int argc, char** argv) {
     const char* backends[16];
     int backend_count = 0;
     const char* profile = NULL;
+    const char* ops = NULL;
+    const char* report = NULL;
     const char* inputs[16];
     int overlays[16], count = 0, i;
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate") || !strcmp(argv[i], "--gpu") ||
-            !strcmp(argv[i], "--sdm")) {
+            !strcmp(argv[i], "--sdm") || !strcmp(argv[i], "--isel")) {
             if (mode) return usage("--extract, --generate, --gpu and --sdm are one or another");
             if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file, --sdm the text");
             mode = argv[i];
@@ -165,6 +167,11 @@ int main(int argc, char** argv) {
             if (i + 1 >= argc) return usage("--backend takes the back end's file");
             if (backend_count == 16) return usage("more than 16 back end files");
             backends[backend_count++] = argv[++i];
+        } else if (!strcmp(argv[i], "--ops") || !strcmp(argv[i], "--report")) {
+            if (i + 1 >= argc) return usage("--ops and --report take a file");
+            if (argv[i][2] == 'o') ops = argv[++i];
+            else
+                report = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
             if (i + 1 >= argc) return usage("--profile takes the decoder's profile (a64.profile)");
             profile = argv[++i];
@@ -184,6 +191,10 @@ int main(int argc, char** argv) {
     }
     if (!mode) return usage("give --extract, --generate, --gpu or --sdm");
     if (!out) return usage("give -o OUT");
+    if (!strcmp(mode, "--isel")) {
+        if (!ops) return usage("--isel takes the back end's primitives (--ops x64.ops)");
+        return sg_isel(roots, ops, out, report);
+    }
     if (!strcmp(mode, "--sdm")) {
         /* the SDM's text, and the overrides: no Sail */
         for (i = 0; i < count; ++i)

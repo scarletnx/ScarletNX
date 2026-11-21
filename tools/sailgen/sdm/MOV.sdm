@@ -1,0 +1,6 @@
+# MOV—Move -- override
+# Erratum E-10 (vibe86's): after 'DEST := SRC;' the Operation goes on in prose ('Loading a segment register while in
+# protected mode results in special checks...') with the segment register rows' checks; the general-purpose rows'
+# Operation is the first line alone.
+@operation
+DEST := SRC;

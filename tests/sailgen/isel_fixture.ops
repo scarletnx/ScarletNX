@@ -1,0 +1,38 @@
+# the primitives of sailgen_isel's test, as tools/sailgen/x64.ops writes them
+op add 64 (A, B)
+RESULT := A + B;
+end
+
+op subs 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+op cmp 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+R := unsigned_sum[W-1:0];
+N := R[W-1];
+Z := IsZero(R);
+C := UInt(R) != unsigned_sum;
+V := SInt(R) != signed_sum;
+end
+
+op lslv 64 (A, B)
+RESULT := LSL(A, UInt(B) MOD W);
+end
+
+op cset 64 (cond P)
+RESULT := ZeroExtend(P, W);
+end
+
+cond EQ Z = 1
+cond CS C = 1
+cond CC C = 0
+cond HI C = 1 AND Z = 0
+cond LT N != V

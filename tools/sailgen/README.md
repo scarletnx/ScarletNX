@@ -330,3 +330,69 @@ sixth column for the tables that have one: the CPUID feature flag (`BMI1`, `BMI2
 wrong, or can't be read as written, an override (a page of only the sections it replaces, `# NAME—Title` first)
 takes their place, so the extracted pages stay the manual's own words and every fix is a file that says why.
 `tests/sailgen/sdm_fixture.txt` is a page written in the manual's layout for the test, `sailgen_sdm`.
+
+### Instruction selection (`--isel`)
+
+```sh
+sailgen --isel sdm.pages --ops tools/sailgen/x64.ops -o x64_isel.inc [--report x64_isel.report]
+```
+
+The back end's primitives (`x64.ops`: `add`, `subs`, `lslv`, `clz`, `csel`... at 32 and 64 bits) are written in the
+SDM's own notation, following the Arm ARM's definitions (AddWithCarry, ShiftReg's `UInt(operand2) MOD datasize`,
+CountLeadingZeroBits), and `isel.c` reads both them and every general-purpose form of the manual (an opcode table's row
+valid in 64-bit mode, of registers, r/m used as a register and immediates) with one parser (`sdm_code.c`, the port of
+vibe86's `tools/ucc/sdm.py`) and evaluates both to terms (`term.c`). A form is selected for a primitive where some binding
+of the primitive's operands to the form's makes their terms the same: the result in the register the form writes, and
+each of Arm's flags the primitive gives one of Intel's flags or its negation. Arm's conditions (`cond` lines) are then
+matched with Intel's condition codes, whose predicates are SETcc's rows ('Set byte if above (CF=0 and ZF=0).'), on the
+flags each selected flag-setting form leaves. Nothing about any instruction is written in sailgen; what it knows is
+the notation, and these, each a sentence of the manuals:
+
+- in 64-bit mode a 32-bit register write zero extends to the whole register, an 8- or 16-bit one leaves the rest
+  (Intel Vol. 1, 3.4.1.1);
+- an immediate narrower than the operand size is sign extended to it (Vol. 2A, 2.2.1.5);
+- the flags 'set according to the result' (Vol. 1, 3.4.3.1, and Appendix A): CF where the unsigned result doesn't fit
+  the destination, OF where the signed one doesn't, SF its top bit, ZF whether it is zero, PF the parity of its low
+  byte; a Flags Affected sentence it can't read leaves the flags it names undefined, and the others too unless every
+  sentence was read (nothing is taken as unaffected that the text doesn't say is);
+- `ZeroExtend(x)` and `SignExtend(x)` extend to the operand size; a division or a product is signed where a comment on
+  its line says so (SAR's 'Signed divide, rounding toward negative infinity', IMUL's 'Signed multiplication').
+
+**Evaluation.** Each form is evaluated once, with its operands, the general-purpose registers (with their AL, AH, AX,
+EAX views), the six status flags and a cc form's condition as variables; an `IF` on a value known then (the operand
+size, the mnemonic in 'instruction is SAL or SHL', 64-bit mode) takes one branch, else both, merged by choices. A
+`WHILE (n != 0)` whose body counts n down by one and steps each other name it sets by a shift or a rotation of itself by
+one (SHL's `tempDEST := tempDEST * 2`) is that shift by n; another loop is unrolled while its condition is decided, and
+as nested choices where it is not (LZCNT's), up to 140 steps. A form whose page can't be read so (prose, memory, a
+helper the notation doesn't define) is reported with why and not selected.
+
+**Terms.** `term.c` keeps terms hash-consed in a canonical form, so two ways of writing one function are one index:
+additions, subtractions, negations and NOT are linear forms modulo 2^w; AND, OR and XOR flat and sorted; extractions
+pushed into what they extract from; integers (UInt, SInt and their sums and products) exact, with the range of their
+value, so that a comparison of one is decided by its range or written as one canonical `L >= 0`. The identity that makes
+the two manuals' flags meet is `UInt(L modulo 2^w) = L` exactly when L is in [0, 2^w) (and SInt's): Arm's AddWithCarry
+gives C as `UInt(result) != unsigned_sum`, Intel's CF is the unsigned result not fitting the destination, and both
+become one comparison of the operands, which is how the selection finds that SUBS's C is the negation of SUB's CF,
+SBCS's carry in the negation of SBB's (`CF=NOT carry`), and HI the condition code A. A pair of terms the identities miss
+compares unequal: that costs a selection, never makes a wrong one.
+
+**What it selects** (`--report` lists every candidate, and every form it couldn't read): ADD, SUB, AND, OR, XOR,
+NOT, NEG, ANDN (BIC), ADC and SBB with their flags, CMP and TEST, IMUL and MUL (MUL, UMULH and SMULH through RDX), SHL,
+SHR, SAR and ROR by an immediate and by CL (x86's count mask is Arm's `MOD datasize`), SHLX, SHRX, SARX and RORX, LZCNT
+(CLZ), TZCNT, BSWAP (REV), MOVZX and MOVSX(D), MOV of registers and immediates (a 32-bit MOV for a 64-bit constant below
+2^32: its zero extension is derived), CMOVcc (CSEL) and SETcc on a zeroed register (CSET), each with the bits of an
+input the form reads (an input the form reads only the low bits of may hold anything above them), whether its result is
+zero extended, the immediate it fits (`imm8` sign extended), the flags it writes and Arm's conditions as condition codes.
+
+**Errata.** A selection is only as right as its page: read as written, CDQ's `EDX := SignExtend(EAX)` was taken for a
+zero extension into EDX. `tools/sailgen/sdm/README.md` lists the errata, vibe86's (E-*n*, its `docs/sdm-errata.md`) and
+those found here (S-*n*: the rotate page runs RCL's, RCR's, ROL's and ROR's code one after another, its ROR loop reads
+the count's bit, a superscript is lost), and which override or reading handles each.
+
+**The output** (`x64_isel.inc`) is, for each selected form, an encoder whose constant bytes sailgen folded (prefixes,
+REX's W, the opcode, ModRM's mod and /digit; the registers' bits and the immediate are its arguments), and for each
+primitive at each width its candidates, cheapest first (no register zeroed before it, no fixed register, no result tied
+to an input, a feature the host may have first): the first whose CPUID feature the host has and whose immediate fits is
+the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--isel` when `SNX_SAIL_X64` is on, from the
+PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
+few pages in the manual's notation written for the test (`sailgen_isel`).

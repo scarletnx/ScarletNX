@@ -1369,6 +1369,19 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages"
 add_custom_target(snx_sailgen_sdm_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
 add_test(NAME sailgen_sdm COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_expected.pages" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
+# --isel derives the selection from pages in the manual's notation (written for the test): ADD for an addition, SUB
+# for SUBS with Arm's C the negation of CF and Arm's conditions as Intel's condition codes, CMP and SUB for CMP, SHL's
+# loop for LSLV (its count mask Arm's MOD 64), SETcc on a zeroed register for CSET, and a page it can't read, with why
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sailgen"
+    COMMAND snx-sailgen --isel "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_fixture.pages"
+            --ops "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_fixture.ops" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.inc"
+            --report "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report"
+    DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_fixture.pages"
+            "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_fixture.ops" VERBATIM)
+add_custom_target(snx_sailgen_isel_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report")
+add_test(NAME sailgen_isel COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
+         "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_expected.report" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
