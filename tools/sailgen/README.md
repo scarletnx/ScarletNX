@@ -432,8 +432,9 @@ virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; 
 a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
 form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
 SETcc forms is the state's memory for the loads and stores of the guest's registers and flags. Where no register is
-free, the value read latest is spilled to a slot of the function's frame (`[RSP + 8k]`, once: an SSA value never
-changes) and reloaded where it is read; the frame's size is patched into the prologue and the epilogues once the
+free, the value read latest is spilled: to a free XMM register (MOVQ, as bytes) where nothing calls out before it is
+last read, since every XMM register is a caller's, else to a slot of the function's frame (`[RSP + 8k]`), once either
+way (an SSA value never changes), and reloaded where it is read; the frame's size is patched into the prologue and the epilogues once the
 function is done. The general registers are given first and RAX, RDX and RCX last, so MUL's and CL's fixed registers
 seldom hold another value. A primitive with no candidate on the host has a composition of the others where one
 is written (CLZ without LZCNT: a binary search of shifts, a test and CMOVcc).
