@@ -78,7 +78,10 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      "`recompile_background =` in `app.ini`", SNX_NOTICE_ALL},
     {SNX_TR_NOOP("A save's files"), SNX_TR_NOOP("in the save's folder itself"),
      SNX_TR_NOOP("the save's last commit in its 0/, the copy the game works in in its 1/: Move Old Files moves them"),
-     "A save's files in its folder itself", SNX_NOTICE_ALL}};
+     "A save's files in its folder itself", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("The BC7 cache"), SNX_TR_NOOP("shader_cache/<id>.vkbc7 and <id>.vkbc7.idx, a file each game kept"),
+     SNX_TR_NOOP("in memory while the game runs: a game's Delete Old Caches deletes the old files"),
+     "A game's `shader_cache/<id>.vkbc7`", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

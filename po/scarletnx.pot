@@ -7106,6 +7106,18 @@ msgstr ""
 msgid "the save's last commit in its 0/, the copy the game works in in its 1/: Move Old Files moves them"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "The BC7 cache"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "shader_cache/<id>.vkbc7 and <id>.vkbc7.idx, a file each game kept"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "in memory while the game runs: a game's Delete Old Caches deletes the old files"
+msgstr ""
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr ""
