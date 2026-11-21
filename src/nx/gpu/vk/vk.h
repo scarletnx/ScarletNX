@@ -1282,6 +1282,12 @@ typedef struct Surf {
     struct Surf* crop;
     u32 crop_gen;
     u64 crop_epoch; /* a snapshot's g_vk_texture_epoch when it was last copied (vk_rt_snapshot) */
+    /* a copy's (a crop or a snapshot): its target's wgen when it was copied, or after the last draw that sampled the
+       copy and wrote the target (vk_rt_copy_drawn) */
+    u32 fb_gen;
+    /* render targets: the copy the draw g_vk_drawing samples of it, while that draw is recorded */
+    struct Surf* fb_snap;
+    u64 fb_draw;
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
@@ -1401,6 +1407,10 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /
 /* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
    copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
 Surf* vk_rt_snapshot(Surf* rt, int pixels);
+/* a draw wrote rt: when it sampled a copy of rt (a crop or a snapshot), the copy stands for rt with that draw's writes
+   as well */
+void vk_rt_copy_drawn(Surf* rt);
+extern u64 g_vk_drawing; /* the draw being recorded (render.c render_draw), counted from 1; 0 outside one */
 Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
