@@ -365,10 +365,10 @@ static void test_large_heap(void) {
     CHECK(g_heap_size == 8500 * MIB && state(HEAP_BASE + 8499 * MIB) == MS_NORMAL);
     CHECK(svc_set_heap_size(0) == 0);
     CHECK(svc_set_heap_size(12ull << 30) == SNX_RC_SVC_INVALID_SIZE);
-    /* an Ounce game gets the same budget with memory_gb at its default */
+    /* an Ounce game gets the same heap region with memory_gb at its default, and the console's 9152 MiB pool */
     g_settings.memory_gb = 0;
     g_ounce = 1;
-    CHECK(mem_total() == 10ull << 30 && info(5) == 12ull << 30);
+    CHECK(mem_total() == 9152 * MIB && info(5) == 12ull << 30);
     CHECK(svc_set_heap_size(8500 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
     g_ounce = 0;
@@ -488,8 +488,8 @@ static void test_short_hint(void) {
     mem_layout_large_heap();
     g_ounce = 1;
     CHECK(hint_is(""));
-    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: an Ounce game's 10240 is the least Auto tells */
-    CHECK(mem_total() == 10240 * MIB && hint_is(""));
+    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: an Ounce game's 9152 is the least Auto tells */
+    CHECK(mem_total() == 9152 * MIB && hint_is(""));
     g_settings.memory_gb = 0;
     mem_fit(0, 0, 0);
     CHECK(hint_is(""));
@@ -515,12 +515,12 @@ static void test_gb_said(void) {
     mem_layout_large_heap();
     g_ounce = 1;
     mem_gb_said();
-    CHECK(!strcmp(said, "memory: memory_gb=8 does not change an Ounce game's memory: it is told 10240 MiB\n"));
-    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: Auto tells no less than its own 10240 */
+    CHECK(!strcmp(said, "memory: memory_gb=8 does not change an Ounce game's memory: it is told 9152 MiB\n"));
+    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: Auto tells no less than its own 9152 */
     said[0] = 0;
     g_settings.memory_gb = 6;
     mem_gb_said();
-    CHECK(!strcmp(said, "memory: memory_gb=6 does not change an Ounce game's memory: it is told 10240 MiB\n"));
+    CHECK(!strcmp(said, "memory: memory_gb=6 does not change an Ounce game's memory: it is told 9152 MiB\n"));
     said[0] = 0;
     g_settings.memory_gb = 0; /* the key's default: nothing was asked */
     mem_gb_said();
