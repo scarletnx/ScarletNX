@@ -459,6 +459,52 @@ int main(void) {
               "each command buffer cuts from segments of its own");
     }
 
+    /* One game's scene: many command buffers, each given a few hundred bytes of command memory of its own, each with one
+       short recording it keeps. Two draws count what their records take, and a line width 12 bytes for 16 of record:
+       the tail (the second draw, the line width and a third draw) goes on in the runtime's memory after a JUMP where
+       the second draw was. Once the recording ends, the tail moves into a block of the small store and the JUMP goes
+       there: no segment stays held for it, so the next command buffer cuts from the same one again, where a segment
+       for each held them all. Recorded again over the same bytes, the last tail's piece comes back */
+    {
+        enum { N = 8 };
+        u32 ns = g_nvn.cmd.ns, np = g_nvn.cmd.np, live = 0, live0 = 0, i, k;
+        u64 hs[N];
+        int ok = 1, moved = 1;
+        for (k = 0; k < g_nvn.cmd.ns; k++) live0 += g_nvn.cmd.s[k].live; /* the earlier recordings' pieces */
+        for (int n = 0; n < N; n++) {
+            const u64 cbn = 0x70000 + (u64)n * 0xa0;
+            nvn_CommandBufferInitialize(&cpu, cbn, 0);
+            nvn_CommandBufferAddCommandMemory(&cpu, cbn, 1, 0x30000 + (u64)n * 0x400, 0x400);
+            nvn_CommandBufferBeginRecording(&cpu, cbn);
+            nvn_CommandBufferDrawArrays(&cpu, cbn, 4, 0, 3);
+            nvn_CommandBufferDrawArrays(&cpu, cbn, 4, 3, 3);
+            nvn_CommandBufferSetLineWidth(&cpu, cbn, 2.0f);
+            nvn_CommandBufferDrawArrays(&cpu, cbn, 4, 6, 3);
+            hs[n] = nvn_CommandBufferEndRecording(&cpu, cbn);
+            walk(hs[n], &a);
+            ok &= hs[n] == 0x10000 + 0x30000 + (u64)n * 0x400 && a.n == 4 && a.op[0] == OP_DRAW && a.op[1] == OP_DRAW &&
+                  a.op[2] == OP_LINE_WIDTH && a.op[3] == OP_DRAW && gr32(a.at[3] + 8 + offsetof(NvnPDraw, first)) == 6;
+            for (k = 0; k < g_nvn.cmd.ns; k++) /* the tail's records are in no segment */
+                if (a.at[1] >= g_nvn.cmd.s[k].at && a.at[1] < g_nvn.cmd.s[k].at + g_nvn.cmd.s[k].size) moved = 0;
+        }
+        for (k = 0; k < g_nvn.cmd.ns; k++) live += g_nvn.cmd.s[k].live;
+        check(ok, "a recording whose tail went on in the runtime's memory walks from its handle in the game's");
+        check(moved && live == live0, "each tail moved into the small store, and no segment holds a piece of it");
+        check(g_nvn.cmd.ns <= ns + 1 && g_nvn.cmd.np == np + N,
+              "the command buffers' tails cut from one segment, and each keeps its piece");
+        for (i = 1, k = 0; i <= g_nvn.cmd.slots; i++)
+            k += g_nvn.cmd.p[i].anchor == 0x10000 + 0x30000 && g_nvn.cmd.p[i].seg >= NVN_SPILL_SMALL;
+        check(k == 1, "the first command buffer's tail is a piece of the small store, anchored at its recording");
+        nvn_CommandBufferAddCommandMemory(&cpu, 0x70000, 1, 0x30000, 0x400);
+        nvn_CommandBufferBeginRecording(&cpu, 0x70000);
+        nvn_CommandBufferDrawArrays(&cpu, 0x70000, 4, 0, 3);
+        nvn_CommandBufferDrawArrays(&cpu, 0x70000, 4, 3, 3);
+        nvn_CommandBufferSetLineWidth(&cpu, 0x70000, 2.0f);
+        nvn_CommandBufferDrawArrays(&cpu, 0x70000, 4, 6, 3);
+        nvn_CommandBufferEndRecording(&cpu, 0x70000);
+        check(g_nvn.cmd.np == np + N, "recorded again over the same bytes, the last tail's piece comes back");
+    }
+
     /* a piece of the runtime's memory a recording is still cut from: records past those written aren't there yet, so a
        walk of another submission that jumps there ends (nvn_replay.c), and the piece is whole once the recording ends */
     {
