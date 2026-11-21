@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define CODE     0x10000u
 #define SLOT     16u          /* words a function has room for, its RET included */
@@ -159,7 +160,11 @@ static const char* const k_vec_ops[] = {
     "SSHR_v", "USRA_v", "SSRA_v", "SHL_s", "USHR_s", "SSHR_s", "SHRN_v", "XTN", "SSHLL_v", "USHLL_v", "SHLL_v",
     "USHL_v", "SSHL_v", "UADDW", "SADDW", "UMULL_v", "SMULL_v", "UMLAL_v", "SMLAL_v", "UMLSL_v", "SMLSL_v",
     "UMULL_vi", "SMULL_vi", "UMLAL_vi", "SMLAL_vi", "UMLSL_vi", "SMLSL_vi", "ADDHN", "SUBHN", "UHADD_v", "SHADD_v",
-    "URHADD_v", NULL};
+    "URHADD_v", "FADD_v", "FSUB_v", "FMUL_v", "FDIV_v", "FABD_v", "FABD_s", "FMAX_v", "FMIN_v", "FMAXNM_v",
+    "FMINNM_v", "FMLA_v", "FMLS_v", "FMUL_vi", "FMLA_vi", "FMLS_vi", "FNEG_v", "FABS_v", "FSQRT_v", "FCMEQ_v",
+    "FCMGE_v", "FCMGT_v", "FCMEQ_s", "FCMGE_s", "FCMGT_s", "FACGE_v", "FACGT_v", "FCMEQ0_v", "FCMGE0_v",
+    "FCMGT0_v", "FCMLE0_v", "FCMLT0_v", "FCVTZS_vi", "FCVTZU_vi", "SCVTF_vi", "UCVTF_vi", "FCVTZS_vf",
+    "FCVTZU_vf", "SCVTF_vf", "UCVTF_vf", "FCVTL_v", "FCVTN_v", NULL};
 static uint32_t* g_rows;
 static size_t g_nrows;
 static uint64_t rnd_for_rows(void) { return rnd(); }
@@ -248,12 +253,30 @@ static void report(const CPU* a, const CPU* b) {
 }
 
 /* an UNDEF or a BRK ends the run where it was (STOP's pc then: both back ends' the same) */
+/* a fault in the code run: the function's words, for --words */
+#include <signal.h>
+static volatile uint64_t g_running;
+static uint8_t* g_mem0;
+static void on_fault(int sig) {
+    char line[256];
+    int n = snprintf(line, sizeof line, "FAULT %d in the function at %llx:", sig, (unsigned long long)g_running), k;
+    for (k = 0; k < (int)SLOT - 1 && g_mem0; ++k) {
+        uint64_t a = g_running + 4 * (uint64_t)k;
+        uint32_t w = (uint32_t)g_mem0[a] | (uint32_t)g_mem0[a + 1] << 8 | (uint32_t)g_mem0[a + 2] << 16 |
+                     (uint32_t)g_mem0[a + 3] << 24;
+        n += snprintf(line + n, sizeof line - (size_t)n, " %08x", w);
+        if (w == 0xD65F03C0u) break;
+    }
+    line[n++] = '\n';
+    (void)!write(2, line, (size_t)n);
+    _exit(3);
+}
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
     (void)word, (void)pc;
     c->pc = STOP;
 }
-static void svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
-static void brk(CPU* c, uint64_t pc, uint32_t imm) {
+static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
+static void on_brk(CPU* c, uint64_t pc, uint32_t imm) {
     (void)imm, (void)pc;
     c->pc = STOP;
 }
@@ -326,10 +349,14 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FAIL: the x86-64 back end made under 90%% of the functions\n");
         ++failures;
     }
+    g_mem0 = mem[0];
+    signal(SIGBUS, on_fault);
+    signal(SIGSEGV, on_fault);
+    signal(SIGILL, on_fault);
     snx_runtime_defaults(&rt);
     rt.undef = undef;
-    rt.svc = svc;
-    rt.brk = brk;
+    rt.svc = on_svc;
+    rt.brk = on_brk;
     for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
     for (i = 0; i < functions; ++i)
         for (s = 0; s < states; ++s) {
@@ -347,6 +374,7 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "FAIL: bind\n");
                     return 1;
                 }
+                g_running = hints[i];
                 snx_recompiled_run(m, &c[k], hints[i], STOP);
             }
             c[0].mem = c[1].mem = NULL;

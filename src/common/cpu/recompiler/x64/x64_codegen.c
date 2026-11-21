@@ -770,7 +770,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     int terminal = 0;
     snx_a64_decode_word(word, u->codegen->features, &insn);
     /* a long block is several regions: the guest's registers are in the state at each one's end */
-    if (x->n > SGX_MAXI - 192 || x->nv > SGX_MAXV - 384 || x->nb > SGX_MAXB - 192) flush(u);
+    if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4) flush(u);
     g->word = word;
     g->pc = address;
     g->start = x->n;
@@ -1353,7 +1353,21 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     if (getenv("SNX_X64_STATS"))
         fprintf(stderr, "x64: %lu of %lu functions\n", (unsigned long)count, (unsigned long)(last - first));
     if (options->jit && count != last - first) count = 0;
-    if (count) write_object(&u, object, size);
+    if (count) {
+        write_object(&u, object, size);
+        if (getenv("SNX_X64_DUMP")) {
+            /* SNX_X64_DUMP=folder: each object as written, x64_<first function>.o, for objdump */
+            char path[512];
+            FILE* fo;
+            snprintf(path, sizeof path, "%s/x64_%llX.o", getenv("SNX_X64_DUMP"),
+                     (unsigned long long)codegen->functions[first].start);
+            fo = fopen(path, "wb");
+            if (fo) {
+                fwrite(*object, 1, *size, fo);
+                fclose(fo);
+            }
+        }
+    }
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
