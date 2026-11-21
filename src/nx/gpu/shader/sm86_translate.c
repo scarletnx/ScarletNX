@@ -6780,6 +6780,11 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 spv_emit_execution_mode(e, fn, SPV_MODE_INVOCATIONS, 1, invocations ? invocations : 1);
             }
             if (stage == ST_FS) spv_emit_fragment_origin_upper_left(e, fn);
+            /* the depth and stencil tests before the program where its key asks for them (DsPrograms.early_z), as
+               spirv_translate.c gives Maxwell's: without them a fragment the tests reject still runs the program's
+               image and memory stores */
+            if (stage == ST_FS && si->early_fragment_tests)
+                spv_emit_execution_mode(e, fn, SPV_MODE_EARLY_FRAGMENT_TESTS, 0, 0);
             if (stage == ST_FS && c->depth) spv_emit_fragment_depth_replacing(e, fn);
             if (stage == ST_CS) {
                 u32 x = si->cs_local[0] ? si->cs_local[0] : 1, y = si->cs_local[1] ? si->cs_local[1] : 1,
