@@ -46,8 +46,28 @@ static unsigned base(void) {
 static unsigned lo(void) { return pick(16); }
 static unsigned v(void) { return pick(32); }
 
+/* LD1-LD4 and ST1-ST4 of multiple and single structures, LD1R-LD4R: no offset, or post-index by the size (Rm 31)
+   or by x28 */
+static uint32_t struct_ldst(void) {
+    static const unsigned opc[] = {0, 2, 4, 6, 7, 8, 10};
+    unsigned rt = v(), rn = base(), q = pick(2), l = pick(2), post = pick(2), rm = post ? (pick(2) ? 31 : 28) : 0;
+    if (pick(2)) { /* multiple */
+        unsigned size = pick(4), o = opc[pick(7)];
+        if (size == 3 && !q && o != 2 && o != 6 && o != 7 && o != 10) size = 2;
+        return q << 30 | 0x0C000000u | post << 23 | l << 22 | rm << 16 | o << 12 | size << 10 | rn << 5 | rt;
+    }
+    { /* single: opcode 000-101 an element (S and size its index), 110-111 LDnR */
+        unsigned o = pick(8), r = pick(2), s = pick(2), size = pick(4);
+        if (o >= 6) l = 1, s = 0;
+        if ((o >> 1) == 1) size &= 2;
+        if ((o >> 1) == 2) size = pick(2) ? 0 : 1, s = size ? 0 : s;
+        return q << 30 | 0x0D000000u | post << 23 | l << 22 | r << 21 | rm << 16 | o << 13 | s << 12 | size << 10 |
+               rn << 5 | rt;
+    }
+}
 static uint32_t fp_ldst(void) {
     unsigned rt = v(), rn = base();
+    if (pick(3) == 0) return struct_ldst();
     switch (pick(5)) {
     case 0: { /* unsigned offset */
         unsigned q = pick(5) == 0, size = q ? 0 : pick(4), opc = (q ? 2 : 0) | pick(2);
@@ -164,7 +184,10 @@ static const char* const k_vec_ops[] = {
     "FMINNM_v", "FMLA_v", "FMLS_v", "FMUL_vi", "FMLA_vi", "FMLS_vi", "FNEG_v", "FABS_v", "FSQRT_v", "FCMEQ_v",
     "FCMGE_v", "FCMGT_v", "FCMEQ_s", "FCMGE_s", "FCMGT_s", "FACGE_v", "FACGT_v", "FCMEQ0_v", "FCMGE0_v",
     "FCMGT0_v", "FCMLE0_v", "FCMLT0_v", "FCVTZS_vi", "FCVTZU_vi", "SCVTF_vi", "UCVTF_vi", "FCVTZS_vf",
-    "FCVTZU_vf", "SCVTF_vf", "UCVTF_vf", "FCVTL_v", "FCVTN_v", NULL};
+    "FCVTZU_vf", "SCVTF_vf", "UCVTF_vf", "FCVTL_v", "FCVTN_v", "SCVTF_f", "UCVTF_f", "FCVTZS_f", "FCVTZU_f",
+    "CMEQ0_s", "CMGT0_s", "CMGE0_s", "CMLE0_s", "CMLT0_s", "SQADD_v", "UQADD_v", "SQSUB_v", "UQSUB_v", "SQXTN_v",
+    "UQXTN_v", "SQXTUN_v", "SQSHRN_v", "UQSHRN_v", "SQSHRUN_v", "SQDMULH_v", "SQRDMULH_v", "SQDMULH_vi",
+    "SQRDMULH_vi", "SQSHL_v", NULL};
 static uint32_t* g_rows;
 static size_t g_nrows;
 static uint64_t rnd_for_rows(void) { return rnd(); }
