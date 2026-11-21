@@ -3775,6 +3775,9 @@ target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
+# the same with guest registers pinned to host ones in every function (the pins' moves, flushes and aliases)
+add_test(NAME recompiler_backends_pins COMMAND snx-test-recompiler-backends)
+set_tests_properties(recompiler_backends_pins PROPERTIES ENVIRONMENT "SNX_X64_PIN_ALL=1")
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails

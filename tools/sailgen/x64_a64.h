@@ -757,8 +757,22 @@ static inline const SgXSel* sgx_mem_form(const SgXSel* t, unsigned n, int rm_out
             return &t[k];
     sg_fail("no form of a load or a store", (long long)n, rm_out);
 }
+/* a guest address that is another value plus a constant (an LDR's offset, an ADD before it): that value, the constant
+   into the access's displacement ([base + value + disp], the same 64-bit sum) */
+static inline void sgx_addr(SgX* x, SgD* address, int* disp) {
+    SgXV* v;
+    long long d;
+    if (!address->v || address->inv || sgx_is_const(address)) return;
+    v = &x->v[address->v];
+    if (v->op != SGX_C_ADD || v->cw != 64 || !v->src) return;
+    d = (long long)v->k + *disp;
+    if (d != (long long)(int)d) return;
+    *address = sgx_val(64, v->src);
+    *disp = (int)d;
+}
 static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
     SgX* x = sgx(g);
+    sgx_addr(x, &address, &disp);
     const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_zext8_32, sgx_sel_zext8_32_n, 0)
                       : bytes == 2 ? sgx_mem_form(sgx_sel_zext16_32, sgx_sel_zext16_32_n, 0)
                       : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 0)
@@ -777,6 +791,7 @@ static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
 }
 static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD value) {
     SgX* x = sgx(g);
+    sgx_addr(x, &address, &disp);
     const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_mov_8, sgx_sel_mov_8_n, 1)
                       : bytes == 2 ? sgx_mem_form(sgx_sel_mov_16, sgx_sel_mov_16_n, 1)
                       : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 1)
