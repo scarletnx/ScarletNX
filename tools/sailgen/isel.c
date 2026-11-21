@@ -2250,8 +2250,9 @@ static void c_name(const Form* f, char* buf, size_t size) {
 }
 
 /* a form's encoder, its constant bytes folded when sailgen runs: r[k] is the host register of the form's operand k,
-   imm the immediate, cc the condition code of a form whose opcode's low nibble is one (SETcc, CMOVcc). Registers only:
-   ModRM's mod is 11 (Vol. 2A, 2.1.5), so no SIB or displacement */
+   imm the immediate, cc the condition code of a form whose opcode's low nibble is one (SETcc, CMOVcc). The r/m operand
+   is a register (0 to 15) or the memory at a register plus the buffer's displacement (16 + the register: the back
+   end's loads and stores of the guest's state), which the back end's sgx_modrm encodes (Vol. 2A, 2.1.5) */
 static void emit_encoder(unsigned fi) {
     const Form* f = &g_forms[fi];
     char name[64];
@@ -2279,7 +2280,7 @@ static void emit_encoder(unsigned fi) {
         sg_out("    sgx_byte(b, 0xC4);\n");
         sg_out("    sgx_byte(b, (unsigned char)(0x%02X", 0x40 | f->vex_map | (reg < 0 ? 0x80 : 0) | (rm < 0 ? 0x20 : 0));
         if (reg >= 0) sg_out(" | (r[%d] < 8 ? 0x80 : 0)", reg);
-        if (rm >= 0) sg_out(" | (r[%d] < 8 ? 0x20 : 0)", rm);
+        if (rm >= 0) sg_out(" | ((r[%d] & 15) < 8 ? 0x20 : 0)", rm);
         sg_out("));\n");
         sg_out("    sgx_byte(b, (unsigned char)(0x%02X", (f->vex_w << 7) | (f->vex_l << 2) | f->vex_pp | (vvvv < 0 ? 0x78 : 0));
         if (vvvv >= 0) sg_out(" | ((~r[%d] & 15) << 3)", vvvv);
@@ -2295,7 +2296,7 @@ static void emit_encoder(unsigned fi) {
         else if (reg >= 0 || bsrc >= 0 || f->rex_w) {
             sg_out("    {\n        unsigned rex = 0x%02X", f->rex_w ? 0x48 : 0x40);
             if (reg >= 0) sg_out(" | (r[%d] >> 3) << 2", reg);
-            if (bsrc >= 0) sg_out(" | (r[%d] >> 3)", bsrc);
+            if (bsrc >= 0) sg_out(" | (r[%d] & 15) >> 3", bsrc);
             sg_out(";\n");
             if (f->rex_w) sg_out("        sgx_byte(b, (unsigned char)rex);\n");
             else {
@@ -2316,15 +2317,23 @@ static void emit_encoder(unsigned fi) {
             sg_out("    sgx_byte(b, 0x%02X);\n", f->opc[i]);
     }
     if (f->modrm >= 0) {
-        sg_out("    sgx_byte(b, (unsigned char)(0xC0");
-        if (f->modrm == 8 && reg >= 0) sg_out(" | (r[%d] & 7) << 3", reg);
-        else if (f->modrm < 8 && f->modrm)
-            sg_out(" | 0x%02X", f->modrm << 3);
-        if (rm >= 0) sg_out(" | (r[%d] & 7)", rm);
-        sg_out("));\n");
+        /* ModRM (and a memory operand's SIB and displacement: sgx_modrm) */
+        sg_out("    sgx_modrm(b, ");
+        if (f->modrm == 8 && reg >= 0) sg_out("r[%d] & 7", reg);
+        else
+            sg_out("%d", f->modrm & 7);
+        sg_out(", %s);\n", rm >= 0 ? (rm == 0 ? "r[0]" : rm == 1 ? "r[1]" : rm == 2 ? "r[2]" : "r[3]") : "0");
     }
     if (f->imm_bytes) sg_out("    sgx_imm(b, imm, %d);\n", f->imm_bytes);
     sg_out("}\n\n");
+}
+
+/* the form's operand ModRM.rm encodes, which may be memory: -1 for none */
+static int rm_operand(const Form* f) {
+    int k;
+    for (k = 0; k < f->nops; ++k)
+        if (f->op[k].kind == OK_REG && f->op[k].role == ROLE_MODRM_RM) return k;
+    return -1;
 }
 
 /* the place a selected form takes an input or gives its result: its operand k (0 to 3), or 16 + a fixed register */
@@ -2361,6 +2370,26 @@ static void emit_output(const PEval* pes, unsigned npes) {
     sg_out("static const char* const sgx_cc_name[16] = {");
     for (i = 0; i < 16; ++i) sg_out("%s\"%s\"", i ? ", " : "", g_cc_name[i] ? g_cc_name[i] : "");
     sg_out("};\n");
+    {
+        /* the condition code that is a flag itself, and its negation: SETcc's predicates of one flag */
+        int j;
+        sg_out("/* each flag's condition code (CF PF AF ZF SF OF), and its negation's, -1 where none is */\n");
+        sg_out("static const signed char sgx_flag_cc[6] = {");
+        for (j = 0; j < NFLAG; ++j) {
+            int cc, found = -1;
+            for (cc = 0; cc < 16 && found < 0; ++cc)
+                if (g_cc_pred[cc] && g_cc_pred[cc] == g_evals[0].in[C_CF + j]) found = cc;
+            sg_out("%s%d", j ? ", " : "", found);
+        }
+        sg_out("};\nstatic const signed char sgx_flag_ncc[6] = {");
+        for (j = 0; j < NFLAG; ++j) {
+            int cc, found = -1;
+            for (cc = 0; cc < 16 && found < 0; ++cc)
+                if (g_cc_pred[cc] && g_cc_pred[cc] == t_not(g_evals[0].in[C_CF + j])) found = cc;
+            sg_out("%s%d", j ? ", " : "", found);
+        }
+        sg_out("};\n");
+    }
     sg_out("/* Arm's conditions, in x64.ops' order */\nenum {");
     for (i = 0; i < g_nconds; ++i) sg_out("%sSGX_ARM_%s", i ? ", " : " ", g_conds[i].name);
     sg_out(", SGX_ARM_COUNT };\n\n");
@@ -2393,7 +2422,7 @@ static void emit_output(const PEval* pes, unsigned npes) {
                 if (m->clobber & (1u << j)) clob |= 1u << (j - C_GPR0);
             for (j = C_OP0; j < C_CF; ++j)
                 if (m->zero_cells & (1 << j)) zero |= 1 << (place(j) & 31);
-            sg_out("    /* %s */\n    {sgx_e_%s, %s, {", f->text, name, feature_c(f->feature));
+            sg_out("    /* %s */\n    {sgx_e_%s, %s, %d, {", f->text, name, feature_c(f->feature), rm_operand(f));
             for (j = 0; j < 4; ++j) sg_out("%s%d", j ? ", " : "", j < p->nin ? place(m->cell_of[j]) : -1);
             sg_out("}, 0x%x, 0x%x, %d, '%c', %d, %d, %d, 0x%x, 0x%x, 0x%x, {", clean, imm, fit_bits,
                    fit_kind ? fit_kind : '-', m->out_cell >= 0 ? place(m->out_cell) : -1, m->clean_out, tied, clob,
@@ -2405,6 +2434,19 @@ static void emit_output(const PEval* pes, unsigned npes) {
         }
         sg_out("};\n");
         sg_out("#define sgx_sel_%s_%d_n %u\n", p->name, pes[k].w, n);
+    }
+    /* a primitive's widths it isn't selected at: no candidates (the back end names a table by its width) */
+    for (k = 0; k < g_nprims; ++k) {
+        static const int ws[2] = {32, 64};
+        int j, q;
+        for (j = 0; j < 2; ++j) {
+            int has = 0;
+            for (q = 0; q < g_prims[k].nwidths; ++q)
+                if (g_prims[k].widths[q] == ws[j]) has = 1;
+            if (!has)
+                sg_out("#define sgx_sel_%s_%d ((const SgXSel*)0)\n#define sgx_sel_%s_%d_n 0u\n", g_prims[k].name, ws[j],
+                       g_prims[k].name, ws[j]);
+        }
     }
     free(used);
     free(kept);

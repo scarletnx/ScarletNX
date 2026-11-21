@@ -15,8 +15,8 @@ set(snx_sdm_url "https://cdrdv2.intel.com/v1/dl/getContent/671110")
 set(snx_sdm_sha256 d137a7887787bbb06c1a8b8bafd51958d8d2e16b4dff987a03226c845cca1516)
 
 # snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
-# and x64_isel.report (what was selected, and the forms the selection couldn't read, with why) into the build folder,
-# and gives <target> its include root
+# and x64_isel.report (what was selected, and the forms the selection couldn't read, with why) into the build folder's
+# sdm/, and gives <target> its include root
 function(snx_sdm_isel target)
     set(pdf "${SNX_SDM_PDF}")
     if(NOT pdf)
@@ -43,7 +43,7 @@ function(snx_sdm_isel target)
     foreach(f ${overrides})
         list(APPEND overlay_args --overlay "${f}")
     endforeach()
-    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sdm")
     add_custom_command(OUTPUT "${out}/sdm.txt"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND "${SNX_PDFTOTEXT}" -layout "${pdf}" "${out}/sdm.txt"
@@ -57,5 +57,26 @@ function(snx_sdm_isel target)
         DEPENDS snx-sailgen "${out}/sdm.pages" "${dir}/x64.ops"
         COMMENT "Deriving the x86-64 instruction selection from the SDM" VERBATIM)
     target_sources(${target} PRIVATE "${out}/x64_isel.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a64_x64(<target>): generates a64_x64.inc (the A64 emitters of a64_x64.roots, with sailgen's x86-64 back
+# end at its top: bits.h, x64.h and x64_a64.h) into the build folder, with the instruction selection it includes
+# (snx_sdm_isel), and gives <target> its include root
+function(snx_sailgen_a64_x64 target)
+    snx_sdm_isel(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    add_custom_command(OUTPUT "${out}/a64_x64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
+                --backend "${back}/x64_a64.h" --profile "${profile}" -o "${out}/a64_x64.inc" "${dir}/a64.sail"
+                --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${back}/bits.h" "${back}/x64.h"
+                "${back}/x64_a64.h" "${profile}"
+        COMMENT "Generating the A64 emitters' x86-64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()

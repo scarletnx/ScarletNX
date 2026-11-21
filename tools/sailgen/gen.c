@@ -1669,7 +1669,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
     if (!strcmp(name, "BranchTo")) { /* BranchTo(target, type, conditional): where the instruction goes, and when */
         need_args(n, 3);
         a = raise(need_bits(n, arg(n, 0), "a branch's target"), BT_DYN);
-        emit("sg_branch_to(g, %s, %s);\n", a.c, g_gen.path[0] ? g_gen.path : "NULL");
+        emit("sg_branch_to(g, %s, %s);\n", a.c, g_gen.path[0] ? g_gen.path : "0");
         *r = unit();
         return 1;
     }
@@ -1772,7 +1772,7 @@ static Val action_call(unsigned n, const char* name, int takes) {
                                  : "a value of a kind sailgen does not keep");
     at = snprintf(text, sizeof text, "sg_%s(g", name);
     if (takes & BACKEND_PATH)
-        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", g_gen.path[0] ? g_gen.path : "NULL");
+        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", g_gen.path[0] ? g_gen.path : "0");
     for (i = 0; (takes & BACKEND_ARGS) && i < count; ++i) {
         Val a = eval(arg_at(n, i), 0);
         if (a.kind == K_UNIT || a.kind == K_TUPLE) sg_fail(n, "%s's argument %u is no value", name, i + 1);
