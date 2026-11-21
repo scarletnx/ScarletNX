@@ -28,7 +28,6 @@ static u32* wait_list_for(int kind, u64 word) {
     switch (kind) {
         case 2: return &g_hle.sync.mwait;
         case 3: return &g_hle.sync.cvwait[bucket(word)];
-        case 4: return &g_hle.sync.arbwait[bucket(word)];
         default: return NULL;
     }
 }
@@ -100,6 +99,11 @@ static void prio_restore_nl(KThread* t) {
             if (w->lock_owner == kt_ix(t) && w->prio < p) p = w->prio;
         if (p == t->prio) return;
         core_set_prio(t, p);
+        /* an address waiter goes behind the waiters of its new priority: its ticket, which its bucket's wakes read */
+        if (atomic_load_explicit(&t->arb_in, memory_order_acquire))
+            atomic_store_explicit(&t->wait_ticket,
+                                  atomic_fetch_add_explicit(&g_hle.sync.arb_ticket, 1, memory_order_relaxed) + 1,
+                                  memory_order_relaxed);
         l = wait_list(t);
         if (l) {
             list_del(l, t);
@@ -334,11 +338,41 @@ u32 svc_signal_cv(u64 key, i32 count) {
 }
 
 /* ============================================================ address arbitration */
-static u32 addr_finish_nl(KThread* t, int woke) {
+/* An address wait and its signals take the lock of their word's bucket (g_host.kernel.arb_lk), not g_klock: the SDK's
+   light events, semaphores and message queues wait and signal through them thousands of times a second, and every
+   other thread's SVC waited behind them for g_klock (a racing game's threads 44 s in 222 s). The bucket's list is that
+   lock's, and so is a thread while it waits in it (arb_in, woken, wait_result). Its priority and its place among
+   waiters of one priority are atomics a priority change sets under g_klock (arb_prio, wait_ticket) */
+static_assert(sizeof g_host.kernel.arb_lk / sizeof *g_host.kernel.arb_lk == WAIT_BUCKETS, "a lock per bucket");
+static PMutex* arb_lock(u64 word) {
+    PMutex* m = &g_host.kernel.arb_lk[bucket(word)];
+    pm_lock(m);
+    return m;
+}
+/* the lock let go of, then the threads its holder woke */
+static void arb_unlock(PMutex* m) {
+    pm_unlock(m);
+    kt_flush();
+}
+/* the waiter on addr to wake first: the best priority, the earliest ticket among equals */
+static KThread* arb_best(u32 l, u64 addr) {
+    KThread *b = NULL, *w;
+    int bp = 0;
+    u64 bt = 0;
+    for (w = kt_at(l); w; w = kt_at(w->next_waiter)) {
+        if (w->wait_addr != addr) continue;
+        int p = atomic_load_explicit(&w->arb_prio, memory_order_relaxed);
+        u64 tk = atomic_load_explicit(&w->wait_ticket, memory_order_relaxed);
+        if (!b || p < bp || (p == bp && tk < bt)) b = w, bp = p, bt = tk;
+    }
+    return b;
+}
+/* the end of t's address wait, woken or timed out (woke 0), its bucket's lock held */
+static u32 addr_finish_held(KThread* t, int woke) {
     if (woke) return (u32)t->wait_result;
-    if (t->wait_kind == 4) {
-        list_del(wait_list(t), t);
-        t->wait_kind = 0;
+    if (atomic_load_explicit(&t->arb_in, memory_order_relaxed)) {
+        list_del(&g_hle.sync.arbwait[bucket(t->wait_addr)], t);
+        atomic_store_explicit(&t->arb_in, 0, memory_order_release);
     }
     return SNX_RC_SVC_TIMED_OUT;
 }
@@ -360,7 +394,7 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
     R_UNLESS(type <= 3, SNX_RC_SVC_INVALID_ENUM_VALUE);
     R_TRY(check_mapped(addr, type == 3 ? 8 : 4));
     p = uword(addr);
-    pm_lock(&g_host.kernel.klock);
+    PMutex* m = arb_lock(addr);
     if (type == 3)
         unmet = (i64)snx_le64(atomic_load_explicit((_Atomic u64*)(void*)GP(addr), memory_order_seq_cst)) != value;
     else {
@@ -370,20 +404,23 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
         unmet = type == 2 ? (i32)cur != (i32)value : (i32)cur >= (i32)value;
     }
     if (unmet) {
-        klock_unlock();
+        arb_unlock(m);
         R_THROW(SNX_RC_SVC_INVALID_STATE);
     }
     if (!timeout) {
-        klock_unlock();
+        arb_unlock(m);
         R_THROW(SNX_RC_SVC_TIMED_OUT);
     }
     t->woken = 0;
-    t->wait_kind = 4;
     t->wait_addr = addr;
     t->wait_svc = WAIT_SVC_ADDR;
-    list_add(wait_list(t), t);
-    r = addr_finish_nl(t, sleep_nl(t, timeout));
-    klock_unlock();
+    atomic_store_explicit(&t->wait_ticket,
+                          atomic_fetch_add_explicit(&g_hle.sync.arb_ticket, 1, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
+    list_add(&g_hle.sync.arbwait[bucket(addr)], t);
+    atomic_store_explicit(&t->arb_in, (int)bucket(addr) + 1, memory_order_release);
+    r = addr_finish_held(t, sleep_held(t, m, timeout));
+    arb_unlock(m);
     return r;
 }
 /* svcSignalToAddress (Eden's KAddressArbiter::Signal, SignalAndIncrementIfEqual and
@@ -399,8 +436,8 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
     R_UNLESS(type <= 2, SNX_RC_SVC_INVALID_ENUM_VALUE);
     if (type) R_TRY(check_mapped(addr, 4)); /* a plain signal reads nothing */
     p = uword(addr);
-    l = wait_list_for(4, addr);
-    pm_lock(&g_host.kernel.klock);
+    l = &g_hle.sync.arbwait[bucket(addr)];
+    PMutex* m = arb_lock(addr);
     if (type) {
         u32 cur = (u32)value, nv = (u32)value + 1u;
         if (type == 2) {
@@ -419,17 +456,17 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
         else
             cur = word_load(p);
         if (cur != (u32)value) {
-            klock_unlock();
+            arb_unlock(m);
             R_THROW(SNX_RC_SVC_INVALID_STATE);
         }
     }
-    while ((count <= 0 || n < count) && (w = list_best(*l, 0, addr)) != NULL) {
+    while ((count <= 0 || n < count) && (w = arb_best(*l, addr)) != NULL) {
         list_del(l, w);
-        w->wait_kind = 0;
+        atomic_store_explicit(&w->arb_in, 0, memory_order_release);
         wake(w, 0);
         n++;
     }
-    klock_unlock();
+    arb_unlock(m);
     R_SUCCEED();
 }
 
@@ -524,7 +561,9 @@ void sync_resume(KThread* t) {
     u32 r = 0, idx = 0, i, n = 0;
     int outputs = 1;
     i64 left = -1;
-    pm_lock(&g_host.kernel.klock);
+    /* an address wait sleeps under its bucket's lock, the others under g_klock */
+    PMutex* held = t->wait_svc == WAIT_SVC_ADDR ? &g_host.kernel.arb_lk[bucket(t->wait_addr)] : &g_host.kernel.klock;
+    pm_lock(held);
     if (t->wait_end) {
         u64 now = guest_ns();
         left = t->wait_end > now ? (i64)(t->wait_end - now) : 0;
@@ -540,7 +579,7 @@ void sync_resume(KThread* t) {
             r = (u32)t->wait_result;
             break;
         case WAIT_SVC_CV: r = cv_finish_nl(t, sleep_nl(t, left)); break;
-        case WAIT_SVC_ADDR: r = addr_finish_nl(t, sleep_nl(t, left)); break;
+        case WAIT_SVC_ADDR: r = addr_finish_held(t, sleep_held(t, held, left)); break;
         case WAIT_SVC_SYNC:
             n = (u32)t->nwaits; /* the objects in the order the game named them, each with the wait's reference */
             for (i = 0; i < n; i++) objs[i] = kobj_at(t->waits[i]);
@@ -548,7 +587,8 @@ void sync_resume(KThread* t) {
             break;
         default: outputs = 0; break;
     }
-    klock_unlock();
+    pm_unlock(held);
+    kt_flush();
     for (i = 0; i < n; i++) kobj_unref(objs[i]);
     if (!outputs) return;
     if (g_arm_mod) {

@@ -67,8 +67,18 @@ void wake(KThread* t, int result) {
     t->wait_result = result;
     if (g_watch) g_watched = snx_ld_le32(g_mem + g_watch);
 }
-void core_set_prio(KThread* t, int prio) { t->prio = prio; }
+/* as thread.c's: the priority, and its copy that an address wait's wake reads */
+void core_set_prio(KThread* t, int prio) {
+    t->prio = prio;
+    atomic_store_explicit(&t->arb_prio, prio, memory_order_relaxed);
+}
 void klock_unlock(void) {}
+/* sync.c's address waits sleep under their bucket's lock: as sleep_nl, here */
+int sleep_held(KThread* t, PMutex* held, i64 timeout) {
+    (void)held;
+    return sleep_nl(t, timeout);
+}
+void kt_flush(void) {}
 
 enum { SNX_KMT_THREADS = 6, SNX_KMT_HANDLE = 0x100 };
 /* the threads are the pool's first slots, where the kernel's lists find them (kt_at) */
@@ -104,6 +114,7 @@ static KThread* reset(const int* prio) {
     for (int i = 0; i < SNX_KMT_THREADS; i++) {
         snx_kmt_thread[i].o.type = KO_THREAD;
         snx_kmt_thread[i].prio = snx_kmt_thread[i].base_prio = prio[i];
+        atomic_store_explicit(&snx_kmt_thread[i].arb_prio, prio[i], memory_order_relaxed); /* as thread.c's start */
     }
     return snx_kmt_thread;
 }
@@ -356,9 +367,10 @@ int main(void) {
               "type 4: InvalidEnumValue");
         CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 2, 4, 0, -1) == SNX_RC_SVC_INVALID_ADDRESS,
               "the alignment before the type");
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0 && t[0].wait_kind == 4 &&
-                  t[0].wait_addr == SNX_KMT_ARB64,
-              "equal: it waits on the address (kind %d)", t[0].wait_kind);
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0 &&
+                  atomic_load_explicit(&t[0].arb_in, memory_order_relaxed) != 0 && t[0].wait_addr == SNX_KMT_ARB64,
+              "equal: it waits on the address (bucket + 1: %d)",
+              atomic_load_explicit(&t[0].arb_in, memory_order_relaxed));
         CHECK(svc_wait_addr(&t[1], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0, "a second waiter");
         t[0].woken = t[1].woken = 0;
         CHECK(svc_signal_addr(SNX_KMT_ARB64, 0, 0, 1) == 0 && t[1].woken && !t[0].woken,

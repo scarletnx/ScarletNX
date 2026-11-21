@@ -33,7 +33,10 @@ void fatal(const char* fmt, ...) {
 #define g_self (g_hle.thread.threads[0])
 KThread* kthread_cur(void) { return &g_self; }
 void core_leave(KThread* t) { (void)t; }
-void core_set_prio(KThread* t, int prio) { t->prio = prio; }
+void core_set_prio(KThread* t, int prio) {
+    t->prio = prio;
+    atomic_store_explicit(&t->arb_prio, prio, memory_order_relaxed);
+}
 static u64 g_now;
 u64 plat_ns(void) { return g_now; }
 u64 guest_ns(void) { return g_now; } /* the waits' deadlines: no pause here */
@@ -49,6 +52,7 @@ void kt_notify_later(KThread* t) { (void)t; }
 /* the wake of a futex waiter on a mutex word (sync.c, g_lock_futex), which no test turns on */
 void plat_wake_word_one(_Atomic u32* w) { (void)w; }
 void klock_unlock(void) {}
+void kt_flush(void) {}
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);
 static char g_seen_name[24];

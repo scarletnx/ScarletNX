@@ -237,7 +237,8 @@ void kobj_signal_nl(KObj* o) {
    The deadline is in guest time, which stops while the game is paused (clock.c), and the thread counts as stopped for
    a game pause while it waits: a wake or a timeout during one waits for its end. It waits on its word (kt_wait), not
    holding g_klock */
-int sleep_nl(KThread* t, i64 timeout) {
+int sleep_nl(KThread* t, i64 timeout) { return sleep_held(t, &g_host.kernel.klock, timeout); }
+int sleep_held(KThread* t, PMutex* held, i64 timeout) {
     u64 end = 0;
     int r = 1;
     if (timeout > ((i64)1 << 62)) timeout = -1; /* centuries: no deadline the clock could reach */
@@ -258,7 +259,7 @@ int sleep_nl(KThread* t, i64 timeout) {
     for (;;) {
         u32 seq = kt_seq(t);
         i64 left = -1;
-        kthread_retire_check(&g_host.kernel.klock);
+        kthread_retire_check(held);
         if (t->woken) break;
         if (timeout > 0 && !atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed)) {
             u64 now = guest_ns();
@@ -268,13 +269,13 @@ int sleep_nl(KThread* t, i64 timeout) {
             }
             left = (i64)(end - now);
         }
-        kt_wait(t, seq, &g_host.kernel.klock, left);
+        kt_wait(t, seq, held, left);
     }
     for (;;) {
         u32 seq = kt_seq(t);
         if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed)) break;
-        kthread_retire_check(&g_host.kernel.klock);
-        kt_wait(t, seq, &g_host.kernel.klock, -1);
+        kthread_retire_check(held);
+        kt_wait(t, seq, held, -1);
     }
     atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
     SNX_FIBER_LEAVE();
