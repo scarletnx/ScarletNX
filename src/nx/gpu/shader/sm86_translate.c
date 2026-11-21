@@ -122,6 +122,8 @@ typedef struct {
     u32 scale, scale_ptr, scaled_push;
     /* a vertex program's per-draw block (SNX_VKB_DRAW), read at the draw id (draw_id, the push constant word 0) */
     u32 draw, draw_ptr, draw_id, draw_id_ptr;
+    /* the fragment stage's block (SNX_VKB_FRAME), a uniform buffer in place of its push constants */
+    u32 frame, frame_ptr;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
        instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
@@ -682,6 +684,16 @@ static u32 draw_component(Ctx* c, u32 k) {
                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 2)),
                                       spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 3)), c->t_f32);
 }
+/* word k of the fragment stage's block (SNX_VKB_FRAME): the renderer's pc[] for the fragment stage, in a uniform buffer
+   in place of its push constants, at the same word offsets. Its float bits, as pc[] holds them (u32 words read with to_u) */
+static u32 frame_word(Ctx* c, u32 k) {
+    if (!c->frame) {
+        c->frame = spv_emit_uniform_vec4_array(&c->e, c->t_v4f, c->t_f32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                               SNX_VKB_FRAME, SNX_DRAW_WORDS / 4, &c->frame_ptr);
+        add_interface(c, c->frame);
+    }
+    return spv_emit_uniform_component(&c->e, c->frame_ptr, c->frame, c->zero, cu(c, k >> 2), cu(c, k & 3), c->t_f32);
+}
 static u32 push_component(Ctx* c, u32 k) {
     if (c->stage == ST_VS) return draw_component(c, k); /* a vertex program's per-draw block */
     if (cb_windowed(c)) unified_push(c);
@@ -699,11 +711,8 @@ static u32 cbuf_window(Ctx* c, u32 bank, u32 element) {
     u32 packed;
     if (c->stage == ST_VS) /* a vertex program's window offsets are in its per-draw block */
         packed = to_u(c, draw_component(c, SH_PUSH_CB_WINDOW / 4 + word));
-    else {
-        unified_push(c);
-        packed = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->cbw_member + word / 4),
-                                             cu(c, word & 3), c->t_u32);
-    }
+    else /* the fragment stage's in its uniform block */
+        packed = to_u(c, frame_word(c, SH_PUSH_CB_WINDOW_FS / 4 + word));
     if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
     return spv_emit_iadd_u32(&c->e, c->t_u32, element,
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF)));
@@ -859,17 +868,7 @@ static u32 scale_component(Ctx* c, u32 k) {
    push constant offset 16 (vk/render.c: x the slots 0 to 31, y 32 to 63), as a bool. With own, whether that target
    has the size of the one the draw renders to as well (render.c's own_size): its bit in the uvec4 at offset 96 */
 static u32 scaled_slot(Ctx* c, int slot, int own) {
-    if (cb_windowed(c)) unified_push(c); /* members 2 and 3 there too */
-    if (!c->scaled_push) {
-        const u32 members[3] = {c->t_v4f, c->t_v4u, c->t_v4u}, offsets[3] = {16, 32, 96};
-        u32 block = spv_emit_type_struct(&c->e, members, offsets, 3);
-        spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
-        c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
-        add_interface(c, c->scaled_push);
-    }
-    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
-                                           c->scaled_push, cu(c, (cb_windowed(c) ? 1u : 0u) + (own ? 2u : 1u)),
-                                           cu(c, slot >= 32), c->t_u32);
+    u32 bits = to_u(c, frame_word(c, (own ? 24 : 8) + (slot >= 32)));
     u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
                               cu(c, 1));
@@ -2992,11 +2991,8 @@ static u32 record_word(Ctx* c, u32 k) {
     u32 base;
     if (c->stage == ST_VS) /* a vertex program's word window is in its per-draw block */
         base = to_u(c, draw_component(c, SH_PUSH_TEX_WORDS / 4));
-    else {
-        unified_push(c);
-        base = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->tw_member),
-                                           cu(c, c->stage == ST_FS), c->t_u32);
-    }
+    else /* the fragment stage's in its uniform block */
+        base = to_u(c, frame_word(c, SH_PUSH_TEX_WORDS / 4 + 1));
     u32 index = spv_emit_iadd_u32(
         &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, k));
     return uniform_word(c, c->tex_words_ptr, c->tex_words, index);
