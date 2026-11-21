@@ -16,10 +16,10 @@
    life of the process. The hooks do the same through the kernel (kshmem_map_free). Every font is loaded from the
    start. The SDK stops the game on any failure of the service, so no function here returns one.
 
-   The Ounce's SDK also has built-in fonts (GetBuiltInFontData), which are the shared fonts, each a plain TrueType
-   font past its header: the same memory answers, with the font's address in it and its size. Its other built-in
-   font functions (the sets, and the ones of the first console's types) have no hook: a game that calls one opens
-   pl:u, and sm stops it with the name of this layer */
+   The Ounce's SDK also has built-in fonts (GetBuiltInFontData and its set), which are the shared fonts, each a
+   plain TrueType font past its header: the same memory answers, with the font's address in it and its size. Its
+   built-in font functions of the first console's types have no hook: a game that calls one opens pl:u, and sm
+   stops it with the name of this layer */
 #include "nx/nn/pl.h"
 #include "nx/nn/pl_font.h"
 #include "nx/hle/hook/hook.h"
@@ -263,16 +263,34 @@ int nnpl_get_shared_font(CPU* c, u64 count, u64 data, i32 max, u64 language) {
     return 1;
 }
 
-/* GetBuiltInFontData: the caller's BuiltInFontDataOunce filled as the SDK fills it from the service's answer, two
+/* one built-in font: the caller's BuiltInFontDataOunce filled as the SDK fills it from the service's answer, two
    bytes of flags (1 and 0: the first is the value a game ran with, and what they mean is not known), the font's
-   address at 8 and its size at 0x10; a type with no font leaves it and answers false */
-int nnpl_get_built_in_font_data(CPU* c, u64 font, u8 type, int flag) {
-    (void)flag;
+   address at 8 and its size at 0x10, the bytes between left; a type with no font leaves it and answers 0 */
+static int built_in_font(CPU* c, u64 font, u8 type) {
     if (type >= PL_FONTS || !g_hle.pl.font_size[type]) return 0;
     u8* f = hook_host(c, font);
     f[0] = 1;
     f[1] = 0;
     snx_st_le64(f + 8, fonts_base() + g_hle.pl.font_off[type]);
     snx_st_le64(f + 0x10, g_hle.pl.font_size[type]);
+    return 1;
+}
+int nnpl_get_built_in_font_data(CPU* c, u64 font, u8 type, int flag) {
+    (void)flag;
+    return built_in_font(c, font, type);
+}
+
+/* the set: the SDK reads no more than six of the types (each a byte), and fills one BuiltInFontDataOunce (0x18
+   bytes) for each entry of the service's answer, as the single function does, and the count with the answer's.
+   Which fonts the service gives is not in the SDK: here each type asked, in its order, gives the font the single
+   function gives it, a type with no font none, whatever the language, as the lists do. The count is the fonts given.
+   The answer is true even with none: every font is loaded from the start, and a game asks again until it is */
+#define PL_SET_TYPES 6
+int nnpl_get_built_in_font_data_set(CPU* c, u64 count, u64 fonts, u64 types, i32 n, u64 language, int flag) {
+    u32 given = 0;
+    (void)language, (void)flag;
+    for (i32 i = 0; i < n && i < PL_SET_TYPES; i++)
+        given += (u32)built_in_font(c, fonts + (u64)given * 0x18, *(const u8*)hook_host(c, types + (u64)i));
+    snx_st_le32(hook_host(c, count), given);
     return 1;
 }
