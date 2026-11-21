@@ -256,10 +256,40 @@ setting DLSS upscaler
     key dlss_upscaler
     int 0 1
     default 1
-    words Filtered copy|FSR 2
-    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = AMD FidelityFX Super Resolution
-    help 2.2 (a temporal upscaler, on any GPU), 0 = a filtered copy of the frame (cheaper, soft, and the picture shakes
-    help with the game's camera jitter). FSR 2 falls back to the copy where it can't run
+    words Filtered copy|Upscaler
+    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = the runtime's temporal upscaler
+    help (render_upscaler's, AMD FidelityFX Super Resolution 2.2 by default, on any GPU), 0 = a filtered copy of the
+    help frame (cheaper, soft, and the picture shakes with the game's camera jitter). The upscaler falls back to the
+    help copy where it can't run
+setting Render upscaler
+    key render_upscaler
+    int 0 6
+    default 0
+    words Best|FSR 2|FSR 1|Filtered copy|DLSS|FSR 3.1 or 4|XeSS
+    help The upscaler of the game's own rendering: a Switch 2 game's DLSS evaluations, and the upscalers that hook
+    help modules replace (docs/layers/gpu/upscalers.md). 0 = the best one that can run, 1 = AMD FidelityFX Super
+    help Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or motion needed), 3 = a filtered copy,
+    help 4 = NVIDIA DLSS (Windows, an NVIDIA GPU, and NVIDIA's runtime in dlss_runtime's folder). FSR 3.1 or 4 and
+    help XeSS are not built in yet. Where the one asked for can't run, or its caller can't take it (a DLSS evaluation
+    help takes a temporal one only), the best one that can stands in
+setting DLSS runtime
+    key dlss_runtime
+    text 2048
+    startup
+    only windows
+    help The folder that holds NVIDIA's DLSS runtime, which the user downloads from NVIDIA and which is not part of
+    help ScarletNX: sl.interposer.dll, sl.common.dll and sl.dlss.dll from NVIDIA Streamline's SDK and nvngx_dlss.dll
+    help (docs/user/dlss.md). Empty = no DLSS. With it, render_upscaler 0 (Best) or 4 runs DLSS on an NVIDIA GPU. On
+    help any other, or where the files are missing or not signed by NVIDIA, the next upscaler stands in
+setting DLSS preset
+    key dlss_preset
+    int 0 4
+    default 2
+    words NVIDIA's|J|K|L|M
+    startup
+    only windows
+    help The DLSS model: 0 = NVIDIA's choice for each mode, 1 to 4 = the presets J, K, L, M (transformer models). K
+    help by default: at 2x it takes less memory than NVIDIA's choice there (M), 158 against 214 MB at 2560x1440
 setting DLSS render size
     key dlss_render_size
     int 0 5
@@ -272,7 +302,7 @@ setting FSR sharpness
     key fsr_sharpness
     float 0 1
     default 0
-    help The sharpening FSR 2 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
+    help The sharpening FSR 2 or FSR 1 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
 setting Shadows
     key shadows
     int 0 1
@@ -1450,7 +1480,8 @@ setting Hook families off
     default ""
     startup
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
-    help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
+    help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
+    help which a problem comes from. Empty: every family and module is on
 setting Hook families verified
     key hooks_verify
     text 256
@@ -1481,6 +1512,14 @@ setting Native os sync
     help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
     help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
     help and loaded
+setting GPU hook trace
+    key gpu_hook_trace
+    int 0 1000000
+    default 0
+    startup
+    help How many of a Switch 2 or NVN game's draws and dispatches the log names as a hook module's GPU chain would
+    help (docs/platforms/nx/hooks.md, Modules): each dispatch's program hash, call site in main, grid and block, each
+    help draw's fragment program hash and targets. For writing a module from a run. 0 = none
 setting Shader corpus
     key shader_corpus
     text 1024

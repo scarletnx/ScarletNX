@@ -1224,11 +1224,12 @@ static void c0_packed(const NvnDraw* d, DispatchState* x) {
     }
     memcpy(x->bank0, c0, sizeof c0);
 }
-static void dispatch(NvnDraw* d, u64 payload) {
+/* the record's grid into the queue's state: 0 when the record dispatches nothing */
+static int dispatch_grid(NvnDraw* d, u64 payload) {
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
     u32 g[3];
     g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
-    if (!d->dx.code || !g_renderer->dispatch || (!r->ind && (!g[0] || !g[1] || !g[2]))) return;
+    if (!d->dx.code || !g_renderer->dispatch || (!r->ind && (!g[0] || !g[1] || !g[2]))) return 0;
     /* DispatchComputeIndirect's grid stays in guest memory, which the GPU reads (DispatchState.indirect) */
     d->dx.indirect = r->ind;
     if (!r->ind) {
@@ -1237,6 +1238,16 @@ static void dispatch(NvnDraw* d, u64 payload) {
         snx_st_le32(d->dx.bank0 + 0x204, g[1]);
         snx_st_le32(d->dx.bank0 + 0x208, g[2]);
     }
+    return 1;
+}
+int nvn_draw_dispatch_state(NvnDraw* d, u64 payload, DispatchState* x) {
+    if (!dispatch_grid(d, payload)) return 0;
+    *x = d->dx;
+    if (g_shader_sm86 && d->c0rec[0] == 1) c0_packed(d, x);
+    return 1;
+}
+static void dispatch(NvnDraw* d, u64 payload) {
+    if (!dispatch_grid(d, payload)) return;
     if (g_shader_sm86 && d->c0rec[0] == 1) {
         DispatchState x = d->dx;
         c0_packed(d, &x);

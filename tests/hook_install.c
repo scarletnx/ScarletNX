@@ -51,7 +51,7 @@ int kernel_symbol(u32 i, u64* addr, const char** name) {
     *addr = symbols[i].addr, *name = symbols[i].name;
     return 1;
 }
-static const SnxModInfo modules[1] = {{.name = "main", .base = CODE, .size = 0x1000}};
+static const SnxModInfo modules[1] = {{.name = "main", .base = CODE, .size = 0x1000, .text_size = 0x1000}};
 static SnxModule module = {.nmods = 1, .mods = modules};
 const SnxModule* g_mod = &module;
 const SnxArmModule* g_arm_mod;
@@ -136,6 +136,25 @@ int main(void) {
     c.mem = guest;
     c.disp = slots; /* the dispatch loop's table, for a function's own code that leaves for other code */
     g_settings.native_hooks = 1;
+#ifdef HOOK_MODULE_TEST
+    /* a hook module named after the plain family (tests/hook_module_plain.c), whose code check holds (1) or not (2), or
+       holds while hooks_off names it (3): applied, the family's hook goes in. Refused or off, the game's function keeps
+       its own code, the other family its hook */
+    static const u8 checked[4] = {0xde, 0xad, 0xbe, 0xef};
+    memcpy(guest + CODE + 0x40, checked, sizeof checked);
+    if (HOOK_MODULE_TEST == 2) guest[CODE + 0x41] = 0;
+    /* 3: the check holds, and the game's .ini turns the module off by its name */
+    if (HOOK_MODULE_TEST == 3)
+        snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "libc, plain");
+    hook_install();
+    assert(hook_module_applies(0) == (HOOK_MODULE_TEST == 1));
+    assert(slots[(ANSWER - CODE) >> 2] == (HOOK_MODULE_TEST == 1 ? hook_fn[answer] : own_answer));
+    assert(slots[(COPY - CODE) >> 2] == hook_fn[entry_of("copy")]);
+    puts(HOOK_MODULE_TEST == 1   ? "hook_install, a module that applies: passed"
+         : HOOK_MODULE_TEST == 2 ? "hook_install, a module refused: passed"
+                                 : "hook_install, a module turned off: passed");
+    return 0;
+#endif
     snprintf(g_settings.hook_families_verified, sizeof g_settings.hook_families_verified, "pure");
     hook_install();
     assert(slots[(COPY - CODE) >> 2] == verify_fn && slots[(ANSWER - CODE) >> 2] == hook_fn[answer]);
