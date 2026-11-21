@@ -79,6 +79,8 @@ typedef struct {
                                    block from being emptied, and one that gets an owner without this stays where it is */
     u8 brief;                   /* without moves: it comes and goes by the hundred MB with the game's work (the
                                    mirror's granules, kept results), in blocks apart from what stays (DM_KIND_BRIEF) */
+    u8 sized;                   /* its size follows the game's from one request to the next (render targets at a
+                                   dynamic resolution, and their copies): a large one takes a run of its size class */
 } DevMemWant;
 typedef struct {
     VkDeviceMemory memory;

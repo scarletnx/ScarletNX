@@ -1077,6 +1077,15 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(bbuf >> 20), (unsigned long long)(usage >> 20),
                     (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20),
                     (unsigned long long)(vk_surf_ended_freed() >> 20));
+                VkRtKinds k;
+                vk_rt_kinds(&k);
+                LOG("vulkan: render targets by what they hold: %u that later ones drew all over (%llu MB, %u parked), "
+                    "%u that memory holds or that hold nothing (%llu MB, %u parked), %u with pixels memory lacks (%llu "
+                    "MB, %u parked); %u copies of them (%llu MB); %llu MB let go that the frames in flight still hold\n",
+                    k.n[0], (unsigned long long)(k.bytes[0] >> 20), k.parked[0], k.n[1],
+                    (unsigned long long)(k.bytes[1] >> 20), k.parked[1], k.n[2], (unsigned long long)(k.bytes[2] >> 20),
+                    k.parked[2], k.copies, (unsigned long long)(k.copy_bytes >> 20),
+                    (unsigned long long)(vk_deferred_bytes() >> 20));
             }
             vk_tex_report_log();
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "

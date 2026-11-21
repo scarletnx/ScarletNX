@@ -653,6 +653,7 @@ int vk_uma_can_dmabuf(void);
    g_vk_present moved. vk_present_before: the present before which an entry last used then has gone unused for at
    least ago_ns and at least `presents` presents (0: none has) */
 void vk_mem_use(u64* usage, u64* budget);
+u64 vk_mem_holes(void); /* the free space inside that heap's blocks, which the use leaves out */
 int vk_mem_heap(void); /* that heap's index */
 u64 vk_mem_budget_cap(u64 bytes); /* vk_budget_mb's cap set to bytes (0: none), the one it had back */
 /* moves whenever the budget vk_mem_use gives can have moved since: the driver's budgets asked again
@@ -1277,6 +1278,7 @@ typedef struct Surf {
     u32 row;
     u64 bytes; /* the device memory its image takes */
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    u64 took_wseq;  /* textures: the newest change (wseq) of the surfaces those pixels came from */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
        Bytes that owner still holds are the image's own (texture.c pieces_published) */
     u64 pub_serial;
@@ -1549,6 +1551,7 @@ void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recenc
 void vk_surf_touch(Surf* s);
 /* s's pixels can be had again now: off the list of old ones whose pixels would be lost, if it is on it */
 void vk_surf_relist(Surf* s);
+int vk_surf_lossless(const Surf* s); /* its pixels can be had again once it goes: from memory, or later targets */
 VkImageAspectFlags vk_aspect(const VkFmt* f);
 /* frees textures (VK_LRU_TEX) or render targets (VK_LRU_RT), the least recently used first, last used before the
    present `before`, until `want` bytes went. lossy says which: VK_RECLAIM_LOSSLESS only those whose pixels can be had
@@ -1562,6 +1565,16 @@ u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
+   (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
+   the copies of them (texture.c rt_copy), which go with them */
+typedef struct {
+    u32 n[3], parked[3];
+    u64 bytes[3];
+    u32 copies;
+    u64 copy_bytes;
+} VkRtKinds;
+void vk_rt_kinds(VkRtKinds* k);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */

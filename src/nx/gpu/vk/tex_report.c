@@ -81,6 +81,7 @@ typedef struct {
         u32 n;
         u64 bytes;
     } by_class[VK_TEX_CLASSES];
+    u64 dead_held; /* the dead ones' bytes that only they hold (vk_surf_lossless) */
     int detail; /* buffer_copy_stats: the sums below too */
     VkTexFormats formats;
     VkAstcSizes astc;
@@ -144,6 +145,7 @@ static void census_texture(void* ctx, const Surf* t) {
         const int k = vk_tex_live_class(c->starts, c->nstarts, c->live, c->nlive, t->gva);
         c->by_class[k].n++;
         c->by_class[k].bytes += t->bytes;
+        if (k == VK_TEX_DEAD && !vk_surf_lossless(t)) c->dead_held += t->bytes;
     }
     if (!c->detail) return;
     /* an ASTC texture the device samples as it is: one row for all its block sizes, which the ASTC sums tell apart */
@@ -291,11 +293,11 @@ void vk_tex_report_log(void) {
     if (c.starts || c.detail) vk_surf_each(VK_LRU_TEX, census_texture, &c);
     if (c.starts)
         LOG("vulkan: textures by the game's texture objects: %u at the address of a live object (%llu MB), %u inside "
-            "a live object (%llu MB), %u dead with no live object at their address (%llu MB). The game has %llu live "
-            "objects at %u addresses\n",
+            "a live object (%llu MB), %u dead with no live object at their address (%llu MB, %llu MB of it pixels taken "
+            "from render targets that no later one drew over). The game has %llu live objects at %u addresses\n",
             c.by_class[VK_TEX_LIVE].n, MB(c.by_class[VK_TEX_LIVE].bytes), c.by_class[VK_TEX_INSIDE].n,
             MB(c.by_class[VK_TEX_INSIDE].bytes), c.by_class[VK_TEX_DEAD].n, MB(c.by_class[VK_TEX_DEAD].bytes),
-            (unsigned long long)c.refs, c.nstarts);
+            MB(c.dead_held), (unsigned long long)c.refs, c.nstarts);
     if (g_tex_report.evictions)
         LOG("vulkan: %llu textures made again after the cache evicted them (%llu MB of guest memory loaded again, "
             "%llu MB of images), %llu of them since the last report. The cache evicted %llu textures in all\n",

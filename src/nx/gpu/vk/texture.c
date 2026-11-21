@@ -1303,6 +1303,7 @@ void vk_tex_later_stats(VkLaterStats* s) {
    (took_drawn), which the cache keeps until nothing lossless is left. A texture in pieces or with sparse blocks keeps
    the low class of its owner: the driver only moves its memory sooner */
 static void tex_drawn(Surf* t, int drawn) {
+    if (!drawn) t->took_wseq = 0;
     if (t->took_drawn == drawn) return;
     t->took_drawn = drawn;
     vk_devmem_priority(t->mem, drawn ? DM_PRIO_MID : DM_PRIO_LOW);
@@ -4644,6 +4645,10 @@ static int copied_into(const Surf* s, const Surf* t) {
 }
 static void mark_copied(Surf* s, Surf* t) {
     tex_drawn(t, 1);
+    /* what a later draw over t must come after for t's pixels to be no one's (surface.c tex_superseded): s's last
+       change, a draw or a storage surface's store */
+    const u64 w = s->wseq > s->draw_wseq ? s->wseq : s->draw_wseq;
+    if (w > t->took_wseq) t->took_wseq = w;
     if (s->copied[0].t != t) s->copied[1] = s->copied[0];
     s->copied[0].t = t;
     s->copied[0].wgen = s->wgen;

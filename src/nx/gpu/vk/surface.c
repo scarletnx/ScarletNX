@@ -2714,23 +2714,51 @@ void vk_rt_watch_owed(void) {
     }
 }
 static u64 g_drawn_max; /* the biggest span a listed target has: how far before an address one over it can start */
-/* Whether every byte of s's span was drawn over after s last changed, by targets drawn later, each over its own span:
-   memory holds their pixels now (or would on the console), so s's are no one's to read and it goes without loss. A
-   game rendering at a dynamic resolution makes its scene's targets again at another size each frame over the same
-   memory, and each old one held a draw memory never got: kept as precious, a few thousand took the budget from the
-   targets that are (one game's ink maps, drawn once at a level's start, went under that pressure with the budget
-   lowered, and its walls took no ink). The drawn list is in order of address, so the targets over s are a sweep from its start */
-static int rt_superseded(const Surf* s) {
-    u64 lo = s->gva & ~(1ull << 63), hi = lo + s->rt_size, reach = lo;
-    if (!s->is_rt || !s->rt_size) return 0;
+/* Whether every byte of [lo, hi) was drawn over by targets other than self drawn after `after`, each over its own
+   span: memory holds their pixels now (or would on the console). Of a target drawn over after it last changed
+   (rt_superseded), its own pixels are then no one's to read, and it goes without loss. A game rendering at a dynamic
+   resolution makes its scene's targets again at another size each frame over the same memory, and each old one held a
+   draw memory never got: kept as precious, a few thousand took the budget from the targets that are (one game's ink
+   maps, drawn once at a level's start, went under that pressure with the budget lowered, and its walls took no ink).
+   The drawn list is in order of address, so the targets over [lo, hi) are a sweep from lo */
+static int drawn_covers(u64 lo, u64 hi, u64 after, const Surf* self) {
+    u64 reach = lo;
     for (int i = drawn_lower(lo > g_drawn_max ? lo - g_drawn_max : 0); i < g_ndrawn && g_drawn[i]->drawn_from <= reach;
          i++) {
         const Surf* o = g_drawn[i];
-        if (o == s || o->draw_wseq <= s->wseq || o->drawn_from + o->rt_size <= reach) continue;
+        if (o == self || o->draw_wseq <= after || o->drawn_from + o->rt_size <= reach) continue;
         reach = o->drawn_from + o->rt_size;
         if (reach >= hi) return 1;
     }
     return 0;
+}
+static int rt_superseded(const Surf* s) {
+    const u64 lo = s->gva & ~(1ull << 63);
+    return s->is_rt && s->rt_size && drawn_covers(lo, lo + s->rt_size, s->wseq, s);
+}
+/* The same of a texture that took pixels from render targets (tex_take_drawn): every byte of its span drawn over by
+   targets drawn after the newest it took (took_wseq). Its pixels are older than theirs, which a texture made there
+   takes again, so it goes as one loaded from memory does, the game's ended ones first (ended_reclaim). A racing game at
+   a dynamic resolution, which draws its scene to targets of a new size each frame, held 4.8 GB of textures with no live
+   texture object at their address, and its trims moved 1.8 GB of textures into system memory */
+static int tex_superseded(const Surf* t) {
+    return !t->is_rt && t->took_drawn && t->size && !(t->gva >> 63) &&
+           drawn_covers(t->gva, t->gva + t->size, t->took_wseq, t);
+}
+void vk_rt_kinds(VkRtKinds* k) {
+    *k = (VkRtKinds){0};
+    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head; r; r = g_rows.lru[r].next) {
+            const Surf* s = g_rows.surf[r];
+            const int kind = s->layout != VK_IMAGE_LAYOUT_UNDEFINED && rt_superseded(s) ? 0 : lossless(s) ? 1 : 2;
+            k->n[kind]++;
+            k->bytes[kind] += s->bytes;
+            k->parked[kind] += (s->gva >> 63) != 0;
+            for (const Surf* c = s->crop; c; c = c->next) {
+                k->copies++;
+                k->copy_bytes += c->bytes;
+            }
+        }
 }
 /* The runs of s's span's size bytes that no target drawn after s last changed is over, as [from, to) offsets into the
    span in address order: the bytes whose newest pixels are s's. The rest are a later target's, as all of a target
@@ -2882,15 +2910,16 @@ static int keeps_drawn(Surf* s) {
     return s->f.depth ? s->layout != VK_IMAGE_LAYOUT_UNDEFINED : vk_rt_drawn_fresh(s);
 }
 /* a surface whose pixels can be had again once it goes. A texture: loaded from memory, unless it took pixels from
-   render targets since. A render target: without defined contents, or with memory holding what it holds (written back
+   render targets since that later ones did not draw over (tex_superseded). A render target: without defined contents, or with memory holding what it holds (written back
    or loaded since its last draw, in a format that moves between the two; rt_create loads it again), or with every
    byte drawn over by later targets (rt_superseded). A parked one too only then: taken out of parking it gives back
    its own pixels, which memory, written by neither target's draws, doesn't have */
 static int lossless(const Surf* s) {
-    if (!s->is_rt) return !s->took_drawn;
+    if (!s->is_rt) return !s->took_drawn || tex_superseded(s);
     if (s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 1;
     return (!s->f.depth && s->f.raw && s->mem_wgen == s->wgen && moves_scaled(s)) || rt_superseded(s);
 }
+int vk_surf_lossless(const Surf* s) { return lossless(s); }
 /* s out of the table and freed, with its copies (gpu/vk/texture.c rt_crop): the device memory that releases */
 /* a texture where an eviction would take it (want: bytes of the GPU's memory are asked for): moved into system memory
    (vk_tex_demote), else evicted. One in system memory already frees none of the GPU's memory: it stays for such a
@@ -3204,6 +3233,7 @@ static u64 trim_head(u64 budget) {
     return head > budget / 4 ? budget / 4 : head;
 }
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
+static u32 g_churned;   /* the present a trim that memory no entry holds started last ran (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 static u32 g_oom_target; /* the same of render targets */
@@ -3388,12 +3418,27 @@ void vk_mem_trim(u64 extra, int force) {
     vk_mem_use(&usage, &budget);
     usage += extra;
     const u64 head = trim_head(budget);
+    /* What the caches' count (vk_mem_use) leaves out and the allocator counts against the budget, as it makes no block
+       past it (devmem.c): the free space inside the heap's blocks (vk_mem_holes), which a request takes only where a
+       piece is as big, and the memory let go that the frames in flight still hold (vk_deferred_bytes), back once they
+       are done. A racing game at a dynamic resolution, which draws its scene to targets of a new size each frame and
+       copies them, filled a heap of 12 GB either way while the trim counted far less and never started: once with
+       2.5 GB in flight (7.6 GB counted), once with 0.9 GB free inside the blocks in pieces of 7.5 MB at most under
+       requests of 8 to 16 MB (11.1 GB counted, the start at 11.8). So the trim starts with both counted in */
+    const u64 holes = vk_mem_holes(), inflight = vk_deferred_bytes();
     if (force) { /* the allocation's size, less what evictions before it are releasing already: not what moves
                     release, which goes back to a block no request takes while it is emptied */
-        u64 gone = vk_deferred_bytes() - vk_deferred_moved();
+        u64 gone = inflight - vk_deferred_moved();
         need = extra > gone ? extra - gone : 0;
-    } else if (usage <= vk_mem_trim_start(budget))
+    } else if (usage + holes + inflight <= vk_mem_trim_start(budget))
         return;
+    /* started by what no entry holds, not by the caches: the game's churn. Once a present, as a trim for an
+       allocation: what it frees comes back when the frame is done, and each call walks the targets it leaves */
+    const int churn = !force && usage <= vk_mem_trim_start(budget);
+    if (churn) {
+        if (g_churned == g_vk_present + 1) return;
+        g_churned = g_vk_present + 1;
+    }
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to two heads under the budget
@@ -3416,9 +3461,12 @@ void vk_mem_trim(u64 extra, int force) {
        2 GB budget, where a trim ran each present, 60 and 85% of the targets made in its two busiest spans of 600
        presents (21% in a quieter one) had the shape of one freed in the 120 presents before. Each was a new image
        and, for the large ones, memory of its own: a call to the driver of 0.64 ms where it moves memory, 0.29 ms
-       where it doesn't. A trim for an allocation (force) still takes them after two presents */
-    const u32 superseded_before = g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8)
-                                                               : vk_present_before(0, 2);
+       where it doesn't. A trim for an allocation (force) still takes them after two presents, and so does one that
+       memory no entry holds started (churn): the driver pages nothing that our allocator keeps under the budget, and
+       in the racing game the first trim for an allocation freed 6.6 GB of such targets and their copies, a second of
+       its frames, and nothing else */
+    const u32 superseded_before =
+        g_vk.has_pageable && !force && !churn ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
     u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull);
     static const struct {
         u32 ms, presents;
@@ -3427,10 +3475,18 @@ void vk_mem_trim(u64 extra, int force) {
     } steps[] = {{1000, 8, 0, 4}, {0, 8, 0, 1}, {5000, 30, 1, 2}, {1000, 8, 1, 1}};
     u64 freed = superseded, by[3] = {0, 0, superseded}, working = 0, step_big = 0, step_back = 0;
     int short_of = 0;
+    /* For an allocation that found no memory (force), what goes only once unused for a second, and the textures the
+       game ended, count the free space inside the blocks as used: a request found none there, and the blocks give
+       room only as they empty. In the racing game, after its first such allocation, 2 to 4 GB stayed free inside the
+       blocks in pieces under 16 MB, 800 to 1,100 requests in 600 presents found none, and each trim, counting 7.7 to
+       9.7 GB, freed only the targets drawn over, while 3 to 4.5 GB of textures with no live texture object at their
+       address stayed. The steps that take what the last presents used leave it out: those would go for room their
+       going does not make */
+    const u64 idle_use = force ? usage + holes : usage;
     /* first the textures the game has ended, down to the lowest mark: no later frame asks for them */
     ended_collect();
     {
-        const u64 low = budget - 2 * head, left = usage > freed ? usage - freed : 0;
+        const u64 low = budget - 2 * head, left = idle_use > freed ? idle_use - freed : 0;
         u64 want = left > low ? left - low : 0;
         if (want < need) want = need;
         /* under the budget's pressure, after two presents: a draw recorded before the object ended may hold one */
@@ -3449,7 +3505,8 @@ void vk_mem_trim(u64 extra, int force) {
         freed += got;
     }
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
-        u64 mark = budget - steps[i].mark * (head / 2), left = usage > freed ? usage - freed : 0;
+        const u64 use = steps[i].ms ? idle_use : usage;
+        u64 mark = budget - steps[i].mark * (head / 2), left = use > freed ? use - freed : 0;
         u64 want = left > mark ? left - mark : 0;
         if (freed < need && want < need - freed) want = need - freed;
         if (!want) continue;
@@ -3511,10 +3568,11 @@ void vk_mem_trim(u64 extra, int force) {
                  (unsigned long long)(g_left_big >> 20), (unsigned long long)(g_left_back >> 20));
     if (freed || short_of)
         LOG_LIMIT(20,
-                  "vulkan: %llu of %llu MB budgeted in use%s: freed %llu MB of textures, %llu of buffers, %llu of "
-                  "render targets%s%s\n",
+                  "vulkan: %llu of %llu MB budgeted in use%s, with %llu MB free inside the heap's blocks and %llu MB "
+                  "the frames in flight hold: freed %llu MB of textures, %llu of buffers, %llu of render targets%s%s\n",
                   (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
-                  force ? " (an allocation found no memory)" : "", (unsigned long long)(by[0] >> 20),
+                  force ? " (an allocation found no memory)" : "", (unsigned long long)(holes >> 20),
+                  (unsigned long long)(inflight >> 20), (unsigned long long)(by[0] >> 20),
                   (unsigned long long)(by[1] >> 20), (unsigned long long)(by[2] >> 20),
                   short_of ? ", all that could go" : "", left_big);
     g_left_big = g_left_back = 0;
