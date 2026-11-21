@@ -8076,6 +8076,10 @@ static int run_headless(int argc, char** argv) {
             free(copy);
             free(text);
         }
+    /* the checks read each draw's counts and pixels right after the draw is made, on this thread: the renderer's side
+       runs here too unless an argument asks for its thread (--gpu-split=1), where a draw is done only once that
+       thread has taken it */
+    g_settings.gpu_split = 0;
     /* the checks of guest memory read in place bind vertices and constant buffers there, as the runtime did before
        uma_copies, whose auto copies them on amdgpu (vk_uma_imports_dear): in place unless the command line says
        otherwise (--uma_copies=0 or 2), and check_uma_copies takes each value itself */
