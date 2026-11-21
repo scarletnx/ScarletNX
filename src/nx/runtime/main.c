@@ -615,6 +615,22 @@ static void npdm_layout(void) {
         g_ounce = g_shader_sm86 = g_gob_native = 1;
         g_shader_sm86_dump = g_settings.sm86_dump[0] ? g_settings.sm86_dump : NULL;
         clock_ounce();
+        /* An Ounce program's eight cores run best with no emulated core ordering: the ordering makes each guest thread
+           yield at SVC and poll points for the priority of the core it holds, which costs the CPU its threads contend
+           with the GPU thread for. One game's race went from 8 to 24 frames a second to 16 to 35 with this off.
+           The command line's own --emulated_cores still wins */
+        if (!ini_overridden("emulated_cores")) {
+            g_settings.emulated_cores = 0;
+            LOG("npdm: an Ounce program: emulated_cores off, the host's threads are the cores\n");
+        }
+        /* A first run's new shader combinations compile as the game goes, and each new pipeline stalls the frame 60 to
+           400 ms while it is made: a race hitches as new views come into sight. async_pipelines makes them on a worker
+           and skips the draw until its pipeline is ready, so what a new shader draws shows up a frame or two late
+           instead of the pause. The command line's own --async_pipelines still wins */
+        if (!ini_overridden("async_pipelines")) {
+            g_settings.async_pipelines = 1;
+            LOG("npdm: an Ounce program: async_pipelines on, a new shader's draws show up a frame or two late\n");
+        }
         LOG("npdm: an Ounce program\n");
     }
     if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
