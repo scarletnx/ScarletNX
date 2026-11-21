@@ -23,6 +23,11 @@
 #define AUDREN_MAX_QUEUED_MS 100
 /* the log says what each playing renderer's host queue was once in this many seconds of frames */
 #define AUDREN_QUEUED_LINE_S 10
+/* the sound the host is left holding when a frame comes, once it held more through a whole window with no frame
+   finding it empty for the calm time: four frames, what a late turn of the clock's thread may take without silence */
+#define AUDREN_TARGET_QUEUED_MS 20
+#define AUDREN_TARGET_WINDOW_S  1
+#define AUDREN_TARGET_CALM_S    10
 
 ARRen* audren_at(u32 id) {
     ARRen* r = id && id <= SNX_AUDREN_MAX ? &g_hle.audren.rens[id - 1] : NULL;
@@ -105,23 +110,47 @@ static u32 audren_queued_ms(const ARRen* r, u64 bytes) {
     return (u32)((bytes * 1000 + ms_bytes / 2) / ms_bytes);
 }
 
-/* A frame of the clock that found r's output playing with queued bytes left, dropped or not: counted, and every
-   AUDREN_QUEUED_LINE_S seconds of frames the log says what the queue was, the sound's delay behind the clock. Only
-   sums on the clock's thread between two lines */
-static void audren_queued_count(const ARRen* r, u32 queued, int dropped) {
-    u32 id = POOL_INDEX(g_hle.audren.rens, r) + 1;
+/* whether frames of r's are seconds of sound, or more */
+static int audren_frames_last(const ARRen* r, u32 frames, u32 seconds) {
+    return (u64)frames * r->s->frame >= (u64)seconds * r->s->rate;
+}
+
+/* A frame of the clock that found r's output playing with queued bytes left: whether it is dropped, not given to the
+   host. Above AUDREN_MAX_QUEUED_MS it is. And the bytes the host holds when a frame comes are how far the sound
+   trails the clock, which a stall of the clock's thread leaves higher (the host ran out, then got the stall's
+   frames at once) for good: so one frame is dropped each time the host held more than
+   AUDREN_TARGET_QUEUED_MS through a whole AUDREN_TARGET_WINDOW_S, once no frame found it empty for
+   AUDREN_TARGET_CALM_S, so a host that keeps stalling keeps the sound its stalls need. Every AUDREN_QUEUED_LINE_S
+   seconds of frames the log says what the queue was. Only sums on the clock's thread between two lines */
+static int audren_queued_frame(const ARRen* r, u32 queued) {
+    u32 id = POOL_INDEX(g_hle.audren.rens, r) + 1, ms_bytes = r->s->rate * 4 / 1000;
     AudrenQueued* q = &g_host.audren.queued[id - 1];
+    int over = queued > ms_bytes * AUDREN_MAX_QUEUED_MS, trim = 0;
+    if (!q->window || queued < q->floor) q->floor = queued;
+    if (!queued)
+        q->calm = 0;
+    else if (!audren_frames_last(r, q->calm, AUDREN_TARGET_CALM_S))
+        q->calm++;
+    if (audren_frames_last(r, ++q->window, AUDREN_TARGET_WINDOW_S)) {
+        trim = !over && q->floor > ms_bytes * AUDREN_TARGET_QUEUED_MS &&
+               audren_frames_last(r, q->calm, AUDREN_TARGET_CALM_S);
+        q->window = 0;
+    }
     if (!q->frames || queued < q->least) q->least = queued;
     if (queued > q->most) q->most = queued;
     q->sum += queued;
     q->empty += !queued;
-    q->dropped += dropped != 0;
-    if ((u64)++q->frames * r->s->frame < (u64)AUDREN_QUEUED_LINE_S * r->s->rate) return;
-    LOG("audren %u: the host held %u to %u ms of sound over the last %d s, %u ms on average; %u frames found it "
-        "empty, and %u found more than %d ms and were dropped\n",
-        id, audren_queued_ms(r, q->least), audren_queued_ms(r, q->most), AUDREN_QUEUED_LINE_S,
-        audren_queued_ms(r, q->sum / q->frames), q->empty, q->dropped, AUDREN_MAX_QUEUED_MS);
-    *q = (AudrenQueued){0};
+    q->dropped += over;
+    q->trimmed += trim;
+    if (audren_frames_last(r, ++q->frames, AUDREN_QUEUED_LINE_S)) {
+        LOG("audren %u: the host held %u to %u ms of sound over the last %d s, %u ms on average; %u frames found it "
+            "empty, %u found more than %d ms and were dropped, and %u were dropped to bring it back to %d ms\n",
+            id, audren_queued_ms(r, q->least), audren_queued_ms(r, q->most), AUDREN_QUEUED_LINE_S,
+            audren_queued_ms(r, q->sum / q->frames), q->empty, q->dropped, AUDREN_MAX_QUEUED_MS, q->trimmed,
+            AUDREN_TARGET_QUEUED_MS);
+        *q = (AudrenQueued){.window = q->window, .floor = q->floor, .calm = q->calm};
+    }
+    return over || trim;
 }
 
 void audren_tick(void) {
@@ -147,9 +176,7 @@ void audren_tick(void) {
         /* nothing left on the device while the renderer is playing: the sound stopped for as long as the host took
            to give it the next frame, which a stalled run's audio shows as a click */
         SNX_PLOT("audio underruns", r->out_started && !queued ? 1.0 : 0.0);
-        int drop = queued > r->s->rate * 4 / 1000 * AUDREN_MAX_QUEUED_MS;
-        if (r->out_started) audren_queued_count(r, queued, drop);
-        if (drop) continue;
+        if (r->out_started && audren_queued_frame(r, queued)) continue;
         snx_le16_array(stereo, (size_t)r->s->frame * 2); /* the host plays little-endian samples, as audout's are */
         plat_audio_queue(r->out, stereo, bytes);
         if (!r->out_started) {
