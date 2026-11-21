@@ -5,8 +5,10 @@
    again with Rd, Rn and Rm 31) that the x86-64 back end's roots (a64_x64.roots) take becomes x86-64 code for u64
    step(CPU*), once with the host's BMI1, BMI2 and LZCNT and once with none (the candidates without them), and an LLVM
    step (llvm_steps.c, the generated LLVM emitters); both run from the same random states, and every register, the
-   flags, the next pc and the runtime's UNDEF must match.
-     snx-test-sail-x64 [--states N] [--samples N] [--verbose] [--dump WORD]
+   flags, the next pc and the runtime's UNDEF must match. Then sequences of two to four of those words (--sequences N)
+   become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
+   a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
+     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--verbose] [--dump WORD...]
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "llvm_steps.h"
@@ -74,7 +76,7 @@ static void on_undef(CPU* c, u64 pc, u32 word) {
 typedef u64 (*Step)(CPU* c);
 
 int main(int argc, char** argv) {
-    unsigned states = 64, samples = 3, i, k;
+    unsigned states = 64, samples = 3, sequences = 4000, i, k;
     unsigned hosts[2];
     u32 *rows = NULL, *words;
     size_t count, n = 0, failures = 0, unmade = 0, compared = 0, bytes = 0, made = 0, plain_unmade = 0;
@@ -89,13 +91,17 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--samples") && i + 1 < (unsigned)argc)
             samples = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--sequences") && i + 1 < (unsigned)argc)
+            sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))
             g_test.verbose = 1;
         else if (!strcmp(argv[i], "--dump") && i + 1 < (unsigned)argc) {
-            /* the word's x86-64 code on this host's features, as hex bytes (for a disassembler) */
+            /* the words' x86-64 code as one block on this host's features, as hex bytes (for a disassembler) */
             unsigned char buf[CODE_MAX];
-            u32 w = (u32)strtoul(argv[++i], NULL, 16);
-            size_t got = snx_x64_step(w, 0x1000, TARGET, host_features(), buf, sizeof buf), b;
+            u32 ws[16];
+            size_t nw = 0, got, b;
+            while (i + 1 < (unsigned)argc && nw < 16) ws[nw++] = (u32)strtoul(argv[++i], NULL, 16);
+            got = snx_x64_block(ws, &nw, 0x1000, TARGET, host_features(), buf, sizeof buf);
             for (b = 0; b < got; ++b) printf("0x%02x%c", buf[b], b + 1 < got ? ' ' : '\n');
             if (!got) printf("(not made)\n");
             return 0;
@@ -234,6 +240,102 @@ int main(int argc, char** argv) {
             }
         }
     llvm_steps_end(&set);
+    /* sequences: words in a row as one block, against their LLVM steps one after another */
+    if (n && sequences) {
+        typedef struct {
+            u32 w[4];
+            size_t count, code, first;
+        } Seq;
+        Seq* seq = (Seq*)malloc(sizeof(Seq) * sequences);
+        size_t q, nseq = 0, steps = 0;
+        if (!seq) return 1;
+        if (mprotect(code, code_cap, PROT_READ | PROT_WRITE)) return 1;
+        for (q = 0; q < sequences; ++q) {
+            Seq* sq = &seq[nseq];
+            size_t len = 2 + rnd() % 3, got, j;
+            for (j = 0; j < len; ++j) sq->w[j] = words[rnd() % n];
+            sq->count = len;
+            g_test.jumping = 1;
+            if (sigsetjmp(g_test.jump, 1)) {
+                g_test.jumping = 0;
+                ++failures;
+                fprintf(stderr, "FAIL: the block of");
+                for (j = 0; j < len; ++j) fprintf(stderr, " %08x", (unsigned)sq->w[j]);
+                fprintf(stderr, " can't be made\n");
+                continue;
+            }
+            got = snx_x64_block(sq->w, &sq->count, 0x1000, TARGET, hosts[0], code + code_at, code_cap - code_at);
+            g_test.jumping = 0;
+            if (!got) continue;
+            sq->code = code_at;
+            code_at += (got + 15) & ~(size_t)15;
+            ++nseq;
+        }
+        if (mprotect(code, code_cap, PROT_READ | PROT_EXEC)) return 1;
+        if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
+            fprintf(stderr, "FAIL: %s\n", error);
+            return 1;
+        }
+        for (q = 0; q < nseq; ++q) {
+            size_t j;
+            seq[q].first = steps;
+            for (j = 0; j < seq[q].count; ++j, ++steps) llvm_steps_add(&set, seq[q].w[j], 0x1000 + 4 * j, TARGET);
+        }
+        if (llvm_steps_load(&set, error, sizeof error)) {
+            fprintf(stderr, "FAIL: %s\n", error);
+            return 1;
+        }
+        for (q = 0; q < nseq; ++q) {
+            Step x64 = (Step)(void*)(code + seq[q].code);
+            unsigned st;
+            for (st = 0; st < states; ++st) {
+                CPU start, end[2];
+                u64 next[2] = {0, 0};
+                unsigned undef[2], r;
+                size_t j;
+                memset(&start, 0, sizeof start);
+                for (r = 0; r < 32; ++r) start.x[r] = rnd();
+                if (st & 1) start.x[rnd() & 31] = 0;
+                if (st & 2) start.x[rnd() & 31] = ~0ull;
+                start.n = rnd() & 1;
+                start.z = rnd() & 1;
+                start.cf = rnd() & 1;
+                start.vf = rnd() & 1;
+                start.rt = &rt;
+                start.pc = 0x1000;
+                end[0] = start;
+                end[1] = start;
+                g_test.undef = 0;
+                for (j = 0; j < seq[q].count; ++j) next[0] = set.steps[seq[q].first + j](&end[0]);
+                undef[0] = g_test.undef;
+                g_test.undef = 0;
+                next[1] = x64(&end[1]);
+                undef[1] = g_test.undef;
+                ++compared;
+                if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
+                    end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf) {
+                    ++failures;
+                    fprintf(stderr, "FAIL: the block of");
+                    for (j = 0; j < seq[q].count; ++j)
+                        fprintf(stderr, " %s %08x", op_name(seq[q].w[j]), (unsigned)seq[q].w[j]);
+                    fprintf(stderr, " state %u: the x86-64 code's result differs\n", st);
+                    if (g_test.verbose) {
+                        for (r = 0; r < 32; ++r)
+                            if (end[0].x[r] != end[1].x[r])
+                                fprintf(stderr, "  x%u: llvm %016llx x64 %016llx\n", r,
+                                        (unsigned long long)end[0].x[r], (unsigned long long)end[1].x[r]);
+                        fprintf(stderr, "  nzcv: llvm %u%u%u%u x64 %u%u%u%u; next: llvm %llx x64 %llx\n", end[0].n,
+                                end[0].z, end[0].cf, end[0].vf, end[1].n, end[1].z, end[1].cf, end[1].vf,
+                                (unsigned long long)next[0], (unsigned long long)next[1]);
+                    }
+                    break;
+                }
+            }
+        }
+        llvm_steps_end(&set);
+        printf("sail_x64: %zu blocks of 2 to 4 words\n", nseq);
+        free(seq);
+    }
     printf("sail_x64: %zu words made (%zu bytes of x86-64 on this host's features, %.1f a word; %zu of them not without "
            "BMI1, BMI2 and LZCNT), %zu runs, %zu failures (%zu words not made)\n",
            made, bytes, made ? (double)bytes / (double)made : 0.0, plain_unmade, compared, failures, unmade);

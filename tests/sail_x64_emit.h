@@ -13,6 +13,10 @@ enum { SNX_X64_BMI1 = 1, SNX_X64_BMI2 = 2, SNX_X64_LZCNT = 4 };
    code, 0 when the x86-64 back end's roots take no clause of it */
 size_t snx_x64_step(uint32_t word, uint64_t pc, uint64_t features, unsigned host_features, unsigned char* code,
                     size_t cap);
+/* words in a row as one function u64 block(CPU*), *count of them taken (a branch or UNDEF ends it): its size, 0 as
+   snx_x64_step's */
+size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t features, unsigned host_features,
+                     unsigned char* code, size_t cap);
 /* the SSA instructions the last step appended, dropped ones counted */
 unsigned snx_x64_instructions(void);
 

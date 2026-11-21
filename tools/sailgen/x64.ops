@@ -43,6 +43,29 @@ C := UInt(RESULT) != unsigned_sum;
 V := SInt(RESULT) != signed_sum;
 end
 
+# ADDS and SUBS of a 32-bit immediate, sign extended (ADD and SUB's immediate forms, with their flags)
+op adds_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(B);
+signed_sum := SInt(A) + SInt(B);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+op subs_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
 # CMP: SUBS's flags alone
 op cmp 32 64 (A, B)
 unsigned_sum := UInt(A) + UInt(NOT B) + 1;
