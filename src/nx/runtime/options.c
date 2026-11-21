@@ -466,6 +466,17 @@ void ini_override(const char* k, const char* v) {
 }
 
 const char* ini_overridden(const char* k) { return override_of(k); }
+int ini_given(const char* k) {
+    if (override_of(k)) return 1;
+    pm_lock(&g_picks_lock);
+    int picked = picks_find(k) != NULL;
+    pm_unlock(&g_picks_lock);
+    if (picked) return 1;
+    /* the file is written with every row, a row nobody set at its default (put_rows): only another value is a choice */
+    const Entry* e = store_find(k);
+    const IniOpt* o = find_row(k, NULL);
+    return e && (!o || !o->def || strcmp(e->value, o->def));
+}
 
 /* the menu's change, or its taking out of the game's pick (unpick), waiting for the next poll; apply: the poll applies
    it */
