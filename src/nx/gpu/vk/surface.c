@@ -1463,6 +1463,14 @@ static u32 rt_newer_over(const Surf* s, u64 size, Surf** local, u32 nlocal, Surf
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
 static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
+    /* a parked target (another size or format took its address, rt_create_) owns none of memory's bytes now: its pixels,
+       a storage image's result among them, land nowhere and are settled as if they had. Its address with the parked
+       bit is no GPU address: a write stamped there reads as one over every page (write_pages_stamp), which loaded
+       every target again from memory and left the depth targets undefined */
+    if (s->gva >> 63) {
+        s->mem_wgen = wgen;
+        return;
+    }
     u32 gh = guest_h(s);
     u64 gva = s->gva, row = (u64)guest_w(s) * s->f.bpp, slice = row * gh;
     u64 sz = rt_bytes(s), gw0 = gpu_mem_generation();
