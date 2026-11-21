@@ -1311,6 +1311,15 @@ static int uma_in_buffer(const u8* p) {
 #endif
 }
 static u8 uma_fill(u64 i) { return (u8)(i * 7 + 3); }
+/* a draw's start whose frame check submits what was recorded (vk_submit_every at 1). A region's reads recorded
+   after the last frame check keep it until a later submission is done, which settles them (uma.c's last_read): the
+   checks below free a region at the present after its readers, so their reads are submitted at the draw before */
+static void uma_draw_submits(void) {
+    const int every = g_settings.submit_every;
+    g_settings.submit_every = 1;
+    vk_frame_check();
+    g_settings.submit_every = every;
+}
 static int check_uma_migrate(void) {
     const u64 window = 0x200000;
     VkBuffer b, b2, rb;
@@ -1366,7 +1375,7 @@ static int check_uma_migrate(void) {
     CHECK(uma_in_buffer(g + window) == 1 && uma_in_buffer(g + 2 * window) == 0);
     uma_read(b2, off2, rb, 256);
     uma_read(b2, 0x1000, rb, 512);
-    vk_frame_check(); /* a draw begins: the copies are all recorded */
+    uma_draw_submits(); /* a draw begins: the copies are all recorded, and its frame check submits them */
     u64 recorded = vk_submit_number();
     vk_unlock();
     /* the second window unmapped while the copies are only recorded: nothing waits, nothing is submitted */
@@ -1389,7 +1398,7 @@ static int check_uma_migrate(void) {
         const u64 at = 2 * window + 0x100;
         CHECK(vk_uma_get(UMA_GM + at, 256, 1, &b, &off) && uma_in_buffer(g + 2 * window) == 1);
         uma_read(b, off, rb, 0);
-        vk_frame_check();
+        uma_draw_submits();
         VkOwnRes* owner = uma_owner(256, 0x42);
         CHECK(owner);
         vk_own_publish_owned(UMA_M + at, 256, owner, 0);

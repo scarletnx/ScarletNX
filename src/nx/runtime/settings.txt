@@ -1779,6 +1779,13 @@ setting Vulkan allocation cap
     startup
     help The largest Vulkan allocation in MiB, below the device's own (larger images in pieces with sparse binding),
     help to test the pieces on a driver that takes anything (lavapipe). 0 = the default
+setting Submit every
+    key vk_submit_every
+    int 0 65536
+    default 512
+    help The draws, dispatches and copy bands that a submission holds at most: what was recorded goes to the GPU after
+    help this much work, so the GPU starts on a frame while the rest of it is recorded (Eden's renderer submits every
+    help 4096 draws). 0 = a submission only where the GPU's results are needed (a present, a wait, a readback)
 setting Vulkan memory budget
     key vk_budget_mb
     int 0 INT_MAX

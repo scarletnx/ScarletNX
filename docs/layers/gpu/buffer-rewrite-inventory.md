@@ -924,7 +924,9 @@ trap.**
   first 12 ms of the 21 ms of a frame, then got all of it at the end and finished 6 ms after the GPU thread. The
   game ran at 34.7 fps, and at 40.3 with the rule. Limits of 2 ms and 0.5 ms were both slower. Earlier submissions
   also land their results sooner, so fewer results are pending at a lookup.
-- Comment: `cmd.c`, above `frame_rings` (the limit is `SUBMIT_EVERY_NS`, the code is `frame_check`).
+- Comment: `cmd.c`, above `frame_rings` (the limit is the `vk_submit_every` setting, a count of draws, dispatches and
+  copy bands since the last submission, the code is `frame_check`). It replaced a limit of a millisecond of
+  recording (`SUBMIT_EVERY_NS`).
 - Check: `check_pass_breaks` has a case that depends on this submit. No test holds the limit.
 
 **W4. Each submit lands the results of the submissions that the GPU finished.**

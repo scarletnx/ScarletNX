@@ -466,7 +466,7 @@ static int check_vertex_input_layouts(void) {
         if (p == npipes) pipes[npipes++] = g_viw.cap[c].pipe;
     }
     /* A layout is set before a draw exactly when its command buffer has another or none: a new command buffer (the
-       renderer submits one a millisecond of recording at most, and the last draw follows a finish), or another layout
+       renderer submits one each vk_submit_every draws at most, and the last draw follows a finish), or another layout
        before it, the clear's empty one among them. Draws 0 and 1 share theirs where no submit fell between them */
     for (u32 c = 1; g_vk.vertex_input_dynamic && c <= captured; c++) {
         int need = g_viw.cap[c].cb != g_viw.cap[c - 1].cb || want[c] != want[c - 1];
