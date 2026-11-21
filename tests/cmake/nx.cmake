@@ -327,6 +327,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "SNX_TEST_NVN_CASE=heap_pipeline_flags;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         SKIP_REGULAR_EXPRESSION "SKIP descriptor heap pipeline flags"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the shader objects of a draw of heaps (check_heap_shader_objects) under the validation layer when it is installed:
+    # the heaps' flag and each stage's mapping of its set in place of the set layouts, apart from those of sets
+    add_test(NAME vulkan_heap_shader_objects COMMAND snx-test-vulkan -H --vk-descriptors-mode=2 --vk-validation=1)
+    set_tests_properties(vulkan_heap_shader_objects PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        ENVIRONMENT "SNX_TEST_NVN_CASE=heap_shader_objects;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        SKIP_REGULAR_EXPRESSION "SKIP descriptor heap shader objects"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
     # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
     # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left

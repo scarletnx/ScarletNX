@@ -359,3 +359,96 @@ static int check_heap_pipeline_flags(void) {
            parts, links, (unsigned long long)common, asks, missed, fast);
     return 0;
 }
+
+/* A draw of descriptor heaps binds shader objects where the device has them (shader_objects.c): each object is made
+   with the heaps' flag, no set layouts and no push constant range, and its stage's mapping of its set, as a
+   pipeline's stage is (pipe_info). Such a draw went through a pipeline before, linked or compiled for each new state
+   on a device that takes heaps (an integrated GPU's, vk_descriptors_auto). The objects of heaps and of sets of one
+   module are two, as a run that falls back to sets (render.c) draws with both */
+typedef struct {
+    VkShaderCreateFlagsEXT flags;
+    u32 sets, ranges, mappings;
+    int mapped; /* a VkShaderDescriptorSetAndBindingMappingInfoEXT in its chain */
+} HeapSoCall;
+enum { HEAP_SO_CALLS = 8 };
+static struct {
+    PFN_vkCreateShadersEXT create;
+    u32 n;
+    HeapSoCall calls[HEAP_SO_CALLS];
+} g_heap_so;
+static VKAPI_ATTR VkResult VKAPI_CALL heap_so_create(VkDevice dev, uint32_t n, const VkShaderCreateInfoEXT* info,
+                                                     const VkAllocationCallbacks* alloc, VkShaderEXT* out) {
+    for (u32 i = 0; i < n && g_heap_so.n < HEAP_SO_CALLS; i++) {
+        HeapSoCall* c = &g_heap_so.calls[g_heap_so.n++];
+        *c = (HeapSoCall){
+            .flags = info[i].flags, .sets = info[i].setLayoutCount, .ranges = info[i].pushConstantRangeCount};
+        for (const VkBaseInStructure* x = info[i].pNext; x; x = x->pNext)
+            if (x->sType == VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT) {
+                c->mapped = 1;
+                c->mappings = ((const VkShaderDescriptorSetAndBindingMappingInfoEXT*)(const void*)x)->mappingCount;
+            }
+    }
+    return g_heap_so.create(dev, n, info, alloc, out);
+}
+static int check_heap_shader_objects(void) {
+    if (!g_vk.has_descriptor_heaps || !g_vk.has_shader_objects) {
+        printf("SKIP descriptor heap shader objects: %s\n",
+               !g_vk.has_descriptor_heaps ? "graphics descriptors are not heaps" : "draws go through pipelines");
+        return 0;
+    }
+    size_t words = 0;
+    u32* code = snx_test_spirv_graphics(0, &words);
+    CHECK(code);
+    VkShaderModule vs = vk_module_spv(code, words);
+    if (vs) vk_so_keep_spirv(vs, code, words);
+    free(code);
+    const size_t fs_words = snx_null_fs_spv_size / sizeof *snx_null_fs_spv;
+    VkShaderModule fs = vk_module_spv(snx_null_fs_spv, fs_words);
+    CHECK(vs && fs);
+    vk_so_keep_spirv(fs, snx_null_fs_spv, fs_words);
+    PipeKey k = {.vs = vs,
+                 .fs = fs,
+                 .topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                 .ncolor = 1,
+                 .color = {VK_FORMAT_R8G8B8A8_UNORM},
+                 .heaps = 1};
+    k.blend[0].mask = 15;
+    if (!vk_so_takes(&k, fs)) {
+        fprintf(stderr, "descriptor heap shader objects: a draw of heaps goes through a pipeline\n");
+        return 1;
+    }
+    vk_pipeline_quiesce(); /* no worker makes an object of its own meanwhile */
+    g_heap_so.n = 0;
+    g_heap_so.create = vkCreateShadersEXT;
+    vkCreateShadersEXT = heap_so_create;
+    VkShaderEXT heaps[5], sets[5];
+    const int made = vk_so_make(&k, fs, heaps);
+    k.heaps = 0;
+    const int made_sets = vk_so_make(&k, fs, sets);
+    vkCreateShadersEXT = g_heap_so.create;
+    CHECK(made && made_sets && heaps[0] && heaps[4] && sets[0] && sets[4]);
+    CHECK(heaps[0] != sets[0] && heaps[4] != sets[4]);
+    u32 of_heaps = 0, of_sets = 0;
+    for (u32 i = 0; i < g_heap_so.n; i++) {
+        const HeapSoCall* c = &g_heap_so.calls[i];
+        const int heap = (c->flags & VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT) != 0;
+        const char* wrong = heap && (c->sets || c->ranges) ? "set layouts or a push constant range"
+                            : heap && !c->mapped           ? "no mapping of its set"
+                            : !heap && c->mapped           ? "a mapping, without the heaps' flag"
+                            : !heap && !c->sets            ? "no set layouts, without the heaps' flag"
+                                                           : NULL;
+        if (wrong)
+            fprintf(stderr,
+                    "descriptor heap shader objects: call %u (flags 0x%x, %u set layouts, %u push ranges, %u "
+                    "mappings) has %s\n",
+                    i, (unsigned)c->flags, c->sets, c->ranges, c->mappings, wrong);
+        CHECK(!wrong);
+        of_heaps += heap;
+        of_sets += !heap;
+    }
+    CHECK(of_heaps >= 2 && of_sets >= 2);
+    printf("PASS descriptor heap shader objects: %u objects with the heaps' flag and their set's mapping, %u of sets "
+           "for the same modules\n",
+           of_heaps, of_sets);
+    return 0;
+}

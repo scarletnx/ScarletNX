@@ -8482,6 +8482,8 @@ static int run_headless(int argc, char** argv) {
             result = check_heap_pipeline_flags();
         else if (!strcmp(name, "mesh_draws"))
             result = check_mesh_draws();
+        else if (!strcmp(name, "heap_shader_objects"))
+            result = check_heap_shader_objects();
         else if (!strcmp(name, "cb_address"))
             result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
@@ -8895,6 +8897,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_heap_pipeline_flags());
+    CHECK(!check_heap_shader_objects());
     CHECK(!check_link_optimized_after_presents());
     CHECK(!check_cb_address());
     CHECK(!check_descriptor_memo());
