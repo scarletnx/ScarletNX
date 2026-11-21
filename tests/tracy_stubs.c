@@ -5,6 +5,7 @@
 #include "nx/runtime/platform/tracy.h"
 #if defined(SNX_TRACY)
 _Atomic int snx_tracy_memory_detail;
+_Atomic int snx_tracy_memory_detail_ever;
 _Atomic int snx_tracy_frame_images_live;
 _Atomic int snx_tracy_zone_callstack;
 SnxTracySection snx_tracy_section_start_c(const char* name, uint16_t category) {

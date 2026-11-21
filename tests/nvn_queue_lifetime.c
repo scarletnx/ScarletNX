@@ -4,6 +4,7 @@
    work and its deferred fence, and repeated temporary queues must release their slots and syncpoints. A sync the game
    frees before the submission that fences it keeps the bytes its heap wrote over it. */
 #include "nx/gpu/nvn/nvn_replay.h"
+void nvn_queue_context_set(const char* fmt, ...) { (void)fmt; }
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_copy.h"
