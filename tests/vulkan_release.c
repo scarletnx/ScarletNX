@@ -14,6 +14,7 @@ void vk_result_begin(void);
 void vk_result_end(void);
 int vk_result_landing(void);
 void vk_lock(void);
+u32 vk_lock_owner(void);
 void vk_unlock(void);
 void vk_release_events(void);
 void vk_compute_land_through(u64);
@@ -113,6 +114,7 @@ void logf_(int level, const char* fmt, ...) {
     (void)fmt;
 }
 void vk_lock(void) { lock_depth++; }
+u32 vk_lock_owner(void) { return 0; }
 /* as device.c's: the outermost unlock signals the event slots the releases under it reached */
 void vk_unlock(void) {
     assert(lock_depth);

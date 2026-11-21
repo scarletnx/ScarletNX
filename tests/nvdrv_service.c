@@ -73,6 +73,7 @@ static u64 test_guest_ns; /* the guest clock the runtime's clock.c would answer 
 u64 guest_ns(void) { return test_guest_ns; }
 u64 guest_gpu_ticks(void) { return snx_gpu_ticks_of_ns(test_guest_ns); }
 KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
+uint32_t plat_tid(void) { return 0; }
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;

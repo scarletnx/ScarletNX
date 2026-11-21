@@ -341,7 +341,7 @@ static int draw_fades(u64 now_ns, SnxUiFade fades[SNX_UI_FADES]) {
 /* the keys page's first screen: a build with the client holds its capture's row, which takes the last one's place */
 #if defined(SNX_TRACY)
 enum { KEYS_TRACY_ROWS = 1 };
-static const char* const KEYS_LAST = "Tracy, 60 s";
+static const char* const KEYS_LAST = "Tracy capture";
 static const char* const KEYS_UNDER = "quit the game"; /* under the fold, as its icon is */
 #else
 enum { KEYS_TRACY_ROWS = 0 };

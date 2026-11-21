@@ -1555,6 +1555,7 @@ static void test_sync_never_fenced(void) {
 }
 
 #include "nvn_discard.inc"
+unsigned int syncpt_read(unsigned int id) { (void)id; return 0; }
 
 int main(void) {
     nvn_init();
