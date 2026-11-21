@@ -120,7 +120,10 @@ only read):
   game's SDK sends fails every such request. One difference from the console, on purpose: sf closes the session for
   these refusals (the client's SendSyncRequest gets SessionClosed), while the runtime answers the result in a reply and
   keeps the session. Its own declarations can be wrong where the console's aren't, and a game may survive an error
-  result but not a dead session.
+  result but not a dead session. sm is the exception: its commands have fixed shapes, so it is registered with
+  `svc_register_strict`, and a request sm cannot decode (a CmifInHeader it cannot read, a control request sf does not
+  have, a command it does not declare, the wrong descriptors or raw data, a domain object it does not hold) closes the
+  session with no reply, as the console's does. A command that runs and fails still answers its result.
 - The generator refuses a command whose request or reply would not fit the 0x100 byte message with its headers,
   descriptors, handles and domain object ids (0xd0 bytes of raw data out at most), and more than 15 move handles and
   objects out.

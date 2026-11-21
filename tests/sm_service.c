@@ -81,6 +81,10 @@ int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return 1;
 }
+int ipc_unknown(SvcObj* o, IpcCtx* c) {
+    (void)o, (void)c;
+    return 1;
+}
 int stub_ok(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return 0;

@@ -4,6 +4,7 @@
 
 type nn::sm::ServiceName = bytes<8>;
 
+@fallback(ipc_unknown)
 interface nn::sm::detail::IUserInterface is sm: {
     @stub [0] RegisterClient(pid);
     [1] GetServiceHandle(nn::sm::ServiceName name) -> handle<move, session> session;
@@ -11,3 +12,5 @@ interface nn::sm::detail::IUserInterface is sm: {
     [3] UnregisterService(nn::sm::ServiceName name);
     @stub [4] DetachClient(pid);
 }
+# A request sm cannot decode closes the client's session, as the console's does: the fallback is sf's
+# UnknownCommandId, which the strict flag set at sm's registration (services.c) turns into a close

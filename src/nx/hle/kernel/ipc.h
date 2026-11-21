@@ -65,6 +65,9 @@ typedef struct IpcCtx {
     u32 in_objs[8];
     int nin_objs;
     int tipc;
+    /* a request the session's service cannot decode closes the session (SvcObj.strict): no reply is written, and the
+       client's SendSyncRequest answers SessionClosed */
+    int close_session;
     /* the reply */
     u32 rc;
     u8 out[0x100]; /* the raw data; writes are bounded by its sizeof */
@@ -83,6 +86,7 @@ typedef struct SvcObj {
     void (*destroy)(struct SvcObj* self);
     _Atomic int refs;
     u32 ptrbuf; /* the server's pointer buffer size, which QueryPointerBufferSize answers (0x8000 unless set) */
+    int strict; /* a request the object cannot decode closes the client's session, as the console's sm does */
     void* data;   /* a slot of its service's pool in g_hle (svcobj_new_data), or NULL */
     u32 datasize; /* the slot's size, zeroed as the object goes */
     _Atomic u64 u[8];
@@ -141,6 +145,9 @@ int ipc_unknown(SvcObj* o, IpcCtx* c);
    first 127 characters), else 0 */
 int ipc_warn_once(const char* name, u32 cmd);
 void svc_register(const char* name, SvcCtor ctor);
+/* the same, for a service whose requests it decodes exactly: one it cannot decode closes the client's session, as the
+   console's sm does (docs/platforms/nx/ipc.md) */
+void svc_register_strict(const char* name, SvcCtor ctor);
 SvcObj* svc_open(const char* name);
 int svc_registered(const char* name);
 
@@ -212,10 +219,12 @@ void ipc_ring_text(u32 seq, char* out, size_t n);
 /* the names sm hands out: the runtime registers about a hundred (services.c), and 256 leaves room for more */
 #define SVCREG_MAX  256
 
-/* a name sm hands out, with the constructor of a new object for every session */
+/* a name sm hands out, with the constructor of a new object for every session, and whether a request the object
+   cannot decode closes the client's session */
 typedef struct {
     const char* name;
     SvcCtor ctor;
+    int strict;
 } SvcReg;
 
 /* ipc.c's. lk guards the pools (taking and freeing, and every domain's objects), every service's pool of object data
