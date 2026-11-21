@@ -61,17 +61,17 @@ static void closing(void) {
 static void closing_row(void) {
     SnxClosing w = {.began_ms = 20000};
     SnxPrepareStep st;
-    snx_closing_step(&w, 24900, 166408602, 96 * MIB, &st);
-    CHECK(!strcmp(st.label, "SAVING THE SHADER CACHE") && !strcmp(st.detail, "96.0 of 158.7 MiB, 4 s"));
+    snx_closing_step(&w, 166408602, 96 * MIB, &st);
+    CHECK(!strcmp(st.label, "SAVING SHADERS") && !strcmp(st.detail, "96.0 of 158.7 MiB"));
     CHECK(st.kib && st.value == 96 * 1024 && st.total == 166408602 / 1024 && !st.done && st.started_ms == 20000);
     /* all of it packed: done; more said packed than in all (a count read between two stores) as all of it */
-    snx_closing_step(&w, 33000, 166408602, 166408602, &st);
-    CHECK(st.done && st.value == st.total && !strcmp(st.detail, "158.7 of 158.7 MiB, 13 s"));
-    snx_closing_step(&w, 33000, 10 * MIB, 11 * MIB, &st);
-    CHECK(st.done && st.value == 10 * 1024 && !strcmp(st.detail, "10.0 of 10.0 MiB, 13 s"));
+    snx_closing_step(&w, 166408602, 166408602, &st);
+    CHECK(st.done && st.value == st.total && !strcmp(st.detail, "158.7 of 158.7 MiB"));
+    snx_closing_step(&w, 10 * MIB, 11 * MIB, &st);
+    CHECK(st.done && st.value == 10 * 1024 && !strcmp(st.detail, "10.0 of 10.0 MiB"));
     /* before the save says its bytes: 0 of 0, no progress and not done */
-    snx_closing_step(&w, 20100, 0, 0, &st);
-    CHECK(!st.done && !st.total && !strcmp(st.detail, "0.0 of 0.0 MiB, 0 s"));
+    snx_closing_step(&w, 0, 0, &st);
+    CHECK(!st.done && !st.total && !strcmp(st.detail, "0.0 of 0.0 MiB"));
 }
 static void loading(void) {
     CHECK(!snx_loading_shows(1000, 1000) && !snx_loading_shows(1000, 1299));

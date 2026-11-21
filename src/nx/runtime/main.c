@@ -721,14 +721,14 @@ static void save_renderer(int frontend) {
                 themed = 1;
             }
             g_renderer->saving(&total, &packed, &kept);
-            snx_closing_step(&w, now, total, packed, &st);
+            snx_closing_step(&w, total, packed, &st);
             ui_lock();
 #if defined(__ANDROID__) /* no window to close there */
             prepare_screen_set(&look, g_closing_name, &st, 1, NULL, 0,
-                               "Closing the app now quits without the shaders not saved yet.", now);
+                               "Close the app to quit now. Unsaved shaders are lost.", now);
 #else
             prepare_screen_set(&look, g_closing_name, &st, 1, NULL, 0,
-                               "Closing the window again quits now, without the shaders not saved yet.", now);
+                               "Close again to quit now. Unsaved shaders are lost.", now);
 #endif
             ui_unlock();
             if (g_renderer->refresh) g_renderer->refresh();
