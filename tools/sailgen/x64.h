@@ -148,6 +148,7 @@ typedef struct {
        vzero: the result is made 0 first (PXOR of itself), no input; the memory operand (mplace) is the state's
        [base + mdisp] (mstate), the constant pool's kv (mrip), or guest memory [in[5] + in[6] + mdisp]; vflags: it
        writes the flags (UCOMISS, PTEST) */
+    unsigned short mclobber; /* SGX_K_MACHINE's: the host registers it changes besides its result's (RAX, RDX) */
     const SgXVForm* vf;
     signed char vout;
     unsigned char vtied, vzero, mstate, mrip, vflags;
@@ -1743,7 +1744,23 @@ static inline int sgx_in_reg(SgXAsm* a, int v, int at, unsigned avoid) {
 static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
     int v = a->owner[r];
     if (v > 0 && a->x->v[v].last > at) {
-        int to = sgx_free_reg(a, at, avoid | (1u << r));
+        /* a free register of the pool, else its slot (spilled from r, where the instruction may still read it) */
+        unsigned k, n = a->x->pool && (unsigned)a->x->pool < sizeof sgx_pool ? (unsigned)a->x->pool : sizeof sgx_pool;
+        int to = -1;
+        for (k = 0; k < n && to < 0; ++k) {
+            int c = sgx_pool[k];
+            if (((avoid | (1u << r)) >> c) & 1) continue;
+            if (!a->owner[c] || (a->owner[c] > 0 && a->x->v[a->owner[c]].last < at)) {
+                if (a->owner[c] > 0) a->x->v[a->owner[c]].reg = -1;
+                a->owner[c] = 0;
+                to = c;
+            }
+        }
+        if (to < 0) {
+            sgx_spill_at(a, r, at);
+            a->owner[r] = 0;
+            return;
+        }
         sgx_mov_rr(a, to, r);
         a->x->v[v].reg = (signed char)to;
         a->owner[to] = v;
@@ -2405,7 +2422,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                     int fr = s->fixed[k];
                     int v = s->in[k], from = sgx_in_reg(a, v, i, held | (1u << fr));
                     if (from != fr) {
-                        if (a->owner[fr] > 0) sgx_evict(a, fr, i - 1, held | (1u << fr));
+                        if (a->owner[fr] > 0) sgx_evict(a, fr, i - 1, held | (1u << fr) | (1u << from));
                         sgx_mov_rr(a, fr, from);
                         a->owner[fr] = -1;
                     }
@@ -2418,7 +2435,26 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
             if (s->calls)
                 for (k = 0; k < 16; ++k)
                     if ((SGX_CALLER_SAVED & (1u << k)) && a->owner[k] > 0 && x->v[a->owner[k]].last > i) sgx_spill(a, k);
+            /* the registers it uses besides (and its results' RAX and RDX): what they hold that is read after, moved
+               out of the way */
+            {
+                unsigned clob = s->mclobber | (s->def ? 1u : 0) | (s->def2 ? 4u : 0);
+                for (k = 0; k < 16; ++k)
+                    if (((clob >> k) & 1) && a->owner[k] > 0) {
+                        /* read after: copied elsewhere (an input there is still there for the instruction to read) */
+                        if (x->v[a->owner[k]].last > i) sgx_evict(a, k, i, held | clob);
+                        else if (!((held >> k) & 1)) {
+                            x->v[a->owner[k]].reg = -1;
+                            a->owner[k] = 0;
+                        }
+                    }
+            }
             sgx_machine_ins(a, i, r);
+            for (k = 0; k < 16; ++k)
+                if ((s->mclobber >> k) & 1) {
+                    if (a->owner[k] > 0) x->v[a->owner[k]].reg = -1;
+                    a->owner[k] = 0;
+                }
             for (k = 0; k < 16; ++k)
                 if (a->owner[k] == -1 || (s->calls && (SGX_CALLER_SAVED & (1u << k)))) {
                     if (a->owner[k] > 0) x->v[a->owner[k]].reg = -1;

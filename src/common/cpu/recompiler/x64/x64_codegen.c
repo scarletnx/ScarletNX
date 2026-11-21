@@ -704,10 +704,16 @@ static int sys(Unit* u, SnxU32 word) {
                 v = sgx_val(64, i->def);
                 break;
             }
-            case SYSREG(3, 4, 2, 0): /* NZCV: the flags as the state holds them */
-            case SYSREG(3, 0, 0, 1):
-            case SYSREG(3, 0, 0, 7):
-            case SYSREG(3, 14, 0, 0):
+            case SYSREG(3, 4, 2, 0): /* NZCV from PSTATE's fields, N in bit 31 */
+                v = sg_d_zext(g, sg_d_concat(g, sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_N), sg_PSTATE_read(g, SG_PSTATE_Z)),
+                                             sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_C), sg_PSTATE_read(g, SG_PSTATE_V))), 64);
+                v = sg_d_lsl(g, v, 28);
+                break;
+            /* the constants ir_int.c's read_sysreg gives: CTR_EL0 (SCTLR_EL1.UCT), DCZID_EL0, CNTFRQ_EL0 */
+            case SYSREG(3, 0, 0, 1): v = sgx_const(64, 0x8444C004u); break;
+            case SYSREG(3, 0, 0, 7): v = sgx_const(64, 4); break;
+            case SYSREG(3, 14, 0, 0): v = sgx_const(64, 19200000u); break;
+            /* the counters: the runtime's clock, a call (no other way) */
             case SYSREG(3, 14, 0, 1):
             case SYSREG(3, 14, 0, 2): {
                 SgD k = sgx_const(32, key);
@@ -730,8 +736,11 @@ static int sys(Unit* u, SnxU32 word) {
             i->disp = (int)offsetof(CPU, tpidr);
             return 1;
         }
-        case SYSREG(3, 4, 4, 0):
-        case SYSREG(3, 4, 4, 1): {
+        case SYSREG(3, 4, 4, 1): /* FPSR: the bits the A57 keeps (integer.c's A57_FPSR_MASK) */
+            sgx_state_store(g, (int)offsetof(CPU, fpsr), 32, sg_d_and(g, sg_d_slice(g, xzr_or(g, rt), 31, 0), sgx_const(32, 0xF800009Fu)));
+            g->fp_state[0] = g->fp_state[1] = 0;
+            return 1;
+        case SYSREG(3, 4, 4, 0): { /* FPCR: the runtime's hook too (snx_msr), a call */
             SgD args[2];
             args[0] = sgx_const(32, key);
             args[1] = xzr_or(g, rt);
@@ -750,7 +759,14 @@ static int sys(Unit* u, SnxU32 word) {
     if (op0 == 1 && !l && op1 == 3 && crn == 7 && op2 == 1) {
         SgD a = xzr_or(g, rt);
         switch (crm) {
-        case 4: sgx_call(g, "snx_x64_dc_zva", 0, 1, &a, 1, 0); return 1;
+        case 4: { /* DC ZVA: the 64 bytes of the block at a zeroed, four 16-byte stores */
+            SgX* x = sgx(g);
+            SgD block = sg_d_and(g, a, sgx_const(64, ~(SnxU64)63));
+            int z = sgx_xconst(x, 0, 0), base = sgx_mem(g), index = sgx_reg(x, &block), k, in[4] = {0, z, 0, 0};
+            for (k = 0; k < 4; ++k)
+                sgx_vins(x, &sgx_v_movdqu_st, 0, 0, in, 0, 0, SGX_VM_GUEST, base, index, 16 * k, 0, 0);
+            return 1;
+        }
         case 5: sgx_call(g, "snx_ic_ivau", 0, 1, &a, 1, 0); return 1;
         case 10:
         case 11:
