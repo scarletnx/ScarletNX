@@ -88,6 +88,9 @@ typedef struct {
     const SnxX64Options* options;
     const SnxFunction* f;
     int pinned;          /* the function keeps guest registers in host ones (pin): RBP, R12-R15 pushed */
+    SnxU64* live;        /* each instruction's live-in guest registers (bits 0-31) and flags (32-35), or NULL */
+    SnxU64* live_buf;    /* live's room */
+    size_t cap_live;
     signed char pin[32]; /* each X register's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
     SnxU32 word; /* the instruction being made: SNX_X64_STATS names it where the function goes to LLVM */
@@ -406,11 +409,19 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
+    g->x.end_dead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
     g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
     g->mem = 0;
     g->origin = -1;
     g->x.flags_ins = -1;
+}
+
+/* flush where control goes on at target (the next instruction, a branch's): what is dead there needs no store */
+static SnxU64 dead_at(Unit* u, SnxU64 target);
+static void flush_to(Unit* u, SnxU64 target) {
+    u->g->x.end_dead = dead_at(u, target);
+    flush(u);
 }
 
 /* the machine's instructions of a function's region */
@@ -437,7 +448,7 @@ static void machine_target(Unit* u, int op, SgD target) {
 }
 
 /* a branch's condition at the region's end: JCC to label on its condition code */
-static void jump_if(Unit* u, SgB taken, int label) {
+static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
     SgX* x = &u->g->x;
     int from, cc = sgx_bool_cc(x, taken, &from);
     SgXIns* i = sgx_append(x, SGX_K_MACHINE);
@@ -445,6 +456,8 @@ static void jump_if(Unit* u, SgB taken, int label) {
     i->cc = (unsigned char)cc;
     i->disp = label;
     i->flags_from = from;
+    i->kv[1] = dead_at(u, target);
+    i->jdead = i->kv[1] != 0;
 }
 
 /* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
@@ -922,6 +935,32 @@ static int struct_ldst(Unit* u, SnxU32 word) {
 }
 
 /* the instruction at address, word; 0 where the function goes to LLVM */
+/* SBFM and UBFM (LSL, LSR, ASR, SBFX, UBFX, SBFIZ, UBFIZ, SXTB to SXTW, UXTB, UXTH): one or two shifts, a MOVSX or
+   a mask, not the Sail's rotation, masks and Replicate of the sign. BFM, and reserved fields (the Sail's UNDEF), are
+   the Sail's */
+static int bitfield(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned sf = word >> 31, opc = word >> 29 & 3, n = word >> 22 & 1, immr = word >> 16 & 63, imms = word >> 10 & 63;
+    unsigned rn = word >> 5 & 31, rd = word & 31, d = sf ? 64 : 32;
+    SgD v, r;
+    if ((word >> 23 & 0x3F) != 0x26 || (opc != 0 && opc != 2) || n != sf || (!sf && (immr > 31 || imms > 31))) return 0;
+    v = xzr_or(g, rn);
+    if (!sf) v = sg_d_slice(g, v, 31, 0);
+    if (opc == 2) {
+        if (imms == d - 1) r = sg_d_lsr(g, v, immr);                   /* LSR */
+        else if (imms + 1 == immr) r = sg_d_lsl(g, v, d - 1 - imms);   /* LSL */
+        else if (imms >= immr) r = sg_d_zext(g, sg_d_slice(g, v, imms, immr), d); /* UBFX, UXTB, UXTH */
+        else r = sg_d_lsl(g, sg_d_zext(g, sg_d_slice(g, v, imms, 0), d), d - immr); /* UBFIZ */
+    } else {
+        if (imms == d - 1) r = sg_d_asr(g, v, immr);                   /* ASR */
+        else if (imms >= immr && !immr) r = sg_d_sext(g, sg_d_slice(g, v, imms, 0), d); /* SXTB, SXTH, SXTW */
+        else if (imms >= immr) r = sg_d_asr(g, sg_d_lsl(g, v, d - 1 - imms), d - 1 - imms + immr); /* SBFX */
+        else r = sg_d_lsl(g, sg_d_sext(g, sg_d_slice(g, v, imms, 0), d), d - immr); /* SBFIZ */
+    }
+    if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
+    return 1;
+}
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -931,7 +970,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     int terminal = 0;
     snx_a64_decode_word(word, u->codegen->features, &insn);
     /* a long block is several regions: the guest's registers are in the state at each one's end */
-    if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4) flush(u);
+    if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
+        flush_to(u, address);
     g->word = word;
     g->pc = address;
     g->start = x->n;
@@ -959,7 +999,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (!k) return 0;
             break;
         }
-        if (fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
+        if (bitfield(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
         {
             int v = struct_ldst(u, word);
             if (v < 0) goto undef;
@@ -979,8 +1019,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         }
         break;
     case SNX_A64_FLOW_B:
-        flush(u);
         target = snx_a64_branch_target(&insn, address);
+        flush_to(u, target);
         if (snx_function_contains(f, target)) {
             if (target <= address) poll_then(u, target);
             jmp(u, (int)index_of(f, target));
@@ -991,9 +1031,16 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_BC:
         if (!sg_decode(g) || x->unmade || !g->branched) return 0;
         target = snx_a64_branch_target(&insn, address);
-        if (g->taken) jump_if(u, g->taken, branch_label(u, address, target));
-        flush(u);
-        if (!g->taken) jmp(u, branch_label(u, address, target));
+        if (g->taken) {
+            /* the region goes on past the JCC: what the block knows (its registers' values, the flags, constants)
+               holds where the branch isn't taken. The taken path finds the guest's state where a label wants it:
+               every write stored (or PSET) where it was made, and the store pass keeps the stores before a machine
+               instruction */
+            jump_if(u, g->taken, branch_label(u, address, target), target);
+            break;
+        }
+        flush_to(u, target);
+        jmp(u, branch_label(u, address, target));
         break;
     case SNX_A64_FLOW_BL:
         target = snx_a64_branch_target(&insn, address);
@@ -1078,6 +1125,210 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     return 1;
 }
 
+/* ---- liveness: which guest registers and flags an instruction reads and writes ----
+   Bits 0-30 X0-X30, 31 SP, 32-35 N Z C V. What reads is overstated where unsure (all of them: a call, a return, an
+   SVC, an encoding not classified here) and what writes understated (never SP, never XZR, and nothing an
+   instruction only may write), so a register is only dead where nothing can read it */
+#define LIVE_ALL (~(SnxU64)0 >> 28)
+#define LIVE_NZCV ((SnxU64)15 << 32)
+static SnxU64 live_r(unsigned r) { return (SnxU64)1 << (r & 31); }
+static SnxU64 live_d(unsigned r) { return (r & 31) == 31 ? 0 : (SnxU64)1 << (r & 31); }
+static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
+    unsigned rd = w & 31, rn = w >> 5 & 31, rm = w >> 16 & 31, ra = w >> 10 & 31;
+    *use = LIVE_ALL, *def = 0;
+    if ((w >> 26 & 7) == 4) { /* data processing (immediate) */
+        switch (w >> 23 & 7) {
+        case 0:
+        case 1: *use = 0, *def = live_d(rd); return;                                  /* ADR, ADRP */
+        case 2: *use = live_r(rn), *def = live_d(rd) | (w >> 29 & 1 ? LIVE_NZCV : 0); return; /* ADD, SUB */
+        case 4: *use = live_r(rn), *def = live_d(rd) | ((w >> 29 & 3) == 3 ? LIVE_NZCV : 0); return; /* logical */
+        case 5:
+            if ((w >> 29 & 3) == 1) return;
+            *use = (w >> 29 & 3) == 3 ? live_r(rd) : 0, *def = live_d(rd); /* MOVN, MOVZ, MOVK */
+            return;
+        case 6: *use = live_r(rn) | ((w >> 29 & 3) == 1 ? live_r(rd) : 0), *def = live_d(rd); return; /* bitfield */
+        case 7: *use = live_r(rn) | live_r(rm), *def = live_d(rd); return;               /* EXTR */
+        default: return;
+        }
+    }
+    if ((w >> 26 & 7) == 5) { /* branches, exceptions, system */
+        if ((w >> 26 & 0x1F) == 5) {
+            if (!(w >> 31)) *use = 0; /* B: its successor says; BL calls */
+            return;
+        }
+        if ((w >> 25 & 0x3F) == 0x1A || (w >> 25 & 0x3F) == 0x1B) { /* CBZ, CBNZ, TBZ, TBNZ */
+            *use = live_r(rd);
+            return;
+        }
+        if ((w >> 24) == 0x54) { /* B.cond */
+            *use = LIVE_NZCV;
+            return;
+        }
+        if ((w & 0xFFFFF01F) == 0xD503201F) { /* hints: NOP, YIELD... */
+            *use = 0;
+            return;
+        }
+        if ((w >> 20) == 0xD53) { /* MRS */
+            *use = LIVE_NZCV, *def = live_d(rd);
+            return;
+        }
+        return;
+    }
+    if ((w >> 25 & 5) == 4) { /* loads and stores */
+        unsigned v = w >> 26 & 1;
+        if ((w >> 27 & 7) == 5) { /* pairs */
+            unsigned l = w >> 22 & 1, wb = (w >> 23 & 1) && (w >> 23 & 3) != 2;
+            *use = live_r(rn);
+            if ((w >> 23 & 3) == 1 || (w >> 23 & 3) == 3) *def |= live_d(rn);
+            (void)wb;
+            if (!v) {
+                if (l) *def |= live_d(rd) | live_d(ra);
+                else
+                    *use |= live_r(rd) | live_r(ra);
+            }
+            return;
+        }
+        if ((w >> 27 & 7) == 3 && !(w >> 24 & 1)) { /* literal */
+            *use = 0;
+            if (!v && (w >> 30) != 3) *def = live_d(rd);
+            return;
+        }
+        if ((w >> 27 & 7) == 7) { /* single registers */
+            unsigned opc = w >> 22 & 3, size = w >> 30, store, prfm, idx = w >> 10 & 3;
+            if (!(w >> 24 & 1)) {
+                if (w >> 21 & 1) {
+                    if (idx != 2) return; /* atomics, PAC loads: all */
+                } else if (idx == 2)
+                    return; /* LDTR, STTR: the same, but leave them */
+            }
+            *use = live_r(rn);
+            if (!(w >> 24 & 1) && (w >> 21 & 1)) *use |= live_r(rm); /* register offset */
+            if (!(w >> 24 & 1) && !(w >> 21 & 1) && (idx == 1 || idx == 3)) *def |= live_d(rn); /* writeback */
+            if (v) return;
+            store = opc == 0;
+            prfm = size == 3 && opc == 2;
+            if (size == 3 && opc == 3) {
+                *use = LIVE_ALL, *def = 0;
+                return;
+            }
+            if (prfm) return;
+            if (store) *use |= live_r(rd);
+            else
+                *def |= live_d(rd);
+            return;
+        }
+        if (v && (w >> 31) == 0 && (w >> 23 & 0x3E) == 0x18) { /* SIMD structures: the base, the post index */
+            *use = live_r(rn) | live_r(rm);
+            return;
+        }
+        return;
+    }
+    if ((w >> 25 & 7) == 5) { /* data processing (register) */
+        if (!(w >> 28 & 1)) {
+            /* logical (shifted), add/subtract (shifted, extended) */
+            *use = live_r(rn) | live_r(rm);
+            if ((w >> 24 & 0x1F) == 0x0A) *def = live_d(rd) | ((w >> 29 & 3) == 3 ? LIVE_NZCV : 0);
+            else
+                *def = live_d(rd) | (w >> 29 & 1 ? LIVE_NZCV : 0);
+            return;
+        }
+        switch (w >> 21 & 0xF) {
+        case 0:
+            if (w >> 10 & 0x3F) return; /* RMIF, SETF */
+            *use = live_r(rn) | live_r(rm) | LIVE_NZCV, *def = live_d(rd) | (w >> 29 & 1 ? LIVE_NZCV : 0); /* ADC */
+            return;
+        case 2: *use = live_r(rn) | live_r(rm) | LIVE_NZCV, *def = LIVE_NZCV; return; /* CCMN, CCMP */
+        case 4: *use = live_r(rn) | live_r(rm) | LIVE_NZCV, *def = live_d(rd); return; /* CSEL... */
+        case 6: *use = live_r(rn) | live_r(rm), *def = live_d(rd); return;              /* 1 and 2 sources */
+        default:
+            if (w >> 24 & 1) { /* 3 sources */
+                *use = live_r(rn) | live_r(rm) | live_r(ra), *def = live_d(rd);
+                return;
+            }
+            return;
+        }
+    }
+    if ((w >> 25 & 7) == 7) { /* SIMD and FP: the general-purpose registers of transfers and conversions */
+        *use = 0;
+        if ((w & 0x5F20FC00) == 0x1E200000) *use = live_r(rn); /* FP <-> integer: Rn may be a GPR */
+        else if ((w & 0x9FE08400) == 0x0E000400)
+            *use = live_r(rn); /* DUP, INS (general), UMOV, SMOV */
+        else if ((w & 0xFF203C00) == 0x1E202000)
+            *def = LIVE_NZCV; /* FCMP, FCMPE */
+        else if ((w & 0xFF200C00) == 0x1E200400 || (w & 0xFF200C00) == 0x1E200C00)
+            *use = LIVE_NZCV; /* FCCMP, FCSEL */
+        return;
+    }
+}
+
+/* each instruction's live-in set (u->live), by the successors (the next where it falls through, an inner branch's
+   target; LIVE_ALL past the function): backward passes until nothing changes. NULL where it can't be had */
+static void liveness(Unit* u, const SnxFunction* f) {
+    SnxU64 *use, *def;
+    int* succ;
+    size_t i, n = f->count;
+    int changed, passes = 0;
+    if (getenv("SNX_X64_NO_LIVENESS")) {
+        u->live = NULL;
+        return;
+    }
+    u->live = NULL;
+    u->live_buf = (SnxU64*)grow(u->live_buf, &u->cap_live, n, sizeof *u->live_buf);
+    use = (SnxU64*)malloc(2 * n * sizeof *use);
+    succ = (int*)malloc(2 * n * sizeof *succ);
+    if (!use || !succ) {
+        free(use), free(succ);
+        return;
+    }
+    u->live = u->live_buf;
+    def = use + n;
+    for (i = 0; i < n; ++i) {
+        SnxU64 a = snx_function_address(f, i);
+        SnxU32 w = 0;
+        SnxA64Insn insn;
+        int falls;
+        (void)snx_codegen_word((SnxCodegen*)u->codegen, a, &w);
+        snx_a64_decode_word(w, u->codegen->features, &insn);
+        regs_of(w, &use[i], &def[i]);
+        if (insn.flow == SNX_A64_FLOW_UNDEF || insn.flow == SNX_A64_FLOW_BL || insn.flow == SNX_A64_FLOW_BLR ||
+            insn.flow == SNX_A64_FLOW_SVC || insn.flow == SNX_A64_FLOW_BRK || insn.flow == SNX_A64_FLOW_RET ||
+            insn.flow == SNX_A64_FLOW_BR || insn.op == SNX_A64_OP_UNDEF)
+            use[i] = LIVE_ALL, def[i] = 0;
+        falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
+                insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
+        succ[2 * i] = falls ? (i + 1 < n && snx_function_address(f, i + 1) == a + 4 ? (int)i + 1 : -2) : -1;
+        succ[2 * i + 1] = -1;
+        if (insn.flow == SNX_A64_FLOW_B || insn.flow == SNX_A64_FLOW_BC) {
+            SnxU64 t = snx_a64_branch_target(&insn, a);
+            succ[2 * i + 1] = snx_function_contains(f, t) ? (int)index_of(f, t) : -2; /* -2: out, all live */
+        }
+        u->live[i] = 0;
+    }
+    do {
+        changed = 0;
+        for (i = n; i-- > 0;) {
+            SnxU64 out = 0, in;
+            int k;
+            for (k = 0; k < 2; ++k) {
+                int sx = succ[2 * i + k];
+                if (sx == -2) out = LIVE_ALL;
+                else if (sx >= 0)
+                    out |= u->live[sx];
+            }
+            in = use[i] | (out & ~def[i]);
+            if (in != u->live[i]) u->live[i] = in, changed = 1;
+        }
+    } while (changed && ++passes < 64);
+    free(use), free(succ);
+    if (changed) u->live = NULL; /* no fixed point: none known */
+}
+/* what is dead where control goes to instruction index (or past the function: nothing), for the store pass; SP and
+   what no register is never */
+static SnxU64 dead_at(Unit* u, SnxU64 target) {
+    if (!u->live || !snx_function_contains(u->f, target)) return 0;
+    return ~u->live[index_of(u->f, target)] & LIVE_ALL & ~((SnxU64)1 << 31);
+}
+
 /* the guest registers the function keeps in host registers (RBP, R12-R15, callee-saved: no call changes them) for
    its whole run, written to the state where something else may read it (a call, SVC, BRK, UNDEF, a poll, the
    exits) and read back after: the five most used, a register field of an instruction counting 1, 8 inside a loop
@@ -1085,40 +1336,98 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
    read the state (a system register's helper, WFE, SEV) */
 static void choose_pins(Unit* u, const SnxFunction* f) {
     static const signed char hosts[5] = {5, 12, 13, 14, 15};
-    unsigned weight[32], k, best;
+    SnxU64 weight[32];
+    unsigned k, best;
     unsigned char* loop;
-    size_t i;
+    int* succ;
+    size_t i, backs = 0;
     memset(u->pin, -1, sizeof u->pin);
     u->pinned = 0;
     if (f->count < 8 || getenv("SNX_X64_NO_PINS")) return;
     loop = (unsigned char*)calloc(f->count + 1, 1);
-    if (!loop) return;
+    succ = (int*)malloc(2 * f->count * sizeof *succ);
+    if (!loop || !succ) {
+        free(loop), free(succ);
+        return;
+    }
     memset(weight, 0, sizeof weight);
+    /* each instruction's successors in the function (-1 none): the next where it falls through, a branch's target;
+       the back edges (a branch to itself or before) noted */
     for (i = 0; i < f->count; ++i) {
         SnxU64 a = snx_function_address(f, i);
         SnxU32 w = 0;
         SnxA64Insn insn;
+        int falls;
         (void)snx_codegen_word((SnxCodegen*)u->codegen, a, &w);
         snx_a64_decode_word(w, u->codegen->features, &insn);
         if (insn.op == SNX_A64_OP_SYS || insn.op == SNX_A64_OP_WFE || insn.op == SNX_A64_OP_SEV ||
             insn.op == SNX_A64_OP_SEVL) {
-            free(loop);
+            free(loop), free(succ);
             return;
         }
+        falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
+                insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
+        succ[2 * i] = falls && i + 1 < f->count && snx_function_address(f, i + 1) == a + 4 ? (int)i + 1 : -1;
+        succ[2 * i + 1] = -1;
         if (insn.flow == SNX_A64_FLOW_B || insn.flow == SNX_A64_FLOW_BC) {
             SnxU64 t = snx_a64_branch_target(&insn, a);
-            if (t <= a && snx_function_contains(f, t)) {
-                size_t j;
-                for (j = index_of(f, t); j <= i; ++j)
-                    if (loop[j] < 3) ++loop[j]; /* the depth of loops, to 3 */
+            if (snx_function_contains(f, t)) {
+                succ[2 * i + 1] = (int)index_of(f, t);
+                if (t <= a) ++backs;
             }
         }
     }
+    if (backs) {
+        /* the natural loops: for each header (a back edge's target), what reaches one of its back edges without
+           passing it, by the predecessors from those back edges. Each instruction's depth is the loops it is in */
+        int *first = (int*)malloc((f->count + 1) * sizeof *first), *pred = (int*)malloc(2 * f->count * sizeof *pred);
+        int* stack = (int*)malloc(f->count * sizeof *stack);
+        unsigned* seen = (unsigned*)calloc(f->count, sizeof *seen);
+        size_t e;
+        if (!first || !pred || !stack || !seen) {
+            free(first), free(pred), free(stack), free(seen), free(loop), free(succ);
+            return;
+        }
+        memset(first, 0, (f->count + 1) * sizeof *first);
+        for (e = 0; e < 2 * f->count; ++e)
+            if (succ[e] >= 0) ++first[succ[e] + 1];
+        for (i = 0; i < f->count; ++i) first[i + 1] += first[i];
+        {
+            int* fill = stack; /* the next free entry of each instruction's predecessors, borrowed */
+            for (i = 0; i < f->count; ++i) fill[i] = first[i];
+            for (e = 0; e < 2 * f->count; ++e)
+                if (succ[e] >= 0) pred[fill[succ[e]]++] = (int)(e / 2);
+        }
+        for (i = 0; i < f->count; ++i) {
+            /* i a header: the back edges to it are its predecessors at or after it */
+            int top = 0, j, mark = (int)i + 1;
+            for (j = first[i]; j < first[i + 1]; ++j)
+                if ((size_t)pred[j] >= i && seen[pred[j]] != (unsigned)mark) {
+                    seen[pred[j]] = (unsigned)mark;
+                    stack[top++] = pred[j];
+                }
+            if (!top) continue;
+            seen[i] = (unsigned)mark;
+            if (loop[i] < 5) ++loop[i];
+            while (top) {
+                int m = stack[--top], q;
+                if (m != (int)i && loop[m] < 5) ++loop[m];
+                if (m == (int)i) continue;
+                for (q = first[m]; q < first[m + 1]; ++q)
+                    if (seen[pred[q]] != (unsigned)mark) {
+                        seen[pred[q]] = (unsigned)mark;
+                        stack[top++] = pred[q];
+                    }
+            }
+        }
+        free(first), free(pred), free(stack), free(seen);
+    }
+    free(succ);
     for (i = 0; i < f->count; ++i) {
         SnxU32 w = 0;
-        unsigned wt;
+        SnxU64 wt;
         (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
-        wt = 1u << (3 * loop[i]);
+        wt = 1ull << (3 * loop[i]); /* 8 times a loop's level */
         /* the general-purpose register fields by the encoding's group: none in SIMD and FP data processing (bits
            27-25 111); a load's or store's base, and its registers where V (bit 26) is clear (a pair's second, bits
            14-10, where bits 29-27 are 101; the register offset, bits 20-16, where bits 29-27 are 111, 24 clear and
@@ -1148,7 +1457,8 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     }
     free(loop);
     for (k = 0; k < 5; ++k) {
-        unsigned r, top = 0;
+        unsigned r;
+        SnxU64 top = 0;
         best = 32;
         for (r = 0; r < 32; ++r)
             if (u->pin[r] < 0 && weight[r] > top) top = weight[r], best = r;
@@ -1190,6 +1500,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->nsyms++;
     flush(u); /* no block state of another function's */
     choose_pins(u, f);
+    liveness(u, f);
     u->g->pinned = u->pinned;
     memcpy(u->g->pin, u->pin, sizeof u->pin);
     u->a.pin_flush = pins_flush;
@@ -1241,7 +1552,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             SnxU64 address = snx_function_address(f, vi);
             SnxU32 word = 0;
             if (f->leaders[vi]) {
-                flush(u);
+                flush_to(u, address);
                 bind(u, lab0 + (int)vi);
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
@@ -1661,6 +1972,7 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
+    free(u.live_buf);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
