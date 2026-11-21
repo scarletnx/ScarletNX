@@ -26,7 +26,10 @@ typedef struct {
     size_t n, cap;
     int disp;  /* a memory operand's displacement and index register (-1 none), for sgx_modrm */
     int index;
+    size_t rip_at; /* where sgx_modrm put a RIP-relative operand's displacement (r/m SGX_RIP) */
 } SgXBuf;
+/* the r/m operand that is the constant pool's (RIP-relative: mod 00, r/m 101), which the assembler patches */
+#define SGX_RIP 32
 
 static inline void sgx_byte(SgXBuf* b, unsigned char x) {
     if (b->n < b->cap) b->p[b->n] = x;
@@ -44,6 +47,12 @@ static inline unsigned sgx_rex_x(const SgXBuf* b, int rm) { return rm >= 16 && b
    10 of 32; a SIB for an index, or for RSP and R12 as the base (Vol. 2A, 2.1.5, tables 2-2 and 2-3) */
 static inline void sgx_modrm(SgXBuf* b, int reg, int rm) {
     int base, mod, sib;
+    if (rm == SGX_RIP) {
+        sgx_byte(b, (unsigned char)((reg & 7) << 3 | 5));
+        b->rip_at = b->n;
+        sgx_imm(b, 0, 4);
+        return;
+    }
     if (rm < 16) {
         sgx_byte(b, (unsigned char)(0xC0 | (reg & 7) << 3 | (rm & 7)));
         return;
@@ -59,7 +68,10 @@ static inline void sgx_modrm(SgXBuf* b, int reg, int rm) {
 }
 
 /* the host's features a candidate may need (CPUID's), SgX.features */
-enum { SGX_F_BMI1 = 1, SGX_F_BMI2 = 2, SGX_F_LZCNT = 4 };
+enum {
+    SGX_F_BMI1 = 1, SGX_F_BMI2 = 2, SGX_F_LZCNT = 4, SGX_F_SSE3 = 8, SGX_F_SSSE3 = 16, SGX_F_SSE41 = 32,
+    SGX_F_SSE42 = 64, SGX_F_PCLMUL = 128, SGX_F_F16C = 256, SGX_F_POPCNT = 512, SGX_F_AVX = 1024, SGX_F_FMA = 2048
+};
 
 /* a selected form (x64_isel.inc): its encoder; the feature it needs; its ModRM.rm operand; where each of the
    primitive's inputs goes (the form's operand 0 to 3, or 16 + a fixed register); the inputs it reads whole (clean) and
@@ -83,6 +95,17 @@ typedef struct {
     signed char cc_of[16];
 } SgXSel;
 
+/* an SSE form an 'enc' line of x64.ops asks for (x64_isel.inc's sgx_v_NAME): its encoder, the CPUID flag it needs,
+   its operands (nops), which of them ModRM.reg, ModRM.rm and VEX.vvvv encode (-1 none), which are XMM registers
+   (xmask's bit k: operand k; the others general-purpose), and its immediate's bytes. Operand k's register goes in
+   the encoder's r[k], 16 + a base register for the memory an r/m operand may be */
+typedef struct {
+    void (*enc)(SgXBuf* b, const unsigned char* r, long long imm, int cc);
+    unsigned feature;
+    signed char nops, reg, rm, vvvv;
+    unsigned char xmask, imm_bytes;
+} SgXVForm;
+
 #include "x64_isel.inc"
 
 /* ---- the SSA of the block's instructions ---- */
@@ -95,7 +118,9 @@ enum {
     SGX_K_SETCC,      /* def = condition code cc on flags_from's flags, 0 or 1 */
     SGX_K_RET,        /* the end: the next pc in[0] (or imm) */
     SGX_K_UNDEF,      /* the runtime's undef(state, pc imm, word disp) */
-    SGX_K_MACHINE     /* the machine's own (x64_a64.h's: labels, jumps, calls), op its kind */
+    SGX_K_MACHINE,    /* the machine's own (x64_a64.h's: labels, jumps, calls), op its kind */
+    SGX_K_VEC,        /* an SSE form (vf): its operand k is in[k] (none for the result's unless vtied, or the memory's) */
+    SGX_K_COLD        /* def = cc on flags_from's flags ? sym(state, in[1..w]) : in[0], the call out of the hot code */
 };
 
 typedef struct {
@@ -119,9 +144,18 @@ typedef struct {
     unsigned char cadd; /* an addition of the constant cadd_k to in[0] (its flags or not): what sgx_optimize folds
                            into the next such addition where nothing reads the flags of either */
     long long cadd_k;
+    /* SGX_K_VEC: the form; its result's operand (-1 none: a store, a compare), which reads in[vout] first when vtied;
+       vzero: the result is made 0 first (PXOR of itself), no input; the memory operand (mplace) is the state's
+       [base + mdisp] (mstate), the constant pool's kv (mrip), or guest memory [in[5] + in[6] + mdisp]; vflags: it
+       writes the flags (UCOMISS, PTEST) */
+    const SgXVForm* vf;
+    signed char vout;
+    unsigned char vtied, vzero, mstate, mrip, vflags;
+    SnxU64 kv[2];
 } SgXIns;
 
 typedef struct {
+    unsigned char cls;  /* 0 a general-purpose register's, 1 an XMM register's (128 bits) */
     unsigned char zab;  /* its register's bits from here up are 0 (64: none known) */
     unsigned char op;   /* made by an operation with a constant (SGX_C_*) of width cw, of the value src and k: the
                            chain the next such operation of that width folds into (AND of an AND: one AND of both
@@ -129,11 +163,12 @@ typedef struct {
     unsigned char cw;
     int def;            /* the instruction defining it */
     int last;           /* the last that reads it */
-    signed char reg;    /* the host register, once given */
+    signed char reg;    /* the host register (an XMM one for cls 1), once given */
     short slot;         /* its spill slot, -1 for none */
     signed char xmm;    /* the XMM register it is spilled to, -1 for none */
     int src;
     SnxU64 k;
+    int g0, g1; /* cls 1: its low and high doublewords as general-purpose values, once taken out (sgx_flat) */
 } SgXV;
 enum { SGX_C_NONE, SGX_C_AND, SGX_C_OR, SGX_C_XOR, SGX_C_ADD };
 
@@ -174,6 +209,8 @@ typedef struct {
     int wide;  /* bits past 64 this back end doesn't make (CRC32's operands as the Sail concatenates them, which the
                   lowered builtin doesn't read): an error where something reads them */
     int nzcv;  /* NZCV not made yet: the instruction whose flags are them, + 1 */
+    int x;     /* the value is the low w bits of this XMM virtual register (the bits above unknown): floating point and
+                  vectors, which the operations of general-purpose registers take out of it first (sgx_flat) */
 } SgD;
 
 /* an integer known only when the guest runs: its value modulo 2^64 (v, an SgD of 64 bits: what gen.c's (x).v reads),
@@ -207,6 +244,8 @@ static inline SgXIns* sgx_append(SgX* x, int kind) {
 }
 static inline int sgx_vreg(SgX* x, int def, unsigned zab) {
     if (x->nv == SGX_MAXV) sg_fail("a block of too many values", x->nv, SGX_MAXV);
+    x->v[x->nv].cls = 0;
+    x->v[x->nv].g0 = x->v[x->nv].g1 = 0;
     x->v[x->nv].zab = (unsigned char)zab;
     x->v[x->nv].op = SGX_C_NONE;
     x->v[x->nv].def = def;
@@ -232,7 +271,91 @@ static inline SgD sgx_val(unsigned w, int v) {
     return d;
 }
 static inline int sgx_is_const(const SgD* d) {
-    return !d->v && !d->inv && !d->nzcv && !d->wide && (d->w <= 64 || !d->vh);
+    return !d->v && !d->x && !d->inv && !d->nzcv && !d->wide && (d->w <= 64 || !d->vh);
+}
+
+/* ---- XMM values: the SSE forms' (x64.ops' enc lines) ---- */
+
+static inline void sgx_flags_clobbered(SgX* x);
+
+static inline int sgx_xvreg(SgX* x, int def) {
+    int r = sgx_vreg(x, def, 64);
+    x->v[r].cls = 1;
+    return r;
+}
+static inline SgD sgx_xval(unsigned w, int v) {
+    SgD d;
+    memset(&d, 0, sizeof d);
+    d.w = w;
+    d.x = v;
+    return d;
+}
+
+/* where an SSE form's memory operand is: none, guest memory [in[5] + in[6] + disp], the state's [base + disp], or
+   the constant pool's 16 bytes (lo, hi) */
+enum { SGX_VM_NONE, SGX_VM_GUEST, SGX_VM_STATE, SGX_VM_POOL };
+/* appends f: in[k] the virtual register of operand k (an XMM one where f's xmask says, else general-purpose); out
+   the result's operand (-1: none, the form writes the flags), tied when it is read first (in[out] then its old
+   value), zero when it is made 0 first instead. A memory operand memk (mode not NONE) is read, or written where it
+   is out: a store, kept though nothing reads it. The result's virtual register (0 for none) */
+static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm, int memk,
+                           int mode, int base, int index, int disp, SnxU64 lo, SnxU64 hi) {
+    SgXIns* i;
+    int k;
+    if (f->feature & ~x->features & ~(unsigned)(SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT))
+        sg_fail("an SSE form this host's processor lacks", (long long)f->feature, (long long)x->features);
+    if (out < 0) sgx_flags_clobbered(x); /* a compare's flags end the ones before: their conditions kept first */
+    i = sgx_append(x, SGX_K_VEC);
+    i->vf = f;
+    i->vout = (signed char)out;
+    i->vtied = (unsigned char)(tied != 0);
+    i->vzero = (unsigned char)(tied < 0);
+    if (tied < 0) i->vtied = 0;
+    i->imm = imm;
+    for (k = 0; k < f->nops && k < 4; ++k) i->in[k] = in ? in[k] : 0;
+    if (out >= 0 && !i->vtied) i->in[out] = 0;
+    if (mode != SGX_VM_NONE) {
+        i->mplace = (signed char)memk;
+        i->in[memk] = 0;
+        i->mdisp = disp;
+        if (mode == SGX_VM_GUEST) {
+            i->in[5] = base;
+            i->in[6] = index;
+        } else if (mode == SGX_VM_STATE)
+            i->mstate = 1;
+        else {
+            i->mrip = 1;
+            i->kv[0] = lo;
+            i->kv[1] = hi;
+        }
+    }
+    if (out < 0) {
+        /* a compare: its flags are the ones now */
+        i->vflags = 1;
+        x->flags_ins = x->n - 1;
+        return 0;
+    }
+    if (mode != SGX_VM_NONE && out == memk) {
+        i->side = 1;
+        return 0;
+    }
+    i->def = (f->xmask >> out & 1) ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
+    return i->def;
+}
+/* f of registers only: result operand 0 (tied: the two-operand SSE forms), the operands' registers a, b, c */
+static inline int sgx_v2(SgX* x, const SgXVForm* f, int a, int b, long long imm) {
+    int in[4] = {a, b, 0, 0};
+    return sgx_vins(x, f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+}
+/* f's result operand 0 written, not read: PSHUFD, MOVQ r64, xmm, CVTTSD2SI... of the register b */
+static inline int sgx_v1(SgX* x, const SgXVForm* f, int b, long long imm) {
+    int in[4] = {0, b, 0, 0};
+    return sgx_vins(x, f, 0, 0, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+}
+/* 16 bytes from the constant pool (lo the low doubleword) */
+static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi) {
+    if (!lo && !hi) return sgx_vins(x, &sgx_v_pxor, 0, -1, NULL, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    return sgx_vins(x, &sgx_v_movdqu_ld, 0, 0, NULL, 0, 1, SGX_VM_POOL, 0, 0, 0, lo, hi);
 }
 
 static inline SgB sgx_bool(SgX* x, int kind, int v, int cc) {
@@ -368,7 +491,33 @@ static inline SgD sgx_op(SgX* x, const SgXSel* table, unsigned n, SgD* in, int n
 static inline unsigned sgx_width(unsigned w) { return w <= 32 ? 32 : 64; }
 
 static inline SgD sgx_nzcv_bits(SgX* x, int ins);
+/* an XMM value as general-purpose registers (MOVD, MOVQ; PEXTRQ for bits past 64), each taken out once */
+static inline void sgx_flat(SgX* x, SgD* d) {
+    int v = d->x;
+    unsigned w = d->w;
+    if (!v) return;
+    if (!x->v[v].g0) {
+        int in[4] = {0, v, 0, 0};
+        x->v[v].g0 = sgx_vins(x, w <= 32 ? &sgx_v_movd_rx : &sgx_v_movq_rx, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        x->v[x->v[v].g0].zab = (unsigned char)(w <= 32 ? 32 : 64);
+    } else if (w > 32 && x->v[x->v[v].g0].zab == 32) {
+        int in[4] = {0, v, 0, 0};
+        x->v[v].g0 = sgx_vins(x, &sgx_v_movq_rx, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    memset(d, 0, sizeof *d);
+    d->w = w;
+    d->v = x->v[v].g0;
+    if (w > 64) {
+        if (!x->v[v].g1) {
+            int in[4] = {0, v, 0, 0};
+            x->v[v].g1 = sgx_vins(x, &sgx_v_pextrq, 0, 0, in, 1, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        }
+        d->vh = x->v[v].g1;
+    }
+}
+
 static inline int sgx_reg(SgX* x, SgD* d) {
+    sgx_flat(x, d);
     if (d->wide) sg_fail("bits past 64 of a concatenation this back end doesn't make, read", d->w, 0);
     if (d->nzcv) *d = sgx_nzcv_bits(x, d->nzcv - 1);
     if (d->inv) {
@@ -383,6 +532,56 @@ static inline int sgx_reg(SgX* x, SgD* d) {
         d->k = 0;
     }
     return d->v;
+}
+
+/* any value in an XMM register (its bits above w unknown, but a constant's 0): a constant from the pool (PXOR for 0),
+   general-purpose registers by MOVQ (and PINSRQ for the high doubleword) */
+static inline int sgx_xreg(SgX* x, SgD* d) {
+    int r;
+    if (d->x) return d->x;
+    if (d->w > 64) {
+        SgD lo, hi;
+        if (d->wide || d->nzcv) sg_fail("an XMM value of these bits", d->w, 0);
+        if (sgx_is_const(d)) r = sgx_xconst(x, d->k, d->kh);
+        else {
+            lo = d->v ? sgx_val(64, d->v) : sgx_const(64, d->k);
+            hi = d->vh ? sgx_val(d->w - 64, d->vh) : sgx_const(d->w - 64, d->kh);
+            if (d->inv) sg_fail("an XMM value of a NOT past 64 bits", d->w, 0);
+            if (sgx_is_const(&lo) && sgx_is_const(&hi)) r = sgx_xconst(x, lo.k, hi.k);
+            else {
+                int in[4] = {0, sgx_reg(x, &lo), 0, 0};
+                r = sgx_vins(x, &sgx_v_movq_xr, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+                if (!sgx_is_const(&hi) || hi.k) {
+                    in[0] = r;
+                    in[1] = sgx_reg(x, &hi);
+                    r = sgx_vins(x, &sgx_v_pinsrq, 0, 1, in, 1, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+                }
+            }
+        }
+    } else if (sgx_is_const(d))
+        r = sgx_xconst(x, d->k, 0);
+    else {
+        int in[4] = {0, sgx_reg(x, d), 0, 0};
+        r = sgx_vins(x, d->w <= 32 ? &sgx_v_movd_xr : &sgx_v_movq_xr, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    *d = sgx_xval(d->w, r);
+    return r;
+}
+/* an XMM value's bits w and up, to 128, made 0: MOVQ for a doubleword, INSERTPS for a word, byte shifts below */
+static inline int sgx_xclear(SgX* x, int v, unsigned w) {
+    if (w >= 128) return v;
+    if (w == 64) return sgx_v1(x, &sgx_v_movq_ld, v, 0);
+    if (w == 32 && (x->features & SGX_F_SSE41)) {
+        int in[4] = {v, v, 0, 0};
+        return sgx_vins(x, &sgx_v_insertps, 0, 1, in, 0x0E, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    if (w % 8 || w > 64) sg_fail("an XMM value cleared above a width not of bytes", w, 0);
+    {
+        int in[4] = {v, 0, 0, 0}, t;
+        t = sgx_vins(x, &sgx_v_pslldq, 0, 1, in, 16 - w / 8, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        in[0] = t;
+        return sgx_vins(x, &sgx_v_psrldq, 0, 1, in, 16 - w / 8, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
 }
 
 /* ---- dynamic bits ---- */
@@ -416,6 +615,12 @@ static inline SgD sgx_zext(SgX* x, SgD a, unsigned w) {
 }
 
 static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
+    if (a.x && a.w <= 64 && w > 64) return sgx_xval((unsigned)w, sgx_xclear(sgx(g), a.x, a.w));
+    if (a.x && a.w > 64) {
+        a.w = (unsigned)w;
+        return a;
+    }
+    sgx_flat(sgx(g), &a);
     if (a.w == (unsigned)w) return a;
     if (a.w > 64) {
         /* past 64 bits already: its high part's bits above it are 0, as a register's or a constant's are */
@@ -435,6 +640,8 @@ static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
 }
 
 static inline SgD sg_d_sext(SgCtx* g, SgD a, long long w) {
+    sgx_flat(sgx(g), &a);
+
     SgX* x = sgx(g);
     unsigned aw = a.w;
     if (sgx_is_const(&a)) {
@@ -460,6 +667,19 @@ static inline SgD sg_d_sext(SgCtx* g, SgD a, long long w) {
 static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
     SgX* x = sgx(g);
     unsigned w = (unsigned)(hi - lo + 1);
+    if (a.x) {
+        /* an XMM value's low bits are themselves (of a float's or a vector's width: others go to general-purpose
+           registers); an aligned element of 32 or 64 bits PSHUFD's to the bottom */
+        if (lo == 0 && (w == 16 || w == 32 || w == 64 || w == 128)) {
+            a.w = w;
+            return a;
+        }
+        if ((lo == 64 && hi <= 127) || (lo % 32 == 0 && hi < lo + 32 && hi <= 127)) {
+            unsigned e = (unsigned)(lo / 32), imm = lo == 64 ? 0xEE : e * 0x55;
+            return sgx_xval(w, sgx_v1(x, &sgx_v_pshufd, a.x, imm));
+        }
+        sgx_flat(x, &a);
+    }
     if (a.w > 64) {
         SgD l = a.v ? sgx_val(64, a.v) : sgx_const(64, a.k), h = a.vh ? sgx_val(a.w - 64, a.vh) : sgx_const(a.w - 64, a.kh);
         if (lo >= 64) return sg_d_slice(g, h, hi - 64, lo - 64);
@@ -495,6 +715,13 @@ static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
 static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
     SgX* x = sgx(g);
     unsigned w = h.w + l.w;
+    if ((h.x || l.x) && w == 128 && h.w == 64) {
+        /* two doublewords in an XMM register: PUNPCKLQDQ (the low's high bits are the high's low ones) */
+        int lx = sgx_xreg(x, &l), hx = sgx_xreg(x, &h);
+        return sgx_xval(128, sgx_v2(x, &sgx_v_punpcklqdq, lx, hx, 0));
+    }
+    sgx_flat(x, &h);
+    sgx_flat(x, &l);
     if (w > 64) {
         SgD r;
         if (l.w != 64) {
@@ -525,6 +752,8 @@ static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
 }
 
 static inline SgD sg_d_not(SgCtx* g, SgD a) {
+    sgx_flat(sgx(g), &a);
+
     (void)g;
     if (sgx_is_const(&a) && a.w > 64) {
         a.k = ~a.k;
@@ -539,6 +768,7 @@ static inline SgD sg_d_not(SgCtx* g, SgD a) {
 /* a value past 64 bits by its doublewords: 0 the low 64 bits, 1 the rest (a NOT of the whole is each half's) */
 static inline SgD sgx_half(SgD d, int k) {
     SgD r;
+    if (d.x) sg_fail("a doubleword of an XMM value read as general-purpose bits", d.w, k);
     if (d.wide) sg_fail("bits past 64 of a concatenation this back end doesn't make, read", d.w, 0);
     if (k == 0) r = d.v ? sgx_val(64, d.v) : sgx_const(64, d.k);
     else
@@ -552,6 +782,9 @@ static inline SgD sgx_half(SgD d, int k) {
 }
 
 static inline SgD sgx_logic(SgCtx* g, int op, SgD a, SgD b) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &b);
+
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
     if (a.w > 64) /* each doubleword's own */
@@ -612,6 +845,9 @@ static inline SgD sg_d_or(SgCtx* g, SgD a, SgD b) { return sgx_logic(g, 1, a, b)
 static inline SgD sg_d_xor(SgCtx* g, SgD a, SgD b) { return sgx_logic(g, 2, a, b); }
 
 static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &b);
+
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
     SgD r;
@@ -653,6 +889,8 @@ static inline SgD sg_d_sub(SgCtx* g, SgD a, SgD b) { return sgx_addsub(g, a, b, 
 static inline SgD sg_d_add_int(SgCtx* g, SgD a, long long n) { return sgx_addsub(g, a, sgx_const(a.w, (SnxU64)n), 0); }
 
 static inline SgD sgx_shift_i(SgCtx* g, int kind, SgD a, long long n) {
+    sgx_flat(sgx(g), &a);
+
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
     SgD r;
@@ -689,6 +927,9 @@ static inline SgD sg_d_ror(SgCtx* g, SgD a, long long n) { return sgx_shift_i(g,
 /* LSLV, LSRV, ASRV, RORV: the amount UInt(operand2) MOD datasize, which the x86 forms selected for them take as it
    is (their count mask, the selection proved, is that MOD) */
 static inline SgD sg_d_shift_dyn(SgCtx* g, SgD a, SgD amount, int kind) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &amount);
+
     SgX* x = sgx(g);
     unsigned w = a.w;
     SgD r;
@@ -704,7 +945,20 @@ static inline SgD sg_d_shift_dyn(SgCtx* g, SgD a, SgD amount, int kind) {
 }
 
 static inline void sg_d_set_slice(SgCtx* g, SgD* a, long long hi, long long lo, SgD v) {
-    unsigned w = a->w, n = (unsigned)(hi - lo + 1);
+    unsigned w, n;
+    if (lo == 0 && (unsigned)(hi + 1) == a->w && v.w == a->w) { /* all of it */
+        *a = v;
+        return;
+    }
+    if (v.x && lo == 0 && sgx_is_const(a) && !a->k && (a->w <= 64 || !a->kh)) {
+        /* the low bits of a zero (a vector made from its first element): the XMM value cleared above them */
+        *a = sg_d_zext(g, v, a->w);
+        return;
+    }
+    sgx_flat(sgx(g), a);
+    sgx_flat(sgx(g), &v);
+    w = a->w;
+    n = (unsigned)(hi - lo + 1);
     SnxU64 mask = sg_ones(n) << lo;
     SgD keep = sg_d_and(g, *a, sgx_const(w, ~mask));
     SgD put = sg_d_lsl(g, sg_d_zext(g, v, w), lo);
@@ -712,6 +966,8 @@ static inline void sg_d_set_slice(SgCtx* g, SgD* a, long long hi, long long lo, 
 }
 
 static inline SgD sg_d_replicate(SgCtx* g, SgD a, long long n) {
+    sgx_flat(sgx(g), &a);
+
     SgD r = a;
     long long i;
     for (i = 1; i < n; ++i) r = sg_d_concat(g, r, a);
@@ -760,6 +1016,36 @@ static inline int sgx_bool_cc(SgX* x, SgB c, int* from) {
     }
 }
 
+/* when c holds, sym(state, args...) on a cold path (out of the hot code: the exact helper, where the inline code's
+   guards fail), else the value tied: the value of both, in tied's register (an XMM one for a vector's) */
+static inline SgD sgx_cold(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, int nargs) {
+    int regs[5], k, from, cc, t, cls;
+    SgXIns* i;
+    SgXBool* b = &x->b[c];
+    if (!c || (b->kind == SGX_B_CONST && !b->v)) return tied;
+    if (nargs > 5) sg_fail("a cold call of more than five arguments", nargs, 0);
+    for (k = 0; k < nargs; ++k) regs[k] = args[k].x ? args[k].x : sgx_reg(x, &args[k]);
+    cls = tied.x != 0;
+    t = cls ? tied.x : sgx_reg(x, &tied);
+    if (b->kind == SGX_B_CONST) {
+        /* always: the flags of a TEST of a register of 1 */
+        SgD one = sgx_const(32, 1);
+        SgB r = sgx_bool(x, SGX_B_REG, sgx_reg(x, &one), 0);
+        c = r;
+    }
+    cc = sgx_bool_cc(x, c, &from);
+    i = sgx_append(x, SGX_K_COLD);
+    i->cc = (unsigned char)cc;
+    i->flags_from = from;
+    i->sym = sym;
+    i->w = (unsigned char)nargs;
+    i->in[0] = t;
+    for (k = 0; k < nargs; ++k) i->in[1 + k] = regs[k];
+    i->side = 1; /* its call changes FPSR though nothing reads its value */
+    i->def = cls ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
+    return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
+}
+
 static inline SgB sg_b_not(SgCtx* g, SgB a) {
     SgX* x = sgx(g);
     SgXBool b = x->b[a];
@@ -791,6 +1077,9 @@ static inline SgB sg_b_eq(SgCtx* g, int ne, SgB a, SgB b) {
 
 /* c ? a : b of bits: CMOVcc on c's condition code */
 static inline SgD sg_d_select(SgCtx* g, SgB c, SgD a, SgD b) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &b);
+
     SgX* x = sgx(g);
     SgXBool cb = x->b[c];
     unsigned w = a.w, pw = sgx_width(w);
@@ -821,6 +1110,9 @@ static inline SgB sg_b_select(SgCtx* g, SgB c, SgB a, SgB b) {
 /* a == b of bits: CMP (or TEST of a value with itself against 0), and the condition code the selection gives Arm's EQ
    on its flags */
 static inline SgB sg_d_eq(SgCtx* g, SgD a, SgD b) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &b);
+
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
     const SgXSel* s;
@@ -856,6 +1148,33 @@ static inline SgB sg_d_eq(SgCtx* g, SgD a, SgD b) {
     return sgx_bool(x, SGX_B_CC, x->flags_ins, s->cc_of[SGX_ARM_EQ]);
 }
 static inline SgB sg_d_is_zero(SgCtx* g, SgD a) { return sg_d_eq(g, a, sgx_const(a.w, 0)); }
+/* a < b, unsigned: CMP's carry (Arm's CC, LO) */
+static inline SgB sgx_d_ult(SgCtx* g, SgD a, SgD b) {
+    SgX* x = sgx(g);
+    unsigned pw;
+    const SgXSel* s;
+    SgD in[2];
+    sgx_flat(x, &a);
+    sgx_flat(x, &b);
+    if (sgx_is_const(&a) && sgx_is_const(&b)) return sgx_bool(x, SGX_B_CONST, a.k < b.k, 0);
+    pw = sgx_width(a.w);
+    if (sgx_is_const(&a)) sgx_reg(x, &a);
+    a = sgx_zext(x, a, pw);
+    if (!sgx_is_const(&b)) b = sgx_zext(x, b, pw);
+    if (a.inv) sgx_reg(x, &a);
+    if (b.inv) sgx_reg(x, &b);
+    in[0] = a;
+    if (sgx_is_const(&b) && sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, b.k, pw)) {
+        in[1] = sgx_const(32, b.k);
+        s = sgx_pick(x, SGX_TABLE(cmp_i, pw), SGX_TABLE_N(cmp_i, pw), b.k, pw, 0);
+    } else {
+        in[1] = b;
+        if (sgx_is_const(&b)) sgx_reg(x, &in[1]);
+        s = sgx_pick(x, SGX_TABLE(cmp, pw), SGX_TABLE_N(cmp, pw), 0, pw, 0);
+    }
+    sgx_emit(x, s, in, 2, pw, 0, -1);
+    return sgx_bool(x, SGX_B_CC, x->flags_ins, s->cc_of[SGX_ARM_CC]);
+}
 
 /* ---- integers ---- */
 
@@ -944,6 +1263,8 @@ static inline SgD sg_i_slice(SgCtx* g, SgI i, long long hi, long long lo) {
    the count's sum made before the test, so both choices read its flags), then 1 more where the top bit is still 0
    (w for 0) */
 static inline SgD sgx_clz_search(SgCtx* g, SgD a) {
+    sgx_flat(sgx(g), &a);
+
     unsigned w = a.w, step;
     SgD n = sgx_const(w, 0);
     for (step = w / 2; step >= 1; step /= 2) {
@@ -956,6 +1277,8 @@ static inline SgD sgx_clz_search(SgCtx* g, SgD a) {
 }
 
 static inline SgI sg_i_clz(SgCtx* g, SgD a) {
+    sgx_flat(sgx(g), &a);
+
     SgX* x = sgx(g);
     unsigned w = a.w;
     if (w != 32 && w != 64) sg_fail("CLZ of a value not of 32 or 64 bits", w, 0);
@@ -984,6 +1307,10 @@ static inline int sgx_arm_flag_cc(const SgXSel* fsel, int f) {
 }
 
 static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* result, SgD* nzcv) {
+    sgx_flat(sgx(g), &a);
+    sgx_flat(sgx(g), &b);
+    sgx_flat(sgx(g), &cin);
+
     SgX* x = sgx(g);
     unsigned w = a.w;
     const SgXSel *s, *alt;
@@ -1070,6 +1397,8 @@ static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* resul
 /* [r[N-1]] @ IsZeroBit(r) @ 0b00: the flags of ANDS. Where the AND that made r is the last to write the flags and the
    selection lists its form for ANDS too, they are its own; else TEST r, r */
 static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
+    sgx_flat(sgx(g), &r);
+
     SgX* x = sgx(g);
     unsigned w = r.w;
     if ((w == 32 || w == 64) && r.v && !r.inv && x->flags_ins >= 0 && x->v[r.v].def == x->flags_ins) {
@@ -1112,7 +1441,8 @@ static inline void sgx_optimize(SgX* x) {
         if (s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
         for (k = i + 1; k < x->n; ++k) {
             SgXIns* t = &x->ins[k];
-            if (t->kind == SGX_K_UNDEF || t->kind == SGX_K_MACHINE || (t->kind == SGX_K_LOAD && t->disp == s->disp))
+            if (t->kind == SGX_K_UNDEF || t->kind == SGX_K_MACHINE || (t->kind == SGX_K_LOAD && t->disp == s->disp) ||
+                (t->kind == SGX_K_VEC && t->mstate) || t->kind == SGX_K_COLD)
                 break;
             if ((t->kind == SGX_K_STORE || t->kind == SGX_K_STORE_FLAG) && t->disp == s->disp &&
                 (t->kind == SGX_K_STORE_FLAG ? 32 : t->w) >= (s->kind == SGX_K_STORE_FLAG ? 32 : s->w)) {
@@ -1225,7 +1555,8 @@ typedef struct SgXAsm {
     SgXBuf* b;
     int owner[16]; /* the virtual register a host one holds, 0 for none, -1 a copy made for one instruction */
     int slots, slots_max;
-    int xmm_owner[16];    /* the value an XMM register holds spilled, 0 for none */
+    int xowner[16];       /* the value an XMM register holds: a vector's (cls 1), or a general-purpose one spilled
+                             there; 0 for none, -1 a copy made for one instruction (PBLENDVB's XMM0) */
     int* next_call;       /* for each instruction, the next one at or after it that calls out (x->n: none) */
     size_t frame_at[256]; /* where an imm32 of the frame's size is */
     int nframe;
@@ -1233,6 +1564,28 @@ typedef struct SgXAsm {
     /* a helper's call: by a relocation reloc records (an object's), or else at the address resolve gives */
     void (*reloc)(void* machine, size_t at, const char* sym, long long addend);
     SnxU64 (*resolve)(const char* sym);
+    /* the constant pool (16 bytes each) the function's RIP-relative operands read, after its code
+       (sgx_pool_emit), and where each such operand's displacement is */
+    SnxU64 (*pool)[2];
+    int npool, cap_pool;
+    struct SgXRip {
+        size_t at, end;
+        int idx;
+    } * rips;
+    int nrips, cap_rips;
+    /* the cold paths (SGX_K_COLD's calls), after the function's code and before its pool (sgx_cold_emit): their
+       bytes, the jumps between them and the hot code, their calls' relocations */
+    SgXBuf cold;
+    struct SgXCJump {
+        size_t at, to;          /* the rel32's place and its target: into the cold code from the hot, or back */
+        unsigned char in_cold;  /* the rel32 is the cold code's (a jump back) */
+    } * cjumps;
+    int ncjumps, cap_cjumps;
+    struct SgXCCall {
+        size_t at;
+        const char* sym;
+    } * ccalls;
+    int nccalls, cap_ccalls;
 } SgXAsm;
 
 static inline const SgXSel* sgx_find(const SgXSel* t, unsigned n, int rm_is_out, int w_rm) {
@@ -1289,9 +1642,13 @@ static inline void sgx_spill_at(SgXAsm* a, int r, int at) {
     SgXV* vv = &a->x->v[v];
     if (vv->slot < 0 && vv->xmm < 0 && a->next_call && at >= 0 && a->next_call[at] > vv->last)
         for (k = 0; k < 16; ++k) {
-            if (a->xmm_owner[k] > 0 && a->x->v[a->xmm_owner[k]].last >= at) continue;
-            if (a->xmm_owner[k] > 0) a->x->v[a->xmm_owner[k]].xmm = -1;
-            a->xmm_owner[k] = v;
+            if (a->xowner[k] < 0 || (a->xowner[k] > 0 && a->x->v[a->xowner[k]].last >= at)) continue;
+            if (a->xowner[k] > 0) {
+                if (a->x->v[a->xowner[k]].cls) a->x->v[a->xowner[k]].reg = -1;
+                else
+                    a->x->v[a->xowner[k]].xmm = -1;
+            }
+            a->xowner[k] = v;
             vv->xmm = (signed char)k;
             sgx_movq(a->b, 1, k, r);
             break;
@@ -1472,6 +1829,408 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     }
 }
 
+/* ---- XMM registers: vectors' values and spilled general-purpose ones ---- */
+
+/* 16 bytes of the frame (two 8-byte slots; MOVDQU needs no alignment) */
+static inline int sgx_slot2(SgXAsm* a) {
+    int k = a->slots;
+    a->slots += 2;
+    if (a->slots > a->slots_max) a->slots_max = a->slots;
+    return k;
+}
+/* f between XMM register xr and the memory at base + disp (MOVDQU, MOVQ to or from it) */
+static inline void sgx_vmem(SgXAsm* a, const SgXVForm* f, int xr, int base, int disp) {
+    unsigned char r[4] = {0, 0, 0, 0};
+    r[(int)f->reg] = (unsigned char)xr;
+    r[(int)f->rm] = (unsigned char)(16 + base);
+    a->b->disp = disp;
+    a->b->index = -1;
+    f->enc(a->b, r, 0, 0);
+}
+static inline void sgx_vrr(SgXAsm* a, const SgXVForm* f, int dst, int src) {
+    unsigned char r[4] = {0, 0, 0, 0};
+    r[(int)f->reg] = (unsigned char)dst;
+    r[(int)f->rm] = (unsigned char)src;
+    f->enc(a->b, r, 0, 0);
+}
+static inline void sgx_xrelease(SgXAsm* a, int k) {
+    int o = a->xowner[k];
+    if (o > 0) {
+        if (a->x->v[o].cls) a->x->v[o].reg = -1;
+        else
+            a->x->v[o].xmm = -1;
+    }
+    a->xowner[k] = 0;
+}
+/* what XMM register k holds, kept where it is read after at: a vector in its 16 bytes of the frame, a spilled
+   general-purpose value in its 8 (once: an SSA value never changes) */
+static inline void sgx_xspill(SgXAsm* a, int k, int at) {
+    int o = a->xowner[k];
+    if (o > 0 && a->x->v[o].last > at && a->x->v[o].slot < 0) {
+        SgXV* vv = &a->x->v[o];
+        if (vv->cls) {
+            vv->slot = (short)sgx_slot2(a);
+            sgx_vmem(a, &sgx_v_movdqu_st, k, SGX_RSP, 8 * vv->slot);
+        } else {
+            vv->slot = (short)a->slots++;
+            if (a->slots > a->slots_max) a->slots_max = a->slots;
+            sgx_vmem(a, &sgx_v_movq_st, k, SGX_RSP, 8 * vv->slot);
+        }
+    }
+    sgx_xrelease(a, k);
+}
+/* an XMM register free at at, none of avoid's: one holding nothing read after, or else the one whose value is read
+   latest, spilled */
+static inline int sgx_xfree(SgXAsm* a, int at, unsigned avoid) {
+    int k, best = -1;
+    for (k = 0; k < 16; ++k) {
+        int o = a->xowner[k];
+        if ((avoid >> k) & 1) continue;
+        if (!o || (o > 0 && a->x->v[o].last < at)) {
+            sgx_xrelease(a, k);
+            return k;
+        }
+    }
+    for (k = 0; k < 16; ++k)
+        if (!((avoid >> k) & 1) && a->xowner[k] > 0 &&
+            (best < 0 || a->x->v[a->xowner[k]].last > a->x->v[a->xowner[best]].last))
+            best = k;
+    if (best < 0) sg_fail("no XMM register to spill", at, (long long)avoid);
+    sgx_xspill(a, best, at);
+    return best;
+}
+/* vector value v in an XMM register (reloaded from its slot where it was spilled), not one of avoid's */
+static inline int sgx_xin(SgXAsm* a, int v, int at, unsigned avoid) {
+    SgXV* vv = &a->x->v[v];
+    int k;
+    if (vv->reg >= 0) return vv->reg;
+    if (vv->slot < 0) sg_fail("a vector in neither a register nor a slot", v, at);
+    k = sgx_xfree(a, at, avoid);
+    sgx_vmem(a, &sgx_v_movdqu_ld, k, SGX_RSP, 8 * a->x->v[v].slot);
+    a->xowner[k] = v;
+    a->x->v[v].reg = (signed char)k;
+    return k;
+}
+/* the constant pool's entry of these 16 bytes */
+static inline int sgx_pool_index(SgXAsm* a, SnxU64 lo, SnxU64 hi) {
+    int k;
+    for (k = 0; k < a->npool; ++k)
+        if (a->pool[k][0] == lo && a->pool[k][1] == hi) return k;
+    if (a->npool == a->cap_pool) {
+        a->cap_pool = a->cap_pool ? 2 * a->cap_pool : 16;
+        a->pool = (SnxU64(*)[2])realloc(a->pool, (size_t)a->cap_pool * sizeof *a->pool);
+        if (!a->pool) sg_fail("out of memory", 0, 0);
+    }
+    a->pool[a->npool][0] = lo;
+    a->pool[a->npool][1] = hi;
+    return a->npool++;
+}
+/* the pool after the code, 16-aligned, and the operands' displacements to it; emptied for the next function */
+static inline void sgx_pool_emit(SgXAsm* a) {
+    SgXBuf* b = a->b;
+    size_t at;
+    int k;
+    if (!a->npool) {
+        a->nrips = 0;
+        return;
+    }
+    while (b->n % 16) sgx_byte(b, 0xCC);
+    at = b->n;
+    for (k = 0; k < a->npool; ++k) {
+        sgx_imm(b, (long long)a->pool[k][0], 8);
+        sgx_imm(b, (long long)a->pool[k][1], 8);
+    }
+    for (k = 0; k < a->nrips; ++k) {
+        long long d = (long long)(at + 16 * (size_t)a->rips[k].idx) - (long long)a->rips[k].end;
+        size_t p = a->rips[k].at;
+        if (p + 4 <= b->cap) {
+            b->p[p] = (unsigned char)d;
+            b->p[p + 1] = (unsigned char)(d >> 8);
+            b->p[p + 2] = (unsigned char)(d >> 16);
+            b->p[p + 3] = (unsigned char)(d >> 24);
+        }
+    }
+    a->npool = a->nrips = 0;
+}
+
+static inline void sgx_assemble_vec(SgXAsm* a, int at) {
+    SgX* x = a->x;
+    SgXIns* i = &x->ins[at];
+    const SgXVForm* f = i->vf;
+    SgXBuf* b = a->b;
+    unsigned char r[4] = {0, 0, 0, 0};
+    unsigned heldg = 0, heldx = 0;
+    int k, out = i->vout, outreg = -1, implicit = -1, base = -1, index = -1, isx = 0;
+    for (k = 0; k < f->nops; ++k)
+        if (k != f->reg && k != f->rm && k != f->vvvv && ((f->xmask >> k) & 1)) implicit = k; /* <XMM0> */
+    if (implicit >= 0 && i->in[implicit]) {
+        int from = sgx_xin(a, i->in[implicit], at, 0);
+        if (from != 0) {
+            int o = a->xowner[0];
+            if (o > 0 && x->v[o].last > at) {
+                int to = sgx_xfree(a, at, 1u | (1u << from));
+                sgx_vrr(a, &sgx_v_movaps, to, 0);
+                a->xowner[0] = 0;
+                if (x->v[o].cls) x->v[o].reg = (signed char)to;
+                else
+                    x->v[o].xmm = (signed char)to;
+                a->xowner[to] = o;
+            } else
+                sgx_xrelease(a, 0);
+            sgx_vrr(a, &sgx_v_movaps, 0, from);
+            a->xowner[0] = -1;
+        }
+        heldx |= 1;
+    }
+    for (k = 0; k < f->nops; ++k) {
+        int v = i->in[k], rr;
+        if (!v || k == implicit || k == i->mplace) continue;
+        if ((f->xmask >> k) & 1) {
+            rr = sgx_xin(a, v, at, heldx);
+            heldx |= 1u << rr;
+        } else {
+            rr = sgx_in_reg(a, v, at, heldg);
+            heldg |= 1u << rr;
+        }
+        r[k] = (unsigned char)rr;
+    }
+    if (i->mplace >= 0 && !i->mstate && !i->mrip) {
+        base = sgx_in_reg(a, i->in[5], at, heldg);
+        heldg |= 1u << base;
+        if (i->in[6]) {
+            index = sgx_in_reg(a, i->in[6], at, heldg);
+            heldg |= 1u << index;
+        }
+    }
+    if (out >= 0 && out != i->mplace) {
+        isx = (f->xmask >> out) & 1;
+        if (i->vtied) {
+            int tv = i->in[out], from = r[out], dies = x->v[tv].last == at;
+            for (k = 0; k < f->nops; ++k)
+                if (k != out && i->in[k] == tv) dies = 0;
+            if (dies) {
+                outreg = from;
+                if (isx) {
+                    a->xowner[from] = 0;
+                    x->v[tv].reg = -1;
+                } else {
+                    a->owner[from] = 0;
+                    x->v[tv].reg = -1;
+                }
+            } else if (isx) {
+                outreg = sgx_xfree(a, at, heldx | (1u << from));
+                sgx_vrr(a, &sgx_v_movaps, outreg, from);
+            } else {
+                outreg = sgx_free_reg(a, at, heldg | (1u << from));
+                sgx_mov_rr(a, outreg, from);
+            }
+        } else
+            outreg = isx ? sgx_xfree(a, at, heldx) : sgx_free_reg(a, at, heldg);
+        r[out] = (unsigned char)outreg;
+        if (i->vzero) r[(int)f->rm] = (unsigned char)outreg; /* PXOR of itself */
+    }
+    if (i->mplace >= 0) {
+        if (i->mstate) r[(int)i->mplace] = (unsigned char)(16 + x->base);
+        else if (i->mrip)
+            r[(int)i->mplace] = SGX_RIP;
+        else
+            r[(int)i->mplace] = (unsigned char)(16 + base);
+        b->index = index;
+        b->disp = i->mrip ? 0 : i->mdisp;
+    }
+    f->enc(b, r, i->imm, 0);
+    b->index = -1;
+    if (i->mrip) {
+        if (a->nrips == a->cap_rips) {
+            a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
+            a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
+            if (!a->rips) sg_fail("out of memory", 0, 0);
+        }
+        a->rips[a->nrips].at = b->rip_at;
+        a->rips[a->nrips].end = b->n;
+        a->rips[a->nrips++].idx = sgx_pool_index(a, i->kv[0], i->kv[1]);
+    }
+    for (k = 0; k < 16; ++k) {
+        if (a->owner[k] == -1) a->owner[k] = 0;
+        if (a->xowner[k] == -1) a->xowner[k] = 0;
+    }
+    if (outreg >= 0 && i->def) {
+        if (isx) {
+            if (a->xowner[outreg] > 0 && a->xowner[outreg] != i->def) sgx_xrelease(a, outreg);
+            a->xowner[outreg] = i->def;
+        } else {
+            if (a->owner[outreg] > 0 && a->owner[outreg] != i->def) a->x->v[a->owner[outreg]].reg = -1;
+            a->owner[outreg] = i->def;
+        }
+        x->v[i->def].reg = (signed char)outreg;
+    }
+}
+
+/* ---- cold paths ---- */
+
+static inline void sgx_cjump(SgXAsm* a, size_t at, size_t to, int in_cold) {
+    if (a->ncjumps == a->cap_cjumps) {
+        a->cap_cjumps = a->cap_cjumps ? 2 * a->cap_cjumps : 32;
+        a->cjumps = (struct SgXCJump*)realloc(a->cjumps, (size_t)a->cap_cjumps * sizeof *a->cjumps);
+        if (!a->cjumps) sg_fail("out of memory", 0, 0);
+    }
+    a->cjumps[a->ncjumps].at = at;
+    a->cjumps[a->ncjumps].to = to;
+    a->cjumps[a->ncjumps++].in_cold = (unsigned char)in_cold;
+}
+static inline void sgx_cold_room(SgXAsm* a, size_t need) {
+    if (a->cold.cap - a->cold.n >= need) return;
+    a->cold.cap = a->cold.cap * 2 + need;
+    a->cold.p = (unsigned char*)realloc(a->cold.p, a->cold.cap);
+    if (!a->cold.p) sg_fail("out of memory", 0, 0);
+}
+
+/* SGX_K_COLD at at: the hot code jumps out where its condition holds; the cold code keeps the registers the call
+   changes that are read after (and the arguments) in scratch slots of the frame above the region's, calls with the
+   arguments from where they are, puts RAX in the result's register, takes the others back and jumps in again */
+static inline void sgx_assemble_cold(SgXAsm* a, int at) {
+    static const signed char args_reg[5] = {6, 2, 1, 8, 9}; /* RSI RDX RCX R8 R9, RDI the state */
+    SgX* x = a->x;
+    SgXIns* i = &x->ins[at];
+    SgXBuf* b = a->b;
+    SgXBuf* c;
+    int tv = i->in[0], cls = x->v[tv].cls, from, outreg, k, n = 0, nargs = i->w;
+    int gslot[16], xslot[16], argslot[5];
+    unsigned char saved_g[16] = {0}, saved_x[16] = {0};
+    /* the result's register: the tied value's, which dies here, or a copy of it */
+    from = cls ? sgx_xin(a, tv, at, 0) : sgx_in_reg(a, tv, at, 0);
+    if (x->v[tv].last == at) {
+        outreg = from;
+        if (cls) a->xowner[from] = 0;
+        else
+            a->owner[from] = 0;
+        x->v[tv].reg = -1;
+    } else if (cls) {
+        outreg = sgx_xfree(a, at, 1u << from);
+        sgx_vrr(a, &sgx_v_movaps, outreg, from);
+    } else {
+        outreg = sgx_free_reg(a, at, 1u << from);
+        sgx_mov_rr(a, outreg, from);
+    }
+    /* the hot code: Jcc rel32 into the cold */
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, (unsigned char)(0x80 | (i->cc & 15)));
+    sgx_cjump(a, b->n, a->cold.n, 0);
+    sgx_imm(b, 0, 4);
+    sgx_cold_room(a, 1024);
+    {
+        SgXBuf* hot = a->b;
+        size_t back = hot->n;
+        a->b = &a->cold;
+        c = a->b;
+        /* the caller-saved general-purpose registers read after at, or an argument's */
+        for (k = 0; k < 16; ++k) {
+            int o = a->owner[k], keep = 0, j;
+            if (o <= 0 || k == (cls ? -1 : outreg) || !((SGX_CALLER_SAVED >> k) & 1)) continue;
+            keep = x->v[o].last > at;
+            for (j = 0; j < nargs; ++j) keep |= i->in[1 + j] == o;
+            if (!keep) continue;
+            gslot[k] = a->slots + n++;
+            saved_g[k] = 1;
+            sgx_mov_mem(a, 0, 64, k, SGX_RSP, 8 * gslot[k]);
+        }
+        for (k = 0; k < 16; ++k) {
+            int o = a->xowner[k];
+            if (o <= 0 || (cls && k == outreg) || x->v[o].last <= at) continue;
+            if (n % 2) ++n;
+            xslot[k] = a->slots + n;
+            n += 2;
+            saved_x[k] = 1;
+            sgx_vmem(a, &sgx_v_movdqu_st, k, SGX_RSP, 8 * xslot[k]);
+        }
+        if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
+        /* the arguments: from a saved register's slot, an XMM register, or the value's own slot */
+        for (k = 0; k < nargs; ++k) {
+            int v = i->in[1 + k], dst = args_reg[k];
+            SgXV* vv = &x->v[v];
+            argslot[k] = -1;
+            if (vv->cls) {
+                if (vv->reg >= 0) {
+                    unsigned char r[4] = {0, 0, 0, 0};
+                    r[(int)sgx_v_movq_rx.rm] = (unsigned char)dst;
+                    r[(int)sgx_v_movq_rx.reg] = (unsigned char)vv->reg;
+                    sgx_v_movq_rx.enc(c, r, 0, 0);
+                } else
+                    sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
+            } else if (vv->reg >= 0 && saved_g[vv->reg])
+                sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * gslot[(int)vv->reg]);
+            else if (vv->reg >= 0)
+                sgx_mov_rr(a, dst, vv->reg); /* a callee-saved one */
+            else if (vv->xmm >= 0)
+                sgx_movq(c, 0, vv->xmm, dst);
+            else
+                sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
+        }
+        sgx_byte(c, 0x48); /* mov rdi, rbx */
+        sgx_byte(c, 0x89);
+        sgx_byte(c, 0xDF);
+        if (a->reloc) {
+            sgx_byte(c, 0xE8);
+            if (a->nccalls == a->cap_ccalls) {
+                a->cap_ccalls = a->cap_ccalls ? 2 * a->cap_ccalls : 32;
+                a->ccalls = (struct SgXCCall*)realloc(a->ccalls, (size_t)a->cap_ccalls * sizeof *a->ccalls);
+                if (!a->ccalls) sg_fail("out of memory", 0, 0);
+            }
+            a->ccalls[a->nccalls].at = c->n;
+            a->ccalls[a->nccalls++].sym = i->sym;
+            sgx_imm(c, 0, 4);
+        } else {
+            SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
+            if (!to) sg_fail("a helper nothing resolves", 0, 0);
+            sgx_byte(c, 0x48); /* mov rax, imm64; call rax */
+            sgx_byte(c, 0xB8);
+            sgx_imm(c, (long long)to, 8);
+            sgx_byte(c, 0xFF);
+            sgx_byte(c, 0xD0);
+        }
+        if (cls) {
+            unsigned char r[4] = {0, 0, 0, 0};
+            r[(int)sgx_v_movq_xr.reg] = (unsigned char)outreg;
+            r[(int)sgx_v_movq_xr.rm] = 0; /* RAX */
+            sgx_v_movq_xr.enc(c, r, 0, 0);
+        } else
+            sgx_mov_rr(a, outreg, 0);
+        for (k = 0; k < 16; ++k) {
+            if (saved_g[k] && x->v[a->owner[k]].last > at) sgx_mov_mem(a, 1, 64, k, SGX_RSP, 8 * gslot[k]);
+            if (saved_x[k]) sgx_vmem(a, &sgx_v_movdqu_ld, k, SGX_RSP, 8 * xslot[k]);
+        }
+        sgx_byte(c, 0xE9); /* jmp back */
+        sgx_cjump(a, c->n, back, 1);
+        sgx_imm(c, 0, 4);
+        a->b = hot;
+    }
+    if (cls) a->xowner[outreg] = i->def;
+    else
+        a->owner[outreg] = i->def;
+    x->v[i->def].reg = (signed char)outreg;
+}
+
+/* the cold paths after the code (and the jumps between, and their calls' relocations); emptied for the next */
+static inline void sgx_cold_emit(SgXAsm* a) {
+    SgXBuf* b = a->b;
+    size_t base = b->n, k;
+    for (k = 0; k < a->cold.n; ++k) sgx_byte(b, a->cold.p[k]);
+    for (k = 0; k < (size_t)a->ncjumps; ++k) {
+        size_t at = a->cjumps[k].in_cold ? base + a->cjumps[k].at : a->cjumps[k].at;
+        size_t to = a->cjumps[k].in_cold ? a->cjumps[k].to : base + a->cjumps[k].to;
+        long long d = (long long)to - (long long)(at + 4);
+        if (at + 4 <= b->cap) {
+            b->p[at] = (unsigned char)d;
+            b->p[at + 1] = (unsigned char)(d >> 8);
+            b->p[at + 2] = (unsigned char)(d >> 16);
+            b->p[at + 3] = (unsigned char)(d >> 24);
+        }
+    }
+    for (k = 0; k < (size_t)a->nccalls; ++k) a->reloc(a->machine, base + a->ccalls[k].at, a->ccalls[k].sym, -4);
+    a->cold.n = 0;
+    a->ncjumps = a->nccalls = 0;
+}
+
 /* the machine's part: the instructions of its own kind (SGX_K_MACHINE, SGX_K_UNDEF, SGX_K_RET), their inputs in
    registers r[] (in[k]'s), which it may only read; the prologue and the epilogues */
 static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r);
@@ -1483,7 +2242,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
     SgXBuf* b = a->b;
     a->x = x;
     memset(a->owner, 0, sizeof a->owner);
-    memset(a->xmm_owner, 0, sizeof a->xmm_owner);
+    memset(a->xowner, 0, sizeof a->xowner);
     a->slots = 0;
     for (i = 0; i < x->nv; ++i) {
         x->v[i].reg = -1;
@@ -1502,6 +2261,8 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         if (s->dead) continue;
         switch (s->kind) {
         case SGX_K_SEL: sgx_assemble_sel(a, i); break;
+        case SGX_K_VEC: sgx_assemble_vec(a, i); break;
+        case SGX_K_COLD: sgx_assemble_cold(a, i); break;
         case SGX_K_LOAD: {
             int d = sgx_free_reg(a, i, 0);
             sgx_mov_mem(a, 1, s->w == 64 ? 64 : 32, d, x->base, s->disp);
@@ -1548,6 +2309,8 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                    straight into its register: no move has to wait for another */
                 for (k = 0; k < 16; ++k)
                     if (a->owner[k] > 0) sgx_spill(a, k);
+                for (k = 0; k < 16; ++k) /* every XMM register is caller-saved: what is read after, in its slot */
+                    sgx_xspill(a, k, i);
                 for (k = 0; k < 5; ++k)
                     if (s->in[k]) {
                         SgXV* vv = &x->v[s->in[k]];
@@ -1671,12 +2434,16 @@ static inline SgD sgx_nzcv_bits(SgX* x, int ins) {
 
 /* CountLeadingSignBits(x): CLZ(x<N-1:1> EOR x<N-2:0>) of N - 1 bits, which is CLZ of ((x EOR (x << 1)) OR 1) of N */
 static inline SgI sg_i_cls(SgCtx* g, SgD a) {
+    sgx_flat(sgx(g), &a);
+
     SgD t = sg_d_or(g, sg_d_xor(g, a, sg_d_lsl(g, a, 1)), sgx_const(a.w, 1));
     return sg_i_clz(g, t);
 }
 
 /* BitReverse: BSWAP, then the bits of each byte swapped in three steps of masks and shifts (nibbles, pairs, bits) */
 static inline SgD sg_d_bitreverse(SgCtx* g, SgD a) {
+    sgx_flat(sgx(g), &a);
+
     SgX* x = sgx(g);
     unsigned w = a.w, k;
     static const SnxU64 masks[3] = {0x0F0F0F0F0F0F0F0Full, 0x3333333333333333ull, 0x5555555555555555ull};

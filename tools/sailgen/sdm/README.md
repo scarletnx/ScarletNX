@@ -28,4 +28,8 @@ erratum is not just a missing selection: CDQ's read as written was taken for a z
 | S-3 | RCL/RCR/ROL/ROR | `tempCF * 2SIZE` (a superscript lost) | 2^(SIZE - 1) for ROR, 2^SIZE for RCR | `RCL_RCR_ROL_ROR.sdm` |
 | S-4 | RCL/RCR/ROL/ROR | `MSB − 1(tempDEST)`; stray `ELIHW;` lines | the bit below the top; nothing | `RCL_RCR_ROL_ROR.sdm` |
 | S-6 | DIV, IDIV | (as E-1 and E-2) | | the overrides keep the pages' words; IDIV's 8- and 16-bit forms are left unread |
+| S-7 | PINSRB/PINSRD/PINSRQ, PEXTRB/PEXTRD/PEXTRQ, PINSRW | (pdftotext) rows of neighbouring forms run into one, their cells sharing a line of the table | each form its own row | `PINSRB_PINSRD_PINSRQ.sdm`, `PEXTRB_PEXTRD_PEXTRQ.sdm`, `PINSRW.sdm` (legacy forms only) |
+| S-8 | CVTDQ2PS, ROUNDPS | (pdftotext) CVTDQ2PS's table of one mode column read as opcodes alone; ROUNDPS's `/r ib` in the instruction cell | the legacy form's row | `CVTDQ2PS.sdm`, `ROUNDPS.sdm` |
+| S-9 | PAVGB | the opcode `66 0F E0, /r`, a comma among the bytes | `66 0F E0 /r` | `isel.c` reads a comma in an opcode as a space |
+| S-10 | PMOVSX, PMOVZX | the opcodes in lower case, `66 0f 38 20 /r` | `66 0F 38 20 /r` | `isel.c` reads `0f` as `0F` |
 | S-5 | SAL/SAR/SHL/SHR, SARX/SHLX/SHRX | the division's signedness in a comment ('Signed divide, rounding toward negative infinity') | a signed division | `sdm_code.c` reads the comment |

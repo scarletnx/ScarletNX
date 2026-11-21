@@ -1,0 +1,6 @@
+# PINSRW—Insert Word -- override
+# S-7: pdftotext runs the rows of PINSRW xmm and VPINSRW into one: the legacy forms' rows each its own, the VEX and
+# EVEX forms left out.
+@opcodes
+NP 0F C4 /r ib | PINSRW mm, r32/m16, imm8 | A | Valid | Valid | SSE | Insert the low word from r32 or from m16 into mm at the word position specified by imm8.
+66 0F C4 /r ib | PINSRW xmm, r32/m16, imm8 | A | Valid | Valid | SSE2 | Move the low word of r32 or from m16 into xmm at the word position specified by imm8.

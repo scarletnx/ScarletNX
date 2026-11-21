@@ -1,0 +1,5 @@
+# CVTDQ2PS—Convert Packed Doubleword Integers to Packed Single Precision Floating-Point -- override
+# S-8: this page's table has an Opcode/Instruction column of two lines and one '64/32 bit Mode Support' column, which
+# the extraction reads as the opcode alone: the legacy form's row as the other pages have it.
+@opcodes
+NP 0F 5B /r | CVTDQ2PS xmm1, xmm2/m128 | A | Valid | Valid | SSE2 | Convert four packed signed doubleword integers from xmm2/m128 to four packed single precision floating-point values in xmm1.

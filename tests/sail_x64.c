@@ -108,6 +108,23 @@ static unsigned host_features(void) {
         if (b & (1u << 8)) f |= SNX_X64_BMI2;
     }
     if (__get_cpuid(0x80000001u, &a, &b, &c, &d) && (c & (1u << 5))) f |= SNX_X64_LZCNT;
+    if (__get_cpuid(1, &a, &b, &c, &d)) {
+        if (c & 1u) f |= SNX_X64_SSE3;
+        if (c & (1u << 1)) f |= SNX_X64_PCLMUL;
+        if (c & (1u << 9)) f |= SNX_X64_SSSE3;
+        if (c & (1u << 19)) f |= SNX_X64_SSE41;
+        if (c & (1u << 20)) f |= SNX_X64_SSE42;
+        if (c & (1u << 23)) f |= SNX_X64_POPCNT;
+        if ((c & (1u << 27)) && (c & (1u << 28))) {
+            unsigned lo, hi;
+            __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+            if ((lo & 6) == 6) {
+                f |= SNX_X64_AVX;
+                if (c & (1u << 12)) f |= SNX_X64_FMA;
+                if (c & (1u << 29)) f |= SNX_X64_F16C;
+            }
+        }
+    }
 #endif
     return f;
 }
@@ -207,7 +224,7 @@ int main(int argc, char** argv) {
 #endif
     g_test.seed = 0x9e3779b97f4a7c15ull;
     hosts[0] = host_features();
-    hosts[1] = 0;
+    hosts[1] = SNX_X64_BASELINE; /* no BMI1, BMI2, LZCNT, AVX, FMA or F16C */
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_abort;
     sigaction(SIGABRT, &sa, NULL);

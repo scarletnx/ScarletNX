@@ -39,7 +39,8 @@ typedef struct {
 
 typedef struct {
     char* open;
-    char* op[4];
+    char* op[5];
+    int nop; /* the entries after the name: a tuple type's column and the operands' */
 } PEnc;
 
 typedef struct {
@@ -123,12 +124,15 @@ static void read_pages(const char* path) {
             if (!cur->rows) exit(1);
             cur->rows[cur->nrows++] = r;
         } else if (sec == 1 && line[0]) {
-            char* c[5];
+            char* c[6];
             PEnc e;
             int k;
-            split_cols(line, c, 5);
+            const char* q;
+            split_cols(line, c, 6);
             e.open = c[0];
-            for (k = 0; k < 4; ++k) e.op[k] = c[k + 1];
+            for (k = 0; k < 5; ++k) e.op[k] = c[k + 1];
+            e.nop = 0;
+            for (q = line; (q = strstr(q, " | ")) != NULL; q += 3) ++e.nop;
             cur->enc = (PEnc*)realloc(cur->enc, (cur->nenc + 1) * sizeof *cur->enc);
             if (!cur->enc) exit(1);
             cur->enc[cur->nenc++] = e;
@@ -155,6 +159,7 @@ enum { ROLE_NONE, ROLE_MODRM_REG, ROLE_MODRM_RM, ROLE_VVVV, ROLE_IMM, ROLE_OPCOD
 
 typedef struct {
     int kind;
+    int xmm;     /* an XMM register (OK_REG: xmm1, xmm2/m128...) */
     int size;    /* bits */
     int fixed;   /* OK_FIXED: the register's number (0 RAX, 1 RCX, 2 RDX...) */
     int role;    /* how it is encoded */
@@ -170,6 +175,8 @@ typedef struct {
     FOp op[4];
     int opsize;
     char feature[24]; /* the CPUID flag, or "" */
+    int xmm;          /* an operand is an XMM register: an SSE form, which no primitive is matched with; its encoder
+                         is emitted where an 'enc' line of the primitives' file asks for it */
     /* the encoding */
     int vex;          /* 0: legacy */
     int vex_l, vex_pp, vex_map, vex_w;
@@ -197,6 +204,7 @@ static int parse_hex2(const char* s, unsigned char* out) {
         int c = s[k], d;
         if (c >= '0' && c <= '9') d = c - '0';
         else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else if (c >= 'a' && c <= 'f' && k == 1 && s[0] == '0') d = c - 'a' + 10; /* PMOVSX's '66 0f 38' (S-10) */
         else return 0;
         v = v * 16 + d;
     }
@@ -212,6 +220,9 @@ static int parse_opcode(Form* f, const char* s0) {
     size_t len = strlen(s0);
     if (len >= sizeof buf) return 0;
     memcpy(buf, s0, len + 1);
+    /* '66 0F E0, /r' (PAVGB's row, S-9): a comma among the bytes */
+    for (i = 0; buf[i]; ++i)
+        if (buf[i] == ',') buf[i] = ' ';
     /* 'VEX.LZ. 0F38.W1': pdftotext's space inside the prefix */
     for (i = 0; buf[i]; ++i)
         if (buf[i] == '.' && buf[i + 1] == ' ') memmove(buf + i + 1, buf + i + 2, strlen(buf + i + 2) + 1);
@@ -251,7 +262,9 @@ static int parse_opcode(Form* f, const char* s0) {
             while (*q) {
                 char* dot = strchr(q, '.');
                 size_t l = dot ? (size_t)(dot - q) : strlen(q);
-                if ((l == 2 && !strncmp(q, "LZ", 2)) || (l == 2 && !strncmp(q, "L0", 2)) || (l == 3 && !strncmp(q, "128", 3))) f->vex_l = 0;
+                if ((l == 2 && !strncmp(q, "LZ", 2)) || (l == 2 && !strncmp(q, "L0", 2)) || (l == 3 && !strncmp(q, "128", 3)) ||
+                    (l == 3 && !strncmp(q, "LIG", 3)))
+                    f->vex_l = 0;
                 else if ((l == 2 && !strncmp(q, "L1", 2)) || (l == 3 && !strncmp(q, "256", 3))) f->vex_l = 1;
                 else if (l == 2 && !strncmp(q, "66", 2)) f->vex_pp = 1;
                 else if (l == 2 && !strncmp(q, "F3", 2)) f->vex_pp = 2;
@@ -327,6 +340,21 @@ static int operand_kind(const char* s, FOp* o) {
         if (!strcmp(s, fixed8[k])) return o->kind = OK_FIXED, o->size = 8, o->fixed = k, 1;
     }
     if (!strcmp(s, "1")) return o->kind = OK_ONE, o->size = 8, 1;
+    /* xmm, xmm1-xmm3 and their memory forms (xmm2/m128, xmm1/m64...), and m128, m64, m32 alone */
+    if (starts(s, "xmm")) {
+        const char* q = s + 3;
+        if (*q >= '0' && *q <= '9') ++q;
+        if (!*q) return o->kind = OK_REG, o->xmm = 1, o->size = 128, 1;
+        if (*q == '/' && q[1] == 'm' && (n = atoi(q + 2)) >= 8 && n <= 128)
+            return o->kind = OK_REG, o->xmm = 1, o->size = 128, 1;
+        return 0;
+    }
+    /* the general-purpose register of an SSE form (MOVMSKPS reg, PEXTRB reg/m8, PINSRB xmm1, r32/m8): 32 bits */
+    if (!strcmp(s, "reg") || starts(s, "reg/m") || starts(s, "r32/m")) return o->kind = OK_REG, o->size = 32, 1;
+    /* PBLENDVB's and BLENDVPS's implicit mask */
+    if (!strcmp(s, "<XMM0>")) return o->kind = OK_FIXED, o->xmm = 1, o->size = 128, o->fixed = 0, 1;
+    if (s[0] == 'm' && (!strcmp(s + 1, "128") || !strcmp(s + 1, "64") || !strcmp(s + 1, "32")))
+        return o->kind = OK_REG, o->xmm = 1, o->size = atoi(s + 1), 1;
     if (starts(s, "r/m")) {
         n = atoi(s + 3);
         if (n == 8 || n == 16 || n == 32 || n == 64) return o->kind = OK_REG, o->size = n, 1;
@@ -410,12 +438,41 @@ static void forms_of(const Page* p) {
             if (!operand_kind(ops[k], &f.op[k])) break;
         if (k < n) continue;
         snprintf(f.feature, sizeof f.feature, "%s", row->c[5]);
+        for (k = 0; k < n; ++k) f.xmm |= f.op[k].xmm;
         if (!parse_opcode(&f, row->c[0])) continue;
         for (k = 0; k < (int)p->nenc; ++k)
             if (!strcmp(p->enc[k].open, row->c[2])) enc = &p->enc[k];
-        if (!enc && n) continue;
-        for (k = 0; k < n; ++k) {
-            f.op[k].role = role_of(enc->op[k], &f.op[k].read, &f.op[k].write);
+        if (!enc && n && !f.xmm) continue;
+        for (k = 0; k < n && !enc; ++k) {
+            /* an SSE form whose page's encoding table the extraction lost (MOVDQU's): the operand that may be
+               memory is ModRM.rm, an immediate the immediate, <XMM0> implicit; of the registers, with /digit the
+               one is r/m, else the first is ModRM.reg and the other r/m. Only an 'enc' line takes such a form */
+            int memory = strstr(ops[k], "/m") || (ops[k][0] == 'm' && ops[k][1] >= '0' && ops[k][1] <= '9');
+            int regs_before = 0, j;
+            for (j = 0; j < k; ++j) regs_before += f.op[j].kind == OK_REG;
+            f.op[k].read = 1;
+            if (f.op[k].kind == OK_IMM) f.op[k].role = ROLE_IMM;
+            else if (f.op[k].kind != OK_REG) f.op[k].role = ROLE_IMPLICIT;
+            else if (memory || (f.modrm >= 0 && f.modrm < 8)) f.op[k].role = ROLE_MODRM_RM;
+            else {
+                int other_memory = 0;
+                for (j = 0; j < n; ++j)
+                    if (j != k && (strstr(ops[j], "/m") || (ops[j][0] == 'm' && ops[j][1] >= '0' && ops[j][1] <= '9')))
+                        other_memory = 1;
+                f.op[k].role = other_memory || !regs_before ? ROLE_MODRM_REG : ROLE_MODRM_RM;
+            }
+        }
+        /* the encoding tables of the pages with EVEX forms have a tuple type before the operands ('A | N/A |
+           ModRM:reg (w) | ...', 'B | Full Mem | ...'): operand 0 always has a role, so a first entry that is none is
+           that column */
+        int skip = 0;
+        if (enc && n && enc->nop > n &&
+            (!strcmp(enc->op[0], "N/A") || !strcmp(enc->op[0], "NA") || strstr(enc->op[0], "Tuple") ||
+             strstr(enc->op[0], "Full") || strstr(enc->op[0], "Half") || strstr(enc->op[0], "Quarter") ||
+             strstr(enc->op[0], "Eighth") || strstr(enc->op[0], "Mem") || strstr(enc->op[0], "Scalar")))
+            skip = 1;
+        for (k = 0; k < n && enc; ++k) {
+            f.op[k].role = role_of(enc->op[k + skip], &f.op[k].read, &f.op[k].write);
             if (f.op[k].kind == OK_FIXED || f.op[k].kind == OK_ONE) f.op[k].role = ROLE_IMPLICIT;
             if (f.op[k].kind == OK_IMM) f.op[k].role = ROLE_IMM;
         }
@@ -1613,7 +1670,13 @@ static void evaluate_form(unsigned fi) {
     Form* f = &g_forms[fi];
     FEval* r = &g_evals[fi];
     Ctx c;
-    Env e = env_new();
+    Env e;
+    if (f->xmm) { /* an SSE form: an 'enc' line's encoder at most */
+        r->ok = 0;
+        r->why = NULL;
+        return;
+    }
+    e = env_new();
     unsigned pi = page_index(f->page), k;
     char name[32];
     memset(&c, 0, sizeof c);
@@ -1694,6 +1757,14 @@ typedef struct {
 
 static Prim* g_prims;
 static unsigned g_nprims;
+/* the primitives' file's 'enc NAME FORM' lines: an SSE form's encoder by its instruction column, under NAME */
+typedef struct {
+    char* name;
+    char* text;
+    unsigned line;
+} EncReq;
+static EncReq* g_encs;
+static unsigned g_nencs;
 static ArmCond g_conds[16];
 static unsigned g_nconds;
 
@@ -1726,6 +1797,21 @@ static void read_ops(const char* path) {
             continue;
         }
         if (line[0] == '#' || !line[0]) {
+            free(line);
+            continue;
+        }
+        if (starts(line, "enc ")) {
+            char* p = (char*)ws(line + 4);
+            char* sp = strchr(p, ' ');
+            if (!sp) {
+                fprintf(stderr, "%s:%u: enc NAME FORM\n", path, line_no);
+                exit(1);
+            }
+            g_encs = (EncReq*)realloc(g_encs, (g_nencs + 1) * sizeof *g_encs);
+            if (!g_encs) exit(1);
+            g_encs[g_nencs].name = dupn(p, (size_t)(sp - p));
+            g_encs[g_nencs].text = dups(ws(sp));
+            g_encs[g_nencs++].line = line_no;
             free(line);
             continue;
         }
@@ -2290,7 +2376,8 @@ static void report_unreadable(FILE* out) {
     unsigned i;
     fprintf(out, "\n## forms not evaluated\n");
     for (i = 0; i < g_nforms; ++i)
-        if (!g_evals[i].ok) fprintf(out, "%-32s %s\n", g_forms[i].text, g_evals[i].why ? g_evals[i].why : "?");
+        if (!g_evals[i].ok && !g_forms[i].xmm)
+            fprintf(out, "%-32s %s\n", g_forms[i].text, g_evals[i].why ? g_evals[i].why : "?");
 }
 
 /* ---- the output ---- */
@@ -2565,6 +2652,70 @@ static void emit_output(const PEval* pes, unsigned npes) {
     free(kept);
 }
 
+/* an SSE form's CPUID flag as x64.h's SGX_F_*: SSE and SSE2 are every x86-64's */
+static const char* xmm_feature_c(const char* f) {
+    static const char* const names[][2] = {{"SSE", "0"},           {"SSE2", "0"},          {"SSE3", "SGX_F_SSE3"},
+                                           {"SSSE3", "SGX_F_SSSE3"}, {"SSE4_1", "SGX_F_SSE41"}, {"SSE4_2", "SGX_F_SSE42"},
+                                           {"PCLMULQDQ", "SGX_F_PCLMUL"}, {"F16C", "SGX_F_F16C"}, {"POPCNT", "SGX_F_POPCNT"},
+                                           {"AVX", "SGX_F_AVX"},   {"FMA", "SGX_F_FMA"},   {"", "0"}};
+    unsigned k;
+    for (k = 0; k < sizeof names / sizeof *names; ++k)
+        if (!strcmp(f, names[k][0])) return names[k][1];
+    return NULL;
+}
+/* text with its runs of spaces made one, and none after a comma ('MULSS xmm1,xmm2/m32' as some rows print it) */
+static void squeeze(const char* in, char* out, size_t size) {
+    size_t o = 0;
+    for (; *in && o + 1 < size; ++in)
+        if (*in != ' ' || (o && out[o - 1] != ' ' && out[o - 1] != ','))
+            out[o++] = *in;
+    while (o && out[o - 1] == ' ') --o;
+    out[o] = 0;
+}
+/* the 'enc' lines' forms: each one's encoder and its operands (SgXVForm): where ModRM.reg, ModRM.rm and VEX.vvvv
+   are, the XMM ones, the immediate's bytes and the CPUID flag it needs. A form the manual lacks stops the build */
+static void emit_encs(void) {
+    unsigned i, f;
+    char* done = (char*)sg_alloc(g_nforms + 1);
+    for (i = 0; i < g_nencs; ++i) {
+        char want[96], have[96], name[64];
+        int k, reg = -1, rm = -1, vvvv = -1;
+        unsigned xmask = 0;
+        const char* feat;
+        squeeze(g_encs[i].text, want, sizeof want);
+        for (f = 0; f < g_nforms; ++f) {
+            squeeze(g_forms[f].text, have, sizeof have);
+            if (!strcmp(have, want) && g_forms[f].modrm >= 0) break;
+        }
+        if (f == g_nforms) {
+            fprintf(stderr, "sailgen --isel: enc %s (line %u): no form '%s' in the manual's pages\n", g_encs[i].name,
+                    g_encs[i].line, want);
+            exit(1);
+        }
+        feat = xmm_feature_c(g_forms[f].feature);
+        if (!feat) {
+            fprintf(stderr, "sailgen --isel: enc %s: the CPUID flag %s isn't one x64.h knows\n", g_encs[i].name,
+                    g_forms[f].feature);
+            exit(1);
+        }
+        if (!done[f]) {
+            emit_encoder(f);
+            done[f] = 1;
+        }
+        for (k = 0; k < g_forms[f].nops; ++k) {
+            if (g_forms[f].op[k].xmm) xmask |= 1u << k;
+            if (g_forms[f].op[k].kind != OK_REG) continue;
+            if (g_forms[f].op[k].role == ROLE_MODRM_REG) reg = k;
+            if (g_forms[f].op[k].role == ROLE_MODRM_RM) rm = k;
+            if (g_forms[f].op[k].role == ROLE_VVVV) vvvv = k;
+        }
+        c_name(&g_forms[f], name, sizeof name);
+        sg_out("static const SgXVForm sgx_v_%s = {sgx_e_%s, %s, %d, %d, %d, %d, %u, %d}; /* %s */\n", g_encs[i].name,
+               name, feat, g_forms[f].nops, reg, rm, vvvv, xmask, g_forms[f].imm_bytes, g_forms[f].row->c[0]);
+    }
+    free(done);
+}
+
 int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, const char* report_path) {
     unsigned i, k, npes = 0;
     PEval* pes;
@@ -2638,5 +2789,6 @@ int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, 
         fclose(rep);
     }
     emit_output(pes, npes);
+    emit_encs();
     return sg_flush(out_path);
 }

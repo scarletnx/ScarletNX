@@ -375,7 +375,8 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
-    for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = 0;
+    for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = 0;
+    g->fp_state[0] = g->fp_state[1] = 0;
     g->mem = 0;
     g->origin = -1;
     g->x.flags_ins = -1;
@@ -907,6 +908,9 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->f = f;
     u->index = index;
     u->nframe = 0;
+    u->a.cold.n = 0;
+    u->a.ncjumps = u->a.nccalls = 0;
+    u->a.npool = u->a.nrips = 0;
     u->a.slots_max = 0;
     u->nstubs = 0;
     g_fail = &jb;
@@ -1028,6 +1032,9 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         } else
             call_target(u, s.target, 1);
     }
+    /* the cold paths (the FP helpers' calls), then the constant pool */
+    sgx_cold_emit(&u->a);
+    sgx_pool_emit(&u->a);
     /* the frame's size, in the prologue and every epilogue */
     {
         int size = (u->a.slots_max * 8 + 15) & ~15;
@@ -1250,9 +1257,13 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     return 0;
 }
 
+static unsigned host_features(void);
+/* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT */
+#define X64_BASELINE (SGX_F_SSE3 | SGX_F_SSSE3 | SGX_F_SSE41 | SGX_F_SSE42 | SGX_F_PCLMUL | SGX_F_POPCNT)
 int snx_x64_available(void) {
     const char* b = getenv("SNX_RECOMPILER_BACKEND");
-    return !(b && !strcmp(b, "llvm"));
+    if (b && !strcmp(b, "llvm")) return 0;
+    return (host_features() & X64_BASELINE) == X64_BASELINE;
 }
 
 /* CPUID's BMI1, BMI2 and LZCNT (ABM) */
@@ -1263,6 +1274,24 @@ static unsigned host_features(void) {
     if (b & (1u << 8)) f |= SGX_F_BMI2;
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
     if (c & (1u << 5)) f |= SGX_F_LZCNT;
+    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT; the VEX forms' (AVX, FMA, F16C) where the system
+       keeps the YMM state (OSXSAVE, and XCR0's SSE and AVX bits) */
+    __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    if (c & 1u) f |= SGX_F_SSE3;
+    if (c & (1u << 1)) f |= SGX_F_PCLMUL;
+    if (c & (1u << 9)) f |= SGX_F_SSSE3;
+    if (c & (1u << 19)) f |= SGX_F_SSE41;
+    if (c & (1u << 20)) f |= SGX_F_SSE42;
+    if (c & (1u << 23)) f |= SGX_F_POPCNT;
+    if ((c & (1u << 27)) && (c & (1u << 28))) {
+        unsigned lo, hi;
+        __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        if ((lo & 6) == 6) {
+            f |= SGX_F_AVX;
+            if (c & (1u << 12)) f |= SGX_F_FMA;
+            if (c & (1u << 29)) f |= SGX_F_F16C;
+        }
+    }
     return f;
 }
 
@@ -1321,6 +1350,7 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
+    free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
     return 0;

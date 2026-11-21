@@ -8,7 +8,7 @@
    each function runs from the same random state in both, and every register, the flags, FPCR, FPSR, TPIDR_EL0 and the
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
-     snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--verbose]
+     snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--verbose] [--words HEX...]
    On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
@@ -224,7 +224,8 @@ static void brk(CPU* c, uint64_t pc, uint32_t imm) {
 }
 
 int main(int argc, char** argv) {
-    unsigned functions = 600, states = 8, i, s, k;
+    unsigned functions = 600, states = 8, i, s, k, nwords = 0;
+    uint32_t words[SLOT];
     struct snx_recompiler *rx, *rl;
     struct snx_recompiled *mx, *ml;
     uint8_t *mem[2], *data0;
@@ -238,6 +239,12 @@ int main(int argc, char** argv) {
             seed = strtoull(argv[++i], NULL, 0) | 1;
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
+        else if (!strcmp(argv[i], "--words")) {
+            /* --words W...: one function of these words (and a RET), run from every state */
+            while (i + 1 < (unsigned)argc && argv[i + 1][0] != '-' && nwords < SLOT - 1)
+                words[nwords++] = (uint32_t)strtoul(argv[++i], NULL, 16);
+            functions = 1;
+        }
     }
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
@@ -254,9 +261,9 @@ int main(int argc, char** argv) {
     /* the program, in both memories: each function its words then RET */
     for (i = 0; i < functions; ++i) {
         uint64_t at = CODE + (uint64_t)i * SLOT * 4;
-        unsigned n = 1 + pick(SLOT - 2);
+        unsigned n = nwords ? nwords : 1 + pick(SLOT - 2);
         hints[i] = at;
-        for (k = 0; k < n; ++k) put32(mem[0], at + 4 * k, word());
+        for (k = 0; k < n; ++k) put32(mem[0], at + 4 * k, nwords ? words[k] : word());
         put32(mem[0], at + 4 * n, 0xD65F03C0u);
         for (; k + 1 < SLOT; ++k) put32(mem[0], at + 4 * (k + 1), 0xD65F03C0u);
     }
