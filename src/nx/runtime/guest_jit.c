@@ -6,6 +6,7 @@
    walk the table's pointer chains. There is no interpreter: when neither the pack nor the JIT has code, the game ends
    with the reason (rtapi.c's rt_miss) */
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/armature.h"
 #include "nx/loader/ounce.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -743,6 +744,7 @@ int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries
     int refused = 0;
     u32 i, n = 0;
     *entries = 0;
+    if (arma_on()) return 1; /* armature runs it, from its code in guest memory */
     if (!NRO_MODULES || place < 0 || g_nros->slots[place].base != base || g_nros->slots[place].size != size) return 1;
     if (!g_disp || base < g_code_lo || size > g_code_hi - base) return 1;
     pm_lock(&g_fn_lock);

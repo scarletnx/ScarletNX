@@ -10,6 +10,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
@@ -113,11 +114,12 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     (void)pc;
     fatal("NCE runs only on an AArch64 Linux host");
 }
-void nce_kick(struct KThread* t) { (void)t; }
-GuestFn nce_slot(GuestFn f) { return f; }
+/* a host without NCE may run the game in armature, which takes the same calls */
+void nce_kick(struct KThread* t) { arma_kick(t); }
+GuestFn nce_slot(GuestFn f) { return arma_slot(f); }
 void nce_slot_taken(u64 addr, const char* family) {
-    (void)addr;
     (void)family;
+    arma_slot_taken(addr);
 }
 void nce_code_added(u64 base, u64 text_size) {
     (void)base;
@@ -126,6 +128,7 @@ void nce_code_added(u64 base, u64 text_size) {
 void nce_crash_context(const void* context, const void* fault) {
     (void)context;
     (void)fault;
+    arma_crash_context();
 }
 #else
 

@@ -172,6 +172,21 @@ if(SNX_TRACY AND SNX_DEPLOY)
     message(STATUS "SNX_TRACY: no post-build deploy of the profiling runtime (a run of the profiled driver still puts "
                    "it beside its game)")
 endif()
+# The prototype of armature (an AArch64 to x86-64 JIT in Rust) in place of the AOT code and the runtime JIT, behind
+# the setting armature: its static library, built outside (notas' armature-snx.patch), linked as it is
+option(SNX_ARMATURE "Link armature's static library (SNX_ARMATURE_LIB) for the setting armature: x86-64 Linux" OFF)
+set(SNX_ARMATURE_LIB "" CACHE FILEPATH "armature's libarmature.a, with SNX_ARMATURE")
+if(SNX_ARMATURE)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        message(FATAL_ERROR "SNX_ARMATURE is for x86-64 Linux: this is ${CMAKE_SYSTEM_NAME} on ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    if(NOT EXISTS "${SNX_ARMATURE_LIB}")
+        message(FATAL_ERROR "SNX_ARMATURE needs SNX_ARMATURE_LIB, armature's libarmature.a: '${SNX_ARMATURE_LIB}' is not a file")
+    endif()
+    add_compile_definitions(SNX_ARMATURE=1)
+else()
+    add_compile_definitions(SNX_ARMATURE=0)
+endif()
 # A project that adds ScarletNX (CPM, add_subdirectory) builds none of its tests unless it asks: a plain variable here
 # rather than BUILD_TESTING in the cache, which the including project's own tests read
 option(SNX_BUILD_TESTING "Build ScarletNX's tests (off when another project includes it)" ${PROJECT_IS_TOP_LEVEL})

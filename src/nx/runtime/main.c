@@ -32,6 +32,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/armature.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/vi.h"
@@ -762,6 +763,7 @@ void snx_save_before_exit(int frontend) {
         if (g_renderer && g_renderer->save) save_renderer(frontend);
         svc_core_exit();
         jit_report();
+        arma_report();
         kernel_core_report();
         gl_census_report();
         saved = 1;
@@ -1637,6 +1639,7 @@ int snx_main(int argc, char** argv) {
         if (loaded) fatal("Could not load the game executables. See the .log for details.");
     }
     nce_init(); /* the patches of native code, before the hooks take their functions */
+    arma_init(); /* armature in the JIT's place, before the hooks take their functions */
     kernel_load_symbols();
     linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
     nnfs_init();
@@ -1651,7 +1654,7 @@ int snx_main(int argc, char** argv) {
     entry = linker_entry(entry);
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
-    if (!g_arm_mod && !nce_on()) jit_init();
+    if (!g_arm_mod && !nce_on() && !arma_on()) jit_init();
     read_npdm();
     svc_core_init();
     handover_give();

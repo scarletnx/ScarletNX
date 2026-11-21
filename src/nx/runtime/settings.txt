@@ -1346,6 +1346,18 @@ setting User uid
     help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
+needs armature
+setting Armature
+    key armature
+    only linux
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the game's 64-bit code runs in armature, an AArch64 to x86-64 JIT, in place of its recompiled code and
+    help the runtime JIT: a prototype, in x86-64 Linux builds made with SNX_ARMATURE only. 0 = the recompiled code
+    help and the JIT
+end
 setting FSR input conventions
     key fsr_input_conventions
     int 0 255

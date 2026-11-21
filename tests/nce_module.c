@@ -8,6 +8,7 @@
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/platform/log.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -24,6 +25,11 @@ static void check(int condition, const char* what) {
     }
 }
 
+/* armature.c's, which nce.c's calls go to on a host without NCE: no game runs in armature here */
+void arma_kick(struct KThread* t) { (void)t; }
+GuestFn arma_slot(GuestFn f) { return f; }
+void arma_slot_taken(u64 addr) { (void)addr; }
+void arma_crash_context(void) {}
 /* mem.c's: how far the layout moved */
 static u64 g_moved;
 u64 mem_moved(void) { return g_moved; }
