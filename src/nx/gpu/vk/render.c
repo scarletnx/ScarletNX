@@ -361,6 +361,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
 static void target_written(Surf* s) {
     vk_surf_wrote(s);
     vk_rt_drawn(s);
+    vk_rt_copy_drawn(s);
 }
 /* a draw or clear wrote the depth target, which was undefined (its layout, before the pass, or still) when that is
    pred_undefined. One predicated on the GPU may not have run, and depth is never loaded from memory: until a write
@@ -6163,7 +6164,11 @@ static int g_setup_restarts;
 int vk_render_setup_restarts(void) { return g_setup_restarts; }
 static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture);
 static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
+    static u64 serial;
+    const u64 was = g_vk_drawing; /* a draw recorded within another (its slices) */
+    g_vk_drawing = ++serial;      /* the copies of targets it samples (texture.c copy_read) */
     render_draw_main(ds, dc, o, texture);
+    g_vk_drawing = was;
     g_setup_restarts = 0;
 }
 static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {

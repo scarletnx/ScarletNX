@@ -2898,7 +2898,8 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }
     u64 epoch = atomic_load_explicit(&g_vk_texture_epoch, memory_order_relaxed);
-    if (c->crop_gen != rt->wgen && !(reuse && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
+    /* a copy is reused while the target's writes since it are the ones of draws that sampled it (vk_rt_copy_drawn) */
+    if (c->crop_gen != rt->wgen && !(reuse && c->fb_gen == rt->wgen && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
         const int open = vk_render_begun();
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
@@ -2923,6 +2924,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
                          VK_LAYOUT(TRANSFER_DST_OPTIMAL), rt->f.stencil ? 2 : 1, r);
         c->crop_gen = rt->wgen;
         c->crop_epoch = epoch;
+        c->fb_gen = rt->wgen;
         g_vk_rt_copy_writes++;
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }
@@ -2932,9 +2934,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
    width), or its bytes in another format. The copy is made again only after a texture barrier, as vk_rt_snapshot's:
    one game's full-screen pass read its 800x448 target as 792x448 through each of its draws to it, and the copy before
    each draw (210 a frame) took about 10 ms of the GPU. Its GPU timer then held its render size down there */
+static Surf* copy_read(Surf* rt, Surf* c);
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     const int why = !as ? VK_RT_COPY_CROP : w == rt->w && h == rt->h ? VK_RT_COPY_FORMAT : VK_RT_COPY_FORMAT_CROP;
-    return rt_copy(rt, w, h, as, why, 1, 1);
+    return copy_read(rt, rt_copy(rt, w, h, as, why, 1, 1));
 }
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     for (const Surf* x = rt->crop; x; x = x->next)
@@ -2969,14 +2972,35 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
 }
 
 /* A draw that samples a target it renders to, where the feedback loop can't take it (render.c's stage_set_), reads a
-   copy of the target. The console's texture caches hold what they read until a texture barrier, so a draw there may
-   or may not see the draws before it without one, and NVN asks the game for the barrier when it needs them. So the
-   copy is made again only after a texture barrier, a submission's end or wait, or a present (g_vk_texture_epoch),
-   not after each draw to the target: one game's 50 such draws a frame took 5.8 ms of its 9.6 ms on the GPU with a
-   copy before each, 92 % of them with no texture barrier since the copy before */
+   copy of the target, and so does one that reads a corner of a target (rt_crop). The console's texture caches hold
+   what they read until a texture barrier, so a draw there may or may not see the draws before it without one, and
+   NVN asks the game for the barrier when it needs them. So a copy is made again only after a texture barrier, a
+   submission's end or wait, or a present (g_vk_texture_epoch), not after each draw that sampled it and wrote the
+   target: one game's 50 such draws a frame took 5.8 ms of its 9.6 ms on the GPU with a copy before each, 92 % of
+   them with no texture barrier since the copy before.
+   A draw that sampled none of it is another matter: what it wrote is in memory, and texels the caches never held
+   read as they are there. One game draws its ground and then, in the same pass with no barrier, grass that samples
+   the target under it: the copy made for a feedback draw earlier in the pass showed a stale, stretched ground
+   through the grass, which stayed put on the screen as the camera moved. Its lighting read the corners of targets
+   drawn since their copies were made, and parts of the frame took the lighting of earlier frames in rectangles. So
+   a copy is made again when a draw that sampled none of it wrote the target since */
+u64 g_vk_drawing;
+/* the copy c of rt that the draw being recorded samples (copy_read) */
+static Surf* copy_read(Surf* rt, Surf* c) {
+    if (c && c != rt && g_vk_drawing) {
+        rt->fb_snap = c;
+        rt->fb_draw = g_vk_drawing;
+    }
+    return c;
+}
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_copy(rt, rt->w, rt->h, NULL, VK_RT_COPY_FEEDBACK, pixels, 1);
+    return copy_read(rt, rt_copy(rt, rt->w, rt->h, NULL, VK_RT_COPY_FEEDBACK, pixels, 1));
+}
+/* every write of the draw that sampled it (a color attachment, then its programmable blend): a write outside any draw
+   (a clear: g_vk_drawing 0), or another draw's, is not */
+void vk_rt_copy_drawn(Surf* rt) {
+    if (rt->fb_snap && rt->fb_draw && rt->fb_draw == g_vk_drawing) rt->fb_snap->fb_gen = rt->wgen;
 }
 
 /* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the
