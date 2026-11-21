@@ -431,8 +431,12 @@ candidate (SUBS to the zero register: CMP). `sgx_assemble` then gives the
 virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; RBX holds the state's address), moving
 a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
 form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
-SETcc forms is the state's memory for the loads and stores of the guest's registers and flags. Nothing spills yet:
-a block that needs more registers than the nine stops the emitter.
+SETcc forms is the state's memory for the loads and stores of the guest's registers and flags. Where no register is
+free, the value read latest is spilled to a slot of the function's frame (`[RSP + 8k]`, once: an SSA value never
+changes) and reloaded where it is read; the frame's size is patched into the prologue and the epilogues once the
+function is done. The general registers are given first and RAX, RDX and RCX last, so MUL's and CL's fixed registers
+seldom hold another value. A primitive with no candidate on the host has a composition of the others where one
+is written (CLZ without LZCNT: a binary search of shifts, a test and CMOVcc).
 
 `x64_a64.h` keeps A64's state where `cpu.h`'s CPU does (`x[32]`; `n`, `z`, `cf`, `vf` each a 32-bit 0 or 1), reads
 a register once a block, stores each write at once, and writes only the ABI's own as bytes: the prologue, the call of
@@ -445,5 +449,6 @@ conditional compares, the divisions, CRC32, PAuth, CLS, RBIT and the flag manipu
 **The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
 (again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
 run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
-UNDEF must match. Then random sequences of two to four of the words are made one block each and run beside their LLVM
+UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
+sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
