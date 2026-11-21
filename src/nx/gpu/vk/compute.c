@@ -920,6 +920,22 @@ typedef struct {
     u64 tex_minmax, tex_minmax_max; /* min/max reductions the program takes (ShaderInfo.tex_minmax_*) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
+/* Programs the driver refused a pipeline for. A driver that loses its shader compiler spends its whole retry time on
+   each attempt (about 30 s on KosmicKrisp), so one refusal is remembered and that program's dispatches are skipped:
+   the game keeps drawing without it instead of stopping for half a minute at every frame. */
+#define CS_REFUSED_MAX 64
+static u64 g_cs_refused[CS_REFUSED_MAX];
+static u32 g_cs_refused_n;
+static int cs_refused_has(u64 key) {
+    u32 n = __atomic_load_n(&g_cs_refused_n, __ATOMIC_ACQUIRE);
+    for (u32 i = 0; i < n; i++)
+        if (__atomic_load_n(&g_cs_refused[i], __ATOMIC_ACQUIRE) == key) return 1;
+    return 0;
+}
+static void cs_refused_add(u64 key) {
+    u32 i = __atomic_fetch_add(&g_cs_refused_n, 1, __ATOMIC_ACQ_REL);
+    if (i < CS_REFUSED_MAX) __atomic_store_n(&g_cs_refused[i], key, __ATOMIC_RELEASE);
+}
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
    tables read through read; *blen: the bytes of the window the program takes */
 static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read,
@@ -989,6 +1005,7 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
        thread makes these with no hold, vk_cs_pipe_load). One took 235 ms in a racing game, and every thread that
        landed GPU results waited for it. The table, g_cb and the code window are the dispatching thread's alone. Not
        while a constant buffer is still to be read (g_cb_later): a read of it can land results */
+    if (cs_refused_has(key)) return &g_cs_alloc_failed;
     int paused = !g_cb_later && vk_lock_pause();
     p = cs_make(code, blen, key, flow_base, lx, ly, lz, shm, k, cs_cb_read);
     vk_lock_resume(paused);
@@ -1086,8 +1103,10 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
                      "memory)",
                      (unsigned long long)key, nw / 256, lx, ly, lz, (unsigned)p->si.shared_size);
     if (!VK_OK(snx_vk_compute_pipeline_flags(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
-                                             warp ? 32 : 0, warp && lx % 32 == 0, vk_pipeline_stats_flags(), &p->p)))
+                                             warp ? 32 : 0, warp && lx % 32 == 0, vk_pipeline_stats_flags(), &p->p))) {
         p->failed = 1;
+        cs_refused_add(key);
+    }
     else
         vk_pipeline_stats_write_compute(p->p, key);
     plat_thread_note_clear();
