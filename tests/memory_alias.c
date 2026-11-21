@@ -337,17 +337,18 @@ static void test_process_code(void) {
     CHECK(svc_map_process_code_memory(0x1234, dst, dst + 0x500000, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(mem_unmap(dst + 0x500000, size) == 0);
     /* the view's dst is free memory of the address space outside the heap, the alias region and the kernel's pages */
-    CHECK(svc_map_process_code_memory(0x1234, HEAP_BASE + 0x80000, src, size) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+    CHECK(svc_map_process_code_memory(0x1234, HEAP_BASE + 0x80000, src, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     if (ALIAS_SIZE)
         CHECK(svc_map_process_code_memory(0x1234, ALIAS_BASE + 0x200000, src, size) ==
-              SNX_RC_SVC_INVALID_MEMORY_REGION);
-    CHECK(svc_map_process_code_memory(0x1234, KERN_BASE + 0x10000, src, size) == SNX_RC_SVC_INVALID_MEMORY_REGION);
-    /* the destination's region is checked before the source's state, as the console's SVC does (Contains, then
-       CanContain): a free source and a destination in the heap answer the region's result */
+              SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    CHECK(svc_map_process_code_memory(0x1234, KERN_BASE + 0x10000, src, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    /* the destination's region is the SVC's own check, InvalidCurrentMemory as the console's svcMapProcessCodeMemory and
+       svcUnmapProcessCodeMemory answer it (Contains, then CanContain): the page table's InvalidMemoryRegion for it is
+       never reached from the SVC */
     CHECK(svc_map_process_code_memory(0x1234, HEAP_BASE + 0x80000, HEAP_BASE + 0x300000, size) ==
-          SNX_RC_SVC_INVALID_MEMORY_REGION);
+          SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(svc_unmap_process_code_memory(0x1234, HEAP_BASE + 0x80000, HEAP_BASE + 0x300000, size) ==
-          SNX_RC_SVC_INVALID_MEMORY_REGION);
+          SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(mem_map(dst + 0x100000, size, MS_NORMAL, PERM_RW) == 0);
     CHECK(svc_map_process_code_memory(0x1234, dst + 0x100000, src, size) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(mem_unmap(dst + 0x100000, size) == 0);

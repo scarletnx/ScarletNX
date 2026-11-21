@@ -57,11 +57,12 @@ program clears Uncached first.
 ## Invalid requests
 
 The calls return the console's results. A wrong alignment is InvalidAddress. A zero or partial page count is
-InvalidSize. A range that wraps is InvalidCurrentMemory. A handle that is not a process is InvalidHandle. A
-destination outside the address space, or over the heap, the alias region or the kernel's pages, is
-InvalidMemoryRegion. A source that is not normal read-write memory, a destination that is not free, and a range that
-is not code are InvalidCurrentMemory. A wrong permission is InvalidNewMemoryPermission. An unmap whose source is not
-the view's own source, for the range given, is InvalidMemoryRegion, as the console's page group comparison gives.
+InvalidSize. A range that wraps is InvalidCurrentMemory. A handle that is not a process is InvalidHandle. A destination
+outside the address space, or over the heap, the alias region or the kernel's pages, is InvalidCurrentMemory, the SVC's
+own check before the page table's. A source that is not normal read-write memory, a destination that is not free, and a
+range that is not code are InvalidCurrentMemory too. A wrong permission is InvalidNewMemoryPermission. An unmap whose
+source is not the view's own source, for the range given, is InvalidMemoryRegion, as the console's page group comparison
+gives.
 
 ## Limits
 
