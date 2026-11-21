@@ -11,6 +11,7 @@
   * [Which tool for which question](#which-tool-for-which-question)
 * [First look: the stats box and the log](#first-look-the-stats-box-and-the-log)
 * [Tracy: the whole run on one timeline](#tracy-the-whole-run-on-one-timeline)
+  * [Sections, lock marks and callstacks](#sections-lock-marks-and-callstacks)
 * [CPU profiling](#cpu-profiling)
   * [Naming the game's code](#naming-the-games-code)
   * [perf (Linux)](#perf-linux)
@@ -29,6 +30,7 @@
   * [One shader: snx-shaderperf](#one-shader-snx-shaderperf)
   * [The renderer's CPU side](#the-renderers-cpu-side)
   * [GPU memory](#gpu-memory)
+  * [Memory view: which allocations have a pool](#memory-view-which-allocations-have-a-pool)
 * [Comparing two builds or two settings](#comparing-two-builds-or-two-settings)
 * [Pitfalls](#pitfalls)
 
@@ -124,7 +126,7 @@ python3 tools/run_game.py <id> --script "" --seconds 60 --fps-limit=0 --vsync=0 
 | Which functions burn the CPU? | [perf](#perf-linux), [pmcstat](#pmcstat-and-dtrace-freebsd), [profile_cpu.py](#profile_cpupy-sampling-without-perf), Tracy's sampler |
 | Is the frame rate bound by the CPU or the GPU? | [CPU-bound or GPU-bound](#cpu-bound-or-gpu-bound) |
 | Which render pass costs the GPU? | [`vk_gpu_profile=1`](#vk_gpu_profile-where-the-gpus-time-goes), Tracy's GPU track |
-| Which draw of that pass, and why? | `vk_gpu_draw_profile=1`, then [RenderDoc](#renderdoc) and a [vendor profiler](#vendor-gpu-profilers) |
+| Which draw of that pass, and why? | the GPU track's draw zones in a connected Tracy run, then [RenderDoc](#renderdoc) and a [vendor profiler](#vendor-gpu-profilers) |
 | Is this shader translation faster than that one? | [snx-shaderperf](#one-shader-snx-shaderperf) |
 | Did my change make the game faster? | [`tools/bench_nvn_game.py`](#comparing-two-builds-or-two-settings) |
 
@@ -169,8 +171,9 @@ build/tracy/scarletnx --game="$games/<id>" --tracy
 wait
 ```
 
-or, while a game runs, press `F10` for a 60-second capture beside the game (the log names its file). The launcher
-has the same as settings (`Settings > Debug > Tracy profiler`, `Settings > Launch > Tracy capture`).
+or, while a game runs, press `F10` for a capture beside the game that runs for `tracy_capture_seconds` (60 s by
+default); the log names its file. The launcher has the same as settings (`Settings > Debug > Tracy profiler`,
+`Settings > Launch > Tracy capture`).
 
 A walk through a trace:
 
@@ -192,11 +195,32 @@ the instrumented zones alone, which costs much less.
 Turn on `tracy_context_switches` (`--tracy-context-switches=1`) for the OS's context switches on the threads'
 timelines. A guest thread's wait and preemption then show against the game's zones. On Linux this needs permission to
 read perf events and tracefs (`kernel.perf_event_paranoid`, and a high `ulimit -n`), and Tracy turns it off with a
-debug line when it cannot. Tracy couples it to its sampler, so the sample stacks come on with it.
+debug line when it cannot. Tracy couples it to its sampler, so the sample stacks come on with it. Either setting
+turns on both the sampler and the context switches.
 
 Each guest thread's wait also appears as a **fiber**, named for what the thread blocked on: an object, a mutex, a
 condition variable, an address, a pause, a service request or a game pause. The Fibers pane lists them with their
 durations, so a thread's idle time can be sorted by why it waited without reading the log.
+
+Two more settings add information for flame graphs. `tracy_zone_callstack` (`--tracy-zone-callstack=N`, 0 to 16
+frames, 0 by default) gives a call stack only to zones written with `SNX_ZONE_CS`: `pipeline make compile callstack`,
+`shader translate maxwell`, `kern core switch`, `kern core handoff`, `kern mutex handoff`, `kern svc unknown`,
+`svc hid cmd`, `state memory check`, `state memory load` and `state compress`. Those zones show their callers without
+every zone paying for a stack. `perf_map` (`--perf-map=1`) writes a Linux perf map (`/tmp/perf-<pid>.map`) for the code the
+runtime's JIT compiles, so a sampled flame graph names those frames instead of `[unknown]`. The map is written as
+loads compile, with un-emitted lines appended at exit; 0 writes no map.
+
+While a GUI is attached, its parameter pane has six live controls: **Frame image seconds**, **Memory detail**,
+**Memory callstack depth**, **Zone callstack depth**, **GPU zone callstack depth** and **Lock marks**. The matching
+`.ini` values are the startup defaults; changing a parameter acts on the next emission without a restart. **Memory
+detail** can only be enabled this way: once on, it stays on for the run so every tracked allocation keeps its free
+event.
+
+The frame sets dropdown separates the unnamed set from **present**, **guest**, **audio**, **jit** and **state**.
+`audio`, `jit` and `state` are discontinuous sets: their spans are the work between a start and an end, not frames
+between presents. Guest threads carry a group hint naming their emulated core, so the thread view can group them.
+Shader translation failures also send a message with a four-frame call stack, and a JIT add uses a transient zone
+whose name is the code's address. The Source view can ask for the shader summary that the translator registers.
 
 Tracy 0.15.0 has no call that writes a trace from the app. A fatal outside a signal marks the trace's message pane
 with the reason and closes the client, so a capture writes the events up to it. A fatal from the crash handler exits
@@ -209,10 +233,47 @@ Things to know (more in [Development](development.md#profiling)):
 - Every plot and zone is listed by the question it answers in [What a trace answers](development.md#what-a-trace-answers).
 - Raise the open file limit (`ulimit -n 65536`) for a profiled run.
 - The GPU and CPU clocks drift while the system synchronizes its time; stop the time sync for long traces.
-- `tracy-csvexport trace.tracy > zones.csv` gives the zones without the GUI, for scripts.
 - Tracy's client is not in Android's app or on iOS. On FreeBSD the instrumentation works; the sampler does not
   (Tracy samples with Linux perf events or Windows ETW).
+- The driver and the loader are not profiled: their build targets do not link the Tracy client, so zones in them do
+  not reach a trace. The game process's runtime is the part that is instrumented.
 - The cost: off, an emission is one atomic load; connected, Tracy's own. Measure throughput without it.
+
+### Sections, lock marks and callstacks
+
+A few additions to the instrumentation show more of what a run was doing. They emit nothing while no viewer is
+attached, and each one a setting gates has its own cost when it is on.
+
+A **section** is a high-level phase on Tracy's section track, written with `SNX_SECTION_SCOPED`. `game load`, `shader
+preparation`, `save state` and `load state` use it. Unlike a zone, a section is not a stack. Its enter and leave
+bracket one piece of work and carry an id, so the section track shows the phase against the zones of every thread. No
+setting gates it. With a viewer connected it costs one event at the start and one at the end of each phase.
+
+**Lock marks** (`tracy_lock_marks=1`) put the source line that holds a named lock on the lock pane. More of the
+runtime's mutexes announce themselves now, among them the Vulkan device, the guest memory, the GPU queue, the shader
+translate and pipeline layout locks, and the audio renderer's table. The pane shows who held a lock and who waited on
+it, and a failed try lock is an event too, so a try that won and one that lost both appear. Each acquisition costs one
+Tracy event, and the source lines are interned in a small table, so leave this off unless the trace needs lock waits.
+
+**Allocation callstacks** come from `tracy_memory_callstack` (`0` to `16` frames, `0` by default). It adds a CPU call
+stack to the detailed memory events of `tracy_memory_detail`, so the Memory view says which code made each allocation.
+It needs `tracy_memory_detail=1` as well, and every game `malloc` and `free` then pays for the stack, so keep both off
+unless the pools and their callers are what the trace is for. `SNX_MEM_DISCARD` also emits a discard for a named pool,
+so a pool cleared as a whole shows that rather than a list of frees.
+
+**GPU pass-zone callstacks** come from `tracy_gpu_zone_callstack` (`0` to `16` frames, `0` by default). It adds the
+CPU stack where a pass was recorded to each pass zone on the GPU track. It walks a stack for every pass zone, so it
+costs much more than the zone callstacks of `tracy_zone_callstack` and belongs on pass-level zones only.
+`SNX_ZONE_COLOR` sets a zone's color, so a rare case such as a failed SVC shows red against the usual zones without a
+separate zone name.
+
+Tracy's GUI has a built-in Achievements tutorial, and several of its items unlock from the data a run sends with no
+further setup. `tracy_sampling=1` sends callstack samples, which unlock *Sampling program execution*.
+`tracy_frame_images=N` attaches pictures to frames, which the Playback view and its *A picture is worth a thousand
+words* item under *Instrumenting frames* need. `tracy_context_switches=1`, `tracy_zone_callstack=N` and
+`tracy_memory_detail=1` feed the context-switch, callstack and Memory views that the same tutorial leads through.
+Frame marks and zones are always on, so *First profiling session* and *Instrumenting your application* unlock on the
+first connected run.
 
 ## CPU profiling
 
@@ -389,8 +450,9 @@ The recompile compiles what its analysis finds; a function it missed is compiled
    one. The settings `jit_threads`, `jit_region_instructions`, `jit_live_budget` and `jit_opt` trade compile time
    against code quality ([Settings](../user/settings.md#performance)). `tools/tune_jit_latency.py` compares
    compile strategies offline on private snapshots with `snx-bench-jit-latency`.
-2. **Unnamed code.** The JIT's code is in anonymous memory and the runtime writes no perf map, so external
-   profilers cannot name it. To profile it, make it AOT: the JIT records what it compiled, and an
+2. **Unnamed code.** The JIT's code is in anonymous memory. On Linux, `perf_map=1` writes a perf map that names it
+   for sampled profilers ([Tracy](#tracy-the-whole-run-on-one-timeline)); off, external profilers cannot name it. To
+   profile it otherwise, make it AOT: the JIT records what it compiled, and an
    [AOT pack](../user/aot-packs.md) links those functions into the game's module, where they have `F_` names. A profile
    of the pack's run names them. Under the GDB stub, `gdb_jit=1` registers each JIT object with GDB (`gdb_jit.c`), so
    a debugger can name and unwind them; it stops the game at every compile, so it is for inspection, not timing.
@@ -476,10 +538,10 @@ found), says where to look next.
 
 In a Tracy build, a connected run takes the same timestamps and puts each pass on the GPU's track, named by its
 target, with each compute batch's dispatches; the GPU clock is aligned to the CPU's once a frame, so a long pass
-shows against the CPU work that waited for it. `--vk_gpu_draw_profile=1` adds a zone on every draw and dispatch
-(named by pipeline, topology and count), capped at 256 draws a frame and 128 per batch (`gpu untimed draws` counts the
-rest). A timestamp between draws keeps the GPU from overlapping them on many devices, so the draw zones inflate the
-frame: use them to rank draws inside a pass, not to time the frame. See
+shows against the CPU work that waited for it. With a client attached, a zone is added on every draw and dispatch
+(named by pipeline, topology and count); `GP_QUERIES` gives 16384 timestamps and `GP_DISP` 4096 dispatches a frame
+slot, and the log says how many passes went untimed. A timestamp between draws keeps the GPU from overlapping them on
+many devices, so the draw zones inflate the frame: use them to rank draws inside a pass, not to time the frame. See
 [Development: Profiling](development.md#profiling).
 
 ### RenderDoc
@@ -558,8 +620,9 @@ thread. Profile the GPU thread with perf/pmcstat (`--tid`, or `--sort comm` and 
 [The CPU cost of a draw](draw-cost.md) names (`buf_get`, `cb_get`, `tex_resolve`, `stage_set`, `vk_shader_hash`,
 `vk_mirror_harvest`, libc copies). Tracy's `draws`, `dispatches`, `pipeline make ms`, `pipeline wait ms` and
 `texture upload MB/s` give the counts to divide by. Settings that move this work are worth one A/B run each:
-`vk_record` (a recording thread of its own), `vk_descriptors_mode`, `vertex_input_dynamic_state`, `vk_memory`,
-`vk_buffer_pages` ([Settings](../user/settings.md#debug)); `tools/tune_gpu.py` searches them for a game.
+`vk_record` (a recording thread of its own), `vk_descriptors_mode`, `vk_memory`, `vk_buffer_pages`
+([Settings](../user/settings.md#debug)); `vertex_input_dynamic_state` ([Settings](../user/settings.md#graphics));
+`tools/tune_gpu.py` searches them for a game.
 
 Pipeline compiles are the other CPU-side GPU cost: the first frames of a new scene make pipelines (`pipeline make
 ms`); the next run loads them from `<id>.<driver>.vkshaders`. `tools/prepare_pipeline_probe.py` with
@@ -572,8 +635,33 @@ Running out of video memory looks like a GPU slowdown (evictions, uploads, textu
 lost device. Watch the stats box's video memory against the budget, Tracy's GPU memory and budget plots and
 `texture cache misses/s`, and the `resources:`/`memory:` lines of `--log=2`. A Vulkan out-of-memory logs each heap
 and the descriptor pools. `vk_budget_mb` and `vk_max_allocation_mb` impose a smaller budget, to reproduce a small
-GPU's behaviour on a large one; `astc_mode` changes what ASTC textures cost on a GPU without ASTC
-([Settings](../user/settings.md#graphics)).
+GPU's behaviour on a large one ([Settings](../user/settings.md#debug)); `astc_mode` changes what ASTC textures cost
+on a GPU without ASTC ([Settings](../user/settings.md#graphics)).
+
+### Memory view: which allocations have a pool
+
+Tracy's Memory view groups allocations by pool. Guest mappings and Vulkan device memory are always tracked when a
+client is attached. The finer pools below are off by default: set `tracy_memory_detail=1` before the run to emit them.
+Every game `malloc` and `free` then pays for a Tracy event, so use them only when the trace needs to say which pool
+holds the bytes. These are the named pools a trace can show:
+
+| Pool | What it holds |
+|---|---|
+| `guest` | Every guest mapping and split, from `mem_map`/`mem_unmap` |
+| `game malloc` | Each block the game's `malloc`/`new` takes from the sandboxed arena, including realloc |
+| `textures`, `render targets`, `rings`, `descriptors`, `compute arenas`, … | Vulkan device memory, one pool per owner in `ledger.c` |
+| `texture objects`, `render targets` | `Surf` objects, including render targets and their saved crops |
+| `pipelines`, `shader modules`, `descriptor sets` | Those Vulkan objects' create and destroy pairs |
+| `audio`, `video decode`, `audio dsp` | Host buffers for hwopus, the FFmpeg video decoder and the Denoise state |
+
+Two pools are deliberately one-sided: shader objects (`VkShaderEXT`) and the clear-shader modules have no destroy
+site, so they stay live for the run by design. Command buffers go with their frame pool's reset and have no free
+pair, so they have no pool. The host heap, kernel handles and static object pools have only plots, not events:
+`host heap` and `host rss` sample the process, and `gpu block free` plots the free space inside Vulkan's device
+blocks. A memory event carries no frame id, so the Memory view cannot say which frame holds a block.
+`tracy_memory_callstack` adds the allocating stack to the detailed events ([Sections, lock marks and
+callstacks](#sections-lock-marks-and-callstacks)). Use `tracy_zone_callstack` on the zones that ask for one for the code
+around a use.
 
 ## Comparing two builds or two settings
 
@@ -598,8 +686,8 @@ long `--frames` or compare Tracy's `frame ms` over the same scene.
 
 ## Pitfalls
 
-- **Profiling changes the run.** Tracy's sampler, `--log=2`, `vk_gpu_draw_profile`, `tracy_frame_images` and DWARF
-  call graphs all cost time. Find hot spots with them; measure speed without them.
+- **Profiling changes the run.** Tracy's sampler, `--log=2`, the GPU track's draw zones, `tracy_frame_images` and
+  DWARF call graphs all cost time. Find hot spots with them; measure speed without them.
 - **The pace hides the work.** With `fps_limit` and `vsync` on, a faster frame only waits longer. Profile uncapped,
   or read frame *work* time rather than frame rate.
 - **Cold caches.** Shader translation, pipeline creation and JIT compiles dominate a first run. Profile a warm one
