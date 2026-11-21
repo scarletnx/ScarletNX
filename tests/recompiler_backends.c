@@ -11,6 +11,7 @@
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--verbose] [--words HEX...]
    On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so */
 #include "common/cpu/recompiler/snx_recompiler.h"
+#include "llvm_qemu_words.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,8 +148,42 @@ static uint32_t simd_copy(void) {
     }
 }
 
+/* the AdvSIMD data processing x64_vec.c makes: words of the decoder's rows of these (llvm_qemu_words.c), registers
+   and all as the rows' samples have them (no memory: any register will do) */
+static const char* const k_vec_ops[] = {
+    "AND_v", "BIC_v", "ORR_v", "ORN_v", "EOR_v", "BSL_v", "BIT_v", "BIF_v", "ADD_v", "SUB_v", "NEG_v", "ABS_v",
+    "MUL_v", "MLA_v", "MLS_v", "MUL_vi", "MLA_vi", "MLS_vi", "CMEQ_v", "CMGT_v", "CMGE_v", "CMHI_v", "CMHS_v",
+    "CMTST_v", "CMEQ0_v", "CMGT0_v", "CMGE0_v", "CMLE0_v", "CMLT0_v", "SMAX_v", "SMIN_v", "UMAX_v", "UMIN_v",
+    "ADDP_v", "SMAXP_v", "SMINP_v", "UMAXP_v", "UMINP_v", "ADDV", "SMAXV", "SMINV", "UMAXV", "UMINV", "ZIP1", "ZIP2",
+    "UZP1", "UZP2", "TRN1", "TRN2", "EXT_q", "REV16_v", "REV32_v", "REV64_v", "CNT_v", "TBL_TBX", "SHL_v", "USHR_v",
+    "SSHR_v", "USRA_v", "SSRA_v", "SHL_s", "USHR_s", "SSHR_s", "SHRN_v", "XTN", "SSHLL_v", "USHLL_v", "SHLL_v",
+    "USHL_v", "SSHL_v", "UADDW", "SADDW", "UMULL_v", "SMULL_v", "UMLAL_v", "SMLAL_v", "UMLSL_v", "SMLSL_v",
+    "UMULL_vi", "SMULL_vi", "UMLAL_vi", "SMLAL_vi", "UMLSL_vi", "SMLSL_vi", "ADDHN", "SUBHN", "UHADD_v", "SHADD_v",
+    "URHADD_v", NULL};
+static uint32_t* g_rows;
+static size_t g_nrows;
+static uint64_t rnd_for_rows(void) { return rnd(); }
+static void rows_init(void) {
+    uint32_t* all;
+    size_t n = lqd_row_words(6, rnd_for_rows, &all), i, k;
+    g_rows = (uint32_t*)malloc((n + 1) * sizeof *g_rows);
+    for (i = 0; i < n; ++i) {
+        const char* name = lqd_switch_op_name(all[i]);
+        for (k = 0; name && k_vec_ops[k]; ++k)
+            if (!strcmp(name, k_vec_ops[k])) {
+                g_rows[g_nrows++] = all[i];
+                break;
+            }
+    }
+    free(all);
+}
+static uint32_t vec_row(void) { return g_nrows ? g_rows[pick((unsigned)g_nrows)] : 0xD503201Fu; /* NOP */ }
+
 static uint32_t word(void) {
-    switch (pick(9)) {
+    switch (pick(12)) {
+    case 9:
+    case 10:
+    case 11: return vec_row();
     case 8: return simd_copy();
     case 0:
     case 1:
@@ -246,6 +281,7 @@ int main(int argc, char** argv) {
             functions = 1;
         }
     }
+    rows_init();
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     if (!rx || !rl) {
@@ -279,6 +315,7 @@ int main(int argc, char** argv) {
                 ml ? "" : snx_recompiler_error(rl));
         return 1;
     }
+    printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
     printf("recompiler backends: %lu functions, the x86-64 back end made %lu\n",
            (unsigned long)snx_recompiled_functions(mx), (unsigned long)snx_recompiled_x64_functions(mx));
     if (!snx_recompiled_x64_functions(mx)) {

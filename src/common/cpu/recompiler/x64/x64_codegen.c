@@ -758,6 +758,8 @@ static int sys(Unit* u, SnxU32 word) {
 }
 #undef SYSREG
 
+#include "common/cpu/recompiler/x64/x64_vec.c"
+
 /* the instruction at address, word; 0 where the function goes to LLVM */
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
@@ -794,6 +796,11 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             break;
         }
         if (fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
+        {
+            int v = vec(u, &insn, word);
+            if (v < 0) goto undef;
+            if (v) break;
+        }
         if (!sg_decode(g) || x->unmade) return 0;
         if (g->undefined) {
             /* the Sail's UNDEF (SGX_K_UNDEF set the pc and called the runtime): the function returns */
