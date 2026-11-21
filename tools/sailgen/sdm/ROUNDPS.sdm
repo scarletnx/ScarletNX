@@ -1,0 +1,4 @@
+# ROUNDPS—Round Packed Single Precision Floating-Point Values -- override
+# S-8: '66 0F 3A 08 /r ib' broken across the table's columns ('66 0F 3A 08 | /r ib ROUNDPS ...'): the opcode whole.
+@opcodes
+66 0F 3A 08 /r ib | ROUNDPS xmm1, xmm2/m128, imm8 | RMI | Valid | Valid | SSE4_1 | Round packed single precision floating-point values in xmm2/m128 and place the result in xmm1.
