@@ -7,7 +7,8 @@
    for an allocation (force), or one where the driver does not move memory, takes it after two presents. A target
    whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
-   system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). No Vulkan loader, device or GPU is used:
+   system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
+   nowhere (flush_land). No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -352,6 +353,23 @@ static int aside_hash(void) {
     surf_evict(s);
     return hashed && unchanged && changed;
 }
+/* A parked target (rt_create_ parks the one at an address that another size takes, its address with bit 63 set) whose
+   storage image's result lands (flush_land, from image_out.c's landing): memory there is no longer its own, so nothing
+   is read, written or stamped (each of those calls aborts here) and the result is settled. A write stamped at the
+   parked address read as one over every page, and loaded every target again. 1 when that held */
+static int parked_lands_nothing(void) {
+    static u8 pixels[GUEST_SIZE], original[GUEST_SIZE];
+    Surf* s = target(GUEST_GPU | 1ull << 63, GUEST_SIZE, 1);
+    g_parked++; /* as rt_create_ counts it */
+    s->wgen = 7;
+    s->mem_wgen = 3;
+    u8* keep = NULL;
+    u64 keep_size = 0;
+    flush_land(s, pixels, original, s->wgen, &keep, &keep_size);
+    const int settled = s->mem_wgen == 7 && !keep && !keep_size;
+    surf_evict(s);
+    return settled && targets_held() == 0;
+}
 /* Targets in system memory (rt_demote) while the system heap they went to is past its budget less a head: every 30
    presents the least recently used go until it is within, their pixels with them; one the last two presents used
    stays, however far past the heap is. 1 when the oldest alone went for an excess within its size, and the other old
@@ -397,10 +415,12 @@ int main(void) {
     /* a target with pixels memory lacks: kept for its age, taken by the pressure, where it can't move */
     CHECK(aside_or_lost(VK_MEM_UMA) && aside_or_lost(VK_MEM_SMALL_BAR));
     CHECK(aside_hash());
+    CHECK(parked_lands_nothing());
     CHECK(sys_heap_short());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should; a target with pixels memory "
         "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
-        "changed meanwhile, and targets in system memory went oldest first while the system heap was short\n");
+        "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
+        "target's storage result landed nothing\n");
     return 0;
 }
