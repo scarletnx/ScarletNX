@@ -6740,6 +6740,45 @@ static void test_complementary_pair(const char* dir) {
     (void)dir;
 }
 
+/* IABS R0, R5 is x < 0 ? -x : x without GLSL.std.450's SAbs (instruction 5 of the program's one extended set): R0 is
+   |R5| for positive, zero and negative values, and the most negative value stays as it is */
+static void test_iabs_select(void) {
+    static const u32 values[5][2] = {{5, 5}, {0xfffffffbu, 5}, {0, 0}, {0xffffffffu, 1}, {0x80000000u, 0x80000000u}};
+    for (u32 k = 0; k < 5; k++) {
+        u8 code[16 * 8] = {0};
+        u32 n = 0;
+        for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.25f)));
+        put(code, n++, mov_imm(5, values[k][0]));
+        Word x = alu(0x013, 1, 0, 255); /* IABS R0, R5 */
+        set(&x, 32, 8, 5);
+        put(code, n++, x);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        u32 fsph[32] = {0};
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "iabs: %s\n", si.first_unsupported);
+            continue;
+        }
+        u32 at[256], sabs = 0;
+        u32 ext = spv_find(spv, count, 12 /* OpExtInst */, at, 256);
+        for (u32 i = 0; i < ext; i++) sabs += spv[at[i] + 4] == 5;
+        free(spv);
+        CHECK(sabs == 0);
+        SpvEvalEnv env = {0};
+        int ran = run_stage(ST_FS, code, n, fsph, &env);
+        CHECK(ran && env.out[0][0] == values[k][1]);
+        if (!ran || env.out[0][0] != values[k][1] || sabs)
+            fprintf(stderr, "iabs of %08x: %08x (%08x), %u SAbs\n", values[k][0], env.out[0][0], values[k][1], sabs);
+    }
+}
+
 /* the fuse of an LDSM and the HMMA that reads its fragments (fuse.c): one instruction where the two were, with the
    HMMA's fields kept and the LDSM's packed beside them. The HMMA has the scheduling bits a compiled one has (105-125:
    its stalls, yield, barriers, waits and reuse), which the LDSM's fields once took: OR'ed into stall 15 and yield,
@@ -7610,6 +7649,7 @@ int main(int argc, char** argv) {
     test_ftz_modes(dir);
     test_ffma_fused();
     test_complementary_pair(dir);
+    test_iabs_select();
     test_fuse_pairs();
     test_fuse_branch();
     test_fuse_ldsm_hmma(dir);

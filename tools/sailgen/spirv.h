@@ -137,12 +137,6 @@ static inline SgV sg_shl(SgG* g, int w, SgV a, SgV n) { return sg_trim(g, w, sg_
 static inline SgV sg_lshr(SgG* g, int w, SgV a, SgV n) { return sg_bin(g, w, SPV_OP_SHIFT_RIGHT_LOGICAL, a, n); }
 /* ASR of a u32 or u64 as that type: SPIR-V's shift takes the sign from the opcode. Only of whole words */
 static inline SgV sg_ashr(SgG* g, int w, SgV a, SgV n) { return sg_bin(g, w, SPV_OP_SHIFT_RIGHT_ARITHMETIC, a, n); }
-/* Abs of SInt: SAbs of the i32 */
-static inline SgV sg_sabs(SgG* g, int w, SgV a) {
-    SgSpv* s = sg_spv(g);
-    (void)w;
-    return sg_v(spv_emit_glsl_unary(s->e, s->t_i32, s->glsl, SPV_GLSL_S_ABS, sg_as(g, a, SGT_I32)), SGT_I32);
-}
 
 /* gpu.sail's operations of the 32-bit word every GPU has */
 static inline SgV sg_PopCount(SgG* g, SgV a) {
@@ -290,6 +284,14 @@ static inline SgV sg_select(SgG* g, int w, SgV c, SgV a, SgV b) {
     if (w < 0) return sg_vt(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, a.ty, c.id, a.id, b.id), a.ty);
     y = sg_as(g, b, t);
     return sg_v(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, sg_type(g, t), c.id, a.id, y), t);
+}
+/* Abs of SInt: x < 0 ? 0 - x : x of the u32 rather than GLSL.std.450's SAbs: NVIDIA's driver 621.24 compiled a vertex
+   program with SAbs into code that lost the device at an invalid instruction pointer. The most negative value stays
+   as it is, as SAbs leaves it */
+static inline SgV sg_sabs(SgG* g, int w, SgV a) {
+    SgV zero = sg_const(g, 32, 0);
+    (void)w;
+    return sg_select(g, 32, sg_slt(g, 32, a, zero), sg_sub(g, 32, zero, a), a);
 }
 
 /* Min and Max of UInt or SInt: GLSL.std.450's, a signed one's on i32 */
