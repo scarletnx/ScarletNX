@@ -208,11 +208,15 @@ int vk_nvdec_write(const NvdecPic* p) {
     r = nvdec_write(p, &hp);
     vk_unlock();
     if (p->hw) hw_unlock(&hp);
-    /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint */
-    if (r) {
-        vk_uma_mem_need_cpu(p->luma, p->ext_y);
-        vk_uma_mem_need_cpu(p->chroma, p->ext_c);
-    }
+    /* No wait for the copy here. The picture reaches guest memory in stream order, as a write in place over the
+       import that holds its pages or as a result a CPU read faults on and lands (uma.c, owned.c), and a guest load
+       of those bytes does not pass through the runtime. What orders the copy with that load is the job's syncpoint,
+       which host1x.c's run_job now queues as a release the submit carrying the copy performs: it steps when the
+       picture is there, as the console's does when its job ends. Waiting here waited for the whole GPU queue while
+       holding vk_lock, so the thread recording the frame waited behind the video: one title's title screen measured
+       54 to 61 frames a second with the wait and 81.5 without it, with the picture unchanged. VIC's compose (vk/vic.c)
+       has the same two waits and the same increment now orders its picture, but it is left alone here: a title's
+       upscaler does not reach it, and no run measured it */
     return r;
 }
 
