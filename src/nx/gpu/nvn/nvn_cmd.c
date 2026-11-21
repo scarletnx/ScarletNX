@@ -20,7 +20,9 @@
    recording that started in a piece moves, as it ends, into its command bytes when they hold it, or else into a
    block of a small store, and its handle is then a JUMP there from its command bytes when they hold one, as the
    driver's handle is where its commands are (spill_settle, spill_compact, spill_link). The game writing over that
-   JUMP gives its pieces back too (spill_sweep). Adding
+   JUMP gives its pieces back too (spill_sweep). A recording that started in the game's memory and went on in one
+   piece moves that piece's records into a block of the small store as it ends, the JUMP after its records in the
+   game's memory going there (spill_tail). Adding
    memory again isn't writing over it: one game hands the rest of a block to its next recording at the driver's used
    bytes, adds the whole block again for the next ones, and still calls recordings further in it. A recording that
    takes no command memory on the driver (calls and compute binds go to its control memory) counts 4 bytes, so that it
@@ -102,8 +104,10 @@ static void put_jump(u64 at, u64 to) {
 
 /* ---- the runtime's memory for the records the game's memory has no room for */
 #define SPILL_SEGMENT (64u << 10)
-/* NvnCmdBuf.piece: the slot of the piece the open recording starts in, with PIECE_MORE once it goes on in another */
+/* NvnCmdBuf.piece: the slot of the piece the open recording starts in, with PIECE_MORE once it goes on in another, or
+   with PIECE_TAIL the slot of the piece a recording that started in the game's memory goes on in, after a JUMP there */
 #define PIECE_MORE    0x80000000u
+#define PIECE_TAIL    0x40000000u
 /* ---- the control memory, counted as the game's driver writes it (one game's driver, NVN 55) */
 static NvnCtl* ctl_of(u64 cb) {
     u32 k = CB(cb)->ctl;
@@ -550,7 +554,8 @@ static void divert(u64 cb, u32 need) {
     }
     u32 piece;
     o->lent = spill_cut(cb, o->anchor, need + h.size, &at, &piece) + 1;
-    o->piece = o->recording == 2 ? piece : 0; /* the recording starts here */
+    /* the recording starts here, or its records in the game's memory go on here after the JUMP at from */
+    o->piece = o->recording == 2 ? piece : from ? piece | PIECE_TAIL : 0;
     o->cur = at;
     if (h.size) {
         memcpy(GP(at), GP(from), h.size);
@@ -602,7 +607,8 @@ static void move_records(u64 dst, u64 src, u64 bytes) {
 static u64 spill_settle(u64 cb) {
     NvnCmdBuf* o = CB(cb);
     u64 bytes = o->cur - o->begin, a = (o->anchor + 7) & ~7ull, end = o->origin + o->used;
-    if (!o->piece || (o->piece & PIECE_MORE) || !o->lent || o->anchor < o->origin || a > end || bytes > end - a)
+    if (!o->piece || (o->piece & (PIECE_MORE | PIECE_TAIL)) || !o->lent || o->anchor < o->origin || a > end ||
+        bytes > end - a)
         return o->begin;
     move_records(a, o->begin, bytes);
     pm_lock(&g_nvn.cmd.lock);
@@ -625,7 +631,7 @@ static u64 spill_compact(u64 cb) {
     u64 bytes = o->cur - o->begin, at = 0, a = (o->anchor + 7) & ~7ull, end = o->origin + o->used;
     u32 k = small_class(bytes), slot = o->piece;
     int linked = o->anchor >= o->origin && a <= end && end - a >= 16;
-    if (!slot || (slot & PIECE_MORE) || !o->lent || k == NVN_SMALL_CLASSES) return o->begin;
+    if (!slot || (slot & (PIECE_MORE | PIECE_TAIL)) || !o->lent || k == NVN_SMALL_CLASSES) return o->begin;
     pm_lock(&st->lock);
     for (u32 i = st->bucket[NVN_SPILL_BUCKET(o->anchor)]; !linked && i && !at; i = st->p[i].next) {
         NvnSpillPiece* q = &st->p[i];
@@ -662,7 +668,7 @@ static u64 spill_link(u64 cb, u64 h) {
     const NvnCmdBuf* o = CB(cb);
     u64 a = (o->anchor + 7) & ~7ull, end = o->origin + o->used;
     u32 slot = o->piece;
-    if (!slot || (slot & PIECE_MORE) || o->anchor < o->origin || a > end || end - a < 16) return h;
+    if (!slot || (slot & (PIECE_MORE | PIECE_TAIL)) || o->anchor < o->origin || a > end || end - a < 16) return h;
     pm_lock(&st->lock);
     int small = st->p[slot].seg >= NVN_SPILL_SMALL && st->p[slot].at == h;
     if (small) {
@@ -679,6 +685,39 @@ static u64 spill_link(u64 cb, u64 h) {
     }
     pm_unlock(&st->lock);
     return small ? a : h;
+}
+/* A recording that started in the game's memory and went on in one piece of the runtime's memory from a JUMP after its
+   records there (divert) moves that piece's records into a block of the small store, where the JUMP then goes: its
+   piece takes the block, and the segment is cut from the piece's start again. A segment comes back only once all of
+   its pieces do, and each command buffer cuts from segments of its own: one game gives thousands of command buffers a
+   few hundred bytes of command memory each, records one short recording in each and keeps them, and only their last
+   record or two didn't fit the bytes counted, so a segment of 64 KiB stood for each of them and every segment was
+   held within minutes. The JUMP is the last 16 bytes before game_cur, unless the game added memory since (then piece
+   is no longer marked) */
+static void spill_tail(u64 cb) {
+    NvnCmdBuf* o = CB(cb);
+    NvnCmdState* st = &g_nvn.cmd;
+    u32 slot = o->piece & ~PIECE_TAIL, k;
+    u64 jump = o->game_cur - 16, from, at;
+    if (!(o->piece & PIECE_TAIL) || (o->piece & PIECE_MORE) || !o->lent || o->game_cur < 16) return;
+    if (NVN_REC_OP(gr32(jump)) != OP_JUMP) return;
+    from = gr64(jump + 8);
+    const NvnSpillSeg* s = &st->s[o->lent - 1];
+    if (from < s->at || from > o->cur || o->cur > s->at + s->size || o->cur == from) return;
+    if ((k = small_class(o->cur - from)) == NVN_SMALL_CLASSES) return;
+    pm_lock(&st->lock);
+    if ((at = small_take(st, k)) != 0) {
+        NvnSpillPiece* q = &st->p[slot];
+        st->s[q->seg].live--; /* still cb's: spill_end gives it up */
+        q->seg = NVN_SPILL_SMALL + k;
+        q->at = at;
+    }
+    pm_unlock(&st->lock);
+    if (!at) return;
+    move_records(at, from, o->cur - from);
+    put_jump(jump, at);
+    o->cur = from;
+    o->piece = 0;
 }
 /* The pieces whose recording's JUMP is gone (spill_link), or whose command memory is: taken under the lock, the game's
    memory read without it (mem_mapped_run takes mem.c's), and each given back under it again while it is still the same
@@ -858,9 +897,10 @@ void nvn_CommandBufferAddCommandMemory(CPU* c, u64 cb, u64 pool, i64 offset, u64
     o->game_end = o->origin + size;
     o->used = 0;
     o->seen = 0;
-    if (o->lent)
+    if (o->lent) {
         o->game_cur = (o->origin + 7) & ~7ull;
-    else
+        if (o->piece & PIECE_TAIL) o->piece = 0; /* spill_tail no longer finds its JUMP before game_cur */
+    } else
         o->cur = (o->origin + 7) & ~7ull;
 }
 /* The control memory holds the driver's entries of each recording, which the game sizes by GetControlMemoryUsed and
@@ -997,7 +1037,10 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
         /* bytes of its own, the driver's being control memory: no callback, which the driver wouldn't call */
         if (no_command && o->used + 4 <= o->game_end - o->origin) o->used += 4;
         h = spill_settle(cb);
-        if (o->piece) h = spill_link(cb, spill_compact(cb)); /* it stays in the runtime's memory */
+        if (o->piece & PIECE_TAIL)
+            spill_tail(cb); /* its handle stays in the game's memory */
+        else if (o->piece)
+            h = spill_link(cb, spill_compact(cb)); /* it stays in the runtime's memory */
     } else
         h = empty_recording();
     if (t && t->start && no_command) {
