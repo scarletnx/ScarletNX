@@ -1351,6 +1351,18 @@ setting Alias pool
     help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
+setting Guest files
+    key guest_files
+    int 0 1
+    default 0
+    default-if SNX_IOS 1
+    startup
+    words Off|On
+    help 1 = the game's memory is in unlinked files of 1 GiB (larger for a large address space) in the temporary
+    help folder (Apple), so the system counts its pages as file pages, which it can write to the disk, and not against
+    help the app's memory limit (iOS ends an app past it). The system writes the game's changed memory to the disk from
+    help time to time and under memory pressure, up to the game's memory (memory_gb): it needs that much free disk and
+    help 2 GiB more, or the game keeps anonymous memory. The files go away when the game ends. 0 = anonymous memory
 setting Write tracking
     key write_tracking
     int 0 2

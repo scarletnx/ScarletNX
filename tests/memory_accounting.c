@@ -170,6 +170,11 @@ void plat_vm_decommit(u8* p, u64 size) {
     if (mmap(p, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) abort();
 #endif
 }
+/* no guest files here (platform_posix tests them) */
+int plat_vm_files(u8* base, u64 size, const char* dir) {
+    (void)base, (void)size, (void)dir;
+    return -1;
+}
 /* no alias pool here: views are copies (memory_alias tests the pool) */
 int plat_alias_init(u64 size) {
     (void)size;

@@ -1040,6 +1040,53 @@ static void mark_seen(void* data, const SnxRunMark* mark) {
     (void)data;
     (void)mark;
 }
+/* the file slots (plat_vm_files): a decommit reads zero again, through the guest address and through the file, also
+   across the edge of two slots, and the partial last slot keeps its bytes. Last in main: the slots stay to the end */
+static void test_guest_files(const char* dir) {
+#if defined(__APPLE__)
+    u64 page = plat_vm_page(), slot = (u64)1 << 30, size = 2 * slot + page, off = 0;
+    u8* p = plat_vm_reserve(size);
+    u8 *a, *view;
+    int fd = -1;
+    printf("guest files\n");
+    CHECK(p != NULL, "no reservation");
+    if (!p) return;
+    CHECK(plat_vm_files(p, size, "/nonexistent/snx") == -1 && !plat_vm_files_slot(p, NULL, NULL),
+          "a folder that does not exist gave files");
+    CHECK(!plat_vm_files(p, size, dir), "no files");
+    CHECK(plat_vm_files_slot(p + slot + 5, &fd, &off) && off == 5, "the second slot's offset");
+    CHECK(!plat_vm_files_slot(p + size, NULL, NULL), "a slot past the end");
+    a = p + slot - page; /* the last page of the first slot and the first of the second */
+    CHECK(!plat_vm_commit(a, 2 * page) && !plat_vm_commit(p + 2 * slot, page), "commit");
+    memset(a, 0xAB, (size_t)(2 * page));
+    memset(p + 2 * slot, 0xCD, (size_t)page);
+    plat_vm_decommit(a, 2 * page);
+    CHECK(!plat_vm_commit(a, 2 * page), "commit again");
+    CHECK(a[0] == 0 && a[page - 1] == 0 && a[page] == 0 && a[2 * page - 1] == 0, "a decommitted range kept its bytes");
+    CHECK(p[2 * slot] == 0xCD && p[2 * slot + page - 1] == 0xCD, "the partial slot lost its bytes");
+    CHECK(plat_vm_files_slot(a + page, &fd, &off), "no slot");
+    view = (u8*)mmap(NULL, (size_t)page, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)off);
+    CHECK(view != (u8*)MAP_FAILED, "no second mapping of the file");
+    if (view != (u8*)MAP_FAILED) {
+        CHECK(view[0] == 0, "the file kept the decommitted bytes");
+        view[0] = 0x5A;
+        CHECK(a[page] == 0x5A, "the guest page is not the file's page");
+        munmap(view, (size_t)page);
+    }
+    /* a reservation past 64 GiB takes slots of 2 GiB, so its descriptors stay within 64 */
+    u64 big = 65 * slot;
+    u8* q = plat_vm_reserve(big);
+    CHECK(q != NULL && !plat_vm_files(q, big, dir), "no files for 65 GiB");
+    if (q) {
+        int fd0 = -1;
+        CHECK(plat_vm_files_slot(q, &fd0, NULL) && plat_vm_files_slot(q + slot, &fd, NULL) && fd == fd0,
+              "two GiB in two files");
+        CHECK(plat_vm_files_slot(q + 3 * slot, NULL, &off) && off == slot, "the middle of a 2 GiB slot");
+    }
+#else
+    (void)dir;
+#endif
+}
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1193,6 +1240,7 @@ int main(int argc, char** argv) {
               "a real fault in a child was not reported");
     }
 
+    test_guest_files(dir);
     printf("%u checks, %u failed\n", checks, failures);
     return failures != 0;
 }
