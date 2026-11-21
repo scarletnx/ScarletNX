@@ -2094,6 +2094,19 @@ static _Atomic int g_wscan_failed;     /* atomic */
 static _Atomic int g_wscan_on;         /* atomic: the scanner runs */
 static PMutex g_wscan_wlk = PMUTEX_INIT;
 static PCond g_wscan_cv;
+/* The checks scanning now (atomic). On Windows the scanner starts no scan while one does: the write watch calls of
+   two threads at once slow each other down. In one game a check's call that found no page took 64 us against the
+   scanner's 14 us, about 47 us a leaf against 4, and with the scanner waiting the checks took 12 us a leaf. A check
+   runs on the thread that records the draws, which sets the frame rate, and the scanner's next leaves can wait. The
+   other hosts' scans were not measured so: their scanner keeps going. A test sets WW_SCANS_SERIAL on any host */
+static _Atomic int g_wcheck_scans;
+#if !defined(WW_SCANS_SERIAL)
+#if defined(_WIN32)
+#define WW_SCANS_SERIAL 1
+#else
+#define WW_SCANS_SERIAL 0
+#endif
+#endif
 /* plat_ww_scan's callback: a run of written pages. When the stage is full its last range grows over the new one
    (scans go up through memory), marking more than was written: a cache over the rest only checks its contents once */
 static void ww_note(u8* p, u64 n) {
@@ -2372,6 +2385,8 @@ static void ww_scanner(void* arg) {
                 l = ww_next_ever(l + 1, n);
                 continue;
             }
+            /* before its claims, which a check would wait for */
+            while (WW_SCANS_SERIAL && atomic_load_explicit(&g_wcheck_scans, memory_order_acquire)) plat_yield();
             u64 lo = l;
             while (l < n && l - lo < WW_RUN_MAX && ww_wanted(l, seen, from) && ww_claim(l)) l++;
             if (l == lo) { /* a check is scanning it */
@@ -2436,6 +2451,8 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
         }
     }
     if (first <= hi) {
+        if (WW_SCANS_SERIAL)
+            atomic_fetch_add_explicit(&g_wcheck_scans, 1, memory_order_acq_rel); /* the scanner waits */
         /* the scanner may be scanning some of them: wait for those, which it may have scanned in this epoch */
         for (a = first; a <= last; a++)
             while (!ww_claim(a)) plat_yield();
@@ -2452,9 +2469,11 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
             while (a <= last && (i32)(atomic_load_explicit(&g_wleaf_done[a], memory_order_relaxed) - seen) < 0) a++;
             if (ww_scan_leaves(run, a - 1, seen, &g_wstage_check) < 0) {
                 for (; a <= last; a++) atomic_store_explicit(&g_wleaf_busy[a], 0, memory_order_release);
+                if (WW_SCANS_SERIAL) atomic_fetch_sub_explicit(&g_wcheck_scans, 1, memory_order_acq_rel);
                 return -1;
             }
         }
+        if (WW_SCANS_SERIAL) atomic_fetch_sub_explicit(&g_wcheck_scans, 1, memory_order_acq_rel);
     }
     ww_take_scanned();
     for (a = l; a <= hi; a++)
