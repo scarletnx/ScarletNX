@@ -672,6 +672,11 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
 }
+u64 vk_tex_reclaim_superseded(u32 before, u64 want) {
+    (void)before, (void)want;
+    return 0;
+}
+void vk_tex_took(Surf* t) { (void)t; }
 void vk_surf_ended_frame(void) {}
 void vk_tex_refine_frame(void) {}
 void vk_tex_promote_frame(void) {}
