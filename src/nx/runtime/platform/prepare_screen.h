@@ -26,6 +26,9 @@ typedef struct {
    now_ms: the time of the update, a monotonic clock's. Under ui_lock; the strings are copied, NULL ones as "" */
 void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPrepareStep* steps, int n,
                         const char (*notes)[SNX_PREPARE_NOTE_SIZE], int nnotes, const char* foot, u64 now_ms);
+/* the look prepare_screen_set draws for theme: it, or the YoRHa theme's for NULL, into out (another title for a screen
+   of its own: the game closing's) */
+void prepare_screen_theme(const SnxRunTheme* theme, SnxRunTheme* out);
 struct RendererPrepare;
 /* the kinds of step prepare_screen_steps makes, by their place in its began */
 enum { SNX_PREPARE_FIND, SNX_PREPARE_TRANSLATE, SNX_PREPARE_PIPES, SNX_PREPARE_KINDS };

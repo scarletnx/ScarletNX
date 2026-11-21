@@ -44,8 +44,10 @@ static const SnxRunTheme yorha = {.page = SNX_GUI_THEME_YORHA_RUN_PAGE,
                                   .title = SNX_GUI_THEME_YORHA_LOADING,
                                   .steps = SNX_GUI_THEME_YORHA_RUN_STEPS,
                                   .texture = SNX_GUI_THEME_YORHA_RUN_TEXTURE,
-                                  .progress = SNX_GUI_THEME_YORHA_RUN_PROGRESS};
+                                  .progress = SNX_GUI_THEME_YORHA_RUN_PROGRESS,
+                                  .ring = SNX_GUI_THEME_YORHA_RUN_RING};
 
+void prepare_screen_theme(const SnxRunTheme* theme, SnxRunTheme* out) { *out = theme ? *theme : yorha; }
 void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPrepareStep* steps, int n,
                         const char (*notes)[SNX_PREPARE_NOTE_SIZE], int nnotes, const char* foot, u64 now_ms) {
     int i, from;
@@ -282,14 +284,27 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
     /* the head: the title, the game's name (and the program a switch starts) and dots that turn while the work goes on,
        still once it is done; a switch's work is the game's first frame */
     if (g_prepare_screen.switching) all_done = 0;
-    x = left + screen_text(l, left, top + ch, s, t->title, 0, cols - 2, t->ink);
-    if (t->title[0]) x += cw;
-    if (g_prepare_screen.switching && g_prepare_screen.program > 0)
-        snprintf(line, sizeof line, "%s (Program %d)%s", g_prepare_screen.name, g_prepare_screen.program,
-                 all_done ? "..." : turn[now / 400 % 4]);
-    else
-        snprintf(line, sizeof line, "%s%s", g_prepare_screen.name, all_done ? "..." : turn[now / 400 % 4]);
-    screen_text(l, x, top + ch, s, line, 1, cols - 1 - (int)((x - (float)x0) / cw), t->soft);
+    { /* the ring where the theme puts it, as the launcher's: left of the title (which then starts three columns on),
+         at the right edge, or after the name and the dots' whole width, so that it stays put */
+        const float head = t->ring == SNX_RUN_RING_LEFT ? left + 3 * cw : left;
+        char cut[SNX_PREPARE_NOTE_SIZE];
+        int name_cols;
+        x = head + screen_text(l, head, top + ch, s, t->title, 0, cols - 2, t->ink);
+        if (t->title[0]) x += cw;
+        if (g_prepare_screen.switching && g_prepare_screen.program > 0)
+            snprintf(line, sizeof line, "%s (Program %d)", g_prepare_screen.name, g_prepare_screen.program);
+        else
+            snprintf(line, sizeof line, "%s", g_prepare_screen.name);
+        name_cols = screen_line(line, 1, cols - 1 - (int)((x - (float)x0) / cw), cut, sizeof cut);
+        snprintf(line + strlen(line), sizeof line - strlen(line), "%s", all_done ? "..." : turn[now / 400 % 4]);
+        screen_text(l, x, top + ch, s, line, 1, cols - 1 - (int)((x - (float)x0) / cw), t->soft);
+        if (t->ring == SNX_RUN_RING_LEFT || t->ring == SNX_RUN_RING_RIGHT || t->ring == SNX_RUN_RING_NEAR_TEXT)
+            ui_loading_ring(l,
+                            t->ring == SNX_RUN_RING_LEFT    ? (float)x0 + cw * 2
+                            : t->ring == SNX_RUN_RING_RIGHT ? (float)(x0 + w) - cw * 2
+                                                            : x + cw * (float)(name_cols + 4) + 7.0f * (float)s,
+                            top + ch * 1.5f, s, now, all_done, UI_RGB(t->dim), UI_RGB(t->soft), UI_RGB(t->ink));
+    }
     if (g_prepare_screen.switching) first_row = switch_rows(l, x0, w, top, s, cols, rows);
     /* a row for each step, coloured as the launcher's: the last row's label and a step at work's detail in ink, the
        others soft */

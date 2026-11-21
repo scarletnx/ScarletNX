@@ -743,6 +743,9 @@ typedef char run_progress_same[SNX_RUN_PROGRESS_AMOUNT == GUI_PROGRESS_AMOUNT &&
                                        SNX_RUN_PROGRESS_TIME == GUI_PROGRESS_TIME
                                    ? 1
                                    : -1];
+static_assert(SNX_RUN_RING_NONE == GUI_RING_NONE && SNX_RUN_RING_LEFT == GUI_RING_LEFT &&
+                  SNX_RUN_RING_RIGHT == GUI_RING_RIGHT && SNX_RUN_RING_NEAR_TEXT == GUI_RING_NEAR_TEXT,
+              "the runtime reads GuiRing's numbers");
 void gui_run_theme(const char* folder, SnxRunTheme* out) {
     char *config = snx_menu_dir(folder, SNX_USER_CONFIG), *data = snx_menu_dir(folder, SNX_USER_DATA);
     char* app = config ? snx_path_join(config, "app.ini") : NULL;
@@ -795,6 +798,7 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
         out->steps = t->run == GUI_RUN_STEPS;
         out->texture = t->texture;
         out->progress = t->progress;
+        out->ring = (int)t->ring;
         out->fade_in_ms = t->fade_in_ms;
         out->fade_out_ms = t->fade_out_ms;
     }
