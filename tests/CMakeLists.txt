@@ -3375,8 +3375,8 @@ if(NOT WIN32)
     # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against its LLVM
     # back end: the same registers, flags, next pc and UNDEF from the same random states, word by word, on the host's
     # BMI1, BMI2 and LZCNT and without them
-    if(SNX_SAIL_X64)
-        include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+    if(SNX_X64)
         add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3768,6 +3768,11 @@ target_compile_options(snx-test-recompiler-library-cpp PRIVATE -Wall -Wextra -We
 target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler Threads::Threads)
 snx_test_sanitize(snx-test-recompiler-library-cpp) # this target is not made through snx_test_target
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
+# the x86-64 back end against LLVM, function by function (recompiler_backends.c)
+add_executable(snx-test-recompiler-backends recompiler_backends.c)
+snx_test_target(snx-test-recompiler-backends gnu23)
+target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
+add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails

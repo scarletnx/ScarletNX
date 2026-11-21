@@ -9,15 +9,24 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
-option(SNX_SAIL_X64 "Derive the x86-64 back end's instruction selection from the Intel SDM (needs pdftotext)" OFF)
+# on by default where the back end runs (x86-64, not Windows: its objects are COFF); without the manual or pdftotext
+# it is left off, with a warning, and LLVM makes every function
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT WIN32)
+    set(snx_sail_x64_default ON)
+else()
+    set(snx_sail_x64_default OFF)
+endif()
+option(SNX_SAIL_X64 "Derive the x86-64 back end's instruction selection from the Intel SDM (needs pdftotext)"
+       ${snx_sail_x64_default})
 set(SNX_SDM_PDF "" CACHE FILEPATH "Intel SDM Vol. 2 PDF, order no. 325383-093US (downloaded if empty)")
 set(snx_sdm_url "https://cdrdv2.intel.com/v1/dl/getContent/671110")
 set(snx_sdm_sha256 d137a7887787bbb06c1a8b8bafd51958d8d2e16b4dff987a03226c845cca1516)
 
-# snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
-# and x64_isel.report (what was selected, and the forms the selection couldn't read, with why) into the build folder's
-# sdm/, and gives <target> its include root
-function(snx_sdm_isel target)
+# the manual and pdftotext, found once: where either is missing (no PDF given and no download, a revision other than
+# 093US, no pdftotext) the x86-64 back end is left out with a warning, and LLVM makes every function
+set(SNX_X64 OFF CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
+if(SNX_SAIL_X64)
+    set(snx_sdm_why "")
     set(pdf "${SNX_SDM_PDF}")
     if(NOT pdf)
         set(pdf "${PROJECT_BINARY_DIR}/sdm/325383-093US.pdf")
@@ -27,16 +36,34 @@ function(snx_sdm_isel target)
             list(GET st 0 rc)
             if(rc)
                 file(REMOVE "${pdf}")
-                message(FATAL_ERROR "SDM download failed (${st}); pass -DSNX_SDM_PDF=<325383-093US.pdf>")
+                set(snx_sdm_why "its download failed (${st}): pass -DSNX_SDM_PDF=<325383-093US.pdf>")
             endif()
         endif()
     endif()
-    file(SHA256 "${pdf}" got)
-    if(NOT got STREQUAL snx_sdm_sha256)
-        message(FATAL_ERROR "${pdf} isn't SDM Vol. 2 revision 325383-093US (SHA-256 ${got}); Intel's download link "
-                            "serves the latest revision: pass the 093US PDF with -DSNX_SDM_PDF=")
+    if(NOT snx_sdm_why)
+        file(SHA256 "${pdf}" got)
+        if(NOT got STREQUAL snx_sdm_sha256)
+            set(snx_sdm_why "${pdf} isn't revision 325383-093US (Intel's link serves the latest): pass the 093US PDF "
+                            "with -DSNX_SDM_PDF=")
+        endif()
     endif()
-    find_program(SNX_PDFTOTEXT pdftotext REQUIRED)
+    find_program(SNX_PDFTOTEXT pdftotext)
+    if(NOT snx_sdm_why AND NOT SNX_PDFTOTEXT)
+        set(snx_sdm_why "pdftotext (poppler) is missing")
+    endif()
+    if(snx_sdm_why)
+        message(WARNING "The x86-64 back end is left out, LLVM makes every function: the Intel SDM's ${snx_sdm_why}")
+    else()
+        set(SNX_X64 ON CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
+        set(SNX_SDM_PDF_FOUND "${pdf}" CACHE INTERNAL "the Intel SDM's PDF the build derives from")
+    endif()
+endif()
+
+# snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
+# and x64_isel.report (what was selected, and the forms the selection couldn't read, with why) into the build folder's
+# sdm/, and gives <target> its include root
+function(snx_sdm_isel target)
+    set(pdf "${SNX_SDM_PDF_FOUND}")
     set(dir "${PROJECT_SOURCE_DIR}/tools/sailgen")
     file(GLOB overrides CONFIGURE_DEPENDS "${dir}/sdm/*.sdm")
     set(overlay_args)
