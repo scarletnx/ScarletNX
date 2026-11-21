@@ -14,6 +14,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "common/platform/thread.h" /* plat_thread_note */
+#include "nx/runtime/platform/tracy.h"
 
 /* A module's SPIR-V, by the module's handle bits, in an open-addressed table that grows (spirv_lock). A module kept
    here lives as long as the run (the translator's and the shader file's, pipeline.c's modinfo_put), unless it is
@@ -242,9 +243,11 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
     if (st->heaps) key = snx_fnv_step(key, st->cb_addr);
     if (st->spec) key = snx_fnv1a(key, values, sizeof values);
     u64 t0 = plat_ns();
+    SNX_ZONE(z, "vk shader object make");
     VkShaderEXT obj = VK_NULL_HANDLE;
     void* binary = NULL;
     size_t size = 0;
+    int from_binary = 0;
     pm_lock(&g_so.bin_lock);
     if (atomic_load_explicit(&g_so.bin_open, memory_order_relaxed)) {
         const void* kept = snx_vk_shader_binary(&g_so.bin, key, &size);
@@ -258,10 +261,12 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         from.codeSize = size;
         from.pCode = binary;
         if (vkCreateShadersEXT(g_vk.dev, 1, &from, NULL, &obj) != VK_SUCCESS) obj = VK_NULL_HANDLE;
+        else SNX_MEM_ALLOC_D((const void*)(uintptr_t)obj, 0, "shader modules"); /* kept for the run: no destroy site */
         free(binary);
-        if (obj)
+        if (obj) {
             atomic_fetch_add_explicit(&g_so.from_binary, 1, memory_order_relaxed);
-        else
+            from_binary = 1;
+        } else
             refused = 1; /* compiled again below, and its new binary takes the place of this one */
     }
     if (!obj) {
@@ -269,10 +274,14 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         VkResult r = vkCreateShadersEXT(g_vk.dev, 1, &info, NULL, &obj);
         snx_vk_compile_leave(entered);
         if (r != VK_SUCCESS) {
+            SNX_ZONE_TEXT(z, "the device refused it: draws go through a pipeline");
+            SNX_ZONE_VALUE(z, 0);
+            SNX_ZONE_END(z);
             LOG_LIMIT(16, "vulkan: the device refused a shader object (%s): its draws go through a pipeline\n",
                       snx_vk_result_str(r));
             return VK_NULL_HANDLE;
         }
+        SNX_MEM_ALLOC_D((const void*)(uintptr_t)obj, 0, "shader modules"); /* kept for the run: no destroy site */
         /* the driver's binary got outside bin_lock, which the other workers' lookups take */
         size_t got = 0;
         void* data = NULL;
@@ -288,7 +297,18 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
         free(data);
     }
     atomic_fetch_add_explicit(&g_so.made, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&g_so.ns, plat_ns() - t0, memory_order_relaxed);
+    u64 ns = plat_ns() - t0;
+    atomic_fetch_add_explicit(&g_so.ns, ns, memory_order_relaxed);
+    SNX_ZONE_TEXT(z, "%s, %llu B",
+                  from_binary ? "from a kept binary"
+                              : refused ? "binary refused, fresh SPIR-V"
+                                        : "no binary, fresh SPIR-V",
+                  (unsigned long long)(from_binary ? size : count * sizeof *words));
+    SNX_ZONE_VALUE(z, obj != VK_NULL_HANDLE);
+    SNX_ZONE_END(z);
+    SNX_PLOT("vk pipe shader object ms", (double)ns / 1e6);
+    SNX_PLOT("vk pipe shader object from binary", (double)from_binary);
+    SNX_PLOT("vk pipe shader object source", (double)(from_binary ? 1 : refused ? 2 : 3)); /* 1 binary, 2 refused, 3 SPIR-V */
     return obj;
 }
 

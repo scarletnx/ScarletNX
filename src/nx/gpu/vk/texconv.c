@@ -13,6 +13,7 @@
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* texconv.comp's push constants, member for member */
 typedef struct {
@@ -115,6 +116,8 @@ static int tc_work(u64 blocks) {
     g_tc_work = buf;
     g_tc_work_mem = mem;
     g_tc_work_size = bi.size;
+    static const char k_grown[] = "vk mem texconv work grew";
+    SNX_MSG(k_grown, sizeof k_grown - 1);
     return 1;
 }
 

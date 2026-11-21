@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Graphics pipeline libraries: the choice and the dynamic pre-rasterization state (pipeline_parts.h) */
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,6 +75,7 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
                                                       : NULL;
     *dyn_pr = 0;
     if (off) {
+        SNX_ZONE_T(z, "vk pipe libraries choice", "off: %s", off);
         snprintf(line, n, "vulkan: graphics pipeline libraries off (%s): each pipeline compiles its shaders whole", off);
         return 0;
     }
@@ -89,14 +91,19 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
         "patch control points", "depth range", "depth clip"};
     char dyn[192];
     size_t at = 0;
+    [[maybe_unused]] int nstates = 0;
     dyn[0] = 0;
     for (int i = 0; i < 7; i++)
-        if ((*dyn_pr >> i & 1) && at < sizeof dyn)
-            at += (size_t)snprintf(dyn + at, sizeof dyn - at, "%s%s", at ? ", " : "", names[i]);
+        if (*dyn_pr >> i & 1) {
+            ++nstates;
+            if (at < sizeof dyn)
+                at += (size_t)snprintf(dyn + at, sizeof dyn - at, "%s%s", at ? ", " : "", names[i]);
+        }
     snprintf(line, n,
              "vulkan: graphics pipeline libraries on: a new pipeline links the parts of its shaders, each compiled "
              "once, and is optimized in the background; dynamic pre-rasterization state: %s",
              at ? dyn : "none");
+    SNX_ZONE_T(z, "vk pipe libraries choice", "on, with %d dynamic states", nstates);
     return 1;
 }
 

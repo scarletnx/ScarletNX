@@ -60,7 +60,8 @@ typedef struct {
                                next free one in own_next */
 } Vb;
 /* The cache of guest ranges as buffers: its entries in one array by index (0 is none), and an index of them by range,
-   open addressed. Entries live twenty seconds after their last use, and draws make new ranges all the time (constant
+   open addressed. An entry with a buffer of its own lives twenty seconds after its last use; one that only holds what
+   its next check compares (the staging ring) goes after two seconds. Draws make new ranges all the time (constant
    buffers streamed through a ring, vertices at new offsets): chained buckets of separately allocated entries grew
    long, and walking them, a cache miss an entry, was a twentieth of the GPU thread in one game. A lookup reads one
    slot of the index, rarely two */
@@ -3889,7 +3890,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so);
 /* a buffer of its own being made, as a profiler zone (SNX_TRACY builds) */
 static int make_own(u32 i, VkBuffer sb, u64 so) {
     VkResourceScope scope = vk_resource_begin();
-    SNX_ZONE_V(z, "own buffer", g_vb[i].len);
+    SNX_ZONE_TV(z, "vk: own buffer", g_vb[i].len, "slot %u, staging @%llx", i, (unsigned long long)so);
     int r = make_own_(i, sb, so);
     SNX_ZONE_END(z);
     vk_resource_end(VK_RESOURCE_BUFFER_CACHE_BUILD, scope);
@@ -4456,7 +4457,15 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
            and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing read again, where a phone had
            1 GB available. Such a source takes one once it stays the same, as every other range does */
         int at_once = len >= PATCH_MIN && g_ww > 0 && (strict != 2 || len <= copy_src_at_once());
+        /* frequent, so a small code: 0 stays in the staging ring, 1 counts pending, 2 paged, 3 stable range, 4 big
+           range with tracked writes */
+        SNX_ZONE(z_choice, "vk mem buffer own choice");
         if (ncounts || e->paged > 0 || !((e->stable >= 2 || at_once) && make_own(i, sb, so))) {
+            SNX_ZONE_VALUE(z_choice, ncounts ? 1 : e->paged > 0 ? 2 : 0);
+            SNX_ZONE_TEXT(z_choice, "%lluKB: %s", (unsigned long long)(len >> 10),
+                          ncounts ? "counts pending, staging ring"
+                          : e->paged > 0 ? "paged, staging ring"
+                                         : "staging ring");
             /* changing (or new) data: read from this frame's staging ring */
             e->buf = sb;
             e->off = so;
@@ -4465,6 +4474,10 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
                 stage_note(why, changed, gva, len);
             }
             e->frame = vk_submit_number();
+        } else {
+            SNX_ZONE_VALUE(z_choice, e->stable >= 2 ? 3 : 4);
+            SNX_ZONE_TEXT(z_choice, "%lluKB: %s", (unsigned long long)(len >> 10),
+                          e->stable >= 2 ? "stable range, own buffer" : "big range with tracked writes, own buffer");
         }
     }
     if (ncounts && !vk_query_counts(sb, so, counts, ncounts)) { /* not on the GPU: the reports performed, waited for */
@@ -5000,7 +5013,8 @@ static void buf_frame(void) {
             (unsigned long long)(g_buffer.wstat.merged - g_buffer.wstat_seen.merged),
             (unsigned long long)(g_buffer.wstat.kept - g_buffer.wstat_seen.kept));
         g_buffer.wstat_seen = g_buffer.wstat;
-        LOG("vulkan: keep_new rejected (traps_off=%llu uma=%llu empty=%llu unaligned=%llu not_contig=%llu "
+        LOG("vulkan: keep_new rejected since start (cumulative; unlike the per-interval counts above): "
+            "traps_off=%llu uma=%llu empty=%llu unaligned=%llu not_contig=%llu "
             "cpu_read=%llu; in the page cache: pages_not_one_run=%llu other_result_on_pages=%llu "
             "other_pending_on_pages=%llu cache_refused=%llu)\n",
             (unsigned long long)g_keep_fail[KF_TRAPS_OFF], (unsigned long long)g_keep_fail[KF_UMA],

@@ -9,6 +9,7 @@
 #include "nx/gpu/vk/ledger.h"
 #include "nx/memory/mem.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,6 +77,8 @@ static int capture_tiles_make(VkCapture* capture, const Surf* target) {
                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     DevMemWant memory = {.at = DM_DEVICE};
     if (!VK_OK(vk_buffer_create(&info, &memory, &capture->tile_buffer, &capture->tile_memory, NULL))) return 0;
+    SNX_ZONE_T(z_cap_tiles, "vk pres capture tiles", "tile buffer for %llu tiles", (unsigned long long)count);
+    SNX_PLOT("vk pres capture tile bytes", (double)bytes);
     vk_mem_track(capture->tile_memory, VK_OWN_MISC);
     capture->tile_count = (u32)count;
     capture->tile_bytes = bytes;
@@ -208,6 +211,7 @@ static VkCapture* capture_get(Surf* target, u32 msaa, int mixed) {
     if (!source->img || source->w != target->w || source->h != target->h || source->sw != target->sw ||
         source->sh != target->sh || source->layers != target->layers || source->msaa != msaa || capture->usage != usage ||
         capture->valid.f.vk != validity) {
+        SNX_ZONE_T(z_cap_make, "vk pres capture make", "capture source's shape or usage changed");
         vk_render_end();
         capture->mixed_set = VK_NULL_HANDLE;
         capture->mixed_frame = 0;
@@ -382,6 +386,7 @@ static VkPipeline capture_pipeline(u64 blend, u32 flags, u32 coverage) {
     int entered = snx_vk_compile_enter();
     VkResult result = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
     snx_vk_compile_leave(entered);
+    SNX_MEM_FREE_D((const void*)(uintptr_t)module, "shader modules");
     vkDestroyShaderModule(g_vk.dev, module, NULL);
     if (!VK_OK(result)) return VK_NULL_HANDLE;
     g_capture.pipelines[g_capture.count++] = (CapturePipeline){blend, flags, coverage, pipeline};
@@ -403,6 +408,7 @@ int vk_capture_finalize_tiles(VkCapture* capture) {
         int entered = snx_vk_compile_enter();
         VkResult result = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &g_capture.finalize);
         snx_vk_compile_leave(entered);
+        SNX_MEM_FREE_D((const void*)(uintptr_t)module, "shader modules");
         vkDestroyShaderModule(g_vk.dev, module, NULL);
         if (!VK_OK(result)) return 0;
     }
@@ -565,6 +571,7 @@ static VkPipeline mixed_pipeline(const MixedKey* key) {
     int entered = snx_vk_compile_enter();
     VkResult result = vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
     snx_vk_compile_leave(entered);
+    SNX_MEM_FREE_D((const void*)(uintptr_t)fragment, "shader modules");
     vkDestroyShaderModule(g_vk.dev, fragment, NULL);
     if (!VK_OK(result)) return VK_NULL_HANDLE;
     g_capture.mixed[g_capture.mixed_count++] = (MixedPipeline){*key, pipeline};
@@ -694,7 +701,10 @@ void vk_capture_destroy(void) {
     capture_tiles_drop(&g_capture.active, 0);
     for (u32 i = 0; i < g_capture.mixed_count; i++) vkDestroyPipeline(g_vk.dev, g_capture.mixed[i].pipeline, NULL);
     free(g_capture.mixed);
-    if (g_capture.mixed_vertex) vkDestroyShaderModule(g_vk.dev, g_capture.mixed_vertex, NULL);
+    if (g_capture.mixed_vertex) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)g_capture.mixed_vertex, "shader modules");
+        vkDestroyShaderModule(g_vk.dev, g_capture.mixed_vertex, NULL);
+    }
     if (g_capture.mixed_layout) vkDestroyPipelineLayout(g_vk.dev, g_capture.mixed_layout, NULL);
     if (g_capture.mixed_descriptors) vkDestroyDescriptorSetLayout(g_vk.dev, g_capture.mixed_descriptors, NULL);
     for (u32 i = 0; i < g_capture.count; i++) vkDestroyPipeline(g_vk.dev, g_capture.pipelines[i].pipeline, NULL);

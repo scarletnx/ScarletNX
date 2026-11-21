@@ -165,6 +165,10 @@ static struct {
     u64 drv_usage[VK_MAX_MEMORY_HEAPS], drv_budget[VK_MAX_MEMORY_HEAPS], drv_blocks[VK_MAX_MEMORY_HEAPS];
 } g_devmem = {.lk = PMUTEX_INIT};
 
+/* blocks made since the last plot, and their bytes: when the allocator had to grow. Written by block_add under lk,
+   read under it in vk_devmem_frame */
+static u64 g_block_made, g_block_made_bytes;
+
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) { return &g_devmem.mp; }
 
 /* whether heap h is the GPU's own on a GPU that does not share the system's memory: the heap that is capped */
@@ -253,11 +257,23 @@ int vk_devmem_init(int bda) {
 }
 static void own_expire(void);
 void vk_devmem_frame(void) {
+    u64 made, made_bytes;
     pm_lock(&g_devmem.lk);
     g_devmem.frame++;
     budgets_fetch();
     own_expire();
+    made = g_block_made;
+    made_bytes = g_block_made_bytes;
     pm_unlock(&g_devmem.lk);
+    {
+        static const char k_made[] = "vk mem blocks made";
+        static const char k_mb[] = "vk mem blocks MB";
+        static u64 was_made, was_bytes;
+        SNX_PLOT(k_made, (double)(made - was_made));
+        SNX_PLOT(k_mb, (double)(made_bytes - was_bytes) / 1048576.0);
+        was_made = made;
+        was_bytes = made_bytes;
+    }
 }
 u32 vk_devmem_fetches(void) { return atomic_load_explicit(&g_devmem.fetches, memory_order_acquire); }
 void vk_devmem_budgets(DevMemBudget* b) {
@@ -345,6 +361,8 @@ static u32 block_slot(void) {
         if (!grown) return 0;
         g_devmem.block = grown;
         g_devmem.capblock = cap;
+        static const char k_grown[] = "vk mem block table grown";
+        SNX_MSG(k_grown, sizeof k_grown - 1);
     }
     g_devmem.block[g_devmem.nblock] = (Block){0}; /* free until its caller fills it */
     return ++g_devmem.nblock;
@@ -399,11 +417,14 @@ static u32 block_add(u32 type, u64 size, int image, int low, u32 units, VkDevice
     u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
     g_devmem.block_bytes[heap] += size;
     g_devmem.blocks[heap]++;
+    g_block_made++;
+    g_block_made_bytes += size;
     return slot;
 }
 /* size bytes of the driver's memory of a type, as a block (of that many units) or as the memory of one allocation
    (units 0), for a buffer or an image when the driver wants it alone: its index plus one, 0 with *res */
 static u32 block_new(u32 type, u64 size, int image, int low, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
+    SNX_ZONE_T(z, "vk mem block new", "%s %u MB, type %u", units ? "block" : "own", (unsigned)(size >> 20), type);
     u32 heap_of = g_devmem.mp.memoryTypes[type].heapIndex;
     /* the capped heap takes no more past its budget: full for this request, as if the driver had said so */
     if (heap_capped(heap_of) && heap_usage(heap_of) + size > heap_budget(heap_of)) {
@@ -606,8 +627,11 @@ static void ahead_run(void* arg) {
    run taken at *at: the full blocks fill up, the others empty. A block whose longest run does not hold it at its
    alignment is passed over for the next one. Its index plus one, 0 for none (lock held) */
 static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, u32* at) {
-    u32 from_room = 0, from_i = 0, slot;
+    /* frequent, so a small code: 0 no block, 1 a block on the first walk, 2 one after a retry past a failed take */
+    SNX_ZONE(z, "vk mem block find");
+    u32 from_room = 0, from_i = 0, slot, tries = 0;
     for (;;) {
+        tries++;
         u32 least = ~0u;
         slot = 0;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
@@ -624,7 +648,10 @@ static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, 
                 slot = i + 1;
             }
         }
-        if (!slot || space_take(&g_devmem.block[slot - 1].free, units, align_units, at)) return slot;
+        if (!slot || space_take(&g_devmem.block[slot - 1].free, units, align_units, at)) {
+            SNX_ZONE_VALUE(z, slot ? (tries > 1 ? 2u : 1u) : 0u);
+            return slot;
+        }
         from_room = least;
         from_i = slot;
     }

@@ -7,6 +7,7 @@
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/vk.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,8 +60,12 @@ static u32 object_find(VkDevice device, u64 handle, u32 kind) {
     for (u32 slot = g_descriptor_objects.object_bucket[object_bucket(device, handle, kind)]; slot;
          slot = g_descriptor_objects.objects[slot].object->next) {
         const Object* object = g_descriptor_objects.objects[slot].object;
-        if (object->device == device && object->handle == handle && object->kind == kind) return slot;
+        if (object->device == device && object->handle == handle && object->kind == kind) {
+            SNX_PLOT("vk pipe desc object found", 1);
+            return slot;
+        }
     }
+    SNX_PLOT("vk pipe desc object found", 0);
     return 0;
 }
 static u32 object_slot(void) {
@@ -155,6 +160,7 @@ static u32 border_bucket(VkDevice device, const VkSamplerCustomBorderColorCreate
 }
 static VkResult border_acquire(VkDevice device, const VkSamplerCustomBorderColorCreateInfoEXT* color, u32* result) {
     if (!vkRegisterCustomBorderColorEXT || !vkUnregisterCustomBorderColorEXT) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    SNX_ZONE(z, "vk descriptor border acquire");
     u32 bucket = border_bucket(device, color);
     for (u32 slot = g_descriptor_objects.border_bucket[bucket]; slot; slot = g_descriptor_objects.borders[slot].next) {
         Border* border = &g_descriptor_objects.borders[slot];
@@ -163,6 +169,9 @@ static VkResult border_acquire(VkDevice device, const VkSamplerCustomBorderColor
             if (border->references == UINT32_MAX) return VK_ERROR_OUT_OF_HOST_MEMORY;
             border->references++;
             *result = slot;
+            SNX_ZONE_TEXT(z, "reused a registered color, now %u references", border->references);
+            SNX_ZONE_VALUE(z, border->index);
+            SNX_ZONE_END(z);
             return VK_SUCCESS;
         }
     }
@@ -194,6 +203,9 @@ static VkResult border_acquire(VkDevice device, const VkSamplerCustomBorderColor
                                                    g_descriptor_objects.border_bucket[bucket]};
     g_descriptor_objects.border_bucket[bucket] = slot;
     *result = slot;
+    SNX_ZONE_TEXT(z, "a new custom color was registered, index %u", index);
+    SNX_ZONE_VALUE(z, index);
+    SNX_ZONE_END(z);
     return VK_SUCCESS;
 }
 static void border_release(u32 slot, u32 count) {
@@ -225,8 +237,10 @@ static Object* object_new(VkDevice device, u32 kind, const void* chain, u32 bord
 /* Drivers may return identical sampler handles for identical state. Keep every associated color registration
    until the final native object reference retires; descriptors encoded from an earlier reference may still use it. */
 static int object_insert(u32 slot, Object* object) {
+    SNX_ZONE(z, "vk descriptor object insert");
     u32 existing = object_find(object->device, object->handle, object->kind);
     if (existing) {
+        SNX_ZONE_T(z_same, "vk descriptor object shared", "the driver reused the native handle");
         Object* old = g_descriptor_objects.objects[existing].object;
         if (old->references == UINT32_MAX) return 0;
         if (object->border_count) {
@@ -252,6 +266,9 @@ static int object_insert(u32 slot, Object* object) {
     object->next = g_descriptor_objects.object_bucket[bucket];
     g_descriptor_objects.objects[slot].object = object;
     g_descriptor_objects.object_bucket[bucket] = slot;
+    SNX_ZONE_TEXT(z, "%s, a new native handle", object->kind == OBJECT_VIEW ? "view" : "sampler");
+    SNX_ZONE_VALUE(z, object->handle);
+    SNX_ZONE_END(z);
     return 1;
 }
 static void object_remove(VkDevice device, u64 handle, u32 kind) {

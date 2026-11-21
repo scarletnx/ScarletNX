@@ -20,6 +20,7 @@
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define CPU_READ_SLOTS 4096
 static struct {
@@ -1228,6 +1229,10 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     OwnRange o;
     u8* d;
     if (!size) return;
+    /* a landing's publish, valued in bytes; the text says which path made it necessary */
+    SNX_ZONE(z, "vk mem landing publish");
+    SNX_ZONE_VALUE(z, size);
+    static const char k_bytes[] = "vk mem landing bytes";
     if (in_place >= 0)
         vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     else
@@ -1241,7 +1246,11 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
        owners of the bytes go: they are written over whole */
     if (in_place && vk_uma_held(cpu, size)) {
         own_drop(cpu, size);
-        if (vk_uma_publish(cpu, size, r->buf, off)) return;
+        if (vk_uma_publish(cpu, size, r->buf, off)) {
+            SNX_ZONE_TEXT(z, "UMA holds %llu bytes, copied into its import", (unsigned long long)size);
+            SNX_PLOT(k_bytes, (double)size);
+            return;
+        }
     }
     if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     /* under pend_lock: a change of guest memory that skips vk_lock found no owner on its pages, and none comes until
@@ -1251,10 +1260,15 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     pend_unlock();
     if (owned) {
         if (in_place >= 0) early_copy(cpu, size, r, off); /* its writes are in the submission being recorded */
+        SNX_ZONE_TEXT(z, "a trap owns %llu bytes, no landing", (unsigned long long)size);
         return;
     }
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);
+    /* the runtime's own publish: it says nothing about the CPU reading those bytes (see land_ctx) */
+    SNX_ZONE_TEXT(z, "no trap, %llu bytes land through GP now", (unsigned long long)size);
+    SNX_PLOT(k_bytes, (double)size);
+    SNX_ZONE_END(z); /* own_acquire and the landing can wait for the GPU; not part of this zone */
     /* Other owned bytes can still trap the edge pages after this range is
        dropped. Land those neighbors before the fallback writes through GP. */
     own_acquire(cpu, size);
@@ -1263,7 +1277,6 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     o.res = r;
     o.res_off = off;
     d = GP(cpu);
-    /* the runtime's own publish: it says nothing about the CPU reading those bytes (see land_ctx) */
     own_land(&o, &d, 1, OWN_BY_RUNTIME);
 }
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }

@@ -6,6 +6,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/runtime/platform/tracy.h"
 
 static int cb_fold_word(VkCbBytes bytes, u32 idx, u32 off, u32* out) {
     const u8* p = bytes(idx, off, 4);
@@ -84,6 +85,7 @@ int vk_cb_fold_note(VkCbReads* reads, const VkCbFold* fold, u32 idx, u32 off, u3
     int folds =
         fold->mode != VK_CB_FOLD_LOADS && cb_fold_word(fold->bytes, idx, off, &v) && cb_fold_takes(fold, idx, off, v);
     if (reads->n % 16 == 0) {
+        SNX_ZONE_T(z_grow, "vk pres cb fold grow", "constant words past a group of 16");
         VkCbRead* grown = realloc(reads->r, sizeof *grown * (reads->n + 16));
         if (!grown) {
             *failed = 1;

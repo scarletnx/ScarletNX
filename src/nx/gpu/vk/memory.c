@@ -41,6 +41,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/resource_stats.h"
@@ -1752,6 +1753,8 @@ int vk_mem_heap(void) {
     return g_heap;
 }
 u64 vk_mem_budget_cap(u64 bytes) {
+    /* rare: a cache changed the budget the device memory allocator works to */
+    SNX_ZONE_TV(z, "vk mem budget cap", bytes, "%llu MB", (unsigned long long)(bytes >> 20));
     u64 had;
     if (g_heap < 0) heap_find(); /* which reads vk_budget_mb once */
     had = g_budget_cap;

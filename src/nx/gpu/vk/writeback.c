@@ -7,6 +7,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 #include "common/utilities/bits.h"
 
@@ -81,7 +83,11 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     Landing l = {addr, res, NULL, 0, 0};
     int begun = 0, changed = 0;
     if (!size) return;
+    /* A shader result lands only where its bytes differ from the snapshot taken when it was bound. The zone's time is
+       the compare and land, its value the bytes; its text at the end says whether the shader changed any. */
+    SNX_ZONE_V(z_wb, "vk pres writeback", size);
     if (in_guest(res, size) || in_guest(org, size)) fatal("vulkan: a storage result compared in guest memory");
+    SNX_PLOT("vk pres writeback bytes", (double)size);
     g_wb_cmp_bytes += size;
     for (u32 i = 0; i < size;) {
         u32 end = size - i < 1024 ? size - i : 1024;
@@ -149,6 +155,9 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     land_flush(&l);
     free(tmp);
     if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
+    else
+        SNX_MSG("vk pres: a writeback changed no bytes", sizeof("vk pres: a writeback changed no bytes") - 1);
+    SNX_ZONE_TEXT(z_wb, "%s, %u bytes compared", changed ? "shader changed bytes since its snapshot" : "shader changed no bytes", size);
     if (begun) vk_result_end();
 }
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
@@ -158,6 +167,10 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
 u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since) {
     u32 conflicts = 0;
     if (!n) return 0;
+    /* Why these runs land: a shader wrote them, and since tells whether the CPU wrote over them meanwhile. */
+    SNX_ZONE_TV(z_wr, "vk pres writeback runs", runs[n - 1].to, "%s, %u runs, %u bytes",
+                since ? "the CPU wrote over a shader result" : "shader result runs", n, runs[n - 1].to);
+    SNX_PLOT("vk pres writeback bytes", (double)runs[n - 1].to);
     if (in_guest(res, runs[n - 1].to)) fatal("vulkan: a storage result landed from guest memory");
     /* first, before any of them writes a page: the runs the CPU wrote over since the shader's input was taken. On
        the console the GPU's store and the CPU's both reached memory, in an order the program left open; here the

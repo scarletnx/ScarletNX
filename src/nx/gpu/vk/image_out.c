@@ -210,6 +210,12 @@ static void image_land(size_t index) {
     GfxImageOut* o = &g_image_out.out[index];
     u64 id = o->id, keep_size = 0;
     u8* keep = NULL;
+    /* the bytes this landing publishes, and why it had to land */
+    SNX_ZONE_TV(z, "vk mem image land", o->size, "%s, %u runs, %u bytes",
+                o->original ? "merged with the CPU's writes" : o->after ? "after the entry it goes on from" : "from its copy",
+                (unsigned)o->nruns, o->size);
+    static const char k_bytes[] = "vk mem image land bytes";
+    SNX_PLOT(k_bytes, (double)o->size);
     vk_devmem_invalidate(o->back_mem, o->back_off, o->back_size);
     vk_surf_flush_land(o->surf, o->back, o->original, o->wgen, image_followed(id) ? &keep : NULL, &keep_size);
     image_follow(id, keep, keep_size);
