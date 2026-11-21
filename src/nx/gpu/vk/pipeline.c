@@ -105,6 +105,11 @@ typedef struct Pipe {
        with its layout of no independent sets (vk_pipeline_layout), which a pipeline made in place of refused objects
        has too */
     int so_layout;
+    /* with pipeline libraries, its link's use: the presents it was bound in (the GPU thread, under vk_lock), and the
+       ask for its optimized pipeline once they reached PIPE_OPT_PRESENTS (pj_lock), so that a worker queues it after
+       its link (vk_pipeline_bound) */
+    u32 used_present, used_presents;
+    int opt_wanted;
     struct Pipe *next, *job;
 } Pipe;
 /* p of a Pipe drawn with shader objects once they are made: not a handle, never bound (vk_pipeline_bind) */
@@ -266,6 +271,7 @@ static struct {
            busy and one or more made an optimized pipeline, and the longest (pj_lock) */
         u64 job_waits, job_wait_ns, job_behind_opt_ns, job_wait_max_ns;
         int opt_busy_max; /* the most workers that made optimized pipelines at once (pj_lock) */
+        u64 opt_asked;    /* the links whose optimized pipeline was asked for (pipe_want_opt; pj_lock) */
     } plib;
     /* the workers' queues, and the wait for one pipeline to be ready. The file's pipelines a draw asked for are made
        first, in the order asked for; the rest of the file's (pf_load_pipe) after */
@@ -2492,7 +2498,8 @@ static void pipe_worker(void* low) {
         atomic_store_explicit(&e->p, p, memory_order_release);
         atomic_store_explicit(&e->opt, opt, memory_order_release);
         atomic_store_explicit(&e->ready, 1, memory_order_release);
-        if (p && e->lib[0] && !opt && !g_vk.gpl_hold) pipe_queue(e, 3); /* a test's hold: the link stays */
+        /* a test's hold: the link stays; else its optimized pipeline once its draws asked for it (vk_pipeline_bound) */
+        if (p && e->lib[0] && !opt && !g_vk.gpl_hold && e->opt_wanted) pipe_queue(e, 3);
         pc_broadcast(&g_pipeline.pj_done);
         pm_unlock(&g_pipeline.pj_lock);
     }
@@ -2675,11 +2682,41 @@ static VkPipeline pipe_make_here(Pipe* p, int record) {
     if (made && p->lib[0] && !opt && !g_vk.gpl_hold) { /* a test's hold: the link stays */
         pm_lock(&g_pipeline.pj_lock);
         int queued = pipe_workers() != 0;
+        if (!p->opt_wanted) g_pipeline.plib.opt_asked++;
+        p->opt_wanted = 1;
         if (queued) pipe_queue(p, 3);
         pm_unlock(&g_pipeline.pj_lock);
         if (!queued) pipe_optimize(p);
     }
     return made;
+}
+/* p's optimized pipeline asked for: queued now when its link is made, else by the worker that makes the link
+   (pipe_worker). Nothing for a pipeline of no parts, an optimized one, one the cache had, or one asked before */
+static void pipe_want_opt(Pipe* p) {
+    if (!p->lib[0] || p->so_layout || atomic_load_explicit(&p->opt, memory_order_acquire)) return;
+    pm_lock(&g_pipeline.pj_lock);
+    if (!p->opt_wanted) {
+        p->opt_wanted = 1;
+        g_pipeline.plib.opt_asked++;
+        if (atomic_load_explicit(&p->ready, memory_order_relaxed) &&
+            atomic_load_explicit(&p->p, memory_order_relaxed) && !atomic_load_explicit(&p->opt, memory_order_relaxed) &&
+            !g_vk.gpl_hold && !p->queued && pipe_workers())
+            pipe_queue(p, 3);
+    }
+    pm_unlock(&g_pipeline.pj_lock);
+}
+void vk_pipeline_bound(VkPipeline h) {
+    Pipe* p = standin_pipe(h);
+    /* used_present is the present + 1, so that 0 is none */
+    if (!p || !p->lib[0] || p->used_presents >= PIPE_OPT_PRESENTS || p->used_present == g_vk_present + 1u) return;
+    p->used_present = g_vk_present + 1u;
+    if (++p->used_presents == PIPE_OPT_PRESENTS) pipe_want_opt(p);
+}
+u64 vk_pipeline_opt_asked(void) {
+    pm_lock(&g_pipeline.pj_lock);
+    u64 n = g_pipeline.plib.opt_asked;
+    pm_unlock(&g_pipeline.pj_lock);
+    return n;
 }
 /* the pipeline for k: made here when new, waited for when one of the file's is still being made */
 VkPipeline vk_pipeline_get(const PipeKey* k) {
@@ -2687,10 +2724,14 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
     Pipe* p = pipe_entry(k, &found);
     if (!p) return VK_NULL_HANDLE;
     if (found) {
-        if (atomic_load_explicit(&p->ready, memory_order_acquire))
-            return pipe_handle(p, atomic_load_explicit(&p->p, memory_order_acquire));
-        if (p->prewarm) pipe_promote(p);
-        return pipe_handle(p, pipe_wait_here(p));
+        if (!atomic_load_explicit(&p->ready, memory_order_acquire)) {
+            if (p->prewarm) pipe_promote(p);
+            (void)pipe_wait_here(p);
+        }
+        /* its draws bind the pipeline's own handle, not a stand-in that vk_pipeline_bound counts the presents of: a
+           link a worker made (the file's) is optimized from its first draw, as pipe_make_here does */
+        pipe_want_opt(p);
+        return pipe_handle(p, atomic_load_explicit(&p->p, memory_order_acquire));
     }
     return pipe_handle(p, pipe_make_here(p, 1));
 }

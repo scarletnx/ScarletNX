@@ -7567,6 +7567,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_lone_lane.inc"
 #include "vulkan_memory_release.inc"
 #include "vulkan_descriptor_heaps.inc"
+#include "vulkan_link_presents.inc"
 #include "vulkan_cb_address.inc"
 #include "vulkan_descriptor_memo.inc"
 #include "vulkan_sample_raster.inc"
@@ -8892,6 +8893,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_memo_over_target());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_heap_pipeline_flags());
+    CHECK(!check_link_optimized_after_presents());
     CHECK(!check_cb_address());
     CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());

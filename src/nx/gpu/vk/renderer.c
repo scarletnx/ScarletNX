@@ -973,12 +973,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     vk_pipeline_lib_stats(made, hits, make_ms, &links, &link_ms, &opts, &opt_ms);
                     LOG("vulkan: pipeline libraries: %llu pre-rasterization and %llu fragment shader parts made (%llu "
                         "and %llu from the cache, %llu and %llu ms), %llu vertex input and %llu fragment output parts "
-                        "(%llu ms); %llu links (%llu ms); %llu optimized pipelines made in the background (%llu ms)\n",
+                        "(%llu ms); %llu links (%llu ms); %llu optimized pipelines made in the background (%llu ms), "
+                        "for %llu links drawn in %u presents or more\n",
                         (unsigned long long)made[1], (unsigned long long)made[2], (unsigned long long)hits[1],
                         (unsigned long long)hits[2], (unsigned long long)make_ms[1], (unsigned long long)make_ms[2],
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
-                        (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                        (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms,
+                        (unsigned long long)vk_pipeline_opt_asked(), PIPE_OPT_PRESENTS);
                     if (g_vk.has_shader_objects) {
                         u64 so_made, so_binary, so_ms, so_mb;
                         vk_so_stats(&so_made, &so_binary, &so_ms, &so_mb);

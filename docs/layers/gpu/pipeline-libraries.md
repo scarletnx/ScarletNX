@@ -287,10 +287,14 @@ stand-in at its bind. Inside it, a new `Pipe` on the GPL path goes this way:
    (`prewarm`) moves to the draws' queue, as `pipe_promote` does now.
 3. When the PR and FS parts are ready, a worker links the four with `VkPipelineLibraryCreateInfoKHR`, with no
    `LINK_TIME_OPTIMIZATION` flag. This is the fast link. It sets `Pipe.fast` and the ready flag.
-4. The same worker then queues the optimized pipeline on a third queue, below the draws' queue and the file's queue.
-   It is the same link with `VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`, into `g_pipeline.pcache`. All parts are made
-   with `VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT` (VUID-VkGraphicsPipelineCreateInfo-flags-06609).
-   When it is done, it sets `Pipe.opt`.
+4. Once the link was drawn in `PIPE_OPT_PRESENTS` (3) presents, the optimized pipeline goes on a third queue, below
+   the draws' queue and the file's queue: `rec_CmdBindPipeline` counts the presents the link's stand-in is bound in
+   (`vk_pipeline_bound`), and the worker that makes the link queues it when its draws asked before it was ready. A
+   link a scene draws once (a loading screen's, one of the file's that no draw asks for again) takes no worker for
+   it. A draw that binds the link's own handle, as `vk_pipeline_get` gives it without the recording thread, asks for
+   it at once. It is the same link with `VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`, into `g_pipeline.pcache`.
+   All parts are made with `VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT`
+   (VUID-VkGraphicsPipelineCreateInfo-flags-06609). When it is done, it sets `Pipe.opt`.
 
 If all parts are ready at step 1, the GPU thread makes the fast link itself, in about 1 ms, and gives the real
 pipeline with no stand-in. The measurement must show if that cost is small enough on the GPU thread. If it is not, the
@@ -328,7 +332,7 @@ So at startup the reading thread (`pf_load_pipe`) queues on the file's queue, in
 
 1. The PR and FS parts of each `PF_PIPE`, each one time (the part tables find the repeats). This is the slow work.
 2. The link of each `PF_PIPE`, when its parts are ready.
-3. The optimized pipeline of each `PF_PIPE`, on the lowest queue.
+3. The optimized pipeline of each `PF_PIPE` that a draw binds in 3 presents, on the lowest queue.
 
 With warm caches, step 1 is a hit in `g_pipeline.pcache` for each part, and step 3 a hit for each pipeline. The file key
 (`pf_key`, `PF_GUEST_VERSION`) does not change, because a `PipeKey` keeps its meaning. A field that becomes 0 for
