@@ -663,11 +663,9 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
    puts the source back to read-write. The view is the source's same pages with the alias pool (a copy of them without
    one, written back at the unmap), so no guard page is needed around it: the console maps exactly the range it was
    given, where ldr:ro's mem_map_code keeps one on each side */
-/* the permission SetProcessMemoryPermission takes: none, read, read-write, execute and read-execute, as the console's
-   MemoryPermission has them (write alone is not one) */
-static int code_perm(u32 perm) {
-    return perm == PERM_NONE || perm == PERM_R || perm == PERM_RW || perm == PERM_X || perm == PERM_RX;
-}
+/* the permission SetProcessMemoryPermission takes: none, read, read-write and read-execute, as the console's
+   IsValidProcessMemoryPermission has them (execute alone and write alone are not among them) */
+static int code_perm(u32 perm) { return perm == PERM_NONE || perm == PERM_R || perm == PERM_RW || perm == PERM_RX; }
 /* the state of a code block that takes the permission perm: a read-write one is code data, and the console's FlagCode
    is gone from it, so the call sets execute once per mapping (map, unmap, write, map again) */
 static u32 code_state(u32 state, u32 perm) {
@@ -698,7 +696,7 @@ static u32 check_code_range(u64 dst, u64 src, u64 size) {
     R_UNLESS(dst + size > dst && src + size > src, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
-/* svcSetProcessMemoryPermission: none, read, read-write, execute or read-execute on the process's code, whose blocks
+/* svcSetProcessMemoryPermission: none, read, read-write or read-execute on the process's code, whose blocks
    must carry FlagCode and no attribute (the console checks the state and the attribute; a read-write result is code
    data, and no longer takes this call) */
 u32 svc_set_process_mem_perm(u32 process, u64 addr, u64 size, u32 perm) {

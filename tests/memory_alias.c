@@ -383,8 +383,9 @@ static void test_process_code(void) {
     gw32(dst, 0xD65F03C0); /* ret */
     CHECK(gr32(src) == 0xD65F03C0); /* the same pages */
     check_tracking(dst, size);
-    /* the permissions it takes: none, read, read-write, execute and read-execute; write alone no more than an
-       invalid one, and the code states only */
+    /* the permissions it takes: none, read, read-write and read-execute; execute alone and write alone no more than
+       an invalid one, and the code states only */
+    CHECK(svc_set_process_mem_perm(0x1234, dst, size, PERM_X) == SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     CHECK(svc_set_process_mem_perm(0x1234, dst, size, PERM_W) == SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     CHECK(svc_set_process_mem_perm(0x1234, dst, size, PERM_DONTCARE) == SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     CHECK(svc_set_process_mem_perm(0x9999, dst, size, PERM_RX) == SNX_RC_SVC_INVALID_HANDLE);

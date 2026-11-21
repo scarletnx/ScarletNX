@@ -8,7 +8,7 @@ makes them executable through an alias, runs them, and unmaps the alias before i
 | SVC | What it does |
 | --- | --- |
 | `svcMapProcessCodeMemory` (0x77) | Maps the process's own normal memory as an AliasCode view |
-| `svcSetProcessMemoryPermission` (0x73) | Sets none, read, read-write, execute or read-execute on code |
+| `svcSetProcessMemoryPermission` (0x73) | Sets none, read, read-write or read-execute on code |
 | `svcUnmapProcessCodeMemory` (0x78) | Unmaps the view and gives the source its read-write access back |
 
 The behavior follows Atmosphère's `KPageTableBase::MapCodeMemory`, `SetProcessMemoryPermission` and
@@ -36,9 +36,9 @@ source.
 ## The permissions
 
 `svcSetProcessMemoryPermission` takes a range whose blocks carry the `FlagCode` state flag and no attribute. It
-accepts None, Read, ReadWrite, Execute and ReadExecute. Write alone is not a permission the console has. A
-read-write code block becomes CodeData (Code) or AliasCodeData (AliasCode). Those states do not carry `FlagCode`, so
-the call cannot set execute on them again. The program unmaps and maps again instead.
+accepts None, Read, ReadWrite and ReadExecute. Execute alone and Write alone are InvalidNewMemoryPermission, as on the
+console. A read-write code block becomes CodeData (Code) or AliasCodeData (AliasCode). Those states do not carry
+`FlagCode`, so the call cannot set execute on them again. The program unmaps and maps again instead.
 
 Setting a read-execute permission tells the runtime's JIT that the range changed, so the runtime compiles the code
 again. The same happens at the unmap, for the view and its source.
