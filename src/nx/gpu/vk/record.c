@@ -72,7 +72,7 @@ typedef struct {
 } RecKind;
 static RecKind g_rec_kind[REC_KINDS];
 static u64 g_rec_kind_total;
-static int g_rec_kind_count; /* vk_gpuprof_on(): the count runs on every command the recorder drains */
+static int g_rec_kind_count; /* the GPU profile is on (vk_rec_command_report's count): the count runs on every command */
 static void rec_kind(RecFn fn) {
     u64 h = (uintptr_t)fn >> 4;
     g_rec_kind_total++;
@@ -2128,7 +2128,7 @@ VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWrit
 
 /* the command kinds the recording thread drained since the last report, by name, most first: where its time (the ring
    dwell before a submit) went. Logged by gpuprof.c's report, which then resets the counters */
-void vk_rec_command_report(double presents) {
+void vk_rec_command_report(double presents, int count) {
     static const struct {
         RecFn fn;
         const char* name;
@@ -2149,7 +2149,7 @@ void vk_rec_command_report(double presents) {
         {clamp_range_run, "clamp ranges"}, {ck_run, "checkpoints"}, {frame_reset_run, "frame resets"},
         {begin_run, "command buffers begun"}, {rec_call_run, "calls"},
     };
-    g_rec_kind_count = vk_gpuprof_on();
+    g_rec_kind_count = count;
     if (!g_rec_kind_total) return;
     char line[512];
     int at = 0;

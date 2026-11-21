@@ -177,7 +177,6 @@ static int gp_on(void) {
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
 /* whether the profile is on and its report will log: gates the recorder's command-kind count, which runs on every
    command it drains */
-int vk_gpuprof_on(void) { return gp_on() > 0; }
 u64 vk_gpuprof_busy_ns(void) { return atomic_load_explicit(&g_stats_busy.ns, memory_order_relaxed); }
 /* the frame's command buffers timed: for the profile (gp_on), or for the stats box, which shows */
 static int gp_timed(void) {
@@ -736,7 +735,7 @@ static void gp_idle_report(void) {
                 "at most) when the GPU thread made it\n",
                 (double)g_submit_dwell_ns / 1000.0 / (double)g_submit_count,
                 (double)g_submit_backlog / (double)g_submit_count / 1024.0, (double)g_submit_backlog_max / 1024.0);
-        vk_rec_command_report(f);
+        vk_rec_command_report(f, gp_on() > 0);
         for (int c = 0; c < IDLE_N; c++)
             if (g_idles[c])
                 LOG("vulkan: GPU   idle, %s: %.2f ms a present, %.1f times\n", g_idle_name[c],
