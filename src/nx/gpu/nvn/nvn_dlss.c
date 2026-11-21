@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* nvn_direct's DLSS of the Ounce (API 231): the network builder and the parameters of an evaluation. Both are the
    game's objects, which the runtime keeps at the offsets of the game's driver, as its setters and getters do */
+#include "nx/gpu/nvn/nvn_dlss_sizes.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
@@ -260,38 +261,24 @@ void nvn_DlssNetworkBuilderGetTextureIDs(CPU* c, u64 b, u64 ids) {
 /* ============================================================ network: a stand-in for the upscaler */
 /* No network runs: an evaluation goes to the renderer's upscaler (FSR 2, the DLSS upscaler setting), or is a filtered
    copy of the input color's subrectangle onto the output's (nvn_cmd.c's nvn_CommandBufferEvaluateDlss, nvn_copy.c's
-   OP_DLSS). The render sizes the driver answers come from a backend this runtime
-   doesn't have, so they are taken from the method as NGX's quality modes scale the output: the driver's methods are
-   assumed to number them as NGX does (0 performance, 1 balanced, 2 quality, 3 ultra performance, 4 ultra quality,
-   5 DLAA), any other is performance's half. The largest render size is the output's, the smallest a third of it */
+   OP_DLSS). The render sizes the driver answers come from a backend this runtime doesn't have, so they follow the
+   driver's rule for an output size and a method (nvn_dlss_sizes.h), with the DLSS render size setting in place of
+   the optimal size where it is set. The driver answers the optimal size, then the smallest, then the largest (a game
+   evaluates only a render size between the two, so their order matters) */
 static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
-    static const i32 scale[6][2] = {{1, 2}, {58, 100}, {2, 3}, {1, 3}, {77, 100}, {1, 1}};
-    /* the DLSS render size setting: FSR 2's own quality modes in place of the game's (1/1.5, 1/1.7, 1/2, 1/3) */
-    static const i32 set[6][2] = {{0, 0}, {1, 1}, {2, 3}, {10, 17}, {1, 2}, {1, 3}};
-    const i32* s = method >= 0 && method < 6 ? scale[method] : scale[0];
-    if (g_settings.dlss_render_size > 0 && g_settings.dlss_render_size < 6) s = set[g_settings.dlss_render_size];
-    out[0][0] = (i32)(((i64)width * s[0] + s[1] / 2) / s[1]);
-    out[0][1] = (i32)(((i64)height * s[0] + s[1] / 2) / s[1]);
-    out[1][0] = width;
-    out[1][1] = height;
-    out[2][0] = (width + 2) / 3;
-    out[2][1] = (height + 2) / 3;
-    for (u32 i = 0; i < 3; i++) {
-        if (out[i][0] < 1) out[i][0] = 1;
-        if (out[i][1] < 1) out[i][1] = 1;
-    }
+    nvn_dlss_sizes(width, height, method, g_settings.dlss_render_size, out);
 }
-int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 max_width, u64 max_height,
-                                             u64 min_width, u64 min_height) {
+int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 min_width, u64 min_height,
+                                             u64 max_width, u64 max_height) {
     i32 r[3][2];
     (void)c;
     render_sizes(NB(b)->width, NB(b)->height, NB(b)->method, r);
     if (width) gw32(width, (u32)r[0][0]);
     if (height) gw32(height, (u32)r[0][1]);
-    if (max_width) gw32(max_width, (u32)r[1][0]);
-    if (max_height) gw32(max_height, (u32)r[1][1]);
     if (min_width) gw32(min_width, (u32)r[2][0]);
     if (min_height) gw32(min_height, (u32)r[2][1]);
+    if (max_width) gw32(max_width, (u32)r[1][0]);
+    if (max_height) gw32(max_height, (u32)r[1][1]);
     return 1;
 }
 /* the storage the game gives the network (SetStorage): no network uses it, so a small amount, page aligned, with the
