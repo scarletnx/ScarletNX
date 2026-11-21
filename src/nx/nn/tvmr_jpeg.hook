@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The movie library's native JPEG decoder and encoder (tvmr_jpeg.c), for tools/hookgen, in the language of
+# hle/hook/hooks.hook. The TVMRJPEG functions, which drive NVJPG on the console, with FFmpeg: the decoder's and the
+# encoder's every function the library's NvMMLite image block calls, and the ones beside them that would read the
+# SDK's own decoder or encoder object (Resize, FeedFrameQuant, GetBitsEx). TVMRJPEGEncSupportedLayout reads a global
+# of the library and stays its own code.
+# Each export is a branch to its body, in the subsdk module whose label is the movie library's (the movie key). Read
+# in movie 1.5.0, 3.5.1, 4.4.1 and 4.5.0 (one layout), 7.3.2 (GetInfo's info is 0x108 bytes, Render's RGB types are
+# 3 higher, and the encoder's GetBits drop a frame with no destination), and in the 32-bit 0.12.16 and 1.4.2 (4-byte
+# pointers: the surfaces' plane objects at +0xc, a bitstream buffer is {u32 pointer, u32 bytes}). Render takes ten
+# arguments: under AAPCS64 the post fence and the flags are on the stack, which its handler reads
+family tvmr_jpeg
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGGetInfo(addr info, u32 count, addr bufs) -> u32 = tvmrjpeg_get_info64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGGetInfo(addr info, u32 count, addr bufs) -> u32 = tvmrjpeg_get_info64_7
+@version(movie < 2.0.0) a32 hook TVMRJPEGGetInfo(addr info, u32 count, addr bufs) -> u32 = tvmrjpeg_get_info32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderCreate(u16 max_w, u16 max_h, u32 max_bytes, u8 partial) -> addr = tvmrjpeg_decoder_create
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderCreate(u16 max_w, u16 max_h, u32 max_bytes, u8 partial) -> addr = tvmrjpeg_decoder_create
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderCreate(u16 max_w, u16 max_h, u32 max_bytes, u8 partial) -> addr = tvmrjpeg_decoder_create
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderSetAttributes(addr dec, u32 mask, addr attr) = tvmrjpeg_decoder_set_attributes
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderSetAttributes(addr dec, u32 mask, addr attr) = tvmrjpeg_decoder_set_attributes
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderSetAttributes(addr dec, u32 mask, addr attr) = tvmrjpeg_decoder_set_attributes
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderResize(addr dec, u16 max_w, u16 max_h, u32 max_bytes) -> u32 = tvmrjpeg_decoder_resize
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderResize(addr dec, u16 max_w, u16 max_h, u32 max_bytes) -> u32 = tvmrjpeg_decoder_resize
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderResize(addr dec, u16 max_w, u16 max_h, u32 max_bytes) -> u32 = tvmrjpeg_decoder_resize
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderRender(addr dec, addr dst, addr src_rect, addr dst_rect, u8 ds, u32 count, addr bufs, addr pre) -> u32 = tvmrjpeg_decoder_render64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderRender(addr dec, addr dst, addr src_rect, addr dst_rect, u8 ds, u32 count, addr bufs, addr pre) -> u32 = tvmrjpeg_decoder_render64_7
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderRender(addr dec, addr dst, addr src_rect, addr dst_rect, u8 ds, u32 count, addr bufs, addr pre, addr post, u32 flags) -> u32 = tvmrjpeg_decoder_render32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderRenderYUV(addr dec, addr dst, u8 ds, u32 count, addr bufs, addr pre, addr post, u32 flags) -> u32 = tvmrjpeg_decoder_render_yuv64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderRenderYUV(addr dec, addr dst, u8 ds, u32 count, addr bufs, addr pre, addr post, u32 flags) -> u32 = tvmrjpeg_decoder_render_yuv64_7
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderRenderYUV(addr dec, addr dst, u8 ds, u32 count, addr bufs, addr pre, addr post, u32 flags) -> u32 = tvmrjpeg_decoder_render_yuv32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGDecoderDestroy(addr dec) = tvmrjpeg_decoder_destroy
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGDecoderDestroy(addr dec) = tvmrjpeg_decoder_destroy
+@version(movie < 2.0.0) a32 hook TVMRJPEGDecoderDestroy(addr dec) = tvmrjpeg_decoder_destroy
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderCreate(u8 nbufs, u32 max_bytes) -> addr = tvmrjpeg_encoder_create
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderCreate(u8 nbufs, u32 max_bytes) -> addr = tvmrjpeg_encoder_create
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderCreate(u8 nbufs, u32 max_bytes) -> addr = tvmrjpeg_encoder_create
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderSetAttributes(addr enc, u32 mask, addr attr) = tvmrjpeg_encoder_set_attributes64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderSetAttributes(addr enc, u32 mask, addr attr) = tvmrjpeg_encoder_set_attributes64
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderSetAttributes(addr enc, u32 mask, addr attr) = tvmrjpeg_encoder_set_attributes32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncFeedFrame(addr enc, addr surf, addr pre, addr out) -> u32 = tvmrjpeg_enc_feed_frame64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncFeedFrame(addr enc, addr surf, addr pre, addr out) -> u32 = tvmrjpeg_enc_feed_frame64
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncFeedFrame(addr enc, addr surf, addr pre, addr out) -> u32 = tvmrjpeg_enc_feed_frame32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderFeedFrame(addr enc, addr surf, addr pre, addr out, u8 quality) -> u32 = tvmrjpeg_encoder_feed_frame64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderFeedFrame(addr enc, addr surf, addr pre, addr out, u8 quality) -> u32 = tvmrjpeg_encoder_feed_frame64
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderFeedFrame(addr enc, addr surf, addr pre, addr out, u8 quality) -> u32 = tvmrjpeg_encoder_feed_frame32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderFeedFrameQuant(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma) -> u32 = tvmrjpeg_encoder_feed_frame_quant64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderFeedFrameQuant(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma) -> u32 = tvmrjpeg_encoder_feed_frame_quant64
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderFeedFrameQuant(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma) -> u32 = tvmrjpeg_encoder_feed_frame_quant32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderFeedFrameRateControl(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma, u32 target) -> u32 = tvmrjpeg_encoder_feed_frame_rate_control64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderFeedFrameRateControl(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma, u32 target) -> u32 = tvmrjpeg_encoder_feed_frame_rate_control64
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderFeedFrameRateControl(addr enc, addr surf, addr pre, addr out, addr luma, addr chroma, u32 target) -> u32 = tvmrjpeg_encoder_feed_frame_rate_control32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderBitsAvailable(addr enc, addr bytes, u32 mode, u32 timeout_ms) -> u32 = tvmrjpeg_encoder_bits_available
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderBitsAvailable(addr enc, addr bytes, u32 mode, u32 timeout_ms) -> u32 = tvmrjpeg_encoder_bits_available
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderBitsAvailable(addr enc, addr bytes, u32 mode, u32 timeout_ms) -> u32 = tvmrjpeg_encoder_bits_available
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderGetBits(addr enc, addr bytes, addr dst, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderGetBits(addr enc, addr bytes, addr dst, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits64_7
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderGetBits(addr enc, addr bytes, addr dst, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderGetBitsEx(addr enc, addr bytes, u32 nbufs, addr bufs, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits_ex64
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderGetBitsEx(addr enc, addr bytes, u32 nbufs, addr bufs, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits_ex64_7
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderGetBitsEx(addr enc, addr bytes, u32 nbufs, addr bufs, u32 flags) -> u32 = tvmrjpeg_encoder_get_bits_ex32
+
+@version(movie >= 1.5.0, < 5.0.0) hook TVMRJPEGEncoderDestroy(addr enc) = tvmrjpeg_encoder_destroy
+@version(movie >= 7.0.0, < 8.0.0) hook TVMRJPEGEncoderDestroy(addr enc) = tvmrjpeg_encoder_destroy
+@version(movie < 2.0.0) a32 hook TVMRJPEGEncoderDestroy(addr enc) = tvmrjpeg_encoder_destroy

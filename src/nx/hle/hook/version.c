@@ -93,7 +93,7 @@ void hook_version_text(char* out, size_t n, int key, u32 version) {
 }
 
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi) {
-    static const char* const names[HOOK_KEYS] = {"any", "sdk", "nvn"};
+    static const char* const names[HOOK_KEYS] = {"any", "sdk", "nvn", "movie"};
     char a[32], b[32];
     if (key <= HOOK_ANY || key >= HOOK_KEYS) {
         snprintf(out, n, "any version");
