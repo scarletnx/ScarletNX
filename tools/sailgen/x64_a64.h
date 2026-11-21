@@ -38,6 +38,7 @@ static inline void sg_undefined(SgCtx* g) {
     SgXIns* i = sgx_append(sgx(g), SGX_K_UNDEF);
     i->imm = (long long)g->pc;
     i->disp = (int)g->word;
+    i->calls = 1;
     g->undefined = 1;
 }
 static inline int sg_see(SgCtx* g) {
@@ -160,36 +161,86 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
     g->taken = when;
 }
 
-/* ---- the ABI ---- */
+/* ---- the ABI ----
+   x86-64 System V: the state's address comes in RDI and stays in RBX (the callee's, saved by the prologue), RSP is
+   16-aligned after the prologue (the push of RBX on the return address, then the frame of spill slots), and a call
+   out spills what is in a caller-saved register first (sgx_assemble_region). These are bytes written here: the
+   instruction selection doesn't make a function's frame */
 
-static inline void sgx_machine_prologue(SgXBuf* b) {
+enum { SGX_M_NONE };
+/* the function emitter's instructions (labels, jumps, calls: x64_fn.h) */
+static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
+
+static inline void sgx_prologue(SgXAsm* a) {
+    SgXBuf* b = a->b;
     sgx_byte(b, 0x53); /* push rbx */
     sgx_byte(b, 0x48); /* mov rbx, rdi */
     sgx_byte(b, 0x89);
     sgx_byte(b, 0xFB);
+    sgx_byte(b, 0x48); /* sub rsp, imm32: the frame, patched */
+    sgx_byte(b, 0x81);
+    sgx_byte(b, 0xEC);
+    if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
+    sgx_imm(b, 0, 4);
 }
-static inline void sgx_machine_return(SgXBuf* b) {
+static inline void sgx_epilogue(SgXAsm* a) {
+    SgXBuf* b = a->b;
+    sgx_byte(b, 0x48); /* add rsp, imm32 */
+    sgx_byte(b, 0x81);
+    sgx_byte(b, 0xC4);
+    if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
+    else
+        sg_fail("a function of more than 255 epilogues", 0, 0);
+    sgx_imm(b, 0, 4);
     sgx_byte(b, 0x5B); /* pop rbx */
-    sgx_byte(b, 0xC3); /* ret */
 }
-/* rt->undef(state, pc, word): RDI, RSI, EDX, through RAX = state->rt (the stack 16-aligned after the push) */
-static inline void sgx_machine_undef(SgXBuf* b, const SgXIns* i) {
-    sgx_byte(b, 0x48); /* mov rdi, rbx */
-    sgx_byte(b, 0x89);
-    sgx_byte(b, 0xDF);
-    sgx_byte(b, 0x48); /* mov rsi, imm64 */
-    sgx_byte(b, 0xBE);
-    sgx_imm(b, i->imm, 8);
-    sgx_byte(b, 0xBA); /* mov edx, imm32 */
-    sgx_imm(b, i->disp, 4);
-    sgx_byte(b, 0x48); /* mov rax, [rbx + rt] */
-    sgx_byte(b, 0x8B);
-    sgx_byte(b, 0x83);
-    sgx_imm(b, (long long)offsetof(CPU, rt), 4);
-    sgx_byte(b, 0xFF); /* call [rax + undef] */
-    sgx_byte(b, 0x90);
-    sgx_imm(b, (long long)offsetof(RtAPI, undef), 4);
+
+/* the machine's instructions, their inputs in r[] */
+static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
+    SgXIns* i = &a->x->ins[at];
+    SgXBuf* b = a->b;
+    switch (i->kind) {
+    case SGX_K_UNDEF:
+        /* rt->undef(state, pc, word): RDI, RSI, EDX, through RAX = state->rt */
+        sgx_byte(b, 0x48); /* mov rdi, rbx */
+        sgx_byte(b, 0x89);
+        sgx_byte(b, 0xDF);
+        sgx_byte(b, 0x48); /* mov rsi, imm64 */
+        sgx_byte(b, 0xBE);
+        sgx_imm(b, i->imm, 8);
+        sgx_byte(b, 0xBA); /* mov edx, imm32 */
+        sgx_imm(b, i->disp, 4);
+        sgx_byte(b, 0x48); /* mov rax, [rbx + rt] */
+        sgx_byte(b, 0x8B);
+        sgx_byte(b, 0x83);
+        sgx_imm(b, (long long)offsetof(CPU, rt), 4);
+        sgx_byte(b, 0xFF); /* call [rax + undef] */
+        sgx_byte(b, 0x90);
+        sgx_imm(b, (long long)offsetof(RtAPI, undef), 4);
+        break;
+    case SGX_K_RET:
+        /* a step's return of the next pc, in RAX (in[0], fixed there) or a constant */
+        if (!i->in[0]) {
+            const SgXSel* m = sgx_pick(a->x, sgx_sel_movi_64, sgx_sel_movi_64_n, (SnxU64)i->imm, 64, 1);
+            unsigned char rr[4] = {0, 0, 0, 0};
+            rr[(int)m->out] = 0;
+            m->enc(b, rr, i->imm, 0);
+        }
+        sgx_epilogue(a);
+        sgx_byte(b, 0xC3); /* ret */
+        break;
+    default: sgx_machine_op(a, at, r); break;
+    }
+    (void)r;
 }
+
+/* the function emitter's (x64_fn.h's, after this) where it is included; none in a step's or a block's code */
+#ifndef SGX_FN
+static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
+    (void)a, (void)r;
+    sg_fail("a machine instruction of no function emitter", at, 0);
+}
+#endif
 
 /* the dispatcher sailgen writes after this */
 static int sg_decode(SgCtx* g);
@@ -197,12 +248,15 @@ static int sg_decode(SgCtx* g);
 /* words in a row as one function, u64 block(CPU*) returning the next pc, their instructions one SSA: a register read
    once, flags one instruction left read by the next as a condition code (CMP then B.cond is CMP and CMOVcc), the stores
    a later one overwrites dropped. Every word but the last runs on to the next: a branch or an UNDEF ends the block
-   (the words after it are left out: count is how many it took). Its size in code, 0 as sg_x64_step's */
+   (the words after it are left out: count is how many it took). Its size in code, 0 when a word isn't taken, needs a
+   primitive this host has no form of, or the code needs more than cap bytes */
 static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 pc, SnxU64 features,
                            unsigned host_features, unsigned char* code, size_t cap) {
     SgXBuf b;
+    SgXAsm a;
     SgXIns* r;
     size_t i;
+    int pool = g->x.pool;
     memset(g, 0, sizeof *g);
     g->features = features;
     g->origin = -1;
@@ -211,6 +265,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     g->x.base = 3; /* RBX */
     g->x.nv = 1;   /* 0 is none */
     g->x.nb = 1;
+    g->x.pool = pool;
     for (i = 0; i < *count; ++i) {
         g->word = words[i];
         g->pc = pc + 4 * i;
@@ -223,11 +278,13 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     }
     *count = i;
     pc = g->pc;
+    r = NULL;
     if (g->branched && !g->undefined) {
         SgD next = g->taken ? sg_d_select(g, g->taken, g->target, sgx_const(64, pc + 4)) : g->target;
         int v = sgx_reg(&g->x, &next);
         r = sgx_append(&g->x, SGX_K_RET);
         r->in[0] = v;
+        r->fixed[0] = 0; /* RAX */
     } else {
         r = sgx_append(&g->x, SGX_K_RET);
         r->imm = (long long)(g->undefined ? pc : pc + 4);
@@ -236,43 +293,17 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     b.n = 0;
     b.cap = cap;
     b.disp = 0;
-    sgx_assemble(&g->x, &b);
+    memset(&a, 0, sizeof a);
+    a.b = &b;
+    sgx_prologue(&a);
+    sgx_assemble_region(&a, &g->x);
+    sgx_patch_frame(&a);
     return b.n <= cap ? b.n : 0;
 }
 
-/* one word's code as a step, u64 step(CPU*) returning the next pc (the word's own after UNDEF): its size in code, or
-   0 when no clause takes the word, a primitive it needs has no form this host runs, or it needs more than cap bytes */
+/* one word's code as a step, u64 step(CPU*) returning the next pc (the word's own after UNDEF): sg_x64_block of it */
 static size_t sg_x64_step(SgCtx* g, SnxU32 word, SnxU64 pc, SnxU64 features, unsigned host_features,
                           unsigned char* code, size_t cap) {
-    SgXBuf b;
-    SgXIns* r;
-    int k;
-    memset(g, 0, sizeof *g);
-    g->word = word;
-    g->pc = pc;
-    g->features = features;
-    g->origin = -1;
-    g->x.features = host_features;
-    g->x.flags_ins = -1;
-    g->x.base = 3; /* RBX */
-    g->x.nv = 1;   /* 0 is none */
-    g->x.nb = 1;
-    for (k = 0; k < 32; ++k) g->gpr[k] = 0;
-    if (!sg_decode(g) || g->x.unmade) return 0;
-    if (g->branched && !g->undefined) {
-        /* the target, or where it isn't taken the next word: CMOVcc on the condition */
-        SgD next = g->taken ? sg_d_select(g, g->taken, g->target, sgx_const(64, pc + 4)) : g->target;
-        int v = sgx_reg(&g->x, &next);
-        r = sgx_append(&g->x, SGX_K_RET);
-        r->in[0] = v;
-    } else {
-        r = sgx_append(&g->x, SGX_K_RET);
-        r->imm = (long long)(g->undefined ? pc : pc + 4);
-    }
-    b.p = code;
-    b.n = 0;
-    b.cap = cap;
-    b.disp = 0;
-    sgx_assemble(&g->x, &b);
-    return b.n <= cap ? b.n : 0;
+    size_t one = 1;
+    return sg_x64_block(g, &word, &one, pc, features, host_features, code, cap);
 }

@@ -30,3 +30,5 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
                      unsigned char* code, size_t cap) {
     return sg_x64_block(&g_ctx, words, count, pc, features, host_features, code, cap);
 }
+
+void snx_x64_set_pool(int registers) { g_ctx.x.pool = registers; }

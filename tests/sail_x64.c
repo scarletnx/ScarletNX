@@ -8,7 +8,8 @@
    flags, the next pc and the runtime's UNDEF must match. Then sequences of two to four of those words (--sequences N)
    become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
    a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
-     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--verbose] [--dump WORD...]
+     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
+   --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too)
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "llvm_steps.h"
@@ -91,6 +92,8 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--samples") && i + 1 < (unsigned)argc)
             samples = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--pool") && i + 1 < (unsigned)argc)
+            snx_x64_set_pool(atoi(argv[++i]));
         else if (!strcmp(argv[i], "--sequences") && i + 1 < (unsigned)argc)
             sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))

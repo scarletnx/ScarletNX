@@ -3384,7 +3384,8 @@ if(NOT WIN32)
         snx_decodetree_a64(snx-test-sail-x64)
         snx_sailgen_a64_x64(snx-test-sail-x64)
         add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
-        set_tests_properties(sail_x64 PROPERTIES TIMEOUT 600)
+        add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool 3 --states 32)
+        set_tests_properties(sail_x64 sail_x64_spill PROPERTIES TIMEOUT 600)
     endif()
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
