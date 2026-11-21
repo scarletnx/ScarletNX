@@ -13,6 +13,7 @@
 typedef struct {
     char label[32], detail[SNX_PREPARE_DETAIL_SIZE];
     u32 value, total;
+    int kib;
     u64 started_ms;
     int done;
 } Row;
@@ -68,6 +69,7 @@ void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPre
         snprintf(r->detail, sizeof r->detail, "%s", steps[i].detail);
         r->value = steps[i].value;
         r->total = steps[i].total;
+        r->kib = steps[i].kib;
         r->started_ms = steps[i].started_ms;
         r->done = steps[i].done;
     }
@@ -188,8 +190,8 @@ static float screen_text(SnxUiList* l, float x, float y, int s, const char* text
     screen_line(text, upper, cols, line, sizeof line);
     return ui_text(l, x, y, s, line, UI_RGB(rgb));
 }
-/* a step's progress as the theme's [run] progress says, as the launcher's (steps.c gui_step_progress): "3 / 6",
-   "50%", "01:23 left" */
+/* a step's progress as the theme's [run] progress says, as the launcher's (steps.c gui_step_progress): "3 / 6" ("1.5 /
+   4.0 MiB" for KiB), "50%", "01:23 left" */
 static void screen_progress(const Row* r, u64 now_ms, char* out, size_t size) {
     u32 done = r->value < r->total ? r->value : r->total;
     i64 left = snx_run_seconds_left(now_ms > r->started_ms ? now_ms - r->started_ms : 0, done, r->total);
@@ -204,6 +206,8 @@ static void screen_progress(const Row* r, u64 now_ms, char* out, size_t size) {
                  (unsigned)(left % 60));
     else if (g_prepare_screen.theme.progress == SNX_RUN_PROGRESS_TIME)
         snprintf(out, size, "%02u:%02u left", (unsigned)(left / 60), (unsigned)(left % 60));
+    else if (r->kib)
+        snprintf(out, size, "%.1f / %.1f MiB", (double)done / 1024.0, (double)r->total / 1024.0);
     else
         snprintf(out, size, "%u / %u", (unsigned)done, (unsigned)r->total);
 }

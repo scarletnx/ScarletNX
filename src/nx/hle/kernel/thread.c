@@ -987,7 +987,7 @@ void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int c
    write the same files at once */
 void process_exit(int code) {
     LOG("The game exited (code %d)\n", code);
-    snx_save_before_exit();
+    snx_save_before_exit(0);
     snx_tracy_shutdown();
     plat_exit_now(code);
 }

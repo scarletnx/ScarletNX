@@ -25,8 +25,9 @@ extern int (*snx_menu)(const char* self);
 extern void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 /* Saves what outlives the run (the hints, the renderer's pipeline cache) before a clean exit:
    the main loop's, the unattended limit's, svcExitProcess. The first caller saves; one that comes while it does waits,
-   then does nothing */
-void snx_save_before_exit(void);
+   then does nothing. frontend: called on the frontend's thread, which keeps the window while the renderer's save goes
+   on (its screen, a second close that stops it); 0 elsewhere (a guest thread's svcExitProcess) */
+void snx_save_before_exit(int frontend);
 /* the log's "resources: " line, into out: iOS's from the frontend (with Metal and the thermal state), elsewhere the
    footprint and what the system still gives the process (a ? where it tells none); then the renderer's memory blocks.
    Any thread */

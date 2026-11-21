@@ -6,6 +6,7 @@
 #include <math.h>
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/platform/ui_colors.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/backend.h"
@@ -1193,6 +1194,37 @@ static void prepare_screen_ring(void) {
     assert(ring_in(&l, &cx, &cy) == 0);
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
 }
+/* The game closing's screen (main.c's save at exit) as the screen before the game draws it: its row says the MiB
+   packed of the save's and the seconds since it began, its progress as the theme says it (the MiB for an amount), and
+   the bar the share packed */
+static void closing_screen(void) {
+    static SnxUiQuad q[4096];
+    SnxUiList l = {q, 0, 4096};
+    SnxClosing w = {.began_ms = 10000};
+    SnxPrepareStep st;
+    SnxRunTheme t;
+    char row[160];
+    const u64 total = 166408602, packed = 100663296; /* 158.7 and 96.0 MiB */
+    prepare_screen_theme(NULL, &t);
+    snprintf(t.title, sizeof t.title, "%s", "CLOSING");
+    snx_closing_step(&w, 14200, total, packed, &st);
+    prepare_screen_set(&t, "GAME", &st, 1, NULL, 0, "FOOT", 14200);
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " CLOSING GAME...")); /* 14200 ms: three dots */
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " SAVING THE SHADER CACHE: 96.0 OF 158.7 MIB, 4 S 60%..."));
+    prepare_row(&l, 32.0f * 19, 2, row, sizeof row);
+    assert(strstr(row, " 60%"));
+    t.steps = 0;
+    t.progress = SNX_RUN_PROGRESS_AMOUNT;
+    prepare_screen_set(&t, "GAME", &st, 1, NULL, 0, "FOOT", 14200);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " SAVING THE SHADER CACHE 96.0 of 158.7 MiB, 4 s: 96.0 / 158.7 MiB"));
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+}
 int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
@@ -1205,6 +1237,7 @@ int main(void) {
     prepare_screen_cut();
     prepare_screen_switching();
     prepare_screen_ring();
+    closing_screen();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());
