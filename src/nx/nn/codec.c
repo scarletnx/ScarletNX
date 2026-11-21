@@ -30,6 +30,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/platform/time.h"
 
 #define OPUS_BROKEN_DATA     4u /* nn::codec::OpusResult */
@@ -190,9 +191,17 @@ static u32 decode(CPU* c, const Shape* s, u64 guest, u64 consumed, u64 samples, 
     u64 t = plat_ns();
     u32 size, want, used = 0, got = 0;
     int reset, rc;
-    if (in_size < OPUS_HEADER || !snx_audio_guest_ok(in, in_size, PERM_R)) return OPUS_SHORT_INPUT;
+    /* the value is the input bytes, the text the call's outcome: an error is rare and says why the SDK refused */
+    SNX_ZONE_TV(z, "nn codec decode", in_size, "decode");
+    if (in_size < OPUS_HEADER || !snx_audio_guest_ok(in, in_size, PERM_R)) {
+        SNX_ZONE_TEXT(z, "short or unreadable input");
+        return OPUS_SHORT_INPUT;
+    }
     size = snx_ld_be32(hook_host(c, in));
-    if ((u64)size + OPUS_HEADER > in_size) return OPUS_SHORT_INPUT;
+    if ((u64)size + OPUS_HEADER > in_size) {
+        SNX_ZONE_TEXT(z, "packet past input");
+        return OPUS_SHORT_INPUT;
+    }
     h = decoder_lock(guest);
     pm_unlock(&g_host.audio.lk); /* a decoder is closed by the thread that decodes with it, or after it */
     if (!h) {
@@ -200,17 +209,32 @@ static u32 decode(CPU* c, const Shape* s, u64 guest, u64 consumed, u64 samples, 
                    "hwopus: a decode on the decoder at %#llx, which isn't open: the SDK's result for a packet the "
                    "decoder refuses (%u)\n",
                    (unsigned long long)guest, OPUS_BROKEN_DATA);
+        SNX_ZONE_TEXT(z, "no decoder open");
         return OPUS_BROKEN_DATA;
     }
     want = hwopus_packet_samples(h, hook_host(c, in + OPUS_HEADER), size);
-    if (!want) return OPUS_BROKEN_DATA;
-    if ((u64)want * h->channels * 2 > out_size) return room ? OPUS_SHORT_OUTPUT : OPUS_BROKEN_DATA;
-    if (!snx_audio_guest_ok(out, out_size, PERM_W)) return OPUS_BROKEN_DATA;
+    if (!want) {
+        SNX_ZONE_TEXT(z, "packet samples refused");
+        return OPUS_BROKEN_DATA;
+    }
+    if ((u64)want * h->channels * 2 > out_size) {
+        SNX_ZONE_TEXT(z, room ? "output too small" : "output refused");
+        return room ? OPUS_SHORT_OUTPUT : OPUS_BROKEN_DATA;
+    }
+    if (!snx_audio_guest_ok(out, out_size, PERM_W)) {
+        SNX_ZONE_TEXT(z, "output unwritable");
+        return OPUS_BROKEN_DATA;
+    }
     reset = s->reset ? *hook_host(c, guest + s->reset) != 0 : 0;
     if (s->reset) *hook_host(c, guest + s->reset) = 0;
     rc = hwopus_decode_packet(h, hook_host(c, in), (u64)size + OPUS_HEADER, (i16*)hook_host(c, out), out_size, reset,
                               &used, &got);
-    if (rc) return OPUS_BROKEN_DATA;
+    if (rc) {
+        SNX_ZONE_TEXT(z, "decoder refused packet");
+        return OPUS_BROKEN_DATA;
+    }
+    SNX_ZONE_TEXT(z, "%u bytes, %u samples", (unsigned)used, (unsigned)got);
+    SNX_PLOT("nn codec out bytes", (double)got * h->channels * 2);
     LOG_LIMIT(1, "hwopus: the first packet decoded, %lu bytes into %lu samples\n", (unsigned long)used,
               (unsigned long)got);
     snx_st_le64(hook_host(c, consumed), used);

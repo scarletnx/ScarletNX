@@ -36,6 +36,8 @@
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/bits.h"
 #include <stdatomic.h>
 
@@ -436,7 +438,10 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
     u32 total = REN_HEADER, n, rc;
     int m;
     if (!renderer(id, "RequestUpdateAudioRenderer")) return SNX_RC_AUDIO_INVALID_HANDLE;
-    if (!methods_find(differences)) return SNX_RC_AUDIO_OPERATION_FAILED;
+    if (!methods_find(differences)) {
+        SNX_ZONE_T(z_update_no_methods, "audio update failed", "SDK exports no manager method"); /* rare */
+        return SNX_RC_AUDIO_OPERATION_FAILED;
+    }
     if (!in || in_size < REN_HEADER || !out || out_size < REN_HEADER) {
         WARN_LIMIT(4,
                    "audren: an AudioRendererConfig with %llu bytes for the update and %llu for its answer, under a "
@@ -454,6 +459,9 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
     memset(header, 0, REN_HEADER);
     snx_st_le32(header, (u32)method(c, config, M_REVISION, 0, 0, 0));
     at = in + REN_HEADER;
+#if defined(SNX_TRACY)
+    u64 t_in = plat_ns();
+#endif
     for (m = M_BEHAVIOR_IN; m <= M_PERFORMANCE_IN; m++) {
         if (!method_used(m, differences)) {
             if (m != M_VOICE_IN) continue;
@@ -477,32 +485,50 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
         total += n;
         at += n;
     }
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio update in us", (double)((plat_ns() - t_in) / 1000));
+#endif
     snx_st_le32(header + HEADER_TOTAL, total);
     if (total > in_size) {
         if (one) c->x[31] = sp;
+        SNX_ZONE_T(z_update_too_big, "audio update failed", "%u > %llu bytes", total,
+                   (unsigned long long)in_size); /* a rare decision */
         WARN_LIMIT(4, "audren: an update of %u bytes in a buffer of %llu: InvalidUpdateInfo\n", total,
                    (unsigned long long)in_size);
         return SNX_RC_AUDIO_INVALID_UPDATE_INFO;
     }
+#if defined(SNX_TRACY)
+    u64 t_dsp = plat_ns();
+#endif
     rc = (u32)audren_update((u32)id, in, total, out, out_size);
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio update dsp us", (double)((plat_ns() - t_dsp) / 1000));
+#endif
     if (!rc) {
         /* the answer's sections, each as long as its header says, or the answer is not one */
         header = hook_host(c, out);
         at = out + REN_HEADER;
+#if defined(SNX_TRACY)
+        u64 t_out = plat_ns();
+#endif
         for (m = M_POOL_OUT; m <= M_BEHAVIOR_OUT && !rc; m++) {
             n = (u32)method(c, config, m, at, 0, 0);
             if (n != snx_ld_le32(header + g_methods[m].header)) rc = SNX_RC_AUDIO_INVALID_UPDATE_INFO;
             at += n;
         }
+#if defined(SNX_TRACY)
+        SNX_PLOT("audio update out us", (double)((plat_ns() - t_out) / 1000));
+#endif
         if (!rc && frames) {
             snx_st_le64(hook_host(c, snx_ld_le64(hook_host(c, config + frames))), snx_ld_le64(hook_host(c, at)));
             if (snx_ld_le32(header + HEADER_INFO) != REN_INFO) rc = SNX_RC_AUDIO_INVALID_UPDATE_INFO;
         }
         if (!rc && snx_ld_le32(header + HEADER_TOTAL) != out_size) rc = SNX_RC_AUDIO_INVALID_UPDATE_INFO;
-        if (rc)
+        if (rc) {
+            SNX_ZONE_T(z_update_bad_answer, "audio update failed", "answer sections or size mismatch"); /* rare */
             WARN_LIMIT(4, "audren: the renderer's answer doesn't have the sections its header says: "
                           "InvalidUpdateInfo\n");
-        else
+        } else
             rc = (u32)method(c, config, M_CHECK_ERRORS, 0, 0, 0);
     } else if (rc == SNX_RC_AUDIO_INVALID_UPDATE_INFO)
         method(c, config, M_CHECK_ERRORS, 0, 0, 0); /* the SDK reads the renderer's errors, then gives the result */

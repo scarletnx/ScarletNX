@@ -30,6 +30,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/main.h" /* g_ounce */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define OUT_NAME_SIZE   0x100 /* an AudioOutInfo, and the name in an AudioOut */
 /* an AudioOutBuffer, which the SDK hands its session whole: the next buffer, the samples' address, their capacity
@@ -87,13 +88,25 @@ static u32 out_release_all(AudOut* q) {
 }
 
 void nnaudio_out_tick(u64 now) {
-    u32 i;
+    u32 i, released = 0;
     pm_lock(&g_host.audio.lk);
     for (i = 0; i < AUDOUT_MAX; i++) {
         AudOut* q = &g_hle.audio.outs_pool[i];
-        if (q->guest && out_advance(q, now)) ev_signal(q->ev);
+        u32 n;
+        if (!q->guest) continue;
+        n = out_advance(q, now);
+        if (n) {
+            released += n;
+            ev_signal(q->ev);
+        } else {
+            /* a frequent decision: no buffer came back. The value is the reason: 1 not started, 2 no queued buffer,
+               3 clock behind append, 4 no frame elapsed */
+            unsigned why = !q->started ? 1 : !q->nqueued ? 2 : now < q->t0 ? 3 : 4;
+            SNX_ZONE_V(z_out_no_release, "audio out no release", why);
+        }
     }
     pm_unlock(&g_host.audio.lk);
+    SNX_PLOT("audio out releases", (double)released);
 }
 
 /* the out of the game's AudioOut at guest, under the lock, which the caller holds from here whether there is one or
@@ -288,6 +301,9 @@ int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
     samples = d[1], capacity = d[2], size = d[3], offset = d[4];
     q = out_lock(out, "AppendAudioOutBuffer");
     if (!q || q->nreleased + q->nqueued >= AUDOUT_BUFFERS) {
+        if (q) { /* a rare decision: the out's ring is full */
+            SNX_ZONE_T(z_out_full, "audio out append", "ring full");
+        }
         pm_unlock(&g_host.audio.lk);
         return 0;
     }
@@ -303,6 +319,7 @@ int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
         /* an offset past the capacity is no place in the buffer (a game leaves the field unset): the buffer plays
            from its start, as Eden and yuzu play every buffer, which never read the field */
         if (offset > capacity) {
+            SNX_ZONE_T(z_out_offset, "audio out append", "offset past capacity"); /* a rare decision */
             WARN_LIMIT(4, "audio: buffer %#llx's data offset %#llx is past its capacity %llu: played from offset 0\n",
                        (unsigned long long)samples, (unsigned long long)offset, (unsigned long long)capacity);
             offset = 0;
@@ -311,9 +328,11 @@ int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
             snx_audio_guest_ok(samples + offset, size, PERM_R))
             /* the frames the clock plays, a part of one at the end left out: SDL refuses it, and the buffer with it */
             plat_audio_queue(q->output, hook_host(c, samples + offset), q->frames[i] * q->channels * 2u);
-        else
+        else {
+            SNX_ZONE_T(z_out_silence, "audio out append", "buffer unreadable, played as silence"); /* rare */
             WARN_LIMIT(4, "audio: buffer %#llx (%llu bytes at offset %llu) isn't readable, played as silence\n",
                        (unsigned long long)samples, (unsigned long long)size, (unsigned long long)offset);
+        }
     }
     pm_unlock(&g_host.audio.lk);
     return 1;
