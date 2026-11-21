@@ -173,7 +173,8 @@ snx_sailgen_a64(snx_llvm)
 # the x86-64 back end (src/common/cpu/recompiler/x64): its functions' code without LLVM, from the A64 emitters sailgen
 # generates with its instruction selection derived from the Intel SDM (cmake/sdm.cmake); the default code generator
 # where it is built, LLVM making what it can't
-target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_codegen.c")
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_elf.c")
 include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
 if(SNX_X64)
     snx_sailgen_a64_x64(snx_llvm)

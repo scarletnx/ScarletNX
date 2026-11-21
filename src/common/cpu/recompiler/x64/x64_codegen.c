@@ -1225,11 +1225,18 @@ static unsigned str_add(Out* s, const char* name) {
     return at;
 }
 
+/* FNV-1a of a name */
+static size_t name_hash(const char* n) {
+    size_t h = (size_t)1469598103934665603ull;
+    for (; *n; ++n) h = (h ^ (unsigned char)*n) * (size_t)1099511628211ull;
+    return h;
+}
+
 static int write_object(Unit* u, unsigned char** object, size_t* size) {
     Out o = {0}, strtab = {0}, symtab = {0}, rela = {0}, data = {0}, rela_data = {0}, shstr = {0};
     size_t i, j, nundef = 0, first_global;
     char** undef = NULL;
-    size_t cap_undef = 0;
+    size_t cap_undef = 0, *reloc_undef = NULL;
     Elf64_Ehdr eh;
     Elf64_Shdr sh[9];
     Elf64_Sym sym;
@@ -1254,22 +1261,46 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     sym.st_info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION);
     sym.st_shndx = 1;
     put(&symtab, &sym, sizeof sym);
-    /* calls this object resolves itself: to one of its own functions */
-    for (i = 0; i < u->nrelocs; ++i) {
-        for (j = 0; j < u->nsyms; ++j)
-            if (!strcmp(u->relocs[i].sym, u->syms[j].name)) break;
-        if (j < u->nsyms) {
-            snx_link_put32(u->b.p + u->relocs[i].at, (uint32_t)((long long)u->syms[j].at - (long long)(u->relocs[i].at + 4)));
-            free(u->relocs[i].sym);
-            u->relocs[i].sym = NULL;
-            continue;
+    /* calls this object resolves itself: to one of its own functions. The names by a hash table each (the unit's
+       functions, then the symbols it leaves undefined), and each relocation's undefined symbol's index kept */
+    {
+        size_t hcap = 64, *hsym, *hund;
+        while (hcap < 2 * (u->nsyms + u->nrelocs) + 2) hcap *= 2;
+        hsym = (size_t*)calloc(hcap, sizeof *hsym); /* index + 1, 0 none */
+        hund = (size_t*)calloc(hcap, sizeof *hund);
+        reloc_undef = (size_t*)calloc(u->nrelocs + 1, sizeof *reloc_undef);
+        if (!hsym || !hund || !reloc_undef) {
+            fprintf(stderr, "x64 back end: out of memory\n");
+            abort();
         }
-        for (j = 0; j < nundef; ++j)
-            if (!strcmp(undef[j], u->relocs[i].sym)) break;
-        if (j == nundef) {
-            undef = (char**)grow(undef, &cap_undef, nundef + 1, sizeof *undef);
-            undef[nundef++] = u->relocs[i].sym;
+        for (j = 0; j < u->nsyms; ++j) {
+            size_t h = name_hash(u->syms[j].name) & (hcap - 1);
+            while (hsym[h]) h = (h + 1) & (hcap - 1);
+            hsym[h] = j + 1;
         }
+        for (i = 0; i < u->nrelocs; ++i) {
+            size_t h0 = name_hash(u->relocs[i].sym) & (hcap - 1), h = h0;
+            for (; hsym[h]; h = (h + 1) & (hcap - 1))
+                if (!strcmp(u->relocs[i].sym, u->syms[hsym[h] - 1].name)) break;
+            if (hsym[h]) {
+                j = hsym[h] - 1;
+                snx_link_put32(u->b.p + u->relocs[i].at,
+                               (uint32_t)((long long)u->syms[j].at - (long long)(u->relocs[i].at + 4)));
+                free(u->relocs[i].sym);
+                u->relocs[i].sym = NULL;
+                continue;
+            }
+            for (h = h0; hund[h]; h = (h + 1) & (hcap - 1))
+                if (!strcmp(u->relocs[i].sym, undef[hund[h] - 1])) break;
+            if (!hund[h]) {
+                undef = (char**)grow(undef, &cap_undef, nundef + 1, sizeof *undef);
+                undef[nundef++] = u->relocs[i].sym;
+                hund[h] = nundef;
+            }
+            reloc_undef[i] = hund[h] - 1;
+        }
+        free(hsym);
+        free(hund);
     }
     if (jit)
         for (i = 0; i < u->nsyms; ++i) {
@@ -1325,10 +1356,8 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
         for (i = 0; i < u->nrelocs; ++i) {
             Elf64_Rela r;
             if (!u->relocs[i].sym) continue;
-            for (j = 0; j < nundef; ++j)
-                if (undef[j] == u->relocs[i].sym || !strcmp(undef[j], u->relocs[i].sym)) break;
             r.r_offset = u->relocs[i].at;
-            r.r_info = ELF64_R_INFO(undef0 + j, u->relocs[i].type);
+            r.r_info = ELF64_R_INFO(undef0 + reloc_undef[i], u->relocs[i].type);
             r.r_addend = u->relocs[i].addend;
             put(&rela, &r, sizeof r);
         }
@@ -1380,6 +1409,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     put(&o, sh, sizeof sh);
     memcpy(o.p, &eh, sizeof eh);
     free(strtab.p), free(symtab.p), free(rela.p), free(data.p), free(rela_data.p), free(shstr.p), free(undef);
+    free(reloc_undef);
     *object = o.p;
     *size = o.n;
     return 0;
