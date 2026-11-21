@@ -625,6 +625,48 @@ static int run_fs_at(const u8* code, u32 n, u32 lane, const u32* cb1, u32 cb1_wo
     return !why && env.out_written[0];
 }
 
+/* A loop's exit, @PT CALL.REL.NOINC to the code after its back edge (the BRA back right after the CALL), then 33,000
+   instructions, a call of a function after the main program's EXIT, and that function: no BRA to itself but the
+   function's own. The exit is a branch, though the function's RET lies before that BRA: taken for a call, everything
+   after the loop was copied and went past 65,536 instructions */
+static void test_loop_exit_call(void) {
+    const u32 body = 33000;
+    u8* big = calloc((size_t)body + 16, 16);
+    CHECK(big != NULL);
+    if (!big) return;
+    u32 n = 0;
+    Word x = fix(0x944);
+    set(&x, 34, 48, (u64)(2 - 0 - 1) * 4);
+    set(&x, 86, 4, 0xf);
+    put(big, n++, x);             /* 0: the loop's exit, to 2 */
+    put(big, n, bra(n, 0, 7, 0)); /* 1: back to the loop's start */
+    n++;
+    for (u32 k = 0; k < body; k++) {
+        x = alu(0x002, 1, 3, 255); /* MOV R3, RZ */
+        set(&x, 32, 8, 255);
+        put(big, n++, x);
+    }
+    const u32 call = n++; /* the call of the function, set below */
+    put(big, n++, exit_insn());
+    const u32 entry = n;
+    x = alu(0x002, 4, 0, 255); /* MOV R0, 1.0 */
+    set(&x, 32, 32, 0x3f800000u);
+    put(big, n++, x);
+    x = fix(0x950); /* RET.REL.NODEC R2 */
+    set(&x, 24, 8, 2);
+    set(&x, 86, 4, 0xf);
+    put(big, n++, x);
+    put(big, n, bra(n, n, 7, 0));
+    n++;
+    x = fix(0x944);
+    set(&x, 34, 48, (u64)(entry - call - 1) * 4);
+    set(&x, 86, 4, 0xf);
+    put(big, call, x);
+    u32 out[4] = {0};
+    CHECK(run_fs_at(big, n, 0, NULL, 0, out) && out[0] == 0x3f800000u);
+    free(big);
+}
+
 /* the jump table of the BRX test: c[1][0x10] on, the targets' byte addresses, then a word that is no target */
 static int table_read(u32 idx, u32 off, u32* out) {
     static const u32 table[3] = {2 * 16, 4 * 16, 0xffffffffu};
@@ -7550,6 +7592,7 @@ int main(int argc, char** argv) {
     test_tcs_empty();
     test_programs(dir);
     test_game_forms(dir);
+    test_loop_exit_call();
     test_brx(dir);
     test_warp_base_blocks(dir);
     test_brx_bounded(dir);
