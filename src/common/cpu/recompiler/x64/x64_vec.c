@@ -248,6 +248,334 @@ static int vshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int sign) {
     return r;
 }
 
+static int shift_imm(SnxU32 word, unsigned* size, unsigned* left, unsigned* right);
+
+/* ---- floating point by lanes ----
+   The host's lanes where the LLVM back end's guards (ir_vec_fp.c's fast paths) hold for every lane that is the
+   instruction's; else all of them on the cold path through the exact helpers (x64_helpers.c's snx_x64_fp_vec, desc
+   as it reads it). sz: 0 singles, 1 doubles; n the lanes */
+
+static const SgXVForm* const k_fadd[2] = {&sgx_v_addps, &sgx_v_addpd};
+static const SgXVForm* const k_fsub[2] = {&sgx_v_subps, &sgx_v_subpd};
+static const SgXVForm* const k_fmul[2] = {&sgx_v_mulps, &sgx_v_mulpd};
+static const SgXVForm* const k_fdiv[2] = {&sgx_v_divps, &sgx_v_divpd};
+static const SgXVForm* const k_fmax[2] = {&sgx_v_maxps, &sgx_v_maxpd};
+static const SgXVForm* const k_fmin[2] = {&sgx_v_minps, &sgx_v_minpd};
+static const SgXVForm* const k_fsqrt[2] = {&sgx_v_sqrtps, &sgx_v_sqrtpd};
+static const SgXVForm* const k_fcmp[2] = {&sgx_v_cmpps, &sgx_v_cmppd};
+static const SgXVForm* const k_fmask[2] = {&sgx_v_movmskps, &sgx_v_movmskpd};
+
+/* any of the first n lanes of mask m (whole lanes of 4 << sz bytes) set */
+static SgB vany(SgCtx* g, int m, unsigned sz, int n) {
+    SgD bits = sgx_val(32, sgx_v1(X, k_fmask[sz], m, 0));
+    return sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, (1u << n) - 1))));
+}
+/* a lane's floating-point constant */
+static int fsplat(SgCtx* g, unsigned sz, SnxU64 bits) { return vsplat(g, sz + 2, bits); }
+/* the lanes that are not normal numbers above the smallest: zero, tiny, infinite, NaN (the doubled magnitude, minus
+   that of the smallest normal and one, not below the range to infinity's, unsigned: a signed compare of them with
+   their tops flipped) */
+static int fnot_roomy(SgCtx* g, unsigned sz, int r) {
+    unsigned size = sz + 2;
+    SnxU64 normal = sz ? 0x0010000000000000ull : 0x00800000u, inf = sz ? 0x7FF0000000000000ull : 0x7F800000u;
+    SnxU64 flip = 1ull << ((8u << size) - 1);
+    int m2 = vadd(g, size, r, r), t = vsub(g, size, m2, vsplat(g, size, (normal + 1) << 1));
+    return vgt(g, size, vxor(g, t, vsplat(g, size, flip)), vsplat(g, size, (((inf - normal - 1) << 1) - 1) ^ flip), 0);
+}
+static int fzero(SgCtx* g, unsigned sz, int a) { return veq(g, sz + 2, vadd(g, sz + 2, a, a), vzero(g)); }
+static int fnan(SgCtx* g, unsigned sz, int a) { return sgx_v2(X, k_fcmp[sz], a, a, 3); /* CMPUNORD */ }
+static SgB fstate(SgCtx* g, SnxU32 mask, int ixc) { return sgx_fp_bad(g, sg_FPCR_read(g), mask, ixc); }
+static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) {
+    return sgx_vcold(X, bad, fast, "snx_x64_fp_vec", a, b, d, desc);
+}
+#define FDESC(kind, sz, n) ((SnxU32)(kind) | (SnxU32)(sz ? 8 : 4) << 4 | (SnxU32)(n) << 8)
+
+/* FADD, FSUB, FMUL, FDIV by lanes; FABD the difference's magnitude */
+static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
+    const SgXVForm* f = op == SNX_FP_ADD ? k_fadd[sz] : op == SNX_FP_MUL ? k_fmul[sz] : op == SNX_FP_DIV ? k_fdiv[sz] : k_fsub[sz];
+    int r = op2(g, f, a, b), bad = fnot_roomy(g, sz, r), zok;
+    if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD) zok = fzero(g, sz, r);
+    else if (op == SNX_FP_MUL)
+        zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
+    else
+        zok = vand(g, fzero(g, sz, r), fzero(g, sz, a));
+    bad = vandn(g, zok, bad);
+    r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, b, 0,
+              FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
+    if (op == SNX_FP_ABD) r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), r);
+    return r;
+}
+/* d + n * m rounded once (sub: d - n * m, n negated first): VFMADD231 where the host has FMA */
+static int ffma(SgCtx* g, unsigned sz, int n_, int d, int a, int b, int sub) {
+    int r, bad, zok;
+    if (sub) a = vxor(g, a, fsplat(g, sz, 1ull << (sz ? 63 : 31)));
+    if (!(X->features & SGX_F_FMA)) return fcold(g, sg_bool(g, 1), vzero(g), d, a, b, FDESC(1, sz, n_));
+    {
+        int in[4] = {d, a, b, 0};
+        r = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
+    bad = vandn(g, zok, fnot_roomy(g, sz, r));
+    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n_)), r, d, a, b,
+                 FDESC(1, sz, n_));
+}
+/* FMAX, FMIN (numeric: FMAXNM, FMINNM): MAXPx's lanes, equal ones ANDed (ORed for the minimum); a NaN goes cold */
+static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int numeric) {
+    int eq = sgx_v2(X, k_fcmp[sz], a, b, 0), t = minimum ? vor(g, a, b) : vand(g, a, b);
+    int r = op2(g, minimum ? k_fmin[sz] : k_fmax[sz], a, b);
+    r = vsel(g, eq, t, r);
+    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, vor(g, fnan(g, sz, a), fnan(g, sz, b)), sz, n)), r,
+                 a, b, 0, FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16);
+}
+static int fsqrt(SgCtx* g, unsigned sz, int n, int a) {
+    int r = sgx_v1(X, k_fsqrt[sz], a, 0), bad = vandn(g, fzero(g, sz, a), fnot_roomy(g, sz, r));
+    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, 0, 0,
+                 FDESC(2, sz, n) | SNX_FP_SQRT << 12);
+}
+/* FCMEQ (cmp 0), FCMGE (1), FCMGT (2) of a and b (abs: FACGE, FACGT): CMPPx's EQ, LE and LT the other way; an
+   unordered lane goes cold (a signalling NaN, or any NaN for GE and GT, raises IOC) */
+static int fcompare(SgCtx* g, unsigned sz, int n, int a, int b, int cmp, int abs) {
+    int r;
+    if (abs) {
+        int m = fsplat(g, sz, sz ? ~(1ull << 63) : 0x7FFFFFFFu);
+        a = vand(g, a, m);
+        b = vand(g, b, m);
+    }
+    r = cmp == 0 ? sgx_v2(X, k_fcmp[sz], a, b, 0) : sgx_v2(X, k_fcmp[sz], b, a, cmp == 1 ? 2 : 1);
+    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n)), r, a, b,
+                 0, FDESC(4, sz, n) | (SnxU32)cmp << 12);
+}
+/* FCVTZS, FCVTZU (to integers of the lanes' width, toward zero) of a scaled by 2^fbits */
+static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
+    int x = a, r, bad;
+    if (fbits) x = op2(g, k_fmul[sz], x, fsplat(g, sz, sz ? (SnxU64)(1023 + fbits) << 52 : (SnxU64)(127 + fbits) << 23));
+    if (!sz) {
+        int lo = sgx_v1(X, &sgx_v_cvttps2dq, x, 0);
+        if (!uns) {
+            r = lo;
+            bad = veq(g, 2, lo, vsplat(g, 2, 0x80000000u)); /* out of range or a NaN */
+        } else {
+            int big = sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0x4F000000u), x, 2); /* 2^31 <= x */
+            int hi = vxor(g, sgx_v1(X, &sgx_v_cvttps2dq, op2(g, &sgx_v_subps, x, fsplat(g, 0, 0x4F000000u)), 0),
+                          vsplat(g, 2, 0x80000000u));
+            r = vsel(g, big, hi, lo);
+            bad = vor(g, sgx_v2(X, &sgx_v_cmpps, x, fsplat(g, 0, 0xBF800000u), 2),  /* x <= -1 */
+                      sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0x4F800000u), x, 2)); /* 2^32 <= x */
+            bad = vor(g, bad, fnan(g, 0, x));
+        }
+    } else {
+        /* the two doubles one at a time (CVTTSD2SI), unsigned ones from 2^63 up cold */
+        SgD l0 = sgx_val(64, sgx_v1(X, &sgx_v_cvttsd2si_64, x, 0));
+        SgD l1 = sgx_val(64, sgx_v1(X, &sgx_v_cvttsd2si_64, sgx_v1(X, &sgx_v_pshufd, x, 0xEE), 0));
+        r = lane_put(g, 3, lane_put(g, 3, vzero(g), 0, l0), 1, l1);
+        bad = veq(g, 3, r, vsplat(g, 3, 1ull << 63));
+        if (uns) bad = vor(g, bad, vor(g, sgx_v2(X, &sgx_v_cmppd, x, fsplat(g, 1, 0xBFF0000000000000ull), 2),
+                                       vgt(g, 3, vzero(g), r, 0)));
+    }
+    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, 0, 0,
+                 FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | 4u << 24);
+}
+/* SCVTF, UCVTF (from integers of the lanes' width), scaled by 2^-fbits: exact where every integer fits the
+   significand, else once IXC is set in round to nearest. Unsigned words as their halves (each exact, one rounding
+   of the sum) */
+static int ffrom_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
+    int r, fit;
+    SnxU64 p = sz ? 53 : 24;
+    if (!sz) {
+        if (!uns) r = sgx_v1(X, &sgx_v_cvtdq2ps, a, 0);
+        else {
+            int hi = sgx_v1(X, &sgx_v_cvtdq2ps, vshr(g, 2, a, 16, 0), 0), lo = sgx_v1(X, &sgx_v_cvtdq2ps, vand(g, a, vsplat(g, 2, 0xFFFF)), 0);
+            r = op2(g, &sgx_v_addps, op2(g, &sgx_v_mulps, hi, fsplat(g, 0, 0x47800000u)), lo);
+        }
+    } else {
+        SgD l0 = lane_get(g, 3, a, 0), l1 = lane_get(g, 3, a, 1);
+        int in[4] = {0, 0, 0, 0}, x0, x1;
+        in[1] = sgx_reg(X, &l0);
+        x0 = sgx_vins(X, &sgx_v_cvtsi2sd_64, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        in[1] = sgx_reg(X, &l1);
+        x1 = sgx_vins(X, &sgx_v_cvtsi2sd_64, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        r = op2(g, &sgx_v_punpcklqdq, x0, x1);
+    }
+    if (fbits) r = op2(g, k_fmul[sz], r, fsplat(g, sz, sz ? (SnxU64)(1023 - fbits) << 52 : (SnxU64)(127 - fbits) << 23));
+    /* fits: |v| < 2^p (signed: v + 2^p below 2^(p+1), unsigned: v below 2^p) */
+    {
+        unsigned size = sz + 2;
+        SnxU64 flip = 1ull << ((8u << size) - 1);
+        int v = uns ? a : vadd(g, size, a, vsplat(g, size, 1ull << p));
+        SnxU64 lim = uns ? (1ull << p) : (1ull << (p + 1));
+        fit = vgt(g, size, vsplat(g, size, lim ^ flip), vxor(g, v, vsplat(g, size, flip)), 0);
+    }
+    {
+        SgB bad = sg_b_and(g, fstate(g, SGX_FPCR_RMODE, 1), vany(g, vnot(g, fit), sz, n));
+        /* an unsigned doubleword from 2^63 up, which CVTSI2SD takes as negative */
+        if (sz && uns) bad = sg_b_or(g, bad, vany(g, vgt(g, 3, vzero(g), a, 0), 1, n));
+        return fcold(g, bad, r, a, 0, 0, FDESC(7, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16);
+    }
+}
+
+/* the FP instructions by lanes; 0 for the rest */
+static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned q = word >> 30 & 1, sz = word >> 22 & 1, rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
+    int n = sz ? 2 : q ? 4 : 2, r, scalar = 0;
+    switch (insn->op) {
+    case SNX_A64_OP_FCMGT_s:
+    case SNX_A64_OP_FCMGE_s:
+    case SNX_A64_OP_FCMEQ_s:
+    case SNX_A64_OP_FABD_s: scalar = 1; break;
+    default: break;
+    }
+    switch (insn->op) {
+    case SNX_A64_OP_FADD_v: case SNX_A64_OP_FSUB_v: case SNX_A64_OP_FMUL_v: case SNX_A64_OP_FDIV_v:
+    case SNX_A64_OP_FABD_v: case SNX_A64_OP_FMAX_v: case SNX_A64_OP_FMIN_v: case SNX_A64_OP_FMAXNM_v:
+    case SNX_A64_OP_FMINNM_v: case SNX_A64_OP_FMLA_v: case SNX_A64_OP_FMLS_v: case SNX_A64_OP_FMUL_vi:
+    case SNX_A64_OP_FMLA_vi: case SNX_A64_OP_FMLS_vi: case SNX_A64_OP_FNEG_v: case SNX_A64_OP_FABS_v:
+    case SNX_A64_OP_FSQRT_v: case SNX_A64_OP_FCMEQ_v: case SNX_A64_OP_FCMGE_v: case SNX_A64_OP_FCMGT_v:
+    case SNX_A64_OP_FACGE_v: case SNX_A64_OP_FACGT_v: case SNX_A64_OP_FCMEQ0_v: case SNX_A64_OP_FCMGE0_v:
+    case SNX_A64_OP_FCMGT0_v: case SNX_A64_OP_FCMLE0_v: case SNX_A64_OP_FCMLT0_v: case SNX_A64_OP_FCVTZS_vi:
+    case SNX_A64_OP_FCVTZU_vi: case SNX_A64_OP_SCVTF_vi: case SNX_A64_OP_UCVTF_vi:
+        if (sz && !q) return -1; /* 1D: reserved */
+        break;
+    case SNX_A64_OP_FCMGT_s: case SNX_A64_OP_FCMGE_s: case SNX_A64_OP_FCMEQ_s: case SNX_A64_OP_FABD_s:
+    case SNX_A64_OP_FCVTZS_vf: case SNX_A64_OP_FCVTZU_vf: case SNX_A64_OP_SCVTF_vf: case SNX_A64_OP_UCVTF_vf:
+    case SNX_A64_OP_FCVTL_v: case SNX_A64_OP_FCVTN_v: break;
+    default: return 0;
+    }
+    if (scalar) n = 1;
+    switch (insn->op) {
+    case SNX_A64_OP_FADD_v: r = fbinary(g, SNX_FP_ADD, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FSUB_v: r = fbinary(g, SNX_FP_SUB, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FMUL_v: r = fbinary(g, SNX_FP_MUL, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FDIV_v: r = fbinary(g, SNX_FP_DIV, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FABD_v:
+    case SNX_A64_OP_FABD_s: r = fbinary(g, SNX_FP_ABD, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FMAX_v: r = fminmax(g, sz, n, vread(g, rn), vread(g, rm), 0, 0); break;
+    case SNX_A64_OP_FMIN_v: r = fminmax(g, sz, n, vread(g, rn), vread(g, rm), 1, 0); break;
+    case SNX_A64_OP_FMAXNM_v: r = fminmax(g, sz, n, vread(g, rn), vread(g, rm), 0, 1); break;
+    case SNX_A64_OP_FMINNM_v: r = fminmax(g, sz, n, vread(g, rn), vread(g, rm), 1, 1); break;
+    case SNX_A64_OP_FMLA_v:
+    case SNX_A64_OP_FMLS_v:
+        r = ffma(g, sz, n, vread(g, rd), vread(g, rn), vread(g, rm), insn->op == SNX_A64_OP_FMLS_v);
+        break;
+    case SNX_A64_OP_FMUL_vi:
+    case SNX_A64_OP_FMLA_vi:
+    case SNX_A64_OP_FMLS_vi: {
+        unsigned h = word >> 11 & 1, l = word >> 21 & 1;
+        int e, m;
+        if (sz && l) return -1;
+        e = sz ? (int)h : (int)(h << 1 | l);
+        m = sgx_v1(X, &sgx_v_pshufd, vread(g, rm), sz ? (e ? 0xEE : 0x44) : (unsigned)e * 0x55);
+        if (insn->op == SNX_A64_OP_FMUL_vi) r = fbinary(g, SNX_FP_MUL, sz, n, vread(g, rn), m);
+        else
+            r = ffma(g, sz, n, vread(g, rd), vread(g, rn), m, insn->op == SNX_A64_OP_FMLS_vi);
+        break;
+    }
+    case SNX_A64_OP_FNEG_v: r = vxor(g, vread(g, rn), fsplat(g, sz, 1ull << (sz ? 63 : 31))); break;
+    case SNX_A64_OP_FABS_v: r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), vread(g, rn)); break;
+    case SNX_A64_OP_FSQRT_v: r = fsqrt(g, sz, n, vread(g, rn)); break;
+    case SNX_A64_OP_FCMEQ_v:
+    case SNX_A64_OP_FCMEQ_s: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 0, 0); break;
+    case SNX_A64_OP_FCMGE_v:
+    case SNX_A64_OP_FCMGE_s: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 1, 0); break;
+    case SNX_A64_OP_FCMGT_v:
+    case SNX_A64_OP_FCMGT_s: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 2, 0); break;
+    case SNX_A64_OP_FACGE_v: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 1, 1); break;
+    case SNX_A64_OP_FACGT_v: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 2, 1); break;
+    case SNX_A64_OP_FCMEQ0_v: r = fcompare(g, sz, n, vread(g, rn), vzero(g), 0, 0); break;
+    case SNX_A64_OP_FCMGE0_v: r = fcompare(g, sz, n, vread(g, rn), vzero(g), 1, 0); break;
+    case SNX_A64_OP_FCMGT0_v: r = fcompare(g, sz, n, vread(g, rn), vzero(g), 2, 0); break;
+    case SNX_A64_OP_FCMLE0_v: r = fcompare(g, sz, n, vzero(g), vread(g, rn), 1, 0); break;
+    case SNX_A64_OP_FCMLT0_v: r = fcompare(g, sz, n, vzero(g), vread(g, rn), 2, 0); break;
+    case SNX_A64_OP_FCVTZS_vi:
+    case SNX_A64_OP_FCVTZU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTZU_vi, 0); break;
+    case SNX_A64_OP_SCVTF_vi:
+    case SNX_A64_OP_UCVTF_vi: r = ffrom_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_UCVTF_vi, 0); break;
+    case SNX_A64_OP_FCVTZS_vf:
+    case SNX_A64_OP_FCVTZU_vf:
+    case SNX_A64_OP_SCVTF_vf:
+    case SNX_A64_OP_UCVTF_vf: {
+        unsigned size, left, right;
+        int to = insn->op == SNX_A64_OP_FCVTZS_vf || insn->op == SNX_A64_OP_FCVTZU_vf;
+        int un = insn->op == SNX_A64_OP_FCVTZU_vf || insn->op == SNX_A64_OP_UCVTF_vf;
+        if (shift_imm(word, &size, &left, &right) < 0 || size < 2 || (size == 3 && !q)) return -1;
+        sz = size - 2;
+        n = sz ? 2 : q ? 4 : 2;
+        r = to ? fto_int(g, sz, n, vread(g, rn), un, (int)right) : ffrom_int(g, sz, n, vread(g, rn), un, (int)right);
+        break;
+    }
+    case SNX_A64_OP_FCVTL_v: { /* singles to doubles (FCVTL2: the high pair); halves to singles by F16C */
+        int src;
+        if (!sz) {
+            int nan, f16 = (X->features & SGX_F_F16C) != 0;
+            src = q ? sgx_v1(X, &sgx_v_pshufd, vread(g, rn), 0xEE) : vread(g, rn);
+            r = f16 ? sgx_v1(X, &sgx_v_vcvtph2ps, src, 0) : vzero(g);
+            /* a NaN half (magnitude above 0x7C00), AHP, or no F16C: the helper */
+            nan = vgt(g, 1, vand(g, src, vsplat(g, 1, 0x7FFF)), vsplat(g, 1, 0x7C00), 0);
+            {
+                SgB bad = sg_b_or(g, fstate(g, SGX_FPCR_AHP, 0),
+                                  sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, nan, 0)),
+                                                                     sgx_const(32, 0xFF)))));
+                if (!f16) bad = sg_bool(g, 1);
+                r = fcold(g, bad, r, src, 0, 0, (SnxU32)5 | 2u << 4 | 4u << 8 | 4u << 12);
+            }
+            vwrite(g, rd, r, 1);
+            return 1;
+        }
+        src = q ? sgx_v1(X, &sgx_v_pshufd, vread(g, rn), 0xEE) : vread(g, rn);
+        r = sgx_v1(X, &sgx_v_cvtps2pd, src, 0);
+        r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, fnan(g, 0, src), 0, 2)), r, src, 0, 0,
+                  FDESC(5, 0, 2) | 8u << 12);
+        vwrite(g, rd, r, 1);
+        return 1;
+    }
+    case SNX_A64_OP_FCVTN_v: { /* doubles to singles (FCVTN2: into the high doubleword); singles to halves by F16C */
+        int a, bad;
+        SgD bits;
+        if (!sz) {
+            int f16 = (X->features & SGX_F_F16C) != 0, notroomy, zin;
+            SgB cold;
+            a = vread(g, rn);
+            if (f16) {
+                int in[4] = {0, a, 0, 0};
+                r = sgx_vins(X, &sgx_v_vcvtps2ph, 0, 0, in, 4, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+            } else
+                r = vzero(g);
+            /* a half not normal above the smallest (its doubled magnitude less 0x0802 not below 0xEFFE, unsigned),
+               unless from a zero single (the range from 0x0802: (0x7C00 - 0x0401) << 1 = 0xEFFE); FPCR's mode, FZ, AHP, IXC clear: the helper */
+            {
+                int m2 = vadd(g, 1, r, r), t = vsub(g, 1, m2, vsplat(g, 1, 0x0802));
+                notroomy = vgt(g, 1, vxor(g, t, vsplat(g, 1, 0x8000)), vsplat(g, 1, (0xEFFEu - 1) ^ 0x8000u), 0);
+            }
+            zin = op2(g, &sgx_v_packssdw, fzero(g, 0, a), fzero(g, 0, a));
+            cold = sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), fstate(g, SGX_FPCR_AHP, 0)),
+                           sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, vandn(g, zin, notroomy), 0)),
+                                                              sgx_const(32, 0xFF)))));
+            if (!f16) cold = sg_bool(g, 1);
+            r = fcold(g, cold, r, a, 0, 0, (SnxU32)5 | 4u << 4 | 4u << 8 | 2u << 12);
+            vwrite_narrow(g, rd, r, q);
+            return 1;
+        }
+        a = vread(g, rn);
+        r = sgx_v1(X, &sgx_v_cvtpd2ps, a, 0);
+        /* lanes not roomy as singles (MOVMSKPS's first two) and not from a zero double (MOVMSKPD's) */
+        bits = sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskps, fnot_roomy(g, 0, r), 0)),
+                        sg_d_not(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskpd, fzero(g, 1, a), 0))));
+        bad = 0;
+        r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1),
+                             sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, 3))))),
+                  r, a, 0, 0, FDESC(5, 1, 2) | 4u << 12);
+        (void)bad;
+        vwrite_narrow(g, rd, r, q);
+        return 1;
+    }
+    default: return 0;
+    }
+    if (scalar) sg__V_write(g, rd, sgx_xval(128, sgx_xclear(X, r, sz ? 64 : 32)));
+    else
+        vwrite(g, rd, r, q);
+    return 1;
+}
+
 /* ---- the instructions ---- */
 
 /* immh:immb's element size (the highest bit of immh) and shift: left (immh:immb - esize) or right (2 * esize -
@@ -264,6 +592,10 @@ static int shift_imm(SnxU32 word, unsigned* size, unsigned* left, unsigned* righ
 
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
+    {
+        int f = vec_fp(u, insn, word);
+        if (f) return f;
+    }
     unsigned q = word >> 30 & 1, uns = word >> 29 & 1, size = word >> 22 & 3;
     unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
     int a, b, r;

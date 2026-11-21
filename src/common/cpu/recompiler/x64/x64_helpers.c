@@ -6,6 +6,7 @@
    includes this), and in the x86-64 back end's test directly. Each takes the state first, as its code has it in RBX */
 #include "common/cpu/aarch64/cpu.h"
 #include <stdatomic.h>
+#include <string.h>
 
 #define SNX_X64_M(c) ((u8*)(c)->mem)
 
@@ -30,6 +31,7 @@ u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
+void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 
 u64 snx_x64_ldx(CPU* c, u64 a, u32 sz) { return ldx(c, SNX_X64_M(c), a, sz); }
 u32 snx_x64_stx(CPU* c, u64 a, u32 sz, u64 v) { return stx(c, SNX_X64_M(c), a, sz, v); }
@@ -207,4 +209,71 @@ u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr) {
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr) {
     if (fpcr >> 32) return 0;
     return snx_x64_fp_done(c, snx_fp_bfcvt(a, (u32)fpcr));
+}
+
+/* a vector's lanes, the cold path of x64_vec.c's: desc's kind (bits 0-3) 0 to 3 are snx_fp_host_lanes' (its desc as it
+   takes it); the others lane by lane through the helpers LLVM's lanes call (ir_vec_fp.c's map), of bytes (bits 4-7)
+   and lanes (8-11): 4 a compare, cmp (12-13: 0 EQ, 1 GE, 2 GT) of the magnitudes where abs (16), all ones where it
+   holds; 5 a conversion to the width of bytes (12-15); 6 to integers of the lanes' width, uns (12), fbits (16-22),
+   rm + 1 (24-26, 0 FPCR's); 7 from integers, uns (12), fbits (16-22); 8 FRINT, rm + 1 (12-14), exact (16) */
+static inline u64 snx_x64_lane_get(const void* p, unsigned i, unsigned bytes) {
+    u64 v = 0;
+    memcpy(&v, (const char*)p + i * bytes, bytes);
+    return v;
+}
+static inline void snx_x64_lane_put(void* p, unsigned i, unsigned bytes, u64 v) { memcpy((char*)p + i * bytes, &v, bytes); }
+void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    unsigned kind = desc & 15, bytes = desc >> 4 & 15, lanes = desc >> 8 & 15, i, w = bytes * 8;
+    unsigned char r[16];
+    if (kind <= 3) {
+        c->fpsr = snx_fp_host_lanes(out, x, y, z, desc, c->fpcr, c->fpsr);
+        return;
+    }
+    memset(r, 0, sizeof r);
+    for (i = 0; i < lanes; ++i) {
+        u64 a = snx_x64_lane_get(x, i, bytes), b = snx_x64_lane_get(y, i, bytes);
+        SnxFpReply rep;
+        switch (kind) {
+        case 4: {
+            unsigned cmp = desc >> 12 & 3;
+            u64 nz;
+            if (desc >> 16 & 1) {
+                a &= ~(1ull << (w - 1));
+                b &= ~(1ull << (w - 1));
+            }
+            rep = snx_fp_compare(a, b, (int)w, cmp != 0, c->fpcr);
+            nz = rep.value;
+            rep.value = (cmp == 0 ? nz == 6 : cmp == 1 ? (nz & 0xB) == 2 : nz == 2) ? ~0ull : 0;
+            snx_x64_lane_put(r, i, bytes, rep.value);
+            break;
+        }
+        case 5: {
+            unsigned to = desc >> 12 & 15;
+            rep = snx_fp_convert(a, (int)w, (int)to * 8, (int)((c->fpcr >> 22) & 3), c->fpcr);
+            snx_x64_lane_put(r, i, to, rep.value);
+            break;
+        }
+        case 6: {
+            unsigned rm1 = desc >> 24 & 7;
+            rep = snx_fp_to_int(a, (int)w, (int)w, (int)(desc >> 12 & 1), (int)(desc >> 16 & 127),
+                                rm1 ? (int)rm1 - 1 : (int)((c->fpcr >> 22) & 3), c->fpcr);
+            snx_x64_lane_put(r, i, bytes, rep.value);
+            break;
+        }
+        case 7:
+            rep = snx_fp_from_int(a, (int)w, (int)w, (int)(desc >> 12 & 1), (int)(desc >> 16 & 127), c->fpcr);
+            snx_x64_lane_put(r, i, bytes, rep.value);
+            break;
+        default: {
+            unsigned rm1 = desc >> 12 & 7;
+            rep = snx_fp_round(a, (int)w, rm1 ? (int)rm1 - 1 : (int)((c->fpcr >> 22) & 3), (int)(desc >> 16 & 1),
+                               c->fpcr);
+            snx_x64_lane_put(r, i, bytes, rep.value);
+            break;
+        }
+        }
+        c->fpsr |= rep.flags;
+        (void)b;
+    }
+    memcpy(out, r, 16);
 }

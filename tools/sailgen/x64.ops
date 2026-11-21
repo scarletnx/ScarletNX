@@ -516,3 +516,9 @@ enc maxss MAXSS xmm1, xmm2/m32
 enc maxsd MAXSD xmm1, xmm2/m64
 enc minss MINSS xmm1, xmm2/m32
 enc minsd MINSD xmm1, xmm2/m64
+enc maxps MAXPS xmm1, xmm2/m128
+enc maxpd MAXPD xmm1, xmm2/m128
+enc minps MINPS xmm1, xmm2/m128
+enc minpd MINPD xmm1, xmm2/m128
+enc vfmadd231ps VFMADD231PS xmm1, xmm2, xmm3/m128
+enc vfmadd231pd VFMADD231PD xmm1, xmm2, xmm3/m128

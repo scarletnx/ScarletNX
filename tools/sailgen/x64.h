@@ -178,9 +178,9 @@ typedef struct {
     int v;  /* SGX_B_CONST: 0 or 1; SGX_B_REG: the virtual register; SGX_B_CC: the instruction whose flags */
 } SgXBool;
 
-#define SGX_MAXI 1024
-#define SGX_MAXV 2048
-#define SGX_MAXB 1024
+#define SGX_MAXI 4096
+#define SGX_MAXV 8192
+#define SGX_MAXB 4096
 
 typedef struct {
     SgXIns ins[SGX_MAXI];
@@ -1044,6 +1044,34 @@ static inline SgD sgx_cold(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, 
     i->side = 1; /* its call changes FPSR though nothing reads its value */
     i->def = cls ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
     return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
+}
+
+/* the vector form of sgx_cold: when c holds, sym(state, &out, &a, &b, &d, desc) on the cold path, the XMM values a,
+   b, d (0: a's) passed by their addresses and the result read from out's 16 bytes; else tied's */
+static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc) {
+    int from, cc;
+    SgXIns* i;
+    SgXBool* bb = &x->b[c];
+    if (!c || (bb->kind == SGX_B_CONST && !bb->v)) return tied;
+    if (bb->kind == SGX_B_CONST) {
+        SgD one = sgx_const(32, 1);
+        c = sgx_bool(x, SGX_B_REG, sgx_reg(x, &one), 0);
+    }
+    cc = sgx_bool_cc(x, c, &from);
+    i = sgx_append(x, SGX_K_COLD);
+    i->cc = (unsigned char)cc;
+    i->flags_from = from;
+    i->sym = sym;
+    i->vflags = 2;
+    i->imm = desc;
+    i->in[0] = tied;
+    i->in[1] = a;
+    i->in[2] = b ? b : a;
+    i->in[3] = d ? d : a;
+    i->w = 3;
+    i->side = 1;
+    i->def = sgx_xvreg(x, x->n - 1);
+    return i->def;
 }
 
 static inline SgB sg_b_not(SgCtx* g, SgB a) {
@@ -2144,6 +2172,40 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             sgx_vmem(a, &sgx_v_movdqu_st, k, SGX_RSP, 8 * xslot[k]);
         }
         if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
+        if (i->vflags == 2) {
+            /* the vector form: each XMM argument's 16 bytes in memory (its slot where it was spilled), the result's
+               16 bytes, their addresses in RSI (the result), RDX, RCX, R8, desc in R9D */
+            int outslot, aslot[3];
+            if (n % 2) ++n;
+            outslot = a->slots + n;
+            n += 2;
+            for (k = 0; k < 3; ++k) {
+                SgXV* vv = &x->v[i->in[1 + k]];
+                if (vv->reg >= 0) {
+                    aslot[k] = a->slots + n;
+                    n += 2;
+                    sgx_vmem(a, &sgx_v_movdqu_st, vv->reg, SGX_RSP, 8 * aslot[k]);
+                } else
+                    aslot[k] = vv->slot;
+            }
+            if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
+            {
+                static const signed char lea_to[4] = {6, 2, 1, 8};
+                for (k = 0; k < 4; ++k) {
+                    int dst = lea_to[k], at8 = 8 * (k ? aslot[k - 1] : outslot);
+                    sgx_byte(c, (unsigned char)(0x48 | (dst >> 3) << 2)); /* lea dst, [rsp + at8] */
+                    sgx_byte(c, 0x8D);
+                    sgx_byte(c, (unsigned char)(0x84 | (dst & 7) << 3));
+                    sgx_byte(c, 0x24);
+                    sgx_imm(c, at8, 4);
+                }
+                sgx_byte(c, 0x41); /* mov r9d, desc */
+                sgx_byte(c, 0xB9);
+                sgx_imm(c, i->imm, 4);
+            }
+            nargs = 0;
+            argslot[0] = outslot;
+        }
         /* the arguments: from a saved register's slot, an XMM register, or the value's own slot */
         for (k = 0; k < nargs; ++k) {
             int v = i->in[1 + k], dst = args_reg[k];
@@ -2188,7 +2250,9 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             sgx_byte(c, 0xFF);
             sgx_byte(c, 0xD0);
         }
-        if (cls) {
+        if (i->vflags == 2)
+            sgx_vmem(a, &sgx_v_movdqu_ld, outreg, SGX_RSP, 8 * argslot[0]);
+        else if (cls) {
             unsigned char r[4] = {0, 0, 0, 0};
             r[(int)sgx_v_movq_xr.reg] = (unsigned char)outreg;
             r[(int)sgx_v_movq_xr.rm] = 0; /* RAX */
