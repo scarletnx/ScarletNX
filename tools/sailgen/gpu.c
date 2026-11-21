@@ -272,10 +272,11 @@ typedef struct {
     int nparams;
 } Sig;
 
+/* a carriage return is a blank too: a checkout on Windows ends the Sail's lines with CR LF */
 static void trim(char* s) {
     size_t n = strlen(s);
-    while (n && (s[n - 1] == ' ' || s[n - 1] == '\n' || s[n - 1] == '\t')) s[--n] = 0;
-    while (*s == ' ' || *s == '\t' || *s == '\n') memmove(s, s + 1, strlen(s));
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\n' || s[n - 1] == '\t' || s[n - 1] == '\r')) s[--n] = 0;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') memmove(s, s + 1, strlen(s));
 }
 
 /* a val's text read again: "val NAME : [forall ... .] (T, ...) -> R" or "T -> R" */
