@@ -398,3 +398,44 @@ to an input, a feature the host may have first): the first whose CPUID feature t
 the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--isel` when `SNX_SAIL_X64` is on, from the
 PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
 few pages in the manual's notation written for the test (`sailgen_isel`).
+
+### At run time (`x64.h`, `x64_a64.h`)
+
+```sh
+sailgen --generate a64_x64.roots --backend bits.h --backend x64.h --backend x64_a64.h --profile a64.profile \
+        -o a64_x64.inc a64.sail --overlay nx.sail
+```
+
+The same generator (`gen.c`), with the x86-64 back end at the output's top in place of LLVM's: the CONST and STATIC
+times are folded when sailgen runs and when the emitter runs as for LLVM, and what is DYN is appended to a short SSA
+of the block's x86 instructions (`SgXIns`: a selected candidate, virtual registers for its operands, an immediate),
+the assembly itself. The emitter does what costs little as it appends: constants fold, an operand that is a constant
+picks the candidate whose immediate it fits (`imm8` sign extended before `imm32`), a candidate needing a feature the
+host lacks is passed over (SHLX for SHL CL; a primitive none can make leaves the word to another back end), an input a
+form reads whole is zero extended only where its register isn't (each value knows the bits of its register above it
+that are 0: the selection said which forms leave their result so), NOT stays unmade until something reads it (a
+subtraction takes the operand it was of), and a chain of operations with constants folds into its first (`x AND k1 AND
+k2` is one AND). Flags are the instruction that made them: AddWithCarry's NZCV is that instruction read through its
+candidate's map of Arm's flags (SUBS's C is `setae`, ADDS's `setb`), an ANDS on the result of the AND that just set
+the flags is that AND (the selection lists its form for `ands` too), and ConditionHolds on them is the condition code
+the selection derived for that Arm condition on that form, while no instruction since has written the flags (before
+one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them).
+
+When the block ends, `sgx_optimize` drops what nothing reads, and an instruction whose result nothing reads but whose
+flags something does becomes its flags-only candidate (SUBS to the zero register: CMP); `sgx_assemble` then gives the
+virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; RBX holds the state's address), moving
+a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
+form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
+SETcc forms is the state's memory for the loads and stores of the guest's registers and flags. Nothing spills yet:
+a block that needs more registers than the nine stops the emitter.
+
+`x64_a64.h` keeps A64's state where `cpu.h`'s CPU does (`x[32]`; `n`, `z`, `cf`, `vf` each a 32-bit 0 or 1), reads
+a register once a block, stores each write at once, and writes only the ABI's own as bytes: the prologue, the call of
+the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one word a function `u64 step(CPU*)`.
+`a64_x64.roots` is the subset it makes: the integer data processing and the branch operands but for the carries in, the
+conditional compares, the divisions, CRC32, PAuth, CLS, RBIT and the flag manipulations.
+
+**The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
+(again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
+run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
+UNDEF must match. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).

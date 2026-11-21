@@ -3372,6 +3372,20 @@ if(NOT WIN32)
         add_test(NAME llvm_sail_ir_${part} COMMAND snx-test-llvm-sail-ir --part ${part}/3)
         set_tests_properties(llvm_sail_ir_${part} PROPERTIES TIMEOUT 600)
     endforeach()
+    # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against its LLVM
+    # back end: the same registers, flags, next pc and UNDEF from the same random states, word by word, on the host's
+    # BMI1, BMI2 and LZCNT and without them
+    if(SNX_SAIL_X64)
+        include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+        add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c)
+        snx_test_target(snx-test-sail-x64 gnu23)
+        target_include_directories(snx-test-sail-x64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(snx-test-sail-x64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+        snx_decodetree_a64(snx-test-sail-x64)
+        snx_sailgen_a64_x64(snx-test-sail-x64)
+        add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
+        set_tests_properties(sail_x64 PROPERTIES TIMEOUT 600)
+    endif()
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
     # alone and in an IT block, and the same results run here. Each part takes a sixteenth of its third, spread over
