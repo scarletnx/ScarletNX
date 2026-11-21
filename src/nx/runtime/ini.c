@@ -372,6 +372,7 @@ static const struct {
                       {"game_dynamic_resolution", "went with the OpenGL renderer"},
                       {"low_priority_shader_compiler", "went with the OpenGL renderer"},
                       {"forced_vsync", "now vsync"},
+                      {"tracy_perf_map", "now perf_map"},
                       {"smooth_recording", "the F7 recorder went with the OpenGL renderer"},
                       {"recording_fps", "the F7 recorder went with the OpenGL renderer"},
                       {"lsfg", "LSFG went with the OpenGL renderer"},
@@ -436,7 +437,13 @@ const char* ini_deprecated(const char* k) {
 }
 static const struct {
     const char *key, *now;
+<<<<<<< HEAD
 } INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"}, {NULL, NULL}};
+||||||| parent of a654ca9a7 ([tracy] Add the profiling wrapper, settings and client bridge)
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {NULL, NULL}};
+=======
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"tracy_perf_map", "perf_map"}, {NULL, NULL}};
+>>>>>>> a654ca9a7 ([tracy] Add the profiling wrapper, settings and client bridge)
 const char* ini_renamed(const char* k) {
     int i;
     for (i = 0; INI_RENAMED[i].key; i++)

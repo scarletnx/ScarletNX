@@ -36,6 +36,7 @@ renderer=opengl
 | Old | Replaced by | Now | How it is told |
 |---|---|---|---|
 | `.ini` keys `renderer`, `dynamic_resolution`, `dynamic_resolution_min`, `game_dynamic_resolution`, `low_priority_shader_compiler`, `smooth_recording`, `recording_fps`, `lsfg`, `lsfg_dll`, `lsfg_target`, `lsfg_multiplier`, `lsfg_flow`, `lsfg_resolution`, `lossless_scaling`, `lossless_path` | Remove the OpenGL renderer | nothing: they went with it | under `[Deprecated]`, named once a run |
+| `.ini` key or `--tracy-perf-map` option `tracy_perf_map` | this branch's Tracy profiling | `perf_map` / `--perf-map` | under [Deprecated], named once a run; the runtime does not read the old key; the launcher renames the key |
 | `.ini` key `audio_device` | [gpu/audio] Fix viewport flips and audio playback | playback follows the system's default | the same |
 | `.ini` key `forced_vsync` | Remove the OpenGL renderer | `vsync` | the same |
 | `.ini` keys `touch_controls`, `touch_controls_opacity` | [runtime] Isolate shared core and NX runtime | `controls`; the opacity nothing, the controls opaque | the same |

@@ -1045,7 +1045,7 @@ setting Tracy capture shortcut
     default F10
     label Tracy capture
     set hotkey_set
-    help The key that records a 60-second Tracy capture, as hotkey_help's
+    help The key that records a Tracy capture of tracy_capture_seconds, as hotkey_help's
 end
 setting Pause shortcut
     key hotkey_pause
@@ -1973,8 +1973,14 @@ setting Tracy capture
     startup
     words Off|On
     help 1 = records this run to a trace beside the game and opens it in the profiler when the run ends; the client
-    help starts for it, so the GUI cannot have the run as well. F10 starts a 60-second capture while a run goes.
+    help starts for it, so the GUI cannot have the run as well. F10 starts a capture while a run goes.
     help tracy-capture must be on PATH, and the runtime built with SNX_TRACY
+setting Tracy capture seconds
+    key tracy_capture_seconds
+    int 1 3600
+    default 60
+    help The seconds a capture records: the run's own capture at the start, and one F10 starts while the game plays.
+    help The capture writes the trace when it stops, so a longer one holds more of the run but takes more disk space
 setting Tracy sampling
     key tracy_sampling
     int 0 1
@@ -2006,8 +2012,8 @@ setting Tracy port
     text 6
     default ""
     startup
-    help The port the client listens on and the capture connects to, a number of 1 to 65535. Empty: one of the
-    help run's own, so an earlier capture or GUI on 8086 is not in the way
+    help The port the client listens on and the capture connects to, a number of 1 to 65535. Empty: Tracy's 8086
+    help unless a capture is requested, when one of the run's own ports is used instead
 setting Tracy capture tool
     key tracy_capture_tool
     text 1024
@@ -2021,7 +2027,54 @@ setting Tracy open trace
     startup
     words Off|On
     help 1 = opens the trace in tracy-profiler when the run ends
+setting Tracy zone callstack
+    key tracy_zone_callstack
+    int 0 16
+    default 0
+    startup
+    help The callstack depth an SNX_ZONE_CS zone captures, 0 to 16 frames. 0 = no callstack; a larger depth gives the
+    help flame graphs more frames but costs more time and space in the trace
+setting Tracy memory detail
+    key tracy_memory_detail
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = emits a Memory view event for each game malloc, audio and video buffer, and GPU object, so a trace can
+    help show which pool holds the bytes. Every game malloc and free then pays the cost of a Tracy event, so leave this
+    help off unless the trace needs those pools; guest mappings and Vulkan device memory are always tracked
+setting Tracy memory callstack
+    key tracy_memory_callstack
+    int 0 16
+    default 0
+    startup
+    help The call stack depth added to the detailed memory events of tracy_memory_detail, 0 to 16 frames. 0 = none.
+    help A larger depth shows the code that made each allocation, and costs time at every game malloc and free
+setting Tracy lock marks
+    key tracy_lock_marks
+    int 0 1
+    default 0
+    words Off|On
+    startup
+    help 1 = adds a try event for named locks and records the source line for each lock mark. Wait, take and release
+    help events go out with any attached client. Leave this off unless the lock pane needs try outcomes
+setting Tracy GPU zone callstack
+    key tracy_gpu_zone_callstack
+    int 0 16
+    default 0
+    startup
+    help The call stack depth added to each GPU pass zone, 0 to 16 frames. 0 = none. A larger depth walks the CPU
+    help stack where the pass is recorded. This costs much time, so use it on pass-level zones only
 end
+setting Perf map
+    key perf_map
+    int 0 1
+    default 0
+    startup
+    only linux
+    words Off|On
+    help 1 = names the code the runtime JIT compiles in Linux perf maps, so a sampled flame graph names those frames.
+    help The map is written as loads compile, and any lines not yet emitted are appended at exit; 0 writes no map
 
 # the unattended runs' (platform/unattended.c): read as the .ini's settings are, from the command line, but in no section,
 # so never written back

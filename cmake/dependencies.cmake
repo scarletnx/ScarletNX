@@ -279,22 +279,26 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 
     # Tracy client, for SNX_TRACY development builds.
     if(SNX_TRACY)
+        option(SNX_TRACY_WAIT_STACKS "Keep Tracy's wait stacks on: they walk the stack at every context switch and need root and tracefs" OFF)
         # The sampler and the callstacks it needs are on; the zones take no callstacks of their own, so it costs
-        # nothing per zone. The wait stacks are off: they walk the stack at every context switch, and they need
-        # root and tracefs. The zones' own validation is on: it queues a ZoneValidation next to every zone begin,
-        # end, text and value, doubled per zone and only while a server is attached, which is the price of a run
-        # that says when this runtime's zone pairs are unbalanced. The code the zones are in and the pictures of the
-        # presented frame are on too: both cost nothing until a GUI asks for them.
+        # nothing per zone. The wait stacks are off by default: SNX_TRACY_WAIT_STACKS=ON keeps them on. They walk the
+        # stack at every context switch, and they need root and tracefs. The zones' own validation is on: it queues a
+        # ZoneValidation next to every zone begin, end, text and value, doubled per zone and only while a server is
+        # attached, which is the price of a run that says when this runtime's zone pairs are unbalanced. The code the
+        # zones are in and the pictures of the presented frame are on too: both cost nothing until a GUI asks for them.
         # Fibers are on: the guest's waits get a lane each, named by what the thread blocked on. Tracy's set_option
         # makes TRACY_FIBERS a PUBLIC define, so the runtime that emits them sees it too.
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
                               "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_WAIT_STACKS ON" "TRACY_FIBERS ON")
+        if(SNX_TRACY_WAIT_STACKS)
+            list(REMOVE_ITEM snx_tracy_options "TRACY_NO_WAIT_STACKS ON")
+        endif()
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
         AddJsonPackage(NAME tracy FORCE_BUNDLED_PACKAGE ON OPTIONS ${snx_tracy_options})
-        # The sampler waits for the runtime to ask for it, and samples at 1 kHz unless TRACY_SAMPLING_HZ says
-        # otherwise.
+        # The sampler waits for the runtime to ask for it and samples at 1 kHz; TRACY_SAMPLING_HZ is this build's
+        # compile-time define, not an environment variable.
         target_compile_definitions(TracyClient PRIVATE TRACY_SAMPLING_PROFILER_MANUAL_START TRACY_SAMPLING_HZ=1000)
         snx_quiet(TracyClient)
     endif()
