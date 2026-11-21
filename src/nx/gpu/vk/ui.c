@@ -28,6 +28,7 @@
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/vpad.h"
 
 #define MAX_QUADS 4096
@@ -255,8 +256,14 @@ static int pipeline_make(VkFormat format) {
         ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipes[i]));
         snx_vk_compile_leave(entered);
     }
-    if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
-    if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
+    if (vs) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)vs, "shader modules");
+        vkDestroyShaderModule(g_vk.dev, vs, NULL);
+    }
+    if (fs) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)fs, "shader modules");
+        vkDestroyShaderModule(g_vk.dev, fs, NULL);
+    }
     g_pipe_format = format;
     g_pipe_space = g_vk.sc_space;
     g_pipe_tiler = blend;

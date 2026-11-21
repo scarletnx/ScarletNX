@@ -39,6 +39,13 @@ VkShaderStageFlags g_vk_subgroup_stages;
 VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+static SnxTracyLock* vk_lock_context(void) {
+    void* named = atomic_load_explicit(&g_vklock.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 static _Thread_local int t_vkdepth;
 /* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
    this one's (vk_own_release_held) */
@@ -106,14 +113,16 @@ void vk_lock(void) {
         if (!got) { /* held: the GPU thread says so for the stall report */
             uintptr_t holder = atomic_load_explicit(&g_vk_site, memory_order_relaxed);
             u64 t_wait = plat_ns();
-            /* Only a contended acquisition gets a zone. */
-            SNX_ZONE(z_wait, "vk lock wait");
+            /* Only a contended acquisition gets a zone. The text names the holder, gated by SNX_TRACY_EMIT so
+               vk_lock_owner() is read only when a client is attached. */
+            SNX_ZONE_T(z_wait, "vk lock wait", "holder %u", vk_lock_owner());
             gpu_wait_note("vk_lock, which another thread holds", 0);
             /* the timeout only guards against a wake lost to the store's race: the baton is cleared at each take */
             while (atomic_load_explicit(&g_vk_baton, memory_order_acquire)) plat_wait_word(&g_vk_baton, 1, 1000000);
             if (!pm_trylock(&g_vklock)) {
                 atomic_fetch_add_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
                 pm_lock(&g_vklock);
+                SNX_LOCK_MARK(vk_lock_context()); /* held here, other threads waiting in pm_lock */
                 atomic_fetch_sub_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
             }
             gpu_wait_note(NULL, 0);
@@ -3091,6 +3100,7 @@ int vk_init(void) {
     if (cap) g_vk.api_cap = cap;
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
+    pm_lock_announce(&g_vk.sc_lock, "vk swapchain"); /* the game's threads and the GPU thread around present */
     if (g_opt_headless) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */

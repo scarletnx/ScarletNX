@@ -473,6 +473,7 @@ static int gsem_done(u64* done) {
         gsem_lost();
     return VK_OK(r);
 }
+const char* const g_vk_wait_name[VK_WAIT_N] = {"finish", "frame slot reuse", "a release or result's submit"};
 /* kind: VK_WAIT_*, for the statistics */
 static void timeline_wait(u64 value, int kind) {
     u64 t0 = plat_ns(), done = 0;
@@ -481,8 +482,18 @@ static void timeline_wait(u64 value, int kind) {
     if (gsem_done(&done) && done >= value) return;
     int mine = gpu_wait_note("a graphics submission", value);
     if (mine) vk_gpuprof_waited(value, kind);
-    SNX_ZONE_V(z, "timeline wait", value);
+    /* frame slot reuse, a finish or a release's submit name the wait; only a trace reads the clock and the lock's
+       holder after the wait, for text that says how long it took and how far the GPU was behind */
+    int trace = snx_tracy_attached();
+    u32 lock_holder = trace ? vk_lock_owner() : 0;
+    SNX_ZONE_V(z, "vk: timeline wait", value);
     vk_wait_semaphore(g_gsem, value);
+    if (trace) {
+        u64 us = (plat_ns() - t0) / 1000;
+        SNX_ZONE_TEXT(z, "%s %lluus gate %llu done %llu queued %llu lock %u", g_vk_wait_name[kind],
+                      (unsigned long long)us, (unsigned long long)value, (unsigned long long)done,
+                      (unsigned long long)vk_rec_gfx_queued(), lock_holder);
+    }
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
     if (mine) {
@@ -530,6 +541,8 @@ void vk_frame_ready(void) {
     vk_submit_progress(&submitted, &done);
     if (at > submitted || at <= done) return; /* not handed to the GPU yet (frame_recycle waits then), or done */
     SNX_ZONE(z, "vk frame ready");
+    SNX_ZONE_TEXT(z, "frame slot %u, gate %llu of %llu", vk_frame_slot(), (unsigned long long)at,
+                  (unsigned long long)submitted);
     timeline_wait(at, VK_WAIT_RECYCLE);
 }
 static void pool_recycle(Frame* f);
@@ -546,6 +559,7 @@ static void frame_recycle(Frame* f) {
         land_through(done);
         landed = done;
     }
+    SNX_ZONE_TEXT(z, "slot %u, gate %llu", (unsigned)(f - g_fr), (unsigned long long)landed);
     f->last = 0;
     f->hold = 0;
     g_cmd.recycles++;
@@ -1168,6 +1182,9 @@ static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkA
 }
 /* the submissions that waited for compute results and for ASTC uploads (the "submitted, not started" idle) */
 u64 g_vk_cs_waits, g_vk_astc_waits;
+/* the one name of each reason for a submission, shared with gpuprof.c's log (vk.h) */
+const char* const g_vk_sub_name[VK_SUB_N] = {"other", "present", "finish", "1 ms",
+                                             "readback", "frame end", "split", "background"};
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
@@ -1235,6 +1252,19 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     f->recording = 0;
     f->icb++;
     SNX_ZONE_VALUE(z_submit, f->icb);
+    /* cb is the submissions in this frame, so at a present it is the submissions in one present; rec is how many
+       bytes of commands the recording thread still has to get through, from the ring's head to its tail. Only a
+       trace walks the counts to name the busiest reason; w above holds the submission's semaphore waits */
+    if (snx_tracy_attached()) {
+        u32 top = 0;
+        for (u32 i = 1; i < VK_SUB_N; i++)
+            if (g_cmd.submits[i] > g_cmd.submits[top]) top = i;
+        SNX_ZONE_TEXT(z_submit, "%s cb%u g%llu rec%lluB top %s %llu", g_vk_sub_name[why], f->icb,
+                      (unsigned long long)atomic_load_explicit(&g_gval, memory_order_relaxed),
+                      (unsigned long long)vk_rec_behind(), g_vk_sub_name[top],
+                      (unsigned long long)g_cmd.submits[top]);
+    }
+    if (why == VK_SUB_PRESENT) SNX_PLOT("vk submissions per present", (double)f->icb);
     f->last = atomic_load_explicit(&g_gval, memory_order_relaxed);
     g_rec_unsafe--;
     /* results of submissions the GPU has finished land now, so a later release doesn't find them pending */
@@ -1596,8 +1626,11 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
     ci.poolSizeCount = types;
     ci.pPoolSizes = sz;
     VkDescriptorPool p = VK_NULL_HANDLE;
-    if (VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &p)))
+    if (VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &p))) {
+        /* a pool's memory is made whole when it is: the sets it holds live until the pool is reset or given back */
+        SNX_MEM_ALLOC_D((const void*)(uintptr_t)p, 0, "descriptor sets");
         atomic_fetch_add_explicit(&g_desc_pools, 1, memory_order_relaxed);
+    }
     return p;
 }
 u32 vk_desc_pools(void) { return atomic_load_explicit(&g_desc_pools, memory_order_relaxed); }
@@ -1610,7 +1643,9 @@ void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* use
     if (++*uses < VK_DESC_POOL_USES) return;
     keep = *peak > 1 ? *peak : 1;
     while (*npool > keep) {
-        vkDestroyDescriptorPool(g_vk.dev, pools[--*npool], NULL);
+        const VkDescriptorPool gone = pools[--*npool];
+        SNX_MEM_FREE_D((const void*)(uintptr_t)gone, "descriptor sets");
+        vkDestroyDescriptorPool(g_vk.dev, gone, NULL);
         pools[*npool] = VK_NULL_HANDLE;
         atomic_fetch_sub_explicit(&g_desc_pools, 1, memory_order_relaxed);
     }

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
+#include "nx/runtime/platform/tracy.h"
 #include <math.h>
 
 int vk_hdr_surface_format(u32 space, const VkSurfaceFormatKHR* formats, u32 n, VkSurfaceFormatKHR* out) {
@@ -37,6 +38,10 @@ int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSu
            : !vk_hdr_surface_format(SNX_HDR_SPACE_SCRGB, formats, n, &found)
                ? "the window's surface lists no scRGB (extended linear sRGB) half float format"
                : NULL;
+    SNX_PLOT("vk pres hdr", *why ? 0.0 : 1.0);
+    if (*why) { /* the reason the window shows SDR */
+        SNX_ZONE_T(z, "vk pres hdr off", "%s", *why);
+    }
     return !*why;
 }
 
