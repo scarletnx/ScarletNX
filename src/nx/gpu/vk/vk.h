@@ -2779,7 +2779,7 @@ typedef struct {
 } VkCbReads;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
 /* the window of a program's bytes that vk_shader_get reads from its SPH (pipeline.c says why it is this wide) */
-#define SH_CODE 0x80000u
+#define SH_CODE 0x100000u
 /* Read/hash a program into code, SH_CODE bytes zero-padded, without cohering unrelated trailing data. Holds
    vk_lock. */
 void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read);

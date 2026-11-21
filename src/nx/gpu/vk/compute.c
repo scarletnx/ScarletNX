@@ -124,8 +124,8 @@ u64 g_vk_dispatches, g_vk_cs_batches;
 _Atomic u64 g_vk_cs_wait_ns;
 u64 g_vk_cs_open, g_vk_cs_left; /* vk.h */
 /* A program's window: 80 zero bytes in place of a header, then the bytes of its code that cs_read_code reads, and zeros
-   after them. It takes as much code as a graphics program's window (pipeline.c's SH_CODE): an Ounce game has a
-   compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
+   after them. It took as much code as a graphics program's window (pipeline.c's SH_CODE) before that grew for longer
+   fragment programs: an Ounce game has a compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
    skipped as not translated */
 #define CS_CODE   0x80000u
 #define CS_WINDOW (CS_CODE + 80u)

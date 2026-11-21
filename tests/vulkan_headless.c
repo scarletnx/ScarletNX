@@ -8418,7 +8418,7 @@ static int run_headless(int argc, char** argv) {
         else if (!strcmp(name, "late_depth_shadow"))
             result = check_late_depth_shadow();
         else if (!strcmp(name, "shader_windows"))
-            result = check_shader_read_windows();
+            result = check_shader_read_windows() || check_sm86_long_window();
         else if (!strcmp(name, "texture_half"))
             result = check_texture_half_rounding();
         else if (!strcmp(name, "cross_stage_alias"))
@@ -8868,6 +8868,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_blend_capture());
     CHECK(!check_late_depth_shadow());
     CHECK(!check_shader_read_windows());
+    CHECK(!check_sm86_long_window());
     CHECK(!check_texture_half_rounding());
     CHECK(!check_cross_stage_image_alias());
     CHECK(!check_cross_stage_blend_snapshots());
