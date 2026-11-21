@@ -46,7 +46,8 @@ runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game the
   recompiler and the runtime JIT alike: LSE, RDM, FP16, the dot product, RCpc with LRCPC2, PAuth with authentication
   off, FlagM and ESB. It has no JSCVT, FCMA, DIT or MSR SSBS (PFR1's SSBS is 1). Before, an Ounce game took
   `cpu_extensions=1`'s LSE, RCpc and PAuth only, and one game's bootstrap level stopped on a UDOT
-- the 10 GiB application pool and the 12 GiB heap region of `memory_gb=12`
+- a 9152 MiB application pool, the 12 GiB heap region of `memory_gb=12` and a 128 GiB alias region, the sizes
+  GetInfo answers a native program on the console
 - SM86 shaders and the T239's GOB
 - a 31.25 MHz system tick. The SDK's `nn::os::GetSystemTickFrequency` returns 31,250,000 as a constant, and the SDK
   never reads `CNTFRQ_EL0`. With the Switch's 19.2 MHz, the game's time ran at 0.61 of real time. The GPU's

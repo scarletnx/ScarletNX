@@ -86,11 +86,13 @@ static int user_writable(u64 a, u64 size) {
 
 /* ============================================================ accounting */
 /* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
-   boards; 12, and an Ounce game, an experimental 10 GiB budget, more than the older console's pool), see
-   docs/platforms/nx/memory-accounting.md */
+   boards; 12, an experimental 10 GiB budget), and an Ounce program's, 9152 MiB, as GetInfo 6 answers a native program
+   on that console (and 21 the same less its 16 MiB of system resource), see docs/platforms/nx/memory-accounting.md */
+#define OUNCE_POOL (9152 * MIB)
 static int large(void) { return g_settings.memory_gb >= 12 || g_ounce; }
 static u64 pool_of(int memory_gb) {
-    if (memory_gb >= 12 || g_ounce) return 10ull << 30;
+    if (g_ounce) return OUNCE_POOL;
+    if (memory_gb >= 12) return 10ull << 30;
     if (memory_gb >= 8) return 6964 * MIB;
     if (memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
