@@ -7,7 +7,7 @@
    one layer and three; block linear 100 pixels across, so the last GOB of a row holds part of it, and two rows of
    blocks, the second cut short. Each is loaded from guest memory holding a pattern, its red cleared to 0.5 alone, and written
    back: the red bytes of every pixel hold 0.5 in the format, and every other byte, padding too, keeps the pattern */
-#define WS_CPU  (HEAP_BASE + 0x32000000)
+#define WS_CPU  (HEAP_BASE + 0x40000000) /* past every other check's host bytes: the process is one address space */
 #define WS_GVA  0xD00000000ull
 #define WS_SPAN 0x1400000ull /* 20 MiB */
 
