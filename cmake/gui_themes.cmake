@@ -25,6 +25,7 @@ set(snx_gui_themes_colors "")
 set(snx_gui_themes_index 0)
 set(snx_gui_pictures none square round) # [head] picture's words, GuiPicture's order
 set(snx_gui_progresses amount percent time) # [run] progress's words, GuiProgress's order
+set(snx_gui_rings none left right right-near-text) # [run] ring's words, GuiRing's order
 set(snx_gui_hex "[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]")
 foreach(id IN LISTS snx_gui_themes)
     set(file "${snx_gui_themes_dir}/${id}/theme.ini")
@@ -66,6 +67,8 @@ foreach(id IN LISTS snx_gui_themes)
             endif()
         elseif(section STREQUAL "run" AND line MATCHES "^[ \t]*progress[ \t]*=[ \t]*(amount|percent|time)[ \t\r]*$")
             list(FIND snx_gui_progresses "${CMAKE_MATCH_1}" word_${name}_RUN_PROGRESS)
+        elseif(section STREQUAL "run" AND line MATCHES "^[ \t]*ring[ \t]*=[ \t]*(none|left|right|right-near-text)[ \t\r]*$")
+            list(FIND snx_gui_rings "${CMAKE_MATCH_1}" word_${name}_RUN_RING)
         elseif(section STREQUAL "transitions" AND line MATCHES "^[ \t]*fade_(in|out)_ms[ \t]*=[ \t]*([0-9]+)[ \t\r]*$")
             # a number past 10000 is none to theme.c, which keeps the base's
             string(TOUPPER "${CMAKE_MATCH_1}" key)
@@ -102,7 +105,7 @@ foreach(id IN LISTS snx_gui_themes)
             string(APPEND snx_gui_themes_colors "#define SNX_GUI_THEME_${name}_${key} \"${text_${name}_${key}}\"\n")
         endif()
     endforeach()
-    foreach(key RUN_STEPS RUN_TEXTURE RUN_PROGRESS FADE_IN_MS FADE_OUT_MS)
+    foreach(key RUN_STEPS RUN_TEXTURE RUN_PROGRESS RUN_RING FADE_IN_MS FADE_OUT_MS)
         if(DEFINED word_${name}_${key})
             string(APPEND snx_gui_themes_colors "#define SNX_GUI_THEME_${name}_${key} ${word_${name}_${key}}\n")
         endif()
@@ -139,7 +142,7 @@ file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/gui_theme_colors.h" @ONLY
 /* each built-in's colours, 0xRRGGBB: [colors], [run] as RUN_, [splash] page as SPLASH_PAGE; and [head] picture as
    PICTURE, 0 none, 1 square, 2 round. As its file says them (a key it leaves to its base isn't here): [theme] name
    as NAME, [head] loading as LOADING, [run] layout as RUN_STEPS (1 steps, 0 console), texture as RUN_TEXTURE
-   and progress as RUN_PROGRESS (GuiProgress's numbers), and [transitions] fade_in_ms and fade_out_ms as FADE_IN_MS
-   and FADE_OUT_MS */
+   progress as RUN_PROGRESS (GuiProgress's numbers) and ring as RUN_RING (GuiRing's), and [transitions] fade_in_ms and
+   fade_out_ms as FADE_IN_MS and FADE_OUT_MS */
 @snx_gui_themes_colors@#endif
 ")
