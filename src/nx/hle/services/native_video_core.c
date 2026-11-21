@@ -6,6 +6,7 @@
    with closed PR #1009 as a reference. The image layout itself is the
    service's choice: the SDK sizes a pool with 991 and reads an image only through the descriptors */
 #include "nx/hle/services/native_video.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +82,9 @@ int nvideo_image_register(NativeVideoCodec* c, u32 id, u32* fence) {
     R_UNLESS(id, NVIDEO_BAD_ARGUMENT);
     R_UNLESS(!image_of(c, id), NVIDEO_BAD_STATE);
     NativeVideoImage* slot = image_of(c, 0);
+    if (!slot) {
+        SNX_ZONE_T(z_nvcore, "svc nvideo error", "no image slot for id %u", id);
+    }
     R_UNLESS(slot, NVIDEO_NO_ROOM);
     *slot = (NativeVideoImage){.id = id, .fence = ++c->next_fence, .queued = 1, .wait_id = ~0u};
     *fence = slot->fence;
@@ -123,6 +127,9 @@ u32 nvideo_image_fill(NativeVideoCodec* c, NativeVideoImage* image, const u32 pr
     return inc;
 }
 int nvideo_output_pop(NativeVideoCodec* c, u32 props[NVIDEO_PROPS]) {
+    if (!c->output_count) {
+        SNX_ZONE_T(z_nvcore, "svc nvideo error", "output queue empty");
+    }
     R_UNLESS(c->output_count, NVIDEO_OUTPUT_EMPTY);
     memcpy(props, c->outputs[c->output_head], NVIDEO_PROPS * sizeof *props);
     c->output_head = (c->output_head + 1) % NVIDEO_OUTPUTS;

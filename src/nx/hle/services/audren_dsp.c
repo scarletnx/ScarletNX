@@ -137,6 +137,7 @@ ARState* audren_state_new(const u8* params) {
     ARState* s;
     u8* base;
     u32 w[11]; /* host numbers: the IPC layer converted OpenAudioRenderer's raw parameters */
+    SNX_SECTION_SCOPED_C(s_audren_open, "audio renderer open", 4);
     memcpy(w, params, sizeof w);
     u32 rate = w[0], frame = w[1], buffers = w[2], submixes = w[3];
     u32 voices = w[4], sinks = w[5], effects = w[6];
@@ -431,6 +432,9 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
     if (total > os) {
         WARN_LIMIT(4, "audren: output buffer too small (%llu > %llu)\n", (unsigned long long)total,
                    (unsigned long long)os);
+        /* a rare decision: the game must resize the answer buffer it hands the renderer */
+        SNX_ZONE_T(z_answer_small, "audio answer buffer small", "%llu > %llu", (unsigned long long)total,
+                   (unsigned long long)os);
         return -4;
     }
     s->rev = rev;
@@ -712,7 +716,10 @@ static void voice_channel(ARState* s, ARVoice* v, int ch, float* out) {
     memcpy(t, c->history, taps * sizeof *t);
     u32 pos = taps, read = 0;
     while (read < (u32)need) {
-        if (!c->valid[c->index]) break; /* starved */
+        if (!c->valid[c->index]) { /* starved: the voice ran out of wave buffer */
+            SNX_PLOT("audio voice starve", 1);
+            break;
+        }
         const ARWave* w = &v->wave[c->index];
         if (c->offset == 0 && v->format == SNX_AUDREN_ADPCM && w->ctx && w->ctx_size >= 6) {
             const u8* x = GP(w->ctx);
@@ -754,12 +761,22 @@ static void voice_channel(ARState* s, ARVoice* v, int ch, float* out) {
     memcpy(c->history, t + need, taps * sizeof *t);
 }
 
+/* voice-inactive reason codes: nonzero and distinct, so a zone's value ranks the reasons in a statistic */
+enum {
+    VI_NO_CHANNEL = 1,
+    VI_NO_WAVE,
+    VI_STOPPING,
+    VI_PLAY_STATE
+};
 /* Eden's VoiceInfo::UpdateParametersForCommandGeneration: a flush drops buffers from the wave buffer index; a
    started voice hands its new buffers to the DSP; a stop consumes what was queued and starts the channels over.
    Returns 1 when the voice has something to play this frame */
 static int voice_prepare(ARState* s, ARVoice* v) {
     for (int ch = 0; ch < v->channels; ch++)
-        if (v->res[ch] >= s->nres) return 0;
+        if (v->res[ch] >= s->nres) {
+            SNX_ZONE_TV(z_v_no_chan, "audio voice inactive", VI_NO_CHANNEL, "no channel"); /* a rare decision */
+            return 0;
+        }
     if (v->fresh) { /* the first frame since is_new: the channels start clean, the volumes without a ramp */
         for (int ch = 0; ch < v->channels; ch++) {
             ARChannel* c = &s->chan[v->res[ch]];
@@ -790,7 +807,7 @@ static int voice_prepare(ARState* s, ARVoice* v) {
         v->flush = 0;
     }
     switch (v->play) {
-        case SNX_AUDREN_STARTED:
+        case SNX_AUDREN_STARTED: {
             for (int w = 0; w < SNX_AUDREN_WAVES; w++)
                 if (!v->wave[w].sent) {
                     for (int ch = 0; ch < v->channels; ch++) s->chan[v->res[ch]].valid[w] = 1;
@@ -799,8 +816,11 @@ static int voice_prepare(ARState* s, ARVoice* v) {
             v->was_playing = 0;
             for (int w = 0; w < SNX_AUDREN_WAVES; w++)
                 if (s->chan[v->res[0]].valid[w]) return 1;
+            /* a frequent decision: a started voice with no wave buffer left this frame */
+            SNX_ZONE_V(z_v_no_wave, "audio voice inactive", VI_NO_WAVE);
             return 0;
-        case SNX_AUDREN_STOPPING:
+        }
+        case SNX_AUDREN_STOPPING: {
             for (int w = 0; w < SNX_AUDREN_WAVES; w++) {
                 v->wave[w].sent = 1;
                 for (int ch = 0; ch < v->channels; ch++) {
@@ -823,8 +843,15 @@ static int voice_prepare(ARState* s, ARVoice* v) {
             }
             v->play = SNX_AUDREN_STOPPED;
             v->was_playing = v->last_play == SNX_AUDREN_STARTED;
+            SNX_ZONE_TV(z_v_stopping, "audio voice inactive", VI_STOPPING, "stopping"); /* a rare decision */
             return 0;
-        default: v->was_playing = v->last_play == SNX_AUDREN_STARTED; return 0;
+        }
+        default: {
+            /* a frequent decision: paused or stopped; the code names the reason, not the play state */
+            SNX_ZONE_V(z_v_state, "audio voice inactive", VI_PLAY_STATE);
+            v->was_playing = v->last_play == SNX_AUDREN_STARTED;
+            return 0;
+        }
     }
 }
 
@@ -2063,33 +2090,56 @@ int audren_frame(ARState* s, i16* stereo) {
     u32 n = s->frame;
     u32 played = 0;
     SNX_FRAME_SCOPED(f_audio, "audio"); /* the tick's own frame set: discontinuous, one of them now and then */
-    [[maybe_unused]] u64 t0 = plat_ns();
+#if defined(SNX_TRACY)
+    u64 t0 = plat_ns(); /* the clocks below are only read for plots and zone values */
+#endif
     SNX_ZONE(z_frame, "audio frame");
     memset(s->buf, 0, (size_t)(s->buffers + SNX_AUDREN_CHANNELS) * n * sizeof *s->buf);
+#if defined(SNX_TRACY)
+    u64 t_sort = plat_ns();
+#endif
     u32 nsorted = sort_mixes(s);
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio sort us", (double)((plat_ns() - t_sort) / 1000));
+#endif
+#if defined(SNX_TRACY)
+    u64 t_voices = plat_ns();
+#endif
     for (u32 i = 0; i < s->nvoices; i++) {
         ARVoice* v = &s->voice[i];
         if (!v->in_use || !v->wave_count) continue;
         if (voice_prepare(s, v)) {
-            [[maybe_unused]] u64 t0 = plat_ns();
+#if defined(SNX_TRACY)
+            u64 t_voice = plat_ns();
+#endif
             SNX_ZONE_T(z_voice, "audio voice", "voice %u mix %u", i, v->mix_id);
             play_voice(s, v);
-            SNX_ZONE_VALUE(z_voice, (u64)(plat_ns() - t0) / 1000); /* its microseconds: the zones rank the voices */
+#if defined(SNX_TRACY)
+            SNX_ZONE_VALUE(z_voice, (u64)(plat_ns() - t_voice) / 1000); /* its microseconds: the zones rank the voices */
+#endif
             played++;
             SNX_ZONE_END(z_voice);
         }
     }
+#if defined(SNX_TRACY)
+    t_voices = plat_ns() - t_voices;
+    SNX_PLOT("audio voices us", (double)(t_voices / 1000));
+#endif
     SNX_ZONE_VALUE(z_frame, played);
     /* the DSP frame's own time: the renderer's frame is what a game's audio thread asks for, so what it takes of
        the audio clock's 5 ms is the number a hitch in a run's audio is */
+#if defined(SNX_TRACY)
     SNX_PLOT("audio frame ms", (double)(plat_ns() - t0) / 1e6);
+#endif
     (void)played;
     for (j = 0; j < s->ndest; j++) { /* the destinations voices sent through ramp from here next frame */
         ARDest* d = &s->dest[j];
         if (d->in_use && d->need_update) memcpy(d->prev, d->vol, sizeof d->prev);
         d->need_update = 0;
     }
-    [[maybe_unused]] u64 mix0 = plat_ns();
+#if defined(SNX_TRACY)
+    u64 mix0 = plat_ns();
+#endif
     for (u32 k = 0; k < nsorted; k++) { /* the submixes, then the final mix */
         u32 id = (u32)s->order[k];
         ARMix* m = &s->mix[id];
@@ -2117,8 +2167,14 @@ int audren_frame(ARState* s, i16* stereo) {
                 for (u32 i = 0; i < n; i++) dst[i] += src[i] * g;
             }
     }
+#if defined(SNX_TRACY)
     SNX_PLOT("audio mix ms", (double)(plat_ns() - mix0) / 1e6);
+#endif
+#if defined(SNX_TRACY)
+    u64 t_sinks = plat_ns();
+#endif
     int device = 0;
+    SNX_ZONE(z_sinks, "audio sinks"); /* a shallow sibling of the frame's other stages */
     if (s->mix[SNX_AUDREN_FINAL_MIX].distance >= 0) {
         for (u32 i = 0; i < s->nsinks; i++)
             if (s->sink[i].in_use && s->sink[i].type == SNX_AUDREN_SINK_DEVICE)
@@ -2127,6 +2183,10 @@ int audren_frame(ARState* s, i16* stereo) {
             if (s->sink[i].in_use && s->sink[i].type == SNX_AUDREN_SINK_CIRCULAR)
                 sink_frame(s, &s->sink[i], NULL, &device);
     }
+    SNX_ZONE_VALUE(z_sinks, (u64)device); /* 1 when a device sink wrote the stereo frame */
+#if defined(SNX_TRACY)
+    SNX_PLOT("audio sinks us", (double)((plat_ns() - t_sinks) / 1000));
+#endif
     s->frames++;
     return device;
 }

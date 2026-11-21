@@ -22,6 +22,7 @@
 #include "common/utilities/mii_db.h"
 #include "common/utilities/users.h"
 #include "gui/splash.h"
+#include "nx/runtime/platform/tracy.h"
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <time.h>
@@ -292,6 +293,7 @@ static int nn_friends_detail_ipc_INotificationService_GetEvent(SvcObj* self, u32
 static int nn_friends_detail_ipc_INotificationService_Pop(SvcObj* self,
                                                          nn_friends_detail_ipc_SizedNotificationInfo* info) {
     (void)self, (void)info;
+    SNX_ZONE_T(z_misc, "svc misc error", "friend notification queue empty");
     R_THROW(SNX_RC_ACCOUNT_NO_NOTIFICATIONS);
 }
 
@@ -984,6 +986,7 @@ static int nn_bcat_detail_ipc_IDeliveryCacheStorageService_CreateDirectoryServic
 static int nn_bcat_detail_ipc_IDeliveryCacheFileService_Open(SvcObj* self, const nn_bcat_DirectoryName* directory_name,
                                                             const nn_bcat_FileName* file_name) {
     (void)self, (void)directory_name, (void)file_name;
+    SNX_ZONE_T(z_misc, "svc misc error", "bcat delivery cache has no files");
     R_THROW(SNX_RC_BCAT_NOT_FOUND);
 }
 static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event) {

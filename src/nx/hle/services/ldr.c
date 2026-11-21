@@ -14,6 +14,7 @@
 #include "nx/runtime/loader.h"
 #include <openssl/evp.h>
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 
 /* each session's RoState, the lock and the session that initialized: g_hle.ldr (services_int.h) */
@@ -110,6 +111,7 @@ static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, 
 }
 static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, u64* address) {
     MemCodeMap m = {0, source, size, bss, bss_size};
+    u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     int r;
     R_TRY(ro_range(m.source, m.size, 1));
     R_TRY(ro_range(m.bss, m.bss_size, 0));
@@ -120,6 +122,9 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
             slot = &s->nro[i];
             break;
         }
+    if (!slot) {
+        SNX_ZONE_T(z_ldr_err, "svc ldr error", "all %d NRO slots in use", RO_LIMIT);
+    }
     R_UNLESS(slot, SNX_RC_RO_TOO_MANY_NRO);
     /* The address the recompiler made this NRO's code for, by the hash of its image where the game holds it: the view
        goes there, and nowhere else in the addresses kept for such NROs. When that address is in use (the NRO mapped
@@ -143,10 +148,15 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
         }
     } else
         r = mem_map_code(&m);
-    if (r)
+    if (t0) SNX_PLOT("svc ldr nro us", (double)(plat_ns() - t0) / 1000.0); /* guard an attach or detach during the map */
+    SNX_ZONE_TV(z_ldr_nro, "svc ldr nro", place >= 0 ? 1u : 0u, "hash slot %ld, %llu bytes, map %d", place,
+                (unsigned long long)m.size, r);
+    if (r) {
+        SNX_ZONE_T(z_ldr_err, "svc ldr error", "NRO map failed with %d", r);
         R_THROW(r == MEM_LIMIT      ? SNX_RC_RO_OUT_OF_ADDRESS_SPACE
                 : r == MEM_BADSTATE ? SNX_RC_RO_INVALID_MEMORY_STATE
                                     : SNX_RC_RO_INTERNAL_ERROR);
+    }
     u32 text, ro, data;
     r = ro_validate_nro(s, &m, &text, &ro, &data, hash);
     if (R_SUCCEEDED(r)) {

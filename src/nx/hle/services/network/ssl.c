@@ -15,6 +15,7 @@
    here. */
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/tracy.h"
 #include "hle/services/network/ssl.swipc.inc"
 #include <limits.h>
 #ifdef _WIN32
@@ -221,12 +222,27 @@ static int alert_result(int alert) {
 /* the result of a TLS call that failed for another reason than a socket that isn't ready */
 static int conn_error(SslConn* c, int ssl_error) {
     char text[160];
-    if (c->verify_error) return c->verify_error;
-    if (c->sock_err) return errno_result(c->sock_err);
-    if (c->alert >= 0) return alert_result(c->alert);
+    SNX_ZONE(z_ssl_err, "hle: net ssl error");
+    SNX_ZONE_VALUE(z_ssl_err, (u64)ssl_error);
+    if (c->verify_error) {
+        SNX_ZONE_TEXT(z_ssl_err, "certificate verification failed");
+        return c->verify_error;
+    }
+    if (c->sock_err) {
+        SNX_ZONE_TEXT(z_ssl_err, "socket error %d", c->sock_err);
+        return errno_result(c->sock_err);
+    }
+    if (c->alert >= 0) {
+        SNX_ZONE_TEXT(z_ssl_err, "TLS fatal alert %d", c->alert);
+        return alert_result(c->alert);
+    }
     ERR_error_string_n(ERR_peek_last_error(), text, sizeof text);
     LOG_LIMIT(8, "ssl: OpenSSL error %d (%s)\n", ssl_error, text);
-    if (ssl_error == SSL_ERROR_ZERO_RETURN || ssl_error == SSL_ERROR_SYSCALL) return SNX_RC_SSL_CONNECTION_ABORTED;
+    if (ssl_error == SSL_ERROR_ZERO_RETURN || ssl_error == SSL_ERROR_SYSCALL) {
+        SNX_ZONE_TEXT(z_ssl_err, "connection closed or syscall failed");
+        return SNX_RC_SSL_CONNECTION_ABORTED;
+    }
+    SNX_ZONE_TEXT(z_ssl_err, "OpenSSL error %d", ssl_error);
     return SNX_RC_SSL_INTERNAL_ERROR;
 }
 
@@ -338,6 +354,9 @@ enum { OP_HANDSHAKE, OP_READ, OP_PEEK, OP_WRITE };
 static int conn_io(SslConn* c, int op, void* data, size_t size, size_t* done) {
     u64 start = plat_ns();
     *done = 0;
+    if (!c->s) {
+        SNX_ZONE_T(z_ssl_nosock, "hle: net ssl error", "no socket set");
+    }
     R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     if (op != OP_HANDSHAKE && !size) R_SUCCEED();
     if (SSL_in_before(c->ssl)) conn_prepare(c);
@@ -348,24 +367,50 @@ static int conn_io(SslConn* c, int op, void* data, size_t size, size_t* done) {
         ERR_clear_error();
         c->sock_err = 0;
         c->alert = -1;
+        /* The TLS call is CPU work (the handshake's key exchange, a record's encryption); the poll below can wait
+           and is left outside the zone, with its own plot. */
+        u64 cpu0 = snx_tracy_attached() ? plat_ns() : 0;
+        SNX_ZONE(z_tls, "hle: ssl tls");
+        SNX_ZONE_TEXT(z_tls, "op %d, %zu bytes", op, size);
         switch (op) {
             case OP_HANDSHAKE: r = SSL_do_handshake(c->ssl); break;
             case OP_READ: r = SSL_read_ex(c->ssl, data, size, done); break;
             case OP_PEEK: r = SSL_peek_ex(c->ssl, data, size, done); break;
             default: r = SSL_write_ex(c->ssl, data, size, done); break;
         }
+        u64 cpu_us = 0;
+        if (cpu0) cpu_us = (plat_ns() - cpu0) / 1000; /* an attach or detach in the call must not underflow */
+        SNX_ZONE_VALUE(z_tls, cpu_us);
+        if (op == OP_HANDSHAKE)
+            SNX_PLOT("net tls handshake us", (double)cpu_us);
+        else
+            SNX_PLOT("net tls record us", (double)cpu_us);
+        SNX_ZONE_END(z_tls);
         if (r == 1) R_SUCCEED();
         err = SSL_get_error(c->ssl, r);
         if (err == SSL_ERROR_ZERO_RETURN && op != OP_HANDSHAKE) R_SUCCEED();
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) return conn_error(c, err);
+        if (c->io_mode != IO_BLOCKING) {
+            SNX_ZONE_T(z_ssl_wb, "hle: net ssl error", "nonblocking call would block");
+        }
         R_UNLESS(c->io_mode == IO_BLOCKING, SNX_RC_SSL_IO_WOULD_BLOCK);
-        elapsed = (plat_ns() - start) / 1000000;
+        elapsed = 0;
+        if (start) elapsed = (plat_ns() - start) / 1000000;
+        if (elapsed >= BLOCKING_MS) {
+            SNX_ZONE_T(z_ssl_to, "hle: net ssl error", "blocking call timed out");
+        }
         R_UNLESS(elapsed < BLOCKING_MS, SNX_RC_SSL_IO_TIMEOUT);
         e.socket = c->s;
         e.host_fd = -1;
         e.events = err == SSL_ERROR_WANT_READ ? SNX_POLLIN : SNX_POLLOUT;
         e.revents = 0;
+        u64 poll0 = snx_tracy_attached() ? plat_ns() : 0;
         r = snx_net_poll(&e, 1, (int)(BLOCKING_MS - elapsed));
+        u64 poll_ms = 0;
+        if (poll0) poll_ms = (plat_ns() - poll0) / 1000000ull; /* no underflow if tracy detaches in the poll */
+        SNX_PLOT("net ssl poll wait ms", (double)poll_ms);
+        SNX_ZONE_TV(z_ssl_wait, "hle: net ssl wait", (u64)poll_ms, "op %d, poll %llu ms", op,
+                    (unsigned long long)poll_ms);
         if (r < 0) return errno_result(-r);
     }
 }
@@ -417,11 +462,18 @@ static int nn_ssl_sf_ISslConnection_SetSocketDescriptor(SvcObj* self, i32 fd, i3
     SnxSockAddr peer;
     SnxSocket* s;
     BIO* bio;
+    if (c->s) {
+        SNX_ZONE_T(z_ssl_inuse, "hle: net ssl error", "socket already set");
+    }
     R_UNLESS(!c->s, SNX_RC_SSL_ALREADY_IN_USE);
     s = bsd_client_socket(x->pid, fd);
+    if (!s) {
+        SNX_ZONE_T(z_ssl_fds, "hle: net ssl error", "no socket for fd %d", fd);
+    }
     R_UNLESS(s, SNX_RC_SSL_INVALID_SOCKET);
     /* the console asks the duplicate for its peer, and fails without one */
     if (snx_socket_peer(s, &peer)) {
+        SNX_ZONE_T(z_ssl_peer, "hle: net ssl error", "socket has no peer");
         snx_socket_unref(s);
         R_THROW(SNX_RC_SSL_NO_CONNECTION);
     }
