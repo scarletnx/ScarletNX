@@ -621,16 +621,18 @@ static int image_word(const SnxCodeImage* images, size_t count, SnxU64 address, 
 }
 
 /* Two 64-bit hashes of a function's instructions, each address with its word: 0, or -1 when one is outside the
-   images. runs: count pairs of (start, words) */
-static int hash_runs(const SnxCodeImage* images, size_t image_count, const unsigned char* runs, size_t count,
-                     SnxU64* h1, SnxU64* h2) {
+   images. runs: count pairs of (start, words). With a codegen, the words it was built from (snx_codegen_word), so a
+   unit's record says the code its object holds even when the module's copy changed since */
+static int hash_runs(const SnxCodeImage* images, size_t image_count, SnxCodegen* codegen, const unsigned char* runs,
+                     size_t count, SnxU64* h1, SnxU64* h2) {
     SnxU64 a = SNX_VARIANT_H1_BASIS, b = SNX_VARIANT_H2_BASIS;
     for (size_t i = 0; i < count; ++i) {
         SnxU64 address = snx_ld_le64(runs + 12 * i);
         SnxU32 n = snx_ld_le32(runs + 12 * i + 8);
         for (SnxU32 k = 0; k < n; ++k, address += 4) {
             SnxU32 word;
-            if (image_word(images, image_count, address, &word)) return -1;
+            if (codegen ? !snx_codegen_word(codegen, address, &word) : image_word(images, image_count, address, &word))
+                return -1;
             snx_variant_mix(&a, &b, address, word);
         }
     }
@@ -869,9 +871,9 @@ static CacheRecord* cache_find(Cache* c, SnxU64 pc) {
     return NULL;
 }
 
-/* Appends the unit just loaded: its functions as codegen found them, hashed from the images, and its object. Under
-   load_lock */
-static void cache_append(SnxJitService* s, const SnxCodegen* codegen, const char* name, const unsigned char* object,
+/* Appends the unit just loaded: its functions as codegen found them, hashed from the words they were built from, and
+   its object. Under load_lock */
+static void cache_append(SnxJitService* s, SnxCodegen* codegen, const char* name, const unsigned char* object,
                          size_t size, const SnxCodeImage* images, size_t image_count,
                          const SnxImageGeneration* generations, size_t generation_count) {
     size_t name_length = strlen(name);
@@ -907,7 +909,7 @@ static void cache_append(SnxJitService* s, const SnxCodegen* codegen, const char
         if (f->count) out32(&runs, (SnxU32)((previous - start) / 4 + 1));
         out32(&body, (SnxU32)run_count);
         out_bytes(&body, runs.bytes, runs.size);
-        if (runs.failed || hash_runs(images, image_count, runs.bytes, run_count, &h1, &h2)) body.failed = 1;
+        if (runs.failed || hash_runs(images, image_count, codegen, runs.bytes, run_count, &h1, &h2)) body.failed = 1;
         out64(&body, h1);
         out64(&body, h2);
     }
@@ -953,7 +955,7 @@ static int cache_load(SnxJitService* s, CacheRecord* r, const SnxCodeImage* imag
         size_t leaders = snx_ld_le32(p + 8);
         p += 12 + 8 * leaders;
         size_t runs = snx_ld_le32(p);
-        int changed = hash_runs(images, image_count, p + 4, runs, &h1, &h2);
+        int changed = hash_runs(images, image_count, NULL, p + 4, runs, &h1, &h2);
         int mismatch = !changed &&
                        (h1 != snx_ld_le64(p + 4 + 12 * runs) || h2 != snx_ld_le64(p + 12 + 12 * runs));
         if (changed || mismatch) {

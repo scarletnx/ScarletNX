@@ -99,6 +99,49 @@ SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address) {
     return NULL;
 }
 
+/* read_block's arrays, read_capacity entries each */
+static SnxU64* read_addresses(const SnxCodegen* codegen) { return (SnxU64*)(void*)codegen->read_block; }
+static SnxU32* read_words(const SnxCodegen* codegen) {
+    return (SnxU32*)(void*)(codegen->read_block + codegen->read_capacity * sizeof(SnxU64));
+}
+static unsigned char* read_used(const SnxCodegen* codegen) {
+    return codegen->read_block + codegen->read_capacity * (sizeof(SnxU64) + sizeof(SnxU32));
+}
+
+static void read_put(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
+    if (!codegen->read_capacity || (codegen->read_count + 1) * 4 >= codegen->read_capacity * 3) {
+        SnxCodegen old = {.read_block = codegen->read_block, .read_capacity = codegen->read_capacity};
+        codegen->read_capacity = old.read_capacity ? old.read_capacity * 2 : 128;
+        codegen->read_count = 0;
+        codegen->read_block = (unsigned char*)snx_alloc(codegen->read_capacity * (sizeof(SnxU64) + sizeof(SnxU32) + 1));
+        memset(read_used(codegen), 0, codegen->read_capacity);
+        for (size_t i = 0; i < old.read_capacity; ++i)
+            if (read_used(&old)[i]) read_put(codegen, read_addresses(&old)[i], read_words(&old)[i]);
+        free(old.read_block);
+    }
+    size_t i = address_hash(address) & (codegen->read_capacity - 1);
+    while (read_used(codegen)[i]) i = (i + 1) & (codegen->read_capacity - 1);
+    read_used(codegen)[i] = 1;
+    read_addresses(codegen)[i] = address;
+    read_words(codegen)[i] = word;
+    ++codegen->read_count;
+}
+
+/* the word at offset off of m: from a module whose copy an update can change meanwhile, the one this codegen read
+   there first. Read twice, a word that changed in between would give discovery one instruction and the emitter
+   another (a branch to an address discovery made no block for) */
+static SnxU32 image_word_once(SnxCodegen* codegen, const SnxCodeImage* m, size_t off) {
+    if (!m->generation) return snx_code_image_word(m, off);
+    SnxU64 address = m->base + off;
+    if (codegen->read_capacity)
+        for (size_t i = address_hash(address) & (codegen->read_capacity - 1); read_used(codegen)[i];
+             i = (i + 1) & (codegen->read_capacity - 1))
+            if (read_addresses(codegen)[i] == address) return read_words(codegen)[i];
+    SnxU32 word = snx_code_image_word(m, off);
+    read_put(codegen, address, word);
+    return word;
+}
+
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word) {
     SnxCodeImage* module = snx_codegen_module(codegen, address);
     if (!module || (address & 3)) return 0;
@@ -106,7 +149,7 @@ int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word) {
     if (off > module->image_size || module->image_size - off < 4 ||
         address - (module->base + module->text_off) + 4 > module->text_size)
         return 0;
-    *word = snx_code_image_word(module, off);
+    *word = image_word_once(codegen, module, off);
     return 1;
 }
 
@@ -473,7 +516,7 @@ static int image_read(SnxCodegen* codegen, SnxU64 address, unsigned width, SnxU6
                         continue;
                     }
                     if (word_off != last_word_off) {
-                        word = snx_code_image_word(m, word_off);
+                        word = image_word_once(codegen, m, word_off);
                         last_word_off = word_off;
                     }
                     bytes[i] = (unsigned char)(word >> ((byte_off - word_off) * 8));
@@ -1075,5 +1118,6 @@ void snx_codegen_free(SnxCodegen* codegen) {
     }
     free(codegen->functions);
     free(codegen->modules);
+    free(codegen->read_block);
     *codegen = (SnxCodegen){0};
 }

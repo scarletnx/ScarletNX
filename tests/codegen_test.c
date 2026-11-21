@@ -534,6 +534,49 @@ static void jump_table_anchor_branch_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* the host value whose bytes in memory are word's little-endian bytes, as a module's copy of the code holds it */
+static SnxU32 copy_word(SnxU32 word) {
+    unsigned char bytes[4];
+    SnxU32 value;
+    put32(bytes, 0, word);
+    memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+/* A copy of the code that an update can change while a batch reads it (SnxCodeImage.generation, the recompiler
+   library's): mov x0,#0; add x0,x0,#1; nop; ret, then a nop and a ret no function reaches */
+enum { COPY_BASE = 0x10000, COPY_WORDS = 8, COPY_FLIP = 2, COPY_FAR = 6 };
+static void copy_setup(_Atomic SnxU32* copy, _Atomic SnxU64* generation, SnxCodeImage* module) {
+    static const SnxU32 words[COPY_WORDS] = {0xD2800000UL, 0x91000400UL, 0xD503201FUL, 0xD65F03C0UL, 0, 0,
+                                             0xD503201FUL, 0xD65F03C0UL};
+    for (size_t i = 0; i < COPY_WORDS; ++i) atomic_init(&copy[i], copy_word(words[i]));
+    atomic_init(generation, 0);
+    *module = (SnxCodeImage){.image = (const unsigned char*)(const void*)copy,
+                             .image_size = COPY_WORDS * 4,
+                             .base = COPY_BASE,
+                             .text_size = COPY_WORDS * 4,
+                             .atomic_words = 1,
+                             .generation = generation};
+}
+
+/* The codegen answers each address of such a copy with the word it read there first: the emitter reads the words
+   again after discovery, and a cbnz it read where discovery had read the nop branched to a block discovery never
+   made (LLVMBuildBr with no block) */
+static void copy_word_test(void) {
+    _Atomic SnxU32 copy[COPY_WORDS];
+    _Atomic SnxU64 generation;
+    SnxCodeImage module;
+    SnxCodegen codegen;
+    SnxU64 hint = COPY_BASE;
+    SnxU32 word = 0;
+    copy_setup(copy, &generation, &module);
+    check(!snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, 0), "analyze a copy an update can change");
+    atomic_store_explicit(&copy[COPY_FLIP], copy_word(0xB5FFFFFFUL /* cbnz xzr,.-4 */), memory_order_relaxed);
+    check(snx_codegen_word(&codegen, COPY_BASE + COPY_FLIP * 4, &word) && word == 0xD503201FUL,
+          "a word of the copy updated after the codegen read it reads as it was then");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1497,6 +1540,7 @@ int main(void) {
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();
+    copy_word_test();
     semantics_test();
     poll_test();
     cpu_extensions_test();
