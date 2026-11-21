@@ -8,17 +8,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
-#define SNX_X64_M(c) ((u8*)(c)->mem)
 
-u64 snx_x64_ldx(CPU* c, u64 a, u32 sz);
-u32 snx_x64_stx(CPU* c, u64 a, u32 sz, u64 v);
-u64 snx_x64_ldxp(CPU* c, u64 a, u32 sz);
-u32 snx_x64_stxp(CPU* c, u64 a, u32 sz, u64 v1, u64 v2);
-u64 snx_x64_rmw(CPU* c, u64 a, u64 v, u32 op);
-u64 snx_x64_cas(CPU* c, u64 a, u64 expected, u64 desired, u32 sz);
-u64 snx_x64_cas128(CPU* c, u64 a, u64 e_lo, u64 e_hi, u64 d_lo, u64 d_hi);
-u32 snx_x64_crc32(u32 acc, u64 value, u32 bytes, u32 castagnoli);
-void snx_x64_dc_zva(CPU* c, u64 a);
 u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
 u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc);
 u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc);
@@ -32,107 +22,7 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-
-u64 snx_x64_ldx(CPU* c, u64 a, u32 sz) { return ldx(c, SNX_X64_M(c), a, sz); }
-u32 snx_x64_stx(CPU* c, u64 a, u32 sz, u64 v) { return stx(c, SNX_X64_M(c), a, sz, v); }
-/* LDXP: the first register's value; the second's is the state's excl_val2 for a pair of doublewords, the high word
-   of excl_val for a pair of words (ldxp's), which the code reads after */
-u64 snx_x64_ldxp(CPU* c, u64 a, u32 sz) {
-    u64 v1, v2;
-    ldxp(c, SNX_X64_M(c), a, sz, &v1, &v2);
-    return v1;
-}
-u32 snx_x64_stxp(CPU* c, u64 a, u32 sz, u64 v1, u64 v2) { return stxp(c, SNX_X64_M(c), a, sz, v1, v2); }
-
-/* an atomic read-modify-write, sequentially consistent, of 1 << (op & 3) bytes: op >> 2 is 0 ADD, 1 AND (LDCLR's
-   operand already inverted), 2 XOR, 3 OR, 4 SMAX, 5 SMIN, 6 UMAX, 7 UMIN, 8 SWP. The old value */
-#define SNX_X64_RMW(T, ST)                                                                                             \
-    do {                                                                                                               \
-        _Atomic T* p = (_Atomic T*)(SNX_X64_M(c) + a);                                                                 \
-        T x = (T)v, old = atomic_load_explicit(p, memory_order_seq_cst), nv;                                           \
-        switch (op >> 2) {                                                                                             \
-            case 0: return (u64)atomic_fetch_add_explicit(p, x, memory_order_seq_cst);                                 \
-            case 1: return (u64)atomic_fetch_and_explicit(p, x, memory_order_seq_cst);                                 \
-            case 2: return (u64)atomic_fetch_xor_explicit(p, x, memory_order_seq_cst);                                 \
-            case 3: return (u64)atomic_fetch_or_explicit(p, x, memory_order_seq_cst);                                  \
-            case 8: return (u64)atomic_exchange_explicit(p, x, memory_order_seq_cst);                                  \
-            default: break;                                                                                            \
-        }                                                                                                              \
-        do {                                                                                                           \
-            switch (op >> 2) {                                                                                         \
-                case 4: nv = (ST)old > (ST)x ? old : x; break;                                                         \
-                case 5: nv = (ST)old < (ST)x ? old : x; break;                                                         \
-                case 6: nv = old > x ? old : x; break;                                                                 \
-                default: nv = old < x ? old : x; break;                                                                \
-            }                                                                                                          \
-        } while (!atomic_compare_exchange_weak_explicit(p, &old, nv, memory_order_seq_cst, memory_order_seq_cst));     \
-        return (u64)old;                                                                                               \
-    } while (0)
-u64 snx_x64_rmw(CPU* c, u64 a, u64 v, u32 op) {
-    switch (op & 3) {
-        case 0: SNX_X64_RMW(u8, int8_t);
-        case 1: SNX_X64_RMW(u16, int16_t);
-        case 2: SNX_X64_RMW(u32, int32_t);
-        default: SNX_X64_RMW(u64, int64_t);
-    }
-}
-/* CAS of 1 << sz bytes: the old value */
-u64 snx_x64_cas(CPU* c, u64 a, u64 expected, u64 desired, u32 sz) {
-    switch (sz) {
-        case 0: {
-            u8 e = (u8)expected;
-            atomic_compare_exchange_strong_explicit((_Atomic u8*)(SNX_X64_M(c) + a), &e, (u8)desired,
-                                                    memory_order_seq_cst, memory_order_seq_cst);
-            return e;
-        }
-        case 1: {
-            u16 e = (u16)expected;
-            atomic_compare_exchange_strong_explicit((_Atomic u16*)(SNX_X64_M(c) + a), &e, (u16)desired,
-                                                    memory_order_seq_cst, memory_order_seq_cst);
-            return e;
-        }
-        case 2: {
-            u32 e = (u32)expected;
-            atomic_compare_exchange_strong_explicit((_Atomic u32*)(SNX_X64_M(c) + a), &e, (u32)desired,
-                                                    memory_order_seq_cst, memory_order_seq_cst);
-            return e;
-        }
-        default: {
-            u64 e = expected;
-            atomic_compare_exchange_strong_explicit((_Atomic u64*)(SNX_X64_M(c) + a), &e, desired, memory_order_seq_cst,
-                                                    memory_order_seq_cst);
-            return e;
-        }
-    }
-}
-/* CASP of doublewords: the old low half; the old high half is left in the state's excl_val2 (a CASP clears no
-   monitor and arms none: the field is the code's to read straight after) */
-u64 snx_x64_cas128(CPU* c, u64 a, u64 e_lo, u64 e_hi, u64 d_lo, u64 d_hi) {
-    u64* p = (u64*)(SNX_X64_M(c) + a);
-    for (;;) {
-        u64 lo = atomic_load_explicit((_Atomic u64*)p, memory_order_seq_cst);
-        u64 hi = atomic_load_explicit((_Atomic u64*)(p + 1), memory_order_seq_cst);
-        int equal = lo == e_lo && hi == e_hi;
-        if (snx_cas128(c, p, lo, hi, equal ? d_lo : lo, equal ? d_hi : hi)) {
-            c->excl_val2 = hi;
-            return lo;
-        }
-    }
-}
-/* the reflected CRC update of bytes (1, 2, 4 or 8) of value: CRC32's polynomial, or CRC32C's */
-u32 snx_x64_crc32(u32 acc, u64 value, u32 bytes, u32 castagnoli) {
-    u32 poly = castagnoli ? 0x82F63B78u : 0xEDB88320u, i, k;
-    for (i = 0; i < bytes; ++i) {
-        acc ^= (u32)(value >> (8 * i)) & 0xFF;
-        for (k = 0; k < 8; ++k) acc = (acc >> 1) ^ (poly & (0u - (acc & 1)));
-    }
-    return acc;
-}
-/* DC ZVA: the 64 bytes of the block at a zeroed */
-void snx_x64_dc_zva(CPU* c, u64 a) {
-    u8* p = SNX_X64_M(c) + (a & ~(u64)63);
-    for (unsigned i = 0; i < 64; ++i) p[i] = 0;
-}
+extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
    Each takes the guest's FPCR as the code read it (fpcr, bits 0-31), ORs the FPSR flags the operation raised into
@@ -277,3 +167,51 @@ void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void*
     }
     memcpy(out, r, 16);
 }
+
+/* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's
+   SGX_M_CRC), RIP-relative from the code */
+const u32 snx_x64_crc32_table[256] = {
+    0x00000000u, 0x77073096u, 0xEE0E612Cu, 0x990951BAu, 0x076DC419u, 0x706AF48Fu,
+    0xE963A535u, 0x9E6495A3u, 0x0EDB8832u, 0x79DCB8A4u, 0xE0D5E91Eu, 0x97D2D988u,
+    0x09B64C2Bu, 0x7EB17CBDu, 0xE7B82D07u, 0x90BF1D91u, 0x1DB71064u, 0x6AB020F2u,
+    0xF3B97148u, 0x84BE41DEu, 0x1ADAD47Du, 0x6DDDE4EBu, 0xF4D4B551u, 0x83D385C7u,
+    0x136C9856u, 0x646BA8C0u, 0xFD62F97Au, 0x8A65C9ECu, 0x14015C4Fu, 0x63066CD9u,
+    0xFA0F3D63u, 0x8D080DF5u, 0x3B6E20C8u, 0x4C69105Eu, 0xD56041E4u, 0xA2677172u,
+    0x3C03E4D1u, 0x4B04D447u, 0xD20D85FDu, 0xA50AB56Bu, 0x35B5A8FAu, 0x42B2986Cu,
+    0xDBBBC9D6u, 0xACBCF940u, 0x32D86CE3u, 0x45DF5C75u, 0xDCD60DCFu, 0xABD13D59u,
+    0x26D930ACu, 0x51DE003Au, 0xC8D75180u, 0xBFD06116u, 0x21B4F4B5u, 0x56B3C423u,
+    0xCFBA9599u, 0xB8BDA50Fu, 0x2802B89Eu, 0x5F058808u, 0xC60CD9B2u, 0xB10BE924u,
+    0x2F6F7C87u, 0x58684C11u, 0xC1611DABu, 0xB6662D3Du, 0x76DC4190u, 0x01DB7106u,
+    0x98D220BCu, 0xEFD5102Au, 0x71B18589u, 0x06B6B51Fu, 0x9FBFE4A5u, 0xE8B8D433u,
+    0x7807C9A2u, 0x0F00F934u, 0x9609A88Eu, 0xE10E9818u, 0x7F6A0DBBu, 0x086D3D2Du,
+    0x91646C97u, 0xE6635C01u, 0x6B6B51F4u, 0x1C6C6162u, 0x856530D8u, 0xF262004Eu,
+    0x6C0695EDu, 0x1B01A57Bu, 0x8208F4C1u, 0xF50FC457u, 0x65B0D9C6u, 0x12B7E950u,
+    0x8BBEB8EAu, 0xFCB9887Cu, 0x62DD1DDFu, 0x15DA2D49u, 0x8CD37CF3u, 0xFBD44C65u,
+    0x4DB26158u, 0x3AB551CEu, 0xA3BC0074u, 0xD4BB30E2u, 0x4ADFA541u, 0x3DD895D7u,
+    0xA4D1C46Du, 0xD3D6F4FBu, 0x4369E96Au, 0x346ED9FCu, 0xAD678846u, 0xDA60B8D0u,
+    0x44042D73u, 0x33031DE5u, 0xAA0A4C5Fu, 0xDD0D7CC9u, 0x5005713Cu, 0x270241AAu,
+    0xBE0B1010u, 0xC90C2086u, 0x5768B525u, 0x206F85B3u, 0xB966D409u, 0xCE61E49Fu,
+    0x5EDEF90Eu, 0x29D9C998u, 0xB0D09822u, 0xC7D7A8B4u, 0x59B33D17u, 0x2EB40D81u,
+    0xB7BD5C3Bu, 0xC0BA6CADu, 0xEDB88320u, 0x9ABFB3B6u, 0x03B6E20Cu, 0x74B1D29Au,
+    0xEAD54739u, 0x9DD277AFu, 0x04DB2615u, 0x73DC1683u, 0xE3630B12u, 0x94643B84u,
+    0x0D6D6A3Eu, 0x7A6A5AA8u, 0xE40ECF0Bu, 0x9309FF9Du, 0x0A00AE27u, 0x7D079EB1u,
+    0xF00F9344u, 0x8708A3D2u, 0x1E01F268u, 0x6906C2FEu, 0xF762575Du, 0x806567CBu,
+    0x196C3671u, 0x6E6B06E7u, 0xFED41B76u, 0x89D32BE0u, 0x10DA7A5Au, 0x67DD4ACCu,
+    0xF9B9DF6Fu, 0x8EBEEFF9u, 0x17B7BE43u, 0x60B08ED5u, 0xD6D6A3E8u, 0xA1D1937Eu,
+    0x38D8C2C4u, 0x4FDFF252u, 0xD1BB67F1u, 0xA6BC5767u, 0x3FB506DDu, 0x48B2364Bu,
+    0xD80D2BDAu, 0xAF0A1B4Cu, 0x36034AF6u, 0x41047A60u, 0xDF60EFC3u, 0xA867DF55u,
+    0x316E8EEFu, 0x4669BE79u, 0xCB61B38Cu, 0xBC66831Au, 0x256FD2A0u, 0x5268E236u,
+    0xCC0C7795u, 0xBB0B4703u, 0x220216B9u, 0x5505262Fu, 0xC5BA3BBEu, 0xB2BD0B28u,
+    0x2BB45A92u, 0x5CB36A04u, 0xC2D7FFA7u, 0xB5D0CF31u, 0x2CD99E8Bu, 0x5BDEAE1Du,
+    0x9B64C2B0u, 0xEC63F226u, 0x756AA39Cu, 0x026D930Au, 0x9C0906A9u, 0xEB0E363Fu,
+    0x72076785u, 0x05005713u, 0x95BF4A82u, 0xE2B87A14u, 0x7BB12BAEu, 0x0CB61B38u,
+    0x92D28E9Bu, 0xE5D5BE0Du, 0x7CDCEFB7u, 0x0BDBDF21u, 0x86D3D2D4u, 0xF1D4E242u,
+    0x68DDB3F8u, 0x1FDA836Eu, 0x81BE16CDu, 0xF6B9265Bu, 0x6FB077E1u, 0x18B74777u,
+    0x88085AE6u, 0xFF0F6A70u, 0x66063BCAu, 0x11010B5Cu, 0x8F659EFFu, 0xF862AE69u,
+    0x616BFFD3u, 0x166CCF45u, 0xA00AE278u, 0xD70DD2EEu, 0x4E048354u, 0x3903B3C2u,
+    0xA7672661u, 0xD06016F7u, 0x4969474Du, 0x3E6E77DBu, 0xAED16A4Au, 0xD9D65ADCu,
+    0x40DF0B66u, 0x37D83BF0u, 0xA9BCAE53u, 0xDEBB9EC5u, 0x47B2CF7Fu, 0x30B5FFE9u,
+    0xBDBDF21Cu, 0xCABAC28Au, 0x53B39330u, 0x24B4A3A6u, 0xBAD03605u, 0xCDD70693u,
+    0x54DE5729u, 0x23D967BFu, 0xB3667A2Eu, 0xC4614AB8u, 0x5D681B02u, 0x2A6F2B94u,
+    0xB40BBE37u, 0xC30C8EA1u, 0x5A05DF1Bu, 0x2D02EF8Du,
+};

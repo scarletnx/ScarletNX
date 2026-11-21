@@ -160,7 +160,16 @@ static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
 
 /* ---- the machine's instructions: calls, fences ---- */
 
-enum { SGX_M_CALL = 1, SGX_M_CALL_RT, SGX_M_FENCE, SGX_M_PAUSE };
+enum {
+    SGX_M_CALL = 1, SGX_M_CALL_RT, SGX_M_FENCE, SGX_M_PAUSE,
+    /* inline, their inputs in fixed registers (sgx_mach): the guest's memory base in R10, the address in RSI */
+    SGX_M_STX,  /* STXR: value RDX; imm the size's log2; status in RAX */
+    SGX_M_STXP, /* STXP: values R8, R9; imm 2 (words) or 3; status in RAX */
+    SGX_M_CAS,  /* CAS: expected RAX, desired RDX; imm log2; the old value in RAX */
+    SGX_M_CASP, /* CASP of doublewords: expected RDX:RAX, desired R9:R8; the old pair in RDX:RAX */
+    SGX_M_RMW,  /* LDADD...SWP: value RDX; imm op << 2 | log2 (x64_helpers.c's snx_x64_rmw's); the old value in RAX */
+    SGX_M_CRC   /* CRC32, CRC32C: the accumulator RAX, value RDX; imm bytes | castagnoli << 4; the result in RAX */
+};
 /* the arguments' registers after the state's (RDI) */
 static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
 
@@ -643,6 +652,40 @@ static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
     return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
 }
 
+/* ---- the machine's inline sequences: inputs in fixed registers ---- */
+
+static inline int sgx_mem(SgCtx* g);
+/* the machine instruction op of inputs in[k] (in registers fix[k]), imm, the registers it changes besides (clobber)
+   and its results (RAX, and RDX where two) */
+static inline SgD sgx_mach(SgCtx* g, int op, SgD* in, const signed char* fix, int n, long long imm, unsigned clobber,
+                           int results, unsigned w) {
+    SgX* x = sgx(g);
+    int regs[6], k;
+    SgXIns* i;
+    for (k = 0; k < n; ++k) regs[k] = sgx_reg(x, &in[k]);
+    i = sgx_append(x, SGX_K_MACHINE);
+    i->op = (unsigned char)op;
+    i->imm = imm;
+    i->mclobber = (unsigned short)clobber;
+    for (k = 0; k < n; ++k) {
+        i->in[k] = regs[k];
+        i->fixed[k] = fix[k];
+    }
+    if (results) i->def = sgx_vreg(x, x->n - 1, 64);
+    if (results > 1) i->def2 = sgx_vreg(x, x->n - 1, 64);
+    i->side = 1; /* memory, or the monitor: kept */
+    x->flags_ins = -1;
+    return results ? sgx_val(w, i->def) : sgx_const(1, 0);
+}
+#define SGX_RAX 0
+#define SGX_RCX 1
+#define SGX_RDX 2
+#define SGX_RSI 6
+#define SGX_R8 8
+#define SGX_R9 9
+#define SGX_R10 10
+#define SGX_R11 11
+
 /* ---- guest memory: CPU.mem plus the address ---- */
 
 static inline int sgx_mem(SgCtx* g) {
@@ -725,25 +768,36 @@ static inline void sg_GuestMemWrite(SgCtx* g, SgD address, long long size, int r
 }
 
 static inline int sgx_log2(long long size) { return size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3; }
+/* a state field of w bits (32 or 64) = v */
+static inline void sgx_state_store(SgCtx* g, int disp, unsigned w, SgD v) {
+    SgX* x = sgx(g);
+    int r = sgx_reg(x, &v);
+    SgXIns* st = sgx_append(x, SGX_K_STORE);
+    st->w = (unsigned char)w;
+    st->in[0] = r;
+    st->disp = disp;
+}
+/* LDXR, LDAXR, LDXP: cpu.h's ldx and ldxp inline (x86's loads are acquires): the value, and the monitor armed at
+   the address with it (a pair of doublewords: both, the size's pair flag) */
 static inline void sg_GuestLoadExclusive(SgCtx* g, SgD address, long long size) {
-    SgD args[2];
-    args[0] = address;
+    SgD v;
     if (size == 16) {
-        args[1] = sgx_const(32, 3);
-        g->exclusive[0] = sgx_call(g, "snx_x64_ldxp", 0, 1, args, 2, 64).v;
-        {
-            SgXIns* i = sgx_append(sgx(g), SGX_K_LOAD);
-            i->w = 64;
-            i->disp = (int)offsetof(CPU, excl_val2);
-            i->def = sgx_vreg(sgx(g), sgx(g)->n - 1, 64);
-            g->exclusive[1] = i->def;
-        }
+        SgD v1 = sgx_load(g, address, 8, 0), v2 = sgx_load(g, address, 8, 8);
+        sgx_state_store(g, (int)offsetof(CPU, excl_val), 64, v1);
+        sgx_state_store(g, (int)offsetof(CPU, excl_val2), 64, v2);
+        sgx_state_store(g, (int)offsetof(CPU, excl_size), 32, sgx_const(32, 3 | 0x10));
+        g->exclusive[0] = sgx_reg(sgx(g), &v1);
+        g->exclusive[1] = sgx_reg(sgx(g), &v2);
         g->exclusive_count = 2;
     } else {
-        args[1] = sgx_const(32, (SnxU64)sgx_log2(size));
-        g->exclusive[0] = sgx_call(g, "snx_x64_ldx", 0, 1, args, 2, 64).v;
+        v = sg_d_zext(g, sgx_load(g, address, (int)size, 0), 64);
+        sgx_state_store(g, (int)offsetof(CPU, excl_val), 64, v);
+        sgx_state_store(g, (int)offsetof(CPU, excl_size), 32, sgx_const(32, (SnxU64)sgx_log2(size)));
+        g->exclusive[0] = sgx_reg(sgx(g), &v);
         g->exclusive_count = 1;
     }
+    sgx_state_store(g, (int)offsetof(CPU, excl_addr), 64, address);
+    sgx_state_store(g, (int)offsetof(CPU, excl_on), 32, sgx_const(32, 1));
     g->exclusive_next = 0;
 }
 static inline SgD sg_GuestExclusiveValue(SgCtx* g, SgD address, long long size) {
@@ -751,18 +805,20 @@ static inline SgD sg_GuestExclusiveValue(SgCtx* g, SgD address, long long size) 
     if (g->exclusive_next >= g->exclusive_count) sg_fail("an exclusive read with no load-exclusive before it", size, 0);
     return sg_d_slice(g, sgx_val(64, g->exclusive[g->exclusive_next++]), 8 * size - 1, 0);
 }
+/* STXR, STLXR, STXP: cpu.h's stx and stxp inline (SGX_M_STX, SGX_M_STXP: LOCK CMPXCHG, CMPXCHG16B) */
 static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size, SgD value) {
-    SgD args[4];
-    args[0] = address;
+    SgD in[4];
+    in[0] = sgx_val(64, sgx_mem(g));
+    in[1] = address;
     if (size == 16) {
-        args[1] = sgx_const(32, 3);
-        args[2] = sg_d_slice(g, value, 63, 0);
-        args[3] = sg_d_slice(g, value, 127, 64);
-        g->status = sgx_call(g, "snx_x64_stxp", 0, 1, args, 4, 32).v;
+        static const signed char fix[4] = {SGX_R10, SGX_RSI, SGX_R8, SGX_R9};
+        in[2] = sg_d_slice(g, value, 63, 0);
+        in[3] = sg_d_slice(g, value, 127, 64);
+        g->status = sgx_mach(g, SGX_M_STXP, in, fix, 4, 3, 1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 32).v;
     } else {
-        args[1] = sgx_const(32, (SnxU64)sgx_log2(size));
-        args[2] = sg_d_zext(g, value, 64);
-        g->status = sgx_call(g, "snx_x64_stx", 0, 1, args, 3, 32).v;
+        static const signed char fix[3] = {SGX_R10, SGX_RSI, SGX_RDX};
+        in[2] = sg_d_zext(g, value, 64);
+        g->status = sgx_mach(g, SGX_M_STX, in, fix, 3, sgx_log2(size), 1u << SGX_RCX, 1, 32).v;
     }
     sgx(g)->v[g->status].zab = 1;
 }
@@ -770,13 +826,16 @@ static inline SgD sg_GuestExclusiveStatus(SgCtx* g) {
     if (!g->status) sg_fail("an exclusive status with no store-exclusive before it", 0, 0);
     return sgx_val(1, g->status);
 }
+/* the LSE atomics: LOCK XADD, XCHG, a LOCK CMPXCHG loop for the others (SGX_M_RMW) */
 static inline SgD sgx_rmw(SgCtx* g, int op, SgD address, SgD v) {
-    SgD args[3];
+    static const signed char fix[3] = {SGX_R10, SGX_RSI, SGX_RDX};
     unsigned w = v.w;
-    args[0] = address;
-    args[1] = sg_d_zext(g, v, 64);
-    args[2] = sgx_const(32, (SnxU64)(op << 2 | sgx_log2(w / 8)));
-    return sg_d_slice(g, sgx_call(g, "snx_x64_rmw", 0, 1, args, 3, 64), w - 1, 0);
+    SgD in[3];
+    in[0] = sgx_val(64, sgx_mem(g));
+    in[1] = address;
+    in[2] = sg_d_zext(g, v, 64);
+    return sg_d_slice(g, sgx_mach(g, SGX_M_RMW, in, fix, 3, op << 2 | sgx_log2(w / 8),
+                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), w - 1, 0);
 }
 static inline SgD sg_GuestAtomicAdd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 0, a, v); }
 static inline SgD sg_GuestAtomicAnd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 1, a, v); }
@@ -787,29 +846,30 @@ static inline SgD sg_GuestAtomicSMin(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g,
 static inline SgD sg_GuestAtomicUMax(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 6, a, v); }
 static inline SgD sg_GuestAtomicUMin(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 7, a, v); }
 static inline SgD sg_GuestAtomicSwap(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 8, a, v); }
+/* CAS: LOCK CMPXCHG, the old value in RAX; CASP of doublewords: LOCK CMPXCHG16B, the old pair in RDX:RAX */
 static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD desired) {
-    SgD args[5];
     unsigned w = expected.w;
-    args[0] = address;
+    SgD in[6];
+    in[0] = sgx_val(64, sgx_mem(g));
+    in[1] = address;
     if (w == 128) {
-        SgD lo, hi;
+        static const signed char fix[6] = {SGX_R10, SGX_RSI, SGX_RAX, SGX_RDX, SGX_R8, SGX_R9};
         SgXIns* i;
-        args[1] = sg_d_slice(g, expected, 63, 0);
-        args[2] = sg_d_slice(g, expected, 127, 64);
-        args[3] = sg_d_slice(g, desired, 63, 0);
-        args[4] = sg_d_slice(g, desired, 127, 64);
-        lo = sgx_call(g, "snx_x64_cas128", 0, 1, args, 5, 64);
-        i = sgx_append(sgx(g), SGX_K_LOAD);
-        i->w = 64;
-        i->disp = (int)offsetof(CPU, excl_val2);
-        i->def = sgx_vreg(sgx(g), sgx(g)->n - 1, 64);
-        hi = sgx_val(64, i->def);
-        return sg_d_concat(g, hi, lo);
+        SgD lo;
+        in[2] = sg_d_slice(g, expected, 63, 0);
+        in[3] = sg_d_slice(g, expected, 127, 64);
+        in[4] = sg_d_slice(g, desired, 63, 0);
+        in[5] = sg_d_slice(g, desired, 127, 64);
+        lo = sgx_mach(g, SGX_M_CASP, in, fix, 6, 0, 1u << SGX_RCX | 1u << SGX_R11, 2, 64);
+        i = &sgx(g)->ins[sgx(g)->n - 1];
+        return sg_d_concat(g, sgx_val(64, i->def2), lo);
     }
-    args[1] = sg_d_zext(g, expected, 64);
-    args[2] = sg_d_zext(g, desired, 64);
-    args[3] = sgx_const(32, (SnxU64)sgx_log2(w / 8));
-    return sg_d_slice(g, sgx_call(g, "snx_x64_cas", 0, 1, args, 4, 64), w - 1, 0);
+    {
+        static const signed char fix[4] = {SGX_R10, SGX_RSI, SGX_RAX, SGX_RDX};
+        in[2] = sg_d_zext(g, expected, 64);
+        in[3] = sg_d_zext(g, desired, 64);
+        return sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), 0, 1, 64), w - 1, 0);
+    }
 }
 
 /* ---- the machine's actions ---- */
@@ -855,14 +915,15 @@ static inline void sg_BTypeCompatible_write(SgCtx* g, SgB v) {
     (void)g;
     (void)v;
 }
-/* CRC32 and CRC32C: the helper's reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say) */
+/* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
+   CRC32 instruction, CRC32 a byte at a time through x64_helpers.c's table (SGX_M_CRC) */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
-    SgD args[4];
-    args[0] = sg_d_zext(g, acc_bits, 64);
-    args[1] = sg_d_zext(g, value_bits, 64);
-    args[2] = sgx_const(32, (SnxU64)(size / 8));
-    args[3] = sgx_const(32, poly.v == 0x1EDC6F41u);
-    return sg_d_slice(g, sgx_call(g, "snx_x64_crc32", 0, 0, args, 4, 64), 31, 0);
+    static const signed char fix[2] = {SGX_RAX, SGX_RDX};
+    SgD in[2];
+    in[0] = sg_d_zext(g, acc_bits, 64);
+    in[1] = sg_d_zext(g, value_bits, 64);
+    return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4,
+                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), 31, 0);
 }
 
 /* BranchTo(target, ...): where the instruction goes, under the run-time condition when (0: always) */
@@ -909,6 +970,159 @@ static inline void sgx_epilogue(SgXAsm* a) {
 }
 
 /* the machine's instructions, their inputs in r[] */
+/* ---- the inline sequences' bytes (sgx_mach's: R10 the memory's base, RSI the address, RBX the state) ---- */
+
+static inline void sgx_bytes(SgXBuf* b, const char* hex) {
+    /* "F0 49 0F B1 14 32": the bytes as written */
+    while (*hex) {
+        unsigned v = 0, k;
+        while (*hex == ' ') ++hex;
+        if (!*hex) break;
+        for (k = 0; k < 2; ++k, ++hex) v = v * 16 + (unsigned)(*hex <= '9' ? *hex - '0' : *hex - 'A' + 10);
+        sgx_byte(b, (unsigned char)v);
+    }
+}
+/* opcode op (and op | 1 past bytes) of [R10 + RSI] with reg, of 1 << sz bytes: its operand-size prefix, REX (W, B) */
+static inline void sgx_m_r10rsi(SgXBuf* b, int lock, unsigned sz, unsigned op8, int reg) {
+    if (lock) sgx_byte(b, 0xF0);
+    if (sz == 1) sgx_byte(b, 0x66);
+    sgx_byte(b, (unsigned char)(0x41 | (sz == 3 ? 8 : 0) | (reg >> 3) << 2));
+    if (op8 > 0xFF) sgx_byte(b, (unsigned char)(op8 >> 8));
+    sgx_byte(b, (unsigned char)((op8 & 0xFF) | (sz ? 1 : 0)));
+    sgx_byte(b, (unsigned char)(0x04 | (reg & 7) << 3)); /* [SIB] */
+    sgx_byte(b, 0x32);                                   /* RSI + R10 */
+}
+static inline void sgx_jcc32(SgXBuf* b, unsigned cc, size_t* at) {
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, (unsigned char)(0x80 | cc));
+    *at = b->n;
+    sgx_imm(b, 0, 4);
+}
+static inline void sgx_patch32(SgXBuf* b, size_t at) {
+    long long d = (long long)b->n - (long long)(at + 4);
+    if (at + 4 <= b->cap) {
+        b->p[at] = (unsigned char)d, b->p[at + 1] = (unsigned char)(d >> 8), b->p[at + 2] = (unsigned char)(d >> 16);
+        b->p[at + 3] = (unsigned char)(d >> 24);
+    }
+}
+static inline void sgx_d32(SgXBuf* b, size_t off) { sgx_imm(b, (long long)off, 4); }
+/* the monitor's checks (armed, the address, and for a single its size covering 1 << sz bytes; a pair's exactly),
+   failing to *fail */
+static inline void sgx_m_monitor(SgXBuf* b, int pair, unsigned sz, size_t* fail) {
+    sgx_bytes(b, "8B 8B"), sgx_d32(b, offsetof(CPU, excl_on)); /* mov ecx, [rbx + excl_on] */
+    sgx_bytes(b, "85 C9");                                       /* test ecx, ecx */
+    sgx_jcc32(b, 4, &fail[0]);                                   /* jz */
+    sgx_bytes(b, "48 3B B3"), sgx_d32(b, offsetof(CPU, excl_addr)); /* cmp rsi, [rbx + excl_addr] */
+    sgx_jcc32(b, 5, &fail[1]);                                      /* jne */
+    if (pair) {
+        sgx_bytes(b, "83 BB"), sgx_d32(b, offsetof(CPU, excl_size)), sgx_byte(b, (unsigned char)(sz | 0x10));
+        sgx_jcc32(b, 5, &fail[2]); /* cmp dword [rbx + excl_size], sz | 0x10; jne */
+    } else {
+        sgx_bytes(b, "8B 8B"), sgx_d32(b, offsetof(CPU, excl_size)); /* mov ecx, [rbx + excl_size] */
+        sgx_bytes(b, "83 E1 03 83 F9"), sgx_byte(b, (unsigned char)sz); /* and ecx, 3; cmp ecx, sz */
+        sgx_jcc32(b, 2, &fail[2]);                                     /* jb */
+    }
+}
+/* status = ZF ? 0 : 1; then the failure's 1; then the monitor disarmed */
+static inline void sgx_m_status(SgXBuf* b, const size_t* fail) {
+    size_t done;
+    sgx_bytes(b, "0F 95 C0 0F B6 C0"); /* setne al; movzx eax, al */
+    sgx_byte(b, 0xE9);
+    done = b->n;
+    sgx_imm(b, 0, 4);
+    sgx_patch32(b, fail[0]), sgx_patch32(b, fail[1]), sgx_patch32(b, fail[2]);
+    sgx_bytes(b, "B8 01 00 00 00"); /* mov eax, 1 */
+    sgx_patch32(b, done);
+    sgx_bytes(b, "C7 83"), sgx_d32(b, offsetof(CPU, excl_on)), sgx_imm(b, 0, 4); /* mov dword [rbx + excl_on], 0 */
+}
+static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
+    SgXBuf* b = a->b;
+    unsigned sz = (unsigned)(i->imm & 3);
+    size_t fail[3];
+    switch (i->op) {
+    case SGX_M_STX: /* cpu.h's stx */
+        sgx_m_monitor(b, 0, sz, fail);
+        sgx_bytes(b, "48 8B 83"), sgx_d32(b, offsetof(CPU, excl_val)); /* mov rax, [rbx + excl_val] */
+        sgx_m_r10rsi(b, 1, sz, 0x0FB0, 2);                              /* lock cmpxchg [r10 + rsi], dl.. */
+        sgx_m_status(b, fail);
+        return;
+    case SGX_M_STXP: /* cpu.h's stxp */
+        sgx_m_monitor(b, 1, sz, fail);
+        sgx_bytes(b, "48 8B 83"), sgx_d32(b, offsetof(CPU, excl_val));
+        if (sz == 2) {
+            /* the words in one doubleword: ecx = r8d, rdx = r9 << 32 | rcx */
+            sgx_bytes(b, "44 89 C1 4C 89 CA 48 C1 E2 20 48 09 CA");
+            sgx_m_r10rsi(b, 1, 3, 0x0FB0, 2);
+        } else {
+            sgx_bytes(b, "48 8B 93"), sgx_d32(b, offsetof(CPU, excl_val2)); /* mov rdx, [rbx + excl_val2] */
+            /* lea r11, [r10 + rsi]; push rbx; mov rbx, r8; mov rcx, r9; lock cmpxchg16b [r11]; pop rbx */
+            sgx_bytes(b, "4D 8D 1C 32 53 4C 89 C3 4C 89 C9 F0 49 0F C7 0B 5B");
+        }
+        sgx_m_status(b, fail);
+        return;
+    case SGX_M_CAS: sgx_m_r10rsi(b, 1, sz, 0x0FB0, 2); return; /* lock cmpxchg [r10 + rsi], dl.. */
+    case SGX_M_CASP: /* lea r11, [r10 + rsi]; push rbx; mov rbx, r8; mov rcx, r9; lock cmpxchg16b [r11]; pop rbx */
+        sgx_bytes(b, "4D 8D 1C 32 53 4C 89 C3 4C 89 C9 F0 49 0F C7 0B 5B");
+        return;
+    case SGX_M_RMW: {
+        unsigned op = (unsigned)(i->imm >> 2);
+        size_t loop;
+        if (op == 0 || op == 8) {
+            sgx_bytes(b, "48 89 D0"); /* mov rax, rdx; lock xadd / xchg [r10 + rsi], al.. */
+            if (op == 0) sgx_m_r10rsi(b, 1, sz, 0x0FC0, 0);
+            else
+                sgx_m_r10rsi(b, 0, sz, 0x86, 0);
+            return;
+        }
+        /* the old value zero extended (movzx eax, byte / word; mov eax / rax) */
+        static const char* const ld[4] = {"41 0F B6 04 32", "41 0F B7 04 32", "41 8B 04 32", "49 8B 04 32"};
+        sgx_bytes(b, ld[sz]);
+        loop = b->n;
+        sgx_bytes(b, "48 89 C1"); /* mov rcx, rax */
+        if (op == 1) sgx_bytes(b, "48 21 D1");      /* and rcx, rdx */
+        else if (op == 2) sgx_bytes(b, "48 31 D1"); /* xor */
+        else if (op == 3) sgx_bytes(b, "48 09 D1"); /* or */
+        else {
+            /* both extended to 64 bits as signed (4, 5) or unsigned (6, 7) at the size, compared, the larger or smaller */
+            static const char* const sx[4] = {"48 0F BE C9 4C 0F BE DA", "48 0F BF C9 4C 0F BF DA", "48 63 C9 4C 63 DA",
+                                              "49 89 D3"};
+            static const char* const zx[4] = {"0F B6 C9 44 0F B6 DA", "0F B7 C9 44 0F B7 DA", "89 C9 41 89 D3",
+                                              "49 89 D3"};
+            sgx_bytes(b, op <= 5 ? sx[sz] : zx[sz]);
+            sgx_bytes(b, "4C 39 D9"); /* cmp rcx, r11 */
+            sgx_bytes(b, op == 4 ? "49 0F 4C CB" : op == 5 ? "49 0F 4F CB" : op == 6 ? "49 0F 42 CB" : "49 0F 47 CB");
+        }
+        sgx_m_r10rsi(b, 1, sz, 0x0FB0, 1); /* lock cmpxchg [r10 + rsi], cl.. */
+        sgx_byte(b, 0x0F), sgx_byte(b, 0x85);
+        sgx_imm(b, (long long)loop - (long long)(b->n + 4), 4); /* jne loop */
+        return;
+    }
+    case SGX_M_CRC: {
+        unsigned bytes = (unsigned)(i->imm & 15), k;
+        if (i->imm & 16) { /* crc32 eax, dl / dx / edx; crc32 rax, rdx */
+            sgx_bytes(b, bytes == 1 ? "F2 0F 38 F0 C2" : bytes == 2 ? "66 F2 0F 38 F1 C2" : bytes == 4 ? "F2 0F 38 F1 C2" : "F2 48 0F 38 F1 C2");
+            return;
+        }
+        /* the table's address in R11: a relocation of the object's, or the address resolve gives */
+        if (a->reloc) {
+            sgx_bytes(b, "4C 8D 1D"); /* lea r11, [rip + table] */
+            a->reloc(a->machine, b->n, "snx_x64_crc32_table", -4);
+            sgx_imm(b, 0, 4);
+        } else {
+            SnxU64 t = a->resolve ? a->resolve("snx_x64_crc32_table") : 0;
+            if (!t) sg_fail("a table nothing resolves", 0, 0);
+            sgx_bytes(b, "49 BB"); /* mov r11, imm64 */
+            sgx_imm(b, (long long)t, 8);
+        }
+        for (k = 0; k < bytes; ++k)
+            /* mov ecx, eax; xor cl, dl; movzx ecx, cl; shr eax, 8; xor eax, [r11 + rcx*4]; shr rdx, 8 */
+            sgx_bytes(b, "89 C1 30 D1 0F B6 C9 C1 E8 08 41 33 04 8B 48 C1 EA 08");
+        return;
+    }
+    default: return;
+    }
+}
+
 static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     SgXIns* i = &a->x->ins[at];
     SgXBuf* b = a->b;
@@ -960,6 +1174,12 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             sgx_byte(b, 0xF3); /* pause */
             sgx_byte(b, 0x90);
             return;
+        case SGX_M_STX:
+        case SGX_M_STXP:
+        case SGX_M_CAS:
+        case SGX_M_CASP:
+        case SGX_M_RMW:
+        case SGX_M_CRC: sgx_machine_inline(a, i); return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             if (i->w) {
