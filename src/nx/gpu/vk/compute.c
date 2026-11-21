@@ -924,17 +924,17 @@ static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, r
    each attempt (about 30 s on KosmicKrisp), so one refusal is remembered and that program's dispatches are skipped:
    the game keeps drawing without it instead of stopping for half a minute at every frame. */
 #define CS_REFUSED_MAX 64
-static u64 g_cs_refused[CS_REFUSED_MAX];
-static u32 g_cs_refused_n;
+static _Atomic u64 g_cs_refused[CS_REFUSED_MAX];
+static _Atomic u32 g_cs_refused_n;
 static int cs_refused_has(u64 key) {
-    u32 n = __atomic_load_n(&g_cs_refused_n, __ATOMIC_ACQUIRE);
+    u32 n = atomic_load_explicit(&g_cs_refused_n, memory_order_acquire);
     for (u32 i = 0; i < n; i++)
-        if (__atomic_load_n(&g_cs_refused[i], __ATOMIC_ACQUIRE) == key) return 1;
+        if (atomic_load_explicit(&g_cs_refused[i], memory_order_acquire) == key) return 1;
     return 0;
 }
 static void cs_refused_add(u64 key) {
-    u32 i = __atomic_fetch_add(&g_cs_refused_n, 1, __ATOMIC_ACQ_REL);
-    if (i < CS_REFUSED_MAX) __atomic_store_n(&g_cs_refused[i], key, __ATOMIC_RELEASE);
+    u32 i = atomic_fetch_add_explicit(&g_cs_refused_n, 1, memory_order_acq_rel);
+    if (i < CS_REFUSED_MAX) atomic_store_explicit(&g_cs_refused[i], key, memory_order_release);
 }
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
    tables read through read; *blen: the bytes of the window the program takes */
