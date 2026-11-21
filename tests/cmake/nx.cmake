@@ -194,6 +194,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_mesh_native COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-mesh-path=native)
     set_tests_properties(vulkan_headless_mesh_native PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the mesh draws alone under the validation layer when it is installed, with the mesh and task stages as shader
+    # objects where the device draws with them (gpu/vk/shader_objects.c): their stages, flags and binds checked
+    add_test(NAME vulkan_mesh_shader_objects COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-validation=1)
+    add_test(NAME vulkan_mesh_shader_objects_native COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on
+                                                            --vk-mesh-path=native --vk-validation=1)
+    set_tests_properties(vulkan_mesh_shader_objects vulkan_mesh_shader_objects_native PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=mesh_draws;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;went through a pipeline")
     # an Ounce fragment program's colour into integer targets (tests/vulkan_ounce_int_targets.inc) under the validation
     # layer when it is installed, which reports a float output in an integer attachment
     add_test(NAME vulkan_ounce_int_targets COMMAND snx-test-vulkan -H --vk-validation=1)

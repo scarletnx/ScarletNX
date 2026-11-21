@@ -8480,6 +8480,8 @@ static int run_headless(int argc, char** argv) {
             result = check_descriptor_heaps();
         else if (!strcmp(name, "heap_pipeline_flags"))
             result = check_heap_pipeline_flags();
+        else if (!strcmp(name, "mesh_draws"))
+            result = check_mesh_draws();
         else if (!strcmp(name, "cb_address"))
             result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
