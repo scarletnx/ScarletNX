@@ -13,7 +13,8 @@ beside it, which hold the one use with no ISO form or the reference a test compa
 - __attribute__((...)): C23's [[...]], gnu:: or clang:: where the attribute is the compiler's own, and alignas;
 - _Noreturn: [[noreturn]];
 - __atomic_* and __sync_*: <stdatomic.h>'s functions on _Atomic objects; tests/glsl/glsl.hpp, the C++ of the GLSL
-  tests, keeps them, as the Android NDK's libc++ (NDK 28) has no std::atomic_ref;
+  tests, keeps them, as the Android NDK's libc++ (NDK 28) has no std::atomic_ref; the public CPU header's C++ dispatch
+  lookup and the C++ embedding test keep them for the same reason, since embedders may build with that libc++;
 - range designators ([a ... b] =) and case ranges (case a ... b:): one designator or label each.
 Inline assembly is not in this list. Third-party code (hactool's lz4.h) and the guest programs the tests compile for
 the console (tests/gnuabi, tests/qemu_ref) are left out.
@@ -46,7 +47,8 @@ RULES = [
     ),
     ('__attribute__', r'\b__attribute__\b', set()),
     ('_Noreturn', r'\b_Noreturn\b', set()),
-    ('a GNU atomic builtin', r'\b__(atomic|sync)_\w+\s*\(', {'tests/glsl/glsl.hpp'}),
+    ('a GNU atomic builtin', r'\b__(atomic|sync)_\w+\s*\(',
+     {'tests/glsl/glsl.hpp', 'src/common/cpu/aarch64/cpu.h', 'tests/recompiler_library_cpp.cpp'}),
     ('a range designator', r'\[[^\]\n]*\.\.\.[^\]\n]*\]\s*=', set()),
     ('a case range', r'\bcase\b[^:\n]*\.\.\.', set()),
 ]

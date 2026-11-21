@@ -13,7 +13,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#ifdef __cplusplus
+/* a C++ embedder reads the atomic fields with the __atomic builtins: the same layout without C11's _Atomic */
+#define SNX_ATOMIC(T) T
+#else
 #include <stdatomic.h>
+#define SNX_ATOMIC(T) _Atomic T
+#endif
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -102,14 +108,14 @@ typedef struct CPU {
     u32 excl_size;
     u32 excl_on;
     u8* mem;       /* the host address of guest address 0 */
-    _Atomic GuestFn* disp; /* the function of each code word: disp[(pc - code_lo) >> 2], 0 for none */
+    SNX_ATOMIC(GuestFn)* disp; /* the function of each code word: disp[(pc - code_lo) >> 2], 0 for none */
     u64 code_lo, code_hi;
     const RtAPI* rt;
     void* thread; /* the runtime thread or process this CPU belongs to */
     /* written by another host thread when the runtime wants this thread's core back (a thread of higher priority
        waits for it): generated code reads it on each backward branch, the interpreter on each taken branch, and then
        calls rt->poll */
-    _Atomic u32 poll;
+    SNX_ATOMIC(u32) poll;
 } CPU;
 
 /* The emitters bake these offsets into generated code, so modules built before a layout change would read the
@@ -171,7 +177,11 @@ SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc) {
     u64 offset = pc - c->code_lo;
     GuestFn fn;
     if (UNLIKELY(offset >= c->code_hi - c->code_lo || (pc & 3))) return c->rt->miss;
+#ifdef __cplusplus
+    fn = __atomic_load_n(&c->disp[offset >> 2], __ATOMIC_RELAXED);
+#else
     fn = atomic_load_explicit(&c->disp[offset >> 2], memory_order_relaxed);
+#endif
     return LIKELY(fn != 0) ? fn : c->rt->miss;
 }
 #define CALLDYN(t)                                                                                                     \
@@ -562,6 +572,7 @@ SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
 /* Guest memory holds whatever the guest stored last, at any width: the helpers' typed accesses to it go through
    these, which may alias every other access as a char's would, so none is assumed apart from another of a different
    type once the helpers are inlined into each other */
+#ifndef __cplusplus /* the helpers of generated code, from here to the end: C11 atomics */
 /* Guest memory, the guest's registers and the settings stay plain objects the code reads without atomics; their few
    atomic accesses go through an _Atomic T*, which needs _Atomic T laid out as T */
 static_assert(sizeof(_Atomic u8) == 1 && sizeof(_Atomic u16) == 2 && sizeof(_Atomic u32) == 4 &&
@@ -688,4 +699,5 @@ SNX_INLINE u64 vfp_imm64(u32 i) {
     u64 exponent = ((b ^ 1) << 10) | (b ? 0x3FCu : 0) | ((i >> 4) & 3); /* NOT(b):Replicate(b,8):cd */
     return (u64)((i >> 7) & 1) << 63 | exponent << 52 | (u64)(i & 15) << 48;
 }
+#endif /* __cplusplus */
 #endif

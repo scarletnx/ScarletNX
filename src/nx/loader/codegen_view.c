@@ -10,6 +10,7 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
     views = (SnxCodeImage*)snx_alloc(program->module_count * sizeof(*views));
     for (i = 0; i < program->module_count; ++i) {
         const SnxModuleImage* m = &program->modules[i];
+        views[i] = (SnxCodeImage){0}; /* a field this loop doesn't name, as the updatable copy's, is none */
         views[i].image = m->image;
         views[i].image_size = m->image_size;
         views[i].base = m->base;

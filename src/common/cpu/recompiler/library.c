@@ -125,6 +125,14 @@ struct snx_recompiled {
        the caller's may go once snx_recompile returns */
     SnxCodeImage* views;
     size_t view_count;
+    int live_code; /* the views are the caller's bytes (snx_recompiler_set_live_code), not a copy */
+    _Atomic uint64_t code_generation;
+#ifdef _WIN32
+    SRWLOCK code_update_lock;
+#else
+    pthread_mutex_t code_update_lock;
+#endif
+    int code_update_lock_ready;
     /* the descriptor's entries, which the JIT's code calls directly */
     const uint64_t* entry_addresses;
     const _Atomic GuestFn* entry_functions;
@@ -145,6 +153,40 @@ struct snx_recompiled {
 };
 static char jit_none;
 #define JIT_NONE ((SnxJitService*)(void*)&jit_none)
+
+static int init_code_update_lock(struct snx_recompiled* m) {
+#ifdef _WIN32
+    InitializeSRWLock(&m->code_update_lock);
+#else
+    if (pthread_mutex_init(&m->code_update_lock, NULL)) return -1;
+#endif
+    m->code_update_lock_ready = 1;
+    return 0;
+}
+
+static void destroy_code_update_lock(struct snx_recompiled* m) {
+    if (!m->code_update_lock_ready) return;
+#ifndef _WIN32
+    pthread_mutex_destroy(&m->code_update_lock);
+#endif
+    m->code_update_lock_ready = 0;
+}
+
+static void lock_code_updates(struct snx_recompiled* m) {
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&m->code_update_lock);
+#else
+    pthread_mutex_lock(&m->code_update_lock);
+#endif
+}
+
+static void unlock_code_updates(struct snx_recompiled* m) {
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&m->code_update_lock);
+#else
+    pthread_mutex_unlock(&m->code_update_lock);
+#endif
+}
 
 static void fail(struct snx_recompiler* r, const char* fmt, ...) {
     va_list ap;
@@ -1103,19 +1145,25 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
                      size_t count) {
     size_t total = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (ranges[i].size > SIZE_MAX / 2 - total) {
+        if (total > SIZE_MAX / 2 - 3 || ranges[i].size > SIZE_MAX / 2 - total - 3) {
             fail(r, "the code ranges are too large");
             return -1;
         }
-        total += ranges[i].size;
+        total += ranges[i].size + 3;
     }
     if (count > (SIZE_MAX / 2 - total) / sizeof(SnxCodeImage)) {
         fail(r, "the code ranges are too large");
         return -1;
     }
     if (r->live_code) total = 0; /* no copy: the views are the caller's bytes, which outlive the module */
+    if (init_code_update_lock(m)) {
+        fail(r, "cannot initialize the code update lock");
+        return -1;
+    }
+    atomic_init(&m->code_generation, 0);
     m->views = (SnxCodeImage*)calloc(1, count * sizeof(SnxCodeImage) + total);
     if (!m->views) {
+        destroy_code_update_lock(m);
         fail(r, "out of memory for a copy of the code");
         return -1;
     }
@@ -1125,15 +1173,25 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
         if (r->live_code)
             m->views[i].image = (const unsigned char*)ranges[i].code;
         else {
+            at += ((size_t)ranges[i].address - at) & 3;
             memcpy(bytes + at, ranges[i].code, ranges[i].size);
             m->views[i].image = bytes + at;
+            size_t first = (size_t)(4 - (ranges[i].address & 3)) & 3;
+            for (size_t off = first; off + 4 <= ranges[i].size; off += 4) {
+                uint32_t word;
+                memcpy(&word, bytes + at + off, sizeof(word));
+                atomic_init((_Atomic uint32_t*)(void*)(bytes + at + off), word);
+            }
             at += ranges[i].size;
         }
         m->views[i].image_size = ranges[i].size;
         m->views[i].base = ranges[i].address;
         m->views[i].text_size = ranges[i].size;
+        m->views[i].atomic_words = !r->live_code;
+        if (!r->live_code) m->views[i].generation = &m->code_generation;
     }
     m->view_count = count;
+    m->live_code = r->live_code;
     return 0;
 }
 
@@ -1282,6 +1340,7 @@ struct snx_recompiled* snx_recompile_ranges(struct snx_recompiler* r, const stru
              (unsigned long long)(ranges[range_count - 1].address + ranges[range_count - 1].size));
         free(views);
         free(m->views);
+        destroy_code_update_lock(m);
         free(m);
         return NULL;
     }
@@ -1342,6 +1401,7 @@ void snx_recompiled_free(struct snx_recompiled* m) {
         atomic_load_explicit(&m->jit, memory_order_relaxed) != JIT_NONE)
         snx_jit_service_free(
             atomic_load_explicit(&m->jit, memory_order_relaxed)); /* its threads stop before the code they read goes */
+    destroy_code_update_lock(m);
     free(m->jit_cache_path);
     free(m->compiled_functions);
     free(m->entry_aliases);
@@ -1374,6 +1434,37 @@ int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu) {
 /* cpu.h's snx_lookup over the module's table, and the JIT's code for a pc the table lacks */
 GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc) { return module_code(m, pc); }
 
+/* Update the module's copy before invalidation, so its JIT builds patched code from the current bytes. Readers of a
+   copied view use atomic word loads. A live-code module has no copy and its caller may use read-only storage. */
+size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code, size_t size) {
+    size_t i, updated = 0;
+    const unsigned char* bytes = (const unsigned char*)code;
+    if (!m || !code || m->live_code || (addr & 3) || (size & 3) || size > UINT64_MAX - addr) return 0;
+    if (!m->view_count || !size) return 0;
+    /* Serialize writers so no second update can make the reader-visible generation even mid-copy. */
+    lock_code_updates(m);
+    atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
+    for (i = 0; i < m->view_count; ++i) {
+        const SnxCodeImage* view = &m->views[i];
+        uint64_t lo = addr > view->base ? addr : view->base;
+        uint64_t hi = addr + size < view->base + view->image_size ? addr + size : view->base + view->image_size;
+        uint64_t at;
+        lo += (4 - (lo & 3)) & 3;
+        hi &= ~UINT64_C(3);
+        if (lo >= hi) continue;
+        for (at = lo; at < hi; at += 4) {
+            uint32_t word;
+            memcpy(&word, bytes + (at - addr), sizeof(word));
+            atomic_store_explicit((_Atomic uint32_t*)(void*)((unsigned char*)view->image + (at - view->base)), word,
+                                  memory_order_seq_cst);
+        }
+        updated += (size_t)(hi - lo);
+    }
+    atomic_fetch_add_explicit(&m->code_generation, 1, memory_order_seq_cst);
+    unlock_code_updates(m);
+    return updated;
+}
+
 GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc) {
     uint64_t o = pc - m->code_lo;
     return o < m->code_hi - m->code_lo && !(pc & 3) ? atomic_load_explicit(&m->dispatch[o >> 2], memory_order_acquire)
@@ -1382,6 +1473,16 @@ GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc) {
 
 void snx_recompiled_set_fallback(struct snx_recompiled* m, GuestFn fallback) {
     atomic_store_explicit(&m->fallback, fallback, memory_order_release);
+}
+
+/* Empty a retired function's slot, only while it still holds the entry table's own function for the address, as the NX
+   runtime's fn_stale does. The table is the lazy JIT's too: a slot it has filled since is its own to retire, and
+   snx_jit_invalidate_ranges clears that slot and the pc's pending bit together. A slot emptied here under a unit leaves
+   the pc's bit set with nothing there, a pc the JIT will never compile again */
+static void retire_slot(struct snx_recompiled* m, size_t entry, uint64_t address) {
+    GuestFn expected = atomic_load_explicit(&m->entry_functions[entry], memory_order_relaxed);
+    atomic_compare_exchange_strong_explicit(&m->dispatch[(address - m->code_lo) >> 2], &expected, NULL,
+                                            memory_order_release, memory_order_relaxed);
 }
 
 size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64_t size,
@@ -1413,16 +1514,14 @@ size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64
         for (; alias_lo < m->entry_alias_count && m->entry_aliases[alias_lo].code == code; ++alias_lo) {
             size_t entry = m->entry_aliases[alias_lo].entry;
             uint64_t address = m->entry_addresses[entry];
-            if (address >= m->code_lo && address < m->code_hi)
-                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
+            if (address >= m->code_lo && address < m->code_hi) retire_slot(m, entry, address);
         }
         /* The aliases above share the first leader's wrapper; every other leader's slot goes too, so a call through
            one of them cannot re-enter the retired function */
         for (size_t k = 0; k < function->leader_count; ++k) {
             size_t entry = function->leaders[k];
             uint64_t address = m->entry_addresses[entry];
-            if (address >= m->code_lo && address < m->code_hi)
-                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
+            if (address >= m->code_lo && address < m->code_hi) retire_slot(m, entry, address);
         }
         /* Clear dispatch before marking stale so diversions miss rather than re-enter */
         atomic_store_explicit(&m->stale[function->stale_index], 1, memory_order_release);

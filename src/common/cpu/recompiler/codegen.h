@@ -31,6 +31,11 @@ typedef struct {
        them */
     int check_fetch;
     int hook_direct_calls;
+    /* the words read from a module whose copy can change while it is read (SnxCodeImage.generation), each taken from
+       the module once, so discovery, the jump tables, the emitter and the JIT cache's hash agree on one version of
+       every word: the one the code is built from. One block: read_capacity addresses, as many words, as many marks */
+    unsigned char* read_block;
+    size_t read_count, read_capacity;
 } SnxCodegen;
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
@@ -53,8 +58,13 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
                              void* context, SnxU64 features);
 void snx_codegen_free(SnxCodegen* codegen);
 SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address);
+/* the instruction word at address: 1, or 0 outside the text. From a module whose copy can change, the word this codegen
+   read there first (read_block) */
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
-/* the case targets of the jump table the BR at address dispatches through, up to capacity; 0 when it is not one */
+/* 1 when every word in read_block is what its module holds now */
+int snx_codegen_words_current(const SnxCodegen* codegen);
+/* conservative discovery targets for a BR's jump table, up to capacity; emitted BR instructions still use their
+   register and dispatch at run time */
 size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity);
 SnxU64 snx_function_address(const SnxFunction* function, size_t index);
 int snx_function_contains(const SnxFunction* function, SnxU64 address);
