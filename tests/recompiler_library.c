@@ -672,6 +672,101 @@ static void test_repatch(void) {
     snx_recompiler_free(r);
 }
 
+#ifndef _WIN32
+/* ---- snx_recompiled_update_code while the module's JIT compiles ----
+   UPDATE: ret, the module's entry and its AOT function. UPDATE_FN: mov x0,#0; add x0,x0,#1; FLIP; ret, which only
+   the JIT compiles, FLIP a nop or cbnz xzr,.-4 (never taken: x0 is 1 either way). UPDATE_FAR: nop; ret, never run */
+#define UPDATE      0x5000u
+#define UPDATE_FN   (UPDATE + 0x10)
+#define UPDATE_FLIP (UPDATE_FN + 8)
+#define UPDATE_FAR  (UPDATE + 0x400)
+#define UPDATE_END  (UPDATE_FAR + 8)
+#define NOP_WORD    0xd503201fu
+#define RET_WORD    0xd65f03c0u
+typedef struct {
+    struct snx_recompiled* m;
+    uint64_t at;       /* the word it writes */
+    uint32_t words[2]; /* in turn */
+    long pause_us;     /* about this long between two writes, 0 for none */
+    _Atomic int stop;
+} UpdateWriter;
+static void nap_us(long us) {
+    struct timespec t;
+    t.tv_sec = us / 1000000;
+    t.tv_nsec = (us % 1000000) * 1000L;
+    while (nanosleep(&t, &t)) {}
+}
+static void* update_writer(void* arg) {
+    UpdateWriter* w = (UpdateWriter*)arg;
+    unsigned seed = 1;
+    for (unsigned n = 0; !atomic_load_explicit(&w->stop, memory_order_acquire); ++n) {
+        uint8_t bytes[4];
+        place(bytes, 0, &w->words[n & 1], 1);
+        snx_recompiled_update_code(w->m, w->at, bytes, sizeof bytes);
+        seed = seed * 1103515245u + 12345u;
+        if (w->pause_us) nap_us(w->pause_us / 2 + (long)((seed >> 16) % (unsigned)w->pause_us));
+    }
+    return NULL;
+}
+/* x0 of a run of UPDATE_FN, UINT64_MAX when it reached no code */
+static uint64_t update_call(struct snx_recompiled* m, uint8_t* mem, RtAPI* rt) {
+    CPU cpu = {0};
+    Seen seen = {0};
+    cpu.mem = mem;
+    cpu.rt = rt;
+    cpu.thread = &seen;
+    cpu.x[30] = STOP;
+    if (snx_recompiled_bind(m, &cpu)) return UINT64_MAX;
+    snx_recompiled_run(m, &cpu, UPDATE_FN, STOP);
+    return seen.undefs ? UINT64_MAX : cpu.x[0];
+}
+static struct snx_recompiled* update_module(struct snx_recompiler* r, uint8_t* mem, RtAPI* rt) {
+    const uint32_t ret = RET_WORD, fn[] = {0xd2800000, 0x91000400, NOP_WORD, RET_WORD}, far[] = {NOP_WORD, RET_WORD};
+    memset(mem + UPDATE, 0, UPDATE_END - UPDATE);
+    place(mem, UPDATE, &ret, 1);
+    place(mem, UPDATE_FN, fn, 4);
+    place(mem, UPDATE_FAR, far, 2);
+    snx_runtime_defaults(rt);
+    rt->svc = svc64;
+    rt->undef = undef64;
+    rt->brk = brk64;
+    return snx_recompile(r, UPDATE, mem + UPDATE, UPDATE_END - UPDATE);
+}
+
+static double update_seconds(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+/* A word that changes while the JIT compiles its function: discovery and the emitter see one version of it. Read
+   again by the emitter, a cbnz where discovery had read the nop branched to UPDATE_FN + 4, a block discovery never
+   made, and the JIT's thread died in LLVMBuildBr within the first runs. A batch whose word changed is compiled again,
+   so the runs stop after 30 s on a host slow enough to lose most batches that way */
+static void update_flip64(struct snx_recompiler* r, uint8_t* mem) {
+    RtAPI rt;
+    struct snx_recompiled* m = update_module(r, mem, &rt);
+    pthread_t writer;
+    unsigned wrong = 0, runs = 0;
+    check(m != NULL, "update flip: a module");
+    if (!m) return;
+    UpdateWriter w = {.m = m, .at = UPDATE_FLIP, .words = {NOP_WORD, 0xb5ffffffu /* cbnz xzr,.-4 */}, .pause_us = 5000};
+    if (pthread_create(&writer, NULL, update_writer, &w)) {
+        check(0, "update flip: the writer thread");
+        snx_recompiled_free(m);
+        return;
+    }
+    for (double end = update_seconds() + 30; runs < 100 && update_seconds() < end; ++runs) {
+        snx_recompiled_invalidate(m, UPDATE_FN, 16, NULL, NULL);
+        wrong += update_call(m, mem, &rt) != 1;
+    }
+    atomic_store_explicit(&w.stop, 1, memory_order_release);
+    pthread_join(writer, NULL);
+    check(runs && !wrong, "update flip: each run of a function while another thread flips one of its words gives 1");
+    snx_recompiled_free(m);
+}
+#endif
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -710,6 +805,7 @@ int main(int argc, char** argv) {
         live64(r, mem);
 #ifndef _WIN32
         spin64(r, mem);
+        update_flip64(r, mem);
 #endif
         jit_cache(r, mem, cache);
         run32(r, mem);
