@@ -467,12 +467,31 @@ static SgD base_of(SgCtx* g, unsigned rn) { return sg_GPR_read(g, rn); }
 /* Xm as an operand: XZR for 31 */
 static SgD xzr_or(SgCtx* g, unsigned rm) { return rm == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rm); }
 
+/* the SSE form of a guest access of the SIMD&FP registers: MOVD, MOVQ (which zero the rest of the register as the
+   load's Vt wants) and MOVDQU */
+static const SgXVForm* v_form(int bytes, int store) {
+    if (bytes == 16) return store ? &sgx_v_movdqu_st : &sgx_v_movdqu_ld;
+    if (bytes == 8) return store ? &sgx_v_movq_st : &sgx_v_movq_ld;
+    return store ? &sgx_v_movd_rx : &sgx_v_movd_xr;
+}
+static int vload(SgCtx* g, SgD address, int bytes);
+static void vstore(SgCtx* g, SgD address, int r, int bytes);
 static void v_load(SgCtx* g, unsigned t, SgD address, int bytes) {
-    SgD v = sg_GuestMemRead(g, address, bytes, 0);
+    SgD v;
+    if (bytes >= 4) {
+        sg__V_write(g, t, sgx_xval(128, vload(g, address, bytes)));
+        return;
+    }
+    v = sg_GuestMemRead(g, address, bytes, 0);
     sg__V_write(g, t, sg_d_zext(g, v, 128));
 }
 static void v_store(SgCtx* g, unsigned t, SgD address, int bytes) {
-    sg_GuestMemWrite(g, address, bytes, 0, sg__V_read_bits(g, t, 8 * bytes - 1, 0));
+    SgD v = sg__V_read_bits(g, t, 8 * bytes - 1, 0);
+    if (bytes >= 4) {
+        vstore(g, address, sgx_xreg(sgx(g), &v), bytes);
+        return;
+    }
+    sg_GuestMemWrite(g, address, bytes, 0, v);
 }
 
 /* LDR, STR (immediate: unsigned offset, unscaled, pre- and post-index; register offset; literal), LDP, STP, LDNP,
@@ -829,14 +848,20 @@ static int sys(Unit* u, SnxU32 word) {
 /* bytes 8 or 16 of guest memory at address as an XMM register (MOVQ, MOVDQU), and the other way */
 static int vload(SgCtx* g, SgD address, int bytes) {
     SgX* x = sgx(g);
-    int base = sgx_mem(g), index = sgx_reg(x, &address);
-    return sgx_vins(x, bytes == 16 ? &sgx_v_movdqu_ld : &sgx_v_movq_ld, 0, 0, NULL, 0, 1, SGX_VM_GUEST, base, index, 0,
-                    0, 0);
+    const SgXVForm* f = v_form(bytes, 0);
+    int disp = 0, base, index;
+    sgx_addr(x, &address, &disp);
+    base = sgx_mem(g), index = sgx_reg(x, &address);
+    return sgx_vins(x, f, f->reg, 0, NULL, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
 }
 static void vstore(SgCtx* g, SgD address, int r, int bytes) {
     SgX* x = sgx(g);
-    int base = sgx_mem(g), index = sgx_reg(x, &address), in[4] = {0, r, 0, 0};
-    sgx_vins(x, bytes == 16 ? &sgx_v_movdqu_st : &sgx_v_movq_st, 0, 0, in, 0, 0, SGX_VM_GUEST, base, index, 0, 0, 0);
+    const SgXVForm* f = v_form(bytes, 1);
+    int disp = 0, base, index, in[4] = {0, 0, 0, 0};
+    sgx_addr(x, &address, &disp);
+    base = sgx_mem(g), index = sgx_reg(x, &address);
+    in[(int)f->reg] = r;
+    sgx_vins(x, f, f->rm, 0, in, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
 }
 
 /* 1 made, 0 not one of these, -1 UNDEF */
@@ -1343,7 +1368,9 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     size_t i, backs = 0;
     memset(u->pin, -1, sizeof u->pin);
     u->pinned = 0;
-    if (f->count < 8 || getenv("SNX_X64_NO_PINS")) return;
+    static int every = -1; /* SNX_X64_PIN_ALL=1: pins in every function, of every register read once (for tests) */
+    if (every < 0) every = getenv("SNX_X64_PIN_ALL") != NULL;
+    if ((f->count < 8 && !every) || getenv("SNX_X64_NO_PINS")) return;
     loop = (unsigned char*)calloc(f->count + 1, 1);
     succ = (int*)malloc(2 * f->count * sizeof *succ);
     if (!loop || !succ) {
@@ -1462,7 +1489,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         best = 32;
         for (r = 0; r < 32; ++r)
             if (u->pin[r] < 0 && weight[r] > top) top = weight[r], best = r;
-        if (best == 32 || top < 16) break;
+        if (best == 32 || top < (every ? 1u : 16u)) break;
         u->pin[best] = hosts[k];
         u->pinned = 1;
     }

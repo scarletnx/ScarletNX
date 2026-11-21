@@ -174,6 +174,8 @@ typedef struct {
     signed char reg;    /* the host register (an XMM one for cls 1), once given */
     short slot;         /* its spill slot, -1 for none */
     signed char xmm;    /* the XMM register it is spilled to, -1 for none */
+    unsigned char pinned; /* SGX_K_PGET's: it is in the pinned host register itself, which no instruction may
+                             overwrite as its result (a tied form copies it first) */
     int src;
     SnxU64 k;
     int g0, g1; /* cls 1: its low and high doublewords as general-purpose values, once taken out (sgx_flat) */
@@ -2061,7 +2063,7 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
             out_reg = s->out - 16;
             if (a->owner[out_reg] > 0 && a->owner[out_reg] != i->def) sgx_evict(a, out_reg, at, fixed | held);
         } else if (tv) {
-            int from = x->v[tv].reg, dies = x->v[tv].last == at;
+            int from = x->v[tv].reg, dies = x->v[tv].last == at && !x->v[tv].pinned;
             for (k = 0; k < 4; ++k)
                 if (k != tied_in && i->in[k] == tv) dies = 0;
             if (dies) {
@@ -2389,7 +2391,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
     unsigned char saved_g[16] = {0}, saved_x[16] = {0};
     /* the result's register: the tied value's, which dies here, or a copy of it */
     from = cls ? sgx_xin(a, tv, at, 0) : sgx_in_reg(a, tv, at, 0);
-    if (x->v[tv].last == at) {
+    if (x->v[tv].last == at && !x->v[tv].pinned) {
         outreg = from;
         if (cls) a->xowner[from] = 0;
         else
@@ -2612,6 +2614,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         x->v[i].reg = -1;
         x->v[i].slot = -1;
         x->v[i].xmm = -1;
+        x->v[i].pinned = 0;
     }
     sgx_optimize(x);
     {
@@ -2629,14 +2632,26 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         case SGX_K_SEL: sgx_assemble_sel(a, i); break;
         case SGX_K_VEC: sgx_assemble_vec(a, i); break;
         case SGX_K_COLD: sgx_assemble_cold(a, i); break;
-        case SGX_K_PGET: {
-            int d = sgx_free_reg(a, i, 0);
-            sgx_mov_rr(a, d, (int)s->imm);
-            a->owner[d] = s->def;
-            x->v[s->def].reg = (signed char)d;
+        case SGX_K_PGET:
+            /* the value is the pinned register's own, no copy (until a PSET of it, which moves it if still read) */
+            a->owner[s->imm & 15] = s->def;
+            x->v[s->def].reg = (signed char)s->imm;
+            x->v[s->def].pinned = 1;
+            break;
+        case SGX_K_PSET: {
+            int p = (int)s->imm, o = a->owner[p], src;
+            if (o > 0 && x->v[o].pinned && x->v[o].reg == p && x->v[o].last > i) {
+                int d = sgx_free_reg(a, i, 1u << p);
+                sgx_mov_rr(a, d, p);
+                a->owner[d] = o;
+                x->v[o].reg = (signed char)d;
+                x->v[o].pinned = 0;
+            }
+            src = sgx_in_reg(a, s->in[0], i, 0);
+            sgx_mov_rr(a, p, src);
+            a->owner[p] = 0;
             break;
         }
-        case SGX_K_PSET: sgx_mov_rr(a, (int)s->imm, sgx_in_reg(a, s->in[0], i, 0)); break;
         case SGX_K_LOAD: {
             int d = sgx_free_reg(a, i, 0);
             if (s->w == 8) {
