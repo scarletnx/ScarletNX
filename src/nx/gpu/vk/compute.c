@@ -1473,7 +1473,7 @@ static int tensor_entry_live(TensorMemo* m) {
     const u32 epoch = vk_ww_epoch();
     const u64 gw = gpu_mem_generation();
     if (m->live && m->live_epoch == epoch && m->live_gw == gw) return m->live;
-    int w = 0; /* a GPU write of those bytes since the read leaves another program there */
+    int w = 1; /* a GPU write of those bytes since the read leaves another program there: written */
     if (!gpu_mem_dirty_since(m->gw, m->code, m->bytes)) {
         u8* host = gmem_host(m->code, m->bytes);
         if (host) w = vk_written_since(host, m->bytes, m->wseen);
