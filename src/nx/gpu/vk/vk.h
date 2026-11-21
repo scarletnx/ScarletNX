@@ -3111,8 +3111,9 @@ extern u64 g_submit_end_ns, g_submit_queue_ns, g_submit_uploads, g_submit_count;
 /* record.c: the submission's dwell in the ring before the recorder runs it, and the ring backlog (vk_rec_behind) when
    the GPU thread made it: where the "submitted, not started" idle goes (reset by gpuprof.c's report) */
 extern u64 g_submit_dwell_ns, g_submit_backlog, g_submit_backlog_max;
-/* record.c: log and reset the command kinds the recording thread drained (the "submitted, not started" idle) */
-void vk_rec_command_report(double presents);
+/* record.c: log and reset the command kinds the recording thread drained (the "submitted, not started" idle). count:
+   the recording thread counts them until the next report (the GPU profile is on) */
+void vk_rec_command_report(double presents, int count);
 /* record.c: state repeats, reset by vk_rec_command_report */
 extern u64 g_push_same, g_push_diff;
 extern u64 g_barrier_merged; /* barriers that shared a vkCmdPipelineBarrier2 with an earlier one */
@@ -3484,7 +3485,6 @@ void vk_gpuprof_frame_done(u32 slot);
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
    profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
-int vk_gpuprof_on(void); /* the profile is on and its report logs: gates the recorder's command-kind count */
 u64 vk_gpuprof_busy_ns(void);
 /* vk_gpu_profile's submissions placed on the CPU's clock since the start, and the idle their unsubmitted commands left
    (gpuprof_gap.h's fill) */
