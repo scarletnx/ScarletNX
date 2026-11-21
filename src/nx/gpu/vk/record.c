@@ -1801,8 +1801,12 @@ static int barrier_chained(const VkDependencyInfo* d) {
     return 0;
 }
 /* Consecutive barriers merge into one vkCmdPipelineBarrier2: the driver call costs the same for one barrier as for
-   many, and one game's passes cluster barriers (gpuprof.c's "gaps with barriers only"). Two image barriers on one
-   image stay apart: in one call they are not ordered, so a layout transition's old layout would be wrong. */
+   many, and one game's passes cluster barriers (gpuprof.c's "gaps with barriers only"). Two barriers in one call are
+   not ordered against each other, so a barrier stays apart from the batch where the order matters:
+   - two image barriers on one image: a layout transition's old layout would be wrong.
+   - a barrier whose first scope takes stages that the batch's second scope has (dst). In two calls the second
+     barrier's dependency chains after the first one's: a copy, a barrier from the copy to compute, then a barrier
+     from compute to the fragment stage orders the copy before the fragment stage too. One call loses that chain. */
 #define BAR_BATCH_CAP 64
 static struct {
     VkCommandBuffer cb;
@@ -1812,12 +1816,14 @@ static struct {
     VkBufferMemoryBarrier2 buf[BAR_BATCH_CAP];
     VkImageMemoryBarrier2 img[BAR_BATCH_CAP];
     VkImage images[BAR_BATCH_CAP]; /* the image of img[i], to keep two barriers on one image apart */
+    VkPipelineStageFlags2 dst;     /* the stages of the batch's second scope, all its barriers' */
 } g_bar_batch;
 u64 g_barrier_merged; /* barriers that shared a call with an earlier one (vk_rec_command_report) */
 static void barrier_flush(void) {
     if (!g_bar_batch.nm && !g_bar_batch.nb && !g_bar_batch.ni) return;
     u32 nm = g_bar_batch.nm, nb = g_bar_batch.nb, ni = g_bar_batch.ni;
     g_bar_batch.nm = g_bar_batch.nb = g_bar_batch.ni = 0;
+    g_bar_batch.dst = 0;
     u64 h = REC_AL(sizeof(BarrierArgs)), mn = REC_AL(nm * sizeof(VkMemoryBarrier2)),
         bn = REC_AL(nb * sizeof(VkBufferMemoryBarrier2));
     BarrierArgs* x = rec_push(barrier_run, h + mn + bn + ni * sizeof(VkImageMemoryBarrier2));
@@ -1827,6 +1833,23 @@ static void barrier_flush(void) {
     memcpy(q + mn, g_bar_batch.buf, nb * sizeof(VkBufferMemoryBarrier2));
     memcpy(q + mn + bn, g_bar_batch.img, ni * sizeof(VkImageMemoryBarrier2));
     rec_commit();
+}
+/* whether a scope's stages src take any of dst's: ALL_COMMANDS and ALL_GRAPHICS take every stage (for this test) */
+static int stages_meet(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst) {
+    const VkPipelineStageFlags2 all = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+    if (!src || !dst) return 0;
+    return (src & all) || (dst & all) || (src & dst);
+}
+/* the first scope's stages of d's barriers, and the second scope's */
+static VkPipelineStageFlags2 barrier_stages(const VkDependencyInfo* d, int second) {
+    VkPipelineStageFlags2 st = 0;
+    for (u32 i = 0; i < d->memoryBarrierCount; i++)
+        st |= second ? d->pMemoryBarriers[i].dstStageMask : d->pMemoryBarriers[i].srcStageMask;
+    for (u32 i = 0; i < d->bufferMemoryBarrierCount; i++)
+        st |= second ? d->pBufferMemoryBarriers[i].dstStageMask : d->pBufferMemoryBarriers[i].srcStageMask;
+    for (u32 i = 0; i < d->imageMemoryBarrierCount; i++)
+        st |= second ? d->pImageMemoryBarriers[i].dstStageMask : d->pImageMemoryBarriers[i].srcStageMask;
+    return st;
 }
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     if (rec_on(cb)) g_rec_barriers++;
@@ -1842,7 +1865,8 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     int apart = g_bar_batch.cb != cb || g_bar_batch.flags != d->dependencyFlags ||
                 g_bar_batch.nm + d->memoryBarrierCount > BAR_BATCH_CAP ||
                 g_bar_batch.nb + d->bufferMemoryBarrierCount > BAR_BATCH_CAP ||
-                g_bar_batch.ni + d->imageMemoryBarrierCount > BAR_BATCH_CAP;
+                g_bar_batch.ni + d->imageMemoryBarrierCount > BAR_BATCH_CAP ||
+                stages_meet(barrier_stages(d, 0), g_bar_batch.dst);
     for (u32 i = 0; i < d->imageMemoryBarrierCount && !apart; i++)
         for (u32 j = 0; j < g_bar_batch.ni && !apart; j++)
             if (d->pImageMemoryBarriers[i].image == g_bar_batch.images[j]) apart = 1;
@@ -1860,6 +1884,7 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     g_bar_batch.nm += d->memoryBarrierCount;
     g_bar_batch.nb += d->bufferMemoryBarrierCount;
     g_bar_batch.ni += d->imageMemoryBarrierCount;
+    g_bar_batch.dst |= barrier_stages(d, 1);
 }
 
 typedef struct {
