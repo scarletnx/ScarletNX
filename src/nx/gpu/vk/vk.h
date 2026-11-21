@@ -653,6 +653,9 @@ int vk_uma_can_dmabuf(void);
    g_vk_present moved. vk_present_before: the present before which an entry last used then has gone unused for at
    least ago_ns and at least `presents` presents (0: none has) */
 void vk_mem_use(u64* usage, u64* budget);
+/* the main heap's use as the driver counts it, the free space inside the renderer's blocks with it (vk_mem_use
+   counts that space as room), less what frees release once their frames are done */
+u64 vk_mem_heap_use(void);
 int vk_mem_heap(void); /* that heap's index */
 u64 vk_mem_budget_cap(u64 bytes); /* vk_budget_mb's cap set to bytes (0: none), the one it had back */
 /* moves whenever the budget vk_mem_use gives can have moved since: the driver's budgets asked again

@@ -1807,6 +1807,14 @@ void vk_mem_use(u64* usage, u64* budget) {
 #endif
 }
 
+u64 vk_mem_heap_use(void) {
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+    if (g_heap < 0) heap_find();
+    vk_devmem_budgets(b);
+    const u64 u = b[g_heap].usage, gone = vk_deferred_bytes();
+    return u > gone ? u - gone : 0;
+}
+
 /* the present clock: a present and its time every quarter second at most, seventeen minutes back */
 #define CLOCK_N 4096
 static struct {

@@ -4,8 +4,9 @@
    over (rt_superseded). Such a target holds no one's pixels, and a trim takes it before anything else. Where the
    driver moves memory by priority (g_vk.has_pageable), a trim for headroom leaves it for a second and eight presents,
    as the sweep every 30 presents does: targets have the highest priority, and the driver moves textures first. A trim
-   for an allocation (force), or one where the driver does not move memory, takes it after two presents. A target
-   whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
+   for an allocation (force), or one where the driver does not move memory, takes it after two presents, and so does
+   one while the heap itself is at its budget, though the caches count room in the free space inside the blocks. A
+   target whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
@@ -238,11 +239,13 @@ void vk_devmem_budgets(DevMemBudget* b) {
     b[0].budget = g_sys_budget;
 }
 /* what the trim reads: the heap's use and budget, and the presents before now (memory.c) */
-static u64 g_use, g_budget, g_deferred;
+static u64 g_use, g_budget, g_deferred, g_heap_use;
 void vk_mem_use(u64* usage, u64* budget) {
     *usage = g_use;
     *budget = g_budget;
 }
+/* the heap's use with the free space inside the blocks (memory.c) */
+u64 vk_mem_heap_use(void) { return g_heap_use; }
 /* the present `presents` ago, or 60 more where a time is asked too: a second is 60 presents here */
 u32 vk_present_before(u64 ago_ns, u32 presents) { return g_vk_present - presents - (ago_ns ? 60 : 0); }
 u64 vk_deferred_bytes(void) { return 0; }
@@ -306,6 +309,28 @@ static int trim_takes(int pageable, int force, u32 ago) {
     CHECK(held == 1 ? g_deferred == 1 << 20 : held == 2 && !g_deferred); /* the old one went, or nothing */
     while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
     CHECK(targets_held() == 0 && !g_ndrawn);
+    return held == 1;
+}
+
+/* A target last used `ago` presents ago that a later one drew all over, and a trim for headroom where the driver
+   pages, with the caches' use (the free space inside the blocks counted as room) under the trim's start and the
+   heap's own use at its budget (heap_full) or under the start: 1 when the trim took it */
+static int heap_full_takes(int heap_full, u32 ago) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 1;
+    Surf* old = target(0x40000000, 1 << 20, 1);
+    old->last_used = g_vk_present - ago;
+    Surf* over = target(0x40000000, 1 << 20, 2);
+    drawn_over(over);
+    g_use = vk_mem_trim_start(g_budget) - trim_head(g_budget);
+    g_heap_use = heap_full ? g_budget : g_use;
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    const u32 held = targets_held();
+    CHECK(held == 1 ? g_deferred == 1 << 20 : held == 2 && !g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    CHECK(targets_held() == 0 && !g_ndrawn);
+    g_heap_use = 0;
     return held == 1;
 }
 
@@ -394,6 +419,9 @@ int main(void) {
     CHECK(trim_takes(1, 1, 5) && !trim_takes(1, 1, 1)); /* for an allocation: taken after two presents */
     /* where the driver does not page: taken after two presents */
     CHECK(trim_takes(0, 0, 5) && !trim_takes(0, 0, 1) && trim_takes(0, 1, 5));
+    /* the caches count room in the blocks, but the heap itself is at its budget: taken after two presents, the hold
+       of a second and eight presents aside; with the heap under the trim's start, nothing runs */
+    CHECK(heap_full_takes(1, 5) && !heap_full_takes(1, 1) && !heap_full_takes(0, 5) && !heap_full_takes(0, 69));
     /* a target with pixels memory lacks: kept for its age, taken by the pressure, where it can't move */
     CHECK(aside_or_lost(VK_MEM_UMA) && aside_or_lost(VK_MEM_SMALL_BAR));
     CHECK(aside_hash());
