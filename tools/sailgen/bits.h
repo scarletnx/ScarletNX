@@ -18,7 +18,17 @@ typedef struct {
 
 static inline SnxU64 sg_ones(unsigned n) { return n >= 64 ? ~0ull : (1ull << n) - 1; }
 
+/* what the back end can't make: the process ends, but where the includer defines SG_FAIL_JUMP (a jmp_buf* the
+   thread's emitter sets, the x86-64 recompiler's), the emitter takes the word back and another back end makes it */
 [[noreturn]] static inline void sg_fail(const char* what, long long a, long long b) {
+#ifdef SG_FAIL_JUMP
+    if (SG_FAIL_JUMP) {
+#ifdef SG_FAIL_NOTE
+        SG_FAIL_NOTE(what, a, b);
+#endif
+        longjmp(*SG_FAIL_JUMP, 1);
+    }
+#endif
     fprintf(stderr, "sailgen back end: %s (%lld, %lld)\n", what, a, b);
     abort();
 }

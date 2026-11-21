@@ -50,6 +50,50 @@ static u64 rnd(void) {
     return g_test.seed;
 }
 
+/* the SIMD&FP state a start has: each doubleword random, or two singles or a double of the values floating point
+   treats apart (zeros, infinities, quiet and signalling NaNs, denormals, the largest, ordinary numbers); FPCR's
+   rounding mode, FZ, DN, AHP and FZ16 random in odd states (0 in the rest), FPSR's flags random */
+static u64 fp_value(int dbl) {
+    static const u64 d[] = {0, 0x8000000000000000ull, 0x3ff0000000000000ull, 0xc008000000000000ull,
+                            0x7ff0000000000000ull, 0xfff0000000000000ull, 0x7ff8000000000000ull, 0x7ff4000000000000ull,
+                            0x000fffffffffffffull, 0x8000000000000001ull, 0x7fefffffffffffffull, 0x0010000000000000ull,
+                            0x41dfffffffc00000ull, 0xc3e0000000000000ull, 0x3fe0000000000000ull, 0x4059000000000000ull};
+    static const u32 f[] = {0, 0x80000000u, 0x3f800000u, 0xc0400000u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+                            0x7fa00000u, 0x007fffffu, 0x80000001u, 0x7f7fffffu, 0x00800000u, 0x4effffffu, 0xdf000000u,
+                            0x3f000000u, 0x42c80000u};
+    u64 r = rnd();
+    if (r & 0x100) return r >> 9; /* any bits */
+    if (dbl) return d[r & 15];
+    return (u64)f[r & 15] | (u64)f[(r >> 4) & 15] << 32;
+}
+static void fp_state(CPU* c, unsigned s) {
+    unsigned r;
+    for (r = 0; r < 32; ++r) {
+        c->v[r].d[0] = fp_value(rnd() & 1);
+        c->v[r].d[1] = fp_value(rnd() & 1);
+    }
+    c->fpcr = s & 1 ? (u32)rnd() & (3u << 22 | 1u << 24 | 1u << 25 | 1u << 26 | 1u << 19) : 0;
+    c->fpsr = (u32)rnd() & 0x9f;
+}
+/* --verbose: the SIMD&FP registers, FPSR and FPCR where the ends differ */
+static void fp_report(const CPU* a, const CPU* b, const CPU* start) {
+    unsigned r;
+    for (r = 0; r < 32; ++r)
+        if (memcmp(&a->v[r], &b->v[r], sizeof a->v[r]))
+            fprintf(stderr, "  v%u: llvm %016llx:%016llx x64 %016llx:%016llx (was %016llx:%016llx)\n", r,
+                    (unsigned long long)a->v[r].d[1], (unsigned long long)a->v[r].d[0],
+                    (unsigned long long)b->v[r].d[1], (unsigned long long)b->v[r].d[0],
+                    (unsigned long long)start->v[r].d[1], (unsigned long long)start->v[r].d[0]);
+    if (a->fpsr != b->fpsr || a->fpcr != b->fpcr)
+        fprintf(stderr, "  fpsr: llvm %08x x64 %08x (was %08x); fpcr: llvm %08x x64 %08x\n", a->fpsr, b->fpsr,
+                start->fpsr, a->fpcr, b->fpcr);
+}
+/* the SIMD&FP state two ends differ in */
+static int fp_differs(const CPU* a, const CPU* b) {
+    return memcmp(a->v, b->v, sizeof a->v) || a->fpsr != b->fpsr || a->fpcr != b->fpcr;
+}
+
+
 static const char* op_name(u32 word) {
     SnxA64Insn insn;
     return snx_a64_decode_word(word, TARGET, &insn) != SNX_A64_OP_UNDEF ? snx_a64_op_text(insn.op) : NULL;
@@ -254,6 +298,7 @@ int main(int argc, char** argv) {
                 unsigned undef[2], r;
                 memset(&start, 0, sizeof start);
                 for (r = 0; r < 32; ++r) start.x[r] = rnd();
+                fp_state(&start, s);
                 if (s & 1) start.x[rnd() & 31] = 0;
                 if (s & 2) start.x[rnd() & 31] = 0x8000000000000000ull;
                 if (s & 4) start.x[rnd() & 31] = ~0ull;
@@ -286,7 +331,8 @@ int main(int argc, char** argv) {
                     memcpy(g_test.memory[1] + MEMORY_ZERO, g_test.memory[2] + MEMORY_ZERO, MEMORY_TOUCHED);
                 }
                 if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
-                    end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf) {
+                    end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf ||
+                    fp_differs(&end[0], &end[1])) {
                     ++failures;
                     fprintf(stderr, "FAIL: %s %08x (%s host) state %u: the x86-64 code's result differs\n",
                             op_name(words[i]), (unsigned)words[i], k ? "a plain" : "this", s);
@@ -299,6 +345,7 @@ int main(int argc, char** argv) {
                         fprintf(stderr, "  nzcv: llvm %u%u%u%u x64 %u%u%u%u; next: llvm %llx x64 %llx; undef %u %u\n",
                                 end[0].n, end[0].z, end[0].cf, end[0].vf, end[1].n, end[1].z, end[1].cf, end[1].vf,
                                 (unsigned long long)next[0], (unsigned long long)next[1], undef[0], undef[1]);
+                        fp_report(&end[0], &end[1], &start);
                     }
                     break;
                 }
@@ -363,6 +410,7 @@ int main(int argc, char** argv) {
                 size_t j;
                 memset(&start, 0, sizeof start);
                 for (r = 0; r < 32; ++r) start.x[r] = rnd();
+                fp_state(&start, st);
                 if (st & 1) start.x[rnd() & 31] = 0;
                 if (st & 2) start.x[rnd() & 31] = ~0ull;
                 start.n = rnd() & 1;
@@ -381,7 +429,8 @@ int main(int argc, char** argv) {
                 undef[1] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 ++compared;
                 if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
-                    end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf) {
+                    end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf ||
+                    fp_differs(&end[0], &end[1])) {
                     ++failures;
                     fprintf(stderr, "FAIL: the block of");
                     for (j = 0; j < seq[q].count; ++j)

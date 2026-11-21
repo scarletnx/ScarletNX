@@ -24,6 +24,7 @@ struct SgCtx {
     SgD target; /* BranchTo's: where, and when (0: always) */
     SgB taken;
     int gpr[32];     /* the virtual register of each X register the block knows, 0 for none */
+    int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
@@ -169,6 +170,9 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     SgXIns* i;
     if (nargs > 5 - (state ? 0 : 0)) sg_fail("a call of more than five arguments", nargs, 0);
     for (k = 0; k < nargs; ++k) regs[k] = sgx_reg(x, &args[k]);
+    /* a call changes the flags: a condition on them read after it (FCCMP's, both its compare's path and its flags'
+       choice) is first made 0 or 1 in a register */
+    sgx_flags_clobbered(x);
     i = sgx_append(x, SGX_K_MACHINE);
     i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
     i->sym = sym;
@@ -187,6 +191,155 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
 static inline void sgx_simple(SgCtx* g, int op) {
     SgXIns* i = sgx_append(sgx(g), SGX_K_MACHINE);
     i->op = (unsigned char)op;
+}
+
+/* ---- the SIMD&FP registers and floating point ----
+   _V's elements are CPU.v's (two doublewords each, the low first), read and written a doubleword at a time; a write
+   is of all 128 bits, as nx.sail's register file has it (a scalar's result zero-extended). FPCR is CPU.fpcr. The
+   arithmetic the Sail lowers (FPAdd...) calls cpu.h's helpers, the exact ones LLVM's slow paths call, through
+   x64_helpers.c's snx_x64_fp_* (the state first, FPSR's flags ORed in there): bits the operation takes as constants
+   of the instruction are packed in desc, and a run-time path (FCCMP's) turns into FPCR's bit 32, the helper then
+   doing nothing */
+
+static inline int sgx_vd_offset(long long n, int k) { return (int)(offsetof(CPU, v) + 16 * (size_t)n + 8 * (size_t)k); }
+static inline SgD sgx_vd_read(SgCtx* g, long long n, int k) {
+    SgX* x = sgx(g);
+    if (!g->vd[n][k]) {
+        SgXIns* i = sgx_append(x, SGX_K_LOAD);
+        i->w = 64;
+        i->disp = sgx_vd_offset(n, k);
+        i->def = sgx_vreg(x, x->n - 1, 64);
+        g->vd[n][k] = i->def;
+    }
+    return sgx_val(64, g->vd[n][k]);
+}
+static inline void sgx_vd_write(SgCtx* g, long long n, int k, SgD v) {
+    SgX* x = sgx(g);
+    int r = sgx_reg(x, &v);
+    SgXIns* i = sgx_append(x, SGX_K_STORE);
+    i->w = 64;
+    i->in[0] = r;
+    i->disp = sgx_vd_offset(n, k);
+    g->vd[n][k] = r;
+}
+static inline SgD sg__V_read_bits(SgCtx* g, long long n, long long hi, long long lo) {
+    long long w = hi - lo + 1;
+    if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
+    if (lo == 0 && w <= 64) return sg_d_slice(g, sgx_vd_read(g, n, 0), hi, 0);
+    if (lo == 64 && hi <= 127) return sg_d_slice(g, sgx_vd_read(g, n, 1), hi - 64, 0);
+    if (lo == 0 && hi == 127) return sg_d_concat(g, sgx_vd_read(g, n, 1), sgx_vd_read(g, n, 0));
+    sg_fail("bits of a SIMD&FP register across its doublewords", hi, lo);
+}
+static inline void sg__V_write(SgCtx* g, long long n, SgD v) {
+    SgD lo, hi;
+    if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
+    if (v.w != 128 || v.wide || v.inv || v.nzcv) sg_fail("a SIMD&FP register written from other than 128 bits", v.w, 128);
+    lo = v.v ? sgx_val(64, v.v) : sgx_const(64, v.k);
+    hi = v.vh ? sgx_val(64, v.vh) : sgx_const(64, v.kh);
+    sgx_vd_write(g, n, 0, lo);
+    sgx_vd_write(g, n, 1, hi);
+}
+
+static inline SgD sg_FPCR_read(SgCtx* g) {
+    SgX* x = sgx(g);
+    SgXIns* i = sgx_append(x, SGX_K_LOAD);
+    i->w = 32;
+    i->disp = (int)offsetof(CPU, fpcr);
+    i->def = sgx_vreg(x, x->n - 1, 32);
+    return sgx_val(64, i->def);
+}
+
+/* FPCR's 32 bits as a helper takes them, bit 32 set where path doesn't hold */
+static inline SgD sgx_fp_fpcr(SgCtx* g, SgB path, SgD fpcr) {
+    SgD f = sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 64);
+    return path ? sg_d_select(g, path, f, sgx_const(64, 1ull << 32)) : f;
+}
+/* snx_x64_fp_<sym>(state, operands..., fpcr, desc): the value's low w bits */
+static inline SgD sgx_fp(SgCtx* g, const char* sym, SgB path, SgD fpcr, SgD* ops, int nops, int has_desc, SnxU32 desc,
+                         unsigned w) {
+    SgD args[5];
+    int k, n = 0;
+    for (k = 0; k < nops; ++k) args[n++] = sg_d_zext(g, ops[k], 64);
+    args[n++] = sgx_fp_fpcr(g, path, fpcr);
+    if (has_desc) args[n++] = sgx_const(32, desc);
+    return sg_d_slice(g, sgx_call(g, sym, 0, 1, args, n, 64), (long long)w - 1, 0);
+}
+static inline SgD sgx_fp_binary(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned op) {
+    SgD ops[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_binary", path, fpcr, ops, 2, 1, a.w | op << 8, a.w);
+}
+static inline SgD sg_FPAdd(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_ADD); }
+static inline SgD sg_FPSub(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_SUB); }
+static inline SgD sg_FPMul(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_MUL); }
+static inline SgD sg_FPDiv(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_DIV); }
+static inline SgD sgx_fp_minmax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned minimum, unsigned numeric) {
+    SgD ops[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_minmax", path, fpcr, ops, 2, 1, a.w | minimum << 8 | numeric << 9, a.w);
+}
+static inline SgD sg_FPMax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 0); }
+static inline SgD sg_FPMin(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 0); }
+static inline SgD sg_FPMaxNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 1); }
+static inline SgD sg_FPMinNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 1); }
+static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD fpcr) {
+    SgD ops[3] = {addend, a, b};
+    return sgx_fp(g, "snx_x64_fp_fma", path, fpcr, ops, 3, 1, a.w, a.w);
+}
+static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
+    return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | SNX_FP_SQRT << 8, a.w);
+}
+#define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
+static inline int sg_FPRoundingMode(SgCtx* g, SgB path, SgD fpcr) {
+    (void)g, (void)path, (void)fpcr;
+    return SG_FP_ROUNDING_FPCR;
+}
+/* a rounding the Sail hands a lowered function as desc's rm + 1: FPRounding's 0-4 (TIEEVEN to TIEAWAY), 0 for FPCR's */
+static inline SnxU32 sgx_fp_rm(int rounding) {
+    if (rounding == SG_FP_ROUNDING_FPCR) return 0;
+    if (rounding < 0 || rounding > 4) sg_fail("a floating-point rounding the helpers do not take", rounding, 4);
+    return (SnxU32)rounding + 1;
+}
+static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, int exact) {
+    return sgx_fp(g, "snx_x64_fp_round", path, fpcr, &a, 1, 1, a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)!!exact << 12,
+                  a.w);
+}
+static inline SgD sg_FPRoundIntN(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, long long intsize) {
+    return sgx_fp(g, "snx_x64_fp_round_int", path, fpcr, &a, 1, 1,
+                  a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)intsize << 16, a.w);
+}
+static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long long to_bits) {
+    if (to_bits != 16 && to_bits != 32 && to_bits != 64) sg_fail("a conversion to a float of this width", to_bits, 0);
+    return sgx_fp(g, "snx_x64_fp_convert", path, fpcr, &op, 1, 1, op.w | (SnxU32)to_bits << 8, (unsigned)to_bits);
+}
+/* the NZCV nibble (N bit 3 ... V bit 0) */
+static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD fpcr) {
+    SgD ops[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_compare", path, fpcr, ops, 2, 1, a.w | (SnxU32)!!signal << 8, 4);
+}
+static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
+                               long long width) {
+    if (rounding != SG_FP_ROUNDING_FPCR) sg_fail("FixedToFP in a mode of its own: the helper rounds as FPCR says", rounding, 0);
+    if (fbits < 0 || fbits > 64) sg_fail("FixedToFP of these fraction bits", fbits, 0);
+    return sgx_fp(g, "snx_x64_fp_from_int", path, fpcr, &op, 1, 1,
+                  op.w | (SnxU32)width << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17, (unsigned)width);
+}
+static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
+                               long long integer) {
+    if (rounding == SG_FP_ROUNDING_FPCR) sg_fail("FPToFixed in FPCR's mode: the helper takes the encoding's", rounding, 0);
+    if (integer != 32 && integer != 64) sg_fail("a conversion to an integer of this width", integer, 0);
+    if (fbits < 0 || fbits > 64) sg_fail("FPToFixed of these fraction bits", fbits, 0);
+    return sgx_fp(g, "snx_x64_fp_to_int", path, fpcr, &op, 1, 1,
+                  op.w | (SnxU32)integer << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17 | sgx_fp_rm(rounding) << 24,
+                  (unsigned)integer);
+}
+static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64, long long n, SgD* result, SgD* z) {
+    SgD reply;
+    if (!is64 || n != 32 || op.w != 64) sg_fail("FPToFixedJS other than a double to 32 bits", n, op.w);
+    reply = sgx_fp(g, "snx_x64_fp_jcvt", path, fpcr, &op, 1, 0, 0, 64);
+    *result = sg_d_slice(g, reply, 31, 0);
+    *z = sg_d_slice(g, reply, 32, 32);
+}
+static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
+    return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
 }
 
 /* ---- guest memory: CPU.mem plus the address ---- */
@@ -460,7 +613,14 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     SgXBuf* b = a->b;
     switch (i->kind) {
     case SGX_K_UNDEF:
-        /* rt->undef(state, pc, word): RDI, RSI, EDX, through RAX = state->rt */
+        /* state->pc = pc, then rt->undef(state, pc, word): RDI, RSI, EDX, through RAX = state->rt */
+        sgx_byte(b, 0x48); /* mov rax, imm64; mov [rbx + pc], rax */
+        sgx_byte(b, 0xB8);
+        sgx_imm(b, i->imm, 8);
+        sgx_byte(b, 0x48);
+        sgx_byte(b, 0x89);
+        sgx_byte(b, 0x83);
+        sgx_imm(b, (long long)offsetof(CPU, pc), 4);
         sgx_byte(b, 0x48); /* mov rdi, rbx */
         sgx_byte(b, 0x89);
         sgx_byte(b, 0xDF);
