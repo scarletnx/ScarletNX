@@ -3152,6 +3152,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_depth_range_unrestricted,
                   /* how a fragment program reads its fragment's size (S2R 0x84) */
                   (u32)g_spirv_translate.shading_rate,
+                  /* the descriptor bindings' count (shader.h): a binding added, dropped or moved shifts every later
+                     number, and the file's SPIR-V names the old ones, so the count invalidates the file */
+                  SNX_VKB_END,
                   (u32)g_vk.vertex_input_dynamic};
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */
