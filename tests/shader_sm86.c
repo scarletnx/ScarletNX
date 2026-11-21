@@ -2322,6 +2322,40 @@ static void test_fragment_depth(const char* dir) {
     (void)dir;
 }
 
+/* A fragment program whose key asks for the depth and stencil tests before it (ShaderInfo.early_fragment_tests, the
+   program's own request) gets OpExecutionMode EarlyFragmentTests, and one that doesn't has none: without it a fragment
+   the tests reject still runs the program's image stores */
+static void test_early_fragment_tests(const char* dir) {
+    u8 code[16 * 4] = {0};
+    u32 n = 0;
+    put(code, n++, mov_imm(0, f2u(1.0f)));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 1;
+    for (u32 early = 0; early < 2; early++) {
+        ShaderInfo si = {.early_fragment_tests = early};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "early fragment tests: %s\n", si.first_unsupported);
+            return;
+        }
+        u32 modes[16], found = 0;
+        u32 nm = spv_find(spv, count, 16 /* OpExecutionMode */, modes, 16);
+        for (u32 i = 0; i < nm; i++)
+            if (spv[modes[i] + 2] == 9 /* EarlyFragmentTests */) found = 1;
+        CHECK(found == early);
+        if (found != early)
+            fprintf(stderr, "early fragment tests: asked %u, the module has the mode %u\n", early, found);
+        if (dir && early) CHECK(keep_module(dir, "fs_early_fragment_tests", spv, count));
+        free(spv);
+    }
+}
+
 /* the instruction that defines type id (a type's result is its word 1), 0 for none */
 static size_t spv_type_def(const u32* words, size_t count, u32 id) {
     for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
@@ -7387,6 +7421,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_early_fragment_tests(dir);
     test_integer_targets(dir);
     test_clip_distances(dir);
     test_float64_fallback_scale(dir);
