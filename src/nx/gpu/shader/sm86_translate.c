@@ -97,13 +97,9 @@ typedef struct {
     u32 coop_gen[256];               /* the writes each register took, which the matrices are held against */
     u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
     u32 warp_base;                   /* warp_read's index high bits, made once a block (coop_flow forgets it) */
-    u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
-    /* with cb_windows, a vertex or fragment program's one push block (unified_push): the members of push and
-       scaled_push, then the three uvec4 of its constant buffers' window offsets from member cbw_member */
-    u32 cbw_member, cbw_u32_ptr;
-    /* with tex_table: the push member of the words' window offsets (SH_PUSH_TEX_WORDS), the words' uniform buffer,
-       the samplers' table, and each kind of image's table (table_kind) */
-    u32 tw_member, tex_words, tex_words_ptr, table_samplers;
+    u32 push, push_ptr; /* a compute dispatch's push constant vec4 (push_component): a task program's first workgroup */
+    /* with tex_table: the words' uniform buffer, the samplers' table, and each kind of image's table (table_kind) */
+    u32 tex_words, tex_words_ptr, table_samplers;
     u32 table_kinds, table_kind_key[32], table_kind_var[32], table_kind_sampled[32];
     u32 tex_images[SH_MAXTEX]; /* a table slot's image table, 0 for a slot of its own variable */
     u32 centroid_mask;  /* the inputs decorated Centroid */
@@ -117,11 +113,11 @@ typedef struct {
     /* a vertex or geometry program's ClipDistance output, 8 planes (clip_var) */
     u32 clip;
     int passthrough;
-    /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
-       constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
-    u32 scale, scale_ptr, scaled_push;
-    /* a graphics stage's per-draw block (SNX_VKB_DRAW), read at the draw id (draw_id, the push constant word 0) */
-    u32 draw, draw_ptr, draw_id, draw_id_ptr;
+    /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) */
+    u32 scale, scale_ptr;
+    /* a graphics stage's per-draw block (SNX_VKB_DRAW, draw_component) and the push constant word 0 that says where it
+       starts (draw_at) */
+    u32 draw, draw_ptr, draw_at, draw_at_ptr;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
        instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
@@ -636,59 +632,31 @@ static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
 static int cb_windowed(const Ctx* c) {
     return g_spirv_translate.cb_windows && (c->stage == ST_VS || c->stage == ST_FS);
 }
-static void unified_push(Ctx* c) {
-    if (c->push) return;
-    const int fs = c->stage == ST_FS;
-    u32 members[8], offsets[8], n = 0;
-    members[n] = c->t_v4f, offsets[n++] = 0;
-    if (fs) {
-        members[n] = c->t_v4f, offsets[n++] = 16;
-        members[n] = c->t_v4u, offsets[n++] = 32;
-        members[n] = c->t_v4u, offsets[n++] = 96;
+/* where the draw's per-draw block (SNX_VKB_DRAW) starts in its window, in 16-byte units: the push constant word 0 that
+   the renderer gives a graphics program */
+static u32 draw_at(Ctx* c) {
+    if (!c->draw_at) {
+        c->draw_at = spv_emit_push_vec4(&c->e, c->t_v4u, c->t_u32, 0, 0, &c->draw_at_ptr);
+        add_interface(c, c->draw_at);
     }
-    c->cbw_member = n;
-    for (u32 k = 0; k < 3; k++)
-        members[n] = c->t_v4u, offsets[n++] = (fs ? SH_PUSH_CB_WINDOW_FS : SH_PUSH_CB_WINDOW) + 16 * k;
-    if (g_spirv_translate.tex_table) {
-        c->tw_member = n;
-        members[n] = c->t_v4u, offsets[n++] = SH_PUSH_TEX_WORDS;
-    }
-    u32 block = spv_emit_type_struct(&c->e, members, offsets, n);
-    spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
-    c->push = c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
-    c->push_ptr = spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_f32);
-    c->cbw_u32_ptr = spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32);
-    add_interface(c, c->push);
+    return spv_emit_push_component_f32(&c->e, c->draw_at_ptr, c->draw_at, c->zero, c->zero, c->t_u32);
 }
-/* the draw id (the push constant word 0 the renderer gives a graphics program), which indexes its per-draw block */
-static u32 draw_id(Ctx* c) {
-    if (!c->draw_id) {
-        c->draw_id = spv_emit_push_vec4(&c->e, c->t_v4u, c->t_u32, 0, 0, &c->draw_id_ptr);
-        add_interface(c, c->draw_id);
-    }
-    return spv_emit_push_component_f32(&c->e, c->draw_id_ptr, c->draw_id, c->zero, c->zero, c->t_u32);
-}
-/* word k of a graphics stage's per-draw block (SNX_VKB_DRAW), at its draw id (draw_id): its float bits, as the
-   renderer's pc[] holds them (callers that read a u32 word bitcast it with to_u) */
+/* word k of a graphics stage's per-draw block (SNX_VKB_DRAW) at draw_at: its float bits, as the renderer's pc[] holds
+   them (callers that read a u32 word bitcast it with to_u). The program declares the whole window (SNX_DRAW_WINDOW) */
 static u32 draw_component(Ctx* c, u32 k) {
     if (!c->draw) {
         c->draw = spv_emit_readonly_vec4_array(&c->e, c->t_v4f, c->t_f32, c->t_u32, (u32)shader_vk_set(c->stage),
-                                               SNX_VKB_DRAW, SNX_DRAW_MAX * SNX_DRAW_WORDS / 4, &c->draw_ptr);
+                                               SNX_VKB_DRAW, SNX_DRAW_WINDOW / 16, &c->draw_ptr);
         add_interface(c, c->draw);
     }
-    u32 index = spv_emit_iadd_u32(
-        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, draw_id(c), cu(c, SNX_DRAW_WORDS)), cu(c, k));
     return spv_emit_uniform_component(&c->e, c->draw_ptr, c->draw, c->zero,
-                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 2)),
-                                      spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 3)), c->t_f32);
+                                      spv_emit_iadd_u32(&c->e, c->t_u32, draw_at(c), cu(c, k / 4)), cu(c, k & 3),
+                                      c->t_f32);
 }
+/* word k of the draw's pc[]: a graphics stage reads it in its per-draw block. A compute program, and a task program of
+   the compute-task path (a compute dispatch), read their own push constants, which the dispatch pushes */
 static u32 push_component(Ctx* c, u32 k) {
-    /* every graphics stage's words are in its per-draw block, read at the draw id: the vertex program's, the fragment
-       stage's, a mesh program's and a task program's. A task program of the compute-task path is the exception: it runs
-       as a compute dispatch, whose push constants the compute path sets, and no block is bound for it */
-    if (c->stage == ST_VS || c->stage == ST_FS || c->stage == ST_MS || (c->stage == ST_TS && !c->payload_buf))
-        return draw_component(c, k);
-    if (cb_windowed(c)) unified_push(c);
+    if (c->stage != ST_CS && !(c->stage == ST_TS && c->payload_buf)) return draw_component(c, k);
     if (!c->push) {
         c->push = spv_emit_push_vec4(&c->e, c->t_v4f, c->t_f32, 0, 0, &c->push_ptr);
         add_interface(c, c->push);

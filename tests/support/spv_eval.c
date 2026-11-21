@@ -962,12 +962,8 @@ static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* e
         uint32_t b;
         if ((sc == 2 || sc == 12) && v->binding) { /* Uniform, StorageBuffer */
             uint32_t k = v->binding - 1;
-            if (k == SPV_EVAL_DRAW) /* the per-draw block, read at the draw id (the push constant word 0) */
-                b = new_block(e, env->draw, SPV_EVAL_DRAW_WORDS, 0);
-            else {
-                int bound = k < SPV_EVAL_BINDINGS;
-                b = new_block(e, bound ? env->ubo[k] : NULL, bound ? env->ubo_words[k] : 0, 0);
-            }
+            int bound = k < SPV_EVAL_BINDINGS;
+            b = new_block(e, bound ? env->ubo[k] : NULL, bound ? env->ubo_words[k] : 0, 0);
         } else if (sc == 4 && first) { /* Workgroup: lane 0's */
             const Block* own = &first->blocks[first->ids[in[2]].block];
             b = new_block(e, own->words, own->n, 0);

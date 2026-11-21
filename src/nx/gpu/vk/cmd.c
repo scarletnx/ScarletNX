@@ -1088,7 +1088,6 @@ static void rings_flush_host(const Frame* f) {
             g_cmd.chunk[i].flush = 0;
             g_cmd.unflushed--;
         }
-    vk_render_draw_ubo_flush();
 }
 static void rings_flush(const Frame* f) {
     g_cmd.stream_since = 0;

@@ -415,27 +415,44 @@ static struct {
     DevMem mem;
     u32 end[GPU_CHANNELS * 2][4];
 } g_xfb;
-/* the per-draw push block (SNX_VKB_DRAW): each draw's pc[SH_PUSH_BYTES_TABLE / 4] at its draw id, written by the CPU
-   and flushed at the submit. Every graphics stage reads its words there at the draw id the renderer pushes (word 0 of
-   the push constants) */
-static VkBuffer g_draw_ubo;
-static DevMem g_draw_ubo_mem;
-static u8* g_draw_ubo_ptr;
-static int draw_ubo(void) {
-    if (g_draw_ubo) return 1;
-    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = (VkDeviceSize)SNX_DRAW_WORDS * 4 * SNX_DRAW_MAX,
-                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant aci = {.at = DM_HOST, .mapped = 1};
-    DevMemInfo info;
-    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_draw_ubo, &g_draw_ubo_mem, &info))) return 0;
-    g_draw_ubo_ptr = info.ptr;
-    vk_mem_track(g_draw_ubo_mem, VK_OWN_MISC);
+/* An Ounce program's per-draw block (SNX_VKB_DRAW): the draw's pc[] words, copied into the frame's staging ring at
+   each draw, as Eden's stream buffer holds a draw's uniform data. The binding is a window of the ring chunk that the
+   block is in. The window stays while the blocks land in it, as cb_window_place keeps a constant buffer's window, so
+   the sets keep their descriptor (about one window for each 16 MiB chunk). The draw pushes where its block starts in
+   the window, in 16-byte units (the push constant word 0). A ring chunk lives until the GPU completes its frame, and
+   each submit flushes it. Thus the CPU never writes over a block that the GPU can still read, however many draws are
+   in flight. draw_block_take finds the place before the draw's sets bind it, and the draw writes the words at its
+   push */
+static struct {
+    VkBuffer b;
+    u64 base, range, frame; /* the window, kept for its frame (vk_frame_id() + 1) as a constant buffer's is */
+    u8* data;               /* the draw's block, NULL for a draw that reads none */
+    u32 at;                 /* where the block starts in the window, in 16-byte units */
+} g_draw_block;
+static int draw_block_take(void) {
+    VkBuffer b;
+    u64 o;
+    g_draw_block.data = NULL;
+    u8* data = vk_stage(SH_PUSH_BYTES_TABLE, 16, &b, &o);
+    if (!data) return 0;
+    const u64 frame = vk_frame_id() + 1;
+    if (g_draw_block.b != b || g_draw_block.frame != frame || o < g_draw_block.base ||
+        o + SH_PUSH_BYTES_TABLE > g_draw_block.base + g_draw_block.range) {
+        const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+        const u64 align = l->minStorageBufferOffsetAlignment > 16 ? l->minStorageBufferOffsetAlignment : 16;
+        const u64 size = vk_stage_buffer_size(b), base = o / align * align;
+        u64 reach = size > base ? size - base : 0;
+        if (reach > SNX_DRAW_WINDOW) reach = SNX_DRAW_WINDOW; /* what the programs declare */
+        if (reach > l->maxStorageBufferRange) reach = l->maxStorageBufferRange;
+        if (o + SH_PUSH_BYTES_TABLE > base + reach) return 0;
+        g_draw_block.b = b;
+        g_draw_block.base = base;
+        g_draw_block.range = reach;
+        g_draw_block.frame = frame;
+    }
+    g_draw_block.data = data;
+    g_draw_block.at = (u32)((o - g_draw_block.base) >> 4);
     return 1;
-}
-void vk_render_draw_ubo_flush(void) {
-    if (g_draw_ubo) vk_devmem_flush(g_draw_ubo_mem, 0, VK_WHOLE_SIZE);
 }
 static int xfb_counters(void) {
     if (g_xfb.buf) return 1;
@@ -3936,10 +3953,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
                   draw->map_size[stage]);
-    /* the per-draw push block, read by every graphics stage (SNX_VKB_DRAW) at its draw id */
-    if ((stage == ST_VS || stage == ST_FS || stage == DS_TASK || stage == DS_MESH) && draw_ubo())
-        dw_buffer(&d, set, SNX_VKB_DRAW, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_draw_ubo, 0,
-                  (VkDeviceSize)SNX_DRAW_WORDS * 4 * SNX_DRAW_MAX);
+    /* an Ounce draw's per-draw block, which each graphics stage reads (draw_block_take) */
+    if (g_draw_block.data)
+        dw_buffer(&d, set, SNX_VKB_DRAW, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_draw_block.b, g_draw_block.base,
+                  g_draw_block.range);
     for (u32 b = 0; xfb && xfb->range.declared && b < 5; b++)
         if (b == 4 || xfb->range.declared >> b & 1)
             dw_buffer(&d, set, b == 4 ? SNX_VKB_XFB_PARAMS : SNX_VKB_XFB + b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -6954,6 +6971,18 @@ retry:
             g_mesh_first = ub, g_mesh_first_off = uo;
         }
     }
+    /* an Ounce program's per-draw block: its place, which the sets bind (draw_block_take). Not a texture draw: its
+       programs are the renderer's own (draw_texture_shader.c), which read the push constants */
+    g_draw_block.data = NULL;
+    if (g_shader_sm86 && !texture && !draw_block_take()) {
+        draw_images_discard(&images);
+        if (late_depth) vk_depth_shadow_cancel();
+        g_vk_skipped++;
+        return;
+    }
+    /* this draw's, which the nested draws of predraw_run do not change */
+    u8* const block = g_draw_block.data;
+    const u32 block_at = g_draw_block.at;
     VkDescriptorSet vset =
         stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
     VkDescriptorSet fset = fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, scaled, res, &storage, &images,
@@ -7720,23 +7749,22 @@ retry:
             return;
         }
         float width = (float)rt[0]->w, height = (float)rt[0]->h;
-        /* the rectangle's position and source texels go at byte 80 of the one push block, in place of the varying
-           viewport (a texture draw has none), the draw's own scaled words and the predraw number (it has none): the
-           block already covers byte 80, so a second vkCmdPushConstants is not needed */
         float rectangle[8] = {2 * texture->x0 / width - 1, 2 * texture->y0 / height - 1,
             2 * (texture->x0 + texture->w) / width - 1, 2 * (texture->y0 + texture->h) / height - 1,
             texture->sx0 / source->w, texture->sy0 / source->h,
             (float)((texture->sx0 + texture->du * texture->w) / source->w),
             (float)((texture->sy0 + texture->dv * texture->h) / source->h)};
+        /* at byte 80, which the texture draw's vertex program reads (draw_texture_shader.c), in place of the varying
+           viewport and the own scaled words: a texture draw has neither */
         memcpy(&pc[20], rectangle, sizeof rectangle);
     }
-    if (g_shader_sm86) {
-        /* every graphics stage reads its pc[] words from the per-draw block at its draw id (the push constant word 0):
-           a vertex program's, the fragment stage's (the scaled targets, the constant buffer windows and the texture
-           words), and a mesh or task program's first workgroup, depth fix and params. The push is only the draw id */
-        u32 id = (u32)atomic_load_explicit(&g_draw_id, memory_order_relaxed) & (SNX_DRAW_MAX - 1);
-        if (draw_ubo()) memcpy(g_draw_ubo_ptr + (u64)id * (SNX_DRAW_WORDS * 4), pc, SNX_DRAW_WORDS * 4);
-        rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 4, &id);
+    if (block) {
+        /* an Ounce draw: every graphics stage reads its pc[] words in the per-draw block, and the push is where the
+           block starts in its window (the vec4 that the programs declare at byte 0) */
+        memcpy(block, pc, SH_PUSH_BYTES_TABLE);
+        snx_le32_array(block, SNX_DRAW_WORDS); /* read by the device little-endian */
+        const u32 at[4] = {block_at, 0, 0, 0};
+        rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
     } else
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
 

@@ -648,11 +648,6 @@ static int rec_drop_draw(void) {
 }
 /* the programs of the draws recorded next (rec_draw_tag), which their checkpoints carry: the GPU thread's */
 static u64 g_rec_tag[2];
-/* the graphics frame's draw id: render.c writes each draw's push block to SNX_VKB_DRAW at this id, and the shader
-   reads it there at its draw id (word 0 of the push constants). Counted per draw the recorder keeps, so a dropped draw
-   (a pipeline that failed to build) does not misindex the block */
-_Atomic u64 g_draw_id;
-static void draw_id_bump(void) { atomic_fetch_add_explicit(&g_draw_id, 1, memory_order_relaxed); }
 static u32 g_rec_src; /* where the draw's vertices, indices and constants were bound (vk_buf_sources) */
 void rec_draw_tag(u64 first, u64 second, u32 sources) {
     g_rec_tag[0] = first;
@@ -804,7 +799,6 @@ void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vert
         return;
     }
     const u64 was = g_pending;
-    draw_id_bump();
     DrawArgs* x = rec_push(draw_run, sizeof *x);
     *x = (DrawArgs){cb, vertices, instances, first_vertex, first_instance, {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
     if (g_settings.draw_run_stats) run_draw(1, instances, first_instance, was);
@@ -832,7 +826,6 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
         return;
     }
     const u64 was = g_pending;
-    draw_id_bump();
     DrawIndexedArgs* x = rec_push(draw_indexed_run, sizeof *x);
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance,
                            {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
@@ -863,7 +856,6 @@ static void rec_draw_mesh(const DrawMeshArgs* a) {
         draw_mesh_now(a);
         return;
     }
-    draw_id_bump();
     DrawMeshArgs* x = rec_push(draw_mesh_run, sizeof *x);
     *x = *a;
     rec_commit();
@@ -906,7 +898,6 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
         draw_indirect_now(&a);
         return;
     }
-    draw_id_bump();
     DrawIndirectArgs* x = rec_push(draw_indirect_run, sizeof *x);
     *x = a;
     rec_commit();
