@@ -116,6 +116,7 @@ typedef struct {
     int last;           /* the last that reads it */
     signed char reg;    /* the host register, once given */
     short slot;         /* its spill slot, -1 for none */
+    signed char xmm;    /* the XMM register it is spilled to, -1 for none */
     int src;
     SnxU64 k;
 } SgXV;
@@ -194,6 +195,7 @@ static inline int sgx_vreg(SgX* x, int def, unsigned zab) {
     x->v[x->nv].last = -1;
     x->v[x->nv].reg = -1;
     x->v[x->nv].slot = -1;
+    x->v[x->nv].xmm = -1;
     return x->nv++;
 }
 
@@ -1134,6 +1136,8 @@ typedef struct SgXAsm {
     SgXBuf* b;
     int owner[16]; /* the virtual register a host one holds, 0 for none, -1 a copy made for one instruction */
     int slots, slots_max;
+    int xmm_owner[16];    /* the value an XMM register holds spilled, 0 for none */
+    int* next_call;       /* for each instruction, the next one at or after it that calls out (x->n: none) */
     size_t frame_at[256]; /* where an imm32 of the frame's size is */
     int nframe;
     void* machine;        /* the machine's part's own (its labels, its relocations) */
@@ -1174,18 +1178,48 @@ static inline void sgx_mov_mem(SgXAsm* a, int load, int w, int reg, int base, in
     m->enc(a->b, r, 0, 0);
 }
 
-/* a value's spill slot: given once, as the value never changes (an SSA value), so a second spill stores nothing */
-static inline void sgx_spill(SgXAsm* a, int r) {
-    int v = a->owner[r];
+/* MOVQ xmm, r64 (66 REX.W 0F 6E /r) and MOVQ r64, xmm (66 REX.W 0F 7E /r): a spill to an XMM register, as bytes (the
+   selection reads general-purpose forms only) */
+static inline void sgx_movq(SgXBuf* b, int to_xmm, int xmm, int gpr) {
+    sgx_byte(b, 0x66);
+    sgx_byte(b, (unsigned char)(0x48 | (xmm >> 3) << 2 | (gpr >> 3)));
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, to_xmm ? 0x6E : 0x7E);
+    sgx_byte(b, (unsigned char)(0xC0 | (xmm & 7) << 3 | (gpr & 7)));
+}
+
+/* a value spilled where no register is free: to a free XMM register where nothing calls out before it is last read
+   (every XMM register is caller-saved), else to its slot of the frame, given once (an SSA value never changes, so a
+   second spill stores nothing) */
+static inline void sgx_spill_at(SgXAsm* a, int r, int at) {
+    int v = a->owner[r], k;
     SgXV* vv = &a->x->v[v];
-    if (vv->slot < 0) {
-        vv->slot = (short)a->slots++;
-        if (a->slots > a->slots_max) a->slots_max = a->slots;
-        sgx_mov_mem(a, 0, 64, r, SGX_RSP, 8 * vv->slot);
+    if (vv->slot < 0 && vv->xmm < 0 && a->next_call && at >= 0 && a->next_call[at] > vv->last)
+        for (k = 0; k < 16; ++k) {
+            if (a->xmm_owner[k] > 0 && a->x->v[a->xmm_owner[k]].last >= at) continue;
+            if (a->xmm_owner[k] > 0) a->x->v[a->xmm_owner[k]].xmm = -1;
+            a->xmm_owner[k] = v;
+            vv->xmm = (signed char)k;
+            sgx_movq(a->b, 1, k, r);
+            break;
+        }
+    vv->reg = -1;
+    a->owner[r] = 0;
+    if (vv->xmm >= 0) return;
+    a->owner[r] = v;
+    vv->reg = (signed char)r;
+    {
+        /* the frame */
+        if (vv->slot < 0) {
+            vv->slot = (short)a->slots++;
+            if (a->slots > a->slots_max) a->slots_max = a->slots;
+            sgx_mov_mem(a, 0, 64, r, SGX_RSP, 8 * vv->slot);
+        }
     }
     vv->reg = -1;
     a->owner[r] = 0;
 }
+static inline void sgx_spill(SgXAsm* a, int r) { sgx_spill_at(a, r, -1); }
 
 /* a host register free at instruction at, none of avoid's (a mask: the registers the instruction reads or writes):
    one whose value nothing reads after, or else the one whose value is read latest, spilled */
@@ -1207,7 +1241,7 @@ static inline int sgx_free_reg(SgXAsm* a, int at, unsigned avoid) {
         if (best < 0 || a->x->v[a->owner[r]].last > a->x->v[a->owner[best]].last) best = r;
     }
     if (best < 0) sg_fail("no host register to spill", at, (long long)avoid);
-    sgx_spill(a, best);
+    sgx_spill_at(a, best, at);
     return best;
 }
 
@@ -1216,9 +1250,12 @@ static inline int sgx_in_reg(SgXAsm* a, int v, int at, unsigned avoid) {
     SgXV* vv = &a->x->v[v];
     int r;
     if (vv->reg >= 0) return vv->reg;
-    if (vv->slot < 0) sg_fail("a value in neither a register nor a slot", v, at);
+    if (vv->slot < 0 && vv->xmm < 0) sg_fail("a value in neither a register nor a slot", v, at);
     r = sgx_free_reg(a, at, avoid);
-    sgx_mov_mem(a, 1, 64, r, SGX_RSP, 8 * vv->slot);
+    vv = &a->x->v[v];
+    if (vv->xmm >= 0) sgx_movq(a->b, 0, vv->xmm, r);
+    else
+        sgx_mov_mem(a, 1, 64, r, SGX_RSP, 8 * vv->slot);
     a->owner[r] = v;
     a->x->v[v].reg = (signed char)r;
     return r;
@@ -1326,12 +1363,19 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
     SgXBuf* b = a->b;
     a->x = x;
     memset(a->owner, 0, sizeof a->owner);
+    memset(a->xmm_owner, 0, sizeof a->xmm_owner);
     a->slots = 0;
     for (i = 0; i < x->nv; ++i) {
         x->v[i].reg = -1;
         x->v[i].slot = -1;
+        x->v[i].xmm = -1;
     }
     sgx_optimize(x);
+    a->next_call = (int*)malloc(sizeof(int) * (size_t)(x->n + 1));
+    if (!a->next_call) sg_fail("out of memory", 0, 0);
+    a->next_call[x->n] = x->n;
+    for (i = x->n - 1; i >= 0; --i)
+        a->next_call[i] = !x->ins[i].dead && (x->ins[i].calls || x->ins[i].kind == SGX_K_MACHINE) ? i : a->next_call[i + 1];
     for (i = 0; i < x->n; ++i) {
         SgXIns* s = &x->ins[i];
         unsigned char r[5] = {0, 0, 0, 0, 0};
@@ -1410,6 +1454,8 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         }
         }
     }
+    free(a->next_call);
+    a->next_call = NULL;
     x->n = 0;
     x->nv = 1;
     x->nb = 1;
