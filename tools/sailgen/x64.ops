@@ -154,6 +154,20 @@ op smulh 64 (A, B)
 RESULT := (SInt(A) * SInt(B))[127:64];
 end
 
+# UDIV and SDIV of 64 bits (32-bit ones are of their extensions): the quotient truncated toward zero, which DIV and
+# IDIV give but for the divisor 0 and the one quotient that doesn't fit; those the recompiler keeps from them (a
+# divisor of 1 in their place, its select making Arm's result), which ASSUME says. SDIV's dividend high half (hi) is
+# the sign extension of A (CQO's RDX)
+op udiv 64 (A, B)
+ASSUME NOT IsZero(B)
+RESULT := (UInt(A) / UInt(B))[W-1:0];
+end
+
+op sdiv 64 (A, hi H:A, B)
+ASSUME NOT IsZero(B) AND NOT (A = 8000000000000000H AND B = FFFFFFFFFFFFFFFFH)
+RESULT := (SInt(A) / SInt(B))[W-1:0]; (* signed division *)
+end
+
 # LSL, LSR, ASR and ROR by a constant (the shift's immediate forms)
 op lsl_i 32 64 (A, imm K:L)
 RESULT := LSL(A, UInt(K));
@@ -237,7 +251,8 @@ op sext32 64 (S:32)
 RESULT := SignExtend(S, W);
 end
 
-op mov 32 64 (A)
+# a move: at 8 and 16 bits the stores of a byte and a halfword (MOV r/m8, MOV r/m16)
+op mov 8 16 32 64 (A)
 RESULT := A;
 end
 

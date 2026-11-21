@@ -3377,7 +3377,10 @@ if(NOT WIN32)
     # BMI1, BMI2 and LZCNT and without them
     if(SNX_SAIL_X64)
         include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
-        add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c)
+        add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+        snx_cpu_helpers_flags(snx-test-sail-x64)
         snx_test_target(snx-test-sail-x64 gnu23)
         target_include_directories(snx-test-sail-x64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(snx-test-sail-x64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

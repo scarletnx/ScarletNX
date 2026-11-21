@@ -1,0 +1,33 @@
+# IDIV—Signed Divide -- override
+# Erratum E-2 (vibe86's): as E-1, the remainder after the quotient's write; and the range check
+# '(temp > 7FFFFFFFFFFFFFFFH) or (temp < 8000000000000000H)' compares a signed quotient with constants that read as
+# unsigned numbers, so every positive quotient fails. Here the dividend's signed value (SignExtend of it at twice the
+# operand size), the quotient truncated toward zero (the comment's 'Signed division'), and the check against the
+# signed range the comment states ('a positive result greater than 7F..FH or a negative result less than 80..0H').
+@operation
+IF SRC = 0
+    THEN #DE; (* Divide error *)
+FI;
+IF OperandSize = 32 (* Quadword/doubleword operation *)
+    THEN
+        temp := SInt(EDX:EAX) / SInt(SRC); (* Signed division *)
+        rem := SInt(EDX:EAX) SignedModulus SInt(SRC);
+        IF (temp > 2147483647) or (temp < -2147483648)
+            THEN #DE; (* Divide error *)
+            ELSE
+                EAX := temp;
+                EDX := rem;
+        FI;
+    ELSE IF OperandSize = 64 (* Doublequadword/quadword operation *)
+        THEN
+            temp := SInt(RDX:RAX) / SInt(SRC); (* Signed division *)
+            rem := SInt(RDX:RAX) SignedModulus SInt(SRC);
+            IF (temp > 9223372036854775807) or (temp < -9223372036854775808)
+                THEN #DE; (* Divide error *)
+                ELSE
+                    RAX := temp;
+                    RDX := rem;
+            FI;
+    ELSE
+        #UD; (* the 8- and 16-bit forms are not read here *)
+FI;

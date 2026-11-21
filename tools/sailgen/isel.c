@@ -428,7 +428,17 @@ static void forms_of(const Page* p) {
         for (k = 0; k < n && !f.opsize; ++k)
             if (f.op[k].kind == OK_REG || f.op[k].kind == OK_FIXED) f.opsize = f.op[k].size;
         if (!f.opsize) f.opsize = f.rex_w || f.vex_w ? 64 : 32;
-        if (f.opsize == 16) continue; /* the back end keeps no 16-bit values */
+        /* a 16-bit operand size is the operand-size prefix's, which the opcode column leaves out (Vol. 2A, 2.1.1) */
+        if (f.opsize == 16 && !f.vex) {
+            int has = 0;
+            for (k = 0; k < f.nprefix; ++k) has |= f.prefix[k] == 0x66;
+            if (!has) {
+                if (f.nprefix == 4) continue;
+                memmove(f.prefix + 1, f.prefix, (size_t)f.nprefix);
+                f.prefix[0] = 0x66;
+                ++f.nprefix;
+            }
+        }
         /* a condition in the low nibble of Jcc's, SETcc's and CMOVcc's opcode, which their page's name says */
         if (strstr(p->name, "cc") && f.nopc >= 1) f.cc = f.opc[f.nopc - 1] & 15;
         g_forms = (Form*)realloc(g_forms, (g_nforms + 1) * sizeof *g_forms);
@@ -846,8 +856,15 @@ static Val binop(Ctx* c, const char* op, int sign, Val a, Val b) {
         int k;
         if (!const_int(b, &kb) || kb <= 0 || (kb & (kb - 1))) {
             if (const_int(a, &ka) && const_int(b, &kb) && kb) return vnum(!strcmp(op, "/") ? ka / kb : ka % kb);
-            unreadable(c, "a division by other than a power of two");
-            return vnone();
+            /* by a value: the exact quotient (DIV's), or, where the line's comment says the division is signed
+               (IDIV's), the signed one truncated toward zero; MOD the remainder of each */
+            if (op[0] == '/') {
+                unsigned q = sign == 1 ? t_isdiv(S(a), S(b)) : t_iudiv(U(a), U(b));
+                return vint(q, q);
+            } else {
+                unsigned r = t_iurem(U(a), U(b));
+                return vint(r, r);
+            }
         }
         for (k = 0; (1ll << k) != kb; ++k) {
         }
@@ -875,6 +892,10 @@ static Val binop(Ctx* c, const char* op, int sign, Val a, Val b) {
            infinity */
         return vbits(sign == 1 ? t_ashr(a.t, t_iconst(i128(k))) : t_lshr(a.t, t_iconst(i128(k))));
     }
+    if (!strcmp(op, "SignedModulus")) {
+        unsigned r = t_isrem(S(a), S(b));
+        return vint(r, r);
+    }
     if (!strcmp(op, "AND") || !strcmp(op, "OR") || !strcmp(op, "XOR")) {
         unsigned w, x, y;
         if (a.kind == V_INT && b.kind == V_INT) {
@@ -891,12 +912,14 @@ static Val binop(Ctx* c, const char* op, int sign, Val a, Val b) {
     }
     if (!strcmp(op, "=") || !strcmp(op, "!=")) {
         unsigned r;
-        if (a.kind == V_BITS && b.kind == V_INT && const_int(b, &kb) && kb >= 0 &&
-            (t_width(a.t) >= 63 || kb < (1ll << t_width(a.t))))
-            b = vbits(t_const(t_width(a.t), i128(kb)));
-        if (b.kind == V_BITS && a.kind == V_INT && const_int(a, &ka) && ka >= 0 &&
-            (t_width(b.t) >= 63 || ka < (1ll << t_width(b.t))))
-            a = vbits(t_const(t_width(b.t), i128(ka)));
+        I128 k;
+        /* bits against a number that fits them: bits' equality (FFFFFFFFFFFFFFFFH included) */
+        if (a.kind == V_BITS && b.kind == V_INT && b.u == b.s && t_is_const(b.u, &k) && !i128_neg_p(k) &&
+            i128_cmp(k, i128_pow2(t_width(a.t))) < 0)
+            b = vbits(t_const(t_width(a.t), k));
+        if (b.kind == V_BITS && a.kind == V_INT && a.u == a.s && t_is_const(a.u, &k) && !i128_neg_p(k) &&
+            i128_cmp(k, i128_pow2(t_width(b.t))) < 0)
+            a = vbits(t_const(t_width(b.t), k));
         if (a.kind == V_BITS && b.kind == V_BITS && t_width(a.t) == t_width(b.t)) r = t_eq(a.t, b.t);
         else
             r = t_eq(U(a), U(b));
@@ -972,7 +995,11 @@ static Val call(Ctx* c, Env* e, const XCode* code, const char* f, unsigned args)
 static Val eval(Ctx* c, Env* e, const XCode* code, unsigned x) {
     const XNode* n = &code->nodes[x];
     switch (n->kind) {
-    case X_NUM: return vnum((long long)n->value);
+    case X_NUM: {
+        /* a literal is a nonnegative number, 64 bits of it (FFFFFFFFFFFFFFFFH is 2^64 - 1, not -1) */
+        unsigned k = t_iconst(i128_u(n->value));
+        return vint(k, k);
+    }
     case X_NAME: {
         Ref r;
         Val v, *l = local(e, n->text);
@@ -1346,6 +1373,11 @@ static void exec(Ctx* c, Env* e, const XCode* code, unsigned s) {
         unsigned cb = cond_bit(c, eval(c, e, code, x->a));
         I128 k;
         unsigned then_s = code->nodes[s].b, else_s = code->nodes[s].c;
+        if (getenv("SG_ISEL_TRACE") && c->form && !strcmp(getenv("SG_ISEL_TRACE"), c->form->text)) {
+            char t[600];
+            t_print(cb, t, sizeof t);
+            fprintf(stderr, "  IF line %u: %s\n", code->nodes[s].line, t);
+        }
         if (c->unreadable) return;
         if (t_is_const(cb, &k)) {
             exec_list(c, e, code, (k.lo & 1) ? then_s : else_s);
@@ -1637,7 +1669,7 @@ static void evaluate_form(unsigned fi) {
 
 /* ---- the primitives (x64.ops) ---- */
 
-enum { IN_REG, IN_IMM, IN_COND, IN_CARRY };
+enum { IN_REG, IN_IMM, IN_COND, IN_CARRY, IN_HI };
 
 typedef struct {
     const char* name;
@@ -1652,6 +1684,7 @@ typedef struct {
     OpIn in[4];
     int nin;
     char* code;
+    char* assume; /* ASSUME's condition: what the recompiler makes hold, so a form may fault where it fails */
 } Prim;
 
 typedef struct {
@@ -1679,6 +1712,8 @@ static void read_ops(const char* path) {
         if (cur) {
             if (!strcmp(line, "end")) {
                 cur = NULL;
+            } else if (starts(line, "ASSUME ")) {
+                cur->assume = dups(line + 7);
             } else {
                 size_t a = strlen(cur->code), b = strlen(line);
                 cur->code = (char*)realloc(cur->code, a + b + 2);
@@ -1741,6 +1776,8 @@ static void read_ops(const char* path) {
                 in->kind = IN_REG;
                 strcpy(in->width, "W");
                 if (starts(item, "imm ")) in->kind = IN_IMM, item = (char*)ws(item + 4);
+                else if (starts(item, "hi "))
+                    in->kind = IN_HI, item = (char*)ws(item + 3);
                 else if (starts(item, "cond "))
                     in->kind = IN_COND, item = (char*)ws(item + 5), strcpy(in->width, "1");
                 else if (starts(item, "carry "))
@@ -1766,7 +1803,7 @@ static void read_ops(const char* path) {
 }
 
 static unsigned in_width(const OpIn* in, int w) {
-    if (!strcmp(in->width, "W")) return (unsigned)w;
+    if (in->kind == IN_HI || !strcmp(in->width, "W")) return (unsigned)w;
     if (!strcmp(in->width, "L")) return w == 64 ? 6 : w == 32 ? 5 : w == 16 ? 4 : 3;
     return (unsigned)atoi(in->width);
 }
@@ -1779,6 +1816,7 @@ typedef struct {
     unsigned in[4];   /* the inputs' variables */
     unsigned result;  /* 0: none */
     unsigned flag[4]; /* N Z C V, 0 where it gives none */
+    unsigned assume;  /* ASSUME's condition, 0 for none */
 } PEval;
 
 static PEval evaluate_prim(const Prim* p, int w) {
@@ -1808,6 +1846,19 @@ static PEval evaluate_prim(const Prim* p, int w) {
         exit(1);
     }
     r.ok = 1;
+    if (p->assume) {
+        XCode ac = {0};
+        char src[512];
+        unsigned st;
+        snprintf(src, sizeof src, "_c := (%s);", p->assume);
+        st = x_parse(&ac, src);
+        r.assume = cond_bit(&c, eval(&c, &e, &ac, ac.nodes[st].b));
+        if (c.unreadable) {
+            fprintf(stderr, "sailgen --isel: the primitive %s's ASSUME: %s\n", p->name, c.why);
+            exit(1);
+        }
+        x_code_free(&ac);
+    }
     r.result = e.written[C_RES] ? e.cell[C_RES] : 0;
     for (k = 0; k < 4; ++k) r.flag[k] = e.written[C_N + k] ? e.cell[C_N + k] : 0;
     x_code_free(&code);
@@ -1952,7 +2003,39 @@ static int slots_of(unsigned fi, Slot* slots) {
     return n;
 }
 
-static const int k_slot_kind[4] = {SLOT_REG, SLOT_IMM, SLOT_COND, SLOT_CARRY};
+/* t where the condition p holds (a primitive's ASSUME): each choice whose condition p decides takes its way (DIV's
+   result, which the fault's way leaves as it was) */
+static void collect_ites(unsigned t, unsigned* found, unsigned* n, unsigned max, unsigned char* seen, unsigned limit) {
+    unsigned i;
+    if (t < limit) {
+        if (seen[t]) return;
+        seen[t] = 1;
+    }
+    if (g_terms[t].kind == TK_ITE && *n < max) found[(*n)++] = t;
+    for (i = 0; i < g_terms[t].n; ++i) collect_ites(g_terms[t].arg[i], found, n, max, seen, limit);
+}
+static unsigned under(unsigned t, unsigned p) {
+    unsigned round;
+    if (!p || !t) return t;
+    for (round = 0; round < 8; ++round) {
+        unsigned found[64], from[64], to[64], n = 0, m = 0, k, limit = t + 1;
+        unsigned char* seen = (unsigned char*)sg_alloc(limit);
+        collect_ites(t, found, &n, 64, seen, limit);
+        free(seen);
+        for (k = 0; k < n; ++k) {
+            unsigned c = g_terms[found[k]].arg[0];
+            I128 z;
+            if (t_is_const(t_and(t_not(c), p), &z) && !(z.lo & 1)) from[m] = found[k], to[m++] = g_terms[found[k]].arg[1];
+            else if (t_is_const(t_and(c, p), &z) && !(z.lo & 1))
+                from[m] = found[k], to[m++] = g_terms[found[k]].arg[2];
+        }
+        if (!m) return t;
+        t = t_subst(t, from, to, m);
+    }
+    return t;
+}
+
+static const int k_slot_kind[5] = {SLOT_REG, SLOT_IMM, SLOT_COND, SLOT_CARRY, SLOT_REG};
 
 /* tries one binding (each input to slots[bind[i]]) with its variants; records a match */
 static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* slots, int nslots, const int* bind) {
@@ -1979,6 +2062,17 @@ static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* s
                         m.cell_of[i] = s->cell;
                         switch (s->kind) {
                         case SLOT_REG:
+                            if (p->in[i].kind == IN_HI) {
+                                /* the high half of the sign extension of the input its width names (IDIV's RDX,
+                                   which CQO makes): a function of that input, not one of its own */
+                                int j;
+                                for (j = 0; j < p->nin; ++j)
+                                    if (!strcmp(p->in[j].name, p->in[i].width)) break;
+                                if (j == p->nin) continue;
+                                v = t_extract(t_sext(pe->in[j], 2 * (unsigned)pe->w), 2 * (unsigned)pe->w - 1,
+                                              (unsigned)pe->w);
+                                break;
+                            }
                             if (wi < 64) {
                                 char g[16];
                                 snprintf(g, sizeof g, "G.%d", i);
@@ -2027,7 +2121,19 @@ static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* s
                         }
                     }
                     if (zero && !any_unbound) continue;
-                    if (!t_is_const(t_subst(ev->fault, from, to, (unsigned)n), NULL)) continue;
+                    {
+                        /* a form that may fault: where it faults exactly where the primitive's ASSUME fails (DIV by
+                           0), which the recompiler makes hold */
+                        unsigned f = t_subst(ev->fault, from, to, (unsigned)n);
+                        I128 fk;
+                        if (getenv("SG_ISEL_BIND") && !strcmp(getenv("SG_ISEL_BIND"), p->name) && pe->assume) {
+                            char t1[800], t2[800];
+                            t_print(f, t1, sizeof t1);
+                            t_print(t_not(pe->assume), t2, sizeof t2);
+                            fprintf(stderr, "%s binding: fault %s\n  vs %s\n", g_forms[fi].text, t1, t2);
+                        }
+                        if (t_is_const(f, &fk) ? (fk.lo & 1) : !(pe->assume && f == t_not(pe->assume))) continue;
+                    }
                     result = pe->result ? t_subst(pe->result, wfrom, wto, (unsigned)wn) : 0;
                     for (i = 0; i < 4; ++i) flags[i] = pe->flag[i] ? t_subst(pe->flag[i], wfrom, wto, (unsigned)wn) : 0;
                     if (result) {
@@ -2035,7 +2141,13 @@ static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* s
                         for (c = C_OP0; c < C_CF && m.out_cell < 0; ++c) {
                             unsigned o;
                             if (!ev->written[c] || t_width(ev->out[c]) != 64) continue;
-                            o = t_subst(ev->out[c], from, to, (unsigned)n);
+                            o = under(t_subst(ev->out[c], from, to, (unsigned)n), pe->assume);
+                            if (getenv("SG_ISEL_BIND") && !strcmp(getenv("SG_ISEL_BIND"), p->name)) {
+                                char t1[900], t2[300];
+                                t_print(o, t1, sizeof t1);
+                                t_print(result, t2, sizeof t2);
+                                fprintf(stderr, "  %s out %s = %s\n  want %s\n", g_forms[fi].text, c >= C_GPR0 ? k_gpr64[c - C_GPR0] : "op", t1, t2);
+                            }
                             if (t_extract(o, (unsigned)pe->w - 1, 0) == result) {
                                 m.out_cell = c;
                                 m.clean_out = pe->w == 64 || t_extract(o, 63, (unsigned)pe->w) == t_const(64 - (unsigned)pe->w, i128(0));
@@ -2278,9 +2390,9 @@ static void emit_encoder(unsigned fi) {
     if (f->vex) {
         /* C4, then R X B (inverted) and the map, then W, vvvv (inverted), L and pp (Vol. 2A, 2.3.5) */
         sg_out("    sgx_byte(b, 0xC4);\n");
-        sg_out("    sgx_byte(b, (unsigned char)(0x%02X", 0x40 | f->vex_map | (reg < 0 ? 0x80 : 0) | (rm < 0 ? 0x20 : 0));
+        sg_out("    sgx_byte(b, (unsigned char)(0x%02X", f->vex_map | (reg < 0 ? 0x80 : 0) | (rm < 0 ? 0x60 : 0));
         if (reg >= 0) sg_out(" | (r[%d] < 8 ? 0x80 : 0)", reg);
-        if (rm >= 0) sg_out(" | ((r[%d] & 15) < 8 ? 0x20 : 0)", rm);
+        if (rm >= 0) sg_out(" | ((r[%d] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[%d]) ? 0 : 0x40)", rm, rm);
         sg_out("));\n");
         sg_out("    sgx_byte(b, (unsigned char)(0x%02X", (f->vex_w << 7) | (f->vex_l << 2) | f->vex_pp | (vvvv < 0 ? 0x78 : 0));
         if (vvvv >= 0) sg_out(" | ((~r[%d] & 15) << 3)", vvvv);
@@ -2297,6 +2409,7 @@ static void emit_encoder(unsigned fi) {
             sg_out("    {\n        unsigned rex = 0x%02X", f->rex_w ? 0x48 : 0x40);
             if (reg >= 0) sg_out(" | (r[%d] >> 3) << 2", reg);
             if (bsrc >= 0) sg_out(" | (r[%d] & 15) >> 3", bsrc);
+            if (rm >= 0) sg_out(" | sgx_rex_x(b, r[%d])", rm);
             sg_out(";\n");
             if (f->rex_w) sg_out("        sgx_byte(b, (unsigned char)rex);\n");
             else {
@@ -2492,6 +2605,10 @@ int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, 
                 if (!strcmp(g_forms[i].text, b + 1)) {
                     int c;
                     fprintf(stderr, "%s: %s\n", g_forms[i].text, g_evals[i].ok ? "ok" : g_evals[i].why);
+                    if (g_evals[i].ok) {
+                        t_print(g_evals[i].fault, t, sizeof t);
+                        fprintf(stderr, "  fault = %s\n", t);
+                    }
                     for (c = 0; c < NCELL && g_evals[i].ok; ++c)
                         if (g_evals[i].written[c]) {
                             t_print(g_evals[i].out[c], t, sizeof t);

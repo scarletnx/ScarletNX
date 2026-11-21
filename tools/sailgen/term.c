@@ -235,6 +235,7 @@ static void rehash(void) {
 }
 
 static void range_of(Term* t);
+static int range_known(const Term* t);
 
 /* the canonical node of t (its arrays are copied) */
 static unsigned make(Term t) {
@@ -392,6 +393,7 @@ static void lin_add(Lin* l, unsigned atom, I128 c) {
 
 /* t's parts, times c, added to l (t of l's width, or an integer for an exact l) */
 static unsigned not_of(unsigned x);
+static unsigned idiv_node(int kind, unsigned a, unsigned b);
 
 static void lin_parts(Lin* l, unsigned t, I128 c) {
     const Term* x = &g_terms[t];
@@ -654,6 +656,24 @@ static unsigned bitwise(int kind, unsigned w, unsigned* in, unsigned n_in) {
         n = o;
     }
     if (kind == TK_AND && i128_is_zero(k)) return t_const(w, i128(0));
+    if (kind == TK_AND && w == 1)
+        /* x AND NOT x is 0, and so is NOT (y1 AND y2 ...) beside each of the y (the AND flattened among them) */
+        for (j = 0; j < n; ++j) {
+            unsigned y = not_of(args[j]);
+            if (!y) continue;
+            for (i = 0; i < n; ++i)
+                if (i != j && args[i] == y) return t_const(1, i128(0));
+            if (g_terms[y].kind == TK_AND) {
+                unsigned q, all = 1;
+                for (q = 0; q < g_terms[y].n && all; ++q) {
+                    unsigned found = 0;
+                    for (i = 0; i < n; ++i)
+                        if (args[i] == g_terms[y].arg[q]) found = 1;
+                    all = found;
+                }
+                if (all) return t_const(1, i128(0));
+            }
+        }
     if (kind == TK_OR && i128_eq(k, ones)) return t_const(w, ones);
     if (!n) return t_const(w, k);
     if (kind == TK_XOR && w > 1 && i128_eq(k, ones)) {
@@ -909,8 +929,13 @@ unsigned t_ite(unsigned c, unsigned a, unsigned b) {
     if (t_is_const(c, &k)) return k.lo & 1 ? a : b;
     if (a == b) return a;
     if (g_terms[a].w == 1) {
+        /* of one bit, a choice with a constant way is AND or OR: c ? a : 1 is NOT c OR a, c ? a : 0 is c AND a, c ? 1 :
+           b is c OR b, c ? 0 : b is NOT c AND b (a fault on one way and a condition on the other: IDIV's) */
         I128 ka, kb;
-        if (t_is_const(a, &ka) && t_is_const(b, &kb)) return ka.lo ? c : t_not(c);
+        int ca = t_is_const(a, &ka), cb = t_is_const(b, &kb);
+        if (ca && cb) return ka.lo ? c : t_not(c);
+        if (cb) return kb.lo & 1 ? t_or(t_not(c), a) : t_and(c, a);
+        if (ca) return ka.lo & 1 ? t_or(c, b) : t_and(t_not(c), b);
     }
     {
         I128 ka, kb;
@@ -944,8 +969,8 @@ unsigned t_ge0(unsigned i) {
     I128 g;
     unsigned j;
     if (x->w) bad("a comparison of bits as an integer", x->w, 0);
-    if (i128_cmp(x->lo, i128(0)) >= 0) return t_const(1, i128(1));
-    if (i128_neg_p(x->hi)) return t_const(1, i128(0));
+    if (range_known(x) && i128_cmp(x->lo, i128(0)) >= 0) return t_const(1, i128(1));
+    if (range_known(x) && i128_neg_p(x->hi)) return t_const(1, i128(0));
     lin_parts(&l, i, i128(1));
     if (!l.n) return t_const(1, i128(i128_neg_p(l.k) ? 0 : 1));
     lin_sort(&l);
@@ -969,8 +994,21 @@ unsigned t_ge0(unsigned i) {
     {
         unsigned li = lin_make(&l);
         const Term* y = &g_terms[li];
-        if (i128_cmp(y->lo, i128(0)) >= 0) return t_const(1, i128(1));
-        if (i128_neg_p(y->hi)) return t_const(1, i128(0));
+        if (range_known(y) && i128_cmp(y->lo, i128(0)) >= 0) return t_const(1, i128(1));
+        if (range_known(y) && i128_neg_p(y->hi)) return t_const(1, i128(0));
+        /* SInt(a) / SInt(b) (truncated) - 2^(w-1) >= 0: the quotient is at most |SInt(a)| <= 2^(w-1), and is that
+           only for a the most negative value and b -1 (any other divisor's magnitude is 1 with a positive result
+           below 2^(w-1), or at least 2): IDIV's overflow, an identity of a and b */
+        if (y->kind == TK_ILIN && y->n == 1 && i128_eq(y->coef[0], i128(1)) && g_terms[y->arg[0]].kind == TK_ISDIV) {
+            const Term* q = &g_terms[y->arg[0]];
+            unsigned sa = q->arg[0], sb = q->arg[1];
+            if (g_terms[sa].kind == TK_SINT && g_terms[sb].kind == TK_SINT &&
+                g_terms[g_terms[sa].arg[0]].w == g_terms[g_terms[sb].arg[0]].w) {
+                unsigned a = g_terms[sa].arg[0], b = g_terms[sb].arg[0], w = g_terms[a].w;
+                if (i128_eq(y->k, i128_neg(i128_pow2(w - 1))))
+                    return t_and(t_eq(a, t_const(w, i128_pow2(w - 1))), t_eq(b, t_const(w, i128(-1))));
+            }
+        }
         /* UInt(b) - 1 >= 0 of one bit b: b */
         if (y->kind == TK_ILIN && y->n == 1 && i128_eq(y->coef[0], i128(1)) && i128_eq(y->k, i128(-1)) &&
             g_terms[y->arg[0]].kind == TK_UINT && g_terms[g_terms[y->arg[0]].arg[0]].w == 1)
@@ -1090,24 +1128,52 @@ unsigned t_trunc(unsigned i, unsigned w) {
         unsigned a = x->arg[0], b = x->arg[1], ta = t_trunc(a, w);
         return t_mul(ta, t_trunc(b, w));
     }
+    case TK_IUDIV:
+    case TK_ISDIV:
+    case TK_IUREM:
+    case TK_ISREM: return t_fn("trunc", w, &i, 1); /* the quotient's low bits: no identity reaches into it */
     default: bad("a truncation of this integer", x->kind, w);
     }
 }
 
 /* ---- ranges ---- */
 
+/* a range past what 128 bits hold exactly is unknown: [-2^126, 2^126], which decides no comparison (t_ge0 folds by
+   a range only where it is known) */
+static int range_known(const Term* t) {
+    I128 big = i128_pow2(125);
+    return i128_cmp(t->lo, i128_neg(big)) > 0 && i128_cmp(t->hi, big) < 0;
+}
+static void range_unknown(Term* t) {
+    t->lo = i128_neg(i128_pow2(126));
+    t->hi = i128_pow2(126);
+}
+
 static void range_of(Term* t) {
     unsigned i;
+    for (i = 0; i < t->n; ++i)
+        if (g_terms[t->arg[i]].w == 0 && !range_known(&g_terms[t->arg[i]])) {
+            range_unknown(t);
+            return;
+        }
     switch (t->kind) {
     case TK_ICONST: t->lo = t->hi = t->k; break;
     case TK_UINT: {
         unsigned w = g_terms[t->arg[0]].w;
+        if (w > 120) {
+            range_unknown(t);
+            break;
+        }
         t->lo = i128(0);
         t->hi = i128_sub(i128_pow2(w), i128(1));
         break;
     }
     case TK_SINT: {
         unsigned w = g_terms[t->arg[0]].w;
+        if (w > 120) {
+            range_unknown(t);
+            break;
+        }
         t->lo = i128_neg(i128_pow2(w - 1));
         t->hi = i128_sub(i128_pow2(w - 1), i128(1));
         break;
@@ -1125,6 +1191,7 @@ static void range_of(Term* t) {
             t->lo = i128_add(t->lo, x);
             t->hi = i128_add(t->hi, y);
         }
+        if (!range_known(t) || i128_cmp(t->lo, t->hi) > 0) range_unknown(t);
         break;
     case TK_IMUL: {
         const Term* a = &g_terms[t->arg[0]];
@@ -1138,6 +1205,25 @@ static void range_of(Term* t) {
             if (i128_cmp(c[k], t->lo) < 0) t->lo = c[k];
             if (i128_cmp(c[k], t->hi) > 0) t->hi = c[k];
         }
+        if (!range_known(t)) range_unknown(t);
+        break;
+    }
+    case TK_IUDIV:
+    case TK_IUREM: {
+        /* a nonnegative dividend's quotient and remainder are no more than it */
+        const Term* a = &g_terms[t->arg[0]];
+        t->lo = i128(0);
+        t->hi = i128_neg_p(a->hi) ? i128(0) : a->hi;
+        break;
+    }
+    case TK_ISDIV:
+    case TK_ISREM: {
+        /* truncated toward zero: no larger in magnitude than the dividend */
+        const Term* a = &g_terms[t->arg[0]];
+        I128 m = i128_abs(a->lo);
+        if (i128_cmp(i128_abs(a->hi), m) > 0) m = i128_abs(a->hi);
+        t->lo = i128_neg(m);
+        t->hi = m;
         break;
     }
     default:
@@ -1195,7 +1281,7 @@ int t_mentions(unsigned t, unsigned var) {
 static const char* const k_names[TK_COUNT] = {
     "?", "const", "var", "lin", "and", "or", "xor", "mul", "extract", "concat", "zext", "sext", "shlv", "lshrv",
     "ashrv", "rolv", "rorv", "ite", "eqz", "gez", "clz", "ctz", "popcnt", "bswap", "udiv", "sdiv", "urem", "srem", "fn",
-    "iconst", "ilin", "uint", "sint", "imul", "unknown"};
+    "iconst", "ilin", "uint", "sint", "imul", "iudiv", "isdiv", "iurem", "isrem", "unknown"};
 
 static size_t put(char* buf, size_t size, size_t at, const char* s) {
     size_t n = strlen(s);
@@ -1346,6 +1432,14 @@ static unsigned subst_at(Subst* s, unsigned t) {
                                                                                     : t_srem(a, b);
         break;
     }
+    case TK_IUDIV:
+    case TK_ISDIV:
+    case TK_IUREM:
+    case TK_ISREM: {
+        unsigned a = subst_at(s, x.arg[0]), b = subst_at(s, x.arg[1]);
+        r = idiv_node(x.kind, a, b);
+        break;
+    }
     case TK_UINT: r = t_uint(subst_at(s, x.arg[0])); break;
     case TK_SINT: r = t_sint(subst_at(s, x.arg[0])); break;
     case TK_FN: {
@@ -1379,3 +1473,21 @@ unsigned t_subst(unsigned t, const unsigned* from, const unsigned* to, unsigned 
     s.n = n;
     return subst_at(&s, t);
 }
+
+/* ---- integer division (DIV's and IDIV's, UDIV's and SDIV's) ---- */
+
+static unsigned idiv_node(int kind, unsigned a, unsigned b) {
+    I128 ka, kb;
+    if (t_is_const(a, &ka) && t_is_const(b, &kb) && !i128_is_zero(kb)) {
+        I128 q, r;
+        int neg = i128_neg_p(ka) != i128_neg_p(kb);
+        q = udivmod(i128_abs(ka), i128_abs(kb), &r);
+        if (kind == TK_IUDIV || kind == TK_ISDIV) return t_iconst(kind == TK_ISDIV && neg ? i128_neg(q) : q);
+        return t_iconst(kind == TK_ISREM && i128_neg_p(ka) ? i128_neg(r) : r);
+    }
+    return node2(kind, 0, a, b);
+}
+unsigned t_iudiv(unsigned a, unsigned b) { return idiv_node(TK_IUDIV, a, b); }
+unsigned t_isdiv(unsigned a, unsigned b) { return idiv_node(TK_ISDIV, a, b); }
+unsigned t_iurem(unsigned a, unsigned b) { return idiv_node(TK_IUREM, a, b); }
+unsigned t_isrem(unsigned a, unsigned b) { return idiv_node(TK_ISREM, a, b); }
