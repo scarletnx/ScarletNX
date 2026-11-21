@@ -893,9 +893,10 @@ pad.
 
 F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
 back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
-F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
-(`renderdoc`, or a game RenderDoc's program started), as the game's menu's **Capture frame** is, which shows only then;
+F7 save state; F8 load state; F9 next save state slot; F10 Tracy capture for `tracy_capture_seconds` (60 s by
+default, SNX_TRACY builds); F11/Alt+Enter fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the
+next frame, with RenderDoc in the game (`renderdoc`, or a game RenderDoc's program started), as the game's menu's
+**Capture frame** is, which shows only then;
 Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape twice within 3 seconds quit, the
 first press a warning over the game; Ctrl+D the TV mode On, Off or Auto for the run, as the game's menu's **TV mode**
 is. F4, F6, F12, Ctrl+D and Pause say over the game what the press set (`FPS limit: off`, `Stats: on`), the log

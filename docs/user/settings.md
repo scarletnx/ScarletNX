@@ -67,7 +67,7 @@ Restart for `docked` (`Auto` follows the host's power while the game runs, and `
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`,
 `compress_prepared_shaders`, `jit_threads`, `gpu_pstate`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
-the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
+the `[Debug]` settings other than `log`, `auto_stub_ipc`, `diag` and `tracy_capture_seconds`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
@@ -341,7 +341,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_save_state` | `F7` | Saves the game's state to the selected slot |
 | `hotkey_load_state` | `F8` | Loads the selected slot's state |
 | `hotkey_next_slot` | `F9` | Selects the next save state slot |
-| `hotkey_tracy` | `F10` | Records a 60-second Tracy capture, in a build with `SNX_TRACY` |
+| `hotkey_tracy` | `F10` | Records a Tracy capture, in a build with `SNX_TRACY`. Its length is `tracy_capture_seconds` |
 | `hotkey_pause` | `Pause` | Pauses the whole game and resumes it, said over the game (`Pause: on`), or why it did not pause |
 | `hotkey_fullscreen` | `F11` | Switches fullscreen |
 | `hotkey_fullscreen_2` | `Alt+Return` | A second key that switches fullscreen |
@@ -380,7 +380,7 @@ Each console's online service, the launcher's Online group.
 
 ## Debug
 
-The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`cmake --preset tracy`): another build's menu shows them greyed, and picking one does nothing.
+The profiler rows whose keys start with `tracy_` only do something in a build with `SNX_TRACY`; `perf_map` is a Linux perf feature and works in any build (`cmake --preset tracy`): the launcher's Settings show them greyed in another build, and the game's menu shows them but picking one there has no effect.
 
 
 | Key | Default | Effect |
@@ -462,11 +462,18 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
 | `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds), and the capture key (`hotkey_capture`) or the game's menu's Capture frame captures the frame after the next present. RenderDoc writes a capture inside the present that ends it, and the game stops meanwhile (a minute for a frame of 1.4 GB): a notice over the game says so as the capture is asked or RenderDoc's program starts its own, the log says how long it has been writing every 5 s, and the log and a notice say how long it took, the file and its size once written, or that it failed. A game RenderDoc's own program started takes them and the presents listed too, its captures where that program keeps them when `renderdoc` is empty; F12 stays the stats' key |
 | `tracy_profiler` | `0` | `1` starts the run with the Tracy client up, in a build with `SNX_TRACY` ([Profiling](../dev/development.md#profiling)): connect the GUI to `127.0.0.1:8086`. A capture and the GUI cannot both have the run |
-| `tracy_capture` | `0` | `1` records this run to a trace beside the game and opens it in the profiler when the run ends; the client starts for it, so the GUI cannot have the run as well. `tracy-capture` must be on PATH. F10 starts a 60-second capture while a run goes |
+| `tracy_capture` | `0` | `1` records this run to a trace beside the game and opens it in the profiler when the run ends; the client starts for it, so the GUI cannot have the run as well. `tracy-capture` must be on PATH. F10 starts a capture while a run goes |
+| `tracy_capture_seconds` | `60` | Seconds both a capture started by F10 or the game's menu and a capture of the whole run (`tracy_capture`) record for. The client starts for the capture, so the GUI cannot have the run at the same time. A run capture can also end at game exit, before the seconds pass |
 | `tracy_sampling` | `0` | `1` starts the sampler at the first connection, for the trace's flame graphs |
+| `tracy_zone_callstack` | `0` | The call stack depth, `0` to `16` frames, on zones written with `SNX_ZONE_CS`: `pipeline make compile callstack`, `shader translate maxwell`, `kern core switch`, `kern core handoff`, `kern mutex handoff`, `kern svc unknown`, `svc hid cmd`, `state memory check`, `state memory load` and `state compress`. `0` takes no call stack. A larger depth gives flame graphs more frames but costs more time and space in the trace ([Profiling](../dev/profiling.md#tracy-the-whole-run-on-one-timeline)) |
+| `tracy_gpu_zone_callstack` | `0` | The call stack depth, `0` to `16` frames, added to each pass zone on the GPU track: `0` adds none, and a larger depth walks the CPU stack where the pass is recorded. This costs much time, so use it on pass-level zones only ([Profiling](../dev/profiling.md#sections-lock-marks-and-callstacks)) |
+| `perf_map` | `0` | `1` writes a Linux perf map (`/tmp/perf-<pid>.map`) for the code the runtime's JIT compiles, so a sampled flame graph names those frames instead of `[unknown]`. The map is written as loads compile, and any lines not yet emitted are appended at exit; `0` writes no map |
+| `tracy_memory_detail` | `0` | `1` emits a Memory view event for each game `malloc`, audio and video buffer, and GPU object, so the trace shows which pool holds the bytes. Every game `malloc` and `free` then pays for a Tracy event, so leave this off unless the trace needs those pools; guest mappings and Vulkan device memory are always tracked ([Memory view](../dev/profiling.md#memory-view-which-allocations-have-a-pool)) |
+| `tracy_memory_callstack` | `0` | The call stack depth, `0` to `16` frames, added to the detailed memory events of `tracy_memory_detail`: `0` adds none, and a larger depth shows the code that made each allocation. Every game `malloc` and `free` then pays for the stack ([Profiling](../dev/profiling.md#sections-lock-marks-and-callstacks)) |
 | `tracy_context_switches` | `0` | `1` puts the OS's context switches on the threads' timelines, so a thread's wait and preemption show against the game's zones. On Linux this needs permission to read perf events and tracefs. Without it Tracy writes a debug line and leaves the feature off. Tracy starts its sampler with it, so the sample stacks come too |
+| `tracy_lock_marks` | `0` | `1` marks the source line that holds each named lock, so a trace shows which lock a thread holds or waits on and both results of a try lock. Each lock acquisition then costs one Tracy event, so leave this off unless the trace needs lock waits ([Profiling](../dev/profiling.md#sections-lock-marks-and-callstacks)) |
 | `tracy_frame_images` | `0` | Seconds between the pictures of the presented frame the trace gets. A picture is a readback of the frame the GPU has just presented, which stops the frame it lands in for as long as that takes: off unless the trace needs to say which zone a picture goes with |
-| `tracy_port` | empty | The port the client listens on and the capture connects to, `1` to `65535`. Empty is one of the run's own, so an earlier capture or GUI on 8086 is not in the way |
+| `tracy_port` | empty | The port the client listens on and the capture connects to, `1` to `65535`. Empty is Tracy's 8086, or one of the run's own ports when a capture is requested |
 | `tracy_capture_tool` | empty | The `tracy-capture` to start: a path, or a name on PATH. Empty looks beside the runtime, then on PATH |
 | `tracy_open_trace` | `1` | `1` opens the trace in `tracy-profiler` when the run ends |
 
