@@ -34,6 +34,8 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
@@ -201,8 +203,16 @@ static int abort_needed(u32 r) {
     fatal("nn::fs::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
           2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
-/* the end of a function that returns a Result */
+/* the end of a function that returns a Result. An error is rare, so it gets a trace message naming the call and why
+   it failed; a successful call pays one test of r. The reason is the Result's module and description, the same numbers
+   the log's fatal names when the SDK stops on the error */
 static u32 done(const char* function, u32 r) {
+    if (r && snx_tracy_attached()) {
+        char text[96];
+        int n = snprintf(text, sizeof text, "nn fs %s error %04u-%04u", function, 2000 + (r & 0x1ff),
+                         (r >> 9) & 0x1fff);
+        if (n > 0) SNX_MSG(text, (size_t)(n < (int)sizeof text ? n : (int)sizeof text - 1));
+    }
     if (r && abort_needed(r)) stop(function, r);
     return r;
 }
@@ -368,21 +378,27 @@ static u32 rom_load(NRom* rm, int game, u64 data_id) {
     *rm = (NRom){0};
     rm->game = game;
     rm->data_id = data_id;
+    /* a mount reads the image's tables, which is where an nn::fs mount spends its time. The value is the table bytes
+       once read, the text says which image and why a mount failed */
+    SNX_ZONE_TV(z, "nn fs rom load", 0, "%s", game ? "game image" : "data image");
     if (game)
         snprintf(what, sizeof what, "the game's RomFS");
     else {
         snprintf(what, sizeof what, "the data %016llx", (unsigned long long)data_id);
         u32 r = fs_storage_open(data_id, &rm->st);
         if (r) {
+            SNX_ZONE_TEXT(z, "storage %x failed", r);
             *rm = (NRom){0};
             return r;
         }
     }
     if (rom_tables(rm, what)) {
+        SNX_ZONE_TEXT(z, "%s tables unreadable", what);
         if (!game) fs_storage_close(&rm->st);
         *rm = (NRom){0};
         return R_OUT_OF_RANGE; /* a storage the SDK's RomFS cannot read either */
     }
+    SNX_ZONE_VALUE(z, rm->dirs_size + rm->files_size);
     rm->used = 1;
     return 0;
 }
@@ -1043,6 +1059,8 @@ void nnfs_close_file(CPU* c, u64 h) {
 static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i64 offset, u64 buffer, u64 size,
                      u64* n) {
     *n = 0;
+    SNX_ZONE_V(z, "nn fs read", size); /* the bytes asked for; the text says which call and where it failed */
+    SNX_ZONE_TEXT(z, "%s", function);
     NFile* f = file_take(function, h);
     u32 r = f->sticky;
     if (!r && want_read && !read_out) r = R_NULL_ARGUMENT;
@@ -1057,6 +1075,7 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
             r = R_OUT_OF_RANGE;
     }
     if (r || !size) {
+        SNX_ZONE_TEXT(z, "%s %s", function, r ? "check failed" : "no bytes");
         pm_unlock(&g_nnfs.lock);
         return r;
     }
@@ -1064,6 +1083,7 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
         fs_lock();
         r = fs_file_read(file_data(f), (u64)offset, buffer, size, n);
         fs_unlock();
+        SNX_ZONE_TEXT(z, "%s save %llu bytes", function, (unsigned long long)*n);
         pm_unlock(&g_nnfs.lock);
         return r;
     }
@@ -1072,21 +1092,36 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
     NRom* rm = rom_at(f->rom);
     u64 data = rm->data + rom_file_u64(rm, f->entry, 8), total = rom_file_u64(rm, f->entry, 16);
     pm_unlock(&g_nnfs.lock);
-    if ((u64)offset > total) return R_OUT_OF_RANGE; /* at the end reads nothing, past it is an error */
+    if ((u64)offset > total) {
+        SNX_ZONE_TEXT(z, "%s past end", function);
+        return R_OUT_OF_RANGE; /* at the end reads nothing, past it is an error */
+    }
     u64 count = size < total - (u64)offset ? size : total - (u64)offset;
     if (rm->game ? romfs_read_guest(data + (u64)offset, buffer, count)
-                 : fs_storage_read_guest(&rm->st, data + (u64)offset, buffer, count))
+                 : fs_storage_read_guest(&rm->st, data + (u64)offset, buffer, count)) {
+        SNX_ZONE_TEXT(z, "%s host read failed", function);
         return R_OUT_OF_RANGE;
+    }
     /* the game's RomFS is one storage whatever mount reads it (the SDK read it through one IStorage); another
        image is its own */
     u64 wait = fs_pace_read(rm->game ? (const void*)&g_hle.fs : (const void*)&rm->st, data + (u64)offset, count);
+    SNX_ZONE_TEXT(z, "%s romfs %llu bytes", function, (unsigned long long)count);
+    SNX_PLOT("nn fs read bytes", (double)count);
+    /* the console's pace is a blocking wait: end the zone before it, so the zone times only the read's CPU work */
+    SNX_ZONE_END(z);
     if (wait) {
         /* off the thread's core, as the console's storage read blocks the thread and its core runs the others: a
            movie's decoder, on the core of its read-ahead, set up too late to free its first buffers otherwise */
         KThread* t = kthread_cur();
+#if defined(SNX_TRACY)
+        u64 t0 = plat_ns();
+#endif
         core_leave(t);
         plat_sleep_ns((i64)wait);
         core_enter(t);
+#if defined(SNX_TRACY)
+        SNX_PLOT("nn fs pace ms", (double)(t0 ? plat_ns() - t0 : 0) / 1e6);
+#endif
     }
     *n = count;
     return 0;
@@ -1126,7 +1161,11 @@ u32 nnfs_read_file_exact_option(CPU* c, u64 h, i64 offset, u64 buffer, u64 size,
 
 /* FileAccessor::Write: the sticky Result, the checks in their order, the write, then the file's state */
 u32 nnfs_write_file(CPU* c, u64 h, i64 offset, u64 buffer, u64 size, u64 option) {
-    if (!is_native(h)) return (u32)sdk_own(c, SYM_WRITE_FILE);
+    SNX_ZONE_V(z, "nn fs write", size);
+    if (!is_native(h)) {
+        SNX_ZONE_TEXT(z, "SDK own WriteFile");
+        return (u32)sdk_own(c, SYM_WRITE_FILE);
+    }
     u32 opt = snx_ld_le32(hook_host(c, option)); /* WriteOption: bit 0 flushes */
     NFile* f = file_take("WriteFile", h);
     u32 r = f->sticky;
@@ -1155,6 +1194,8 @@ u32 nnfs_write_file(CPU* c, u64 h, i64 offset, u64 buffer, u64 size, u64 option)
         }
     }
     pm_unlock(&g_nnfs.lock);
+    SNX_ZONE_TEXT(z, "%llu bytes %s", (unsigned long long)size, r ? "failed" : "written");
+    SNX_PLOT("nn fs write bytes", (double)(r ? 0 : size));
     return done("WriteFile", r);
 }
 u32 nnfs_flush_file(CPU* c, u64 h) {
