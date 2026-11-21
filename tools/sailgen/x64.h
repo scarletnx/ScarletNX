@@ -416,6 +416,13 @@ static inline SgD sgx_zext(SgX* x, SgD a, unsigned w) {
 }
 
 static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
+    if (a.w == (unsigned)w) return a;
+    if (a.w > 64) {
+        /* past 64 bits already: its high part's bits above it are 0, as a register's or a constant's are */
+        if (a.wide || a.inv) sg_fail("an extension of a value past 64 bits this back end doesn't make", a.w, w);
+        a.w = (unsigned)w;
+        return a;
+    }
     if (sgx_is_const(&a)) return sgx_const((unsigned)w, a.k);
     if (w > 64) {
         SgD r = sgx_zext(sgx(g), a, 64);
@@ -519,15 +526,37 @@ static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
 
 static inline SgD sg_d_not(SgCtx* g, SgD a) {
     (void)g;
+    if (sgx_is_const(&a) && a.w > 64) {
+        a.k = ~a.k;
+        a.kh = ~a.kh & sg_ones(a.w - 64);
+        return a;
+    }
     if (sgx_is_const(&a)) return sgx_const(a.w, ~a.k);
     a.inv = !a.inv;
     return a;
 }
 
+/* a value past 64 bits by its doublewords: 0 the low 64 bits, 1 the rest (a NOT of the whole is each half's) */
+static inline SgD sgx_half(SgD d, int k) {
+    SgD r;
+    if (d.wide) sg_fail("bits past 64 of a concatenation this back end doesn't make, read", d.w, 0);
+    if (k == 0) r = d.v ? sgx_val(64, d.v) : sgx_const(64, d.k);
+    else
+        r = d.vh ? sgx_val(d.w - 64, d.vh) : sgx_const(d.w - 64, d.kh);
+    if (d.inv) {
+        if (sgx_is_const(&r)) r = sgx_const(r.w, ~r.k);
+        else
+            r.inv = 1;
+    }
+    return r;
+}
+
 static inline SgD sgx_logic(SgCtx* g, int op, SgD a, SgD b) {
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
-    if (a.w > 64) sg_fail("a logical operation past 64 bits", a.w, 64);
+    if (a.w > 64) /* each doubleword's own */
+        return sg_d_concat(g, sgx_logic(g, op, sgx_half(a, 1), sgx_half(b, 1)),
+                           sgx_logic(g, op, sgx_half(a, 0), sgx_half(b, 0)));
     if (sgx_is_const(&a) && sgx_is_const(&b))
         return sgx_const(w, op == 0 ? a.k & b.k : op == 1 ? a.k | b.k : a.k ^ b.k);
     if (sgx_is_const(&a)) {

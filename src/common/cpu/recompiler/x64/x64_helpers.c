@@ -18,6 +18,18 @@ u64 snx_x64_cas(CPU* c, u64 a, u64 expected, u64 desired, u32 sz);
 u64 snx_x64_cas128(CPU* c, u64 a, u64 e_lo, u64 e_hi, u64 d_lo, u64 d_hi);
 u32 snx_x64_crc32(u32 acc, u64 value, u32 bytes, u32 castagnoli);
 void snx_x64_dc_zva(CPU* c, u64 a);
+u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_convert(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_round(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_round_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
+u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 
 u64 snx_x64_ldx(CPU* c, u64 a, u32 sz) { return ldx(c, SNX_X64_M(c), a, sz); }
 u32 snx_x64_stx(CPU* c, u64 a, u32 sz, u64 v) { return stx(c, SNX_X64_M(c), a, sz, v); }
@@ -118,4 +130,81 @@ u32 snx_x64_crc32(u32 acc, u64 value, u32 bytes, u32 castagnoli) {
 void snx_x64_dc_zva(CPU* c, u64 a) {
     u8* p = SNX_X64_M(c) + (a & ~(u64)63);
     for (unsigned i = 0; i < 64; ++i) p[i] = 0;
+}
+
+/* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
+   Each takes the guest's FPCR as the code read it (fpcr, bits 0-31), ORs the FPSR flags the operation raised into
+   CPU.fpsr and gives the value. Bit 32 of fpcr says the instruction's Sail doesn't run the operation here (gen.c's
+   run-time path: FCCMP's compare where the condition fails): then nothing happens, and the value is 0. The rest of
+   the operation's parameters are constants of the instruction, packed into desc: width bits 0-7, the rest per
+   helper. A rounding is rm + 1 (FPRounding's 0-4), 0 for FPCR's mode */
+static inline int snx_x64_rm(u32 desc_rm, u64 fpcr) { return desc_rm ? (int)desc_rm - 1 : (int)((fpcr >> 22) & 3); }
+static inline u64 snx_x64_fp_done(CPU* c, SnxFpReply r) {
+    c->fpsr |= r.flags;
+    return r.value;
+}
+/* desc: width, op << 8 */
+u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_host_binary(a, b, (int)(desc & 0xFF), (int)(desc >> 8), (u32)fpcr, c->fpsr));
+}
+/* add + a * b; desc: width */
+u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_host_fma(add, a, b, (int)(desc & 0xFF), (u32)fpcr));
+}
+/* desc: width, op << 8 */
+u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_host_unary(a, (int)(desc & 0xFF), (int)(desc >> 8), (u32)fpcr));
+}
+/* desc: width, minimum << 8, numeric << 9 */
+u64 snx_x64_fp_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_host_minmax(a, b, (int)(desc & 0xFF), (int)(desc >> 8 & 1), (int)(desc >> 9 & 1),
+                                                 (u32)fpcr));
+}
+/* the NZCV nibble; desc: width, signal << 8 */
+u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_host_compare(a, b, (int)(desc & 0xFF), (int)(desc >> 8 & 1), (u32)fpcr));
+}
+/* desc: from, to << 8, rm + 1 << 16 */
+u64 snx_x64_fp_convert(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_convert(a, (int)(desc & 0xFF), (int)(desc >> 8 & 0xFF),
+                                             snx_x64_rm(desc >> 16 & 7, fpcr), (u32)fpcr));
+}
+/* FRINT*; desc: width, rm + 1 << 8, exact << 12 */
+u64 snx_x64_fp_round(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_round(a, (int)(desc & 0xFF), snx_x64_rm(desc >> 8 & 7, fpcr),
+                                           (int)(desc >> 12 & 1), (u32)fpcr));
+}
+/* FRINT32*, FRINT64*; desc: width, rm + 1 << 8, intsize << 16 */
+u64 snx_x64_fp_round_int(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_round_int(a, (int)(desc & 0xFF), snx_x64_rm(desc >> 8 & 7, fpcr),
+                                               (int)(desc >> 16 & 0xFF), (u32)fpcr));
+}
+/* desc: fp width, int width << 8, uns << 16, fbits << 17 (7 bits), rm + 1 << 24 */
+u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_to_int(a, (int)(desc & 0xFF), (int)(desc >> 8 & 0xFF), (int)(desc >> 16 & 1),
+                                            (int)(desc >> 17 & 0x7F), snx_x64_rm(desc >> 24 & 7, fpcr), (u32)fpcr));
+}
+/* desc: int width, fp width << 8, uns << 16, fbits << 17 (7 bits) */
+u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_from_int(a, (int)(desc & 0xFF), (int)(desc >> 8 & 0xFF), (int)(desc >> 16 & 1),
+                                              (int)(desc >> 17 & 0x7F), (u32)fpcr));
+}
+/* FJCVTZS: the W result, Z in bit 32 */
+u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_jcvt(a, (u32)fpcr));
+}
+u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_bfcvt(a, (u32)fpcr));
 }
