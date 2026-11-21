@@ -13,6 +13,7 @@
    start in the middle of one */
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/platform/log.h"
+#include "common/platform/thread.h"
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/pixdesc.h>
@@ -40,7 +41,12 @@ static enum AVPixelFormat av1_format(AVCodecContext* c, const enum AVPixelFormat
     return *last;
 }
 /* codec opened, with the renderer's device hw (taken over, NULL for none) and H.264's configuration: NULL when it
-   couldn't be. Slice threads only: with frame threads a packet's picture would come out packets later */
+   couldn't be. Slice threads only: with frame threads a packet's picture would come out packets later.
+   The codec's threads start in its open (FFmpeg's slice threads, dav1d's) and take the CPUs of the thread that opens
+   it: a game thread, in the service's IPC, which runs on its core's share of the host CPUs (kernel/thread.c core_pin).
+   They shared those few CPUs with that core's game threads, and one game's 1080p movie came out at 6 to 12 pictures a
+   second of its 30 when other work held them. They start on all of the process's CPUs, and the game thread then goes
+   back to its own */
 static AVCodecContext* context_open(NativeVideoDecoder* d, const AVCodec* codec, AVBufferRef* hw, const u8* config,
                                     u64 config_size) {
     AVCodecContext* c = avcodec_alloc_context3(codec);
@@ -61,7 +67,9 @@ static AVCodecContext* context_open(NativeVideoDecoder* d, const AVCodec* codec,
         memcpy(c->extradata, config, (size_t)config_size);
         c->extradata_size = (int)config_size;
     }
+    int cpus[256], n = plat_thread_cpus_widen(cpus, 256);
     if (avcodec_open2(c, codec, NULL) < 0) avcodec_free_context(&c);
+    if (n) plat_thread_cpus(cpus, n);
     return c;
 }
 /* the stand-in's picture: limited range black, of the configured size */
