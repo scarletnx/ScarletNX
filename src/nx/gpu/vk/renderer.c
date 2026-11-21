@@ -1241,6 +1241,11 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         prepare_screen_game_drew();
         ui_unlock();
     }
+    if (src && overlay_loading_shown()) { /* and so does a loaded save state's box, before its first frame */
+        ui_lock();
+        overlay_game_drew();
+        ui_unlock();
+    }
     show(src, &hdr, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
     atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
     vk_unlock();

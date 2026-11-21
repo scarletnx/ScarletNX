@@ -1097,11 +1097,35 @@ static struct {
         int pad;
         char ok[OVERLAY_INPUT_NAME], back[OVERLAY_INPUT_NAME];
     } input;
+    /* a save state's load (overlay_loading): its slot's words, when the box came, and whether it shows (LOADING), or
+       waits for the game's frame (LOADED); the rows of its box */
+    struct {
+        char slot[OVERLAY_COLS_MAX + 1];
+        u64 since_ns;
+        _Atomic int state; /* read unlocked by the present, which takes ui_lock only while there is one */
+        DialogRows rows;
+    } loading;
 } g_overlay
 #ifdef __ANDROID__
     = {.input = {1, "A", "B"}}
 #endif
 ;
+enum { LOADING_NONE, LOADING_SHOWN, LOADING_LOADED };
+void overlay_loading(const char* slot, u64 shown_ns) {
+    snprintf(g_overlay.loading.slot, sizeof g_overlay.loading.slot, "%s", slot ? slot : "");
+    g_overlay.loading.since_ns = shown_ns;
+    atomic_store_explicit(&g_overlay.loading.state, LOADING_SHOWN, memory_order_relaxed);
+}
+void overlay_loading_done(void) {
+    if (overlay_loading_shown()) atomic_store_explicit(&g_overlay.loading.state, LOADING_LOADED, memory_order_relaxed);
+}
+void overlay_loading_end(void) { atomic_store_explicit(&g_overlay.loading.state, LOADING_NONE, memory_order_relaxed); }
+int overlay_loading_shown(void) {
+    return atomic_load_explicit(&g_overlay.loading.state, memory_order_relaxed) != LOADING_NONE;
+}
+void overlay_game_drew(void) {
+    if (atomic_load_explicit(&g_overlay.loading.state, memory_order_relaxed) == LOADING_LOADED) overlay_loading_end();
+}
 void overlay_input_keys(void) {
     if (!g_overlay.input.pad) return;
     g_overlay.input.pad = 0;
@@ -2033,6 +2057,29 @@ static void menu_lay(int sw, int sh, const MenuKey* key) {
     g_menu.laid = 1;
     ++g_menu.version;
 }
+/* a save state's load: the shade over the whole picture, its alpha the fade's (the first faded span, which the
+   notifications' come after), then the box and its ring, on the row of its words */
+static void loading_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
+    const u64 in = now_ns > g_overlay.loading.since_ns ? (now_ns - g_overlay.loading.since_ns) / 1000000u : 0;
+    const unsigned alpha = in >= OVERLAY_LOADING_FADE_MS ? 128 : (unsigned)(128 * in / OVERLAY_LOADING_FADE_MS);
+    const DialogPara para[2] = {{"Loading the save state", UI_INK, 0, 0, 0, 0},
+                                {g_overlay.loading.slot, UI_SOFT, 0, 1, 0, 0}};
+    const int first = l->n;
+    Dialog d;
+    DialogDrawn at;
+    ui_fill(l, 0, 0, (float)sw, (float)sh, 0xFF000000u);
+    ui_fade_set(first, l->n, alpha);
+    memset(&d, 0, sizeof d);
+    d.title = "SCARLETNX  /  SAVE STATES";
+    memcpy(d.para, para, sizeof para);
+    d.paras = 2;
+    dialog_draw(l, sw, sh, &d, g_overlay.loading.rows, &at);
+    {
+        const float cw = 8.0f * (float)at.scale, ch = 16.0f * (float)at.scale;
+        ui_loading_ring(l, at.box.x + at.box.w - cw * 3, at.box.y + ch * 2, at.scale, now_ns / 1000000u, 0,
+                        UI_RGB(SNX_GUI_THEME_YORHA_DIM), UI_SOFT, UI_INK);
+    }
+}
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
     if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
@@ -2064,6 +2111,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         if (!g_menu.laid || memcmp(&key, &g_menu.key, sizeof key) || !watched_same()) menu_lay(sw, sh, &key);
         ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
     }
+    if (overlay_loading_shown()) loading_draw(l, sw, sh, now_ns);
     toasts_drop(now_ns);
     if (ntoasts) {
         int percent = overlay_display_percent(), first = l->n, i;

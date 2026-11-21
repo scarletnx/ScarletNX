@@ -30,11 +30,13 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/pause.h"
+#include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/unattended.h"
+#include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/state_fns.h"
 #include "nx/runtime/state_io.h"
@@ -1564,6 +1566,16 @@ static void state_unattended(void) {
 }
 
 /* ============================================================ the player's: hotkeys and the menu */
+/* a load the player asked for (loading_begin): when it began, the slot's words for its box, whether the box shows, and
+   its thread's: ticking, told it is over, and gone */
+static struct {
+    struct {
+        u64 began_ms;
+        char slot[24];
+        int shown, ticking;
+        _Atomic int over, gone;
+    } loading;
+} g_state;
 static int g_slot = 1;        /* the slot F7 and F8 use, 1 to state_slots */
 static int g_ask, g_ask_slot; /* a save, load or delete asked for, done at the next pass */
 static int g_menu_pause;      /* the save states' pages hold the game: 1 paused, -1 it didn't stop */
@@ -1645,6 +1657,57 @@ void state_slot_next(void) {
         toast("Slot %d: %s", g_slot, when);
     }
 }
+/* A load the player asked for (F8, the menu's Load) that takes long: a box over the game greyed out
+   (overlay_loading) from SNX_WAIT_LOADING_MS on, shown by a thread of its own as this one is busy with the load,
+   until it ends: then it goes with the state's first frame, or at once when the load failed, whose notification
+   follows. The presses that came meanwhile are dropped, as they did nothing; the log says how long it took and
+   whether the box showed */
+static void loading_tick(void* unused) {
+    (void)unused;
+    while (!atomic_load_explicit(&g_state.loading.over, memory_order_acquire)) {
+        if (!g_state.loading.shown && snx_loading_shows(g_state.loading.began_ms, plat_ns() / 1000000u)) {
+            ui_lock();
+            overlay_loading(g_state.loading.slot, plat_ns());
+            ui_unlock();
+            g_state.loading.shown = 1;
+        }
+        if (g_state.loading.shown && g_renderer->refresh) g_renderer->refresh();
+        plat_sleep_ns(16000000);
+    }
+    atomic_store_explicit(&g_state.loading.gone, 1, memory_order_release);
+}
+static void loading_begin(const char* slot) {
+    g_state.loading.began_ms = plat_ns() / 1000000u;
+    g_state.loading.shown = 0;
+    g_state.loading.ticking = 0;
+    snprintf(g_state.loading.slot, sizeof g_state.loading.slot, "%s", slot);
+    atomic_store_explicit(&g_state.loading.over, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_state.loading.gone, 0, memory_order_relaxed);
+    if (!backend_window_shown()) return; /* nothing to show it in */
+    if (plat_thread(loading_tick, NULL, 0)) {
+        char why[256];
+        WARN("state: no thread for the load's box (%s): the load shows none\n", snx_os_error(why, sizeof why));
+        return;
+    }
+    g_state.loading.ticking = 1;
+}
+static void loading_over(int failed) {
+    atomic_store_explicit(&g_state.loading.over, 1, memory_order_release);
+    while (g_state.loading.ticking && !atomic_load_explicit(&g_state.loading.gone, memory_order_acquire))
+        plat_sleep_ns(1000000);
+    if (g_state.loading.shown) {
+        ui_lock();
+        if (failed)
+            overlay_loading_end();
+        else
+            overlay_loading_done();
+        ui_unlock();
+    }
+    backend_presses_drop();
+    LOG("state: the load took %llu ms with the player waiting, %s\n",
+        (unsigned long long)(plat_ns() / 1000000u - g_state.loading.began_ms),
+        g_state.loading.shown ? "its box shown" : "too quick for its box");
+}
 /* what was asked, done, and said */
 static void ask_do(int op, int slot) {
     char name[16], label[24], start[24], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
@@ -1683,13 +1746,16 @@ static void ask_do(int op, int slot) {
         WARN("state: %s wasn't loaded: %s\n", path, why);
         return;
     }
+    loading_begin(start);
     /* the game as it was, kept to go back to: a load of the auto slot itself keeps that one */
     if (g_settings.save_state_backup && slot) {
         char back[sizeof path], bwhy[256];
         state_path(back, sizeof back, "auto");
         if (state_save(back, bwhy, sizeof bwhy)) WARN("state: no auto slot before the load: %s\n", bwhy);
     }
-    if (state_load(path, why, sizeof why))
+    const int failed = state_load(path, why, sizeof why);
+    loading_over(failed);
+    if (failed)
         toast("Not loaded: %s", why);
     else
         toast("Loaded %s", label);
