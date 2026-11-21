@@ -3560,10 +3560,16 @@ enum {
     VK_SUB_BACKGROUND,
     VK_SUB_N
 };
+/* the one name of each reason for a submission: cmd.c's zone and gpuprof.c's log use it, so a reason reads the same in
+   both */
+extern const char* const g_vk_sub_name[VK_SUB_N];
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
 extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
+/* the one name of each kind of the CPU's wait for the graphics timeline: cmd.c's zone, gpuprof.c's log and plots all
+   use it, so a kind reads the same in every report */
+extern const char* const g_vk_wait_name[VK_WAIT_N];
 /* Each dispatch recorded into the frame's command buffer, timed (record.c's rec_CmdDispatch): begin before it, 1 when
    it is timed, end after it. tag names the next one: a compute program's key, or the VK_PROF_* of one of the
    renderer's own pipelines */
