@@ -3212,6 +3212,7 @@ static u64 trim_head(u64 budget) {
     return head > budget / 4 ? budget / 4 : head;
 }
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
+static u32 g_heap_swept; /* the present the heap's own use last freed the superseded targets (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 static u32 g_oom_target; /* the same of render targets */
@@ -3400,8 +3401,21 @@ void vk_mem_trim(u64 extra, int force) {
                     release, which goes back to a block no request takes while it is emptied */
         u64 gone = vk_deferred_bytes() - vk_deferred_moved();
         need = extra > gone ? extra - gone : 0;
-    } else if (usage <= vk_mem_trim_start(budget))
+    } else if (usage <= vk_mem_trim_start(budget)) {
+        /* The caches count the free space inside the blocks as room, but a request takes only a run of its own kind
+           and size, and the driver's heap can be at its budget while that space is in pieces no request takes. Then
+           the render targets later ones drew all over go after two presents, once a present, though the hold below
+           would keep them for a second: they are lossless. A game at a dynamic resolution that places its frame's
+           targets in one pool, at offsets that move each frame, made about 30 targets a frame at 30 frames a
+           second. A second of them held 5 to 8 GB of a 14.6 GB budget while the caches counted 3 GB of room in the
+           blocks, so no trim ran until an image found no memory, every second and a half: the forced trim then freed
+           5 to 8 GB of targets, too late for that image, and its draws went without it */
+        if (g_heap_swept != g_vk_present + 1 && vk_mem_heap_use() + extra > vk_mem_trim_start(budget)) {
+            g_heap_swept = g_vk_present + 1;
+            g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
+        }
         return;
+    }
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to two heads under the budget
