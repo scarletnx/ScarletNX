@@ -8482,6 +8482,8 @@ static int run_headless(int argc, char** argv) {
             result = check_heap_pipeline_flags();
         else if (!strcmp(name, "mesh_draws"))
             result = check_mesh_draws();
+        else if (!strcmp(name, "vertex_restride"))
+            result = check_vertex_restride();
         else if (!strcmp(name, "heap_shader_objects"))
             result = check_heap_shader_objects();
         else if (!strcmp(name, "cb_address"))

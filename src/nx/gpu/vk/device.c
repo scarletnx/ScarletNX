@@ -931,7 +931,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
     int has_maintenance8 = 0, has_copy_indirect = 0;
-    int has_vertex_input = 0;
+    int has_vertex_input = 0, has_legacy_vertex = 0;
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
@@ -979,6 +979,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         }
         g_vk.has_divisor = snx_vk_choice_has(c, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_choice_has(c, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+        has_legacy_vertex = snx_vk_choice_has(c, VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
         has_gpl = snx_vk_choice_has(c, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                   snx_vk_choice_has(c, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         has_eds2 = snx_vk_choice_has(c, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
@@ -1250,6 +1251,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceLegacyVertexAttributesFeaturesEXT qlegacy_vertex = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LEGACY_VERTEX_ATTRIBUTES_FEATURES_EXT};
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT qgpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
     /* qeds2 above: a 1.2 device's, and the pipeline libraries' patch control points (has_eds2) */
@@ -1314,6 +1317,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_barycentric ? &qbarycentric : NULL,
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
+                           has_legacy_vertex ? &qlegacy_vertex : NULL,
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
@@ -1494,6 +1498,21 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         else
             LOG("%s\n", line);
     }
+    /* VK_EXT_legacy_vertex_attributes reads an attribute at any byte, which the console does: a stream whose stride
+       isn't a multiple of its attributes' components is bound as the guest has it, where each draw of it otherwise
+       reads a copy restrided on the GPU (render.c's restride), a dispatch that ends the rendering pass. The extension
+       needs VK_EXT_vertex_input_dynamic_state (its dependency), and the renderer takes it with the dynamic layout */
+    g_vk.has_legacy_vertex = has_legacy_vertex && qlegacy_vertex.legacyVertexAttributes && g_vk.vertex_input_dynamic;
+    const char* legacy_why =
+        !has_legacy_vertex ? "no VK_EXT_legacy_vertex_attributes, or a setting or a ban took it out"
+        : !qlegacy_vertex.legacyVertexAttributes ? "VK_EXT_legacy_vertex_attributes without legacyVertexAttributes"
+                                                 : "the vertex layout is no dynamic state";
+    if (g_vk.has_legacy_vertex)
+        LOG("vulkan: a vertex stream of any stride is bound as the guest has it (VK_EXT_legacy_vertex_attributes)\n");
+    else
+        LOG("vulkan: a vertex stream whose stride isn't a multiple of its attributes' components is restrided on the "
+            "GPU for each draw: %s\n",
+            legacy_why);
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
     g_vk.has_feedback_dynamic =
@@ -2197,9 +2216,17 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
         .pNext = chain,
         .vertexInputDynamicState = VK_TRUE};
+    VkPhysicalDeviceLegacyVertexAttributesFeaturesEXT flegacy_vertex = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LEGACY_VERTEX_ATTRIBUTES_FEATURES_EXT,
+        .legacyVertexAttributes = VK_TRUE};
     if (g_vk.vertex_input_dynamic) {
         chain = &fvertex_input;
         snx_vk_choice_enable(c, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+    }
+    if (g_vk.has_legacy_vertex) {
+        flegacy_vertex.pNext = chain;
+        chain = &flegacy_vertex;
+        snx_vk_choice_enable(c, VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
     }
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,

@@ -194,6 +194,15 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_mesh_native COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-mesh-path=native)
     set_tests_properties(vulkan_headless_mesh_native PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a vertex stream whose stride isn't a multiple of its components (check_vertex_restride) both ways, under the
+    # validation layer when it is installed: bound as it is with VK_EXT_legacy_vertex_attributes, restrided on the GPU
+    # without it (the default run takes the extension where the device has it)
+    add_test(NAME vulkan_vertex_restride COMMAND snx-test-vulkan -H --vk-validation=1)
+    add_test(NAME vulkan_vertex_restride_off COMMAND snx-test-vulkan -H --vk-validation=1
+                                                     --vk-ext-legacy-vertex-attributes=off)
+    set_tests_properties(vulkan_vertex_restride vulkan_vertex_restride_off PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=vertex_restride;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the mesh draws alone under the validation layer when it is installed, with the mesh and task stages as shader
     # objects where the device draws with them (gpu/vk/shader_objects.c): their stages, flags and binds checked
     add_test(NAME vulkan_mesh_shader_objects COMMAND snx-test-vulkan -H --vk-ext-mesh-shader=on --vk-validation=1)

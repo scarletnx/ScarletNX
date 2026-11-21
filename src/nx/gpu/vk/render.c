@@ -1401,6 +1401,7 @@ static struct {
     VkDrawCounts n, was;
     u32 epoch; /* the last draw's write tracking epoch */
     u64 present, drawn, kept, dset_new, dset_reused, targets_kept, submits[VK_SUB_N];
+    u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
 } g_stats;
@@ -1461,6 +1462,7 @@ static void fs_count_log(const VkDrawCounts* n, const VkDrawCounts* w, u64 prese
         d[VK_FS_TAKE], d[VK_FS_SURFACES], d[VK_FS_EPOCH], d[VK_FS_PRESENT], d[VK_FS_HANDLES], d[VK_FS_QUIET],
         d[VK_FS_UNKEPT_IMAGES], d[VK_FS_UNKEPT_TEXTURES]);
 }
+u64 vk_render_restrided(void) { return g_stats.restrided; }
 void vk_render_stats_log(void) {
     const VkDrawCounts* n = &g_stats.n;
     const VkDrawCounts* w = &g_stats.was;
@@ -1541,6 +1543,12 @@ void vk_render_stats_log(void) {
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
     g_cb_copied_bytes = 0;
+    if (g_stats.restrided != g_stats.restrides)
+        LOG("vulkan: %llu vertex streams restrided on the GPU in the last %llu presents, a dispatch that ended the "
+            "rendering pass each: their strides are no multiple of their attributes' components, which the device "
+            "reads only with VK_EXT_legacy_vertex_attributes\n",
+            (unsigned long long)(g_stats.restrided - g_stats.restrides), (unsigned long long)presents);
+    g_stats.restrides = g_stats.restrided;
     g_stats.was = g_stats.n;
     g_stats.present = g_vk_present;
     g_stats.drawn = g_vk_drawn;
@@ -5414,8 +5422,10 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         return 0;
     }
     /* Maxwell reads an attribute at any byte, Vulkan only at a multiple of its components' size, which a stride like
-       one game's 69 for 4-byte floats breaks every other vertex: RADV's fetches hung the GPU on them */
-    for (u32 b = 0; b < vi->nbind; b++) {
+       one game's 69 for 4-byte floats breaks every other vertex: RADV's fetches hung the GPU on them. With
+       VK_EXT_legacy_vertex_attributes the device reads them at any byte too (components of 8 bytes excepted, which no
+       attribute here has) */
+    for (u32 b = 0; b < vi->nbind && !g_vk.has_legacy_vertex; b++) {
         u32 st = (u32)pl->stride[b], a = align[b];
         if (!st || a < 2 || !(st % a)) continue;
         pl->guest_stride[b] = st;
@@ -5644,6 +5654,7 @@ static void fetch_records(const VertexPlan* pl, const VkBuffer* vbuf, const VkDe
 }
 static int restride(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, VkDeviceSize* off, VkDeviceSize* size) {
     u64 nv = (len + gstride - 1) / gstride, lo = gva & ~3ull, hi = (gva + len + 3) & ~3ull;
+    g_stats.restrided++;
     VkBuffer src;
     u64 at;
     if (nv > 0xFFFFFFFFu || !vk_buf_get_input(lo, hi - lo, 4, &src, &at)) return 0;
