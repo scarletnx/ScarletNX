@@ -152,7 +152,7 @@ void plat_sleep_ns(i64 ns) {
 }
 void kernel_dump_threads(void) {}
 void save_hints(void) {}
-void snx_save_before_exit(void) {}
+void snx_save_before_exit(int frontend) { (void)frontend; }
 void snx_fpcr_apply(CPU* c) { (void)c; }
 void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }

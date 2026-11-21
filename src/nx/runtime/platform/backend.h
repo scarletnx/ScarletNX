@@ -12,6 +12,11 @@
    DLC 1") */
 void video_init(const char* title, const char* addons);
 void video_poll(void);     /* events and input, once per main loop pass */
+/* in video_poll's place while the player waits on a screen with nothing to do (the save as the game closes): the
+   window's events taken as video_poll takes them, the inputs dropped so that they do nothing; the quits among them,
+   each a close asked (the window's, Alt+F4, SIGTERM, the system's). Another thread's fatal error is shown, as there.
+   Main thread */
+int backend_poll_closes(void);
 void frontend_frame(void); /* screenshots and the unattended limits, after each pass */
 
 /* Offers a .ini or command line setting (the touch screen's mode, whose table is settings.h's g_backend_ini) to the

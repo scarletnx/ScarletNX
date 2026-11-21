@@ -16,7 +16,7 @@ static u64 g_now;
 u64 test_ns(void) { return g_now; }
 _Atomic int g_frames;
 char g_exedir[1024], g_exename[256]; /* the game's folder and name, the slots' */
-void snx_save_before_exit(void) {}
+void snx_save_before_exit(int frontend) { (void)frontend; }
 void ini_poll(int final) { (void) final; }
 void plat_exit_now(int code) { exit(code); }
 static char g_log[4096]; /* the log's lines since the test last cleared it */

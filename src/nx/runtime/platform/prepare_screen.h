@@ -17,6 +17,7 @@ typedef struct {
 #define SNX_PREPARE_DETAIL_SIZE 128
     char detail[SNX_PREPARE_DETAIL_SIZE];
     u32 value, total; /* total 0: no progress to show */
+    int kib;          /* value and total are KiB: an amount reads "1.5 / 4.0 MiB" */
     u64 started_ms;   /* when it began, for the theme's time left */
     int done;
 } SnxPrepareStep;
