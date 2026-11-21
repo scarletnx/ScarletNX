@@ -179,32 +179,54 @@ static u8* pf_header(const char* key, size_t* size) {
 }
 
 /* one unit of the records being saved: n bytes of them at raw, and the record that packs them (total 0: they are
-   written as they are, as records that don't come out smaller are) */
+   written as they are, as records that don't come out smaller are); done once it is either, not when a stop came first */
 typedef struct {
     const u8* raw;
     size_t n;
     u8* rec;
     size_t total;
     PfUnit u;
+    int done;
 } PfSaveUnit;
 typedef struct {
+    PFile* pf; /* its progress and its stop */
     PfSaveUnit* unit;
     _Atomic u32 next;
     u32 count;
     int level;
 } PfSave;
-static void pf_save_unit(PfSaveUnit* k, int level) {
-    size_t bound = ZSTD_compressBound(k->n), packed;
+/* the unit packed in steps of PF_SAVE_STEP bytes into one zstd frame, through z (a thread's own), so that a stop
+   ends it after the step at work */
+static void pf_save_unit(PFile* pf, PfSaveUnit* k, ZSTD_CCtx* z) {
+    size_t bound = ZSTD_compressBound(k->n), r = 0;
     k->total = 0;
     k->rec = (u8*)malloc(PF_REC + sizeof k->u + bound + 8);
-    if (!k->rec) return;
-    packed = ZSTD_compress(k->rec + PF_REC + sizeof k->u, bound, k->raw, k->n, level);
-    if (ZSTD_isError(packed)) {
-        LOG("vulkan: cannot pack %zu bytes of shader cache records (zstd: %s): they are saved unpacked\n", k->n,
-            ZSTD_getErrorName(packed));
+    if (!k->rec || !z) {
+        k->done = 1;
+        atomic_fetch_add_explicit(&pf->save_packed, k->n, memory_order_relaxed);
         return;
     }
-    size_t total = PF_REC + sizeof k->u + ((packed + 7) & ~(size_t)7);
+    ZSTD_outBuffer out = {k->rec + PF_REC + sizeof k->u, bound, 0};
+    ZSTD_inBuffer in = {k->raw, 0, 0};
+    ZSTD_CCtx_reset(z, ZSTD_reset_session_only);
+    ZSTD_CCtx_setPledgedSrcSize(z, k->n);
+    while (in.size < k->n || r) {
+        if (atomic_load_explicit(&pf->save_stop, memory_order_relaxed)) return;
+        const size_t step = k->n - in.size > PF_SAVE_STEP ? PF_SAVE_STEP : k->n - in.size;
+        in.size += step;
+        /* the output holds the frame's bound, so each call takes its step whole; the last ends the frame */
+        r = ZSTD_compressStream2(z, &out, &in, in.size == k->n ? ZSTD_e_end : ZSTD_e_continue);
+        if (ZSTD_isError(r) || (r && out.pos == out.size)) {
+            LOG("vulkan: cannot pack %zu bytes of shader cache records (zstd: %s): they are saved unpacked\n", k->n,
+                ZSTD_isError(r) ? ZSTD_getErrorName(r) : "no room left for the frame");
+            k->done = 1;
+            atomic_fetch_add_explicit(&pf->save_packed, k->n - (in.size - step), memory_order_relaxed);
+            return;
+        }
+        atomic_fetch_add_explicit(&pf->save_packed, step, memory_order_relaxed);
+    }
+    k->done = 1;
+    const size_t packed = out.pos, total = PF_REC + sizeof k->u + ((packed + 7) & ~(size_t)7);
     if (total >= k->n) return;
     u32 type = PF_UNIT, len = (u32)(total - PF_REC);
     k->u.raw = (u32)k->n;
@@ -219,21 +241,34 @@ static void pf_save_unit(PfSaveUnit* k, int level) {
 }
 static void* pf_save_worker(void* arg) {
     PfSave* v = arg;
-    for (;;) {
+    ZSTD_CCtx* z = ZSTD_createCCtx();
+    if (z && ZSTD_isError(ZSTD_CCtx_setParameter(z, ZSTD_c_compressionLevel, v->level))) {
+        ZSTD_freeCCtx(z);
+        z = NULL;
+    }
+    if (!z) LOG("vulkan: no zstd context for the shader cache's save: its records are saved unpacked\n");
+    while (!atomic_load_explicit(&v->pf->save_stop, memory_order_relaxed)) {
         u32 i = atomic_fetch_add_explicit(&v->next, 1, memory_order_relaxed);
         if (i >= v->count) break;
-        pf_save_unit(&v->unit[i], v->level);
+        pf_save_unit(v->pf, &v->unit[i], z);
     }
+    ZSTD_freeCCtx(z);
     return NULL;
 }
+void pf_saving(PFile* pf, u64* total, u64* packed, u64* kept) {
+    *total = atomic_load_explicit(&pf->save_total, memory_order_relaxed);
+    *packed = atomic_load_explicit(&pf->save_packed, memory_order_relaxed);
+    *kept = atomic_load_explicit(&pf->save_kept, memory_order_relaxed);
+}
+void pf_save_stop(PFile* pf) { atomic_store_explicit(&pf->save_stop, 1, memory_order_relaxed); }
 /* the threads that pack a save's units: the CPUs but two, eight at most, one where there are no more units */
 #define PF_SAVE_THREADS 8
 void pf_save(PFile* pf) {
     u8* held;
-    u64 n, at = 0, wrote = 0;
+    u64 n, at = 0, wrote = 0, kept = 0;
     const u64 t0 = plat_ns();
-    PfSave v = {.level = ZSTD_maxCLevel()};
-    u32 cap = 0, threads = 1;
+    PfSave v = {.pf = pf, .level = ZSTD_maxCLevel()};
+    u32 cap = 0, threads = 1, whole = 0;
     int ok = 1;
     char why[256] = "out of memory";
     /* the records leave the file's lock with this thread: the game's threads append to a new run of them meanwhile,
@@ -245,6 +280,9 @@ void pf_save(PFile* pf) {
     pf->held_n = pf->held_cap = 0;
     pf->held_full = 0;
     pm_unlock(&pf->lock);
+    atomic_store_explicit(&pf->save_kept, 0, memory_order_relaxed);
+    atomic_store_explicit(&pf->save_packed, 0, memory_order_relaxed);
+    atomic_store_explicit(&pf->save_total, n, memory_order_relaxed);
     if (!n) {
         free(held);
         return;
@@ -267,7 +305,7 @@ void pf_save(PFile* pf) {
             v.unit = grown;
             cap = cap ? cap * 2 : 64;
         }
-        v.unit[v.count++] = (PfSaveUnit){held + at, un, NULL, 0, u};
+        v.unit[v.count++] = (PfSaveUnit){held + at, un, NULL, 0, u, 0};
         at += un;
     }
     if (ok) {
@@ -285,10 +323,13 @@ void pf_save(PFile* pf) {
 #else
         pf_save_worker(&v);
 #endif
+        /* the units in their order up to the first a stop left unpacked: a later one's records would be numbered
+           after those left out */
+        while (whole < v.count && v.unit[whole].done) kept += v.unit[whole++].n;
         pm_lock(&pf->lock);
         ok = pf->f != NULL;
         if (!ok) snprintf(why, sizeof why, "the file is closed");
-        for (u32 i = 0; i < v.count && ok; i++) {
+        for (u32 i = 0; i < whole && ok; i++) {
             const PfSaveUnit* k = &v.unit[i];
             ok = k->total ? fwrite(k->rec, 1, k->total, pf->f) == k->total : fwrite(k->raw, 1, k->n, pf->f) == k->n;
             wrote += k->total ? k->total : k->n;
@@ -308,11 +349,17 @@ void pf_save(PFile* pf) {
     for (u32 i = 0; i < v.count; i++) free(v.unit[i].rec);
     free(v.unit);
     free(held);
-    if (ok)
+    atomic_store_explicit(&pf->save_kept, ok ? kept : 0, memory_order_relaxed);
+    if (ok && kept == n)
         LOG("vulkan: %s: the %.1f MiB of shaders and pipelines this session made saved as %.1f MiB in %.0f ms (zstd "
             "level %d, %u thread(s))\n",
             pf->path, (double)n / 1048576.0, (double)wrote / 1048576.0, (double)(plat_ns() - t0) / 1e6, v.level,
             threads);
+    else if (ok)
+        LOG("vulkan: %s: the save was stopped: %.1f of the %.1f MiB of shaders and pipelines this session made saved as "
+            "%.1f MiB in %.0f ms (%u of %u units), the other %.1f MiB not kept for the next run\n",
+            pf->path, (double)kept / 1048576.0, (double)n / 1048576.0, (double)wrote / 1048576.0,
+            (double)(plat_ns() - t0) / 1e6, whole, v.count, (double)(n - kept) / 1048576.0);
     else
         WARN("vulkan: cannot write %s (%s): the %.1f MiB of shaders and pipelines this session made are not kept "
              "for the next run\n",

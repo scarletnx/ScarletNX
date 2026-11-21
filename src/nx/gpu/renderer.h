@@ -240,6 +240,12 @@ typedef struct Renderer {
        wait for a quiet moment, and before an exit (at_exit), which writes it now. Any thread, while the others still
        run. NULL when the renderer keeps nothing */
     void (*save)(int at_exit);
+    /* how far save(1) has gone, from another thread while it runs, for the screen the game closes on: the bytes of the
+       shaders and pipelines this session made that it packs, those packed so far, and those it wrote once it is done;
+       0 of 0 before it starts. saving_stop ends it at its next step (what it packed by then written, the rest not, the
+       log says both). NULL when the renderer packs nothing as the game closes */
+    void (*saving)(u64* total, u64* packed, u64* kept);
+    void (*saving_stop)(void);
     /* the window given up for a fatal error's screen (log.c's fatal, backend/sdl3.c): the swapchain and the surface go,
        as nothing else can draw in a window something presents to. Called on the failing thread, which never returns to
        its callers, so it keeps no lock. 0 when another thread held the renderer too long. NULL without a window */
