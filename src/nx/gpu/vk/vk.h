@@ -759,6 +759,9 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
 void vk_finish_at(const char* file, int line);
 #define vk_finish() vk_finish_at(__FILE__, __LINE__)
 void vk_finishes_log(void);
+/* this thread's reason for what a finish lands (a guest write, a read of guest memory, ...), for vk_finishes_log's
+   sites: the renderer's hooks set it around the calls that land images, and surf_flush names it in its log line */
+extern _Thread_local const char* g_vk_finish_who;
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
@@ -1401,7 +1404,10 @@ Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
-void vk_rt_before_write(u64 gva, u64 size);
+/* The guest (or a GPU engine's result) writes [gva, gva + size): every pending target over those bytes goes to
+   memory first, except one the write covers whole when whole says the caller writes every byte of its range. Such a
+   target's image has nothing of its own to give back, so it is dropped instead: memory is the truth (rt_cover.h) */
+void vk_rt_before_write(u64 gva, u64 size, int whole);
 void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
 /* whether a render target that is not parked covers any of guest memory [cpu, cpu + size), through any GPU address
@@ -1519,6 +1525,8 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* whether vk_rt_overlay has a render target to record over [gva, gva + size) */
 int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
+/* render targets dropped instead of written back: the guest wrote every byte of them, so memory is the truth */
+extern u64 g_vk_rt_dropped;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 /* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */

@@ -9,6 +9,7 @@
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/rt_bands.h"
+#include "nx/gpu/vk/rt_cover.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1318,7 +1319,7 @@ static void flush_wait(VkCommandBuffer cb) {
                            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
-    vk_finish();
+    vk_finish_at(g_vk_finish_who ? g_vk_finish_who : __FILE__, g_vk_finish_who ? 0 : __LINE__);
     vk_readback_ready();
 }
 /* A write-back keeps what the CPU wrote over a target after its draws. On the console the GPU's writes reached memory
@@ -1671,7 +1672,20 @@ static void flush_parts(Surf* s, u64 size, const u8* original) {
     if (ok) flush_land(s, all, original, s->wgen, NULL, NULL);
     free(all);
 }
+static void surf_flush_body(Surf* s, const u8* original);
+/* A flush waits for the GPU to reach the copies, so each is a round trip the guest's threads sit in: logged with the
+   target and the reason a caller of vk_rt_before_write named (g_vk_finish_who) when it costs a millisecond, since
+   which of the paths asks for it decides whether the wait is needed then at all */
 static void surf_flush(Surf* s, const u8* original) {
+    u64 t0 = plat_ns(), dt;
+    u64 size = flush_bytes(s);
+    surf_flush_body(s, original);
+    dt = plat_ns() - t0;
+    if (size && dt > 1000000)
+        LOG_LIMIT(24, "vulkan: a flush of %llu KB took %llu us, for %s\n", (unsigned long long)(size >> 10),
+                  (unsigned long long)(dt / 1000), g_vk_finish_who ? g_vk_finish_who : "an unnamed caller");
+}
+static void surf_flush_body(Surf* s, const u8* original) {
     u64 size = flush_bytes(s);
     VkBuffer buf;
     if (!size) return;
@@ -2173,6 +2187,7 @@ int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
 }
 
 u64 g_vk_rt_readbacks; /* render targets written back to guest memory because the GPU's copy couldn't take them */
+u64 g_vk_rt_dropped;   /* render targets dropped instead of written back: the guest wrote over all of their bytes */
 /* a publish made for another one's sake (rt_overlay, rt_publish_newer) is under way: one met inside it is written back */
 static int g_rt_nested;
 /* vk_rt_overlay's work for every pending target over the range (of NULL), or for a publish of the target of: the
@@ -2259,7 +2274,7 @@ int vk_rt_over(u64 gva, u64 size) {
     return count != 0;
 }
 
-void vk_rt_before_write(u64 gva, u64 size) {
+void vk_rt_before_write(u64 gva, u64 size, int whole) {
     Surf *local[16], **list;
     u32 count, i;
     if (!size || g_rt_flushing) return;
@@ -2267,7 +2282,34 @@ void vk_rt_before_write(u64 gva, u64 size) {
     g_rt_flushing = 1;
     if (pend_hit_va(&g_rt_pages, gva, size)) {
         count = rt_pending_over(gva, size, local, 16, &list);
-        for (i = 0; i < count; i++) vk_surf_flush(list[i], NULL);
+        for (i = 0; i < count; i++) {
+            Surf* s = list[i];
+            u64 bytes = rt_bytes(s);
+            /* The caller writes every byte of the target: the guest's bytes replace every pixel, so memory is the
+               truth and the image has nothing of its own to give back. Flushing it would be a wait for the GPU to
+               draw pixels the write is about to drop, a round trip each of about 0.3 ms for a 1 MiB target
+               (tests/vulkan_headless.c, check_rt_drop). The image is dropped instead, as a reload whose memory
+               changed leaves it (rt_reload): its layout goes undefined, so the next draw starts from none of it (a
+               full overwrite), and a read of it builds a texture from memory, which the write left as the truth. A
+               write that covers part of a target, or one whole only in part of its range, still flushes it */
+            if (whole && vk_rt_write_covers(s->gva, bytes, gva, size)) {
+                vk_surf_wrote(s); /* the copies of it (crops) are out of date */
+                vk_render_end();
+                s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+                s->draw_wseen = 0;
+                s->gw = gpu_mem_generation();
+                /* Nothing of the image goes to memory, as it holds none of the target's bytes now. The layout says so
+                   only while nothing binds the image: a refresh of the last frame, a screenshot or a present reads it
+                   and leaves it in another layout (vk_surf_use), which a flush meets. Its next draw loads the bytes
+                   the program wrote (or leaves it undefined, if that load fails), and its own write makes the image
+                   flushable again */
+                s->mem_wgen = s->wgen;
+                vk_surf_relist(s);
+                g_vk_rt_dropped++;
+                continue;
+            }
+            vk_surf_flush(s, NULL);
+        }
         if (list != local) free(list);
     }
     g_rt_flushing = 0;

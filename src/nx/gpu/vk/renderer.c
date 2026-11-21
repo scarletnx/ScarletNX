@@ -65,18 +65,23 @@ static int before_write_needed(u64 gva, u64 size) {
     pend_unlock();
     return hit;
 }
-static void vkr_before_write(u64 gva, u64 size) {
+static void vkr_before_write(u64 gva, u64 size, int whole) {
     if (!before_write_needed(gva, size)) return;
     vk_lock();
-    if (size) vk_release_need(gva, size);
-    vk_buf_before_write(gva, size);
-    if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
-    if (size)
+    const char* was = g_vk_finish_who;
+    if (size) {
+        vk_release_need(gva, size);
+        vk_buf_before_write(gva, size);
+        vk_uma_before_write(gva, size); /* what reads it in place runs first */
+        g_vk_finish_who = "a guest write over a storage image's bytes";
         vk_gfx_image_mem_need(gva, size);
-    else
+    } else
         vk_gfx_image_land();
+    g_vk_finish_who = "a guest write over a compute result's bytes";
     vk_compute_before_write(gva, size);
-    vk_rt_before_write(gva, size);
+    g_vk_finish_who = "a guest write over a render target's bytes";
+    vk_rt_before_write(gva, size, whole);
+    g_vk_finish_who = was;
     vk_unlock();
 }
 /* pending compute and graphics results, storage images and queued releases all count their pages in g_pend_any
@@ -99,7 +104,10 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_mirror_mem_need(gva, size); /* the GPU mirror's programs' writes there landed */
     vk_buf_mem_need(gva, size);
     vk_uma_mem_need(gva, size); /* the in-place writes there done */
+    const char* was = g_vk_finish_who;
+    g_vk_finish_who = "a read of guest memory a storage image covers";
     vk_gfx_image_mem_need(gva, size);
+    g_vk_finish_who = was;
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
@@ -186,8 +194,9 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         vk_mirror_mem_need(gva, size);
         vk_gfx_image_mem_need(gva, size);
         vk_compute_mem_need_map(gva, size);
-        /* Images still describe the old backing until the page table changes. */
-        vk_rt_before_write(gva, size);
+        /* Images still describe the old backing until the page table changes: the targets there go to memory, and
+           none is dropped, as nothing says every byte of them is written */
+        vk_rt_before_write(gva, size, 0);
     }
     pend_lock();
 }
@@ -423,9 +432,12 @@ static void* vkr_nvdec_hw_device(u32 codec) { return vk_nvdec_hw_device(codec); 
 static int vkr_dma_copy(const GpuDmaOp* o) { return vk_dma_copy(o); }         /* it takes vk_lock */
 static int vkr_blit_mem(const GpuBlit* b) { return vk_blit_mem(b); }          /* it takes vk_lock */
 static void vkr_rt_flush(u64 gva) {
+    const char* was = g_vk_finish_who;
     vk_lock();
+    g_vk_finish_who = "the front end's flush of a target";
     vk_gfx_image_mem_need(gva, 1);
     vk_rt_flush(gva);
+    g_vk_finish_who = was;
     vk_unlock();
 }
 static void vkr_rt_reload(u64 gva) {
@@ -654,9 +666,14 @@ static void resource_plots(const VkResourceStats* is, const VkResourceStats* was
 static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transform, int game, u64 released_ns,
                  u64 period_ns, u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
+    /* a target dropped for a guest write over it holds nothing to show, as surf_read says: the frame is the layer's,
+       and of the kind this frame had, so that a refresh of an HDR frame keeps the swapchain it needs. A frame with no
+       source of its own (none yet, or none of the size asked) keeps the layer's kind */
+    int void_frame = src && src->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+    if (void_frame) src = NULL;
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, kind = src ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
+    int ww, wh, kind = (src || void_frame) && hdr ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
@@ -1144,11 +1161,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             own_landings_by(by);
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times (%llu for the runtime's own access, "
                 "%llu for a read of the game's code, %llu for a write of it), render targets written back for an "
-                "engine %llu times; block linear targets watched %llu times, published for a CPU access %llu times "
-                "and at a release %llu times\n",
+                "engine %llu times, %llu dropped for a guest write over all of them; block linear targets watched "
+                "%llu times, published for a CPU access %llu times and at a release %llu times\n",
                 (unsigned long long)own_landings(), (unsigned long long)by[OWN_BY_RUNTIME],
                 (unsigned long long)by[OWN_BY_READ], (unsigned long long)by[OWN_BY_WRITE],
-                (unsigned long long)g_vk_rt_readbacks,
+                (unsigned long long)g_vk_rt_readbacks, (unsigned long long)g_vk_rt_dropped,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
         }
@@ -1344,6 +1361,10 @@ static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 trans
     return sized;
 }
 static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
+    /* an image dropped for a guest write over it holds none of its bytes: its pixels now are memory's, and a copy of
+       the image would show what is not the target's any more. The present resolves the frame through vk_rt_for_cpu,
+       which loads such a target; this reads the one kept (g_last) */
+    if (s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return NULL;
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,

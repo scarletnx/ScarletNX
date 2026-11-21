@@ -105,7 +105,8 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
             if (!begun) {
                 begun = 1;
                 vk_result_begin();
-                vk_rt_before_write(addr, size);
+                /* the granules that changed land, not every byte of the range: a target there keeps its pixels */
+                vk_rt_before_write(addr, size, 0);
                 l.dst = gmem_ptr(addr, size);
                 cur = l.dst;
                 if (!cur) {
@@ -169,7 +170,7 @@ u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since) 
     vk_result_begin();
     for (u32 i = 0; i < n; i++) {
         u64 a = addr + runs[i].from, len = runs[i].to - runs[i].from;
-        vk_rt_before_write(a, len);
+        vk_rt_before_write(a, len, 1); /* the run is written whole */
         u8* dst = gmem_ptr(a, len);
         if (dst)
             memcpy(dst, res + runs[i].from, len);
