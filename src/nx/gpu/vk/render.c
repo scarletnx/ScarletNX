@@ -4821,6 +4821,39 @@ static u32 draw_slot(const DrawKey* key, u32 found) {
     g_draw.tag[set][w] = mix;
     return DRAW_TABLE + set * DRAW_WAYS + w;
 }
+/* What a draw made, kept in the table for later draws: in the entry found when it didn't hold, else in a way of its
+   key's set. pipe: VK_NULL_HANDLE for a draw that drew with none of its own (a feedback draw's probe, render_draw_main),
+   and the draw that takes the entry makes it from the entry's key. The entry */
+static u32 draw_keep(const DsState* ds, const DrawKey* key, u32 found, u32 epoch, const DrawShaders* sh,
+                     const FsKey* fk, VkSh* fs, const TargetFormats* tf, const VertexPlan* pl, const PipeKey* k,
+                     VkPipeline pipe) {
+    u32 slot = draw_slot(key, found);
+    DrawKept* e = &g_draw.e[slot];
+    e->key = *key;
+    g_stats.n.made++;
+    e->epoch = epoch;
+    e->used = ++g_draw.use;
+    e->shader_generation = g_vk.shader_generation;
+    /* the translations as they are after this draw's lookups, which can have made some */
+    e->fold_gen = vk_shader_fold_gen();
+    e->sh = *sh;
+    e->fkey = *fk;
+    e->fs = fs;
+    const VkSh* used[6];
+    used_shaders(e, used);
+    e->not_top = 0;
+    for (int i = 0; i < 6; i++)
+        if (used[i] && !vk_shader_fold_top(used[i])) e->not_top |= 1u << i;
+    e->tf = *tf;
+    if (pl != &e->plan) e->plan = *pl;
+    if (k != &e->k) e->k = *k;
+    e->pipe = pipe;
+    memcpy(e->gen, ds->gen, sizeof e->gen);
+    e->vfmt = ds->vfmt;
+    e->vstreams = 0;
+    for (u32 m = sh->vs->si.in_mask; m; m &= m - 1) e->vstreams |= 1u << ds->vfmt.stream[snx_ctz32(m)];
+    return slot;
+}
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
            a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
@@ -6985,6 +7018,15 @@ retry:
                           : ds->rkey.alpha_to_coverage                                   ? "takes alpha to coverage"
                                                                                          : "";
         if (why && !*why) {
+            /* the probe keeps what it made, as a draw that drew does: the two draws have states of their own and keep
+               none, so the same draw's probe made its programs, plan and key again each time. With no pipeline: the
+               probe made none, and a draw that takes the entry in place makes it */
+            if (own && kept)
+                ke->used = ++g_draw.use;
+            else if (own) {
+                if (!have_key) draw_memo_key(ds, draw_topo, mesh_path, 0, &key);
+                draw_keep(ds, &key, found, epoch, &sh, &fk, fs, &tf, pl, k, VK_NULL_HANDLE);
+            }
             draw_images_discard(&images);
             why = predraw_run(ds, dc, o, free, fs);
             if (!why) return;
@@ -7196,6 +7238,7 @@ retry:
     VkPipeline pipe;
     const DrawKept* pe = ke ? ke : g_draw.last ? &g_draw.e[g_draw.last] : NULL;
     if (kept) {
+        if (!ke->pipe) ke->pipe = vk_pipeline_get_deferred(k); /* an entry a feedback draw's probe kept has none yet */
         pipe = ke->pipe;
         if (check) {
             VkPipeline made = vk_pipeline_get_deferred(k);
@@ -7237,32 +7280,7 @@ retry:
         draw_forget(); /* a draw with save attachments keeps nothing for the next draw (it has other targets) */
     else if (pipe && own) {
         if (!have_key) draw_memo_key(ds, draw_topo, mesh_path, 0, &key);
-        u32 slot = draw_slot(&key, found);
-        DrawKept* e = &g_draw.e[slot];
-        e->key = key;
-        g_stats.n.made++;
-        e->epoch = epoch;
-        e->used = ++g_draw.use;
-        e->shader_generation = g_vk.shader_generation;
-        /* the translations as they are after this draw's lookups, which can have made some */
-        e->fold_gen = vk_shader_fold_gen();
-        e->sh = sh;
-        e->fkey = fk;
-        e->fs = fs;
-        const VkSh* used[6];
-        used_shaders(e, used);
-        e->not_top = 0;
-        for (int i = 0; i < 6; i++)
-            if (used[i] && !vk_shader_fold_top(used[i])) e->not_top |= 1u << i;
-        e->tf = tf;
-        if (pl != &e->plan) e->plan = *pl;
-        if (k != &e->k) e->k = *k;
-        e->pipe = pipe;
-        memcpy(e->gen, ds->gen, sizeof e->gen);
-        e->vfmt = ds->vfmt;
-        e->vstreams = 0;
-        for (u32 m = vs->si.in_mask; m; m &= m - 1) e->vstreams |= 1u << ds->vfmt.stream[snx_ctz32(m)];
-        g_draw.last = slot;
+        g_draw.last = draw_keep(ds, &key, found, epoch, &sh, &fk, fs, &tf, pl, k, pipe);
     }
     /* the color slots the draw writes */
     u32 writes = 0;
