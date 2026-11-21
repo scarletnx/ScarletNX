@@ -421,8 +421,13 @@ the flags is that AND (the selection lists its form for `ands` too), and Conditi
 the selection derived for that Arm condition on that form, while no instruction since has written the flags (before
 one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them).
 
-When the block ends, `sgx_optimize` drops what nothing reads, and an instruction whose result nothing reads but whose
-flags something does becomes its flags-only candidate (SUBS to the zero register: CMP); `sgx_assemble` then gives the
+When the block ends, `sgx_optimize` works on the SSA as a whole, where what reads each value and each instruction's
+flags is known: a store a later one to the same place overwrites (no load of it, no call of the runtime between) is
+dropped (a flag two instructions of the block set, a register written twice), constant additions in a row whose flags
+nothing reads fold into one (`ADD #1; ADD #2; SUB #3` is nothing; an ADDS's carry is the last addition's, so not
+there), a sum of 0 is its operand where its register is as zero extended as the sum's was, what nothing reads is
+dropped, and an instruction whose result nothing reads but whose flags something does becomes its flags-only
+candidate (SUBS to the zero register: CMP). `sgx_assemble` then gives the
 virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; RBX holds the state's address), moving
 a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
 form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
@@ -431,11 +436,14 @@ a block that needs more registers than the nine stops the emitter.
 
 `x64_a64.h` keeps A64's state where `cpu.h`'s CPU does (`x[32]`; `n`, `z`, `cf`, `vf` each a 32-bit 0 or 1), reads
 a register once a block, stores each write at once, and writes only the ABI's own as bytes: the prologue, the call of
-the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one word a function `u64 step(CPU*)`.
+the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one word a function `u64 step(CPU*)`, and
+`sg_x64_block` words in a row one (up to a branch or an UNDEF), one SSA: CMP then B.HI is `cmp` then `cmova` of the
+two pcs, the condition code the selection derived for HI on CMP's flags, with no flag stored and read back between.
 `a64_x64.roots` is the subset it makes: the integer data processing and the branch operands but for the carries in, the
 conditional compares, the divisions, CRC32, PAuth, CLS, RBIT and the flag manipulations.
 
 **The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
 (again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
 run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
-UNDEF must match. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+UNDEF must match. Then random sequences of two to four of the words are made one block each and run beside their LLVM
+steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).

@@ -97,12 +97,17 @@ typedef struct {
     int flags_from; /* the instruction whose flags a SETCC, STORE_FLAG or cc form reads */
     const SgXSel* fsel; /* whose map of Arm's flags its flags follow (sel's, or the ANDS candidate of its AND) */
     const SgXSel* alt;  /* the same flags without the result (CMP for SUBS), for a result nothing reads */
+    unsigned char cadd; /* an addition of the constant cadd_k to in[0] (its flags or not): what sgx_optimize folds
+                           into the next such addition where nothing reads the flags of either */
+    long long cadd_k;
 } SgXIns;
 
 typedef struct {
     unsigned char zab;  /* its register's bits from here up are 0 (64: none known) */
-    unsigned char op;   /* made by an operation with a constant (SGX_C_*), of the value src and k: the chain the next
-                           such operation folds into (AND of an AND: one AND of both masks) */
+    unsigned char op;   /* made by an operation with a constant (SGX_C_*) of width cw, of the value src and k: the
+                           chain the next such operation of that width folds into (AND of an AND: one AND of both
+                           masks; a 32-bit one zero extends, so not into a 64-bit one) */
+    unsigned char cw;
     int def;            /* the instruction defining it */
     int last;           /* the last that reads it */
     signed char reg;    /* the host register, once given */
@@ -509,7 +514,7 @@ static inline SgD sgx_logic(SgCtx* g, int op, SgD a, SgD b) {
             return r;
         }
     }
-    if (sgx_is_const(&b) && a.v && !a.inv && x->v[a.v].op == SGX_C_AND + op && sgx_width(a.w) == pw) {
+    if (sgx_is_const(&b) && a.v && !a.inv && x->v[a.v].op == SGX_C_AND + op && x->v[a.v].cw == pw) {
         /* a chain of the same operation with constants, folded at run time: x AND k1 AND k2 = x AND (k1 AND k2), and
            so for OR and XOR (what made a, dropped as the block ends if nothing else reads it) */
         SgXV* av = &x->v[a.v];
@@ -527,6 +532,7 @@ static inline SgD sgx_logic(SgCtx* g, int op, SgD a, SgD b) {
             r = imm ? SGX_OP(x, xor_i, pw, a, b) : SGX_OP(x, xor, pw, a, b);
         if (sgx_is_const(&b) && a.v && !a.inv && r.v) {
             x->v[r.v].op = (unsigned char)(SGX_C_AND + op);
+            x->v[r.v].cw = (unsigned char)pw;
             x->v[r.v].src = a.v;
             x->v[r.v].k = b.k;
         }
@@ -547,7 +553,7 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
     if (!sub && sgx_is_const(&a) && !a.k) return b;
     if (sgx_is_const(&b)) {
         SnxU64 k = sub ? (SnxU64)0 - b.k : b.k;
-        if (a.v && !a.inv && x->v[a.v].op == SGX_C_ADD && sgx_width(a.w) == pw) {
+        if (a.v && !a.inv && x->v[a.v].op == SGX_C_ADD && x->v[a.v].cw == pw) {
             /* (x + k1) + k2 = x + (k1 + k2) */
             SgD src = sgx_val(a.w, x->v[a.v].src);
             return sgx_addsub(g, src, sgx_const(w, x->v[a.v].k + k), 0);
@@ -556,6 +562,7 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
             r = SGX_OP(x, add_i, pw, a, sgx_const(32, k));
             if (a.v && !a.inv && r.v) {
                 x->v[r.v].op = SGX_C_ADD;
+                x->v[r.v].cw = (unsigned char)pw;
                 x->v[r.v].src = a.v;
                 x->v[r.v].k = k;
             }
@@ -902,6 +909,28 @@ static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* resul
     if (w != 32 && w != 64) sg_fail("AddWithCarry of a width not 32 or 64", w, 0);
     if (!sgx_is_const(&cin)) sg_fail("AddWithCarry with a run-time carry in: not made by this back end yet", w, 0);
     in[0] = a;
+    if (sgx_is_const(&b)) {
+        /* an immediate: a + k, or a - k where b is NOT k and the carry in 1 (ADD's and SUB's imm8 and imm32 forms with
+           their flags; CMP's where nothing reads the result) */
+        SnxU64 m = sg_ones(w), k = cin.k ? ~b.k & m : b.k & m;
+        if (sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, k, w)) {
+            in[1] = sgx_const(32, k);
+            s = cin.k ? sgx_pick(x, SGX_TABLE(subs_i, w), SGX_TABLE_N(subs_i, w), k, w, 0)
+                      : sgx_pick(x, SGX_TABLE(adds_i, w), SGX_TABLE_N(adds_i, w), k, w, 0);
+            alt = cin.k ? sgx_pick(x, SGX_TABLE(cmp_i, w), SGX_TABLE_N(cmp_i, w), k, w, 0) : NULL;
+            if (s) {
+                SgXIns* e;
+                r = sgx_emit(x, s, in, 2, w, 0, -1);
+                e = &x->ins[x->n - 1];
+                e->alt = alt;
+                e->cadd = 1;
+                e->cadd_k = (long long)(cin.k ? ((SnxU64)0 - k) & m : k);
+                *result = sgx_val(w, r);
+                *nzcv = sgx_nzcv(x, x->n - 1);
+                return;
+            }
+        }
+    }
     if (cin.k) {
         /* a + NOT(b') + 1 = a - b': SUBS, the operand b was NOT of (or NOT b made) */
         SgD o = b;
@@ -959,10 +988,30 @@ static inline void sgx_optimize(SgX* x) {
     unsigned char* flive = (unsigned char*)calloc((size_t)x->n + 1, 1);
     int i, k;
     if (!vlive || !flive) sg_fail("out of memory", 0, 0);
+    /* a store a later one to the same place overwrites, with no load of it and no call of the runtime (which reads the
+       state) between, is dropped: a flag an instruction of the block set and a later one set again, a register
+       written twice */
+    for (i = 0; i < x->n; ++i) {
+        SgXIns* s = &x->ins[i];
+        if (s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
+        for (k = i + 1; k < x->n; ++k) {
+            SgXIns* t = &x->ins[k];
+            if (t->kind == SGX_K_UNDEF || (t->kind == SGX_K_LOAD && t->disp == s->disp)) break;
+            if ((t->kind == SGX_K_STORE || t->kind == SGX_K_STORE_FLAG) && t->disp == s->disp &&
+                (t->kind == SGX_K_STORE_FLAG ? 32 : t->w) >= (s->kind == SGX_K_STORE_FLAG ? 32 : s->w)) {
+                s->kind = SGX_K_SEL; /* dead: what made its value is dropped too where nothing else reads it */
+                s->sel = NULL;
+                s->dead = 1;
+                s->in[0] = 0;
+                s->flags_from = -1;
+                break;
+            }
+        }
+    }
     for (i = x->n - 1; i >= 0; --i) {
         SgXIns* s = &x->ins[i];
         int root = s->kind == SGX_K_STORE || s->kind == SGX_K_STORE_FLAG || s->kind == SGX_K_RET || s->kind == SGX_K_UNDEF;
-        int live = root || (s->def && vlive[s->def]) || flive[i];
+        int live = !s->dead && (root || (s->def && vlive[s->def]) || flive[i]);
         if (!live) {
             s->dead = 1;
             continue;
@@ -974,6 +1023,65 @@ static inline void sgx_optimize(SgX* x) {
         for (k = 0; k < 5; ++k)
             if (s->in[k]) vlive[s->in[k]] = 1;
         if (s->flags_from >= 0) flive[s->flags_from] = 1;
+    }
+    /* constant additions in a row whose flags nothing reads: x + k1 + k2 is x + (k1 + k2) (ADD #1, ADD #2, SUB #3 is
+       one ADD), the first dropped where nothing else reads it. Only here, where what reads the flags is known: an ADDS
+       of the sum would set them from the last addition alone */
+    {
+        int changed = 0;
+        for (i = 0; i < x->n; ++i) {
+            SgXIns* s = &x->ins[i];
+            SgXIns* p;
+            int d;
+            long long sum;
+            if (s->dead || !s->cadd || flive[i] || !s->in[0]) continue;
+            d = x->v[s->in[0]].def;
+            if (d < 0 || d >= i) continue;
+            p = &x->ins[d];
+            if (p->dead || !p->cadd || flive[d] || p->w != s->w || !p->in[0]) continue;
+            sum = (long long)(((SnxU64)p->cadd_k + (SnxU64)s->cadd_k) & sg_ones(s->w));
+            if (!sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, (SnxU64)sum, s->w)) continue;
+            if (!sum && s->def && (s->w == 64 || x->v[p->in[0]].zab <= s->w)) {
+                /* a sum of 0: the value is the first's operand, which every later reader takes instead, where its
+                   register is as zero extended as the sum's was (a 32-bit addition's result is, and its readers
+                   counted on it) */
+                int j, from = s->def, to = p->in[0];
+                for (j = i + 1; j < x->n; ++j)
+                    for (k = 0; k < 5; ++k)
+                        if (x->ins[j].in[k] == from) x->ins[j].in[k] = to;
+                s->dead = 1;
+                changed = 1;
+                continue;
+            }
+            /* the sum by an addition's form (a subtraction's immediate was the negation) */
+            {
+                const SgXSel* t = sgx_pick(x, SGX_TABLE(add_i, s->w), SGX_TABLE_N(add_i, s->w), (SnxU64)sum, s->w, 0);
+                if (!t) continue;
+                s->sel = t;
+                s->fsel = t;
+                s->alt = NULL;
+                s->in[0] = p->in[0];
+                s->imm = sum;
+                s->cadd_k = sum;
+                changed = 1;
+            }
+        }
+        if (changed) {
+            /* what the folds left unread: liveness again */
+            memset(vlive, 0, (size_t)x->nv + 1);
+            for (i = x->n - 1; i >= 0; --i) {
+                SgXIns* s = &x->ins[i];
+                int root = s->kind == SGX_K_STORE || s->kind == SGX_K_STORE_FLAG || s->kind == SGX_K_RET ||
+                           s->kind == SGX_K_UNDEF;
+                if (s->dead) continue;
+                if (!(root || (s->def && vlive[s->def]) || flive[i])) {
+                    s->dead = 1;
+                    continue;
+                }
+                for (k = 0; k < 5; ++k)
+                    if (s->in[k]) vlive[s->in[k]] = 1;
+            }
+        }
     }
     for (i = 0; i < x->nv; ++i) x->v[i].last = -1;
     for (i = 0; i < x->n; ++i) {
@@ -1015,11 +1123,13 @@ static inline void sgx_mov_rr(SgXAsm* a, int dst, int src) {
     s->enc(a->b, r, 0, 0);
 }
 
-static inline int sgx_free_reg(SgXAsm* a, int at, int avoid) {
+/* a host register free at instruction at, none of avoid's (a mask: the fixed registers the instruction reads or
+   writes) */
+static inline int sgx_free_reg(SgXAsm* a, int at, unsigned avoid) {
     unsigned k;
     for (k = 0; k < sizeof sgx_pool; ++k) {
         int r = sgx_pool[k];
-        if (r == avoid) continue;
+        if (avoid & (1u << r)) continue;
         if (!a->owner[r] || (a->owner[r] > 0 && a->x->v[a->owner[r]].last < at)) {
             if (a->owner[r] > 0) a->x->v[a->owner[r]].reg = -1;
             a->owner[r] = 0;
@@ -1030,10 +1140,10 @@ static inline int sgx_free_reg(SgXAsm* a, int at, int avoid) {
 }
 
 /* moves what host register r holds elsewhere, where it is still read after at */
-static inline void sgx_evict(SgXAsm* a, int r, int at) {
+static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
     int v = a->owner[r];
     if (v > 0 && a->x->v[v].last > at) {
-        int to = sgx_free_reg(a, at, r);
+        int to = sgx_free_reg(a, at, avoid | (1u << r));
         sgx_mov_rr(a, to, r);
         a->x->v[v].reg = (signed char)to;
         a->owner[to] = v;
@@ -1047,14 +1157,18 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     const SgXSel* s = i->sel;
     unsigned char r[4] = {0, 0, 0, 0};
     int k, out_reg = -1, tied_in = s->tied ? s->tied - 1 : -1;
-    unsigned c;
+    unsigned c, fixed = s->clobber;
+    /* the fixed registers it reads and writes: what is moved out of one goes to none of them */
+    for (k = 0; k < 4; ++k)
+        if (s->in[k] >= 16) fixed |= 1u << (s->in[k] - 16);
+    if (s->out >= 16) fixed |= 1u << (s->out - 16);
     /* the inputs in their places: a fixed register's copied in first (what it held moved out of the way), then the
        others, which that may have moved */
     for (k = 0; k < 4; ++k) {
         int v = i->in[k], p = s->in[k];
         if (!v || p < 16) continue;
         if (x->v[v].reg != p - 16) {
-            sgx_evict(a, p - 16, at - 1);
+            sgx_evict(a, p - 16, at - 1, fixed);
             sgx_mov_rr(a, p - 16, x->v[v].reg);
             a->owner[p - 16] = -1;
         }
@@ -1069,26 +1183,26 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
             int keep = 0;
             for (k = 0; k < 4; ++k)
                 if (i->in[k] && x->v[i->in[k]].reg == (int)c && x->v[i->in[k]].last == at) keep = 1;
-            if (!keep || a->owner[c] > 0) sgx_evict(a, (int)c, at);
+            if (!keep || a->owner[c] > 0) sgx_evict(a, (int)c, at, fixed);
         }
     /* the result: in its fixed register, in the register of the input (or the zeroed value) it overwrites, or free */
     if (s->out >= 0) {
         int tv = tied_in >= 0 ? i->in[tied_in] : s->zero ? i->in[4] : 0;
         if (s->out >= 16) {
             out_reg = s->out - 16;
-            if (a->owner[out_reg] > 0 && a->owner[out_reg] != i->def) sgx_evict(a, out_reg, at);
+            if (a->owner[out_reg] > 0 && a->owner[out_reg] != i->def) sgx_evict(a, out_reg, at, fixed);
         } else if (tv) {
             int from = x->v[tv].reg, dies = x->v[tv].last == at;
             for (k = 0; k < 4; ++k)
                 if (k != tied_in && i->in[k] == tv) dies = 0;
             if (dies) out_reg = from;
             else {
-                out_reg = sgx_free_reg(a, at, -1);
+                out_reg = sgx_free_reg(a, at, fixed);
                 sgx_mov_rr(a, out_reg, from);
             }
             r[(int)s->out] = (unsigned char)out_reg;
         } else {
-            out_reg = sgx_free_reg(a, at, -1);
+            out_reg = sgx_free_reg(a, at, fixed);
             r[(int)s->out] = (unsigned char)out_reg;
         }
     }
@@ -1124,7 +1238,7 @@ static inline void sgx_assemble(SgX* x, SgXBuf* b) {
         case SGX_K_LOAD: {
             const SgXSel* m = s->w == 64 ? sgx_find(sgx_sel_mov_64, sgx_sel_mov_64_n, 0, 0)
                                          : sgx_find(sgx_sel_mov_32, sgx_sel_mov_32_n, 0, 0);
-            int d = sgx_free_reg(&a, i, -1);
+            int d = sgx_free_reg(&a, i, 0);
             r[(int)m->out] = (unsigned char)d;
             r[(int)m->in[0]] = (unsigned char)(16 + x->base);
             b->disp = s->disp;
@@ -1154,7 +1268,7 @@ static inline void sgx_assemble(SgX* x, SgXBuf* b) {
             const SgXSel* m = &sgx_sel_cset_32[0];
             int z = s->in[0], d = x->v[z].reg;
             if (x->v[z].last != i) {
-                d = sgx_free_reg(&a, i, -1);
+                d = sgx_free_reg(&a, i, 0);
                 sgx_mov_rr(&a, d, x->v[z].reg);
             }
             r[(int)m->out] = (unsigned char)d;

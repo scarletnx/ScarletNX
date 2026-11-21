@@ -194,6 +194,52 @@ static inline void sgx_machine_undef(SgXBuf* b, const SgXIns* i) {
 /* the dispatcher sailgen writes after this */
 static int sg_decode(SgCtx* g);
 
+/* words in a row as one function, u64 block(CPU*) returning the next pc, their instructions one SSA: a register read
+   once, flags one instruction left read by the next as a condition code (CMP then B.cond is CMP and CMOVcc), the stores
+   a later one overwrites dropped. Every word but the last runs on to the next: a branch or an UNDEF ends the block
+   (the words after it are left out: count is how many it took). Its size in code, 0 as sg_x64_step's */
+static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 pc, SnxU64 features,
+                           unsigned host_features, unsigned char* code, size_t cap) {
+    SgXBuf b;
+    SgXIns* r;
+    size_t i;
+    memset(g, 0, sizeof *g);
+    g->features = features;
+    g->origin = -1;
+    g->x.features = host_features;
+    g->x.flags_ins = -1;
+    g->x.base = 3; /* RBX */
+    g->x.nv = 1;   /* 0 is none */
+    g->x.nb = 1;
+    for (i = 0; i < *count; ++i) {
+        g->word = words[i];
+        g->pc = pc + 4 * i;
+        g->start = g->x.n;
+        if (!sg_decode(g) || g->x.unmade) return 0;
+        if (g->branched || g->undefined) {
+            ++i;
+            break;
+        }
+    }
+    *count = i;
+    pc = g->pc;
+    if (g->branched && !g->undefined) {
+        SgD next = g->taken ? sg_d_select(g, g->taken, g->target, sgx_const(64, pc + 4)) : g->target;
+        int v = sgx_reg(&g->x, &next);
+        r = sgx_append(&g->x, SGX_K_RET);
+        r->in[0] = v;
+    } else {
+        r = sgx_append(&g->x, SGX_K_RET);
+        r->imm = (long long)(g->undefined ? pc : pc + 4);
+    }
+    b.p = code;
+    b.n = 0;
+    b.cap = cap;
+    b.disp = 0;
+    sgx_assemble(&g->x, &b);
+    return b.n <= cap ? b.n : 0;
+}
+
 /* one word's code as a step, u64 step(CPU*) returning the next pc (the word's own after UNDEF): its size in code, or
    0 when no clause takes the word, a primitive it needs has no form this host runs, or it needs more than cap bytes */
 static size_t sg_x64_step(SgCtx* g, SnxU32 word, SnxU64 pc, SnxU64 features, unsigned host_features,

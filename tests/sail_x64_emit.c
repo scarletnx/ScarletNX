@@ -25,3 +25,8 @@ size_t snx_x64_step(uint32_t word, uint64_t pc, uint64_t features, unsigned host
 }
 
 unsigned snx_x64_instructions(void) { return (unsigned)g_ctx.x.n; }
+
+size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t features, unsigned host_features,
+                     unsigned char* code, size_t cap) {
+    return sg_x64_block(&g_ctx, words, count, pc, features, host_features, code, cap);
+}
