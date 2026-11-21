@@ -681,7 +681,7 @@ hook nvnDlssNetworkBuilderGetMemorySize(const NVNdlssNetworkBuilder* b) -> u64
 hook nvnDlssNetworkBuilderSetTextureIDs(NVNdlssNetworkBuilder* b, addr pool, const void* ids)
 hook nvnDlssNetworkBuilderGetTexturePool(const NVNdlssNetworkBuilder* b) -> addr
 hook nvnDlssNetworkBuilderGetTextureIDs(const NVNdlssNetworkBuilder* b, void* ids)
-hook nvnDlssNetworkBuilderGetOptimalSettings(const NVNdlssNetworkBuilder* b, i32* width, i32* height, i32* max_width, i32* max_height, i32* min_width, i32* min_height) -> bool
+hook nvnDlssNetworkBuilderGetOptimalSettings(const NVNdlssNetworkBuilder* b, i32* width, i32* height, i32* min_width, i32* min_height, i32* max_width, i32* max_height) -> bool
 hook nvnDlssNetworkBuilderGetStorageSize(const NVNdlssNetworkBuilder* b) -> u64
 hook nvnDlssNetworkInitialize(NVNdlssNetwork* n, const NVNdlssNetworkBuilder* b) -> bool
 hook nvnDlssNetworkFinalize(NVNdlssNetwork* n)

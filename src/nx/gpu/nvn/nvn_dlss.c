@@ -263,7 +263,9 @@ void nvn_DlssNetworkBuilderGetTextureIDs(CPU* c, u64 b, u64 ids) {
    OP_DLSS). The render sizes the driver answers come from a backend this runtime
    doesn't have, so they are taken from the method as NGX's quality modes scale the output: the driver's methods are
    assumed to number them as NGX does (0 performance, 1 balanced, 2 quality, 3 ultra performance, 4 ultra quality,
-   5 DLAA), any other is performance's half. The largest render size is the output's, the smallest a third of it */
+   5 DLAA), any other is performance's half. The largest render size is the output's, the smallest a third of it.
+   The driver answers the optimal size, then the smallest, then the largest (a game evaluates only a render size
+   between the two, so their order matters) */
 static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
     static const i32 scale[6][2] = {{1, 2}, {58, 100}, {2, 3}, {1, 3}, {77, 100}, {1, 1}};
     /* the DLSS render size setting: FSR 2's own quality modes in place of the game's (1/1.5, 1/1.7, 1/2, 1/3) */
@@ -281,17 +283,17 @@ static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
         if (out[i][1] < 1) out[i][1] = 1;
     }
 }
-int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 max_width, u64 max_height,
-                                             u64 min_width, u64 min_height) {
+int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 min_width, u64 min_height,
+                                             u64 max_width, u64 max_height) {
     i32 r[3][2];
     (void)c;
     render_sizes(NB(b)->width, NB(b)->height, NB(b)->method, r);
     if (width) gw32(width, (u32)r[0][0]);
     if (height) gw32(height, (u32)r[0][1]);
-    if (max_width) gw32(max_width, (u32)r[1][0]);
-    if (max_height) gw32(max_height, (u32)r[1][1]);
     if (min_width) gw32(min_width, (u32)r[2][0]);
     if (min_height) gw32(min_height, (u32)r[2][1]);
+    if (max_width) gw32(max_width, (u32)r[1][0]);
+    if (max_height) gw32(max_height, (u32)r[1][1]);
     return 1;
 }
 /* the storage the game gives the network (SetStorage): no network uses it, so a small amount, page aligned, with the
