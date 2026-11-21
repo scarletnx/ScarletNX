@@ -451,14 +451,12 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)  /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */
-/* the per-draw push block (storage buffer), a vertex program's, at its draw id (the push constant word 0): the draw's
-   pc[] the renderer writes there in place of the per-draw push constants (SNX_DRAW_WORDS) */
+/* the per-draw push block (storage buffer), a graphics stage's, at its draw id (the push constant word 0): the draw's
+   pc[] the renderer writes there in place of the per-draw push constants (SNX_DRAW_WORDS). Every stage reads its own
+   words at its draw id: a vertex program's, the fragment stage's (the scaled targets, the constant buffer windows and
+   the texture words), and a mesh or task program's first workgroup, depth fix and params */
 #define SNX_VKB_DRAW     (SNX_VKB_TEXMAP + 1)
-/* the fragment stage's per-draw block's members (SNX_VKB_FRAME), a uniform buffer the renderer writes in place of the
-   fragment stage's push constants: the scaled targets (pc[8..9] and pc[24..25]), the alpha reference, the clip height,
-   a varying pass's viewport, the capture, the constant buffer windows and the texture words, at their push offsets */
-#define SNX_VKB_FRAME    (SNX_VKB_DRAW + 1)
-#define SNX_VKB_END      (SNX_VKB_FRAME + 1)      /* one past the last binding */
+#define SNX_VKB_END      (SNX_VKB_DRAW + 1)      /* one past the last binding */
 /* Transform feedback by stores (g_spirv_translate.xfb_stores), in the global buffer slots after a program's own (at
    most SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then
    the 4 buffers from where the capture starts */

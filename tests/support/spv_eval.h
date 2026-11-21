@@ -15,9 +15,8 @@
 /* the bindings a module may read buffers at: past SNX_VKB_END (gpu/shader/shader.h), SNX_VKB_SMAP among them */
 #define SPV_EVAL_BINDINGS 128
 /* the per-draw block (SNX_VKB_DRAW) and its words (SNX_DRAW_WORDS), which the evaluator keeps in the env's draw, not
-   its ubo: the numbers are written out because shader.h's f32 and f64 clash with this file's */
+   its ubo: the number is written out because shader.h's f32 and f64 clash with this file's */
 #define SPV_EVAL_DRAW        124
-#define SPV_EVAL_FRAME       125
 #define SPV_EVAL_DRAW_WORDS  60
 typedef struct {
     uint32_t builtin[64][4]; /* the value of each BuiltIn input, by its number (41 SubgroupLocalInvocationId) */
