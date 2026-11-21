@@ -938,6 +938,7 @@ static void units_held(void) {
     remove(PATH);
 }
 
+#if !defined(_WIN32) /* where pf_save packs on threads, which the stop test below needs */
 /* the raw bytes of the file's units from at on, as their PfUnit says, and their count */
 static u64 units_raw(const u8* d, size_t n, size_t at, int* count) {
     u64 raw = 0;
@@ -951,7 +952,6 @@ static u64 units_raw(const u8* d, size_t n, size_t at, int* count) {
     }
     return raw;
 }
-#if !defined(_WIN32) /* where pf_save packs on threads */
 static void* save_thread(void* pf) {
     pf_save(pf);
     return NULL;
