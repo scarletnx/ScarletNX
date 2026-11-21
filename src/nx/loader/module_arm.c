@@ -524,7 +524,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     }
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, error, error_size);
+        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, 0, error, error_size);
     else if (!rc)
         rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);

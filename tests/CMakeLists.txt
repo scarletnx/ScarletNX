@@ -3387,6 +3387,13 @@ snx_test_target(snx-test-unit-cache gnu23)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME unit_cache COMMAND snx-test-unit-cache)
 set_tests_properties(unit_cache PROPERTIES TIMEOUT 120)
+# content-addressed analysis cache (nx/loader/analysis_cache.c): round-trip, trailer/hash reject, key sensitivity,
+# soft-fail open, empty analysis
+add_executable(snx-test-analysis-cache analysis_cache.c)
+snx_test_target(snx-test-analysis-cache gnu23)
+target_link_libraries(snx-test-analysis-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME analysis_cache COMMAND snx-test-analysis-cache)
+set_tests_properties(analysis_cache PROPERTIES TIMEOUT 60)
 # a 32-bit game's blocks going on to the next by themselves (nx/loader/module_arm.c): loops, interworking, the poll
 add_executable(snx-test-arm-module-chain arm_module_chain.c)
 snx_test_target(snx-test-arm-module-chain gnu23)

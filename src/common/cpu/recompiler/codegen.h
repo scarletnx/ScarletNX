@@ -23,6 +23,10 @@ typedef struct {
     /* SVC #imm below SNX_SVC_COUNT calls RtAPI.svcs[imm], the SVC's own entry, instead of RtAPI.svc (the NX modules) */
     int direct_svc;
     SnxFunction* functions;
+    /* one block holding the functions array and every address and leader array, when the analysis cache made them.
+       NULL when each array owns its own allocation, as snx_codegen_analyze leaves them. A loaded codegen is immutable:
+       add_function would realloc the carved functions pointer and break the single-owner free. */
+    void* arrays_block;
     size_t function_count, function_capacity, instruction_count;
     SnxCodeImage* last_module;
     /* emit options, set after snx_codegen_analyze (which clears the struct). check_fetch: each instruction compares its
@@ -35,6 +39,9 @@ typedef struct {
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
                         size_t hint_count, int quiet, SnxU64 features);
+/* Copy the image views into a codegen. Analyze and a cache hit both use this, so the helpers that read guest bytes
+   work with either. The codegen owns the copy and snx_codegen_free releases it. */
+int snx_codegen_attach_images(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count);
 /* The runtime JIT's discovery: the functions at roots[0..root_count), a batch of them, and those they call, found as
    snx_codegen_analyze finds functions. Every root is searched, and its callees until the functions hold budget
    instructions. known(user, address) says code exists already at an address, or will without this batch (the AOT

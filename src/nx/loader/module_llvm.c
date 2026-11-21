@@ -14,6 +14,7 @@
 #include "nx/loader/hook_routes.h"
 #include "common/utilities/bits.h"
 #include "nx/loader/unit_cache.h"
+#include "nx/loader/analysis_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
@@ -51,6 +52,10 @@ typedef struct {
     size_t import_count;
     SnxUnitCache* cache; /* NULL: every unit compiled */
     Unit* units;
+    /* the unit keys a previous build of this analysis made, indexed by unit. NULL: emit every unit's IR. */
+    char (*keys)[65];
+    SnxAnalysisCache* analysis; /* open here, closed with the build: the unit keys are kept after the units compile */
+    char akey[65], options_id[65], unit_id[65];
     size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
     /* for the control of threads left open (auto_workers.h): the units under way, and the bytes of code the finished
@@ -65,6 +70,36 @@ typedef struct {
     pthread_mutex_t lock;
 #endif
 } Queue;
+
+/* A cheap fingerprint of the start and end of a module file, to tell an edited output from the one we linked. */
+static int output_sample(const char* path, char out[65]) {
+    enum { HALF = 1 << 20 };
+    unsigned char* buf = (unsigned char*)snx_alloc(2 * HALF);
+    size_t size = (size_t)snx_file_size(path), first, last;
+    FILE* f = snx_fopen(path, "rb");
+    int ok = 0;
+    if (!buf || !f) {
+        if (buf) free(buf);
+        if (f) fclose(f);
+        return -1;
+    }
+    first = size < HALF ? size : HALF;
+    last = size < HALF ? 0 : HALF;
+    if (first && fread(buf, 1, first, f) != first) goto out;
+    if (last && (fseek(f, -(long)last, SEEK_END) || fread(buf + HALF, 1, last, f) != last)) goto out;
+    ok = snx_analysis_cache_digest(buf, first + last, out) == 0;
+out:
+    fclose(f);
+    free(buf);
+    return ok ? 0 : -1;
+}
+
+static int desc_append(unsigned char* buf, size_t bufsz, size_t* n, const void* data, size_t size) {
+    if (*n + size > bufsz) return -1;
+    memcpy(buf + *n, data, size);
+    *n += size;
+    return 0;
+}
 
 static void lock(Queue* q) {
 #ifdef _WIN32
@@ -218,6 +253,19 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     int rc;
     size_t* order;
     sprintf(name, "code_%03lu", (unsigned long)index);
+    /* A key recorded by an earlier build of this analysis lets the object be read without emitting any IR. That is the
+       walk this cache exists to remove: IR for every function of every unit is far dearer than a file read. */
+    if (q->cache && !q->build->keep_ir && !g_settings.ir_stats && q->keys && q->keys[index][0]) {
+        char why[512];
+        unsigned char* object = snx_unit_cache_reuse(q->cache, q->keys[index], q->build->triple != NULL, &u->size,
+                                                     why, sizeof why);
+        if (object) {
+            memcpy(u->key, q->keys[index], sizeof u->key);
+            u->object = object;
+            u->reused = 1;
+            return 0;
+        }
+    }
     ir = new_ir(q->build, name, error, error_size);
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
@@ -244,14 +292,14 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, q->build->triple ? u->key : NULL,
-                                   error, error_size);
+        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, u->key,
+                                   q->build->triple != NULL, error, error_size);
     else if (!rc)
         rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
     /* a pack is written a record at a time: an object the cache holds is read back then, not kept in memory with every
        other unit's until the last is compiled */
-    if (!rc && u->key[0]) {
+    if (!rc && q->build->triple && u->key[0]) {
         free(u->object);
         u->object = NULL;
     }
@@ -800,12 +848,17 @@ static void report_units(const Queue* q, const SnxLlvmBuild* build, int quiet) {
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
     SnxCodegen codegen;
     Queue q;
+    SnxAnalysisCache* analysis = NULL;
+    char akey[65] = {0};
+    char options_id[65] = {0};
+    char desc_key[65] = {0};
     SnxIr* ir = NULL;
     SnxJitCache* cache = NULL;
     SnxUnitCache* unit_cache = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
     unsigned char *module_object = NULL, *rtlib_object = NULL;
+    PFileMap desc_map = {0};
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
     const char* exports[5];
@@ -837,9 +890,78 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         }
         cache_count = snx_jit_cache_count(cache);
     }
-    if (!options->interp_only &&
-        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
-        goto done;
+    /* Only the AOT path caches the analysis. The NCE prepare in recompile.c runs once per recompile for site finding,
+       and the recompiler library uses other discovery functions, so neither needs this cache. */
+    if (!options->interp_only) {
+        char analysis_folder[4200] = {0};
+        const char* analysis_path = build->analysis_cache;
+        int analysis_hit = 0;
+        SnxCodeImage* views = NULL;
+        if (!analysis_path && build->unit_cache) {
+            int n = snprintf(analysis_folder, sizeof analysis_folder, "%s/analysis", build->unit_cache);
+            if (n < 0 || (size_t)n >= sizeof analysis_folder)
+                snx_error("analysis cache: unit cache path is too long, cache disabled");
+            else
+                analysis_path = analysis_folder;
+        }
+        if (analysis_path) {
+            SnxAnalysisIdentity aid = {.features = features, .version = SNX_ANALYSIS_VERSION};
+            analysis = snx_analysis_cache_open(analysis_path, &aid, error, sizeof error);
+            if (!analysis) {
+                if (!options->quiet) snx_error("analysis cache disabled: %s", error);
+            } else {
+                views = (SnxCodeImage*)snx_alloc(loaded->module_count * sizeof(*views));
+                if (!views) {
+                    if (!options->quiet) snx_error("analysis cache: cannot allocate module views");
+                    snx_analysis_cache_setup_failed(analysis);
+                } else {
+                    size_t mi;
+                    for (mi = 0; mi < loaded->module_count; ++mi) {
+                        const SnxModuleImage* m = &loaded->modules[mi];
+                        views[mi].image = m->image;
+                        views[mi].image_size = m->image_size;
+                        views[mi].base = m->base;
+                        views[mi].text_off = m->text_off;
+                        views[mi].text_size = m->text_size;
+                        views[mi].functions = m->functions;
+                        views[mi].function_count = m->function_count;
+                        views[mi].relptrs = m->relptrs;
+                        views[mi].relptr_count = m->relptr_count;
+                        views[mi].routed = m->routed;
+                        views[mi].routed_count = m->routed_count;
+                        views[mi].fde = m->fde;
+                        views[mi].fde_count = m->fde_count;
+                    }
+                    if (snx_analysis_cache_key(analysis, views, loaded->module_count, options->hints, options->hint_count, akey) == 0) {
+                        memset(&codegen, 0, sizeof codegen);
+                        if (snx_analysis_cache_load(analysis, akey, &codegen, error, sizeof error) == 0 &&
+                            snx_codegen_attach_images(&codegen, views, loaded->module_count) == 0) {
+                            analysis_hit = 1;
+                            codegen.features = features;
+                        } else {
+                            snx_codegen_free(&codegen);
+                        }
+                    } else {
+                        if (!options->quiet) snx_error("analysis cache: cannot form the key");
+                        snx_analysis_cache_setup_failed(analysis);
+                    }
+                }
+            }
+        }
+        if (!analysis_hit) {
+            if (snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features)) {
+                free(views);
+                goto done;
+            }
+            if (analysis && akey[0]) {
+                error[0] = '\0';
+                if (snx_analysis_cache_store(analysis, akey, &codegen, error, sizeof error))
+                    if (!options->quiet) snx_error("analysis cache store: %s", error);
+            }
+        }
+        free(views);
+        snx_analysis_cache_report(analysis, options->quiet);
+    }
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;
     codegen.direct_svc = 1; /* the runtime's RtAPI.svcs (svc.c's g_svc64) */
@@ -857,6 +979,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
+    q.analysis = analysis;
+    memcpy(q.akey, akey, sizeof q.akey);
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
        through CPU.disp (--hook-direct-calls) none is bound */
     if (options->bound_count && !options->hook_direct_calls) {
@@ -908,123 +1032,302 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         if (build->unit_cache_disk) snx_unit_cache_disk(unit_cache, build->unit_cache_disk);
         q.cache = unit_cache;
     }
+    /* The keys a build records name objects under the unit cache's identity. Include that identity, the analysis and
+       every other input to a unit's IR, so a key from another opt, tuning, LLVM or chunk size cannot be reused. */
+    if (analysis && akey[0]) {
+        char bound_id[65] = {0}, layout_id[65] = {0}, triple_id[65] = {0}, unit_id[65] = {0};
+        struct {
+            char identity[64], bound[64], layout[64], triple[64], units_identity[64];
+            SnxU64 chunk, hook, nro, units;
+        } blob;
+        memset(&blob, 0, sizeof blob);
+        memcpy(blob.identity, akey, 64);
+        snx_analysis_cache_digest(options->bound ? options->bound : (const void*)"",
+                                  options->bound_count * sizeof(*options->bound), bound_id);
+        snx_analysis_cache_digest(build->layout ? build->layout : (const void*)"",
+                                  build->layout_count * sizeof(*build->layout), layout_id);
+        snx_analysis_cache_digest(build->triple ? build->triple : "", build->triple ? strlen(build->triple) : 0,
+                                  triple_id);
+        if (unit_cache) snx_unit_cache_identity_digest(unit_cache, unit_id);
+        memcpy(q.unit_id, unit_id, sizeof q.unit_id);
+        memcpy(blob.bound, bound_id, 64);
+        memcpy(blob.layout, layout_id, 64);
+        memcpy(blob.triple, triple_id, 64);
+        memcpy(blob.units_identity, unit_id, 64);
+        blob.chunk = limit;
+        blob.hook = (SnxU64)options->hook_direct_calls;
+        blob.nro = options->nro_count;
+        blob.units = q.count;
+        if (!snx_analysis_cache_digest(&blob, sizeof blob, options_id)) {
+            memcpy(q.options_id, options_id, sizeof q.options_id);
+            q.keys = (char (*)[65])snx_alloc(q.count * 65);
+            if (q.keys) {
+                memset(q.keys, 0, q.count * 65);
+                snx_analysis_cache_load_unit_keys(analysis, akey, options_id, q.keys, q.count);
+            }
+        }
+    }
+    /* Everything the module descriptor emits: the analysis, the unit identities, the program's identity and title,
+       the hook routes and the AOT-pack records. A shorter key would let one program load another's descriptor. */
+    if (analysis && akey[0]) {
+        char npdm_id[65] = {0}, mods_id[65] = {0}, title_key[65] = {0}, routes_id[65] = {0}, jit_id[65] = {0},
+             nros_id[65] = {0};
+        size_t routes_n = (size_t)snx_hook_route_count(), n = 0, j;
+        int ok = 0;
+        size_t bufsz = 4096 + routes_n * 64 + cache_count * 256 + (loaded->module_count + options->nro_count) * 256;
+        unsigned char *buf = (unsigned char*)snx_alloc(bufsz);
+        struct {
+            char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64], nros[64];
+            SnxU64 packs, abi, nro_end;
+        } d;
+        memset(&d, 0, sizeof d);
+        if (buf) {
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.title_id, 8);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.stack, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.prio, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.core, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.aspace, 4);
+            ok |= desc_append(buf, bufsz, &n, &loaded->npdm.is64, 4);
+            ok |= desc_append(buf, bufsz, &n, loaded->npdm.name, strlen(loaded->npdm.name) + 1);
+            ok |= snx_analysis_cache_digest(buf, n, npdm_id) != 0;
+            n = 0;
+            for (j = 0; j < loaded->module_count; ++j) {
+                const SnxModuleImage* m = &loaded->modules[j];
+                ok |= desc_append(buf, bufsz, &n, m->name, strlen(m->name) + 1);
+                ok |= desc_append(buf, bufsz, &n, m->build_id, sizeof m->build_id);
+                ok |= desc_append(buf, bufsz, &n, &m->size, sizeof m->size);
+                ok |= desc_append(buf, bufsz, &n, &m->text_off, sizeof m->text_off);
+                ok |= desc_append(buf, bufsz, &n, &m->text_size, sizeof m->text_size);
+                ok |= desc_append(buf, bufsz, &n, &m->ro_off, sizeof m->ro_off);
+                ok |= desc_append(buf, bufsz, &n, &m->ro_size, sizeof m->ro_size);
+                ok |= desc_append(buf, bufsz, &n, &m->data_off, sizeof m->data_off);
+                ok |= desc_append(buf, bufsz, &n, &m->data_size, sizeof m->data_size);
+                ok |= desc_append(buf, bufsz, &n, &m->bss, sizeof m->bss);
+                ok |= desc_append(buf, bufsz, &n, &m->is_nro, sizeof m->is_nro);
+            }
+            ok |= snx_analysis_cache_digest(buf, n, mods_id) != 0;
+            n = 0;
+            for (j = 0; j < options->nro_count; ++j) {
+                ok |= desc_append(buf, bufsz, &n, options->nros[j].hash, sizeof options->nros[j].hash);
+                ok |= desc_append(buf, bufsz, &n, &options->nros[j].base, sizeof options->nros[j].base);
+                ok |= desc_append(buf, bufsz, &n, &options->nros[j].size, sizeof options->nros[j].size);
+            }
+            ok |= desc_append(buf, bufsz, &n, &options->nro_end, sizeof options->nro_end);
+            ok |= snx_analysis_cache_digest(buf, n, nros_id) != 0;
+            ok |= snx_analysis_cache_digest(options->title ? options->title : "",
+                                            strlen(options->title ? options->title : ""), title_key) != 0;
+            n = 0;
+            for (j = 0; j < routes_n; ++j) {
+                char h[65];
+                ok |= snx_analysis_cache_digest(snx_hook_route_name(j), strlen(snx_hook_route_name(j)), h) != 0;
+                ok |= desc_append(buf, bufsz, &n, h, 64);
+            }
+            ok |= snx_analysis_cache_digest(buf, n, routes_id) != 0;
+            n = 0;
+            for (j = 0; j < cache_count; ++j) {
+                const SnxJitCacheRecord* r = snx_jit_cache_record(cache, j);
+                char h[65];
+                ok |= desc_append(buf, bufsz, &n, r->name, strlen(r->name) + 1);
+                ok |= snx_analysis_cache_digest(r->object, r->object_size, h) != 0;
+                ok |= desc_append(buf, bufsz, &n, h, 64);
+            }
+            ok |= snx_analysis_cache_digest(buf, n, jit_id) != 0;
+            free(buf);
+            memcpy(d.identity, akey, 64);
+            memcpy(d.options, options_id, 64);
+            memcpy(d.npdm, npdm_id, 64);
+            memcpy(d.modules, mods_id, 64);
+            memcpy(d.title, title_key, 64);
+            memcpy(d.routes, routes_id, 64);
+            memcpy(d.jit, jit_id, 64);
+            memcpy(d.nros, nros_id, 64);
+            d.packs = cache_count;
+            d.abi = options->abi;
+            d.nro_end = options->nro_end;
+            ok |= snx_analysis_cache_digest(&d, sizeof d, desc_key) != 0;
+            if (ok) desc_key[0] = 0;
+        }
+    }
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
     if (q.count) run(&q, build->jobs, build->jobs_open);
+    if (q.analysis && q.options_id[0] && q.count) {
+        char (*keys)[65] = (char (*)[65])snx_alloc(q.count * 65);
+        if (keys) {
+            size_t k;
+            int have = 1;
+            memset(keys, 0, q.count * 65);
+            for (k = 0; k < q.count; ++k) {
+                if (!q.units[k].key[0]) {
+                    have = 0;
+                    break;
+                }
+                memcpy(keys[k], q.units[k].key, 65);
+            }
+            if (have) snx_analysis_cache_store_unit_keys(q.analysis, q.akey, q.options_id, keys, q.count);
+            free(keys);
+        }
+    }
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
         goto done;
     }
     /* the module descriptor */
     start = snx_seconds();
-    ir = new_ir(build, "module", error, sizeof(error));
-    if (!ir) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
+    if (analysis && desc_key[0] && !build->keep_ir) {
+        const unsigned char* cached = NULL;
+        if (snx_analysis_cache_load_descriptor(analysis, desc_key, &cached, &module_size, &wrapped, &entry_count,
+                                               &variant_count, &desc_map) == 0) {
+            module_object = (unsigned char*)cached;
+        }
     }
-    /* only the profile cache's units name them: a module without any needs none */
-    if (emit_module(ir, &codegen, options, loaded, cache_count != 0, &wrapped, &entry_count, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
-    if (build->wrappers) *build->wrappers = wrapped;
-    if (emit_routes(ir, options->hook_direct_calls, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
-    if (q.import_count && emit_imports(ir, q.imports, q.import_count, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
-    if (options->nro_count && emit_nros(ir, options, loaded, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
-    if (cache_count &&
-        snx_module_variants_emit(ir, cache, &variant_count, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
-    if (options->jit_cache && !options->quiet)
-        printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
-               variant_count ? "" : " (the cache did not match the game)");
-    if ((build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
-        snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
+    if (desc_map.data) {
+        if (build->wrappers) *build->wrappers = wrapped;
+        if (options->jit_cache && !options->quiet)
+            printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
+                   variant_count ? "" : " (the cache did not match the game)");
+    } else {
+        ir = new_ir(build, "module", error, sizeof(error));
+        if (!ir) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        /* only the profile cache's units name them: a module without any needs none */
+        if (emit_module(ir, &codegen, options, loaded, cache_count != 0, &wrapped, &entry_count, error,
+                        sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (build->wrappers) *build->wrappers = wrapped;
+        if (emit_routes(ir, options->hook_direct_calls, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (q.import_count && emit_imports(ir, q.imports, q.import_count, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (options->nro_count && emit_nros(ir, options, loaded, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (cache_count && snx_module_variants_emit(ir, cache, &variant_count, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (options->jit_cache && !options->quiet)
+            printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
+                   variant_count ? "" : " (the cache did not match the game)");
+        if ((build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
+            snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
+            goto done;
+        }
+        if (analysis && desc_key[0])
+            snx_analysis_cache_store_descriptor(analysis, desc_key, module_object, module_size, wrapped, entry_count,
+                                                 variant_count);
     }
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    /* link: runtime library, descriptor, chunks. A module for another machine has no runtime library of its own
-       (this host has none for that machine): the app that loads it brings its own */
-    if (!build->triple && snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
+    /* If every object still has the key it had when the module was linked, the module on disk is the one they make.
+       Check its size, time and a fingerprint of its ends before trusting a stamp; any doubt links again. */
+    int linked_from_stamp = 0;
+    /* The stamp must bind the objects this build linked, not the keys the sidecar held before it ran. */
+    if (q.keys)
+        for (i = 0; i < q.count; ++i) memcpy(q.keys[i], q.units[i].key, 65);
+    if (analysis && desc_key[0] && q.unit_id[0] && q.keys && !build->triple) {
+        SnxU64 stamp_size = 0, stamp_time = 0;
+        char stamp_sample[65] = {0}, now_sample[65] = {0};
+        int all = 1;
+        for (i = 0; i < q.count; ++i)
+            if (!q.keys[i][0]) all = 0;
+        if (all && !snx_analysis_cache_load_link_stamp(analysis, akey, desc_key, q.unit_id, q.keys, q.count,
+                                                       build->output, &stamp_size, &stamp_time, stamp_sample) &&
+            (SnxU64)snx_file_size(build->output) == stamp_size &&
+            (SnxU64)snx_file_time(build->output) == stamp_time &&
+            !output_sample(build->output, now_sample) && !strcmp(stamp_sample, now_sample)) {
+            linked.size = (size_t)stamp_size;
+            linked_from_stamp = 1;
+        }
     }
-    /* link: runtime library, descriptor, chunks, the profile cache's units. A module for another machine has no
-       runtime library of its own (this host has none for that machine): the app that loads it brings its own */
-    inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + cache_count) * sizeof(*inputs));
-    if (rtlib_object) {
-        inputs[n].data = rtlib_object;
-        inputs[n].size = rtlib_size;
-        inputs[n++].name = "rtlib";
-    }
-    inputs[n].data = module_object;
-    inputs[n].size = module_size;
-    inputs[n++].name = "module";
-    for (i = 0; i < q.count; ++i) {
-        inputs[n].data = q.units[i].object;
-        inputs[n].size = q.units[i].size;
-        inputs[n++].name = "code chunk";
-    }
-    for (i = 0; i < cache_count; ++i) {
-        const SnxJitCacheRecord* record = snx_jit_cache_record(cache, i);
-        inputs[n].data = record->object;
-        inputs[n].size = record->object_size;
-        inputs[n++].name = record->name;
-    }
-    exports[0] = "snx_module";
-    exports[export_count++] = "snx_routes";
-    if (variant_count) exports[export_count++] = "snx_variants";
-    if (options->nro_count) exports[export_count++] = "snx_nros";
-    if (q.import_count) exports[export_count++] = "snx_imports";
-    tmp = snx_format("%s.tmp", build->output);
-    if (build->triple) {
-        /* the pack to its file a record at a time, the code generator's tables gone first: a game of hundreds of
-           thousands of functions has them, its objects and a copy of them as one pack in memory otherwise */
-        PackUnits pack;
-        char reason[256];
-        pack.units = q.units;
-        pack.first = n - q.count - cache_count;
-        pack.count = q.count;
-        pack.cache = unit_cache;
-        snx_codegen_free(&codegen);
-        if (snx_objects_pack_write(inputs, n, tmp, &linked.size, read_unit, written_unit, &pack, error,
-                                   sizeof(error))) {
-            snx_error("packing failed: %s", error);
-            if (snx_is_file(tmp)) snx_remove_tree(tmp);
+    if (!linked_from_stamp) {
+        /* link: runtime library, descriptor, chunks. A module for another machine has no runtime library of its own
+           (this host has none for that machine): the app that loads it brings its own */
+        if (!build->triple && snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
+            snx_error("LLVM backend: %s", error);
             goto done;
         }
-        if (plat_replace_file(tmp, build->output)) {
-            snx_error("packing failed: cannot rename %s to %s: %s", tmp, build->output,
-                      snx_os_error(reason, sizeof reason));
-            snx_remove_tree(tmp);
-            goto done;
+        /* link: runtime library, descriptor, chunks, the profile cache's units */
+        inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + cache_count) * sizeof(*inputs));
+        if (rtlib_object) {
+            inputs[n].data = rtlib_object;
+            inputs[n].size = rtlib_size;
+            inputs[n++].name = "rtlib";
         }
-    } else {
-        if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error, sizeof(error))) {
-            snx_error("linking failed: %s", error);
-            goto done;
+        inputs[n].data = module_object;
+        inputs[n].size = module_size;
+        inputs[n++].name = "module";
+        for (i = 0; i < q.count; ++i) {
+            inputs[n].data = q.units[i].object;
+            inputs[n].size = q.units[i].size;
+            inputs[n++].name = "code chunk";
         }
-        /* a module Android can map: its text is loaded executable, which its file must allow there */
-        if (snx_write_file(tmp, linked.data, linked.size) || snx_make_executable(tmp) ||
-            plat_replace_file(tmp, build->output)) {
-            snx_error("linking failed: cannot write %s or make it executable", build->output);
-            if (snx_is_file(tmp)) snx_remove_tree(tmp);
-            goto done;
+        for (i = 0; i < cache_count; ++i) {
+            const SnxJitCacheRecord* record = snx_jit_cache_record(cache, i);
+            inputs[n].data = record->object;
+            inputs[n].size = record->object_size;
+            inputs[n++].name = record->name;
+        }
+        exports[0] = "snx_module";
+        exports[export_count++] = "snx_routes";
+        if (variant_count) exports[export_count++] = "snx_variants";
+        if (options->nro_count) exports[export_count++] = "snx_nros";
+        if (q.import_count) exports[export_count++] = "snx_imports";
+        tmp = snx_format("%s.tmp", build->output);
+        if (build->triple) {
+            /* the pack to its file a record at a time, the code generator's tables gone first */
+            PackUnits pack;
+            char reason[256];
+            pack.units = q.units;
+            pack.first = n - q.count - cache_count;
+            pack.count = q.count;
+            pack.cache = unit_cache;
+            snx_codegen_free(&codegen);
+            if (snx_objects_pack_write(inputs, n, tmp, &linked.size, read_unit, written_unit, &pack, error,
+                                       sizeof(error))) {
+                snx_error("packing failed: %s", error);
+                if (snx_is_file(tmp)) snx_remove_tree(tmp);
+                goto done;
+            }
+            if (plat_replace_file(tmp, build->output)) {
+                snx_error("packing failed: cannot rename %s to %s: %s", tmp, build->output,
+                          snx_os_error(reason, sizeof reason));
+                snx_remove_tree(tmp);
+                goto done;
+            }
+        } else {
+            if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error,
+                         sizeof(error))) {
+                snx_error("linking failed: %s", error);
+                goto done;
+            }
+            /* a module Android can map: its text is loaded executable, which its file must allow there */
+            if (snx_write_file(tmp, linked.data, linked.size) || snx_make_executable(tmp) ||
+                plat_replace_file(tmp, build->output)) {
+                snx_error("linking failed: cannot write %s or make it executable", build->output);
+                if (snx_is_file(tmp)) snx_remove_tree(tmp);
+                goto done;
+            }
+        }
+        if (analysis && desc_key[0] && q.unit_id[0] && q.keys) {
+            char sample[65] = {0};
+            if (!output_sample(build->output, sample))
+                snx_analysis_cache_store_link_stamp(analysis, akey, desc_key, q.unit_id, q.keys, q.count,
+                                                    build->output, linked.size, (SnxU64)snx_file_time(build->output),
+                                                    sample);
         }
     }
     if (!options->quiet) {
@@ -1034,17 +1337,20 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     rc = 0;
 done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
+    free(q.keys);
     free(q.units);
     free(q.rank);
     free(q.imports);
     free(inputs);
-    free(module_object);
+    if (!desc_map.data) free(module_object);
+    plat_file_unmap(&desc_map);
     free(rtlib_object);
     free(linked.data);
     free(tmp);
     snx_ir_free(ir);
     snx_jit_cache_close(cache);
     snx_unit_cache_close(unit_cache);
+    snx_analysis_cache_close(analysis);
     snx_codegen_free(&codegen);
     return rc;
 }
