@@ -591,7 +591,7 @@ void arma_init(void) {
                                    .write_v128 = wr128,
                                    .is_mapped = mapped,
                                    .signal_memory_tracking = tracking};
-    u64 words;
+    u64 words, cleared = 0;
     if (!g_settings.armature) return;
     if (g_arm_mod) {
         WARN("armature: armature=%d, and the game is 32-bit, which armature does not run: the recompiled code "
@@ -614,10 +614,21 @@ void arma_init(void) {
     g_armature.tr = armature_translator_create(&mem);
     layout_check();
     mem_set_code_invalidate(code_invalidate);
+    /* The module's AOT functions leave their slots, before the hooks take theirs: the runtime's calls into the guest
+       (rt_miss, a hook's callback) then run armature too, as every call armature's own code makes does, and a game
+       recompiled ahead of time runs as one recompiled --jit-only does */
+    for (u32 i = 0; i < g_mod->nentries; i++) {
+        u64 a = g_mod->entry_addr[i];
+        if (a >= g_code_lo && a < g_code_hi && !(a & 3)) {
+            atomic_store_explicit(&g_disp[(a - g_code_lo) >> 2], NULL, memory_order_relaxed);
+            cleared++;
+        }
+    }
     g_armature.on = 1;
     LOG("armature: the game's code runs in armature (guest memory at %p, 39 bits, host-mapped; hooks and NVN by a "
-        "BRK at their functions' first words, %llu words of code covered)\n",
-        (void*)g_mem, (unsigned long long)words);
+        "BRK at their functions' first words, %llu words of code covered; %llu AOT functions of the module left "
+        "unused)\n",
+        (void*)g_mem, (unsigned long long)words, (unsigned long long)cleared);
 }
 
 void arma_report(void) {
