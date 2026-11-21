@@ -1,0 +1,75 @@
+# ADD—Add -- written for sailgen's tests in the manual's notation
+@opcodes
+REX.W + 01 /r | ADD r/m64, r64 | MR | Valid | N.E. |  | Adds.
+@encoding
+MR | ModRM:r/m (r, w) | ModRM:reg (r) | N/A | N/A
+@operation
+DEST := DEST + SRC;
+@flags
+The OF, SF, ZF, AF, CF, and PF flags are set according to the result.
+# SUB—Subtract -- written for sailgen's tests in the manual's notation
+@opcodes
+REX.W + 29 /r | SUB r/m64, r64 | MR | Valid | N.E. |  | Subtracts.
+@encoding
+MR | ModRM:r/m (r, w) | ModRM:reg (r) | N/A | N/A
+@operation
+DEST := (DEST – SRC);
+@flags
+The OF, SF, ZF, AF, PF, and CF flags are set according to the result.
+# CMP—Compare -- written for sailgen's tests in the manual's notation
+@opcodes
+REX.W + 39 /r | CMP r/m64,r64 | MR | Valid | N.E. |  | Compares.
+@encoding
+MR | ModRM:r/m (r) | ModRM:reg (r) | N/A | N/A
+@operation
+temp := SRC1 − SignExtend(SRC2);
+ModifyStatusFlags; (* as SUB's *)
+@flags
+The CF, OF, SF, ZF, AF, and PF flags are set according to the result.
+# SHL—Shift -- written for sailgen's tests in the manual's notation
+@opcodes
+REX.W + D3 /4 | SHL r/m64, CL | MC | Valid | N.E. |  | Shifts.
+@encoding
+MC | ModRM:r/m (r, w) | CL | N/A | N/A
+@operation
+IF OperandSize = 64
+    THEN countMASK := 3FH;
+    ELSE countMASK := 1FH;
+FI
+tempCOUNT := (COUNT AND countMASK);
+tempDEST := DEST;
+WHILE (tempCOUNT ≠ 0)
+DO
+    CF := MSB(tempDEST);
+    tempDEST := tempDEST ∗ 2;
+    tempCOUNT := tempCOUNT – 1;
+OD;
+DEST := tempDEST;
+@flags
+The CF flag contains the last bit shifted out. Words the selection can't read.
+# SETcc—Set Byte on Condition -- written for sailgen's tests in the manual's notation
+@opcodes
+0F 92 | SETB r/m8 | M | Valid | Valid |  | Set byte if below (CF=1).
+0F 93 | SETAE r/m8 | M | Valid | Valid |  | Set byte if above or equal (CF=0).
+0F 94 | SETE r/m8 | M | Valid | Valid |  | Set byte if equal (ZF=1).
+0F 95 | SETNE r/m8 | M | Valid | Valid |  | Set byte if not equal (ZF=0).
+0F 97 | SETA r/m8 | M | Valid | Valid |  | Set byte if above (CF=0 and ZF=0).
+0F 9C | SETL r/m8 | M | Valid | Valid |  | Set byte if less (SF≠ OF).
+@encoding
+M | ModRM:r/m (w) | N/A | N/A | N/A
+@operation
+IF condition
+    THEN DEST := 1;
+    ELSE DEST := 0;
+FI;
+@flags
+None.
+# FROB—An instruction the selection can't read -- written for sailgen's tests
+@opcodes
+REX.W + F1 /r | FROB r/m64, r64 | MR | Valid | N.E. |  | Frobnicates.
+@encoding
+MR | ModRM:r/m (r, w) | ModRM:reg (r) | N/A | N/A
+@operation
+DEST := Frobnicate(DEST, SRC);
+@flags
+None.

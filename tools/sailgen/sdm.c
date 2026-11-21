@@ -11,7 +11,7 @@
 
      # <title> -- Intel SDM 325383-<rev>, <page>
      @opcodes
-     <opcode> | <instruction> | <op/en> | <64-bit mode> | <compat/leg mode> [| <CPUID feature flag>]
+     <opcode> | <instruction> | <op/en> | <64-bit mode> | <compat/leg mode> [| <CPUID flag> [| <description>]]
      @encoding
      <op/en> | <operand 1> | <operand 2> | <operand 3> | <operand 4>
      @operation
@@ -20,8 +20,9 @@
      <prose>
 
    which is the format of vibe86's tools/sdm/extract.py, this one's origin (an override is a page of its own with
-   only the sections it replaces, and comments in # lines), with the CPUID column added where a table has one (not
-   the general-purpose instructions'). Reading a vendor's pseudocode as the executable specification
+   only the sections it replaces, and comments in # lines), with two columns added where a row has them: the CPUID
+   feature flag (the stacked tables'; empty for the general-purpose instructions') and the first line of the row's
+   description, where Jcc, SETcc and CMOVcc say what their condition is ('Set byte if above (CF=0 and ZF=0).'). Reading a vendor's pseudocode as the executable specification
    follows Reid, "Trustworthy Specifications of ARM v8-A and v8-M System Level Architecture", FMCAD 2016 */
 #include "sailgen.h"
 #include <stdio.h>
@@ -157,6 +158,8 @@ static int header_line(const char* line) {
     const char* p;
     if (!is_upper(line[0])) return 0;
     if (strstr(line, "Vol.") || strstr(line, ". . .") || strstr(line, "....")) return 0;
+    /* the notation chapter's example ('CMC—Complement Carry Flag [this is an example]'), before CMC's own page */
+    if (strstr(line, "[this is an example]")) return 0;
     d = strstr(line, DASH);
     if (!d) return 0;
     for (p = line; p < d; ++p)
@@ -293,7 +296,7 @@ static void drop_inline_marks(char* s) {
 }
 
 typedef struct {
-    char* c[6];
+    char* c[7]; /* opcode, instruction, op/en, 64-bit mode, compat/leg mode, CPUID flag, description */
 } Row;
 
 typedef struct {
@@ -317,6 +320,17 @@ static char* concat3(const char* a, const char* sep, const char* b) {
     memcpy(s + na, sep, ns);
     memcpy(s + na + ns, b, nb);
     return s;
+}
+
+/* columns joined by a space (a description pdftotext cut in two) */
+static char* join_cols(char** cols, int n) {
+    Buf b = {0};
+    int j;
+    for (j = 0; j < n; ++j) {
+        if (j) buf_str(&b, " ");
+        buf_str(&b, cols[j]);
+    }
+    return b.s ? b.s : dup_s("");
 }
 
 /* the rows of the 'Opcode | Instruction | Op/En | 64-Bit Mode | Compat/Leg Mode | Description' tables of the
@@ -349,9 +363,7 @@ static void opcode_rows(const Line* body, size_t n, Rows* out) {
             int j;
             for (j = 0; j < 5; ++j) row.c[j] = dup_s(j < k ? cols[j] : "");
             row.c[5] = dup_s("");
-            if (k < 5) {
-                /* a short row: what columns it has, as they come */
-            }
+            row.c[6] = join_cols(cols + (k > 5 ? 5 : k), k > 5 ? k - 5 : 0);
             drop_footnotes(row.c[1]);
             drop_inline_marks(row.c[1]);
             if (pending) {
@@ -374,7 +386,7 @@ static void opcode_rows(const Line* body, size_t n, Rows* out) {
             free_cols(cols, k);
             if (row.c[0][0] && row.c[1][0]) rows_add(out, row);
             else
-                for (j = 0; j < 6; ++j) free(row.c[j]);
+                for (j = 0; j < 7; ++j) free(row.c[j]);
             continue;
         }
         free(pending);
@@ -440,17 +452,20 @@ static int mode_pair(const char* m, char** a, char** b) {
 
 /* the CPUID column of a stacked row: its flags, up to a word with a lowercase letter, where pdftotext left one space
    before the description ('(AVX512VL AND Return the bitwise...'); the flags are capitals, digits, '.', '_' */
-static char* cpuid_flag(const char* col) {
+static char* cpuid_flag(const char* col, const char** rest) {
     const char* p = col;
     const char* end = col;
+    *rest = col + strlen(col);
     while (*p) {
         const char* w = p;
         int lower = 0;
         while (*p && *p != ' ') lower |= (*p >= 'a' && *p <= 'z'), ++p;
-        if (lower) break;
+        if (lower) {
+            *rest = w;
+            break;
+        }
         end = p;
         while (*p == ' ') ++p;
-        (void)w;
     }
     return dup_n(col, (size_t)(end - col));
 }
@@ -511,7 +526,16 @@ static void opcode_rows_stacked(const Line* body, size_t n, Rows* out) {
                         row.c[2] = dup_s(open);
                         row.c[3] = a;
                         row.c[4] = b;
-                        row.c[5] = cpuid_flag(c < k ? cols[c] : "");
+                        {
+                            const char* rest;
+                            row.c[5] = cpuid_flag(c < k ? cols[c] : "", &rest);
+                            if (*rest) {
+                                char* more = join_cols(cols + c + 1, c + 1 < k ? k - c - 1 : 0);
+                                row.c[6] = *more ? concat3(rest, " ", more) : dup_s(rest);
+                                free(more);
+                            } else
+                                row.c[6] = join_cols(cols + c + 1, c + 1 < k ? k - c - 1 : 0);
+                        }
                         rows_add(out, row);
                         cur = &out->rows[out->n - 1];
                         matched = 1;
@@ -556,10 +580,10 @@ static int has_stacked_header(const Line* body, size_t n) {
     return 0;
 }
 
-/* a row's columns; the CPUID one only where the table has it */
+/* a row's columns, up to its last that isn't empty (the CPUID flag, then the description's first line) */
 static void write_row(Buf* o, const Row* r, int cols) {
     int j;
-    if (cols == 6 && !r->c[5][0]) cols = 5;
+    while (cols > 5 && !r->c[cols - 1][0]) --cols;
     for (j = 0; j < cols; ++j) {
         if (j) buf_str(o, " | ");
         buf_str(o, r->c[j]);
@@ -725,7 +749,7 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
                 opcode_rows_stacked(body, body_n, &rows);
             }
             for (j = 0; j < rows.n; ++j)
-                if (rows.rows[j].c[1][0]) write_row(&o, &rows.rows[j], 6);
+                if (rows.rows[j].c[1][0]) write_row(&o, &rows.rows[j], 7);
         }
         buf_str(&o, "@encoding\n");
         if (ov && ov->section[1]) {
@@ -772,7 +796,7 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
         }
         for (j = 0; j < rows.n; ++j) {
             int q;
-            for (q = 0; q < 6; ++q) free(rows.rows[j].c[q]);
+            for (q = 0; q < 7; ++q) free(rows.rows[j].c[q]);
         }
         free(rows.rows);
         free(name);

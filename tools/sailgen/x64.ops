@@ -1,0 +1,282 @@
+# The x86-64 back end's primitives (x64.h): what each computes, in the SDM's own notation, so that sailgen --isel
+# reads them with the parser it reads the manual's Operation sections with, evaluates both to terms, and picks for
+# each primitive the instructions whose pages compute the same (README.md, "Instruction selection").
+#
+#   op NAME WIDTH... (OPERAND, ...)    then the pseudocode, up to 'end'
+#
+# WIDTH is each width the primitive is selected at (W in the code). An operand is bits of W (A, B), bits of a width
+# of its own (S:8), an immediate the recompiler knows (imm K:L, of log2(W) bits; imm K:32), the condition of a flag
+# consumer (cond P: CMOVcc's and SETcc's condition), or a carry in (carry CIN, a flag the instruction reads).
+# RESULT is the value; N, Z, C and V the flags as Arm's AddWithCarry and the logical instructions set them, which the
+# selection matches with Intel's (CF, ZF, SF, OF, or their negation) where an instruction gives them.
+#
+# The definitions follow the Arm ARM's pseudocode (AddWithCarry, LSL, CountLeadingZeroBits), so what is derived is
+# where Intel's instructions compute Arm's functions, and that is all the recompiler takes from them.
+
+op add 32 64 (A, B)
+RESULT := A + B;
+end
+
+op sub 32 64 (A, B)
+RESULT := A - B;
+end
+
+# AddWithCarry(A, B, '0'), the Arm ARM's J1.1.3: the flags of an addition
+op adds 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(B);
+signed_sum := SInt(A) + SInt(B);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# AddWithCarry(A, NOT(B), '1'): SUBS and CMP
+op subs 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# CMP: SUBS's flags alone
+op cmp 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+R := unsigned_sum[W-1:0];
+N := R[W-1];
+Z := IsZero(R);
+C := UInt(R) != unsigned_sum;
+V := SInt(R) != signed_sum;
+end
+
+# AddWithCarry(A, B, CIN): ADCS
+op adcs 32 64 (A, B, carry CIN)
+unsigned_sum := UInt(A) + UInt(B) + UInt(CIN);
+signed_sum := SInt(A) + SInt(B) + UInt(CIN);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# AddWithCarry(A, NOT(B), CIN): SBCS
+op sbcs 32 64 (A, B, carry CIN)
+unsigned_sum := UInt(A) + UInt(NOT B) + UInt(CIN);
+signed_sum := SInt(A) + SInt(NOT B) + UInt(CIN);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+op neg 32 64 (A)
+RESULT := 0 - A;
+end
+
+op not 32 64 (A)
+RESULT := NOT A;
+end
+
+op and 32 64 (A, B)
+RESULT := A AND B;
+end
+
+op or 32 64 (A, B)
+RESULT := A OR B;
+end
+
+op xor 32 64 (A, B)
+RESULT := A XOR B;
+end
+
+# BIC: A AND NOT B
+op bic 32 64 (A, B)
+RESULT := A AND (NOT B);
+end
+
+# ANDS and TST: the logical flags (N and Z of the result, C and V cleared)
+op ands 32 64 (A, B)
+RESULT := A AND B;
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := 0;
+V := 0;
+end
+
+op tst 32 64 (A, B)
+R := A AND B;
+N := R[W-1];
+Z := IsZero(R);
+C := 0;
+V := 0;
+end
+
+op mul 32 64 (A, B)
+RESULT := (UInt(A) * UInt(B))[W-1:0];
+end
+
+# UMULH and SMULH: the high half of the 128-bit product
+op umulh 64 (A, B)
+RESULT := (UInt(A) * UInt(B))[127:64];
+end
+
+op smulh 64 (A, B)
+RESULT := (SInt(A) * SInt(B))[127:64];
+end
+
+# LSL, LSR, ASR and ROR by a constant (the shift's immediate forms)
+op lsl_i 32 64 (A, imm K:L)
+RESULT := LSL(A, UInt(K));
+end
+
+op lsr_i 32 64 (A, imm K:L)
+RESULT := LSR(A, UInt(K));
+end
+
+op asr_i 32 64 (A, imm K:L)
+RESULT := ASR(A, UInt(K));
+end
+
+op ror_i 32 64 (A, imm K:L)
+RESULT := ROR(A, UInt(K));
+end
+
+# LSLV, LSRV, ASRV, RORV: the amount is the register's value modulo the width (ShiftReg's 'UInt(operand2) MOD
+# datasize')
+op lslv 32 64 (A, B)
+RESULT := LSL(A, UInt(B) MOD W);
+end
+
+op lsrv 32 64 (A, B)
+RESULT := LSR(A, UInt(B) MOD W);
+end
+
+op asrv 32 64 (A, B)
+RESULT := ASR(A, UInt(B) MOD W);
+end
+
+op rorv 32 64 (A, B)
+RESULT := ROR(A, UInt(B) MOD W);
+end
+
+# CountLeadingZeroBits(x) = N - 1 - HighestSetBit(x)
+op clz 32 64 (A)
+RESULT := W;
+FOR i := 0 TO W - 1 DO
+    IF A[i] = 1 THEN RESULT := W - 1 - i; FI;
+ROF;
+end
+
+op ctz 32 64 (A)
+RESULT := W;
+FOR i := W - 1 DOWNTO 0 DO
+    IF A[i] = 1 THEN RESULT := i; FI;
+ROF;
+end
+
+# REV: the bytes in the other order
+op rev 32 64 (A)
+RESULT := 0;
+FOR i := 0 TO W / 8 - 1 DO
+    RESULT[8 * i + 7:8 * i] := A[W - 1 - 8 * i:W - 8 - 8 * i];
+ROF;
+end
+
+# extensions: UXTB, UXTH, SXTB, SXTH, SXTW and the 32-bit move that zero extends
+op zext8 32 64 (S:8)
+RESULT := ZeroExtend(S, W);
+end
+
+op zext16 32 64 (S:16)
+RESULT := ZeroExtend(S, W);
+end
+
+op zext32 64 (S:32)
+RESULT := ZeroExtend(S, W);
+end
+
+op sext8 32 64 (S:8)
+RESULT := SignExtend(S, W);
+end
+
+op sext16 32 64 (S:16)
+RESULT := SignExtend(S, W);
+end
+
+op sext32 64 (S:32)
+RESULT := SignExtend(S, W);
+end
+
+op mov 32 64 (A)
+RESULT := A;
+end
+
+# a constant: of the width, or of 32 bits sign extended to 64
+op movi 32 64 (imm K:W)
+RESULT := K;
+end
+
+op movi_s32 64 (imm K:32)
+RESULT := SignExtend(K, W);
+end
+
+# an addition of a 32-bit immediate, sign extended (the immediate forms of ADD, SUB, AND, OR, XOR, CMP)
+op add_i 32 64 (A, imm K:32)
+RESULT := A + SignExtend(K, W);
+end
+
+op and_i 32 64 (A, imm K:32)
+RESULT := A AND SignExtend(K, W);
+end
+
+op or_i 32 64 (A, imm K:32)
+RESULT := A OR SignExtend(K, W);
+end
+
+op xor_i 32 64 (A, imm K:32)
+RESULT := A XOR SignExtend(K, W);
+end
+
+op cmp_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+R := unsigned_sum[W-1:0];
+N := R[W-1];
+Z := IsZero(R);
+C := UInt(R) != unsigned_sum;
+V := SInt(R) != signed_sum;
+end
+
+# CSEL and CSET: a choice by a condition on the flags
+op csel 32 64 (A, B, cond P)
+IF P = 1 THEN RESULT := A; ELSE RESULT := B; FI;
+end
+
+op cset 32 64 (cond P)
+RESULT := ZeroExtend(P, W);
+end
+
+# Arm's conditions (ConditionHolds, the Arm ARM's J1.1.3), on the flags a primitive above gives; the selection finds
+# Intel's condition code that is the same function of the instruction's flags (Jcc's, SETcc's and CMOVcc's tables)
+cond EQ Z = 1
+cond NE Z = 0
+cond CS C = 1
+cond CC C = 0
+cond MI N = 1
+cond PL N = 0
+cond VS V = 1
+cond VC V = 0
+cond HI C = 1 AND Z = 0
+cond LS NOT (C = 1 AND Z = 0)
+cond GE N = V
+cond LT N != V
+cond GT Z = 0 AND N = V
+cond LE NOT (Z = 0 AND N = V)
