@@ -437,13 +437,8 @@ const char* ini_deprecated(const char* k) {
 }
 static const struct {
     const char *key, *now;
-<<<<<<< HEAD
-} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"}, {NULL, NULL}};
-||||||| parent of a654ca9a7 ([tracy] Add the profiling wrapper, settings and client bridge)
-} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {NULL, NULL}};
-=======
-} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"tracy_perf_map", "perf_map"}, {NULL, NULL}};
->>>>>>> a654ca9a7 ([tracy] Add the profiling wrapper, settings and client bridge)
+    } INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"},
+                      {"tracy_perf_map", "perf_map"}, {NULL, NULL}};
 const char* ini_renamed(const char* k) {
     int i;
     for (i = 0; INI_RENAMED[i].key; i++)

@@ -72,6 +72,7 @@ void kt_notify_later(KThread* t);
 void kt_flush(void);
 void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns);
 void klock_unlock(void);
+void kernel_wait_plot_flush(void); /* kernel.c's wait plot and long-wait message, emitted after klock_unlock */
 void kobj_signal_nl(KObj* o);
 int sleep_nl(KThread* t, i64 timeout);
 /* sleep_nl's wait with held in place of g_klock: an address wait's, under its bucket lock */

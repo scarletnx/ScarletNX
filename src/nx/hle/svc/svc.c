@@ -582,6 +582,21 @@ static u32 svc_begin32(KThread* t, SvcRec* in, u32 imm, const SnxArmCPU* a, int 
 /* the SVC's exit, with its first two output registers: the invalid-handle warning, and the result in its record */
 static void svc_end(KThread* t, const SvcRec* in, u32 n, int flags, u64 res, u64 o1) {
     svc_leave(t);
+#if defined(SNX_TRACY)
+    /* x0 also carries data for SVCs that return a tick or an id, so name only SVCs whose x0 is a result the runtime
+       answers. SVC_NOWARN marks the SVCs whose x0 is data, so their failure message is left out as their warning is.
+       The message names the SVC, the thread it failed for and the result, in the console's form and in hex. The ring
+       keeps the full arguments for the crash report */
+    if (!(flags & SVC_NOWARN) && (u32)res && snx_tracy_attached()) {
+        const char* name = svc_name(in->imm);
+        char rc[48], msg[128];
+        int len;
+        snx_result_text(rc, sizeof rc, (u32)res);
+        len = snprintf(msg, sizeof msg, "kern svc %02x %s, thread %llu -> %x, %s", in->imm, name ? name : "?",
+                       (unsigned long long)t->id, (u32)res, rc);
+        if (len > 0) SNX_MSG(msg, (size_t)(len < (int)sizeof msg ? (size_t)len : sizeof msg - 1));
+    }
+#endif
     if (!(flags & SVC_NOWARN) && (u32)res == SNX_RC_SVC_INVALID_HANDLE)
         WARN_LIMIT(20, "svc %02x with an invalid handle (x0=%llx x1=%llx x2=%llx x3=%llx), lr %llx\n", in->imm,
                    (unsigned long long)in->a[0], (unsigned long long)in->a[1], (unsigned long long)in->a[2],
@@ -599,6 +614,13 @@ static void svc_end(KThread* t, const SvcRec* in, u32 n, int flags, u64 res, u64
 /* every SVC svcgen has no handler for, a stub's or an unknown number's: NotImplemented, logged */
 static void not_implemented(u32 imm, u64 a0, u64 a1, u64 a2) {
     const char* name = imm < SNX_SVC_COUNT && g_svc_name[imm] ? g_svc_name[imm] : "unknown";
+#if defined(SNX_TRACY)
+    if (snx_tracy_attached()) { /* a rare decision, worth its own callstack */
+        char msg[96];
+        int n = snprintf(msg, sizeof msg, "svc %02x (%s) is not implemented", imm, name);
+        if (n > 0) SNX_MSG_CS(msg, (size_t)(n < (int)sizeof msg ? (size_t)n : sizeof msg - 1), 4);
+    }
+#endif
     WARN_LIMIT(8, "svc %02x (%s): not implemented (x0=%llx x1=%llx x2=%llx), NotImplemented\n", imm, name,
                (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2);
 }
@@ -606,7 +628,10 @@ static void svc64_unknown(CPU* c, u32 imm) {
     KThread* t = (KThread*)c->thread;
     SvcRec in;
     u32 n = svc_begin64(t, &in, imm, c, 0);
-    SNX_ZONE(svc_zone, "unknown");
+    SNX_ZONE_CS(svc_zone, "kern svc unknown", 0);
+    SNX_ZONE_VALUE(svc_zone, imm);
+    SNX_ZONE_TEXT(svc_zone, "svc %02x is not implemented", imm);
+    SNX_ZONE_COLOR(svc_zone, 0xB03030); /* the rare, failed SVC stands out against the usual ones */
     not_implemented(imm, c->x[0], c->x[1], c->x[2]);
     c->x[0] = SNX_RC_SVC_NOT_IMPLEMENTED;
     SNX_ZONE_END(svc_zone);
@@ -616,7 +641,10 @@ static void svc32_unknown(SnxArmCPU* a, u32 imm) {
     KThread* t = kthread_cur();
     SvcRec in;
     u32 n = svc_begin32(t, &in, imm, a, 0);
-    SNX_ZONE(svc_zone, "unknown");
+    SNX_ZONE_CS(svc_zone, "kern svc unknown", 0);
+    SNX_ZONE_VALUE(svc_zone, imm);
+    SNX_ZONE_TEXT(svc_zone, "svc %02x is not implemented", imm);
+    SNX_ZONE_COLOR(svc_zone, 0xB03030); /* the rare, failed SVC stands out against the usual ones */
     not_implemented(imm, a->r[0], a->r[1], a->r[2]);
     a->r[0] = SNX_RC_SVC_NOT_IMPLEMENTED;
     SNX_ZONE_END(svc_zone);

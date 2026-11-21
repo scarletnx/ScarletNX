@@ -69,18 +69,12 @@ static AVCodecContext* context_open(NativeVideoDecoder* d, const AVCodec* codec,
         memcpy(c->extradata, config, (size_t)config_size);
         c->extradata_size = (int)config_size;
     }
-<<<<<<< HEAD
     int cpus[256], n = plat_thread_cpus_widen(cpus, 256);
-    if (avcodec_open2(c, codec, NULL) < 0) avcodec_free_context(&c);
-    if (n) plat_thread_cpus(cpus, n);
-||||||| parent of fbdd5a6 ([hle] Trace service commands and memory hooks)
-    if (avcodec_open2(c, codec, NULL) < 0) avcodec_free_context(&c);
-=======
     if (avcodec_open2(c, codec, NULL) < 0) {
         SNX_MEM_FREE_D(c, "video decode");
         avcodec_free_context(&c);
     }
->>>>>>> fbdd5a6 ([hle] Trace service commands and memory hooks)
+    if (n) plat_thread_cpus(cpus, n);
     return c;
 }
 /* the stand-in's picture: limited range black, of the configured size */
