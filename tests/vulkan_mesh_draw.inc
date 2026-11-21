@@ -67,6 +67,22 @@ static int mesh_draw_depths(u64 target, float expected, const char* what) {
     CHECK(!bad);
     return bad != 0;
 }
+/* the shader objects made so far (shader_objects.c): a mesh draw makes its mesh and task objects where the device
+   draws with them, and a new mesh program at least one */
+static u64 mesh_draw_objects(void) {
+    u64 made, binary, ms, mb;
+    vk_so_stats(&made, &binary, &ms, &mb);
+    return made;
+}
+static int mesh_draw_took_objects(u64 before, u32 least, const char* what) {
+    const u64 made = mesh_draw_objects() - before;
+    if (!g_vk.has_shader_objects || made >= least) return 0;
+    fprintf(stderr,
+            "vulkan_headless: mesh draws (%s): %llu shader objects made, %u or more expected: the draw went "
+            "through a pipeline\n",
+            what, (unsigned long long)made, least);
+    return 1;
+}
 static int check_mesh_draws(void) {
     if (!g_vk.has_mesh || !g_vk.has_task) {
         puts("SKIP mesh draws: VK_EXT_mesh_shader is off (a ban or vk_ext_mesh_shader=off), or the device has no mesh "
@@ -117,11 +133,12 @@ static int check_mesh_draws(void) {
     DrawClear clear = {.aspects = 1, .depth = 1.0f};
     vk_render_clear(state, &clear, &owner);
     DrawCall call = {.mesh = 1, .topology = 4, .count = 1, .instances = 1};
-    u64 drawn = g_vk_mesh_drawn;
+    u64 drawn = g_vk_mesh_drawn, objects = mesh_draw_objects();
     vk_render_draw(state, &call, &owner);
     vk_render_end();
     CHECK(g_vk_mesh_drawn == drawn + 1);
     CHECK(!mesh_draw_depths(target, 0.5f, "a mesh program alone"));
+    CHECK(!mesh_draw_took_objects(objects, 1, "a mesh program alone"));
     /* the task and mesh programs: no mesh group from workgroup 0, one from workgroup 1 */
     state->prog.task = task;
     state->prog.mesh = after;
@@ -134,9 +151,12 @@ static int check_mesh_draws(void) {
                                        .has_task = 1,
                                        .primitive_vertices = 3};
     state->gen[DS_PROGRAMS] = ds_generation_next();
+    objects = mesh_draw_objects();
     vk_render_draw(state, &call, &owner);
     vk_render_end();
     CHECK(!mesh_draw_depths(target, 0.5f, "a task program that launches no mesh group"));
+    /* the task and mesh objects, or with the compute-task path the mesh one alone */
+    CHECK(!mesh_draw_took_objects(objects, g_vk.mesh_task_compute ? 1 : 2, "a task program and a mesh program"));
     call.first = 1;
     vk_render_draw(state, &call, &owner);
     vk_render_end();
@@ -163,9 +183,12 @@ static int check_mesh_draws(void) {
     g_vk.mesh_task_compute = !g_vk.has_descriptor_heaps; /* a heap's bind is the graphics pipeline's (device.c) */
     call.first = 0;
     vk_render_clear(state, &clear, &owner);
+    objects = mesh_draw_objects();
     vk_render_draw(state, &call, &owner);
     vk_render_end();
     CHECK(!mesh_draw_depths(target, 1.0f, "the compute-task path, a task program that launches no group"));
+    if (g_vk.mesh_task_compute) /* its mesh program with no task stage */
+        CHECK(!mesh_draw_took_objects(objects, 1, "the compute-task path"));
     call.first = 1;
     vk_render_draw(state, &call, &owner);
     vk_render_end();
