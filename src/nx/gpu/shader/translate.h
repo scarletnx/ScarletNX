@@ -552,11 +552,6 @@ static inline u32* direct_reject(ShaderInfo* si, const char* reason) {
     return NULL;
 }
 
-static inline u32* direct_reject_with_buffers(ShaderInfo* si, const char* reason, u32* pop_targets, u8* gb_at) {
-    free(gb_at);
-    free(pop_targets);
-    return direct_reject(si, reason);
-}
 /* What to_spirv sets up before it writes the program's instructions and each family's function reads
    (sm53_sail.c's instructions): the types, the interface variables, the resource slots and the facts its prescan
    found, each named as to_spirv names it, an array by its first element */

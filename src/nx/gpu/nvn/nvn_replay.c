@@ -12,6 +12,7 @@
    work before it is replayed, and its point on the presents' own syncpoint is reached once the display shows it (the
    renderer learns when, renderer.h present_buffer's shown_syncpt) */
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_queue.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -340,7 +341,9 @@ static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* s
 
 /* Replay resumes at an unmet event or captured sync wait. Waiting submissions retain flattened command records;
    direct submissions keep CALL cursors so nested recordings do not repeat earlier draws. */
-static int replay_records(NvnJob* j, NvnReplayQueue* q) {
+/* build_ns, when given, collects the time building draws and copies (op != a wait); the walk is the rest of the
+   time in this function, and run() times the land. Only a trace sets build_ns, so no clock is read without one */
+static int replay_records(NvnJob* j, NvnReplayQueue* q, u32* cmds, u32* wait_kind, u64* build_ns) {
     Replay replay_context = {.q = q};
     u64 page = ~(u64)0; /* acquire_header's page for this pass */
     while (j->handle < j->n) {
@@ -361,6 +364,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
             memcpy(&h, GP(pc), sizeof h);
             atomic_thread_fence(memory_order_acquire);
             u32 op = NVN_REC_OP(h.op);
+            (*cmds)++; /* one command record walked, for the replay zone's count */
             if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
                 fatal("nvn: invalid resumed record at %llx: op %u size %u after %u", (unsigned long long)pc, op, h.size,
                       j->cursor[level].previous);
@@ -381,6 +385,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 if (!over && !j->waiting && g_renderer->stream_end) gpu_stream_end();
                 if (!over) {
                     j->waiting = 1;
+                    *wait_kind = op == OP_WAIT_EVENT ? 1u : 2u; /* 1 an event, 2 a sync */
                     gpu_poll_why(op == OP_WAIT_EVENT ? GPU_POLL_EVENT : GPU_POLL_SYNC);
                     return 0;
                 }
@@ -413,8 +418,11 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 }
                 j->cursor[level].pc = j->cursor[level].piece = to;
                 j->cursor[level].previous = OP_BEGIN;
-            } else if (op != OP_WAIT_EVENT && op != OP_WAIT_SYNC)
+            } else if (op != OP_WAIT_EVENT && op != OP_WAIT_SYNC) {
+                u64 t = build_ns ? plat_ns() : 0;
                 replay(&replay_context, op, pc + 8, h.size - 8);
+                if (build_ns) *build_ns += plat_ns() - t; /* building a draw or copy, apart from the walk */
+            }
         }
         j->handle++;
     }
@@ -489,10 +497,37 @@ static int run(void* arg) {
     switch (j->kind) {
         case JOB_SUBMIT: {
             SNX_ZONE(z_replay, "nvn replay");
+            u32 cmds = 0, wait_kind = 0;
+            int trace = snx_tracy_attached();
+            u64 build_ns = 0, walk_ns = 0, land_ns = 0, t = 0;
             if (g_renderer->stream_run) gpu_stream_run(1);
-            int done = replay_records(j, q);
+            if (trace) t = plat_ns();
+            int done = replay_records(j, q, &cmds, &wait_kind, trace ? &build_ns : NULL);
+            if (trace) walk_ns = plat_ns() - t - build_ns;
+            if (trace) t = plat_ns();
             effects(q);
+            if (trace) land_ns = plat_ns() - t;
             if (g_renderer->stream_run) gpu_stream_run(0);
+            /* The replay continues the game's submit on this thread. Name it with its queue, syncpoint and record
+               count, as the wait and present messages name theirs. No zone is added around a wait. */
+            nvn_queue_context_set("submit q%u sp%u %u records", j->queue, q->syncpt, cmds);
+            /* the zone's span is the whole replay. Its value and text say how much work it was (records and handles)
+               and which of the walk, the build or the land took most of the span, so a long zone says why it was long */
+            [[maybe_unused]] const char* dom = walk_ns >= build_ns && walk_ns >= land_ns ? "walk"
+                              : build_ns >= land_ns                     ? "build"
+                                                                        : "land";
+            SNX_ZONE_VALUE(z_replay, cmds);
+            SNX_ZONE_TEXT(z_replay, "q%u %uh %ur %s %lluus w%llu b%llu l%llu %s; %s", j->queue, j->n, cmds, dom,
+                          (unsigned long long)((walk_ns + build_ns + land_ns) / 1000),
+                          (unsigned long long)(walk_ns / 1000), (unsigned long long)(build_ns / 1000),
+                          (unsigned long long)(land_ns / 1000),
+                          done ? "done" : (wait_kind == 1 ? "event" : "sync"), nvn_queue_context());
+            SNX_PLOT("gpu nvn replay records", (double)cmds);
+            if (trace) {
+                SNX_PLOT("gpu nvn replay walk us", (double)(walk_ns / 1000));
+                SNX_PLOT("gpu nvn replay build us", (double)(build_ns / 1000));
+                SNX_PLOT("gpu nvn replay land us", (double)(land_ns / 1000));
+            }
             if (!done) return 0;
             break;
         }
@@ -674,6 +709,7 @@ void nvn_replay_finish(u32 queue) {
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);
+    SNX_ZONE_TEXT(z, "queue %u sync %u=%u", queue, id, value);
     gpu_call_poll(run, job(queue, JOB_FENCE, 0), queue - 1);
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);

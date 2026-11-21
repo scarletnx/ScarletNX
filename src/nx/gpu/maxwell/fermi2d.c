@@ -12,6 +12,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/fermi2d_regs.h"
 #include "nx/gpu/maxwell/gob.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* A blit's configuration from the pixels_from_memory registers (Eden's Fermi2D::Config): the destination rectangle,
    and the source's origin and its step per destination pixel, in source pixels */
@@ -190,6 +191,7 @@ static void f2d_config(const u32* r, F2dConfig* c) {
 /* The blit (Eden's Fermi2D::Blit): the renderer's image blit when it takes it, else the blit from memory. Every
    operation is done as SRC_COPY */
 static void f2d_blit(GpuChannel* ch) {
+    SNX_ZONE(z, "gpu 2d blit");
     const u32* r = ch->r2d;
     u32 op = r[FERMI2D_OPERATION];
     Surf2D s, d;
@@ -197,10 +199,17 @@ static void f2d_blit(GpuChannel* ch) {
     f2d_config(r, &c);
     f2d_surface(r, FERMI2D_DST, &d);
     f2d_surface(r, FERMI2D_SRC, &s);
-    if (c.dst_width <= 0 || c.dst_height <= 0) return;
+    if (c.dst_width <= 0 || c.dst_height <= 0) {
+        SNX_ZONE_VALUE(z, 1u); /* empty destination */
+        return;
+    }
     if (op != FERMI2D_OPERATION_SRC_COPY && op != FERMI2D_OPERATION_SRC_COPY_AND)
         LOG_LIMIT(4, "gpu: a 2D blit's operation %u is done as a copy\n", op);
-    if (r3d_blit(&s, &d, c.dst_x0, c.dst_y0, c.dst_width, c.dst_height, c.src_x0, c.src_y0, c.du_dx, c.dv_dy)) return;
+    if (r3d_blit(&s, &d, c.dst_x0, c.dst_y0, c.dst_width, c.dst_height, c.src_x0, c.src_y0, c.du_dx, c.dv_dy)) {
+        SNX_ZONE_VALUE(z, 2u); /* an image blit took it */
+        return;
+    }
+    SNX_ZONE_VALUE(z, 0u); /* the blit from memory */
     f2d_blit_memory(r, &s, &d, &c);
 }
 /* a 2D engine method (Eden's Fermi2D::CallMethod): stored, and the blit started by its last register */

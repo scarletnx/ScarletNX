@@ -100,4 +100,19 @@ void nvn_cmd_describe(u64 p, char* out, size_t n);
    so far aren't there yet */
 int nvn_cmd_unfinished(u64 p);
 
+/* ---- the game's current NVN phase, per game thread (nvn_cmd.c) ----
+   The game builds and submits commands on several threads. A Tracy zone says which high-level NVN operation a thread
+   was in when it emitted the zone. Set the context at the NVN entry points and read it when a zone needs text.
+   op is a string literal: the runtime keeps the pointer and never copies or frees it. id is the command buffer or
+   queue address when the call has one, else 0. phase is one of the values below. Neither call stores nor formats
+   anything when no profiler client is attached. */
+enum {
+    NVN_TRACE_NONE = 0,
+    NVN_TRACE_RECORD = 1
+};
+void nvn_trace_set(const char* op, u64 id, int phase);
+/* Puts the current thread's context into out, capped at cap bytes, with an empty string when no client is attached.
+   Returns out. Keep the text under 128 bytes. */
+char* nvn_trace_context(char* out, size_t cap);
+
 #endif

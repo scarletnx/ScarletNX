@@ -13,6 +13,7 @@
 #include "nx/gpu/maxwell/inline_to_memory_regs.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define QMD_BYTES (KEPLER_COMPUTE_QMD_WORDS * 4) /* the launch description, 256 bytes */
 #define CAPTURE_CODE_BYTES 0x10000               /* a captured program: up to 64 KiB of it */
@@ -55,6 +56,7 @@ static void capture(const u32* q, u64 code) {
 /* Eden's ProcessLaunch: the launch description at launch_desc_loc (in 256 byte units), the program at its
    program_start from code_loc. The renderer reads the description's fields (LaunchParams) */
 static void launch(GpuChannel* ch) {
+    SNX_ZONE(z, "gpu compute launch");
     const u32* r = ch->rcomp;
     u32 q[KEPLER_COMPUTE_QMD_WORDS];
     u64 code = ((u64)(r[KEPLER_COMPUTE_CODE_LOC_HIGH] & KEPLER_COMPUTE_CODE_LOC_HIGH_MASK) << 32) |
@@ -62,9 +64,14 @@ static void launch(GpuChannel* ch) {
     gmem_read((u64)r[KEPLER_COMPUTE_LAUNCH_DESC_LOC] << KEPLER_COMPUTE_LAUNCH_DESC_LOC_SHIFT, q, sizeof q);
     snx_le32_array(q, KEPLER_COMPUTE_QMD_WORDS); /* the renderer reads its words and bitfields as numbers */
     if (g_settings.shader_captures) capture(q, code);
-    if (!g_renderer->dispatch) return;
+    SNX_ZONE_TEXT(z, "code %llx", (unsigned long long)code);
+    if (!g_renderer->dispatch) {
+        SNX_ZONE_VALUE(z, 1u); /* no renderer dispatch */
+        return;
+    }
     DispatchState d;
     mx_dispatch_state(q, r, code, &d);
+    SNX_ZONE_VALUE(z, 0u);
     gpu_dispatch(&d);
 }
 /* Eden's KeplerCompute::CallMethod: every method is kept in the registers, and these act */

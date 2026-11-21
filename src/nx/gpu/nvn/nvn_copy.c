@@ -22,9 +22,31 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* why a copy was skipped: the small code in its zone's value, 0 when the copy was launched */
+enum {
+    CP_OK = 0,         /* launched */
+    CP_NO_RENDERER = 1,/* no renderer, or no GPU copy path, yet */
+    CP_FAILED = 2,     /* the renderer could not do the copy */
+    CP_EMPTY = 3,      /* an empty source or destination region */
+    CP_NO_LAYOUT = 4   /* a texture the runtime cannot lay out */
+};
+#if defined(SNX_TRACY)
+/* the words of the codes above, for a copy's zone text. The zone value still holds the code itself. */
+static const char* copy_skip(u32 why) {
+    switch (why) {
+        case CP_NO_RENDERER: return "no renderer or GPU copy path";
+        case CP_FAILED: return "the GPU could not do the copy";
+        case CP_EMPTY: return "an empty source or destination region";
+        case CP_NO_LAYOUT: return "a texture the runtime cannot lay out";
+        default: return "launched";
+    }
+}
+#endif
 /* A texture's level as a surface plane: the snapshot t, its view v (NULL for none), the level's block dimensions
    (texels a block: bw x bh, bpb bytes), its blocks a row and rows, and which slice a copy's z names */
 typedef struct {
@@ -94,12 +116,23 @@ static void tex_side(const TexPlane* p, i32 x, i32 y, i32 z, GpuDmaSide* s) {
 }
 /* the copy, on the GPU; a render target over the destination takes the new bytes */
 static void launch(const GpuDmaOp* o) {
+    SNX_ZONE(z, "nvn dma copy");
+    u32 why = CP_OK;
     if (!g_renderer_up || !g_renderer->dma_copy) {
+        why = CP_NO_RENDERER;
         LOG_LIMIT(4, "nvn: a copy before the renderer started, skipped\n");
-        return;
+        goto done;
     }
-    if (!gpu_renderer_now()->dma_copy(o)) LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
+    if (!gpu_renderer_now()->dma_copy(o)) {
+        why = CP_FAILED;
+        LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
+    }
     if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
+#endif
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
@@ -144,18 +177,27 @@ static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 fla
 /* between a buffer at buf and a texture's region, either way (to_tex: the buffer is the source) */
 static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int to_tex, const i64 stride[2],
                                 const u8* snap) {
+    SNX_ZONE(z, "nvn buffer texture copy");
+    [[maybe_unused]] u32 why = CP_OK;
+    [[maybe_unused]] u32 fmt = r->has_view && (r->view.set & NVN_VIEW_FORMAT) ? r->view.format : t->d.format;
+    [[maybe_unused]] u64 bytes = 0;
     NVNcopyRegion region = copy_region(t, &r->r);
     i32 depth = region.depth > 0 ? region.depth : 1;
-    if (region.width <= 0 || region.height <= 0) return;
+    if (region.width <= 0 || region.height <= 0) {
+        why = CP_EMPTY;
+        goto done;
+    }
     TexPlane p;
     if (!tex_plane(t, r->has_view ? &r->view : NULL, &p)) {
+        why = CP_NO_LAYOUT;
         LOG_LIMIT(4, "nvn: a copy of a texture of format %#x, which the runtime can't lay out\n", t->d.format);
-        return;
+        goto done;
     }
     GpuDmaOp o = {0};
     region_lines(&p, region.width, region.height, &o);
     u64 row = stride[0] ? (u64)stride[0] : o.width;
     u64 image = stride[1] ? (u64)stride[1] : row * o.lines;
+    bytes = image * (u64)depth;
     for (i32 k = 0; k < depth; k++) {
         u64 at = image * (u64)(r->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT ? depth - 1 - k : k);
         GpuDmaSide* b = to_tex ? &o.src : &o.dst;
@@ -169,6 +211,12 @@ static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int t
         else
             launch(&o);
     }
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "copy %s fmt=%#x bytes=%llu %s", to_tex ? "b2t" : "t2b", fmt, (unsigned long long)bytes,
+                  copy_skip(why));
+#endif
 }
 /* The 2D engine's format for a depth or stencil texture, by the zeta format of its target: the color format of the
    same bytes that the game's driver gives the engine (NVN 55.15's format table, the word at +0x18 of each entry:
@@ -627,8 +675,68 @@ static void fill_buffer(u64 dst, u64 n, u32 value) {
     }
 }
 
+#if defined(SNX_TRACY)
+/* the copy path the record asked for, with the bytes and format the record gives: the 2D-engine and DLSS paths have
+   no zone of their own, so their work is named here on the record's zone */
+static void copy_record_text(TracyCZoneCtx z, u32 op, u64 payload) {
+    if (!snx_tracy_attached()) return;
+    switch (op) {
+        case OP_COPY_STRIDE: {
+            const NvnPCopyStride* r = NVN_OBJ(const NvnPCopyStride, payload);
+            SNX_ZONE_TEXT(z, "copy stride image=%d bytes=%lld", r->image, (long long)r->stride);
+            break;
+        }
+        case OP_COPY_B2B: {
+            const NvnPCopyB2B* r = NVN_OBJ(const NvnPCopyB2B, payload);
+            SNX_ZONE_TEXT(z, "copy b2b bytes=%llu", (unsigned long long)r->size);
+            break;
+        }
+        case OP_CLEAR_BUF: {
+            const NvnPClearBuf* r = NVN_OBJ(const NvnPClearBuf, payload);
+            SNX_ZONE_TEXT(z, "copy clear bytes=%llu", (unsigned long long)r->size);
+            break;
+        }
+        case OP_COPY_B2T:
+        case OP_COPY_T2B: {
+            const NvnPCopyB2T* r = NVN_OBJ(const NvnPCopyB2T, payload);
+            u32 fmt = 0;
+            if (r->texture) {
+                NvnTexture t = {0};
+                memcpy(&t, GP(r->texture), NVN_TEX_SNAP);
+                fmt = r->has_view && (r->view.set & NVN_VIEW_FORMAT) ? r->view.format : t.d.format;
+            }
+            SNX_ZONE_TEXT(z, "copy %s fmt=%#x %dx%d", op == OP_COPY_B2T ? "b2t" : "t2b", fmt, r->r.width, r->r.height);
+            break;
+        }
+        case OP_COPY_T2T: {
+            const NvnPCopyT2T* r = NVN_OBJ(const NvnPCopyT2T, payload);
+            u32 fmt = 0;
+            if (r->src) {
+                NvnTexture s = {0};
+                memcpy(&s, GP(r->src), NVN_TEX_SNAP);
+                fmt = r->has_sv && (r->sv.set & NVN_VIEW_FORMAT) ? r->sv.format : s.d.format;
+            }
+            SNX_ZONE_TEXT(z, "copy t2t%s fmt=%#x %dx%d", r->flags & NVN_COPY_RESOLVE ? " resolve" : "", fmt,
+                          r->sr.width, r->sr.height);
+            break;
+        }
+        case OP_DLSS: {
+            const NvnPDlss* r = NVN_OBJ(const NvnPDlss, payload);
+            SNX_ZONE_TEXT(z, "copy dlss %dx%d to %dx%d, %u copies", r->in[0], r->in[1], r->out[0], r->out[1],
+                          (u32)r->n_copies);
+            break;
+        }
+    }
+}
+#endif
+
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
+    /* the record's op stays the value: which kind of copy this is. A skip names why in the zone text instead */
+    SNX_ZONE_V(z, "nvn copy record", op);
+#if defined(SNX_TRACY)
+    copy_record_text(z, op, payload);
+#endif
     switch (op) {
         case OP_COPY_STRIDE: {
             const NvnPCopyStride* r = NVN_OBJ(const NvnPCopyStride, payload);
@@ -649,7 +757,10 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_T2B: {
             NvnPCopyB2T r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.texture) return 1;
+            if (!r.texture) {
+                SNX_ZONE_TEXT(z, "copy b2t/t2b: skipped: no texture");
+                return 1;
+            }
             NvnTexture t = {0}; /* past the snapshot's bytes */
             memcpy(&t, GP(r.texture), NVN_TEX_SNAP);
             copy_buffer_texture(&r, &t, op == OP_COPY_B2T, stride, NULL);
@@ -658,7 +769,10 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_T2T: {
             NvnPCopyT2T r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.src || !r.dst) return 1;
+            if (!r.src || !r.dst) {
+                SNX_ZONE_TEXT(z, "copy t2t: skipped: no source or destination");
+                return 1;
+            }
             NvnTexture s = {0}, d = {0}; /* past the snapshots' bytes */
             memcpy(&s, GP(r.src), NVN_TEX_SNAP);
             memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
@@ -668,7 +782,10 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_DLSS: {
             NvnPDlss r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.tex[NVN_DLSS_INPUT] || !r.tex[NVN_DLSS_OUTPUT]) return 1;
+            if (!r.tex[NVN_DLSS_INPUT] || !r.tex[NVN_DLSS_OUTPUT]) {
+                SNX_ZONE_TEXT(z, "copy dlss: skipped: no input or output texture");
+                return 1;
+            }
             if (dlss_upscale(&r)) return 1;
             /* no upscaler took it: the stand-in copies */
             NvnTexture s = {0}, d = {0};

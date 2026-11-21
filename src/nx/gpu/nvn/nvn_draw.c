@@ -29,7 +29,9 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "common/platform/time.h"
+#include "nx/runtime/platform/tracy.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 
@@ -44,7 +46,18 @@ enum {
     C2_SAMP = 0x568
 };
 #define SEPTEX_SLOT0 128 /* nvn_cmd.c's NVN_SEPTEX_SLOT0: separate textures' slots in OP_BIND_TEX */
-
+/* why a recorded draw, clear or dispatch was not handed to the renderer: the small code in the draw's zone value.
+   The ones that were drawn carry 0. Skips are frequent, so a code in the value, not a string in the text; the words
+   go into the draw's zone text instead, and only when a client is attached. */
+enum {
+    DR_OK = 0,         /* drawn */
+    DR_EMPTY = 1,      /* no vertices, instances or pixels */
+    DR_RENDER_OFF = 2, /* the game turned rendering off */
+    DR_BAD_INDEX = 3,  /* unsupported index type or an unmapped index buffer */
+    DR_NO_RENDERER = 4,/* no renderer path for this kind of draw */
+    DR_NO_TARGET = 5,  /* the texture is no target the runtime lays out */
+    DR_NO_PROGRAM = 6  /* no program to dispatch */
+};
 /* the groups a record changed, made again at the next draw */
 enum {
     D_PROGRAMS = 1u << DS_PROGRAMS,
@@ -58,6 +71,75 @@ enum {
     D_INLINE = 1u << DS_INLINE,
     D_CHANNEL_MASK = 1u << 30
 };
+#if defined(SNX_TRACY)
+/* the words of the codes above, for a draw's zone text. The zone value still holds the code itself. */
+static const char* skip_reason(u32 why) {
+    switch (why) {
+        case DR_EMPTY: return "no vertices, instances or pixels";
+        case DR_RENDER_OFF: return "the game turned rendering off";
+        case DR_BAD_INDEX: return "unsupported index type or an unmapped index buffer";
+        case DR_NO_RENDERER: return "no renderer path for this kind of draw";
+        case DR_NO_TARGET: return "the texture is no target the runtime lays out";
+        case DR_NO_PROGRAM: return "no program to dispatch";
+        default: return "drawn";
+    }
+}
+/* the state groups rebuilt at a draw, named shortly in its zone text: the setup the slow draw paid for */
+static const char* setup_name(u32 group) {
+    switch (group) {
+        case D_PROGRAMS: return "prog";
+        case D_VFORMAT: return "vfmt";
+        case D_BLEND: return "blend";
+        case D_RASTER: return "rast";
+        case D_DYNAMIC: return "dyn";
+        case D_VIEWPORTS: return "vp";
+        case D_VBUF: return "vbuf";
+        case D_BIND: return "bind";
+        case D_INLINE: return "inl";
+        case D_CHANNEL_MASK: return "chm";
+    }
+    return NULL;
+}
+/* the comma separated names of the groups a draw rebuilt, into out (n bytes) */
+static void setup_names(u32 dirty, char* out, size_t n) {
+    static const u32 groups[] = {D_PROGRAMS, D_VFORMAT, D_BLEND, D_RASTER, D_DYNAMIC,
+                                 D_VIEWPORTS, D_VBUF, D_BIND, D_INLINE, D_CHANNEL_MASK};
+    u32 i;
+    size_t len = 0;
+    out[0] = 0;
+    for (i = 0; i < sizeof groups / sizeof *groups; i++) {
+        const char* name = dirty & groups[i] ? setup_name(groups[i]) : NULL;
+        size_t k;
+        if (!name) continue;
+        if (len && len + 1 < n) out[len++] = ',';
+        for (k = 0; name[k] && len + k + 1 < n; k++) out[len + k] = name[k];
+        len += k;
+        out[len] = 0;
+    }
+}
+/* a draw's kind, the 3D path it took, its counts, the skip reason and the state groups it rebuilt. The groups are
+   named when sync rebuilt them (dirty), which also holds for the no-renderer skip that happens after sync; the early
+   skips before sync rebuilt nothing, and the reason stays first in the text. */
+static void draw_text(TracyCZoneCtx z, const char* kind, u32 dirty, const DrawCall* dc, u32 why) {
+    if (!snx_tracy_attached()) return; /* snprintf is ours to gate: the zone text macro only gates the emission */
+    char text[128], st[64];
+    st[0] = 0;
+    if (dirty) setup_names(dirty, st, sizeof st);
+    int n = snprintf(text, sizeof text, "%s 3d n=%u inst=%u topo=%u %s%s%s", kind, dc->count, dc->instances,
+                     dc->topology, skip_reason(why), st[0] ? " st=" : "", st);
+    if (n > 0) SNX_ZONE_TEXT(z, "%s", text);
+}
+/* a clear's texture setup (its target format) and region, the 3D path and the skip reason */
+static void clear_text(TracyCZoneCtx z, const NvnPClearTex* r, u32 format, u32 why) {
+    SNX_ZONE_TEXT(z, "3d clear fmt=%#x %dx%d mask=%u %s", format, r->r.width, r->r.height, (u32)r->mask & 15,
+                  skip_reason(why));
+}
+/* a dispatch's grid and the compute path, or why it was skipped. An indirect grid's words are the GPU's */
+static void dispatch_text(TracyCZoneCtx z, const NvnPDispatch* r, const u32 grid[3], u32 why) {
+    SNX_ZONE_TEXT(z, "compute grid=%u,%u,%u%s %s", grid[0], grid[1], grid[2], r->ind ? " (gpu reads)" : "",
+                  skip_reason(why));
+}
+#endif
 
 void nvn_draw_device(u32 origin, u32 depth_mode) {
     atomic_store_explicit(&g_nvn.draw.origin, origin, memory_order_relaxed);
@@ -817,54 +899,102 @@ static void draw_fixed_state(const NvnDraw* d, DrawCall* call) {
     }
 }
 static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
+    SNX_ZONE(z, "nvn draw arrays");
     NvnPDraw r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     DrawCall dc = {0};
+    u32 why = DR_OK;
+    [[maybe_unused]] u32 dirty = 0;
     dc.topology = (u32)r.prim; /* NVN's primitives are the 3D engine's numbers */
     if (r.ind)
         indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 16);
     else {
-        if (r.count <= 0 || r.instances <= 0) return;
+        if (r.count <= 0 || r.instances <= 0) {
+            why = DR_EMPTY;
+            goto done;
+        }
         dc.first = (u32)r.first;
         dc.count = (u32)r.count;
         dc.base_instance = (u32)r.base_instance;
         dc.instances = (u32)r.instances;
     }
-    if (d->render_off) return;
+    if (d->render_off) {
+        why = DR_RENDER_OFF;
+        goto done;
+    }
     draw_fixed_state(d, &dc);
+    dirty = d->dirty; /* the groups this draw rebuilds, before sync clears them */
     sync(d, 0, dc.base_instance);
+    why = g_renderer->draw ? DR_OK : DR_NO_RENDERER;
     gpu_draw(&d->ds, &dc, &d->own);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    draw_text(z, r.ind ? "arrays indirect" : dc.instances > 1 ? "arrays instanced" : "arrays", dirty, &dc, why);
+#endif
 }
 /* An Ounce's mesh draw (OP_DRAW_MESH): the renderer draws it with the task, mesh and fragment programs. An indirect
    one's records stay where the GPU reads them, as an indirect draw's do */
 static void draw_mesh(NvnDraw* d, u64 payload, u32 size) {
+    SNX_ZONE(z, "nvn draw mesh");
     NvnPDrawMesh r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     DrawCall dc = {0};
+    u32 why = DR_OK;
+    [[maybe_unused]] u32 dirty = 0;
+    /* the triangles of a mesh program (ShMesh.primitive_vertices), set before a skip so the zone text names it */
+    dc.topology = 4;
     if (r.ind)
         indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, r.form & NVN_MESH_3D ? 12 : 8);
     else {
-        if (r.count <= 0 || r.first < 0) return;
+        if (r.count <= 0 || r.first < 0) {
+            why = DR_EMPTY;
+            goto done;
+        }
         dc.first = (u32)r.first;
         dc.count = (u32)r.count;
-        dc.instances = 1;
     }
+    dc.instances = 1;
     dc.mesh = 1;
     dc.params = 0;
-    dc.topology = 4; /* the triangles of a mesh program (ShMesh.primitive_vertices) */
-    if (d->render_off) return;
+    if (d->render_off) {
+        why = DR_RENDER_OFF;
+        goto done;
+    }
     draw_fixed_state(d, &dc);
+    dirty = d->dirty; /* the groups this draw rebuilds, before sync clears them */
     sync(d, 0, 0);
+    why = g_renderer->draw ? DR_OK : DR_NO_RENDERER;
     gpu_draw(&d->ds, &dc, &d->own);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    draw_text(z, r.ind ? "mesh indirect" : "mesh", dirty, &dc, why);
+#endif
 }
 /* how far an indirect draw's indices may reach, which NVN doesn't say (DrawElementsIndirect takes the index buffer's
    address only, and the GPU reads the count): the guest memory mapped contiguously from that address, at most 64 MiB */
 #define INDIRECT_INDEX_SPAN (64ull << 20)
 static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
+    SNX_ZONE(z, "nvn draw elements");
     NvnPDrawIdx r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     DrawCall dc = {0};
-    if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT || (!r.ind && (r.count <= 0 || r.instances <= 0))) return;
+    u32 why = DR_OK;
+    [[maybe_unused]] u32 dirty = 0;
+    /* named before a skip so the zone text always says what the draw asked for */
+    dc.topology = (u32)r.prim;
+    dc.indexed = 1;
+    dc.count = (u32)r.count;
+    dc.instances = (u32)r.instances;
+    if (!r.ind && (r.count <= 0 || r.instances <= 0)) {
+        why = DR_EMPTY;
+        goto done;
+    }
+    if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT) {
+        why = DR_BAD_INDEX;
+        goto done;
+    }
     u32 isz = 1u << r.index_type;
     DsIndex x;
     memset(&x, 0, sizeof x); /* every byte: keep compares the bytes */
@@ -872,9 +1002,10 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     if (r.ind) {
         u64 cpu, run = gmmu_run(r.index_buffer, INDIRECT_INDEX_SPAN, &cpu);
         if (run < isz) {
+            why = DR_BAD_INDEX;
             LOG_LIMIT(4, "nvn: an indirect draw's index buffer at %llx isn't mapped\n",
                       (unsigned long long)r.index_buffer);
-            return;
+            goto done;
         }
         x.end = r.index_buffer + run - 1;
     } else
@@ -883,20 +1014,28 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     x.restart = d->restart;
     x.restart_index = d->restart_index;
     keep(&d->ds.index, &x, sizeof x, &d->ds.gen[DS_INDEX]);
-    dc.topology = (u32)r.prim;
-    dc.indexed = 1;
     if (r.ind)
         indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 20);
     else {
-        dc.count = (u32)r.count;
         dc.base_vertex = (u32)r.base_vertex;
         dc.base_instance = (u32)r.base_instance;
-        dc.instances = (u32)r.instances;
     }
-    if (d->render_off) return;
+    if (d->render_off) {
+        why = DR_RENDER_OFF;
+        goto done;
+    }
     draw_fixed_state(d, &dc);
+    dirty = d->dirty; /* the groups this draw rebuilds, before sync clears them */
     sync(d, (i32)dc.base_vertex, dc.base_instance);
+    why = g_renderer->draw ? DR_OK : DR_NO_RENDERER;
     gpu_draw(&d->ds, &dc, &d->own);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    draw_text(z, r.ind ? "elements indexed indirect" : dc.instances > 1 ? "elements indexed instanced"
+                                                                      : "elements indexed",
+              dirty, &dc, why);
+#endif
 }
 
 /* ---- bindings */
@@ -1156,10 +1295,24 @@ int nvn_draw_samples(NvnDraw* d, u64 address) {
 /* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
    layer (or a volume's slice) at a time, as the 3D engine's clears of a target do */
 static void clear_texture(NvnDraw* d, u64 payload) {
+    SNX_ZONE(z, "nvn clear texture");
     NvnPClearTex r;
     DsState* x = &d->scratch;
     memcpy(&r, GP(payload), sizeof r);
-    if (r.r.width <= 0 || r.r.height <= 0 || !(r.mask & 15) || !g_renderer->clear) return;
+    if (r.r.width <= 0 || r.r.height <= 0 || !(r.mask & 15)) {
+        SNX_ZONE_VALUE(z, DR_EMPTY);
+#if defined(SNX_TRACY)
+        clear_text(z, &r, 0, DR_EMPTY);
+#endif
+        return;
+    }
+    if (!g_renderer->clear) {
+        SNX_ZONE_VALUE(z, DR_NO_RENDERER);
+#if defined(SNX_TRACY)
+        clear_text(z, &r, 0, DR_NO_RENDERER);
+#endif
+        return;
+    }
     DsTargets t;
     memset(&t, 0, sizeof t); /* every byte: keep compares the bytes */
     t.count = 1;
@@ -1169,6 +1322,10 @@ static void clear_texture(NvnDraw* d, u64 payload) {
     int ok = target(r.texture, &r.view, r.has_view, &t.color[0], &is_depth, &msaa, NULL);
     t.msaa = (u8)msaa; /* a multisampled texture's every sample, in a region of its pixels */
     if (!ok || is_depth) {
+        SNX_ZONE_VALUE(z, DR_NO_TARGET);
+#if defined(SNX_TRACY)
+        clear_text(z, &r, 0, DR_NO_TARGET);
+#endif
         if (is_depth) LOG_LIMIT(1, "nvn: a ClearTexture of a depth texture isn't replayed yet\n");
         return;
     }
@@ -1192,6 +1349,10 @@ static void clear_texture(NvnDraw* d, u64 payload) {
         c.layer = (u32)(r.r.zoffset + k);
         gpu_clear(x, &c, &d->own);
     }
+    SNX_ZONE_VALUE(z, DR_OK);
+#if defined(SNX_TRACY)
+    clear_text(z, &r, t.color[0].format, DR_OK);
+#endif
 }
 
 /* a compute dispatch: its grid (or the GPU's words at ind) in bank 0 at 0x200, and the compute stage's state */
@@ -1224,10 +1385,23 @@ static void c0_packed(const NvnDraw* d, DispatchState* x) {
     memcpy(x->bank0, c0, sizeof c0);
 }
 static void dispatch(NvnDraw* d, u64 payload) {
+    SNX_ZONE(z, "nvn dispatch");
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
     u32 g[3];
     g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
-    if (!d->dx.code || !g_renderer->dispatch || (!r->ind && (!g[0] || !g[1] || !g[2]))) return;
+    {
+        u32 why = !d->dx.code ? DR_NO_PROGRAM
+                  : !g_renderer->dispatch ? DR_NO_RENDERER
+                  : !r->ind && (!g[0] || !g[1] || !g[2]) ? DR_EMPTY
+                                                          : DR_OK;
+#if defined(SNX_TRACY)
+        dispatch_text(z, r, g, why);
+#endif
+        if (why) {
+            SNX_ZONE_VALUE(z, why);
+            return;
+        }
+    }
     /* DispatchComputeIndirect's grid stays in guest memory, which the GPU reads (DispatchState.indirect) */
     d->dx.indirect = r->ind;
     if (!r->ind) {
@@ -1236,6 +1410,7 @@ static void dispatch(NvnDraw* d, u64 payload) {
         snx_st_le32(d->dx.bank0 + 0x204, g[1]);
         snx_st_le32(d->dx.bank0 + 0x208, g[2]);
     }
+    SNX_ZONE_VALUE(z, DR_OK);
     if (g_shader_sm86 && d->c0rec[0] == 1) {
         DispatchState x = d->dx;
         c0_packed(d, &x);
@@ -1250,11 +1425,24 @@ static void dispatch(NvnDraw* d, u64 payload) {
    in 32.32. An empty destination draws nothing */
 static double draw_texture_fixed(f32 v) { return floor((double)v * 256.0 + 0.5) / 256.0; }
 static void draw_texture(NvnDraw* d, u64 payload) {
+    SNX_ZONE(z, "nvn draw texture");
     NvnPDrawTexture r;
     memcpy(&r, GP(payload), sizeof r);
     double x0 = draw_texture_fixed(r.dst[0]), y0 = draw_texture_fixed(r.dst[1]);
     double x1 = draw_texture_fixed(r.dst[2]), y1 = draw_texture_fixed(r.dst[3]);
-    if (x0 == x1 || y0 == y1 || d->render_off || !g_renderer->draw_texture) return;
+    u32 why = DR_OK;
+    if (x0 == x1 || y0 == y1) {
+        why = DR_EMPTY;
+        goto done;
+    }
+    if (d->render_off) {
+        why = DR_RENDER_OFF;
+        goto done;
+    }
+    if (!g_renderer->draw_texture) {
+        why = DR_NO_RENDERER;
+        goto done;
+    }
     DrawTexture t = {0};
     t.handle = (u32)r.handle; /* the texture's index in bits 0-19, its sampler's in 20-31 */
     t.x0 = (float)x0;
@@ -1271,6 +1459,11 @@ static void draw_texture(NvnDraw* d, u64 payload) {
     t.owner.pred = d->own.pred;
     sync(d, 0, 0);
     gpu_draw_texture(&d->ds, &t);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "2d quad=%g x %g h=%llu %s", x1 - x0, y1 - y0, (unsigned long long)r.handle, skip_reason(why));
+#endif
 }
 /* The bound shading rate image given to the renderer again, with the palettes: an id for the draws after it */
 static void rate_update(NvnDraw* d, int new_image) {

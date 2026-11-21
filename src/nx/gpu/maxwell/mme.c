@@ -190,5 +190,6 @@ void mme_out(GpuChannel* ch, u32 m, u32 v) {
 u32 mme_reg(GpuChannel* ch, u32 a) { return ch->r3d[a & 0xFFF]; }
 void mme_run(GpuChannel* ch, u32 idx, u32 np) {
     SNX_ZONE_V(z, "mme macro", idx);
+    SNX_ZONE_TEXT(z, "channel %u, %u words", ch->id, np);
     mme_interpret(ch, idx & 0x7F, np);
 }
