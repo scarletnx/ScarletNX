@@ -759,8 +759,8 @@ u32 svc_map_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
        normal read-write memory, and the destination is free */
     if (!in_region(src, size, 0, AS_END))
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
-    else if (!can_contain_code(dst, size))
-        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
+    else if (!can_contain_code(dst, size)) /* the SVC's own check, InvalidCurrentMemory, before the page table's */
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else if (!range_ok(src, size, MS_NORMAL, 0, PERM_RW, ~0u, 0))
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else if (!range_ok(dst, size, MS_FREE, 0, ANY, ~0u, 0))
@@ -803,8 +803,8 @@ u32 svc_unmap_process_code_memory(u32 process, u64 dst, u64 src, u64 size) {
        range can be part of a view: the console unmaps what it is given */
     if (!in_region(src, size, 0, AS_END))
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
-    else if (!can_contain_code(dst, size))
-        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
+    else if (!can_contain_code(dst, size)) /* the SVC's own check, InvalidCurrentMemory, before the page table's */
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else if (!range_ok(src, size, MS_NORMAL, 0, PERM_NONE, ~0u, MA_LOCKED))
         r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else if (!code_view_ok(dst, size, MA_PERMISSION_LOCKED))
