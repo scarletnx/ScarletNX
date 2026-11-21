@@ -5754,6 +5754,16 @@ static Sm86Insn* inline_calls(Ctx* c, Sm86Insn* insn, u32* count) {
     for (u32 i = 0, copies = 0; i < n; i++) {
         if (out[i].op != SM86_CALL) continue;
         u32 entry = sm86_branch_target(&out[i], i), end = entry;
+        /* ptxas leaves a loop with @P CALL.REL.NOINC to the code after the loop's back edge, an unconditional BRA
+           backwards right after the CALL: the loop's exit, a branch. The search below for the RETs up to the next BRA
+           to itself goes on past the program's last EXIT into the functions after it, and took such an exit for a
+           call of everything from there on: copied for each exit, the copies' own exits copied again, a vertex
+           program of 19,584 instructions went past 65,536 and a compute program past 64 copies */
+        if (entry == i + 2 && i + 1 < n && out[i + 1].op == SM86_BRA && sm86_always(&out[i + 1]) &&
+            sm86_branch_target(&out[i + 1], i + 1) <= i) {
+            out[i] = make_bra(&out[i], i, entry);
+            continue;
+        }
         while (end < n &&
                !(out[end].op == SM86_BRA && sm86_always(&out[end]) && sm86_branch_target(&out[end], end) == end))
             end++;
@@ -5762,7 +5772,7 @@ static Sm86Insn* inline_calls(Ctx* c, Sm86Insn* insn, u32* count) {
             free(out);
             return NULL;
         }
-        /* ptxas also leaves a loop with @P CALL.REL.NOINC to the code after it, which no RET ends: a branch */
+        /* and a CALL to code that no RET ends before the next BRA to itself: a branch too */
         int returns = 0;
         for (u32 k = entry; k <= end; k++) returns |= insn[k].op == SM86_RET;
         if (!returns) {
