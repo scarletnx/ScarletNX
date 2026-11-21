@@ -18,7 +18,13 @@
 #include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 #include <stdarg.h>
+
+/* The translation phases timed for the trace's dominant-phase detail. */
+enum { P86_DECODE, P86_DATAFLOW, P86_STRUCTURE, P86_ALLOC, P86_EMIT, P86_N };
+static const char* const sm86_phase_name[P86_N] = {"decode", "dataflow", "structure", "alloc", "emit"};
 
 #define MAX_INTERFACES 256
 
@@ -159,6 +165,7 @@ typedef struct {
     BrxTable* brx_table; /* by instruction, the jump table that brx_resolve found for its BRX */
     int brx_resolved;    /* brx_resolve has looked for the tables */
     u32 cur;         /* the instruction being written */
+    u32 nblocks, nbranches; /* the program's blocks and branches, for the trace's plots */
     /* the registers an IPA that ipa_over_w takes writes, and those a MUFU.RCP writes, a bit each, made at the first
        FMUL fmul_over_w looks at: an FMUL of two others needs no search */
     u32 over_w_ipa[8], over_w_rcp[8];
@@ -194,6 +201,8 @@ static void fail(Ctx* c, const char* fmt, ...) {
     vsnprintf(c->si->first_unsupported, sizeof c->si->first_unsupported, fmt, ap);
     va_end(ap);
     c->si->unsupported++;
+    SNX_MSG(c->si->first_unsupported, strlen(c->si->first_unsupported));
+    SNX_PLOT("shader translate failures", 1);
 }
 static void add_interface(Ctx* c, u32 id) {
     if (c->ninterfaces < MAX_INTERFACES)
@@ -5715,6 +5724,7 @@ static ShStructure* build_structure(Ctx* c) {
     }
     u32 nb = 0;
     for (u32 i = 0; i < n; i++) nb += leader[i];
+    c->nblocks = nb;
     /* the blocks: their starts, successors (two words each), the switches' first case (nb + 1 words) and
        terminators */
     u32* start = calloc((size_t)nb * 4 + 2, sizeof *start);
@@ -6543,21 +6553,36 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
 }
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
                        int can_flush) {
+    /* the whole SM86 translation, with the clock read only when a client can take the plot */
+    int trace = snx_tracy_enter();
+    u64 t0 = trace ? plat_ns() : 0;
+    if (trace) snx_tracy_leave();
+    u64 phase[P86_N] = {0}, h = 0, pt = 0;
     if (!code || !si || !word_count || stage < ST_VS || stage > ST_MS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
     if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
         si->unsupported = 1;
         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                  "a tessellation control program with no invocation (the passthrough takes its place)");
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         return NULL;
     }
     if (stage != ST_VS && stage != ST_GS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
         return NULL;
     }
     u32 n = bytes / 16;
+    SNX_ZONE_TV(z_snx_sm86, "shader translate sm86", n, "stage %d, %u insn", stage, n);
+    if (trace) {
+        h = snx_fnv1a(SNX_FNV_BASIS, code, bytes);
+        SNX_ZONE_TEXT(z_snx_sm86, "stage %d, %u insn, hash %016llx", stage, n, (unsigned long long)h);
+        (void)h; /* the text's arguments are dropped without a client */
+    }
     Ctx* c = calloc(1, sizeof *c);
     u64* words = malloc((size_t)n * 16);
     Sm86Insn* insn = malloc((size_t)n * sizeof *insn);
@@ -6590,6 +6615,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         else if ((sph[4] & 0xfff) > 256 || (sph[2] >> 24) > 32)
             fail(c, "%u geometry output vertices or %u invocations", sph[4] & 0xfff, sph[2] >> 24);
     }
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_decode, "shader decode");
     sm86_load(code, n, words);
     u32 top = 0;
     for (u32 i = 0; i < n; i++) {
@@ -6597,9 +6624,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             fail(c, "unknown opcode 0x%03x", (u32)(words[2 * i] & 0xfff));
         else if (!stage_ok(c, &insn[i]))
             fail(c, "%s in stage %d", sm86_ops[insn[i].op].name, stage);
+        if (!c->failed && (is_brx(insn[i].op) || insn[i].op == SM86_BRA)) c->nbranches++;
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    SNX_ZONE_END(z_snx_decode);
+    if (trace) phase[P86_DECODE] += plat_ns() - pt;
+    SNX_PLOT("shader instructions", (double)n);
+    SNX_PLOT("shader branches", (double)c->nbranches);
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_dataflow, "shader dataflow");
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;
@@ -6664,10 +6698,22 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         sm86_fuse_make(insn, n, fuse, c->failed ? 0 : kept);
     }
     if (!c->failed && !track_globals(c)) fail(c, "out of memory");
+    SNX_ZONE_END(z_snx_dataflow);
+    if (trace) phase[P86_DATAFLOW] += plat_ns() - pt;
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_structure, "shader structure");
     ShStructure* st = c->failed ? NULL : build_structure(c);
+    SNX_ZONE_TEXT(z_snx_structure, "%s", st ? "structured" : "no structure");
+    if (!st && c->si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_structure, "why: %.80s", c->si->first_unsupported);
+    SNX_ZONE_VALUE(z_snx_structure, st ? 1 : 0); /* 1 structured, 0 the dispatch loop is needed */
+    SNX_ZONE_END(z_snx_structure);
+    if (trace) phase[P86_STRUCTURE] += plat_ns() - pt;
+    SNX_PLOT("shader blocks", (double)c->nblocks);
     u32* out = NULL;
     if (!c->failed && st) {
         SpvEmitter* e = &c->e;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_alloc, "shader alloc");
         spv_emit_init(e, (size_t)n * 40 + 512);
         spv_emit_shader_capability(e);
         /* hmma_coop's matrices, which SPV_KHR_cooperative_matrix allows in a module of the Vulkan memory model only */
@@ -6777,6 +6823,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
+        SNX_ZONE_END(z_snx_alloc);
+        if (trace) phase[P86_ALLOC] += plat_ns() - pt;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_emit, "shader emission");
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;
@@ -6840,6 +6890,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 if (merge) coop_label(c, merge);
             }
         }
+        SNX_ZONE_END(z_snx_emit);
+        if (trace) phase[P86_EMIT] += plat_ns() - pt;
         if (se.open && !c->failed) {
             epilogue(c);
             coop_end(c);
@@ -6923,5 +6975,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(insn);
     free(words);
     free(c);
+    if (trace) {
+        int dom = 0;
+        for (int i = 1; i < P86_N; i++)
+            if (phase[i] > phase[dom]) dom = i;
+        SNX_ZONE_VALUE(z_snx_sm86, dom + 1); /* 1 decode, 2 dataflow, 3 structure, 4 alloc, 5 emit */
+        SNX_ZONE_TEXT(z_snx_sm86, "%u spv words, hash %016llx, %s, %s %llu us", out ? (unsigned)*word_count : 0u,
+                      (unsigned long long)h, out ? "made" : "rejected", sm86_phase_name[dom],
+                      (unsigned long long)(phase[dom] / 1000));
+        if (!out && si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_sm86, "rejected: %.80s", si->first_unsupported);
+        SNX_PLOT("shader sm86 translate us", (double)(plat_ns() - t0) / 1000.0);
+    }
     return out;
 }

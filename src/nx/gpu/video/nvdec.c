@@ -27,6 +27,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/video/vp9_rebuild.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -358,6 +359,9 @@ static int make_packet(AVPacket* p, const u8* hdr, u32 hn, const u8* s, u32 n) {
 }
 
 /* ---- the picture into its surface */
+/* one plot point per picture that reaches a surface: the count for a frame is the points between two frame marks */
+static _Atomic u32 g_pictures;
+
 /* NV12 planes, block linear, laid out on the GPU (the renderer's nvdec_write), which keeps them there for VIC
    (docs/layers/gpu/ownership.md). 1 when written */
 static int write_pic(const AVFrame* f, const PicOut* t) {
@@ -402,7 +406,11 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
         WARN_LIMIT(4, "video: an NVDEC picture before the renderer started, dropped\n");
         return 0;
     }
-    return g_renderer->nvdec_write(&p);
+    if (!g_renderer->nvdec_write(&p)) return 0;
+    u32 n = atomic_fetch_add_explicit(&g_pictures, 1, memory_order_relaxed) + 1;
+    SNX_PLOT("video pictures decoded", 1); /* one point per picture: count the points in a frame */
+    SNX_PLOT("video pictures total", (double)n);
+    return 1;
 }
 
 /* ---- the decoder */
@@ -494,6 +502,7 @@ static int drain(NvdecCtx* d) {
 static int send(NvdecCtx* d) {
     int r = avcodec_send_packet(d->dec, d->pkt);
     if (r == AVERROR(EAGAIN)) {
+        SNX_ZONE_T(z_full, "video nvdec decoder full", "drain and resend");
         d->cur_new = 0;
         if (drain(d)) return -1;
         if (d->cur_new) av_frame_unref(d->cur);
@@ -525,6 +534,7 @@ static void job_fail(NvdecCtx* d, u8* st, u32 mbs) {
     d->cur_new = 0;
     d->last_hdr_n = 0;
     put_status(st, 0, mbs);
+    SNX_PLOT("video nvdec failures", 1);
 }
 /* an H.264 job (Eden's H264::ComposeFrame and its surface offsets): the parameter sets rebuilt from the picture info,
    the slice data decoded, the picture written into surface CurrPicIdx */
@@ -543,6 +553,7 @@ static void h264_job(NvdecCtx* d, const u32* r, u8* st) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE(z_rew, "video nvdec rewrite bits");
     if (!(hn = h264_compose_parameter_sets(s, hdr, sizeof hdr))) {
         WARN_LIMIT(8, "video: an H.264 job's parameter sets can't be built\n");
         job_fail(d, st, mbs);
@@ -555,6 +566,11 @@ static void h264_job(NvdecCtx* d, const u32* r, u8* st) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE_VALUE(z_rew, hn);
+    SNX_ZONE_TEXT(z_rew, "H.264 %u B body, %u B headers%s", len, hn, prefix ? " (new SPS/PPS)" : "");
+    SNX_ZONE_END(z_rew);
+
+    SNX_ZONE_TV(z_dec, "video nvdec ffmpeg", len, "H.264 %u B", len);
     d->cur_new = 0;
     if (send(d)) {
         job_fail(d, st, mbs);
@@ -568,6 +584,7 @@ static void h264_job(NvdecCtx* d, const u32* r, u8* st) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE_END(z_dec);
     /* a second field completes the picture its first field started */
     lo = rd32(s, H264_FLAGS);
     if (!d->cur_new && !(h264_field_pic(lo) && h264_second_field(lo) && d->cur->buf[0])) {
@@ -617,6 +634,7 @@ static void vp9_job(NvdecCtx* d, const u32* r, u8* st) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE(z_rew, "video nvdec rewrite bits");
     if (!snx_vp9_compose(d->vp9, s, probs, body, len, r, &f) || !f.size) {
         WARN_LIMIT(8, "video: a VP9 job's frame can't be rebuilt\n");
         job_fail(d, st, mbs);
@@ -631,11 +649,17 @@ static void vp9_job(NvdecCtx* d, const u32* r, u8* st) {
         return;
     }
     memcpy(d->pkt->data, f.data, f.size);
+    SNX_ZONE_VALUE(z_rew, f.size);
+    SNX_ZONE_TEXT(z_rew, "VP9 %ux%u, rebuilt %u B", f.width, f.height, f.size);
+    SNX_ZONE_END(z_rew);
+
+    SNX_ZONE_TV(z_dec, "video nvdec ffmpeg", len, "VP9 %u B", len);
     d->cur_new = 0;
     if (send(d) || drain(d)) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE_END(z_dec);
     /* a picture shown only later still decodes into its surface; one decoding nothing new (show_existing_frame)
        leaves the surfaces as they are */
     if (d->cur_new) {
@@ -722,6 +746,7 @@ static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE(z_rew, "video nvdec rewrite bits");
     hn = vp8_frame_header(key, version, first_part, w, h, hdr);
     av_packet_unref(d->pkt);
     if ((e = av_new_packet(d->pkt, (int)(hn + len))) < 0) {
@@ -731,11 +756,17 @@ static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
     }
     memcpy(d->pkt->data, hdr, hn);
     memcpy(d->pkt->data + hn, body, len);
+    SNX_ZONE_VALUE(z_rew, hn + len);
+    SNX_ZONE_TEXT(z_rew, "VP8 %ux%u, %u B frame%s", w, h, len, key ? " (key)" : "");
+    SNX_ZONE_END(z_rew);
+
+    SNX_ZONE_TV(z_dec, "video nvdec ffmpeg", len, "VP8 %u B", len);
     d->cur_new = 0;
     if (send(d) || drain(d)) {
         job_fail(d, st, mbs);
         return;
     }
+    SNX_ZONE_END(z_dec);
     if (!d->cur_new) {
         WARN_LIMIT(8, "video: a VP8 job started no picture\n");
         job_fail(d, st, mbs);
@@ -798,23 +829,34 @@ void nvdec_free(NvdecCtx* d) {
     av_frame_free(&d->out);
     free(d);
 }
-/* Execute: the job of the codec set_codec_id names, its status written at frame_stats_offset */
+/* Execute: the job of the codec set_codec_id names, its status written at frame_stats_offset. The zone's value is the
+   codec id (a small code for a frequent choice) and its text the reason when the job can't decode */
 void nvdec_execute(NvdecCtx* d, const u32* r) {
     u32 app = r[NVDEC_SET_CODEC_ID];
     u8* st = iova_ptr(nvdec_offset_address(r[NVDEC_FRAME_STATS_OFFSET]), NVDEC_STATUS_SIZE);
-    if (!d) return;
+    SNX_ZONE_TV(z_exec, "video nvdec job", app, "app %u", app);
+    if (!d) {
+        SNX_ZONE_TEXT(z_exec, "no decoder context");
+        return;
+    }
     /* H.265 isn't decoded: the job fails and the decoder stays as it is */
     if (!codec_decoded(app)) {
+        SNX_ZONE_TEXT(z_exec, "app %u not decoded", app);
         WARN_LIMIT(4, "video: NVDEC jobs of codec %u aren't decoded\n", app);
         put_status(st, 0, 0);
         return;
     }
     /* a channel that changes codec starts over; a decoder that failed to open stays failed */
-    if (d->app != app) dec_open(d, app);
+    if (d->app != app) {
+        SNX_ZONE_T(z_open, "video nvdec codec change", "%u -> %u", d->app, app);
+        dec_open(d, app);
+    }
     if (!d->dec) {
+        SNX_ZONE_TEXT(z_exec, "%s decoder not open", codec_name(app));
         job_fail(d, st, 0);
         return;
     }
+    SNX_ZONE_TEXT(z_exec, "%s", codec_name(app));
     if (app == NVDEC_CODEC_H264)
         h264_job(d, r, st);
     else if (app == NVDEC_CODEC_VP8)

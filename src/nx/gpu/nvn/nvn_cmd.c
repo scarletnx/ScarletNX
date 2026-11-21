@@ -40,6 +40,7 @@
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,51 @@
 #define BIND_COST(stage, bytes) ((stage) == NVN_STAGE_COMPUTE ? 0u : (bytes))
 /* the fewest bytes the driver asks the game's callback for when command memory runs out */
 #define NVN_COMMAND_ASK_MIN     0x200u
+/* records and guest bytes a command buffer builds, summed in alloc_rec (rec and CopyCommands both go through it)
+   and plotted at each recording's end: which call builds the most command memory. The counters are indexed by
+   NvnCmdBuf.ctl (1..NVN_CTL_SLOTS), so concurrent recordings, and the records CopyCommands adds at submit time,
+   stay with the command buffer that built them; index 0 is unused. One zone per record would fill the trace, so the
+   per-record zone is gone and these totals carry the cost instead. Command-building runs on the game's threads, so
+   sum atomically, and only while a profiler is attached. */
+typedef struct {
+    _Atomic u64 recs[NVN_CTL_SLOTS + 1];
+    _Atomic u64 bytes[NVN_CTL_SLOTS + 1];
+} NvnRecCount;
+static NvnRecCount g_nvn_rec_count;
+
+/* ---- the game's current NVN phase, per game thread ----
+   The NVN subsystem's one thread-local struct, as g_nvn is its one global. The op strings stay where the NVN entry
+   points wrote them (literals): nothing is copied or owned here. Nothing is stored or formatted without a profiler
+   client. The text of a zone's context stays under 128 bytes. */
+typedef struct {
+    const char* op; /* last high-level NVN operation the game called */
+    u64 id;         /* command buffer or queue address, 0 when the call has none */
+    int phase;      /* NVN_TRACE_NONE or NVN_TRACE_RECORD */
+} NvnTraceCtx;
+static _Thread_local NvnTraceCtx t_nvn;
+
+void nvn_trace_set(const char* op, u64 id, int phase) {
+    if (!snx_tracy_attached()) return;
+    t_nvn.op = op;
+    t_nvn.id = id;
+    t_nvn.phase = phase;
+}
+
+char* nvn_trace_context(char* out, size_t cap) {
+    if (!out || !cap) return out;
+    out[0] = 0;
+    if (!snx_tracy_attached() || !t_nvn.op) return out; /* no formatting without a client */
+    const char* phase = t_nvn.phase == NVN_TRACE_RECORD ? "recording" : "";
+    if (t_nvn.id && phase[0])
+        snprintf(out, cap, "%s cb %llx (%s)", t_nvn.op, (unsigned long long)t_nvn.id, phase);
+    else if (t_nvn.id)
+        snprintf(out, cap, "%s %llx", t_nvn.op, (unsigned long long)t_nvn.id);
+    else if (phase[0])
+        snprintf(out, cap, "%s (%s)", t_nvn.op, phase);
+    else
+        snprintf(out, cap, "%s", t_nvn.op);
+    return out;
+}
 
 /* Runs the guest function fn(a0, a1, a2, a3) on this thread from inside an NVN call, as the driver calls the game's
    callbacks: its return (to the NVN call's own return address, which nothing else returns to) ends the run, and the
@@ -232,6 +278,10 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
     if (k == st->ns && st->ns == NVN_SPILL_SEGS) k = any;
     if (k == st->ns) {
         u64 size = want > SPILL_SEGMENT / 2 ? (want * 2 + 0xffff) & ~0xffffull : SPILL_SEGMENT, was = st->total;
+        /* rare: no held segment had room, so the runtime allocates another */
+        [[maybe_unused]] char tctx[128];
+        SNX_ZONE_T(z, "nvn cmd spill segment", "need %u, new %llu KiB, seg %u; %s", need,
+                   (unsigned long long)(size >> 10), st->ns, nvn_trace_context(tctx, sizeof tctx));
         if (st->ns == NVN_SPILL_SEGS) {
             spill_census(st);
             fatal("nvn: command records past the game's command memory need more than the %u segments of the "
@@ -775,6 +825,10 @@ static int count(CPU* c, u64 cb, u32 cost) {
     if (o->used + cost > o->game_end - o->origin && o->callback) {
         const NvnCtl* control = ctl_of(cb);
         if (!control || control->command_callback) {
+            /* rare: the game's callback adds memory mid-recording, costing the guest call */
+            [[maybe_unused]] char tctx[128];
+            SNX_ZONE_T(z, "nvn cmd out of memory", "cost %u, cb %llx; %s", cost, (unsigned long long)o->callback,
+                       nvn_trace_context(tctx, sizeof tctx));
             LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
                       (unsigned long long)cb, (unsigned long long)o->callback);
             guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY,
@@ -807,6 +861,14 @@ static u64 alloc_rec(CPU* c, u64 cb, u32 op, u32 size, u32 cost) {
     at = o->cur;
     o->cur += size;
     put_hdr(at, op, size, cost);
+    /* only a buffer that still owns a control slot has a counter: a stale ctl index must not add to another's */
+    if (snx_tracy_attached() && ctl_of(cb)) {
+        u32 slot = o->ctl;
+        if (slot <= NVN_CTL_SLOTS) {
+            atomic_fetch_add_explicit(&g_nvn_rec_count.recs[slot], 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&g_nvn_rec_count.bytes[slot], size, memory_order_relaxed);
+        }
+    }
     if (o->recording == 2) { /* the recording's first record is its handle */
         o->begin = at;
         o->recording = 1;
@@ -845,6 +907,9 @@ int nvn_CommandBufferInitialize(CPU* c, u64 cb, u64 d) {
     g_nvn.cmd.ctl[k].grow = 1;
     g_nvn.cmd.ctl[k].command_callback = 1;
     o->ctl = k + 1;
+    /* a slot a finalized command buffer left may still hold counts: start this one from zero */
+    atomic_store_explicit(&g_nvn_rec_count.recs[o->ctl], 0, memory_order_relaxed);
+    atomic_store_explicit(&g_nvn_rec_count.bytes[o->ctl], 0, memory_order_relaxed);
     pm_unlock(&g_nvn.cmd.lock);
     return 1;
 }
@@ -852,7 +917,15 @@ void nvn_CommandBufferFinalize(CPU* c, u64 cb) {
     NvnCtl* t = ctl_of(cb);
     (void)c;
     pm_lock(&g_nvn.cmd.lock);
-    if (t && t->cb == cb) t->cb = 0;
+    if (t && t->cb == cb) {
+        u32 slot = CB(cb)->ctl;
+        t->cb = 0;
+        /* give the profiling counter slot back now, as Initialize takes it from zero: nothing counts it after this */
+        if (slot && slot <= NVN_CTL_SLOTS) {
+            atomic_store_explicit(&g_nvn_rec_count.recs[slot], 0, memory_order_relaxed);
+            atomic_store_explicit(&g_nvn_rec_count.bytes[slot], 0, memory_order_relaxed);
+        }
+    }
     pm_unlock(&g_nvn.cmd.lock);
     CB(cb)->ctl = 0;
     CB(cb)->magic = 0;
@@ -1006,6 +1079,7 @@ void nvn_CommandBufferMultiDrawMeshTasks3DIndirectCount(CPU* c, u64 cb, u64 ind,
 }
 /* a recording starts with its first command, as in NVN */
 void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
+    nvn_trace_set("begin recording", cb, NVN_TRACE_RECORD);
     NvnCmdBuf* o = CB(cb);
     NvnCtl* t = ctl_of(cb);
     if (o->recording) LOG_LIMIT(4, "nvn: command buffer %llx began recording twice\n", (unsigned long long)cb);
@@ -1022,10 +1096,23 @@ void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
 /* the recording ends with its last record, which takes no bytes more, as the driver's EndRecording writes none; one
    without records is the runtime's one END */
 u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
+    nvn_trace_set("end recording", cb, NVN_TRACE_RECORD);
     NvnCmdBuf* o = CB(cb);
     NvnCtl* t = ctl_of(cb);
     u64 h;
     int no_command = 0;
+    /* what this recording cost to build: records and guest bytes, reset for the next one. The reset stays inside the
+       attached check: with no client the plot goes nowhere, and the exchange must not run for nothing. ctl_of guards
+       the slot, as in alloc_rec: a finalizing buffer's stale index must not exchange another buffer's counters */
+    if (snx_tracy_attached() && ctl_of(cb)) {
+        u32 slot = o->ctl;
+        if (slot <= NVN_CTL_SLOTS) {
+            SNX_PLOT("gpu nvn cmd records",
+                     (double)atomic_exchange_explicit(&g_nvn_rec_count.recs[slot], 0, memory_order_relaxed));
+            SNX_PLOT("gpu nvn cmd bytes",
+                     (double)atomic_exchange_explicit(&g_nvn_rec_count.bytes[slot], 0, memory_order_relaxed));
+        }
+    }
     ctl_flush(c, cb);       /* the range of the last commands */
     ctl_count(c, cb, 8, 0); /* the driver's end mark */
     if (o->recording == 1 && o->last) {
@@ -1073,6 +1160,10 @@ u64 nvn_CommandBufferGetControlMemoryUsed(CPU* c, u64 cb) {
    counts the driver's bytes it counted where it was recorded */
 void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     i32 i;
+    nvn_trace_set("copy commands", cb, NVN_TRACE_RECORD);
+    SNX_ZONE_V(z, "nvn cmd copy commands", n > 0 ? (u64)n : 0);
+    [[maybe_unused]] char tctx[128];
+    SNX_ZONE_TEXT(z, "%s", nvn_trace_context(tctx, sizeof tctx));
     for (i = 0; i < n; i++) {
         u64 p = gr64(handles + 8 * (u64)i);
         /* the driver copies the commands into command memory, and a range of them follows (the records' counted
@@ -1105,6 +1196,7 @@ void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
    callee counts one range (0x18, 0x20 with the block's header): its other entries (compute binds) aren't counted, as
    the runtime's handles of recordings in its own memory are used again, and can't name what a callee holds */
 void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
+    nvn_trace_set("call commands", cb, NVN_TRACE_RECORD);
     NvnCtl* t = ctl_of(cb);
     i32 i;
     ctl_flush(c, cb);
@@ -1196,6 +1288,10 @@ static u64 tex_snap(u64 payload, size_t off, int k, u64 t) {
     u64 s = payload + off + (u64)k * NVN_TEX_SNAP;
     if (!t) return 0;
     if (NVN_OBJ(NvnTexture, t)->magic != NVN_MAGIC('T', 'E', 'X', 0)) {
+        /* rare: no snapshot to take, so the address is read again at submit */
+        [[maybe_unused]] char tctx[128];
+        SNX_ZONE_T(z, "nvn cmd tex snap missing", "%llx; %s", (unsigned long long)t,
+                   nvn_trace_context(tctx, sizeof tctx));
         LOG_LIMIT(4, "nvn: texture %llx isn't a live texture as a command is recorded: read at submit\n",
                   (unsigned long long)t);
         return t;
@@ -1294,12 +1390,15 @@ void nvn_CommandBufferCopyTextureToTexture(CPU* c, u64 cb, u64 s, u64 sv, u64 sr
    copy (below). The input's size is the parameters' subrectangle size, else the network's render size; the output's
    is the network's output size, else the output texture's */
 void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
+    nvn_trace_set("evaluate dlss", cb, NVN_TRACE_RECORD);
+    SNX_ZONE(z, "nvn cmd dlss"); /* one of the costliest commands to record: its span is the CPU cost */
     const NvnDlssParameters q = *NVN_OBJ(const NvnDlssParameters, p);
     const NvnDlssNetwork* o = NVN_OBJ(const NvnDlssNetwork, n);
     i32 in_w = q.input_size[0] > 0 ? q.input_size[0] : o->render[0];
     i32 in_h = q.input_size[1] > 0 ? q.input_size[1] : o->render[1];
     i32 out_w = o->output[0], out_h = o->output[1];
     if (!q.input.texture || !q.output.texture) {
+        SNX_ZONE_VALUE(z, 2); /* 2: skipped, no input or output texture */
         LOG_LIMIT(4, "nvn: DLSS evaluation without an input or output texture: nothing copied\n");
         return;
     }
@@ -1357,6 +1456,10 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
     d->sr[d->n_copies] = (NVNcopyRegion){sx0, sy0, 0, sw, sh, 1};
     d->dr[d->n_copies] = (NVNcopyRegion){dx0, dy0, 0, dw, dh, 1};
     d->n_copies++;
+    SNX_ZONE_VALUE(z, 1); /* 1: recorded */
+    [[maybe_unused]] char tctx[128];
+    SNX_ZONE_TEXT(z, "%dx%d to %dx%d, %u copies; %s", in_w, in_h, out_w, out_h, d->n_copies,
+                  nvn_trace_context(tctx, sizeof tctx));
     LOG_LIMIT(4, "nvn: DLSS evaluation of %dx%d at (%d, %d) to %dx%d at (%d, %d)\n", in_w, in_h, q.base[0][0],
               q.base[0][1], out_w, out_h, q.base[4][0], q.base[4][1]);
 }

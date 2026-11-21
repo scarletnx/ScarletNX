@@ -12,6 +12,7 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
@@ -358,8 +359,12 @@ void (*g_gpu_verify_draw)(GpuChannel* ch, const DrawCall* dc);
 void (*g_gpu_verify_cb)(u64 gva, const u32* words, u32 n);
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
+    SNX_ZONE(z, "gpu 3d draw");
     int verify = gpu_channel_verify(ch);
-    if (ch->render_off || (!verify && !g_renderer->draw)) return;
+    if (ch->render_off || (!verify && !g_renderer->draw)) {
+        SNX_ZONE_VALUE(z, ch->render_off ? 1u : 2u); /* 1: render enable is off, 2: no renderer draw */
+        return;
+    }
     mx_draw_state_sync(ch);
     const u32* quad = &ch->r3d[MAXWELL3D_SAMPLE_MASK];
     if (((quad[0] ^ quad[1]) | (quad[0] ^ quad[2]) | (quad[0] ^ quad[3])) & 0xFFFF)
@@ -380,6 +385,7 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
                    .instances = instances,
                    .inline_indices = ch->inline_indices};
     mx_draw_fixed(ch->r3d, &dc);
+    SNX_ZONE_VALUE(z, verify ? 3u : 0u); /* 0: drawn, 3: verified only */
     if (verify)
         g_gpu_verify_draw(ch, &dc);
     else
@@ -443,10 +449,15 @@ static void clear_in_memory(GpuChannel* ch, u32 v) {
     gpu_mem_written_by(a, span, GPU_WRITE_CLEAR, 0, 0);
 }
 void r3d_clear(GpuChannel* ch, u32 v) {
-    if (ch->render_off) return;
-    if (!g_renderer_up)
+    SNX_ZONE(z, "gpu 3d clear");
+    if (ch->render_off) {
+        SNX_ZONE_VALUE(z, 1u); /* render enable is off */
+        return;
+    }
+    if (!g_renderer_up) {
+        SNX_ZONE_VALUE(z, 2u); /* no renderer: cleared in guest memory */
         clear_in_memory(ch, v);
-    else if (g_renderer->clear) {
+    } else if (g_renderer->clear) {
         /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
            target registers of that index directly isn't settled: the first clear where the two differ is logged */
         u32 ctl = ch->r3d[0x487], slot = (v >> 6) & 15;
@@ -456,8 +467,10 @@ void r3d_clear(GpuChannel* ch, u32 v) {
         DrawClear c;
         mx_draw_state_sync(ch);
         mx_draw_clear(ch->r3d, v, &c);
+        SNX_ZONE_VALUE(z, 0u); /* cleared on the GPU */
         gpu_clear(&ch->ds, &c, &ch->owner);
-    }
+    } else
+        SNX_ZONE_VALUE(z, 3u); /* no renderer clear function: the clear is skipped */
 }
 /* DRAW_TEXTURE: not gated by the render enable here, the renderer reads its registers as Eden does */
 void r3d_draw_texture(GpuChannel* ch) {

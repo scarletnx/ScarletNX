@@ -104,8 +104,9 @@ static struct {
     _Atomic u32 jobs; /* queued or running on any channel, through <stdatomic.h>'s calls: what host1x_drain waits for */
 } g_host1x = {PMUTEX_INIT, {{0}}, 0, PMUTEX_INIT, 0};
 
-/* A job is one block of words: the command buffer count, the increment count, each command buffer as its length and
-   words (length 0 for one that was refused), then each increment as (syncpoint id, count) */
+/* A job is one block of words: the command buffer count, the increment count, the submit time (two words), each
+   command buffer as its length and words (length 0 for one that was refused), then each increment as (syncpoint id,
+   count). The submit time rides with the job so the worker can report submit-to-output time after a queue wait */
 struct H1Ch {
     PMutex lk; /* the queue, the flags below it and syncpt[] */
     PCond cv;  /* the queue changed, or the worker ended */
@@ -205,13 +206,25 @@ void host1x_forget_handle(u32 h) {
 }
 
 /* ---- running a job on the worker */
-/* a host class wait: syncpoint id reaching thresh. The engines' lock is let go meanwhile */
+/* a host class wait: syncpoint id reaching thresh. The engines' lock is let go meanwhile. The wait is a blocking
+   call, so it stays out of a zone: a message marks why this job waited and a plot counts the waits instead */
 static void host_wait(u32 id, u32 thresh) {
+    u32 cur = 0;
+    int ok, traced = snx_tracy_attached();
+    if (traced) cur = syncpt_read(id);
     pm_unlock(&g_host1x.engine_lk);
-    if (!syncpt_wait(id, thresh, HOST_WAIT_NS))
+    ok = syncpt_wait(id, thresh, HOST_WAIT_NS);
+    pm_lock(&g_host1x.engine_lk);
+    if (traced) {
+        char msg[96];
+        int n = snprintf(msg, sizeof msg, "host1x wait: syncpt %u to %u (was %u): %s", id, thresh, cur,
+                         ok ? "reached" : "timed out");
+        if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
+    }
+    SNX_PLOT("video host1x waits", 1);
+    if (!ok)
         WARN_LIMIT(8, "host1x: a job waited 2 s for syncpoint %u to reach %u (it is at %u), and goes on\n", id, thresh,
                    syncpt_read(id));
-    pm_lock(&g_host1x.engine_lk);
 }
 /* WaitSyncpt's 24-bit threshold, as the full value nearest the syncpoint's: its high bits, a wrap up when that lands
    more than half the 24-bit range behind */
@@ -292,7 +305,10 @@ static void run_words(H1Ch* ch, const u32* w, u32 n) {
 /* a queued job: its command buffers under the engines' lock, then its syncpoint increments, and the value its
    first reaches, which the guest waits on when it waits for the job */
 static u32 run_job(H1Ch* ch, const u32* job) {
-    u32 ncb = job[0], ninc = job[1], k = 2, c, value = 0;
+    u32 ncb = job[0], ninc = job[1], k = 4, c, value = 0;
+#if defined(SNX_TRACY)
+    u64 t_submit = (u64)job[2] | (u64)job[3] << 32; /* only the job-time plot reads it */
+#endif
     pm_lock(&g_host1x.engine_lk);
     for (c = 0; c < ncb; c++) {
         u32 len = job[k++];
@@ -304,6 +320,10 @@ static u32 run_job(H1Ch* ch, const u32* job) {
         syncpt_add(job[k], job[k + 1]);
         if (!c) value = syncpt_read(job[k]);
     }
+#if defined(SNX_TRACY)
+    /* submit to output: the guest called SUBMIT, the job waited in the queue, and the engine wrote its result */
+    SNX_PLOT(ch->is_vic ? "video vic job ms" : "video nvdec job ms", (double)(plat_ns() - t_submit) / 1e6);
+#endif
     return value;
 }
 static void worker(void* arg) {
@@ -316,10 +336,10 @@ static void worker(void* arg) {
         if (!ch->count) break; /* closing, and every queued job ran */
         job = ch->queue[ch->head];
         pm_unlock(&ch->lk);
-        /* two channels differ only in their engine and class, and a job of either is waited for at its syncpoint */
+        /* two channels differ only in their engine and class, and a job of either is waited for at its syncpoint.
+           The zone times the job itself; a blocking syncpoint wait (host_wait) inside it is counted by its own plot */
         SNX_ZONE_T(z_job, "host1x job", "%s class %04x syncpt %u", ch->is_vic ? "vic" : "nvdec", ch->cls,
                    ch->syncpt[0]);
-        /* the job's first syncpoint's value: only the zone reads it */
         [[maybe_unused]] u32 spval = run_job(ch, job);
         SNX_ZONE_VALUE(z_job, spval);
         SNX_ZONE_END(z_job);
@@ -372,7 +392,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
        so the game doesn't wait for good */
     addr = malloc(ncb ? ncb * sizeof *addr : 1);
     if (!addr) return NV_INSUFFICIENT_MEMORY;
-    total = 2 + ncb + 2ull * ninc; /* the job's words: see H1Ch */
+    total = 4 + ncb + 2ull * ninc; /* the job's words: see H1Ch */
     for (i = 0; i < ncb; i++) {
         u32 at = (u32)(o_cb + (u64)CMD_BUFFER_SIZE * i), memid = rd32(d, at + CMD_BUFFER_MEMORY_ID);
         u32 off = rd32(d, at + CMD_BUFFER_OFFSET), words = rd32(d, at + CMD_BUFFER_WORD_COUNT), size;
@@ -387,7 +407,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
         addr[i] = a + off;
         total += words;
     }
-    if (total - 2 > H1_JOB_WORDS) {
+    if (total - 4 > H1_JOB_WORDS) {
         free(addr);
         return NV_BAD_PARAMETER;
     }
@@ -398,7 +418,13 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     job[0] = ncb;
     job[1] = ninc;
-    k = 2;
+    u64 t_submit = 0; /* the job keeps two words for it so the layout does not depend on the build */
+#if defined(SNX_TRACY)
+    t_submit = plat_ns();
+#endif
+    job[2] = (u32)t_submit;
+    job[3] = (u32)(t_submit >> 32);
+    k = 4;
     for (i = 0; i < ncb; i++) {
         u32 words = addr[i] ? rd32(d, (u32)(o_cb + (u64)CMD_BUFFER_SIZE * i + CMD_BUFFER_WORD_COUNT)) : 0;
         job[k++] = words;
@@ -413,6 +439,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     /* the fences are promised in queue order, under the lock the job is queued in */
     pm_lock(&ch->lk);
+    if (ch->count == H1_QUEUE) SNX_PLOT("video host1x queue waits", 1); /* a full queue holds this submit up */
     while (ch->count == H1_QUEUE) pc_wait(&ch->cv, &ch->lk, -1);
     for (i = 0; i < ninc; i++) {
         u32 v = syncpt_promise(job[k - 2 * ninc + 2 * i], job[k - 2 * ninc + 2 * i + 1]);

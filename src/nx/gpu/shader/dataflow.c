@@ -3,6 +3,7 @@
 /* The analyses over a program's words before it is translated: flow targets, reaching definitions,
    guards, and where a texture handle, a constant or a global memory base comes from */
 #include "nx/gpu/shader/translate.h"
+#include "nx/runtime/platform/tracy.h"
 
 static int direct_reaching_def_same(const ShFlow* f, u32 index, u32 reg, int (*same)(const ShFlow*, u32, u32, int),
                                     int depth);
@@ -1809,6 +1810,8 @@ u32* shader_untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, 
     si->unsupported = 1;
     snprintf(si->first_unsupported, sizeof si->first_unsupported, "untracked %s handle R%u of %s at %x%s", kind, reg,
              op ? op->name : "?", i * 8, from);
+    SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+    SNX_PLOT("shader translate failures", 1);
     return NULL;
 }
 
@@ -1827,6 +1830,8 @@ u32* shader_untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8
         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                  "global memory base R%u not tracked at %x: no write before", reg, i * 8);
     si->unsupported = 1;
+    SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+    SNX_PLOT("shader translate failures", 1);
     return NULL;
 }
 /* The words of a program (n of them, sph its header, words in all) with every attribute load, store and
@@ -1898,6 +1903,8 @@ int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, in
                     snprintf(si->first_unsupported, sizeof si->first_unsupported,
                              "legacy varying 0x%x %s generic %u, which the program also %s", shader_legacy_base(g),
                              d ? "written as" : "read as", LEGACY_GENERIC + g, d ? "writes" : "reads");
+                    SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+                    SNX_PLOT("shader translate failures", 1);
                     return -1;
                 }
         *moved = malloc(words * sizeof **moved);

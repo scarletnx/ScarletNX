@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Constant buffers, local, shared and global memory and their atomics */
 #include "nx/gpu/shader/translate.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/shader/write_log.h"
 
 /* a shared memory word index kept inside the array the shader declares: out of range is undefined on the console,
@@ -69,7 +70,14 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
     u32 folded = 0;
     c->cbuf_seen[at].key = key;
     c->cbuf_seen[at].block = c->emit.block;
-    if (g_shader_cb_fold && g_shader_cb_fold(idx, off, &folded)) {
+    /* a frequent decision: 1 when the word is known and folded into this variant, 0 when it stays a uniform read */
+    int fold_hit = g_shader_cb_fold && g_shader_cb_fold(idx, off, &folded);
+    /* a frequent decision: skip both emissions without a client, so no zone begin or plot lookup runs per read */
+    if (snx_tracy_attached()) {
+        SNX_ZONE_V(z_snx_fold, "shader cbuf fold", (unsigned)fold_hit);
+        SNX_PLOT(fold_hit ? "shader cb fold hit" : "shader cb fold miss", 1);
+    }
+    if (fold_hit) {
         c->cbuf_seen[at].word = shader_u32(c, folded);
         c->cbuf_seen[at].as_float = 0;
         return at;

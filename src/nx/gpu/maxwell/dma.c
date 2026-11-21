@@ -15,6 +15,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_dma_regs.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define DMA_MAX_BYTES (256u << 20) /* a launch past this is a bad register value */
 
@@ -227,9 +228,11 @@ void dma_snap_reset(u32 channel) {
    bytes. from: the source's bytes as read at submission, or NULL; id: nonzero when they are the renderer's, which the
    copy takes over (malloc's stay the caller's) */
 static void dma_copy(const DmaOp* o, u8* from, u64 id) {
+    SNX_ZONE(z, "gpu dma copy");
     DmaOp op = *o;
     u64 in_bytes = o->fill ? 0 : (u64)o->line_in * o->lines, out_bytes = (u64)o->line_out * o->lines;
     if (in_bytes > DMA_MAX_BYTES || out_bytes > DMA_MAX_BYTES) {
+        SNX_ZONE_VALUE(z, 1u); /* over the byte limit */
         WARN_LIMIT(4, "gpu: a DMA copy of %u lines of %u elements is over %u MiB: nothing is copied\n", o->lines,
                    o->width, DMA_MAX_BYTES >> 20);
         if (id) snap_release(from, id);
@@ -238,14 +241,19 @@ static void dma_copy(const DmaOp* o, u8* from, u64 id) {
     op.snap = from;
     op.snap_id = id;
     if (!g_renderer_up || !g_renderer->dma_copy) {
+        SNX_ZONE_VALUE(z, 2u); /* no renderer yet */
         WARN_LIMIT(4,
                    "gpu: a DMA copy of %u lines of %u bytes to %llx before the renderer started: nothing is copied\n",
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
         return;
     }
-    if (!gpu_renderer_now()->dma_copy(&op))
+    int ok = gpu_renderer_now()->dma_copy(&op);
+    if (!ok) {
+        SNX_ZONE_VALUE(z, 3u); /* the GPU could not do it */
         WARN_LIMIT(4, "gpu: the GPU could not do a DMA copy of %u lines of %u bytes to %llx: nothing is copied\n",
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
+    }
+    if (ok) SNX_ZONE_VALUE(z, 0u);
     if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
 }
 /* The copy of a launch (the first half of Eden's MaxwellDMA::Launch): a linear source's submission-time bytes when
