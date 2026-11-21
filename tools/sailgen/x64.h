@@ -159,6 +159,7 @@ typedef struct {
        alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
        alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's */
     unsigned char cstate, cfpcr, ckat, cw32, zacc;
+    unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] what is dead where it goes (sgx_dead_words' mask) */
 } SgXIns;
 
 typedef struct {
@@ -187,6 +188,9 @@ typedef struct {
 
 #define SGX_MAXI 4096
 #define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
+/* the guest's (x64_a64.h's): the state's words a mask of dead registers and flags names, at most 72 of them, into
+   words[]; their count */
+static inline int sgx_dead_words(SnxU64 dead, unsigned short* words);
 #define SGX_MAXV 8192
 #define SGX_MAXB 4096
 
@@ -203,6 +207,8 @@ typedef struct {
     int unmade;    /* a primitive had no candidate this host can run */
     int pool;      /* the host registers values may be in: the first pool of sgx_pool's (0: all; fewer, for tests of
                       spilling) */
+    SnxU64 end_dead; /* the guest's state nothing reads past the region's end (sgx_dead_words' mask), for the store
+                        pass; 0 for none known */
 } SgX;
 
 typedef int SgB;
@@ -495,6 +501,48 @@ static inline SgD sgx_op(SgX* x, const SgXSel* table, unsigned n, SgD* in, int n
     (sgx_op((x), SGX_TABLE(name, w), SGX_TABLE_N(name, w), (SgD[]){__VA_ARGS__},                                     \
             (int)(sizeof((SgD[]){__VA_ARGS__}) / sizeof(SgD)), (w)))
 
+/* LEA for the additions nothing reads the flags of (add, add_i): three operands, no flags written, so an address's
+   arithmetic leaves the flags a branch reads where they are. The SDM's LEA computes EffectiveAddress(SRC), which its
+   Operation section doesn't spell out, so these forms are written here rather than selected (the recompiler's tests
+   check them as they check the derived ones): operand 0 the result, 1 the base, 2 the index; a 32-bit one is the
+   64-bit sum's low half, zero extended (no address-size prefix) */
+static inline void sgx_enc_lea(SgXBuf* b, const unsigned char* r, long long imm, int w64, int with_index) {
+    int d = r[0], base = r[1], index = with_index ? r[2] : -1;
+    if (index == 4) { /* RSP can't be an index */
+        index = base;
+        base = 4;
+    }
+    sgx_byte(b, (unsigned char)(0x40 | (w64 ? 8 : 0) | (d >> 3) << 2 | (index > 0 ? (index >> 3) << 1 : 0) | (base >> 3)));
+    sgx_byte(b, 0x8D);
+    if (index >= 0) {
+        int mod = imm ? 2 : (base & 7) == 5 ? 1 : 0;
+        sgx_byte(b, (unsigned char)(mod << 6 | (d & 7) << 3 | 4));
+        sgx_byte(b, (unsigned char)((index & 7) << 3 | (base & 7)));
+        if (mod == 1) sgx_byte(b, 0);
+        else if (mod == 2)
+            sgx_imm(b, imm, 4);
+    } else {
+        sgx_byte(b, (unsigned char)(0x80 | (d & 7) << 3 | (base & 7)));
+        if ((base & 7) == 4) sgx_byte(b, 0x24);
+        sgx_imm(b, imm, 4);
+    }
+}
+static void sgx_enc_lea_rr64(SgXBuf* b, const unsigned char* r, long long imm, int cc) { (void)imm, (void)cc, sgx_enc_lea(b, r, 0, 1, 1); }
+static void sgx_enc_lea_rr32(SgXBuf* b, const unsigned char* r, long long imm, int cc) { (void)imm, (void)cc, sgx_enc_lea(b, r, 0, 0, 1); }
+static void sgx_enc_lea_ri64(SgXBuf* b, const unsigned char* r, long long imm, int cc) { (void)cc, sgx_enc_lea(b, r, imm, 1, 0); }
+static void sgx_enc_lea_ri32(SgXBuf* b, const unsigned char* r, long long imm, int cc) { (void)cc, sgx_enc_lea(b, r, imm, 0, 0); }
+#define SGX_LEA_SEL(e, im) {.enc = e, .rm = -1, .in = {1, (im) ? -1 : 2, -1, -1}, .imm = (im) ? 2 : 0, .fit_bits = 0, \
+                            .fit_kind = '-', .out = 0, .clean_out = 1, .flag_of = {-1, -1, -1, -1},                   \
+                            .cc_of = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}}
+static const SgXSel sgx_sel_lea_64[1] = {SGX_LEA_SEL(sgx_enc_lea_rr64, 0)};
+static const SgXSel sgx_sel_lea_32[1] = {SGX_LEA_SEL(sgx_enc_lea_rr32, 0)};
+static const SgXSel sgx_sel_leai_64[1] = {SGX_LEA_SEL(sgx_enc_lea_ri64, 1)};
+static const SgXSel sgx_sel_leai_32[1] = {SGX_LEA_SEL(sgx_enc_lea_ri32, 1)};
+#define sgx_sel_lea_64_n 1u
+#define sgx_sel_lea_32_n 1u
+#define sgx_sel_leai_64_n 1u
+#define sgx_sel_leai_32_n 1u
+
 /* the width a primitive runs at for a value of w bits: 32 or 64 */
 static inline unsigned sgx_width(unsigned w) { return w <= 32 ? 32 : 64; }
 
@@ -723,6 +771,8 @@ static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
 static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
     SgX* x = sgx(g);
     unsigned w = h.w + l.w;
+    if (!l.w) return h; /* x : Zeros(0), a shift by 0 */
+    if (!h.w) return l;
     if ((h.x || l.x) && w == 128 && h.w == 64) {
         /* two doublewords in an XMM register: PUNPCKLQDQ (the low's high bits are the high's low ones) */
         int lx = sgx_xreg(x, &l), hx = sgx_xreg(x, &h);
@@ -870,7 +920,7 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
             return sgx_addsub(g, src, sgx_const(w, x->v[a.v].k + k), 0);
         }
         if (sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, k, pw)) {
-            r = SGX_OP(x, add_i, pw, a, sgx_const(32, k));
+            r = SGX_OP(x, leai, pw, a, sgx_const(32, k));
             if (a.v && !a.inv && r.v) {
                 x->v[r.v].op = SGX_C_ADD;
                 x->v[r.v].cw = (unsigned char)pw;
@@ -888,7 +938,7 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
     }
     if (sub && sgx_is_const(&a) && !a.k) r = SGX_OP(x, neg, pw, b);
     else
-        r = sub ? SGX_OP(x, sub, pw, a, b) : SGX_OP(x, add, pw, a, b);
+        r = sub ? SGX_OP(x, sub, pw, a, b) : SGX_OP(x, lea, pw, a, b);
     r.w = w;
     return r;
 }
@@ -1565,10 +1615,15 @@ static inline void sgx_optimize(SgX* x) {
         static _Thread_local unsigned stamp[SGX_STATE_WORDS];
         static _Thread_local unsigned now = 1;
         unsigned pset = 0; /* the pinned host registers a later PSET writes */
+        unsigned short dw[72];
+        int ndw, e;
         if (++now == 0) {
             memset(stamp, 0, sizeof stamp);
             now = 1;
         }
+        /* past the end: what nothing reads is as good as overwritten */
+        ndw = x->end_dead ? sgx_dead_words(x->end_dead, dw) : 0;
+        for (e = 0; e < ndw; ++e) stamp[dw[e]] = now;
         for (i = x->n - 1; i >= 0; --i) {
             SgXIns* s = &x->ins[i];
             unsigned w0, nw;
@@ -1592,6 +1647,20 @@ static inline void sgx_optimize(SgX* x) {
                     for (e = 0; e < 4; ++e) stamp[q + e] = now;
                 } else
                     for (e = 0; e < 4; ++e) stamp[q + e] = 0;
+                continue;
+            }
+            if (s->kind == SGX_K_MACHINE && s->jdead) {
+                /* a jump: a word is dead before it where it is on both ways, the jump's (its mask) and on (its mark) */
+                unsigned char keep[72];
+                ndw = sgx_dead_words(s->kv[1], dw);
+                for (e = 0; e < ndw; ++e) keep[e] = stamp[dw[e]] == now;
+                if (++now == 0) {
+                    memset(stamp, 0, sizeof stamp);
+                    now = 1;
+                }
+                for (e = 0; e < ndw; ++e)
+                    if (keep[e]) stamp[dw[e]] = now;
+                pset = 0;
                 continue;
             }
             if (s->kind == SGX_K_UNDEF || s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD ||
@@ -1686,7 +1755,7 @@ static inline void sgx_optimize(SgX* x) {
             }
             /* the sum by an addition's form (a subtraction's immediate was the negation) */
             {
-                const SgXSel* t = sgx_pick(x, SGX_TABLE(add_i, s->w), SGX_TABLE_N(add_i, s->w), (SnxU64)sum, s->w, 0);
+                const SgXSel* t = sgx_pick(x, SGX_TABLE(leai, s->w), SGX_TABLE_N(leai, s->w), (SnxU64)sum, s->w, 0);
                 if (!t) continue;
                 s->sel = t;
                 s->fsel = t;

@@ -147,7 +147,19 @@ static uint32_t fp(void) {
     }
 }
 
+/* SBFM, BFM, UBFM: the aliases' fields (LSR/ASR, LSL, SXTx/UXTx) a quarter of the time each, any fields else */
+static uint32_t bitfield(void) {
+    unsigned sf = pick(2), d = sf ? 64 : 32, imms = pick(d), immr = pick(d);
+    switch (pick(4)) {
+    case 0: imms = d - 1; break;
+    case 1: immr = (imms + 1) % d; break;
+    case 2: immr = 0, imms = pick(2) ? 7 : pick(2) ? 15 : 31; break;
+    default: break;
+    }
+    return sf << 31 | pick(3) << 29 | 0x13000000u | sf << 22 | immr << 16 | imms << 10 | lo() << 5 | lo();
+}
 static uint32_t integer(void) {
+    if (!pick(3)) return bitfield();
     switch (pick(4)) {
     case 0: return 0xAB000000u | lo() << 16 | lo() << 5 | lo();                 /* ADDS */
     case 1: return 0x9A800000u | lo() << 16 | pick(16) << 12 | lo() << 5 | lo(); /* CSEL */
@@ -345,7 +357,19 @@ int main(int argc, char** argv) {
         uint64_t at = CODE + (uint64_t)i * SLOT * 4;
         unsigned n = nwords ? nwords : 1 + pick(SLOT - 2);
         hints[i] = at;
-        for (k = 0; k < n; ++k) put32(mem[0], at + 4 * k, nwords ? words[k] : word());
+        for (k = 0; k < n; ++k) {
+            uint32_t w = nwords ? words[k] : word();
+            if (!nwords && k + 1 < n && !pick(6)) {
+                /* a branch forward over 1 to 3 words (to the RET at the most): labels, and what is dead at them */
+                unsigned skip = 1 + pick(n - k < 4 ? n - k : 3), r = lo();
+                switch (pick(3)) {
+                case 0: w = 0x54000000u | skip << 5 | pick(14); break;                                 /* B.cond */
+                case 1: w = pick(2) << 31 | 0x34000000u | pick(2) << 24 | skip << 5 | r; break;        /* CBZ, CBNZ */
+                default: w = 0x36000000u | pick(2) << 24 | pick(32) << 19 | skip << 5 | r; break;     /* TBZ, TBNZ */
+                }
+            }
+            put32(mem[0], at + 4 * k, w);
+        }
         put32(mem[0], at + 4 * n, 0xD65F03C0u);
         for (; k + 1 < SLOT; ++k) put32(mem[0], at + 4 * (k + 1), 0xD65F03C0u);
     }

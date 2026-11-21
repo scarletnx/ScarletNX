@@ -171,6 +171,20 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
     g->origin = -1;
 }
 
+/* x64.h's: the state's words of the registers (bits 0-30: X0-X30, 31 SP) and flags (32-35: N Z C V) dead names */
+static inline int sgx_dead_words(SnxU64 dead, unsigned short* words) {
+    int n = 0, r;
+    for (r = 0; r < 32; ++r)
+        if (dead >> r & 1) {
+            unsigned w = (unsigned)(offsetof(CPU, x) + 8 * (size_t)r) >> 2;
+            words[n++] = (unsigned short)w;
+            words[n++] = (unsigned short)(w + 1);
+        }
+    for (r = 0; r < 4; ++r)
+        if (dead >> (32 + r) & 1) words[n++] = (unsigned short)((unsigned)sgx_flag_offset(r) >> 2);
+    return n;
+}
+
 /* ConditionHolds(cond) on the flags NZCV was last written from, while the x86 flags are still them: the condition
    code the selection gave Arm's cond on that form's flags. 0 otherwise (the Sail then reads PSTATE) */
 static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
