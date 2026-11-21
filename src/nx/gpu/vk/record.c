@@ -29,6 +29,9 @@ typedef struct {
     RecFn fn; /* NULL: skip to the start of the ring */
     u64 size; /* of the packet, header included, a multiple of 16 */
 } RecHdr;
+static void barrier_run(const void* p);
+static void barrier_flush(void);
+static void desc_batch_flush(void);
 
 /* The ring holds about a frame of one game's commands (3.8 MB a frame in its underground scene). At 16 MB every packet
    went to memory last written four frames before, long out of the caches, and the stream through the shared cache
@@ -60,6 +63,33 @@ static _Atomic int g_room_waits;
    landing's, owned.c) took 5.1 to 6.4 us asleep and woken, 2.4 to 3.4 us spun (vulkan_recorder, 20,000 drains) */
 #define REC_ROOM_SPIN_NS 200000ull
 
+/* the command kinds the recording thread drained, by their run function: where its time goes. Reset by
+   vk_rec_command_report */
+#define REC_KINDS 64
+typedef struct {
+    RecFn fn;
+    u64 n;
+} RecKind;
+static RecKind g_rec_kind[REC_KINDS];
+static u64 g_rec_kind_total;
+static int g_rec_kind_count; /* vk_gpuprof_on(): the count runs on every command the recorder drains */
+static void rec_kind(RecFn fn) {
+    u64 h = (uintptr_t)fn >> 4;
+    g_rec_kind_total++;
+    for (u32 i = 0; i < REC_KINDS; i++) {
+        RecKind* k = &g_rec_kind[(h + i) & (REC_KINDS - 1)];
+        if (k->fn == fn) {
+            k->n++;
+            return;
+        }
+        if (!k->fn) {
+            k->fn = fn;
+            k->n = 1;
+            return;
+        }
+    }
+}
+
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
@@ -83,7 +113,10 @@ static void rec_thread(void* arg) {
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
             const RecHdr* h = (const RecHdr*)(g_ring + (tail & (REC_CAP - 1)));
-            if (h->fn) h->fn(h + 1);
+            if (h->fn) {
+                if (g_rec_kind_count) rec_kind(h->fn);
+                h->fn(h + 1);
+            }
             tail += h->size;
             records++;
         }
@@ -181,6 +214,7 @@ static int room_wait(u64 more, u64 until) {
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
 static void* rec_push(RecFn fn, u64 size) {
+    if (fn != barrier_run) barrier_flush(); /* a pending batch of barriers ends before any other command */
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
     /* one that could never fit would wait for room forever, with vk_lock held and every thread that takes it behind */
     if (need > REC_CAP / 2)
@@ -313,6 +347,7 @@ int vk_rec_sync_until(u64 until) {
     u32 self = plat_tid();
     if (atomic_load_explicit(&g_rec_tid, memory_order_acquire) == self) return 1;
     vk_lock(); /* no command is added meanwhile */
+    barrier_flush(); /* a pending batch goes in the ring before the drain waits for it */
     publish();
     drained = room_wait(REC_CAP, until); /* all of the ring's room: everything pending made */
     vk_unlock();
@@ -385,17 +420,28 @@ typedef struct {
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;
+    u64 queued; /* plat_ns when vk_rec_submit put it in the ring: its dwell before the recording thread runs it */
 } Submit;
 /* the graphics timeline value of the last submission vkQueueSubmit2 took (atomic): the GPU has that work. A value
    handed to the ring after it is not on the GPU yet (vk_wait_semaphore) */
 static _Atomic u64 g_gfx_queued;
 u64 vk_rec_gfx_queued(void) { return atomic_load_explicit(&g_gfx_queued, memory_order_acquire); }
+/* where a submission's time goes, on the recording thread: the vkEndCommandBuffer's, the vkQueueSubmit2's, and how
+   many submissions carry an upload command buffer. Reset by gpuprof.c's report */
+u64 g_submit_end_ns, g_submit_queue_ns, g_submit_uploads, g_submit_count;
+/* the submission's dwell in the ring before the recording thread reaches it (the backlog the pacer's batch left), and
+   the backlog bytes (vk_rec_behind) when the GPU thread made it */
+u64 g_submit_dwell_ns, g_submit_backlog, g_submit_backlog_max;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    desc_batch_flush(); /* any set's writes precede the command buffer that binds them being ended */
+    g_submit_dwell_ns += plat_ns() - x->queued;
     VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
                                       {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb}};
+    u64 t = plat_ns();
     if (x->up) VK_OK(vkEndCommandBuffer(x->up));
     VK_OK(vkEndCommandBuffer(x->cb));
+    g_submit_end_ns += plat_ns() - t;
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
                         .pWaitSemaphoreInfos = x->w,
@@ -405,8 +451,12 @@ static void submit_run(const void* p) {
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
     vk_queue_lock(g_vk.gfx);
+    t = plat_ns();
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
+    g_submit_queue_ns += plat_ns() - t;
     vk_queue_unlock(g_vk.gfx);
+    g_submit_uploads += x->up != VK_NULL_HANDLE;
+    g_submit_count++;
     if (r == VK_SUCCESS && x->timeline == vk_gfx_timeline())
         atomic_store_explicit(&g_gfx_queued, x->value, memory_order_release);
     if (r == VK_ERROR_DEVICE_LOST) {
@@ -425,7 +475,10 @@ static void submit_run(const void* p) {
 }
 void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
                    const VkSemaphoreSubmitInfo* s, u32 ns) {
-    Submit x = {.up = up, .cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
+    Submit x = {.up = up, .cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value,
+                 .queued = plat_ns()};
+    g_submit_backlog += vk_rec_behind();
+    if (vk_rec_behind() > g_submit_backlog_max) g_submit_backlog_max = vk_rec_behind();
     memcpy(x.w, w, nw * sizeof *w);
     memcpy(x.s, s, ns * sizeof *s);
     g_rec_cb = VK_NULL_HANDLE;
@@ -595,6 +648,11 @@ static int rec_drop_draw(void) {
 }
 /* the programs of the draws recorded next (rec_draw_tag), which their checkpoints carry: the GPU thread's */
 static u64 g_rec_tag[2];
+/* the graphics frame's draw id: render.c writes each draw's push block to SNX_VKB_DRAW at this id, and the shader
+   reads it there at its draw id (word 0 of the push constants). Counted per draw the recorder keeps, so a dropped draw
+   (a pipeline that failed to build) does not misindex the block */
+_Atomic u64 g_draw_id;
+static void draw_id_bump(void) { atomic_fetch_add_explicit(&g_draw_id, 1, memory_order_relaxed); }
 static u32 g_rec_src; /* where the draw's vertices, indices and constants were bound (vk_buf_sources) */
 void rec_draw_tag(u64 first, u64 second, u32 sources) {
     g_rec_tag[0] = first;
@@ -746,6 +804,7 @@ void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vert
         return;
     }
     const u64 was = g_pending;
+    draw_id_bump();
     DrawArgs* x = rec_push(draw_run, sizeof *x);
     *x = (DrawArgs){cb, vertices, instances, first_vertex, first_instance, {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
     if (g_settings.draw_run_stats) run_draw(1, instances, first_instance, was);
@@ -773,6 +832,7 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
         return;
     }
     const u64 was = g_pending;
+    draw_id_bump();
     DrawIndexedArgs* x = rec_push(draw_indexed_run, sizeof *x);
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance,
                            {g_rec_tag[0], g_rec_tag[1]}, g_rec_src};
@@ -803,6 +863,7 @@ static void rec_draw_mesh(const DrawMeshArgs* a) {
         draw_mesh_now(a);
         return;
     }
+    draw_id_bump();
     DrawMeshArgs* x = rec_push(draw_mesh_run, sizeof *x);
     *x = *a;
     rec_commit();
@@ -845,6 +906,7 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
         draw_indirect_now(&a);
         return;
     }
+    draw_id_bump();
     DrawIndirectArgs* x = rec_push(draw_indirect_run, sizeof *x);
     *x = a;
     rec_commit();
@@ -1088,6 +1150,18 @@ static void push_run(const void* p) {
     const PushArgs* x = p;
     vkCmdPushConstants(x->cb, x->layout, x->stages, x->offset, x->size, (const u8*)p + REC_AL(sizeof *x));
 }
+/* The last push constants recorded into the command buffer being recorded (g_last_cb_begun): a draw that pushes the
+   same bytes again, in the same command buffer, needs no second vkCmdPushConstants, as the buffer already holds them.
+   Push constants are undefined in a fresh command buffer, so the record resets with vk_cb_begun. Counted by
+   vk_rec_command_report. */
+static struct {
+    u32 cb_begun;
+    VkPipelineLayout layout;
+    VkShaderStageFlags stages;
+    u32 offset, size;
+    u8 bytes[256];
+} g_last_push;
+u64 g_push_same, g_push_diff;
 void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFlags stages, u32 offset, u32 size,
                           const void* data) {
     if (vk_descriptor_heaps_active() && vk_graphics_playout_is(layout)) {
@@ -1107,6 +1181,19 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
         return;
     }
     const u64 was = g_pending;
+    if (g_last_push.cb_begun == vk_cb_begun() && g_last_push.layout == layout && g_last_push.stages == stages &&
+        g_last_push.offset == offset && g_last_push.size == size && size <= sizeof g_last_push.bytes &&
+        !memcmp(g_last_push.bytes, data, size)) {
+        g_push_same++;
+        return; /* the same bytes were pushed already in this command buffer */
+    }
+    g_push_diff++;
+    g_last_push.cb_begun = vk_cb_begun();
+    g_last_push.layout = layout;
+    g_last_push.stages = stages;
+    g_last_push.offset = offset;
+    g_last_push.size = size;
+    if (size <= sizeof g_last_push.bytes) memcpy(g_last_push.bytes, data, size);
     PushArgs* x = rec_push(push_run, REC_AL(sizeof *x) + size);
     *x = (PushArgs){cb, layout, stages, offset, size};
     memcpy((u8*)x + REC_AL(sizeof *x), data, size);
@@ -1183,6 +1270,7 @@ static void sets_run(const void* p) {
     const VkDescriptorSet* sets = (const void*)((const u8*)p + REC_AL(sizeof *x));
     const u32* dyn = (const void*)((const u8*)sets + REC_AL(x->n * sizeof *sets));
     VkDescriptorSet real[8];
+    desc_batch_flush(); /* a set's writes precede the bind that names it */
     for (u32 i = 0; i < x->n && i < 8; i++)
         if (!(real[i] = rec_set_real(sets[i]))) return; /* a set the pools had no room for: not bound */
     vkCmdBindDescriptorSets(x->cb, x->bp, x->layout, x->first, x->n, real, x->ndyn, x->ndyn ? dyn : NULL);
@@ -1721,26 +1809,66 @@ static int barrier_chained(const VkDependencyInfo* d) {
         if (d->pImageMemoryBarriers[i].pNext) return 1;
     return 0;
 }
+/* Consecutive barriers merge into one vkCmdPipelineBarrier2: the driver call costs the same for one barrier as for
+   many, and one game's passes cluster barriers (gpuprof.c's "gaps with barriers only"). Two image barriers on one
+   image stay apart: in one call they are not ordered, so a layout transition's old layout would be wrong. */
+#define BAR_BATCH_CAP 64
+static struct {
+    VkCommandBuffer cb;
+    VkDependencyFlags flags;
+    u32 nm, nb, ni;
+    VkMemoryBarrier2 mem[BAR_BATCH_CAP];
+    VkBufferMemoryBarrier2 buf[BAR_BATCH_CAP];
+    VkImageMemoryBarrier2 img[BAR_BATCH_CAP];
+    VkImage images[BAR_BATCH_CAP]; /* the image of img[i], to keep two barriers on one image apart */
+} g_bar_batch;
+u64 g_barrier_merged; /* barriers that shared a call with an earlier one (vk_rec_command_report) */
+static void barrier_flush(void) {
+    if (!g_bar_batch.nm && !g_bar_batch.nb && !g_bar_batch.ni) return;
+    u32 nm = g_bar_batch.nm, nb = g_bar_batch.nb, ni = g_bar_batch.ni;
+    g_bar_batch.nm = g_bar_batch.nb = g_bar_batch.ni = 0;
+    u64 h = REC_AL(sizeof(BarrierArgs)), mn = REC_AL(nm * sizeof(VkMemoryBarrier2)),
+        bn = REC_AL(nb * sizeof(VkBufferMemoryBarrier2));
+    BarrierArgs* x = rec_push(barrier_run, h + mn + bn + ni * sizeof(VkImageMemoryBarrier2));
+    u8* q = (u8*)x + h;
+    *x = (BarrierArgs){g_bar_batch.cb, g_bar_batch.flags, nm, nb, ni};
+    memcpy(q, g_bar_batch.mem, nm * sizeof(VkMemoryBarrier2));
+    memcpy(q + mn, g_bar_batch.buf, nb * sizeof(VkBufferMemoryBarrier2));
+    memcpy(q + mn + bn, g_bar_batch.img, ni * sizeof(VkImageMemoryBarrier2));
+    rec_commit();
+}
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     if (rec_on(cb)) g_rec_barriers++;
     if (!rec_on(cb) || barrier_chained(d)) {
         if (rec_on(cb)) {
             g_rec_barriers_synced++;
+            barrier_flush(); /* what the drain waits for goes first */
             vk_rec_sync();
         }
         vkCmdPipelineBarrier2(cb, d);
         return;
     }
-    u64 h = REC_AL(sizeof(BarrierArgs)), mn = REC_AL(d->memoryBarrierCount * sizeof(VkMemoryBarrier2)),
-        bn = REC_AL(d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
-    BarrierArgs* x = rec_push(barrier_run, h + mn + bn + d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
-    u8* q = (u8*)x + h;
-    *x = (BarrierArgs){cb, d->dependencyFlags, d->memoryBarrierCount, d->bufferMemoryBarrierCount,
-                       d->imageMemoryBarrierCount};
-    memcpy(q, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
-    memcpy(q + mn, d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
-    memcpy(q + mn + bn, d->pImageMemoryBarriers, d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
-    rec_commit();
+    int apart = g_bar_batch.cb != cb || g_bar_batch.flags != d->dependencyFlags ||
+                g_bar_batch.nm + d->memoryBarrierCount > BAR_BATCH_CAP ||
+                g_bar_batch.nb + d->bufferMemoryBarrierCount > BAR_BATCH_CAP ||
+                g_bar_batch.ni + d->imageMemoryBarrierCount > BAR_BATCH_CAP;
+    for (u32 i = 0; i < d->imageMemoryBarrierCount && !apart; i++)
+        for (u32 j = 0; j < g_bar_batch.ni && !apart; j++)
+            if (d->pImageMemoryBarriers[i].image == g_bar_batch.images[j]) apart = 1;
+    if (apart) barrier_flush();
+    else if (g_bar_batch.nm || g_bar_batch.nb || g_bar_batch.ni) g_barrier_merged++;
+    g_bar_batch.cb = cb;
+    g_bar_batch.flags = d->dependencyFlags;
+    memcpy(g_bar_batch.mem + g_bar_batch.nm, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
+    memcpy(g_bar_batch.buf + g_bar_batch.nb, d->pBufferMemoryBarriers,
+           d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
+    for (u32 i = 0; i < d->imageMemoryBarrierCount; i++) {
+        g_bar_batch.img[g_bar_batch.ni + i] = d->pImageMemoryBarriers[i];
+        g_bar_batch.images[g_bar_batch.ni + i] = d->pImageMemoryBarriers[i].image;
+    }
+    g_bar_batch.nm += d->memoryBarrierCount;
+    g_bar_batch.nb += d->bufferMemoryBarrierCount;
+    g_bar_batch.ni += d->imageMemoryBarrierCount;
 }
 
 typedef struct {
@@ -1880,6 +2008,7 @@ static VkDescriptorSet rec_alloc(RecPools* f, VkDescriptorSetLayout layout) {
 }
 static void frame_reset_run(const void* p) {
     RecPools* f = &g_rpools[*(const u32*)p];
+    desc_batch_flush(); /* writes that name a set in the pools about to be reset go first */
     vk_desc_pools_keep(f->pool, &f->npool, &f->peak, &f->uses, f->took);
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool[i], 0);
     f->ipool = 0;
@@ -1916,6 +2045,28 @@ static const void* write_info(const VkWriteDescriptorSet* w) {
         default: return w->pImageInfo;
     }
 }
+/* The recording thread writes a set with one vkUpdateDescriptorSets for many sets, not one a set (one game makes
+   ~1100 a frame). A made set's writes wait here until the recording thread has to apply them: before it binds a set,
+   before it resets a frame's pools (the sets the writes name have to still be whole), and before it ends a command
+   buffer. The writes and their buffer/image/view descriptors are copied out of the ring packet, whose memory the
+   recording thread passes and the producer then reuses. Only the recording thread touches this, so it needs no lock */
+#define DESC_BATCH_WRITES 1024
+#define DESC_BATCH_BYTES  (256ull << 10)
+static struct {
+    VkWriteDescriptorSet w[DESC_BATCH_WRITES];
+    u8 info[DESC_BATCH_BYTES];
+    u32 n;      /* writes in w */
+    u64 ibytes; /* info bytes used */
+} g_desc_batch;
+_Atomic u64 g_desc_merged; /* writes that shared a vkUpdateDescriptorSets with an earlier one (vk_rec_command_report) */
+static void desc_batch_flush(void) {
+    if (!g_desc_batch.n) return;
+    u32 n = g_desc_batch.n;
+    atomic_fetch_add_explicit(&g_desc_merged, n - 1, memory_order_relaxed);
+    g_desc_batch.n = 0;
+    g_desc_batch.ibytes = 0;
+    vkUpdateDescriptorSets(g_vk.dev, n, g_desc_batch.w, 0, NULL);
+}
 typedef struct {
     u32 n, slot, id;
     VkDescriptorSetLayout layout;
@@ -1924,7 +2075,7 @@ static void new_set_run(const void* p) {
     const NewSetArgs* x = p;
     /* the packet is the recording thread's now: the copied writes are pointed at their copied descriptors in place */
     VkWriteDescriptorSet* w = (VkWriteDescriptorSet*)((u8*)p + REC_AL(sizeof *x));
-    u8* info = (u8*)w + REC_AL(x->n * sizeof *w);
+    const u8* pinfo = (const u8*)w + REC_AL(x->n * sizeof *w); /* the descriptors vk_rec_new_set copied into the packet */
     VkDescriptorSet set = rec_alloc(&g_rpools[x->slot], x->layout);
     g_rset[x->id] = set;
     if (!set) {
@@ -1932,13 +2083,20 @@ static void new_set_run(const void* p) {
         return;
     }
     for (u32 i = 0; i < x->n; i++) {
-        w[i].dstSet = set;
-        w[i].pBufferInfo = (const void*)info;
-        w[i].pImageInfo = (const void*)info;
-        w[i].pTexelBufferView = (const void*)info;
-        info += REC_AL(write_info_size(&w[i]));
+        u64 isize = write_info_size(&w[i]);
+        if (g_desc_batch.n == DESC_BATCH_WRITES || g_desc_batch.ibytes + REC_AL(isize) > DESC_BATCH_BYTES)
+            desc_batch_flush();
+        VkWriteDescriptorSet* dw = &g_desc_batch.w[g_desc_batch.n++];
+        u8* di = g_desc_batch.info + g_desc_batch.ibytes;
+        *dw = w[i];
+        dw->dstSet = set;
+        memcpy(di, pinfo, isize); /* the packet's copy, not the caller's memory, which its next frame reuses */
+        g_desc_batch.ibytes += REC_AL(isize);
+        dw->pBufferInfo = (const void*)di;
+        dw->pImageInfo = (const void*)di;
+        dw->pTexelBufferView = (const void*)di;
+        pinfo += REC_AL(isize);
     }
-    if (x->n) vkUpdateDescriptorSets(g_vk.dev, x->n, w, 0, NULL);
 }
 VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWriteDescriptorSet* w) {
     u64 size = REC_AL(sizeof(NewSetArgs)) + REC_AL(n * sizeof *w);
@@ -1975,4 +2133,52 @@ VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWrit
     g_frame_sets[slot]++;
     rec_commit();
     return (VkDescriptorSet)(uintptr_t)(REC_STANDIN | id);
+}
+
+/* the command kinds the recording thread drained since the last report, by name, most first: where its time (the ring
+   dwell before a submit) went. Logged by gpuprof.c's report, which then resets the counters */
+void vk_rec_command_report(double presents) {
+    static const struct {
+        RecFn fn;
+        const char* name;
+    } names[] = {
+        {draw_run, "draws"},       {draw_indexed_run, "indexed draws"}, {draw_mesh_run, "mesh draws"},
+        {draw_indirect_run, "indirect draws"}, {dispatch_run, "dispatches"},
+        {dispatch_indirect_run, "indirect dispatches"}, {sets_run, "descriptor set binds"},
+        {new_set_run, "descriptor sets made"}, {push_run, "push constants"}, {vb_run, "vertex buffer binds"},
+        {vertex_input_run, "vertex input binds"}, {bind_pipeline_run, "pipeline binds"}, {barrier_run, "barriers"},
+        {rendering_run, "render passes begun"}, {viewport_run, "viewports"}, {scissor_run, "scissors"},
+        {copy_buffer_run, "buffer copies"}, {copy_image_run, "image copies"}, {blit_run, "blits"},
+        {resolve_run, "resolves"}, {buffer_to_image_run, "buffer-to-image copies"},
+        {image_to_buffer_run, "image-to-buffer copies"}, {clear_color_run, "color clears"},
+        {clear_depth_run, "depth clears"}, {fill_run, "fills"}, {clear_att_run, "attachment clears"},
+        {cond_run, "conditional renders"}, {copy_indirect_run, "indirect copies"}, {xfb_run, "transform feedback"},
+        {heap_bind_run, "heap binds"}, {heap_push_run, "heap pushes"}, {descriptor_buffer_run, "descriptor buffers"},
+        {descriptor_offsets_run, "descriptor offsets"}, {blend_run, "blend constants"},
+        {clamp_range_run, "clamp ranges"}, {ck_run, "checkpoints"}, {frame_reset_run, "frame resets"},
+        {begin_run, "command buffers begun"}, {rec_call_run, "calls"},
+    };
+    g_rec_kind_count = vk_gpuprof_on();
+    if (!g_rec_kind_total) return;
+    char line[512];
+    int at = 0;
+    for (u64 i = 0; i < REC_KINDS; i++)
+        for (size_t j = 0; j < sizeof names / sizeof *names; j++)
+            if (g_rec_kind[i].fn == names[j].fn)
+                at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.0f",
+                               at ? "," : "", names[j].name, (double)g_rec_kind[i].n / (presents ? presents : 1.0));
+    LOG("vulkan: recording thread commands a present:%s\n", line);
+    LOG("vulkan: recording thread state repeats a present: %.0f push constants byte-identical to the one before (of "
+        "%.0f)\n",
+        (double)g_push_same / (presents ? presents : 1.0),
+        (double)(g_push_same + g_push_diff) / (presents ? presents : 1.0));
+    LOG("vulkan: recording thread merged %.0f barriers into an earlier one's call a present\n",
+        (double)g_barrier_merged / (presents ? presents : 1.0));
+    LOG("vulkan: recording thread batched %.0f descriptor writes into an earlier one's call a present\n",
+        (double)atomic_exchange_explicit(&g_desc_merged, 0, memory_order_relaxed) / (presents ? presents : 1.0));
+    memset(g_rec_kind, 0, sizeof g_rec_kind);
+    g_rec_kind_total = 0;
+    g_push_same = g_push_diff = 0;
+    g_barrier_merged = 0;
+    memset(&g_last_push, 0, sizeof g_last_push);
 }

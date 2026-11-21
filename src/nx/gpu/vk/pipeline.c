@@ -596,7 +596,8 @@ int vk_binding_is_texture(u32 i) {
 }
 /* descriptors of each type in one set: the binding ranges in shader.h */
 static VkDescriptorType binding_type(u32 i) {
-    if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE || i == SNX_VKB_MESHBUF) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE || i == SNX_VKB_MESHBUF || i == SNX_VKB_DRAW)
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     if (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     if (i == SNX_VKB_TEXFUNCS || i == SNX_VKB_TEXMAP) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     if (i >= SNX_VKB_IMGBUF) return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;

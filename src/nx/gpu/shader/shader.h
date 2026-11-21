@@ -451,7 +451,10 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)  /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */
-#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)    /* one past the last binding */
+/* the per-draw push block (storage buffer), a vertex program's, at its draw id (the push constant word 0): the draw's
+   pc[] the renderer writes there in place of the per-draw push constants (SNX_DRAW_WORDS) */
+#define SNX_VKB_DRAW     (SNX_VKB_TEXMAP + 1)
+#define SNX_VKB_END      (SNX_VKB_DRAW + 1)      /* one past the last binding */
 /* Transform feedback by stores (g_spirv_translate.xfb_stores), in the global buffer slots after a program's own (at
    most SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then
    the 4 buffers from where the capture starts */
@@ -481,6 +484,10 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    uvec4 at this byte, and the push block's size */
 #define SH_PUSH_TEX_WORDS       224
 #define SH_PUSH_BYTES_TABLE     240
+/* The per-draw block of SNX_VKB_DRAW: the push constants' words a draw (pc[SH_PUSH_BYTES_TABLE / 4]), SNX_DRAW_MAX of
+   them in the buffer (render.c writes each draw's, the shader reads them at its draw id) */
+#define SNX_DRAW_WORDS (SH_PUSH_BYTES_TABLE / 4)
+#define SNX_DRAW_MAX   (1u << 16)
 /* The texture table (ShCaps.tex_table): one descriptor set after the stages' (table_set), images at binding 0 and
    samplers at binding 1. A vertex or fragment program reads its words, one for each plain texture slot, from a window
    of the staging ring at SNX_VKB_TEXWORDS, the binding only compute programs use otherwise */

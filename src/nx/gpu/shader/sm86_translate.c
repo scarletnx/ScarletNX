@@ -120,6 +120,8 @@ typedef struct {
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
     u32 scale, scale_ptr, scaled_push;
+    /* a vertex program's per-draw block (SNX_VKB_DRAW), read at the draw id (draw_id, the push constant word 0) */
+    u32 draw, draw_ptr, draw_id, draw_id_ptr;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
        instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
@@ -716,7 +718,30 @@ static void unified_push(Ctx* c) {
     c->cbw_u32_ptr = spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32);
     add_interface(c, c->push);
 }
+/* the draw id (the push constant word 0 the renderer gives a vertex program), which indexes its per-draw block */
+static u32 draw_id(Ctx* c) {
+    if (!c->draw_id) {
+        c->draw_id = spv_emit_push_vec4(&c->e, c->t_v4u, c->t_u32, 0, 0, &c->draw_id_ptr);
+        add_interface(c, c->draw_id);
+    }
+    return spv_emit_push_component_f32(&c->e, c->draw_id_ptr, c->draw_id, c->zero, c->zero, c->t_u32);
+}
+/* word k of the vertex program's per-draw block (SNX_VKB_DRAW), at its draw id (draw_id): its float bits, as the
+   renderer's pc[] holds them (callers that read a u32 word bitcast it with to_u) */
+static u32 draw_component(Ctx* c, u32 k) {
+    if (!c->draw) {
+        c->draw = spv_emit_readonly_vec4_array(&c->e, c->t_v4f, c->t_f32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                               SNX_VKB_DRAW, SNX_DRAW_MAX * SNX_DRAW_WORDS / 4, &c->draw_ptr);
+        add_interface(c, c->draw);
+    }
+    u32 index = spv_emit_iadd_u32(
+        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, draw_id(c), cu(c, SNX_DRAW_WORDS)), cu(c, k));
+    return spv_emit_uniform_component(&c->e, c->draw_ptr, c->draw, c->zero,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 2)),
+                                      spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 3)), c->t_f32);
+}
 static u32 push_component(Ctx* c, u32 k) {
+    if (c->stage == ST_VS) return draw_component(c, k); /* a vertex program's per-draw block */
     if (cb_windowed(c)) unified_push(c);
     if (!c->push) {
         c->push = spv_emit_push_vec4(&c->e, c->t_v4f, c->t_f32, 0, 0, &c->push_ptr);
@@ -727,11 +752,16 @@ static u32 push_component(Ctx* c, u32 k) {
 /* element plus the bank's window offset in 16-byte units (a 16-bit field, two banks a word), with cb_windows */
 static u32 cbuf_window(Ctx* c, u32 bank, u32 element) {
     if (!cb_windowed(c) || bank >= 18 || bank >= g_spirv_translate.uniform_cbufs) return element;
-    unified_push(c);
     c->si->cb_window = 1;
     const u32 word = bank / 2;
-    u32 packed = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->cbw_member + word / 4),
+    u32 packed;
+    if (c->stage == ST_VS) /* a vertex program's window offsets are in its per-draw block */
+        packed = to_u(c, draw_component(c, SH_PUSH_CB_WINDOW / 4 + word));
+    else {
+        unified_push(c);
+        packed = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->cbw_member + word / 4),
                                              cu(c, word & 3), c->t_u32);
+    }
     if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
     return spv_emit_iadd_u32(&c->e, c->t_u32, element,
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF)));
@@ -3017,9 +3047,14 @@ static u32 record_word(Ctx* c, u32 k) {
                                                    SNX_VKB_TEXWORDS, 4096, &c->tex_words_ptr);
         add_interface(c, c->tex_words);
     }
-    unified_push(c);
-    u32 base = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->tw_member),
+    u32 base;
+    if (c->stage == ST_VS) /* a vertex program's word window is in its per-draw block */
+        base = to_u(c, draw_component(c, SH_PUSH_TEX_WORDS / 4));
+    else {
+        unified_push(c);
+        base = spv_emit_push_component_f32(&c->e, c->cbw_u32_ptr, c->push, cu(c, c->tw_member),
                                            cu(c, c->stage == ST_FS), c->t_u32);
+    }
     u32 index = spv_emit_iadd_u32(
         &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, k));
     return uniform_word(c, c->tex_words_ptr, c->tex_words, index);

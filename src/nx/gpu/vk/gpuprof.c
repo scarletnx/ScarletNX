@@ -175,6 +175,9 @@ static int gp_on(void) {
     return g_on;
 }
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
+/* whether the profile is on and its report will log: gates the recorder's command-kind count, which runs on every
+   command it drains */
+int vk_gpuprof_on(void) { return gp_on() > 0; }
 u64 vk_gpuprof_busy_ns(void) { return atomic_load_explicit(&g_stats_busy.ns, memory_order_relaxed); }
 /* the frame's command buffers timed: for the profile (gp_on), or for the stats box, which shows */
 static int gp_timed(void) {
@@ -720,6 +723,20 @@ static void gp_idle_report(void) {
             "between submissions, %.1f submissions a present\n",
             (unsigned long long)presents, (double)wall / 1e6 / f, (double)g_busy_ns / 1e6 / f,
             100.0 * (double)g_busy_ns / (double)wall, (double)idle / 1e6 / f, (double)g_subs / f);
+        LOG("vulkan: GPU   waits a present: %.1f sparse binds, %.1f compute results, %.1f ASTC uploads\n",
+            (double)g_vk_sparse_waits / f, (double)g_vk_cs_waits / f, (double)g_vk_astc_waits / f);
+        if (g_submit_count)
+            LOG("vulkan: GPU   submissions a present: %.1f, %.0f%% with an upload buffer, end %.2f us and queue submit "
+                "%.2f us each\n",
+                (double)g_submit_count / f, 100.0 * (double)g_submit_uploads / (double)g_submit_count,
+                (double)g_submit_end_ns / 1000.0 / (double)g_submit_count,
+                (double)g_submit_queue_ns / 1000.0 / (double)g_submit_count);
+        if (g_submit_count)
+            LOG("vulkan: GPU   submission in the ring %.2f us before the recorder runs it, backlog %.1f KiB (%.1f KiB "
+                "at most) when the GPU thread made it\n",
+                (double)g_submit_dwell_ns / 1000.0 / (double)g_submit_count,
+                (double)g_submit_backlog / (double)g_submit_count / 1024.0, (double)g_submit_backlog_max / 1024.0);
+        vk_rec_command_report(f);
         for (int c = 0; c < IDLE_N; c++)
             if (g_idles[c])
                 LOG("vulkan: GPU   idle, %s: %.2f ms a present, %.1f times\n", g_idle_name[c],
@@ -764,6 +781,10 @@ static void gp_idle_report(void) {
     g_fill_waited_ns = 0;
     memset(g_sub_why, 0, sizeof g_sub_why);
     g_busy_ns = g_subs = 0;
+    g_vk_sparse_binds = g_vk_sparse_waits = 0;
+    g_vk_cs_waits = g_vk_astc_waits = 0;
+    g_submit_end_ns = g_submit_queue_ns = g_submit_uploads = g_submit_count = 0;
+    g_submit_dwell_ns = g_submit_backlog = g_submit_backlog_max = 0;
     g_t0 = now;
     g_present0 = g_vk_present;
 }

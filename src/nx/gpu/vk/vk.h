@@ -418,6 +418,9 @@ u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
    when the submission has to wait for one, which *wait then holds */
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
+/* the sparse binds a present, and the submissions that waited for one (vk_sparse_flush): the counters for the
+   "submitted, not started" idle of the GPU profile, reset by gpuprof.c's report */
+extern u64 g_vk_sparse_binds, g_vk_sparse_waits;
 /* one range of a sparse buffer bound to memory (or, bind's memory VK_NULL_HANDLE, let go of) in the same batch as
    the images' binds: it goes to the queue ahead of the next submission, which waits for it, so nothing waits for a
    fence. gone: the memory the range had (VK_NULL_HANDLE none), size bytes, freed once the batch is done. readers:
@@ -2648,6 +2651,7 @@ extern _Atomic u64 g_vk_release_forwards;   /* statistics: reads vk_release_read
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 extern u64 g_vk_itable_uploads, g_vk_itable_reused, g_vk_itable_bytes; /* indexed uniform staging statistics */
 void vk_render_upload_cache_reset(void); /* renderer start: invalidate staging addresses from an earlier device */
+void vk_render_draw_ubo_flush(void); /* flush the per-draw block's host writes before a submission (cmd.c) */
 u32 vk_release_value(u32 id);
 u32 vk_release_value_at_least(u32 id);
 /* the event slots the syncpoint increments this thread performed under vk_lock reached, signaled (nvdrv.c's
@@ -3101,6 +3105,21 @@ extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals *
 u64 vk_compute_submitted(void);
 void vk_compute_after_gfx(u64 value);
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
+/* cmd.c: the submissions that waited for compute results and for ASTC uploads (the "submitted, not started" idle) */
+extern u64 g_vk_cs_waits, g_vk_astc_waits;
+/* record.c: where a submission's time goes on the recording thread (reset by gpuprof.c's report) */
+extern u64 g_submit_end_ns, g_submit_queue_ns, g_submit_uploads, g_submit_count;
+/* record.c: the graphics frame's draw id (SNX_VKB_DRAW's index, the region base plus gl_DrawIndex), bumped per draw */
+extern _Atomic u64 g_draw_id;
+/* record.c: the submission's dwell in the ring before the recorder runs it, and the ring backlog (vk_rec_behind) when
+   the GPU thread made it: where the "submitted, not started" idle goes (reset by gpuprof.c's report) */
+extern u64 g_submit_dwell_ns, g_submit_backlog, g_submit_backlog_max;
+/* record.c: log and reset the command kinds the recording thread drained (the "submitted, not started" idle) */
+void vk_rec_command_report(double presents);
+/* record.c: state repeats, reset by vk_rec_command_report */
+extern u64 g_push_same, g_push_diff;
+extern u64 g_barrier_merged; /* barriers that shared a vkCmdPipelineBarrier2 with an earlier one */
+extern _Atomic u64 g_desc_merged; /* descriptor writes that shared a vkUpdateDescriptorSets with an earlier one */
 extern u64 g_vk_dispatches, g_vk_cs_batches;
 extern _Atomic u64 g_vk_cs_wait_ns; /* statistics */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
@@ -3468,6 +3487,7 @@ void vk_gpuprof_frame_done(u32 slot);
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
    profile are off. g_vk_timestamps_read: those read back at the slots' reuse, which a use not timed leaves out */
 int vk_gpuprof_timed(void);
+int vk_gpuprof_on(void); /* the profile is on and its report logs: gates the recorder's command-kind count */
 u64 vk_gpuprof_busy_ns(void);
 /* vk_gpu_profile's submissions placed on the CPU's clock since the start, and the idle their unsubmitted commands left
    (gpuprof_gap.h's fill) */

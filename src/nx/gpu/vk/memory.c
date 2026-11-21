@@ -128,6 +128,9 @@ static struct {
     u64 gone_bytes;
     int readers; /* it changes blocks of an image in use: after the work submitted before it (VK_BIND_*) */
 } g_bind;
+/* the sparse binds a present, and the submissions that waited for one: the counter for the "submitted, not started"
+   idle of the GPU profile (vk_sparse_flush makes a submission wait on the bind timeline) */
+u64 g_vk_sparse_binds, g_vk_sparse_waits;
 
 /* An allocation of size bytes of system memory, no bigger than g_vk.alloc_cap, found none while its heap had the
    room: the driver gives less in one allocation than the device's limit says, and from now on none is bigger than a
@@ -295,6 +298,7 @@ static void bind_flush(void) {
         h->comp = g_bind.readers & VK_BIND_MOVE ? vk_compute_submitted() : 0;
         h->after = g_bind.issued;
         h->value = ++g_bind.issued;
+        g_vk_sparse_binds++;
         vk_rec_call(bind_run, g_bind.buf, g_bind.used);
     }
     for (u32 i = 0; i < g_bind.ngone; i++) vk_defer_call(gone_free, (void*)(uintptr_t)bind_gone()[i]);
@@ -310,6 +314,7 @@ int vk_sparse_flush(VkSemaphoreSubmitInfo* wait) {
     bind_flush();
     if (g_bind.waited == g_bind.issued) return 0;
     g_bind.waited = g_bind.issued;
+    g_vk_sparse_waits++;
     *wait = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                     .semaphore = g_bind.sem,
                                     .value = g_bind.issued,
