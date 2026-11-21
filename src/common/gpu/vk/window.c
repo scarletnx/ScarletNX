@@ -122,16 +122,11 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
             surfaced = SDL_Vulkan_CreateSurface(out->window, out->instance.instance, NULL, &out->surface) ? 1 : 0;
     }
     if (out->window && !surfaced) {
-        fprintf(stderr, "vulkan: SDL could not make the window's surface: %s\n", SDL_GetError());
-        SDL_DestroyWindow(out->window);
-        out->window = NULL;
-        out->surface = VK_NULL_HANDLE;
-        if (out->video) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-        out->video = false;
         /* A window that gave no surface is a failure, not a headless run: the caller asked for a window, so a caller
-           that presents would read a null surface. The instance stays for the caller's close, as the paths above
-           leave it. */
+           that presents would read a null surface. SDL's reason is taken before anything is closed, which may set
+           another, and nothing stays open, as the paths above leave it: a caller frees what it gave on false */
         snprintf(error, error_size, "SDL could not make the window's surface: %s", SDL_GetError());
+        snx_vk_window_close(out);
         return false;
     }
     return true;
