@@ -32,6 +32,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
 
 /* the functions that write the two words, which the family takes all of or none of */
@@ -82,15 +83,27 @@ static void yield(void) {
 }
 /* TimeoutHelperImplByHorizon::Sleep, which nn::os::SleepThread is: 0 yields */
 void os_sleep_thread(CPU* c, i64 ns) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the sleep-time plot reads the clock */
+#endif
     (void)c;
     if (ns == 0 || ns == -1 || ns == -2) {
         yield();
         return;
     }
-    if (ns < 0) return;
+    if (ns < 0) {
+        SNX_ZONE_T(z, "hook os sleep skip", "negative"); /* rare decision */
+        return;
+    }
+#if defined(SNX_TRACY)
+    waited = plat_ns();
+#endif
     hook_wait_begin();
     plat_sleep_ns(ns);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook os sleep ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }
 void os_yield_thread(CPU* c) {
     (void)c;
@@ -117,6 +130,9 @@ static void cs_enter(CPU* c, u64 cs) {
     _Atomic u32* p = word(c, cs);
     u32 tag = me(), v = 0;
     int waited = 0;
+#if defined(SNX_TRACY)
+    u64 t0 = 0; /* only the contention plot reads the clock */
+#endif
     if (cas(p, &v, tag)) return;
     if ((v & ~HANDLE_WAIT) == tag) return; /* the SDK's Enter takes a lock its thread holds as held */
     for (;;) {
@@ -125,11 +141,24 @@ static void cs_enter(CPU* c, u64 cs) {
             continue;
         }
         if (!(v & HANDLE_WAIT) && !cas(p, &v, v | HANDLE_WAIT)) continue;
-        if (!waited) hook_wait_begin(), waited = 1;
+        if (!waited) {
+            hook_wait_begin();
+            waited = 1;
+#if defined(SNX_TRACY)
+            t0 = plat_ns();
+#endif
+        }
         plat_wait_word(p, snx_le32(v | HANDLE_WAIT), -1);
         v = ld(p);
     }
-    if (waited) hook_wait_end();
+    if (waited) {
+        hook_wait_end();
+        /* the wait left the core, so it is wall time, never a zone: the plot says how long contention blocked the
+           guest thread, measured after it runs again */
+#if defined(SNX_TRACY)
+        SNX_PLOT("hook os cs contention ms", (double)(plat_ns() - t0) / 1e6);
+#endif
+    }
 }
 static int cs_try_enter(CPU* c, u64 cs) {
     u32 v = 0;
@@ -167,7 +196,13 @@ static int cv_wait(CPU* c, u64 cv, u64 cs, u64 end) {
     _Atomic u32* p = word(c, cv);
     u32 v = add(p, 1u), now;
     int got = 0;
+#if defined(SNX_TRACY)
+    u64 t0; /* only the wait-time plot reads the clock */
+#endif
     cs_leave(c, cs);
+#if defined(SNX_TRACY)
+    t0 = plat_ns();
+#endif
     hook_wait_begin();
     for (;;) {
         i64 left = -1;
@@ -186,6 +221,11 @@ static int cv_wait(CPU* c, u64 cv, u64 cs, u64 end) {
     }
     add(p, (u32)-1);
     hook_wait_end();
+    /* measured after the thread runs again: a zone here would time the core it had left, not CPU work */
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook os cv wait ms", (double)(plat_ns() - t0) / 1e6);
+#endif
+    if (!got) SNX_MSG("hook os cv timeout", sizeof("hook os cv timeout") - 1); /* rare outcome */
     cs_enter(c, cs);
     return got;
 }
@@ -218,7 +258,10 @@ int os_cv_timed_wait(CPU* c, u64 cv, u64 cs, u64 helper) {
     i64 left;
     if (!cs_mine(c, cs)) misuse("InternalConditionVariable::TimedWait without its lock");
     left = tick ? ticks_left_ns(tick) : 0;
-    if (left < 1) return 0;
+    if (left < 1) {
+        SNX_ZONE_T(z, "hook os cv no wait", "expired"); /* rare decision: no blocking at all */
+        return 0;
+    }
     return cv_wait(c, cv, cs, deadline_ns(left));
 }
 
@@ -268,9 +311,14 @@ void os_sdk_cv_wait(CPU* c, u64 cv, u64 m) {
 /* a TimeSpan of 0 lets the mutex go and takes it again, and times out; a negative one times out holding it */
 int os_sdk_cv_timed_wait(CPU* c, u64 cv, u64 m, i64 ns) {
     if (!cs_mine(c, m)) misuse("SdkConditionVariableType::TimedWait without its mutex");
-    if (ns < 0) return 0;
+    if (ns < 0) {
+        SNX_ZONE_T(z, "hook os cv no wait", "negative span"); /* rare decision */
+        return 0;
+    }
     if (!ns) {
+        SNX_ZONE_T(z, "hook os cv no wait", "zero span"); /* rare decision: the lock is let go and taken again */
         cs_leave(c, m);
+        SNX_ZONE_END(z); /* the re-lock can block; it is not the no-wait decision */
         cs_enter(c, m);
         return 0;
     }

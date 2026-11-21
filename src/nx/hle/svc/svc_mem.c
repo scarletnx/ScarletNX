@@ -12,6 +12,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
 
 #define MIB          (1ull << 20)
@@ -225,6 +226,7 @@ void mem_report(char* out, int n) {
 u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
     u32 r;
+    SNX_ZONE_TV(z_heap, "kern set heap", (u64)(size >> 20), "%llu MiB", (unsigned long long)(size >> 20));
     if ((size & 0x1FFFFF) || size >= ((large() ? 12ull : 8ull) << 30))
         r = SNX_RC_SVC_INVALID_SIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
@@ -233,6 +235,7 @@ u32 svc_set_heap_size(u64 size) {
         r = mem_result(mem_heap_set(size, heap_budget()));
     LOG("heap: %llu MB requested%s (result %x)\n", (unsigned long long)(size >> 20), R_FAILED(r) ? ", refused" : "",
         r);
+    if (r) SNX_ZONE_TEXT(z_heap, "refused %x", r);
     return r;
 }
 /* svcMapPhysicalMemory and svcUnmapPhysicalMemory: page-aligned (InvalidAddress), whole pages (InvalidSize), no wrap
@@ -259,6 +262,8 @@ u32 svc_unmap_physical(u64 addr, u64 size) {
 /* svcSetMemoryPermission: none, read or read-write, on memory whose state may be reprotected and has no attribute */
 u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm) {
     u32 r;
+    SNX_ZONE_TV(z_perm, "kern set perm", (u64)size, "perm %x, %llx bytes at %llx", perm, (unsigned long long)size,
+                (unsigned long long)addr);
     R_TRY(check_range(addr, size));
     if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     pm_lock(&g_host.svcmem.map_lk);
@@ -269,6 +274,7 @@ u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm) {
         r = 0;
     }
     pm_unlock(&g_host.svcmem.map_lk);
+    if (r) SNX_ZONE_TEXT(z_perm, "refused %x", r);
     return r;
 }
 /* the first block of [addr, addr + size) that svcSetMemoryAttribute can't change: 1 and b when there is one, 0 when
@@ -407,6 +413,7 @@ static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
         if (in_region(addr, size, 0, AS_END) && release_unowned(addr, size) &&
             range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~(MA_SET_MASK | MA_GPU_SHARABLE), 0)) {
             mem_set_attr(addr, size, mask, attr);
+            SNX_MSG("kern attr: released a lock with no owner", sizeof("kern attr: released a lock with no owner") - 1);
             R_SUCCEED();
         }
         if (!in_region(addr, size, 0, AS_END))
@@ -425,11 +432,14 @@ static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
 }
 u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     u32 r;
+    SNX_ZONE_TV(z_attr, "kern set attr", (u64)size, "mask %x attr %x, %llx bytes at %llx", mask, attr,
+                (unsigned long long)size, (unsigned long long)addr);
     R_TRY(check_range(addr, size));
     R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, SNX_RC_SVC_INVALID_COMBINATION);
     pm_lock(&g_host.svcmem.map_lk);
     r = set_mem_attr_locked(addr, size, mask, attr);
     pm_unlock(&g_host.svcmem.map_lk);
+    if (r) SNX_ZONE_TEXT(z_attr, "refused %x", r);
     return r;
 }
 /* The Ounce's GPU attribute SVC makes already mapped memory available to GSV. Keep its bits separate from
@@ -437,6 +447,8 @@ u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
 u32 svc_set_gpu_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     u32 r = 0;
     const u32 gpu_mask = MA_GPU_SHARABLE | MA_GPU_SHARED;
+    SNX_ZONE_TV(z_gattr, "kern gpu attr", (u64)size, "mask %x attr %x, %llx bytes", mask, attr,
+                (unsigned long long)size);
     R_TRY(check_range(addr, size));
     R_UNLESS((mask | attr) == mask && (mask | gpu_mask) == gpu_mask, SNX_RC_SVC_INVALID_COMBINATION);
     pm_lock(&g_host.svcmem.map_lk);
@@ -480,10 +492,13 @@ static u32 svc_map_memory_impl(u64 dst, u64 src, u64 size) {
 }
 u32 svc_map_memory(u64 dst, u64 src, u64 size) {
     u32 r;
+    SNX_ZONE_TV(z_mmap, "kern map memory", (u64)size, "%llx bytes, %llx -> %llx", (unsigned long long)size,
+                (unsigned long long)src, (unsigned long long)dst);
     pm_lock(&g_host.svcmem.map_lk);
     r = svc_map_memory_impl(dst, src, size);
     if (R_SUCCEEDED(r)) map_view_add(dst, src, size);
     pm_unlock(&g_host.svcmem.map_lk);
+    if (r) SNX_ZONE_TEXT(z_mmap, "refused %x", r);
     return r;
 }
 static u32 svc_unmap_memory_impl(u64 dst, u64 src, u64 size) {
@@ -501,10 +516,13 @@ static u32 svc_unmap_memory_impl(u64 dst, u64 src, u64 size) {
 }
 u32 svc_unmap_memory(u64 dst, u64 src, u64 size) {
     u32 r;
+    SNX_ZONE_TV(z_munmap, "kern unmap memory", (u64)size, "%llx bytes at %llx", (unsigned long long)size,
+                (unsigned long long)dst);
     pm_lock(&g_host.svcmem.map_lk);
     r = svc_unmap_memory_impl(dst, src, size);
     if (R_SUCCEEDED(r)) map_view_del(dst);
     pm_unlock(&g_host.svcmem.map_lk);
+    if (r) SNX_ZONE_TEXT(z_munmap, "refused %x", r);
     return r;
 }
 
@@ -527,6 +545,8 @@ static u32 check_process_memory(u64 dst, u32 process, u64 src, u64 size) {
 u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     u32 r;
     int i;
+    SNX_ZONE_TV(z_mp, "kern map process", (u64)size, "%llx bytes, %llx -> %llx", (unsigned long long)size,
+                (unsigned long long)src, (unsigned long long)dst);
     R_TRY(check_process_memory(dst, process, src, size));
     R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_UNLESS(range_ok(dst, size, MS_FREE, 0, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
@@ -550,14 +570,18 @@ u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
         WARN_LIMIT(1, "kernel: more than %d views of code at once: their flushes recompile what they cover\n",
                    KCODEVIEW_MAX);
     pm_unlock(&g_host.svcmem.views_lk);
+    SNX_ZONE_TEXT(z_mp, i < KCODEVIEW_MAX ? "a code view is kept" : "no view slot, flushes recompile");
     R_SUCCEED();
 }
 u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     int i;
+    SNX_ZONE_TV(z_up, "kern unmap process", (u64)size, "%llx bytes at %llx", (unsigned long long)size,
+                (unsigned long long)dst);
     R_TRY(check_process_memory(dst, process, src, size));
     R_UNLESS(range_ok(dst, size, MS_SHAREDCODE, 0, PERM_RW, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     mem_alias_unmap(dst, size, src);
+    SNX_ZONE_TEXT(z_up, "compiled code from %llx is stale", (unsigned long long)src);
     mem_alias_end(src, size);
     pm_lock(&g_host.svcmem.views_lk);
     for (i = 0; i < KCODEVIEW_MAX; i++)
@@ -894,6 +918,8 @@ u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm) {
     KCodeMem* c = (KCodeMem*)o;
     u64* at;
     u32 state;
+    SNX_ZONE_TV(z_code, "kern code memory", (u64)op, "op %u, %llx bytes at %llx", op, (unsigned long long)size,
+                (unsigned long long)addr);
     R_TRY(check_range(addr, size));
     R_UNLESS(op <= 3, SNX_RC_SVC_INVALID_ENUM_VALUE);
     state = op & 1 ? MS_CODEOUT : MS_GENCODE;
@@ -910,6 +936,7 @@ u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm) {
     }
     R_UNLESS(*at == addr, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     mem_alias_unmap(addr, size, op == 2 ? c->addr : 0);
+    SNX_ZONE_TEXT(z_code, op == 3 ? "slave unmapped, code invalidated" : "owner unmapped");
     *at = 0;
     R_SUCCEED();
 }

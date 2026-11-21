@@ -8,13 +8,23 @@
    range and where the fault lies in it: debug.c's kernel_dump_libc_fault) */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
+#include "nx/runtime/platform/tracy.h"
 
+/* memcpy and memmove share this one handler (hooks.hook), so one zone covers both: the zone's time is the host CPU
+   time the copy took, its value the bytes it moved. The zone's name says the family; copying the same text into every
+   one of millions of calls only formats a constant, so no zone text is sent here */
 u64 hook_memmove(CPU* c, u64 dst, u64 src, u64 size) {
-    if (size) memmove(hook_host(c, dst), hook_host(c, src), (size_t)size);
+    if (size) {
+        SNX_ZONE_V(z, "hook mem copy", size);
+        memmove(hook_host(c, dst), hook_host(c, src), (size_t)size);
+    }
     return dst;
 }
 
 u64 hook_memset(CPU* c, u64 dst, i32 value, u64 size) {
-    if (size) memset(hook_host(c, dst), value, (size_t)size); /* the value as an unsigned char, as both take it */
+    if (size) {
+        SNX_ZONE_V(z, "hook mem set", size);
+        memset(hook_host(c, dst), value, (size_t)size); /* the value as an unsigned char, as both take it */
+    }
     return dst;
 }

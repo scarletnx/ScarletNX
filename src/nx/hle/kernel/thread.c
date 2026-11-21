@@ -82,6 +82,12 @@ static void core_unlink_nl(int k, KThread* t) {
 static int core_before(const KThread* a, const KThread* b) {
     return a->prio < b->prio || (a->prio == b->prio && a->core_ticket < b->core_ticket);
 }
+/* The late-preemption time and the thread that let go, and the core wait's time, computed under core_lk by
+   core_held_nl and core_give_nl and emitted by core_unlock once that lock is let go, so no plot or text is formatted
+   while the lock is held */
+static _Thread_local u64 preempt_late_ns; /* 0: no late preemption to emit */
+static _Thread_local u64 preempt_late_id;
+static _Thread_local u64 core_wait_plot_ns; /* 0: no core wait plot to emit */
 /* t, which held core k since core_give_nl, lets go of it: the time goes to the report at exit (kernel_core_report) */
 static void core_held_nl(int k, KThread* t) {
     u64 now = plat_ns(), held = now - g_host.thread.core_since[k],
@@ -89,8 +95,12 @@ static void core_held_nl(int k, KThread* t) {
     g_host.thread.core_held_ns[k] += held;
     t->core_held_ns += held;
     if (!flagged) return;
-    /* how late t let go for a waiter of better priority: on the console, at once */
-    if (now - flagged > 10000000u) g_host.thread.preempt_late[k]++;
+    /* how late t let go for a waiter of better priority: on the console, at once. Only a late one is plotted */
+    if (now - flagged > 10000000u) {
+        g_host.thread.preempt_late[k]++;
+        preempt_late_ns = now - flagged;
+        preempt_late_id = t->id;
+    }
     if (now - flagged > g_host.thread.preempt_max_ns[k]) {
         g_host.thread.preempt_max_ns[k] = now - flagged;
         g_host.thread.preempt_max_by[k] = kt_ix(t);
@@ -109,11 +119,22 @@ static void core_give_nl(int k, KThread* t) {
     atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
     core_flag_nl(k);
     if (!waited) return;
+    core_wait_plot_ns = now - t->core_queued;
     t->core_wait_ns += now - t->core_queued;
     t->core_waits++;
     g_host.thread.core_wait_ns[k] += now - t->core_queued;
     kt_notify_later(t);
 }
+/* The core handoff's decision, computed under core_lk and emitted by core_unlock once that lock is let go, so no
+   zone is opened or text formatted while the lock is held. The thread holding the lock is the one that unlocks it.
+   The value codes are 0 no taker and other holders flagged, 1 the best waiter took this core, 2 it came from another
+   core; -1 means no handoff happened */
+static _Thread_local int handoff_why = -1;
+#if defined(SNX_TRACY)
+/* the handoff's taker, captured under core_lk with the decision, named in the zone's text */
+static _Thread_local u64 handoff_tid;
+static _Thread_local int handoff_prio, handoff_core, handoff_from;
+#endif
 /* core k has just fallen free: its best waiter takes it. With none, it takes the best thread waiting for another core
    that its mask lets run here, unless that thread is about to preempt its own core's holder, as the console's
    scheduler moves a ready thread to a core that would otherwise idle */
@@ -137,10 +158,20 @@ static void core_handoff_nl(int k) {
                 }
         }
     if (!best) { /* a holder with a waiter elsewhere may move here */
+        handoff_why = 0;
         for (j = 0; j < NCORES; j++)
             if (j != k && atomic_load_explicit(&g_hle.thread.core_wait[j], memory_order_relaxed)) core_flag_nl(j);
         return;
     }
+#if defined(SNX_TRACY)
+    /* Capture unconditionally: the emit below is gated only by handoff_why, so fields set only while attached would
+       be stale when a client attaches between the decision and the emit */
+    handoff_tid = best->id;
+    handoff_prio = best->prio;
+    handoff_core = k;
+    handoff_from = from;
+#endif
+    handoff_why = from == k ? 1 : 2;
     core_unlink_nl(from, best);
     if (from != k) core_flag_nl(from);
     core_give_nl(k, best);
@@ -233,6 +264,32 @@ static void core_pin(KThread* t) {
 /* the lock let go of, and the threads its holder handed a core to woken */
 static void core_unlock(void) {
     pm_unlock(&g_host.thread.core_lk);
+    if (handoff_why >= 0) {
+        SNX_ZONE_CS(z_handoff, "kern core handoff", 4);
+        SNX_ZONE_VALUE(z_handoff, (u64)handoff_why);
+#if defined(SNX_TRACY)
+        if (handoff_why > 0)
+            SNX_ZONE_TEXT(z_handoff, "thread %llu prio %d takes core %d from %d", (unsigned long long)handoff_tid,
+                          handoff_prio, handoff_core, handoff_from);
+#endif
+        handoff_why = -1;
+    }
+    if (core_wait_plot_ns) {
+        SNX_PLOT("kern core wait ms", (double)core_wait_plot_ns / 1e6);
+        core_wait_plot_ns = 0;
+    }
+    if (preempt_late_ns) {
+        SNX_PLOT("kern preempt late ms", (double)preempt_late_ns / 1e6);
+#if defined(SNX_TRACY)
+        if (snx_tracy_attached()) {
+            char msg[96];
+            int n = snprintf(msg, sizeof msg, "kern preempt late %llu ms, thread %llu",
+                             (unsigned long long)(preempt_late_ns / 1000000u), (unsigned long long)preempt_late_id);
+            if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? (size_t)n : sizeof msg - 1));
+        }
+#endif
+        preempt_late_ns = 0;
+    }
     kt_flush();
 }
 /* Only t's own thread lets go of a core t holds (another thread hands one only to a thread lined up for it), so a
@@ -288,38 +345,80 @@ void core_leave_waiting(void) {
    spinning lock, and the thread that took its core would spin on that lock for good while the holder waits for the
    core. Its interrupt flag is set instead and its poll stays set: the SDK, its count back at zero, sees the flag and
    calls svcSynchronizePreemptionState, where the core changes hands (svc_enter) */
+#if defined(SNX_TRACY)
+/* the waiter of best priority on core k, named in a preemption's or a yield's text */
+static KThread* core_best_waiter_nl(int k) {
+    KThread *b = NULL, *w;
+    for (w = kt_at(atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed)); w;
+         w = kt_at(atomic_load_explicit(&w->core_next, memory_order_relaxed)))
+        if (!b || core_before(w, b)) b = w;
+    return b;
+}
+#endif
+/* The kern core switch zone's value is the decision: 0 an SVC entry or exit, 1 a game poll, 2 a game pause with no
+   core emulation, 3 kept past a waiter because its disable count is raised, 4 it took back a core lent in a fault, 5 a
+   better waiter preempted it, 6 it moved to an idle core, 7 nothing moved. The decision is stored while core_lk is
+   held and emitted once it is let go. A depth of zero keeps the callstack opt-in through the runtime's setting */
 static void core_switch(KThread* t, int stopped) {
-    int k, j, got = 1, kept = 0, best = 64;
+    int k, j, got = 1, kept = 0, best = 64, decision = stopped ? 1 : 0;
     u16 count = 0;
+#if defined(SNX_TRACY)
+    u64 switch_tid = 0;
+    int switch_prio = 0;
+#endif
     if (!t || !atomic_load_explicit(&t->cpu.poll, memory_order_relaxed)) return;
+    SNX_ZONE_CS(z_switch, "kern core switch", 0);
     if (stopped && t->tls) count = gr16(t->tls + SNX_TLS_DISABLE_COUNT); /* its own TLS: only t's thread is here */
     pm_lock(&g_host.thread.core_lk);
     if (!kernel_emulated_cores()) { /* only a game pause sets poll: kernel_hold, under core_lk */
+        decision = 2;
         if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed))
             atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         pm_unlock(&g_host.thread.core_lk);
+        SNX_ZONE_VALUE(z_switch, (u64)decision);
         return;
     }
     k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
     if (count && (k == -1 || (k >= 0 && g_hle.thread.core_best[k] < t->prio))) {
+        decision = 3;
         /* either way it would line up for a core here, behind the thread that may want its lock */
         gw16(t->tls + SNX_TLS_INTERRUPT_FLAG, 1);
         kept = 1;
         if (k >= 0) best = g_hle.thread.core_best[k];
         g_host.thread.kept++;
     } else if (k == -1) { /* its core was let go while it waited in a fault (kthread_fault_lend): it takes one again */
+        decision = 4;
         atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         got = core_take_nl(t);
     } else if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
+        decision = 5;
+#if defined(SNX_TRACY)
+        if (snx_tracy_attached()) {
+            KThread* bw = core_best_waiter_nl(k);
+            if (bw) {
+                switch_tid = bw->id;
+                switch_prio = bw->prio;
+            }
+        }
+#endif
         core_release_nl(t);
         got = core_take_nl(t);
     } else if (k >= 0 && atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed) &&
                (j = core_idle_nl(t)) >= 0) {
+        decision = 6;
         core_release_nl(t); /* the waiter takes k, t the idle core */
         core_give_nl(j, t);
-    } else
+    } else {
+        decision = 7;
         atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
+    }
     core_unlock();
+    SNX_ZONE_VALUE(z_switch, (u64)decision);
+#if defined(SNX_TRACY)
+    if (decision == 5 && switch_tid)
+        SNX_ZONE_TEXT(z_switch, "thread %llu prio %d preempted by thread %llu prio %d", (unsigned long long)t->id,
+                      t->prio, (unsigned long long)switch_tid, switch_prio);
+#endif
     if (kept) { /* it holds the core it held, or none still: nothing moved */
         if (k >= 0)
             LOG_LIMIT(1,
@@ -333,6 +432,7 @@ static void core_switch(KThread* t, int stopped) {
                       (unsigned long long)t->id, t->prio, (unsigned)count);
         return;
     }
+    SNX_ZONE_END(z_switch); /* the wait for a core is not a zone */
     if (!got) core_await(t);
     core_pin(t);
 }
@@ -435,8 +535,12 @@ static KThread* core_suggested_nl(const KThread* t, int k, int* from) {
    it, as the console does: a thread that polls with svcSleepThread(-1) lends its core to threads its core could run,
    which otherwise wait for a busy core of their own. Without that either, t goes on at once */
 void core_yield(KThread* t, int migrate) {
-    int k, j, got = 1;
+    int k, j, got = 1, why = 4;
     KThread* w;
+#if defined(SNX_TRACY)
+    u64 yield_tid = 0;
+    int yield_prio = 0;
+#endif
     if (!t) return;
     if (!kernel_emulated_cores()) { /* the host's threads are the cores: let it run another */
         plat_yield();
@@ -446,18 +550,38 @@ void core_yield(KThread* t, int migrate) {
        flagged t if it would preempt it, and otherwise comes after this yield, as if it had arrived a moment later */
     for (k = 0; k < NCORES && !atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed); k++) {}
     if (k == NCORES) return;
+    /* the zone's value is the decision: 1 a waiter took the core and t took an idle one, 2 it took the core and t
+       lined up, 3 t took a waiter from another core, 4 no waiter moved. It is stored under core_lk and emitted after */
+    SNX_ZONE(z_yield, "kern core yield");
     pm_lock(&g_host.thread.core_lk);
     k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
     if (k >= 0 && atomic_load_explicit(&g_hle.thread.core_wait[k], memory_order_relaxed) &&
         (migrate || g_hle.thread.core_best[k] <= t->prio)) {
+#if defined(SNX_TRACY)
+        if (snx_tracy_attached()) {
+            KThread* bw = core_best_waiter_nl(k);
+            if (bw) {
+                yield_tid = bw->id;
+                yield_prio = bw->prio;
+            }
+        }
+#endif
         core_release_nl(t);
-        if (migrate && (j = core_idle_nl(t)) >= 0)
+        if (migrate && (j = core_idle_nl(t)) >= 0) {
             core_give_nl(j, t);
-        else {
+            why = 1;
+        } else {
             core_queue_nl(t, k);
             got = 0;
+            why = 2;
         }
     } else if (k >= 0 && migrate && (w = core_suggested_nl(t, k, &j))) {
+#if defined(SNX_TRACY)
+        if (snx_tracy_attached()) {
+            yield_tid = w->id;
+            yield_prio = w->prio;
+        }
+#endif
         core_unlink_nl(j, w);
         core_flag_nl(j);
         atomic_store_explicit(&t->on_core, -1, memory_order_relaxed);
@@ -466,8 +590,15 @@ void core_yield(KThread* t, int migrate) {
         core_give_nl(k, w); /* not core_release_nl: its hand-off could pick another thread */
         core_queue_nl(t, k);
         got = 0;
+        why = 3;
     }
     core_unlock();
+    SNX_ZONE_VALUE(z_yield, (u64)why);
+#if defined(SNX_TRACY)
+    if (yield_tid)
+        SNX_ZONE_TEXT(z_yield, "thread %llu prio %d took core %d", (unsigned long long)yield_tid, yield_prio, k);
+#endif
+    SNX_ZONE_END(z_yield); /* the wait for a core is not a zone */
     if (!got) core_await(t);
     core_pin(t);
 }
@@ -516,6 +647,9 @@ void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns) {
 }
 void klock_unlock(void) {
     pm_unlock(&g_host.kernel.klock);
+#if defined(SNX_TRACY)
+    kernel_wait_plot_flush();
+#endif
     kt_flush();
 }
 
@@ -670,8 +804,20 @@ static void thread_main(void* p) {
     KThread* t = (KThread*)p;
     t_hle.thread.cur = t;
     atomic_store_explicit(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), memory_order_relaxed);
+#if defined(SNX_TRACY)
+    if (snx_tracy_attached()) {
+        char msg[64];
+        int n = snprintf(msg, sizeof msg, "thread map guest %lu host %lu", (unsigned long)t->id,
+                         (unsigned long)plat_tid());
+        if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? (size_t)n : sizeof msg - 1));
+    }
+#endif
     guest_stats_thread_start(kt_ix(t));
-    SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
+    {
+        char hint[16];
+        snprintf(hint, sizeof hint, "core %u", (unsigned)core_of(t));
+        SNX_THREAD_NAME_HINT(t->name[0] ? t->name : "guest", hint);
+    }
     atomic_fetch_add_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     thread_run(t, t->entry);
 }
@@ -846,7 +992,11 @@ int kernel_retire(int timeout_ms) {
 static void thread_resume_main(void* p) {
     KThread* t = (KThread*)p;
     int park = t->park;
-    SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
+    {
+        char hint[16];
+        snprintf(hint, sizeof hint, "core %u", (unsigned)core_of(t));
+        SNX_THREAD_NAME_HINT(t->name[0] ? t->name : "guest", hint);
+    }
     t_hle.thread.cur = t;
     atomic_store_explicit(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), memory_order_relaxed);
     atomic_fetch_add_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
