@@ -8,7 +8,8 @@
 
    An object is made from the program's SPIR-V, which the translator's module keeps here (vk_so_keep_spirv): a draw
    whose modules have no SPIR-V kept, such as the runtime's own clears, is made as a pipeline. So is a key that has
-   state that is no dynamic state for shader objects, or that this path does not set yet (vk_so_takes).
+   state that is no dynamic state for shader objects, or that this path does not set yet (vk_so_takes). With
+   descriptor heaps each object maps its stage's set as a pipeline's stage does, in place of the set layouts.
 
    The driver's binaries of the objects are kept between runs in a file of their own for each driver, beside the
    pipeline cache: an object whose binary the file has is made from it, with no compile */
