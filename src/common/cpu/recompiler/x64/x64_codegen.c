@@ -714,7 +714,7 @@ static int sys(Unit* u, SnxU32 word) {
                 v = sgx_call(g, "snx_mrs", 0, 1, &k, 1, 64);
                 break;
             }
-            default: return 0;
+            default: return -1; /* UNDEF at EL0 on the Switch, as ir_int.c's read_sysreg leaves it */
             }
             if (rt != 31) sg_GPR_write(g, rt, v);
             return 1;
@@ -740,7 +740,11 @@ static int sys(Unit* u, SnxU32 word) {
             sgx_call(g, "snx_msr", 0, 1, args, 2, 0);
             return 1;
         }
-        default: return 0; /* NZCV: LLVM's (the flags this region knows) */
+        case SYSREG(3, 4, 2, 0): /* NZCV from bits 31:28 */
+            sg_PSTATE_write(g, SG_PSTATE_N, 4, sg_d_slice(g, xzr_or(g, rt), 31, 28));
+            g->origin = -1;
+            return 1;
+        default: return -1; /* read-only at EL0, or EL1's: UNDEF, as ir_int.c's write_sysreg leaves it */
         }
     }
     if (op0 == 1 && !l && op1 == 3 && crn == 7 && op2 == 1) {
@@ -751,14 +755,124 @@ static int sys(Unit* u, SnxU32 word) {
         case 10:
         case 11:
         case 14: return 1;
-        default: return 0;
+        default: return -1;
         }
     }
-    return 0;
+    return -1; /* the rest of SYS and SYSL: UNDEF, as ir_int.c's sys() */
 }
 #undef SYSREG
 
 #include "common/cpu/recompiler/x64/x64_vec.c"
+
+/* ---- the SIMD&FP structures: LD1-LD4, ST1-ST4 (multiple and single), LD1R-LD4R ---- */
+
+/* bytes 8 or 16 of guest memory at address as an XMM register (MOVQ, MOVDQU), and the other way */
+static int vload(SgCtx* g, SgD address, int bytes) {
+    SgX* x = sgx(g);
+    int base = sgx_mem(g), index = sgx_reg(x, &address);
+    return sgx_vins(x, bytes == 16 ? &sgx_v_movdqu_ld : &sgx_v_movq_ld, 0, 0, NULL, 0, 1, SGX_VM_GUEST, base, index, 0,
+                    0, 0);
+}
+static void vstore(SgCtx* g, SgD address, int r, int bytes) {
+    SgX* x = sgx(g);
+    int base = sgx_mem(g), index = sgx_reg(x, &address), in[4] = {0, r, 0, 0};
+    sgx_vins(x, bytes == 16 ? &sgx_v_movdqu_st : &sgx_v_movq_st, 0, 0, in, 0, 0, SGX_VM_GUEST, base, index, 0, 0, 0);
+}
+
+/* 1 made, 0 not one of these, -1 UNDEF */
+static int struct_ldst(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned q = word >> 30 & 1, l = word >> 22 & 1, post = word >> 23 & 1, rm = word >> 16 & 31;
+    unsigned rn = word >> 5 & 31, rt = word & 31, size = word >> 10 & 3;
+    SgD base, a;
+    unsigned total, k;
+    if ((word & 0xBF800000u) == 0x0C000000u || (word & 0xBF800000u) == 0x0C800000u) {
+        /* multiple structures: opcode's registers and elements of each structure */
+        unsigned opc = word >> 12 & 15, rpt, selem, len = q ? 16 : 8, eb = 1u << size, ne = len / eb, r, e, s;
+        if ((!post && rm) || (word >> 21 & 1)) return 0;
+        switch (opc) {
+        case 0: rpt = 1, selem = 4; break;
+        case 2: rpt = 4, selem = 1; break;
+        case 4: rpt = 1, selem = 3; break;
+        case 6: rpt = 3, selem = 1; break;
+        case 7: rpt = 1, selem = 1; break;
+        case 8: rpt = 1, selem = 2; break;
+        case 10: rpt = 2, selem = 1; break;
+        default: return -1;
+        }
+        if (size == 3 && !q && selem > 1) return -1;
+        base = sg_GPR_read(g, rn);
+        total = rpt * selem * len;
+        if (selem == 1) {
+            for (r = 0; r < rpt; ++r) {
+                a = sg_d_add(g, base, sgx_const(64, r * len));
+                if (l) vwrite(g, (rt + r) & 31, vload(g, a, (int)len), (int)q);
+                else
+                    vstore(g, a, vread(g, (rt + r) & 31), (int)len);
+            }
+        } else {
+            /* interleaved: structure e's element s is V[t + s]'s element e, one at a time */
+            int regs[4];
+            for (s = 0; s < selem; ++s) regs[s] = l ? vzero(g) : vread(g, (rt + s) & 31);
+            for (e = 0; e < ne; ++e)
+                for (s = 0; s < selem; ++s) {
+                    a = sg_d_add(g, base, sgx_const(64, (e * selem + s) * eb));
+                    if (l) regs[s] = lane_put(g, size, regs[s], (int)e, sg_GuestMemRead(g, a, eb, 0));
+                    else
+                        sg_GuestMemWrite(g, a, eb, 0, lane_get(g, size, regs[s], (int)e));
+                }
+            if (l)
+                for (s = 0; s < selem; ++s) vwrite(g, (rt + s) & 31, regs[s], (int)q);
+        }
+    } else if ((word & 0xBF9F0000u) == 0x0D000000u || (word & 0xBF800000u) == 0x0D800000u) {
+        /* single structure: one element of selem registers (or each register's every element: LDnR) */
+        unsigned opc = word >> 13 & 7, s_bit = word >> 12 & 1, rbit = word >> 21 & 1, selem = ((opc & 1) << 1 | rbit) + 1;
+        unsigned scale = opc >> 1, index, eb, s;
+        int replicate = 0;
+        if (!post && rm) return 0;
+        switch (scale) {
+        case 0: index = q << 3 | s_bit << 2 | size; break;
+        case 1:
+            if (size & 1) return -1;
+            index = q << 2 | s_bit << 1 | size >> 1;
+            break;
+        case 2:
+            if (size & 2) return -1;
+            if (!(size & 1)) index = q << 1 | s_bit;
+            else {
+                if (s_bit) return -1;
+                index = q;
+                scale = 3;
+            }
+            break;
+        default:
+            if (!l || s_bit) return -1;
+            scale = size;
+            replicate = 1;
+            index = 0;
+            break;
+        }
+        eb = 1u << scale;
+        base = sg_GPR_read(g, rn);
+        total = selem * eb;
+        for (s = 0; s < selem; ++s) {
+            unsigned t = (rt + s) & 31;
+            a = sg_d_add(g, base, sgx_const(64, s * eb));
+            if (replicate) {
+                int v = lane_put(g, scale, vzero(g), 0, sg_GuestMemRead(g, a, eb, 0));
+                vwrite(g, t, vdup(g, scale, v, 0), (int)q);
+            } else if (l)
+                vwrite(g, t, lane_put(g, scale, vread(g, t), (int)index, sg_GuestMemRead(g, a, eb, 0)), 1);
+            else
+                sg_GuestMemWrite(g, a, eb, 0, lane_get(g, scale, vread(g, t), (int)index));
+        }
+    } else
+        return 0;
+    if (post) /* the base moved past what was read or written, or by Xm */
+        sg_GPR_write(g, rn, sg_d_add(g, sg_GPR_read(g, rn), rm == 31 ? sgx_const(64, total) : sg_GPR_read(g, rm)));
+    (void)k;
+    return 1;
+}
 
 /* the instruction at address, word; 0 where the function goes to LLVM */
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
@@ -792,10 +906,17 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_PLAIN:
         if (insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE) goto undef;
         if (insn.op == SNX_A64_OP_SYS) {
-            if (!sys(u, word)) return 0;
+            int k = sys(u, word);
+            if (k < 0) goto undef;
+            if (!k) return 0;
             break;
         }
         if (fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
+        {
+            int v = struct_ldst(u, word);
+            if (v < 0) goto undef;
+            if (v) break;
+        }
         {
             int v = vec(u, &insn, word);
             if (v < 0) goto undef;
