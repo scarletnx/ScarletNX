@@ -127,4 +127,57 @@ static int nn_sm_detail_IUserInterface_UnregisterService(SvcObj* self, const nn_
     R_THROW(SNX_RC_SM_NOT_ALLOWED);
 }
 
-SvcObj* new_sm(void) { return nn_sm_detail_IUserInterface_new(); }
+/* The Switch 2 TIPC forms of RegisterService and UnregisterService: a service space may come first (RegisterService
+   20 bytes, UnregisterService 12), and RegisterService puts max_sessions before is_light, where CMIF has is_light
+   first (the SDK's TIPC command format, whose RegisterService takes name, max_sessions and is_light in that order,
+   and libounce's SM client). The CMIF forms are the generated dispatcher's, below. The runtime serves one service
+   space, so the space is only logged, as the SM proxy of the public CFW does */
+/* sm's TIPC commands take no buffer, receive list, X descriptor or handle: the SDK's TIPC command format checks the
+   message's counts against the command's, and sm's have none */
+static int sm_tipc_shaped(const IpcCtx* c) {
+    return !c->na && !c->nb && !c->nw && !c->nx && !c->nc && !c->ncopy;
+}
+static int sm_tipc_register(SvcObj* self, IpcCtx* c) {
+    nn_sm_ServiceName name;
+    char s[9];
+    u32 space = 0, off = 0, max_sessions = 0, port = 0;
+    u8 light = 0;
+    if (!sm_tipc_shaped(c)) return ipc_bad_request(self, c);
+    if (c->raw_size == 20) {
+        ipc_in(c, 0, &space, sizeof space);
+        off = 4;
+    } else if (c->raw_size != 16)
+        return ipc_bad_request(self, c);
+    ipc_in(c, off, &name, sizeof name);
+    ipc_in(c, off + 8, &max_sessions, sizeof max_sessions);
+    ipc_in(c, off + 12, &light, sizeof light); /* one byte, as the SDK's client writes it */
+    space = snx_le32(space), max_sessions = snx_le32(max_sessions);
+    if (off && sm_name(&name, s))
+        WARN("sm: the game registers %s in service space %u, which the runtime does not have: NotAllowed\n", s, space);
+    return nn_sm_detail_IUserInterface_RegisterService(self, &name, light != 0, (i32)max_sessions, &port);
+}
+static int sm_tipc_unregister(SvcObj* self, IpcCtx* c) {
+    nn_sm_ServiceName name;
+    char s[9];
+    u32 space = 0, off = 0;
+    if (!sm_tipc_shaped(c)) return ipc_bad_request(self, c);
+    if (c->raw_size == 12) {
+        ipc_in(c, 0, &space, sizeof space);
+        off = 4;
+    } else if (c->raw_size != 8)
+        return ipc_bad_request(self, c);
+    ipc_in(c, off, &name, sizeof name);
+    space = snx_le32(space);
+    if (off && sm_name(&name, s)) WARN("sm: the game unregisters %s in service space %u: NotAllowed\n", s, space);
+    return nn_sm_detail_IUserInterface_UnregisterService(self, &name);
+}
+/* sm's own dispatcher: the two TIPC forms above, and the generated one for the rest */
+static int sm_dispatch(SvcObj* self, IpcCtx* c) {
+    if (c->tipc && c->cmd == 2) return sm_tipc_register(self, c);
+    if (c->tipc && c->cmd == 3) return sm_tipc_unregister(self, c);
+    return nn_sm_detail_IUserInterface_dispatch(self, c);
+}
+
+SvcObj* new_sm(void) { return svcobj_new("nn::sm::detail::IUserInterface", sm_dispatch); }
+/* the functions a save state may hold of this file (state_fns.h): the dispatcher above, which every sm object holds */
+STATE_FN_TABLE(g_sm_state_fns, STATE_FN("sm", sm_dispatch));
