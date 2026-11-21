@@ -14,6 +14,10 @@
 
 /* the bindings a module may read buffers at: past SNX_VKB_END (gpu/shader/shader.h), SNX_VKB_SMAP among them */
 #define SPV_EVAL_BINDINGS 128
+/* the per-draw block (SNX_VKB_DRAW) and its words (SNX_DRAW_WORDS), which the evaluator keeps in the env's draw, not
+   its ubo: the numbers are written out because shader.h's f32 and f64 clash with this file's */
+#define SPV_EVAL_DRAW        124
+#define SPV_EVAL_DRAW_WORDS  60
 typedef struct {
     uint32_t builtin[64][4]; /* the value of each BuiltIn input, by its number (41 SubgroupLocalInvocationId) */
     uint32_t* ubo[SPV_EVAL_BINDINGS]; /* uniform and storage buffers by binding (any set): their words */
@@ -36,6 +40,7 @@ typedef struct {
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */
     uint32_t push[20];          /* the push constant block's words */
+    uint32_t draw[SPV_EVAL_DRAW_WORDS]; /* the per-draw block, at the draw id (push word 0) */
     /* the specialization constants by SpecId: spec[k] where bit k of spec_given is set, else the module's default */
     uint32_t spec[8], spec_given;
     /* task and mesh programs, one invocation of a workgroup: the TaskPayloadWorkgroupEXT variable's words (given, and

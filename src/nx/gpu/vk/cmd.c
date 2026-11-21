@@ -1088,6 +1088,7 @@ static void rings_flush_host(const Frame* f) {
             g_cmd.chunk[i].flush = 0;
             g_cmd.unflushed--;
         }
+    vk_render_draw_ubo_flush();
 }
 static void rings_flush(const Frame* f) {
     g_cmd.stream_since = 0;
@@ -1118,6 +1119,8 @@ static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkA
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
 }
+/* the submissions that waited for compute results and for ASTC uploads (the "submitted, not started" idle) */
+u64 g_vk_cs_waits, g_vk_astc_waits;
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
@@ -1149,6 +1152,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     }
     if (xw) w[nw++] = *xw;
     if (g_vk_cs_wait_value) { /* draws read compute results on the GPU: after that batch */
+        g_vk_cs_waits++;
         w[nw++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                           .semaphore = g_vk_csem,
                                           .value = g_vk_cs_wait_value,
@@ -1156,6 +1160,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
         g_vk_cs_wait_value = 0;
     }
     if (g_vk_astc_wait_value) { /* the ASTC uploads on the compute queue (astc.c's stream) */
+        g_vk_astc_waits++;
         w[nw++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                           .semaphore = g_vk_astc_sem,
                                           .value = g_vk_astc_wait_value,

@@ -415,6 +415,28 @@ static struct {
     DevMem mem;
     u32 end[GPU_CHANNELS * 2][4];
 } g_xfb;
+/* the per-draw push block (SNX_VKB_DRAW): each draw's pc[SH_PUSH_BYTES_TABLE / 4] at its draw id, written by the CPU
+   and flushed at the submit. The shader reads the block at the draw id the renderer pushes (word 0 of the push
+   constants) */
+static VkBuffer g_draw_ubo;
+static DevMem g_draw_ubo_mem;
+static u8* g_draw_ubo_ptr;
+static int draw_ubo(void) {
+    if (g_draw_ubo) return 1;
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = (VkDeviceSize)SNX_DRAW_WORDS * 4 * SNX_DRAW_MAX,
+                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant aci = {.at = DM_HOST, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_draw_ubo, &g_draw_ubo_mem, &info))) return 0;
+    g_draw_ubo_ptr = info.ptr;
+    vk_mem_track(g_draw_ubo_mem, VK_OWN_MISC);
+    return 1;
+}
+void vk_render_draw_ubo_flush(void) {
+    if (g_draw_ubo) vk_devmem_flush(g_draw_ubo_mem, 0, VK_WHOLE_SIZE);
+}
 static int xfb_counters(void) {
     if (g_xfb.buf) return 1;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -3914,6 +3936,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
                   draw->map_size[stage]);
+    /* the per-draw push block, read by the vertex program (SNX_VKB_DRAW) */
+    if (stage == ST_VS && draw_ubo())
+        dw_buffer(&d, set, SNX_VKB_DRAW, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_draw_ubo, 0,
+                  (VkDeviceSize)SNX_DRAW_WORDS * 4 * SNX_DRAW_MAX);
     for (u32 b = 0; xfb && xfb->range.declared && b < 5; b++)
         if (b == 4 || xfb->range.declared >> b & 1)
             dw_buffer(&d, set, b == 4 ? SNX_VKB_XFB_PARAMS : SNX_VKB_XFB + b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -7686,7 +7712,6 @@ retry:
             const u32 at = g_cb_offsets[st][CB_WINDOW_WORDS];
             memcpy(&pc[SH_PUSH_TEX_WORDS / 4 + st], &at, sizeof at);
         }
-    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {
@@ -7695,13 +7720,32 @@ retry:
             return;
         }
         float width = (float)rt[0]->w, height = (float)rt[0]->h;
+        /* the rectangle's position and source texels go at byte 80 of the one push block, in place of the varying
+           viewport (a texture draw has none), the draw's own scaled words and the predraw number (it has none): the
+           block already covers byte 80, so a second vkCmdPushConstants is not needed */
         float rectangle[8] = {2 * texture->x0 / width - 1, 2 * texture->y0 / height - 1,
             2 * (texture->x0 + texture->w) / width - 1, 2 * (texture->y0 + texture->h) / height - 1,
             texture->sx0 / source->w, texture->sy0 / source->h,
             (float)((texture->sx0 + texture->du * texture->w) / source->w),
             (float)((texture->sy0 + texture->dv * texture->h) / source->h)};
-        rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 80, sizeof rectangle, rectangle);
+        memcpy(&pc[20], rectangle, sizeof rectangle);
     }
+    if (g_shader_sm86) {
+        if (mesh) /* a mesh program reads the first workgroup, the depth fix and the params from push constants */
+            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 12, pc);
+        else {
+            /* the vertex program's per-draw block at its draw id (the push constant word 0), and the fragment stage's
+               members in the same block: a vertex program reads its words from the block, so the push holds the draw
+               id in place of the base instance and leaves the depth fix, the params and the window out (they are in
+               the block). One push to all stages, as the one push range asks (VUID-vkCmdPushConstants-offset-01796) */
+            u32 id = (u32)atomic_load_explicit(&g_draw_id, memory_order_relaxed) & (SNX_DRAW_MAX - 1);
+            if (draw_ubo()) memcpy(g_draw_ubo_ptr + (u64)id * (SNX_DRAW_WORDS * 4), pc, SNX_DRAW_WORDS * 4);
+            memcpy(&pc[0], &id, 4); /* word 0 is the draw id, the base instance is in the block */
+            pc[1] = pc[2] = pc[3] = 0.0f;
+            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
+        }
+    } else
+        rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
 
     if (capture && !g_vk.has_descriptor_heaps)
         rec_CmdPushConstants(cb, layout, VK_PUSH_STAGES, 112, sizeof g_capture_draw.primitive, &g_capture_draw.primitive);
