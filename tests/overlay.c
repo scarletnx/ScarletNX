@@ -1207,13 +1207,13 @@ static void closing_screen(void) {
     const u64 total = 166408602, packed = 100663296; /* 158.7 and 96.0 MiB */
     prepare_screen_theme(NULL, &t);
     snprintf(t.title, sizeof t.title, "%s", "CLOSING");
-    snx_closing_step(&w, 14200, total, packed, &st);
+    snx_closing_step(&w, total, packed, &st);
     prepare_screen_set(&t, "GAME", &st, 1, NULL, 0, "FOOT", 14200);
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     prepare_row(&l, 32.0f, 2, row, sizeof row);
     assert(!strcmp(row, " CLOSING GAME...")); /* 14200 ms: three dots */
     prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
-    assert(!strcmp(row, " SAVING THE SHADER CACHE: 96.0 OF 158.7 MIB, 4 S 60%..."));
+    assert(!strcmp(row, " SAVING SHADERS: 96.0 OF 158.7 MIB 60%..."));
     prepare_row(&l, 32.0f * 19, 2, row, sizeof row);
     assert(strstr(row, " 60%"));
     t.steps = 0;
@@ -1222,7 +1222,7 @@ static void closing_screen(void) {
     l.n = 0;
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
-    assert(!strcmp(row, " SAVING THE SHADER CACHE 96.0 of 158.7 MiB, 4 s: 96.0 / 158.7 MiB"));
+    assert(!strcmp(row, " SAVING SHADERS 96.0 of 158.7 MiB: 96.0 / 158.7 MiB"));
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
 }
 /* A save state's box (overlay_loading): nothing before it; then the whole picture shaded black, its alpha coming in

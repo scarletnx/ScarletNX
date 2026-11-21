@@ -23,9 +23,9 @@ typedef struct {
    the window seen or not: the screen shows from SNX_WAIT_CLOSING_MS on while the window is seen (w->shown); 1 when the
    save is to stop now, at the first close, 0 otherwise */
 int snx_closing_pass(SnxClosing* w, u64 now_ms, int closes, int window_shown);
-/* The screen's row for a save of total bytes with packed of them packed at now_ms: SAVING THE SHADER CACHE, "96.0 of
-   158.7 MiB, 4 s" (the seconds since it began), its value and total in KiB (SnxPrepareStep's kib), from began_ms */
-void snx_closing_step(const SnxClosing* w, u64 now_ms, u64 total, u64 packed, SnxPrepareStep* st);
+/* The screen's row for a save of total bytes with packed of them packed: SAVING SHADERS, "96.0 of 158.7 MiB", its
+   value and total in KiB (SnxPrepareStep's kib), from began_ms */
+void snx_closing_step(const SnxClosing* w, u64 total, u64 packed, SnxPrepareStep* st);
 /* The log's line for a save that a close stopped, once it is over, kept of its total bytes written: "a second close
    stopped the shader cache's save 2.4 s in: 96.0 of 158.7 MiB of this session's shaders not saved" */
 void snx_closing_said(const SnxClosing* w, u64 total, u64 kept, char* out, size_t size);
