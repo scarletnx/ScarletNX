@@ -1918,14 +1918,15 @@ int nvn_program_early_z(u64 serial) {
     pm_unlock(&g_nvn.object.xfb_lock);
     return found;
 }
-/* The early tests a fragment stage's control section asks for: its byte at 0x718, nonzero for on. The game's driver
+/* The early tests a fragment stage's control section asks for: its byte at 0x718, nonzero for on (an Ounce section's
+   at nvn_section_early_z). The game's driver
    reads it in SetShaders (its accessor returns the byte) and writes MANDATED_EARLY_Z (3D method 0x084) with it into
    the program's commands, which BindProgram copies. Without it Vulkan may run a fragment program before its depth
    and stencil tests, and a fragment those tests reject keeps its image stores: one game's light volumes record
    which volumes cover a pixel in an image, and a volume's rejected fragments recorded it where it does not, so a
    floor beside the volume lost its indoor light and took the sky's */
 static void early_z_of(u64 control, u64 serial) {
-    if (!control || !GP(control)[0x718]) return;
+    if (!control || !(ounce_section(control) ? nvn_section_early_z(GP(control)) : GP(control)[0x718])) return;
     LOG_LIMIT(1, "nvn: a fragment program asks for early depth and stencil tests: they run before it\n");
     pm_lock(&g_nvn.object.xfb_lock);
     void* entries = g_nvn.object.early_z;
@@ -2056,7 +2057,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
     u64 tess_controls[2] = {0};
-    u64 fragment = 0; /* the fragment stage's control section, which the Ounce's is not */
+    u64 fragment = 0; /* the fragment stage's control section */
     NvnOunceEntry ounce = {0};
     u32 subroutine_mask = 0;
     i32 i, last_rank = -1;
@@ -2088,7 +2089,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         if (!ounce_section(control) && gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
         if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
         if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
-        if (stage == NVN_SHADER_STAGE_FRAGMENT && !ounce_section(control)) fragment = control;
+        if (stage == NVN_SHADER_STAGE_FRAGMENT) fragment = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1

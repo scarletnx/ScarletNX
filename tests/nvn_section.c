@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The fields of an Ounce control section that nvn_section.h reads: the stage, and a mesh or task program's own */
+/* The fields of an Ounce control section that nvn_section.h reads: the stage, a fragment program's early tests, and a
+   mesh or task program's own */
 #include "nx/gpu/nvn/nvn.h"
 #include "nx/gpu/nvn/nvn_section.h"
 #undef NDEBUG /* the checks are the test */
@@ -57,6 +58,15 @@ int main(void) {
     const u32 fragment[] = {0x10000};
     section(s, fragment, 1);
     assert(nvn_section_stage(s) == NVN_SHADER_STAGE_FRAGMENT);
+    assert(!nvn_section_early_z(s));
+    /* a fragment program that asks for its depth and stencil tests first: its byte at 0x5b, and only that byte (the
+       ones beside it are other fields of a fragment program) */
+    const u32 early[] = {0x10000, 0x1000000};
+    section(s, early, 2);
+    assert(nvn_section_early_z(s));
+    const u32 others[] = {0x10000, 0xffffff, 0xff};
+    section(s, others, 3);
+    assert(!nvn_section_early_z(s));
     /* a compute program: its workgroup of 32x4x1 and its shared memory, 0x5460 bytes (one game's video upscaler, a
        108-byte slot a thread from 0x1e60), and one of none */
     const u32 compute[] = {0x50000, 32, 4, 1, 0x5460};
