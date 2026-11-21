@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/hle/services/hid_touch.h"
 #include "nx/hle/services/hid_layout.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 #include <string.h>
 
@@ -53,4 +54,5 @@ void hid_touch_sample(HidFingers* f, const TouchState* seen, u64 sampling, u8* o
         ++count;
     }
     snx_st_le32(out + HO_HidTouchScreenState_count, (u32)count);
+    SNX_ZONE_V(z_hid_touch, "svc hid touch", (u32)count); /* the number of touches written this sample */
 }

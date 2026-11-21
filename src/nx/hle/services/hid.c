@@ -15,9 +15,26 @@
 #include "nx/hle/services/hid_layout.h"
 #include "nx/hle/services/hid_motion.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/hid.swipc.inc"
 #include <stdatomic.h>
+
+/* A traced dispatch: the command's number is the zone's value, so the commands of this service rank by their time.
+   Both dispatchers share a zone name, so the text says which object answered. A depth of zero keeps the callstack
+   opt-in through the runtime's setting */
+static int hid_server_timed(SvcObj* self, IpcCtx* c) {
+    SNX_ZONE_CS(z_hid_srv, "svc hid cmd", 0);
+    SNX_ZONE_VALUE(z_hid_srv, c->cmd);
+    SNX_ZONE_TEXT(z_hid_srv, "IHidServer");
+    return nn_hid_IHidServer_dispatch(self, c);
+}
+static int hid_sys_timed(SvcObj* self, IpcCtx* c) {
+    SNX_ZONE_CS(z_hid_sys, "svc hid cmd", 0);
+    SNX_ZONE_VALUE(z_hid_sys, c->cmd);
+    SNX_ZONE_TEXT(z_hid_sys, "IHidSystemServer");
+    return nn_hid_IHidSystemServer_dispatch(self, c);
+}
 
 #define HID_LIFO_N  17 /* each LIFO's entries */
 
@@ -616,6 +633,9 @@ static int hid_mouse_memory(u32 handle, u64 size, u64 need, u32* object, u64* gu
     R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE); /* the kernel's InvalidHandle */
     LOG("hid: %s at %llx, %llu bytes\n", what, (unsigned long long)t->addr, (unsigned long long)size);
     if (size < need || t->size < need) {
+        SNX_ZONE_TV(z_hid_mem, "svc hid error", (u64)t->size, "%s memory too small: %llu for %llu", what,
+                    (unsigned long long)t->size, (unsigned long long)need);
+        SNX_ZONE_COLOR(z_hid_mem, 0xB03030); /* the failed answer is red; its value and text stay as they were */
         WARN("hid: %s's memory has %llu bytes, %llu are written\n", what, (unsigned long long)t->size,
              (unsigned long long)need);
         kobj_unref(&t->o);
@@ -889,6 +909,9 @@ static int nn_hid_IHidServer_AcquireNpadStyleSetUpdateEventHandle(SvcObj* self, 
                                                                   u64 event_ptr, u32* event) {
     int e = hid_entry(id);
     (void)self, (void)aruid, (void)event_ptr;
+    if (e < 0) {
+        SNX_ZONE_T(z_hid_id, "svc hid error", "invalid Npad id %llx", (unsigned long long)id);
+    }
     R_UNLESS(e >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     *event = ev_handle(g_hle.hid.style_ev[e]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
@@ -1050,6 +1073,10 @@ static int nn_hid_IHidServer_MergeSingleJoyAsDualJoy(SvcObj* self, nn_hid_NpadId
                                                      u64 aruid) {
     int a = hid_entry(id1), b = hid_entry(id2), i, q;
     (void)self, (void)aruid;
+    if (a < 0 || b < 0) {
+        SNX_ZONE_T(z_hid_pair, "svc hid error", "invalid merge ids %llx %llx",
+                    (unsigned long long)id1, (unsigned long long)id2);
+    }
     R_UNLESS(a >= 0 && b >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     pm_lock(&g_host.hid.lock);
     if (a < HID_PADS && b < HID_PADS && a != b) {
@@ -1196,8 +1223,8 @@ static int nn_hid_IHidServer_GetNpadCommunicationMode(SvcObj* self, nn_hid_NpadC
 }
 
 /* ============================================================ init */
-static SvcObj* new_hid(void) { return nn_hid_IHidServer_new(); }
-static SvcObj* new_hid_sys(void) { return nn_hid_IHidSystemServer_new(); }
+static SvcObj* new_hid(void) { return svcobj_new("nn::hid::IHidServer", hid_server_timed); }
+static SvcObj* new_hid_sys(void) { return svcobj_new("nn::hid::IHidSystemServer", hid_sys_timed); }
 static u32 hid_shm(u64 size, const char* name) {
     KShmem* s = kshmem_new(size, name);
     kobj_ref(&s->o); /* the service's, for as long as it runs */
@@ -1233,3 +1260,5 @@ void svc_hid_init(void) {
     nn_hid_IHidServer_register(new_hid);
     nn_hid_IHidSystemServer_register(new_hid_sys);
 }
+
+STATE_FN_TABLE(g_hid_state_fns, STATE_FN("hid", hid_server_timed), STATE_FN("hid", hid_sys_timed));

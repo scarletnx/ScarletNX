@@ -22,6 +22,7 @@
 #include "common/network/net_ldn.h"
 #include "common/network/net_room.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/tracy.h"
 #include "hle/services/network/ldn.swipc.inc"
 #include <openssl/rand.h>
 
@@ -177,10 +178,12 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Initialize(SvcObj* self,
     int r = 0;
     (void)pid;
     if (g_opt_ldn == SNX_OPT_LDN_OFF) {
+        SNX_ZONE_T(z_net_ldn, "hle: net ldn error", "ldn=off disables local wireless");
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which ldn=off disables\n");
         R_THROW(refuse(d, SNX_RC_LDN_DEVICE_DISABLED));
     }
     if (g_settings.airplane_mode) {
+        SNX_ZONE_T(z_net_ldn, "hle: net ldn error", "airplane mode disables local wireless");
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which airplane_mode=1 turns off\n");
         R_THROW(refuse(d, SNX_RC_LDN_AIRPLANE_MODE_ENABLED));
     }
@@ -500,8 +503,14 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Connect(SvcObj* self, co
     /* the host by its address: its user_name can name the player, and players attach the log to public reports */
     LOG("ldn: connecting to the host at %u.%u.%u.%u\n", n.nodes[0].ipv4[3], n.nodes[0].ipv4[2], n.nodes[0].ipv4[1],
         n.nodes[0].ipv4[0]);
-    /* the wait is the transport's, without the lock: the state stays StationOpened until the host answers */
+    /* the wait is the transport's, without the lock: the state stays StationOpened until the host answers. It is
+       timed with a plot; the zone opens after it and carries the result */
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0;
     r = snx_ldn_connect(d->lan, &n, data->v + CFG_USER_NAME, (i16)version, LDN_CONNECT_MS);
+    u64 waited_ms = 0;
+    if (wait0) waited_ms = (plat_ns() - wait0) / 1000000ull; /* an attach or detach during the wait must not underflow */
+    SNX_PLOT("net ldn connect ms", (double)waited_ms);
+    SNX_ZONE_TV(z_net_ldn, "hle: net ldn connect", (u64)waited_ms, "errno %d", -r);
     pm_lock(&d->lk);
     if (!r && d->state == LDN_STATION_OPENED) set_state(d, LDN_STATION_CONNECTED);
     pm_unlock(&d->lk);

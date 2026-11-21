@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/hle/services/hid_motion.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 #include <math.h>
 #include <string.h>
@@ -60,6 +61,8 @@ void hid_motion_sample(HidMotionState* state, const PadMotion* motion, u64 dt_ns
     float dq[4];
     u32 attr = 1; /* HidSixAxisSensorAttribute_IsConnected */
     int i;
+    /* 1: a live sensor's fusion, 0: a neutral pose from a missing or disabled sensor */
+    SNX_ZONE_V(z_hid_motion, "svc hid motion", motion && motion->valid ? 1u : 0u);
     memset(out, 0, HS_HidSixAxisSensorState);
     if (q[0] == 0.0f && q[1] == 0.0f && q[2] == 0.0f && q[3] == 0.0f) q[0] = 1.0f;
     if (motion && motion->valid) {

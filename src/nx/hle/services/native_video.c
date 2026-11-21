@@ -555,6 +555,7 @@ static int nn_gsv_INativeVideoCodec_InitializeWithProcess(SvcObj* self, u32 proc
 static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const nn_gsv_VideoConfiguration* cfg,
                                               u64* reserved) {
     NativeVideoCodec* s = self->data;
+    SNX_SECTION_SCOPED_C(s_video_codec_open, "video codec open", 5);
     (void)reserved;
     R_UNLESS(s->state == NVIDEO_INITIALIZED && !s->encoder, NVIDEO_BAD_STATE);
     R_UNLESS(mime.addr && mime.size && mime.size <= 64 && mem_mapped_run(mime.addr, mime.size) == mime.size,
@@ -701,6 +702,8 @@ static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
 }
 static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 timestamp, u8 eos, u64* consumed) {
     NativeVideoCodec* s = self->data;
+    SNX_ZONE_V(z_nv_state, "svc nvideo state", s->state);
+    SNX_PLOT("svc nvideo submit bytes", (double)input.size);
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
     R_UNLESS(input.size <= INT_MAX && (!input.size || mem_mapped_run(input.addr, input.size) == input.size),
              NVIDEO_BAD_ARGUMENT);
@@ -714,6 +717,7 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
         R_SUCCEED();
     }
     if (way == NVIDEO_REFUSE_AGAIN) {
+        SNX_ZONE_T(z_nv_err, "svc nvideo error", "input queue full, %u entries", s->input_count);
         ev_clear(s->event);
         R_THROW(NVIDEO_INPUT_FULL);
     }
@@ -724,6 +728,7 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
         R_SUCCEED();
     }
     if (way == NVIDEO_REFUSE_KEEP) {
+        SNX_ZONE_T(z_nv_err, "svc nvideo error", "input queue full, %u entries", s->input_count);
         ev_clear(s->event);
         if (b->bytes + input.size > NVIDEO_BACKLOG_BYTES) {
             WARN_LIMIT(4, "gsv: video codec %u: %llu KB of packets wait for the decoder: one more is dropped\n",

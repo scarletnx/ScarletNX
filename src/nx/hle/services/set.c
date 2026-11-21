@@ -7,6 +7,7 @@
 /* set and set:sys: the system's language, region, keyboard, nickname and firmware version */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/set.swipc.inc"
 #include "nx/hle/services/key_code_map.inc"
@@ -74,6 +75,9 @@ static int nn_settings_ISettingsServer_GetAvailableLanguageCodes(SvcObj* self, I
 }
 static int nn_settings_ISettingsServer_MakeLanguageCode(SvcObj* self, u32 language, nn_settings_LanguageCode* code) {
     (void)self;
+    if (language >= (u32)SET_LANGUAGES) {
+        SNX_ZONE_T(z_set_err, "svc set error", "language %u out of range", language);
+    }
     R_UNLESS(language < (u32)SET_LANGUAGES, SNX_RC_SETTINGS_LANGUAGE_OUT_OF_RANGE);
     memcpy(code->v, set_languages[language].code, 8);
     R_SUCCEED();

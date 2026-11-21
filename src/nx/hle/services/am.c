@@ -21,6 +21,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/ctrl_applet.h"
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/am.swipc.inc"
 
@@ -1362,6 +1363,7 @@ static int am_kb_unasked(const char* what, const OverlayKeyboard* k, char* out, 
    out, 1 cancelled, -1 when no box can show (no window) */
 static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
     int r;
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0;
     pm_lock(&g_host.am.lock);
     k->ticket = am_kb_ticket(NULL);
     pm_unlock(&g_host.am.lock);
@@ -1378,6 +1380,10 @@ static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
         if (!r) snprintf(out, size, "%s", g_host.am.kb_text);
     }
     pm_unlock(&g_host.am.lock);
+    u64 waited = 0;
+    if (wait0) waited = plat_ns() - wait0; /* an attach or detach during the wait must not underflow */
+    SNX_PLOT("svc am keyboard wait ms", (double)waited / 1e6);
+    SNX_ZONE_T(z_am_kb, "svc am keyboard", r ? "cancelled" : "answered");
     return r;
 }
 

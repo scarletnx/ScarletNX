@@ -69,7 +69,12 @@ extern const StateFnTable g_acc_state_fns;    /* acc.c */
 extern const StateFnTable g_am_state_fns;     /* am.c */
 extern const StateFnTable g_ldr_state_fns;    /* ldr.c */
 extern const StateFnTable g_misc_state_fns;   /* misc.c */
+<<<<<<< HEAD
 extern const StateFnTable g_sm_state_fns;     /* sm.c */
+||||||| parent of fbdd5a6 ([hle] Trace service commands and memory hooks)
+=======
+extern const StateFnTable g_hid_state_fns;    /* hid.c */
+>>>>>>> fbdd5a6 ([hle] Trace service commands and memory hooks)
 /* how many nn::settings::Language values set knows, to check the language the settings file names */
 int set_language_count(void);
 #include "common/utilities/users.h" /* SNX_USERS_MAX, the .ini's user at most */

@@ -16,6 +16,7 @@
 #include "nx/hle/services/vi.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/options.h" /* g_opt_fps */
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/vi.swipc.inc"
 #include <stdatomic.h>
@@ -228,6 +229,7 @@ static void vi_present(void* arg) {
     i32 crop[4];
     pm_lock(&g_host.vi.lock);
     if (vi_key(li, (int)(key & 0xff)) != key || s->state != SLOT_QUEUED) {
+        SNX_ZONE_T(z_vi_drop, "svc vi drop", "frame stale or layer closed, layer %d slot %d", li, (int)(key & 0xff));
         pm_unlock(&g_host.vi.lock);
         return;
     }
@@ -311,6 +313,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
     u32 v, gen, fence_none[9];
     i32 interval = 0;
     int qslot = -1, li = (int)(l - g_hle.vi.layer), dequeued = 0, qbi_ok = 0, waits = 0;
+    u64 wait0;
     uintptr_t qkey = 0;
     u8 qbi[VI_QBI];
     parcel_open(&in, GP(parcel.addr), (u32)(parcel.size < 0x10000 ? parcel.size : 0x10000));
@@ -330,13 +333,24 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             else
                 parcel_flat(&out, l->slot[slot].gbuf, VI_GBUF);
             break;
-        case BQ_DEQUEUE_BUFFER:
+        case BQ_DEQUEUE_BUFFER: {
             /* async, width, height, format, usage: the buffers are the game's own, whatever it asks */
             gen = l->gen;
-            /* every buffer the game gave is in use: wait for one, never taking one back from the display */
+            /* every buffer the game gave is in use: wait for one, never taking one back from the display. The wait
+               is timed with a plot; no zone spans it, so a zone's time is work, not idle */
+            wait0 = snx_tracy_attached() ? plat_ns() : 0;
             while ((slot = vi_free_slot(l)) < 0 && l->gen == gen)
-                if (kthread_wait(&g_host.vi.freed, &g_host.vi.lock, 1000000000ll))
-                    WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", ++waits);
+                if (kthread_wait(&g_host.vi.freed, &g_host.vi.lock, 1000000000ll)) {
+                    ++waits; /* count every timeout, not only the ones the log limit lets through */
+                    WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", waits);
+                }
+            if (wait0) SNX_PLOT("svc vi dequeue wait ms", (double)(plat_ns() - wait0) / 1e6); /* no underflow on detach */
+            SNX_ZONE(z_vi_wait, "svc vi dequeue");
+            if (l->gen != gen)
+                SNX_ZONE_TEXT(z_vi_wait, "layer closed while waiting for a buffer");
+            else
+                SNX_ZONE_TEXT(z_vi_wait, "all buffers busy, %d one-second timeouts", waits);
+            SNX_ZONE_VALUE(z_vi_wait, (u64)waits);
             if (l->gen != gen) { /* the layer closed while it waited */
                 status = BQ_NO_INIT;
                 break;
@@ -348,6 +362,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             interval = atomic_load_explicit(&l->interval, memory_order_relaxed);
             dequeued = 1;
             break;
+        }
         case BQ_QUEUE_BUFFER:
             slot = (i32)parcel_u32(&in);
             parcel_u32(&in); /* the flattened size, */
@@ -442,6 +457,9 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
         default: WARN_LIMIT(4, "vi: binder transaction %u isn't known, it answers success\n", code); break;
     }
     pm_unlock(&g_host.vi.lock);
+    if (status) {
+        SNX_ZONE_T(z_vi_err, "svc vi error", "binder %u status %d", code, status);
+    }
     parcel_w32(&out, (u32)status);
     parcel_reply(reply, &out);
     if (qslot >= 0) {
@@ -465,12 +483,15 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
 /* ============================================================ IHOSBinderDriver */
 static int vi_binder_call(i32 binder_id, u32 code, IpcBuf parcel, IpcBuf reply) {
     ViLayer* l;
+    u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     R_UNLESS(parcel.size >= 16, SNX_RC_VI_OPERATION_FAILED); /* not even a parcel's header */
     pm_lock(&g_host.vi.lock);
     l = vi_binder(binder_id);
     pm_unlock(&g_host.vi.lock);
     R_UNLESS(l, SNX_RC_VI_NOT_FOUND);
     vi_transact(l, code, parcel, reply);
+    if (t0) SNX_PLOT("svc vi transact us", (double)(plat_ns() - t0) / 1000.0); /* no underflow on attach or detach */
+    SNX_ZONE_V(z_vi_code, "svc vi code", code); /* one marker per transaction: the value ranks the commands */
     R_SUCCEED();
 }
 static int nns_hosbinder_IHOSBinderDriver_TransactParcel(SvcObj* self, i32 binder_id, u32 code, IpcBuf parcel,

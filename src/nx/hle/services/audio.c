@@ -90,6 +90,10 @@ void audio_init(void) {
    guest time, which a game pause stops: the clock itself stops at the top of its turn while one is in force */
 void audio_clock(void* arg) {
     u64 next = plat_ns(), now;
+    u64 late;
+#if defined(SNX_TRACY)
+    u64 render_ns, out_ns; /* profiling only: no clock is read for them without a client */
+#endif
     (void)arg;
     SNX_THREAD_NAME("audio");
     for (;;) {
@@ -97,21 +101,43 @@ void audio_clock(void* arg) {
         if (g_hle.audio.hold) {
             g_hle.audio.held = 1;
             pc_broadcast(&g_host.audio.hold_cv);
+            /* the reason the tick stops: a game holds the audio clock; no zone, for the wait below would be in it */
+            SNX_MSG("audio tick: held by a game pause", sizeof("audio tick: held by a game pause") - 1);
             while (g_hle.audio.hold) pc_wait(&g_host.audio.hold_cv, &g_host.audio.lk, -1);
             g_hle.audio.held = 0;
             next = plat_ns();
         }
         pm_unlock(&g_host.audio.lk);
         SNX_ZONE(z_audio, "audio tick");
+#if defined(SNX_TRACY)
+        render_ns = plat_ns();
+#endif
         audren_tick();
+#if defined(SNX_TRACY)
+        render_ns = plat_ns() - render_ns;
+#endif
         ev_signal(g_hle.audio.ev);
         now = plat_ns();
-        SNX_ZONE_VALUE(z_audio, now > next ? (u64)(now - next) / AUDIO_FRAME_NS : 0);
+        late = now > next ? now - next : 0;
+        SNX_ZONE_VALUE(z_audio, late / AUDIO_FRAME_NS);
+        SNX_PLOT("audio tick late us", (double)(late / 1000));
+#if defined(SNX_TRACY)
+        out_ns = plat_ns();
+#endif
         nnaudio_out_tick(guest_ns());
         outstream_tick(guest_ns());
+#if defined(SNX_TRACY)
+        out_ns = plat_ns() - out_ns;
+        SNX_PLOT("audio render us", (double)(render_ns / 1000));
+        SNX_PLOT("audio out tick us", (double)(out_ns / 1000));
+#endif
         SNX_ZONE_END(z_audio);
         next += AUDIO_FRAME_NS;
-        if (now > next + 10 * (u64)AUDIO_FRAME_NS) next = now + AUDIO_FRAME_NS;
+        if (now > next + 10 * (u64)AUDIO_FRAME_NS) {
+            next = now + AUDIO_FRAME_NS;
+            SNX_MSG("audio tick: host stalled, schedule restarted",
+                    sizeof("audio tick: host stalled, schedule restarted") - 1);
+        }
         if (next > now) plat_sleep_ns((i64)(next - now));
     }
 }
@@ -163,10 +189,14 @@ static u32 opus_packet_48k(const u8* p, u32 len) {
 
 void hwopus_free(HwOpus* h) {
 #ifndef SNX_NO_H264
+    if (h->dec) SNX_MEM_FREE_D(h->dec, "audio");
     avcodec_free_context(&h->dec);
+    if (h->pkt) SNX_MEM_FREE_D(h->pkt, "audio");
     av_packet_free(&h->pkt);
+    if (h->frame) SNX_MEM_FREE_D(h->frame, "audio");
     av_frame_free(&h->frame);
 #endif
+    if (h->queue) SNX_MEM_FREE_D(h->queue, "audio");
     free(h->queue);
     h->queue = NULL;
     h->taps = h->hist = NULL;
@@ -221,9 +251,13 @@ int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stereo_strea
     qsize = (size_t)h->cap * channels * sizeof *h->queue; /* even: the floats after it are aligned */
     fsize = (size_t)h->ntaps * (channels + 1) * sizeof *h->taps;
     h->queue = malloc(qsize + fsize + 1);
+    if (h->queue) SNX_MEM_ALLOC_D(h->queue, qsize + fsize + 1, "audio");
     h->dec = avcodec_alloc_context3(codec);
+    if (h->dec) SNX_MEM_ALLOC_D(h->dec, sizeof *h->dec, "audio");
     h->pkt = av_packet_alloc();
+    if (h->pkt) SNX_MEM_ALLOC_D(h->pkt, sizeof *h->pkt, "audio");
     h->frame = av_frame_alloc();
+    if (h->frame) SNX_MEM_ALLOC_D(h->frame, sizeof *h->frame, "audio");
     /* an OpusHead (RFC 7845 5.1): mapping family 0 for a stream of one or two channels, 255 (no layout) for more */
     extra = h->dec ? av_mallocz(21 + 255 + AV_INPUT_BUFFER_PADDING_SIZE) : NULL;
     if (!h->queue || !h->dec || !h->pkt || !h->frame || !extra) {
@@ -358,7 +392,10 @@ u32 hwopus_packet_samples(const HwOpus* h, const u8* payload, u32 size) {
    here: the same decoding, outside the pool's decoders and their save states */
 HwOpus* hwopus_new(u32 rate, u32 channels) {
     HwOpus* h = calloc(1, sizeof *h);
-    if (h && !hwopus_open(h, rate, channels, 1, channels - 1, NULL)) {
+    if (!h) return NULL;
+    SNX_MEM_ALLOC_D(h, sizeof *h, "audio");
+    if (!hwopus_open(h, rate, channels, 1, channels - 1, NULL)) {
+        SNX_MEM_FREE_D(h, "audio");
         free(h);
         return NULL;
     }
@@ -367,6 +404,7 @@ HwOpus* hwopus_new(u32 rate, u32 channels) {
 void hwopus_delete(HwOpus* h) {
     if (!h) return;
     hwopus_free(h);
+    SNX_MEM_FREE_D(h, "audio");
     free(h);
 }
 int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
@@ -412,6 +450,7 @@ void audio_state_drop(void) {
 }
 void audio_state_rebuild(void) {
     u32 i;
+    SNX_SECTION_SCOPED_C(s_audio_rebuild, "audio rebuild", 4);
     nnaudio_out_state_rebuild();
     for (i = 0; i < HWOPUS_POOL; i++) {
         HwOpus* h = &g_hle.audio.opus[i];

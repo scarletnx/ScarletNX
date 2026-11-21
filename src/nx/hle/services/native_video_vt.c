@@ -18,6 +18,7 @@
    configuration is late still starts at its first picture. */
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/platform/thread.h"
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
@@ -485,9 +486,12 @@ int nvideo_vt_receive(void* h, AVFrame* frame) {
     VtDec* d = h;
     CVPixelBufferRef pic;
     i64 pts;
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0;
     pm_lock(&d->lock);
     while (!d->count && d->submitted != d->delivered && !d->eos && !d->dead)
         pc_wait(&d->cond, &d->lock, 1000000); /* a picture the engine still owes, which is on its way */
+    if (wait0) SNX_PLOT("svc nvideo vt wait ms", (double)(plat_ns() - wait0) / 1e6); /* no underflow on detach */
+    SNX_ZONE_V(z_nv_vt, "svc nvideo vt", (u32)(d->count ? 1 : 0)); /* 1: a picture came, 0: end or error */
     if (!d->count) {
         int eos = d->eos || d->dead;
         u32 dropped = d->dropped;
