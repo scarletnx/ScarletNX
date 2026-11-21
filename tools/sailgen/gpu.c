@@ -32,6 +32,12 @@ typedef struct {
 
 /* ---- strings and the output buffers ---- */
 
+/* the strings fmt made: the walk keeps them in its values to the end, which frees them together (fmt_free) */
+static struct {
+    char** p;
+    size_t n, cap;
+} g_fmt;
+
 static char* fmt(const char* f, ...) {
     va_list ap;
     int n;
@@ -43,7 +49,22 @@ static char* fmt(const char* f, ...) {
     va_start(ap, f);
     vsnprintf(s, (size_t)n + 1, f, ap);
     va_end(ap);
+    if (g_fmt.n == g_fmt.cap) {
+        g_fmt.cap = g_fmt.cap ? 2 * g_fmt.cap : 1024;
+        g_fmt.p = (char**)realloc(g_fmt.p, g_fmt.cap * sizeof *g_fmt.p);
+        if (!g_fmt.p) {
+            fprintf(stderr, "sailgen: out of memory for %zu strings\n", g_fmt.cap);
+            exit(1);
+        }
+    }
+    g_fmt.p[g_fmt.n++] = s;
     return s;
+}
+static void fmt_free(void) {
+    for (size_t i = 0; i < g_fmt.n; ++i) free(g_fmt.p[i]);
+    free(g_fmt.p);
+    g_fmt.p = NULL;
+    g_fmt.n = g_fmt.cap = 0;
 }
 
 typedef struct {
@@ -1390,5 +1411,7 @@ int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, in
         if (!seen) sg_out("        case %s:\n", r->ops[0]);
     }
     sg_out("%s        default: return 0;\n    }\n}\n", nfuse ? "            return 1;\n" : "");
-    return sg_flush(out_path);
+    const int rc = sg_flush(out_path);
+    fmt_free();
+    return rc;
 }
