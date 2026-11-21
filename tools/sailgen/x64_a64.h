@@ -32,6 +32,7 @@ struct SgCtx {
     int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int vx[32];      /* each SIMD&FP register as an XMM value, where the block has it so (one cache or the other) */
     SgB fp_state[2]; /* the hot paths' check of FPCR and FPSR (sgx_fp_bad), made once a region: without, with IXC */
+    int fp_bound[2]; /* sgx_fp_bound's register for 32 and 64 bits, once a region with fp_state (0: none yet) */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
@@ -121,7 +122,7 @@ static inline SgD sg_PSTATE_read(SgCtx* g, long long field) {
     SgXIns* i;
     if (field < 0 || field > 3) sg_fail("a field of PSTATE this back end does not keep", field, 3);
     i = sgx_append(x, SGX_K_LOAD);
-    i->w = 32;
+    i->w = 8; /* the flag's low byte (0 or 1): what STORE_FLAG's SETcc wrote */
     i->disp = sgx_flag_offset(field);
     i->def = sgx_vreg(x, x->n - 1, 1);
     return sgx_val(1, i->def);
@@ -208,6 +209,7 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
        choice) is first made 0 or 1 in a register; and it may change FPCR (MSR's snx_msr): the FP state check again */
     sgx_flags_clobbered(x);
     g->fp_state[0] = g->fp_state[1] = 0;
+    g->fp_bound[0] = g->fp_bound[1] = 0;
     i = sgx_append(x, SGX_K_MACHINE);
     i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
     i->sym = sym;
@@ -373,6 +375,34 @@ static inline SgB sgx_fp_roomy(SgCtx* g, SgD bits, unsigned w) {
     SgD t = sg_d_sub(g, m, sgx_const(w, (normal + 1) << 1));
     return sgx_d_ult(g, t, sgx_const(w, (inf - normal - 1) << 1));
 }
+/* the hot path's test of a result r (w 32 or 64): its doubled magnitude less the smallest normal's (and 1 more) below
+   the bound, unsigned: a normal number above the smallest, below infinity. The bound is 0 where FPCR rounds otherwise
+   or flushes, or FPSR's IXC is clear: a register made once a region (sgx_fp_bound), so the test costs a MOVD, LEA,
+   CMP and Jcc and no load of FPCR or FPSR an operation */
+static inline SgD sgx_fp_bound(SgCtx* g, SgD fpcr, unsigned w) {
+    SgX* x = sgx(g);
+    SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull, inf = w == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
+    SgD b;
+    if (g->fp_bound[w == 64]) return sgx_val(w, g->fp_bound[w == 64]);
+    b = sg_d_select(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), sgx_const(w, 0),
+                    sgx_const(w, (inf - normal - 1) << 1));
+    sgx_reg(x, &b);
+    g->fp_bound[w == 64] = b.v;
+    return b;
+}
+static inline SgB sgx_fp_hot(SgCtx* g, SgD r, SgD fpcr, unsigned w) {
+    SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull;
+    SgD bound = sgx_fp_bound(g, fpcr, w), rb = sgx_fp_bits(g, r);
+    return sgx_d_ult(g, sg_d_sub(g, sg_d_lsl(g, rb, 1), sgx_const(w, (normal + 1) << 1)), bound);
+}
+/* the cold path of an operation sgx_fp_hot tests: the helper's call where not ok, but a zero result the hot path's
+   where FPCR rounds to nearest without FZ and (zargs, a mask of ops) one of those operands is a zero (none: any zero
+   is exact, as a sum's is) */
+static inline SgD sgx_fp_cold_z(SgCtx* g, SgB ok, SgD fast, const char* sym, SgD* ops, int nops, SnxU32 desc,
+                                unsigned zargs) {
+    return sgx_cold_fp(sgx(g), sg_b_not(g, ok), fast, sym, ops, nops, nops, nops + 1, desc, (int)offsetof(CPU, fpcr),
+                       (int)offsetof(CPU, fpsr), 0x80 | zargs, SGX_FPCR_RMODE | SGX_FPCR_FZ);
+}
 static inline SgB sgx_fp_zero(SgCtx* g, SgD bits) { return sg_d_is_zero(g, sg_d_lsl(g, bits, 1)); }
 static inline SgB sgx_fp_nan(SgCtx* g, SgD bits, unsigned w) {
     SnxU64 inf = w == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
@@ -382,13 +412,10 @@ static inline SgB sgx_fp_nan(SgCtx* g, SgD bits, unsigned w) {
 /* the arguments of an snx_x64_fp_* helper (x64_helpers.c): the operands' bits, FPCR, the constants packed */
 static inline SgD sgx_fp_cold(SgCtx* g, SgB bad, SgD fast, const char* sym, SgD* ops, int nops, SgD fpcr, int has_desc,
                               SnxU32 desc) {
-    SgD args[5];
-    int k, n = 0;
+    (void)fpcr;
     if (nops > 3) sg_fail("an FP helper of more than three operands", nops, 0);
-    for (k = 0; k < nops; ++k) args[n++] = ops[k];
-    args[n++] = sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 64);
-    if (has_desc) args[n++] = sgx_const(32, desc);
-    return sgx_cold(sgx(g), bad, fast, sym, args, n);
+    return sgx_cold_fp(sgx(g), bad, fast, sym, ops, nops, nops, has_desc ? nops + 1 : -1, desc,
+                       (int)offsetof(CPU, fpcr), (int)offsetof(CPU, fpsr), 0, 0);
 }
 /* an operand as an XMM register */
 static inline int sgx_fx(SgCtx* g, SgD* v) { return sgx_xreg(sgx(g), v); }
@@ -406,20 +433,13 @@ static inline SgD sgx_fp_binary(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsi
         SgD o[2] = {a, b};
         return sgx_fp(g, "snx_x64_fp_binary", path, fpcr, o, 2, 1, a.w | op << 8, a.w);
     }
-    ab = sgx_fp_bits(g, a);
-    bb = sgx_fp_bits(g, b);
+    (void)ab, (void)bb, (void)rb;
     r = sgx_xval(w, sgx_v2(x, forms[op][w == 64], sgx_fx(g, &a), sgx_fx(g, &b), 0));
-    rb = sgx_fp_bits(g, r);
-    ok = sgx_fp_roomy(g, rb, w);
-    if (op == SNX_FP_ADD || op == SNX_FP_SUB) ok = sg_b_or(g, ok, sgx_fp_zero(g, rb));
-    else if (op == SNX_FP_MUL)
-        ok = sg_b_or(g, ok, sg_b_and(g, sgx_fp_zero(g, rb), sg_b_or(g, sgx_fp_zero(g, ab), sgx_fp_zero(g, bb))));
-    else
-        ok = sg_b_or(g, ok, sg_b_and(g, sgx_fp_zero(g, rb), sgx_fp_zero(g, ab)));
-    ops[0] = ab;
-    ops[1] = bb;
-    return sgx_fp_cold(g, sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), sg_b_not(g, ok)), r,
-                       "snx_x64_fp_binary", ops, 2, fpcr, 1, w | op << 8);
+    ok = sgx_fp_hot(g, r, fpcr, w);
+    ops[0] = a;
+    ops[1] = b;
+    return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_binary", ops, 2, w | op << 8,
+                         op == SNX_FP_ADD || op == SNX_FP_SUB ? 0 : op == SNX_FP_MUL ? 3 : 1);
 }
 static inline SgD sg_FPAdd(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_ADD); }
 static inline SgD sg_FPSub(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_SUB); }
@@ -469,22 +489,17 @@ static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD 
         SgD o[3] = {addend, a, b};
         return sgx_fp(g, "snx_x64_fp_fma", path, fpcr, o, 3, 1, a.w, a.w);
     }
-    cb = sgx_fp_bits(g, addend);
-    ab = sgx_fp_bits(g, a);
-    bb = sgx_fp_bits(g, b);
+    (void)cb, (void)ab, (void)bb, (void)rb;
     {
         int in[4] = {sgx_fx(g, &addend), sgx_fx(g, &a), sgx_fx(g, &b), 0};
         r = sgx_xval(w, sgx_vins(x, w == 64 ? &sgx_v_vfmadd231sd : &sgx_v_vfmadd231ss, 0, 1, in, 0, 0, SGX_VM_NONE, 0,
                                  0, 0, 0, 0));
     }
-    rb = sgx_fp_bits(g, r);
-    ok = sg_b_or(g, sgx_fp_roomy(g, rb, w),
-                 sg_b_and(g, sgx_fp_zero(g, rb), sg_b_or(g, sgx_fp_zero(g, ab), sgx_fp_zero(g, bb))));
-    ops[0] = cb;
-    ops[1] = ab;
-    ops[2] = bb;
-    return sgx_fp_cold(g, sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), sg_b_not(g, ok)), r,
-                       "snx_x64_fp_fma", ops, 3, fpcr, 1, w);
+    ok = sgx_fp_hot(g, r, fpcr, w);
+    ops[0] = addend;
+    ops[1] = a;
+    ops[2] = b;
+    return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_fma", ops, 3, w, 6);
 }
 static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
     SgX* x = sgx(g);
@@ -492,12 +507,10 @@ static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
     SgD ab, r, rb;
     SgB ok;
     if ((w != 32 && w != 64) || path) return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | SNX_FP_SQRT << 8, a.w);
-    ab = sgx_fp_bits(g, a);
+    (void)ab, (void)rb;
     r = sgx_xval(w, sgx_v1(x, w == 64 ? &sgx_v_sqrtsd : &sgx_v_sqrtss, sgx_fx(g, &a), 0));
-    rb = sgx_fp_bits(g, r);
-    ok = sg_b_or(g, sgx_fp_roomy(g, rb, w), sgx_fp_zero(g, ab));
-    return sgx_fp_cold(g, sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), sg_b_not(g, ok)), r,
-                       "snx_x64_fp_unary", &ab, 1, fpcr, 1, w | SNX_FP_SQRT << 8);
+    ok = sgx_fp_hot(g, r, fpcr, w);
+    return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_unary", &a, 1, w | SNX_FP_SQRT << 8, 1);
 }
 #define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
 static inline int sg_FPRoundingMode(SgCtx* g, SgB path, SgD fpcr) {
