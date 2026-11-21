@@ -255,9 +255,10 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     sprintf(name, "code_%03lu", (unsigned long)index);
     /* A key recorded by an earlier build of this analysis lets the object be read without emitting any IR. That is the
        walk this cache exists to remove: IR for every function of every unit is far dearer than a file read. */
-    if (q->cache && !q->build->keep_ir && q->keys && q->keys[index][0]) {
+    if (q->cache && !q->build->keep_ir && !g_settings.ir_stats && q->keys && q->keys[index][0]) {
         char why[512];
-        unsigned char* object = snx_unit_cache_reuse(q->cache, q->keys[index], &u->size, why, sizeof why);
+        unsigned char* object = snx_unit_cache_reuse(q->cache, q->keys[index], q->build->triple != NULL, &u->size,
+                                                     why, sizeof why);
         if (object) {
             memcpy(u->key, q->keys[index], sizeof u->key);
             u->object = object;
@@ -291,7 +292,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
     if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, u->key, error, error_size);
+        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, u->key,
+                                   q->build->triple != NULL, error, error_size);
     else if (!rc)
         rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);

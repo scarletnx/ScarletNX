@@ -311,14 +311,14 @@ int snx_unit_cache_identity_digest(const SnxUnitCache* cache, char out[65]) {
                               cache->identity_size, out);
 }
 
-unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, size_t* size, char* error,
+unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, int hold_key, size_t* size, char* error,
                                     size_t error_size) {
     char *name = snx_format("%s.o", key), *path = snx_path_join(snx_unit_cache_folder(cache), name), why[512];
     size_t file_size = 0, object_size = 0;
     unsigned char* file;
     *size = 0;
     /* hold before the read: another worker's room() can trim the file while snx_read_file runs */
-    hold(cache, key);
+    if (hold_key) hold(cache, key);
     file = snx_read_file(path, &file_size);
     free(name);
     if (!file)
@@ -367,9 +367,9 @@ unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, s
     return file;
 }
 
-int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* kept,
-                          char* error, size_t error_size) {
-    char key[65], why[512], reason[256], *triple, *cpu, *features, *name, *path;
+int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* key,
+                          int hold_key, char* error, size_t error_size) {
+    char key_name[65], why[512], reason[256], *triple, *cpu, *features, *name, *path;
     LLVMMemoryBufferRef bitcode;
     unsigned char* file;
     size_t file_size = 0, object_size = 0, length;
@@ -378,7 +378,7 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
     *data = NULL;
     *size = 0;
     *reused = 0;
-    if (kept) kept[0] = 0;
+    if (key) key[0] = 0;
     /* snx_ir_object refuses a unit with an instruction no emitter covers, which nothing is looked up for */
     if (ir->fallbacks) return snx_ir_object(ir, cache->opt, data, size, error, error_size);
     bitcode = LLVMWriteBitcodeToMemoryBuffer(ir->mod);
@@ -386,7 +386,7 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
     cpu = LLVMGetTargetMachineCPU(ir->tm);
     features = LLVMGetTargetMachineFeatureString(ir->tm);
     rc = bitcode ? snx_unit_cache_key(cache, triple, cpu, features, LLVMGetBufferStart(bitcode),
-                                      LLVMGetBufferSize(bitcode), key)
+                                      LLVMGetBufferSize(bitcode), key_name)
                  : -1;
     if (bitcode) LLVMDisposeMemoryBuffer(bitcode);
     LLVMDisposeMessage(triple);
@@ -397,16 +397,16 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
                  bitcode ? "OpenSSL cannot hash its IR" : "LLVM cannot write its IR as bitcode");
         return -1;
     }
-    name = snx_format("%s.o", key);
+    name = snx_format("%s.o", key_name);
     path = snx_path_join(snx_unit_cache_folder(cache), name);
-    if (kept) hold(cache, key); /* before it is read, so that it is still there when it is read back */
+    if (hold_key) hold(cache, key_name); /* before it is read, so that it is still there when it is read back */
     file = snx_read_file(path, &file_size);
     if (!file) snx_os_error(reason, sizeof reason);
-    if (file && !whole(file, file_size, key, &object_size, why, sizeof why)) {
+    if (file && !whole(file, file_size, key_name, &object_size, why, sizeof why)) {
         *data = file;
         *size = object_size;
         *reused = 1;
-        if (kept) memcpy(kept, key, sizeof key);
+        if (key) memcpy(key, key_name, sizeof key_name);
         /* the size limit removes the objects reused longest ago first */
         if (snx_set_file_time(path, (SnxU64)time(NULL))) {
             snx_os_error(reason, sizeof reason);
@@ -439,8 +439,8 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
         pthread_mutex_lock(&cache->lock);
 #endif
         if (!room(cache, (SnxU64)*size + SNX_UNIT_TRAILER)) {
-            if (!snx_unit_cache_keep(cache, key, *data, *size, why, sizeof why)) {
-                if (kept) memcpy(kept, key, sizeof key);
+            if (!snx_unit_cache_keep(cache, key_name, *data, *size, why, sizeof why)) {
+                if (key) memcpy(key, key_name, sizeof key_name);
             } else {
                 if (first_said(cache, UNIT_SAID_KEEP))
                     snx_error("unit cache: %s: this run's units are not cached", why);
