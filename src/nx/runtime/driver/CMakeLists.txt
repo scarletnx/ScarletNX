@@ -29,7 +29,7 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" llvm-backend)
 # the NX game module through the LLVM backend; GNU C23 for the LLVM-C headers, the driver itself stays ISO C23
-add_library(snx_driver_llvm STATIC ../../loader/module_llvm.c ../../loader/module_variants.c ../../loader/module_arm.c
+add_library(snx_driver_llvm STATIC ../../loader/module_llvm.c ../../loader/module_x64.c ../../loader/module_variants.c ../../loader/module_arm.c
                                    ../../loader/unit_cache.c llvm_tuning.c disasm.c "${SNX_SETTINGS_LLVM}")
 set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)

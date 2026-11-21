@@ -16,6 +16,7 @@
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "nx/loader/module_x64.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
 #include <stdio.h>
@@ -124,7 +125,37 @@ static void written_unit(void* arg, size_t index) {
     p->units[index - p->first].object = NULL;
 }
 
+/* LLVM's targets, initialized once, when something needs LLVM: a module the x86-64 back end makes whole needs none */
+#ifdef _WIN32
+static INIT_ONCE g_llvm_once = INIT_ONCE_STATIC_INIT;
+#else
+static pthread_mutex_t g_llvm_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+static int g_llvm_ready;
+static int llvm_ready(char* error, size_t error_size) {
+    int rc = 0;
+#ifdef _WIN32
+    BOOL pending;
+    InitOnceBeginInitialize(&g_llvm_once, 0, &pending, NULL);
+    if (pending) {
+        rc = snx_ir_init(error, error_size);
+        g_llvm_ready = !rc;
+        InitOnceComplete(&g_llvm_once, 0, NULL);
+    } else if (!g_llvm_ready)
+        rc = snx_ir_init(error, error_size);
+#else
+    pthread_mutex_lock(&g_llvm_lock);
+    if (!g_llvm_ready) {
+        rc = snx_ir_init(error, error_size);
+        g_llvm_ready = !rc;
+    }
+    pthread_mutex_unlock(&g_llvm_lock);
+#endif
+    return rc;
+}
+
 static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, size_t error_size) {
+    if (llvm_ready(error, error_size)) return NULL;
     return build->triple ? snx_ir_new_target(name, build->opt, build->triple, error, error_size)
                          : snx_ir_new(name, build->opt, error, error_size);
 }
@@ -837,12 +868,11 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     const char* exports[5];
     char error[1024], *tmp = NULL;
     double start;
-    int rc = -1;
+    int rc = -1, x64_only = 0, rtlib_static = 0;
     memset(&codegen, 0, sizeof(codegen));
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
-    if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
     if (options->jit_cache && build->triple) {
         snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);
         goto done;
@@ -940,7 +970,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         q.cache = unit_cache;
     }
     if (!options->quiet)
-        printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
+        printf("%s: %lu code unit%s and the module descriptor\n", q.x64 ? "x86-64 back end (LLVM where it can't)" : "LLVM",
+               (unsigned long)q.count, q.count == 1 ? "" : "s");
     if (q.count) run(&q, build->jobs, build->jobs_open);
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
@@ -949,11 +980,25 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (q.x64 && !options->quiet) {
         size_t made = 0;
         for (i = 0; i < q.count; ++i) made += q.units[i].x64_made;
-        printf("x86-64 back end: %lu of %lu functions, LLVM the rest\n", (unsigned long)made,
-               (unsigned long)codegen.function_count);
+        printf("x86-64 back end: %lu of %lu functions%s\n", (unsigned long)made, (unsigned long)codegen.function_count,
+               made == codegen.function_count ? "" : ", LLVM the rest");
     }
-    /* the module descriptor */
+    /* the module descriptor: without LLVM where the x86-64 back end made every function (and no profile cache's
+       units come in), LLVM's IR otherwise */
     start = snx_seconds();
+    x64_only = q.x64 && !cache_count;
+    for (i = 0; x64_only && i < q.count; ++i)
+        if (q.units[i].object || q.units[i].key[0] || q.units[i].x64_made != q.units[i].last - q.units[i].first)
+            x64_only = 0;
+    if (x64_only) {
+        if (snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, &module_object, &module_size,
+                               &entry_count, error, sizeof(error))) {
+            snx_error("x86-64 back end: %s", error);
+            goto done;
+        }
+        if (build->wrappers) *build->wrappers = 0;
+        goto descriptor_done;
+    }
     ir = new_ir(build, "module", error, sizeof(error));
     if (!ir) {
         snx_error("LLVM backend: %s", error);
@@ -990,6 +1035,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", error);
         goto done;
     }
+descriptor_done:
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
@@ -997,7 +1043,14 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     /* link: runtime library, descriptor, chunks. A module for another machine has no runtime library of its own
        (this host has none for that machine): the app that loads it brings its own */
-    if (!build->triple && snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
+    if (x64_only) {
+        /* the one the recompiler's build compiled (rtlib_object.h), as the JIT links: no LLVM */
+        rtlib_object = (unsigned char*)snx_rtlib_object;
+        rtlib_size = (size_t)snx_rtlib_object_size;
+        rtlib_static = 1;
+    } else if (!build->triple &&
+               (llvm_ready(error, sizeof(error)) ||
+                snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error)))) {
         snx_error("LLVM backend: %s", error);
         goto done;
     }
@@ -1073,7 +1126,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         }
     }
     if (!options->quiet) {
-        printf("LLVM module: %.1f MB, %lu entries\n", (double)linked.size / 1000000.0, (unsigned long)entry_count);
+        printf("%s module: %.1f MB, %lu entries\n", x64_only ? "x86-64" : "LLVM", (double)linked.size / 1000000.0,
+               (unsigned long)entry_count);
     }
     if (unit_cache) report_units(&q, build, options->quiet);
     rc = 0;
@@ -1087,7 +1141,7 @@ done:
     free(q.imports);
     free(inputs);
     free(module_object);
-    free(rtlib_object);
+    if (!rtlib_static) free(rtlib_object);
     free(linked.data);
     free(tmp);
     snx_ir_free(ir);
