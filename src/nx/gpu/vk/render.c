@@ -154,7 +154,11 @@ void vk_render_end_at(const char* file, int line) {
     if (!g_rp.open) return;
     if (g_rp.clears) rp_record(); /* clears with nothing drawn after them still clear */
     g_rp.open = 0;
-    if (!g_rp.begun) return; /* nothing was recorded in it: its load and store would change nothing */
+    if (!g_rp.begun) { /* nothing was recorded in it: its load and store would change nothing */
+        SNX_ZONE_T(z_skip, "vk pass skip: nothing recorded", "nothing was recorded: no load or store");
+        SNX_PLOT("vk pipe pass skipped", 1);
+        return;
+    }
     g_rp.begun = 0;
     pass_end_count(file, line);
     VkCommandBuffer cb = vk_cmd();
@@ -294,8 +298,14 @@ static void async_tell(int may_skip) {
    attachment has a surface (a draw's color targets all sampled and none written, render_draw), the targets' the guest
    bound */
 static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb, VkExtent2D area) {
+    SNX_ZONE_V(z, "vk render begin", 2); /* 2 a new pass, 1 the open pass reused, 0 none opened */
     srgb_write = !!srgb_write;
-    if (!n && !zt) return 0;
+    if (!n && !zt) {
+        SNX_ZONE_VALUE(z, 0);
+        SNX_ZONE_T(z_skip, "vk pass skip: no target", "no color or depth target");
+        SNX_PLOT("vk pipe pass skipped", 1);
+        return 0;
+    }
     if (!zt) zt_ro = 0;
     int same = g_rp.open && g_rp.n == n && g_rp.zt == zt && g_rp.zt_ro == zt_ro && g_rp.srgb_write == srgb_write &&
                !memcmp(g_rp.rt, rt, sizeof g_rp.rt);
@@ -304,7 +314,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     VkImageView rate = g_rp.rate_want == RATE_KEEP ? (same ? g_rp.rate : VK_NULL_HANDLE)
                        : vk_vrs_attachment(g_rp.rate_want, same ? g_rp.ext : area);
     if (same && rate != g_rp.rate) same = 0;
-    if (same && !(fb & ~g_rp.fb)) return 1;
+    if (same && !(fb & ~g_rp.fb)) {
+        SNX_ZONE_VALUE(z, 1);
+        return 1; /* the open pass serves: no new attachments or feedback slots */
+    }
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
@@ -336,6 +349,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                         (loop ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0));
         ca[i].imageView = vk_rt_attachment(rt[i], srgb_write);
         if (!ca[i].imageView) {
+            SNX_ZONE_VALUE(z, 0);
+            SNX_ZONE_T(z_skip, "vk pass skip: no attachment view", "a color target has no attachment view");
+            SNX_PLOT("vk pipe pass skipped", 1);
             vk_surf_batch_end();
             return 0;
         }
@@ -672,7 +688,7 @@ static int feedback_order(u32 read, u32 write, int strict) {
     if (!(read & written) && !(write & sampled)) return 1;
     if (!g_vk.has_local_read) {
         Surf* rt[8];
-        SNX_ZONE(z, "vk pass restart");
+        SNX_ZONE_T(z, "vk pass restart", "no dynamicRenderingLocalRead: end and begin the pass for the barrier");
         memcpy(rt, g_rp.rt, sizeof rt);
         vk_render_end();
         g_vk_fb_restarts++;
@@ -3764,7 +3780,8 @@ static u64 predraw_choose(const DsState* ds, const VkSh* fs0, const TexRes* fres
 static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
                                  u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
                                  const ScreenSlots* screen, const XfbBind* xfb) {
-    SNX_ZONE(z, "stage set");
+    SNX_ZONE_TV(z, "shader: stage set", stage, "stage %d hash %016llx, %u targets, %d images", stage,
+                 (unsigned long long)s->hash, n, s->si.nimg);
     VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images, screen, xfb);
     SNX_ZONE_END(z);
     return set;
@@ -4030,7 +4047,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     d.n = 0;
     d.cb_addr = vk_cb_addr_mask(&s->si);
     /* the profiler's zones of a stage's set: its constant buffers, storage buffers, textures and the set itself */
-    SNX_ZONE(zcb, "stage set constants");
+    SNX_ZONE_TV(zcb, "shader: stage set constants", s->si.cbuf_mask,
+                 "stage %d, cb mask %08x, hash %016llx", stage, s->si.cbuf_mask, (unsigned long long)s->hash);
     if ((u32)shader_vk_set(s->stage) < 2) memset(g_cb_dyn[shader_vk_set(s->stage)], 0, sizeof g_cb_dyn[0]);
     for (u32 banks = s->si.cbuf_mask & 0x3FFFFu; banks; banks &= banks - 1) { /* the banks the program has */
         const int i = (int)snx_ctz32(banks);
@@ -4082,7 +4100,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
        draws about 600 times a frame into one result buffer, and each of those draws ended the pass for a barrier
        before it. nvn_storage_order 0 keeps that order for comparisons */
     SNX_ZONE_END(zcb);
-    SNX_ZONE(zsb, "stage set storage");
+    SNX_ZONE_TV(zsb, "shader: stage set storage", s->si.ngbuf, "stage %d, %d gbuf banks, hash %016llx", stage,
+                 s->si.ngbuf, (unsigned long long)s->hash);
     int ordered = !g_settings.nvn_storage_ordering;
     /* The stage's record in its words' window (table_words): with gbuf_address, each global buffer slot's device
        address and length and the scratch words' address (SH_RECORD_GBUF), then the texture words. A program of
@@ -4251,7 +4270,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
-    SNX_ZONE(ztex, "stage set textures");
+    SNX_ZONE_TV(ztex, "shader: stage set textures", s->si.ntex, "stage %d, %d textures, hash %016llx", stage,
+                 s->si.ntex, (unsigned long long)s->hash);
     u32 tcb = ds->bind.tex_bank;
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
@@ -4559,7 +4579,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
-    SNX_ZONE(zset, "stage set descriptors");
+    SNX_ZONE_TV(zset, "shader: stage set descriptors", d.n, "stage %d, %u writes, hash %016llx", stage, d.n,
+                 (unsigned long long)s->hash);
     if (!g_spirv_translate.split_sets) return desc_set_cached(layout, &d, stage);
     /* the textures' writes into a set of their own (shader_vk_tex_set), which a draw that changes only its constant
        buffers finds again in the set cache: one set for both was new at each of those draws */
@@ -4667,6 +4688,17 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
 u64 g_vk_async_early;
+/* why the draw being made now was skipped. render_draw saves and restores it so a draw inside a draw keeps its own
+   reason; vk_render_draw labels the zone with the reason its draw returns. A short reason, not a zone of its own, so a
+   game that skips most of its draws does not nest a zone per skip */
+static const char* g_skip_why;
+/* the key hash of the pipeline this draw bound, for its zone text. render_draw saves and restores it with g_skip_why
+   so a draw inside a draw (a capture slice, a save draw) keeps its own. 0 when no pipeline was reached */
+static u64 g_draw_pipe_hash;
+static void draw_skip(const char* why) {
+    g_vk_skipped++;
+    g_skip_why = why;
+}
 /* draws whose depth the console both clips and clamps (its clamp off), and of them those that write their own depth or
    take a depth bias, whose depth may leave the viewport's range: undefined there without VK_EXT_depth_clip_enable */
 u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
@@ -6313,7 +6345,8 @@ static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 ao
         for (u32 i = 0; i < n; i++)
             rec_CmdDrawIndirect(cb, indexed, abuf, aoff + (u64)i * stride, VK_NULL_HANDLE, 0, 1, 0);
 }
-static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture);
+static const char* render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture,
+                               u64* pipe_hash);
 static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner, Surf* target, u64 blend,
                          int coverage, const VkCoverage* mixed, VkCapture* prepared);
 static int capture_supported(const DrawShaders* shaders, const DsState* ds, const DrawCall* dc, u32 colors) {
@@ -6465,12 +6498,12 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
     u64 drawn = g_vk_drawn;
     g_predraw.phase = 1;
-    render_draw(&pre, &call, o, NULL);
+    render_draw(&pre, &call, o, NULL, NULL);
     int saved = g_vk_drawn != drawn;
     if (saved) {
         g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
         g_predraw.phase = 2;
-        render_draw(ds, dc, o, NULL);
+        render_draw(ds, dc, o, NULL, NULL);
         if (g_vk_drawn != drawn) g_vk_predraws++;
     }
     g_predraw.phase = 0;
@@ -6479,10 +6512,16 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     return saved ? NULL : "had its save draw skipped (the log says why above)";
 }
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    SNX_ZONE(z, "draw");
+    SNX_ZONE_V(z, "vk: draw", dc->count);
     int heaps = g_vk.has_descriptor_heaps;
-    render_draw(ds, dc, o, NULL);
+    u64 pipe_hash = 0;
+    const char* why = render_draw(ds, dc, o, NULL, &pipe_hash);
     g_vk.has_descriptor_heaps = heaps;
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "n=%u inst=%u topo=%u pipe=%016llx%s%s", dc->count, dc->instances, dc->topology,
+                  (unsigned long long)pipe_hash, why ? " skipped: " : "", why ? why : "");
+#endif
+    if (why) SNX_PLOT("vk pipe draw skipped", 1);
     SNX_ZONE_END(z);
 }
 /* in a draw's setup, from its start (retry) to its check of the submission number (setup_frame), where it starts again
@@ -6491,13 +6530,23 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
 static int g_setup_restarts;
 int vk_render_setup_restarts(void) { return g_setup_restarts; }
 static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture);
-static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
+static const char* render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture,
+                               u64* pipe_hash) {
     static u64 serial;
     const u64 was = g_vk_drawing; /* a draw recorded within another (its slices) */
     g_vk_drawing = ++serial;      /* the copies of targets it samples (texture.c copy_read) */
+    const char* outer_why = g_skip_why;
+    u64 outer_hash = g_draw_pipe_hash;
+    g_skip_why = NULL;
+    g_draw_pipe_hash = 0;
     render_draw_main(ds, dc, o, texture);
+    const char* why = g_skip_why;
+    if (pipe_hash) *pipe_hash = g_draw_pipe_hash;
+    g_skip_why = outer_why;
+    g_draw_pipe_hash = outer_hash;
     g_vk_drawing = was;
     g_setup_restarts = 0;
+    return why;
 }
 static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
     DrawCall normalized;
@@ -6530,7 +6579,8 @@ static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o
                 LOG_LIMIT(1, "vulkan: %s (skipped)\n",
                           dc->indirect ? "an indirect mesh draw of the 3D form, or of several records"
                                        : "a mesh draw of more workgroups than this GPU launches");
-            g_vk_skipped++;
+            draw_skip(dc->indirect ? "an indirect mesh draw of the 3D form, or of several records"
+                                   : "a mesh draw of more workgroups than this GPU launches");
             return;
         }
     }
@@ -6592,7 +6642,7 @@ retry:
                 draw_differs("shaders");
                 draw_drop(found);
             }
-            g_vk_skipped++;
+            draw_skip("the shaders could not be made");
             return;
         }
         if (kept && !draw_shaders_same(&made, &sh)) {
@@ -6626,7 +6676,7 @@ retry:
         (ds->dyn.depth_test || ds->dyn.depth_write || ds->dyn.stencil_test ||
          (dc->state_flags & DS_DRAW_DEPTH_BOUNDS))) {
         LOG_LIMIT(4, "vulkan: a required depth/stencil target is unavailable, draw skipped\n");
-        g_vk_skipped++;
+        draw_skip("a required depth/stencil target is unavailable");
         return;
     }
     int alpha_integer = n && rt[0] && rt[0]->f.is_int; /* retain the guest primary type before capture's float scratch */
@@ -6649,7 +6699,7 @@ retry:
             ratio_one_flags = shader_coverage_r1_flags(equal.mode, equal.table[0]);
         if (ratio_one_flags && !g_vk_preserve_infnan) {
             LOG_LIMIT(4, "vulkan: ratio-one modulation needs signed-zero/infinity/NaN preservation\n");
-            g_vk_skipped++;
+            draw_skip("ratio-one modulation needs signed-zero/NaN preservation");
             return;
         }
     }
@@ -6721,11 +6771,11 @@ retry:
                 if (!texture && location == 0 && n == 1 && !ds->blend.logic_op &&
                     capture_supported(&sh, ds, dc, 1) && capture_draw(ds, dc, o, rt[0], 0, 1, NULL, NULL)) return;
                 LOG_LIMIT(4, "vulkan: coverage-to-color requires a native or ordered capture path for this draw\n");
-                g_vk_skipped++;
+                draw_skip("coverage-to-color needs a native or ordered capture path");
                 return;
             } else {
                 LOG_LIMIT(4, "vulkan: coverage-to-color needs native support or safe post-depth shader coverage\n");
-                g_vk_skipped++;
+                draw_skip("coverage-to-color needs native support or safe post-depth coverage");
                 return;
             }
         }
@@ -6768,7 +6818,7 @@ retry:
         if (!texture && n == 1 && capture_supported(&sh, ds, dc, 1) &&
             capture_draw(ds, dc, o, rt[0], dc->advanced_blend[0], 0, NULL, NULL)) return;
         LOG_LIMIT(4, "vulkan: advanced blending needs a native, interlock or ordered capture path for this draw\n");
-        g_vk_skipped++;
+        draw_skip("advanced blending needs a native, interlock or capture path");
         return;
     }
     /* and the vertex program, or the geometry program, of a per-vertex pass (draw_varying) */
@@ -6850,11 +6900,11 @@ retry:
             }
             fs = made;
         }
-        if (texture && !fs) { g_vk_skipped++; return; }
+        if (texture && !fs) { draw_skip("the texture's fragment shader was not made"); return; }
         if (fs && fs->failed) {
             LOG_LIMIT(4, "vulkan: the fragment program at %llx isn't translated (%s): draw skipped\n",
                       (unsigned long long)ds->prog.code[5], fs->si.first_unsupported);
-            g_vk_skipped++;
+            draw_skip("the fragment program is not translated");
             return;
         }
         if (!texture && fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
@@ -6900,7 +6950,7 @@ retry:
                  (tcs && (tcs->si.gbuf_wmask || tcs->si.nimg)) ||
                  (tes && (tes->si.gbuf_wmask || tes->si.nimg)) || (gs && (gs->si.gbuf_wmask || gs->si.nimg));
     if (!n && !zt && !xfb_on && !stores) {
-        g_vk_skipped++;
+        draw_skip("no target, capture or store in the program");
         return;
     }
     if (!g_settings.shadows && !n && zt && shadow_map(zt)) {
@@ -6922,7 +6972,7 @@ retry:
                 target_written(zt);
             }
         }
-        g_vk_skipped++;
+        draw_skip("shadows are off: a depth-only pass into a shadow map");
         return;
     }
 
@@ -6963,7 +7013,7 @@ retry:
             capture_draw(ds, dc, o, rt[0], 0, 0, &portable,
                          vk_capture_get_mixed_targets(rt, n, portable.raster_samples))) return;
         LOG_LIMIT(4, "vulkan: requested mixed-sample coverage is unsupported for these attachments or shaders\n");
-        g_vk_skipped++;
+        draw_skip("mixed-sample coverage is unsupported");
         return;
     }
     /* Do not ask the native coverage unit to repeat equal-count modulation. Some devices ignore that state;
@@ -6977,7 +7027,7 @@ retry:
                                   (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.clip_height) ||
         (sample_locations.samples && zt && !zt->sample_locations_compatible)) {
         LOG_LIMIT(4, "vulkan: custom sample locations exceed this device's exact grid or depth-image support\n");
-        g_vk_skipped++;
+        draw_skip("custom sample locations exceed the device grid");
         return;
     }
     if (kept && memcmp(&coverage, &ke->k.coverage, sizeof coverage)) kept = 0;
@@ -7022,7 +7072,7 @@ retry:
                 draw_differs("pipeline key");
                 draw_drop(found);
             }
-            g_vk_skipped++;
+            draw_skip("the pipeline key could not be made");
             return;
         }
         made_k.coverage = coverage;
@@ -7093,7 +7143,7 @@ retry:
         if (pl->key[v] == ~0u || pl->key[v] == ~1u) {
             /* the constants: staging that fails skips the draw (it once drew without the attributes) */
             if (!frame_consts(&vbuf[v], &voff[v])) {
-                g_vk_skipped++;
+                draw_skip("constant staging could not be made");
                 return;
             }
             int zero = pl->key[v] == ~1u;
@@ -7123,7 +7173,7 @@ retry:
         u32 base = pl->key[v] >> 5;
         if (base >= len) {
             if (!frame_consts(&vbuf[v], &voff[v])) {
-                g_vk_skipped++;
+                draw_skip("constant staging could not be made");
                 return;
             }
             voff[v] += 48;
@@ -7143,7 +7193,7 @@ retry:
         if (pl->guest_stride[b]) {
             if (!restride(vq[q].gva + vq[q].base, vq[q].len - vq[q].base, pl->guest_stride[b], (u32)pl->stride[b],
                           &vbuf[b], &voff[b], &vsize[b])) {
-                g_vk_skipped++;
+                draw_skip("a vertex stream could not be restrided");
                 return;
             }
             continue;
@@ -7155,7 +7205,7 @@ retry:
         const u64 lead = k->fetch ? vq[q].gva & 3 : 0;
         const u64 gva = vq[q].gva - lead, glen = k->fetch ? ((vq[q].gva + vq[q].len + 3) & ~3ull) - gva : vq[q].len;
         if (!vk_buf_get_input(gva, glen, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
-            g_vk_skipped++;
+            draw_skip("a vertex buffer could not be bound");
             return;
         }
         voff[vq[q].b] += lead + vq[q].base;
@@ -7168,7 +7218,7 @@ retry:
     u64 aoff = 0, cntoff = 0;
     if (dc->indirect &&
         (mesh ? !mesh_indirect(dc, &abuf, &aoff) : !indirect_args(dc, indexed, &abuf, &aoff, &cntbuf, &cntoff))) {
-        g_vk_skipped++;
+        draw_skip("the indirect arguments could not be read");
         return;
     }
     VkPrimitiveTopology topo = topology_vk(topology);
@@ -7194,22 +7244,22 @@ retry:
             if (ds->bind.xfb[i].on && (i32)ds->bind.xfb[i].size > 0 &&
                 vk_depth_shadow_range_aliases(zt, ds->bind.xfb[i].addr, ds->bind.xfb[i].size)) overlaps = 1;
         if (overlaps) {
-            g_vk_skipped++;
+            draw_skip("a late-depth draw reads the shadow map it writes");
             return;
         }
     }
     int alias = vk_draw_storage_any(&storage) ? vk_buf_draw_has_alias(&storage) : 0;
     if (alias < 0) {
-        g_vk_skipped++;
+        draw_skip("a storage alias could not be looked up");
         return;
     }
     if (vk_draw_storage_any(&storage) && !vk_buf_draw_prepare(&storage)) {
-        g_vk_skipped++;
+        draw_skip("the storage buffers could not be prepared");
         return;
     }
     if (late_depth && !vk_depth_shadow_reserve(zt, &g_capture_draw.shadow)) {
         vk_depth_shadow_cancel();
-        g_vk_skipped++;
+        draw_skip("the shadow map could not be reserved");
         return;
     }
     u32 predraw = 0; /* the draw's number for its pre-draw capture (vk/predraw.c), 0 for none */
@@ -7222,7 +7272,7 @@ retry:
         if (!vk_predraw_reserve(w, h, snx_popcount64(fs->si.predraw_slots))) {
             LOG_LIMIT(1, "vulkan: no images for the pre-draw capture of %ux%u: draws that read their targets are "
                          "skipped\n", w, h);
-            g_vk_skipped++;
+            draw_skip("no images for the pre-draw capture");
             return;
         }
         /* the captured slots' targets, in the order of their side images (shader/spirv_translate.c
@@ -7251,7 +7301,7 @@ retry:
     if (xfb_on && !g_vk.has_xfb &&
         !xfb_bind(ds, o, vs, indexed, dc->indirect != 0, topology, first, count, base_instance, instances,
                   &xfb_stores)) {
-        g_vk_skipped++;
+        draw_skip("transform feedback buffers could not be made");
         return;
     }
     ScreenSlots screen = screen_slots(ds, fs, vs, !tcs && !tes && !sh.gs && !sh.swizzle);
@@ -7326,7 +7376,7 @@ retry:
             draw_forget();
             goto retry;
         }
-        g_vk_skipped++;
+        draw_skip("a descriptor set could not be made");
         return;
     }
     /* a draw that samples, at its own pixel, a target that it writes: drawn two times, the first saving what the second
@@ -7448,7 +7498,7 @@ retry:
                                     : "indices that can't be made into ones Vulkan reads");
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
-            g_vk_skipped++;
+            draw_skip("an indirect draw of quads or 8-bit indices isn't drawn");
             return;
         }
     } else if (topology == 7 || (topology == 8 && !(indexed && ds->index.restart &&
@@ -7540,7 +7590,7 @@ retry:
         if (!vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i], 1)) {
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
-            g_vk_skipped++;
+            draw_skip("a transform feedback buffer copy could not be made");
             return;
         }
         xsize[i] = (u32)size;
@@ -7595,10 +7645,12 @@ retry:
        for this key made beside the draws once it is made. Before the check below: it can read guest memory */
     if (fs && !texture && !vk_host_programs(&ds->prog) && g_predraw.phase != 1)
         vk_shader_fold_draw(ds, fs, ds->prog.code[5], pipe ? k : NULL);
+    /* the pipeline's key hash, the one pipeline.c names its entry by, for the draw's zone text */
+    if (snx_tracy_attached()) g_draw_pipe_hash = vk_hash(k, sizeof *k);
     if (!pipe) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
-        g_vk_skipped++;
+        draw_skip("the pipeline could not be made");
         return;
     }
     /* A guest read while preparing descriptors can submit and land an older graphics output into memory these
@@ -7608,7 +7660,7 @@ retry:
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
         if (++retries < 4) goto retry;
-        g_vk_skipped++;
+        draw_skip("the submission kept changing during setup");
         return;
     }
     /* kept for later draws: in the entry found when it didn't hold, else in a way of the table's set of the draw's
@@ -7672,7 +7724,7 @@ retry:
             actual.range != g_capture_draw.shadow.range) {
             vk_depth_shadow_cancel();
             draw_images_discard(&images);
-            g_vk_skipped++;
+            draw_skip("the late-depth shadow map could not be prepared");
             return;
         }
         zt_ro = 1;
@@ -8216,7 +8268,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
             slice.first = (u32)first;
             g_capture_draw.primitive = primitive;
             u64 drawn = g_vk_drawn;
-            render_draw(ds, &slice, owner, NULL);
+            render_draw(ds, &slice, owner, NULL, NULL);
             if (g_vk_drawn != drawn + 1) { complete = 0; break; }
             u32 flags = images->flags | (ds->blend.mask[0] & 15);
             if (ds->tgt.srgb_write && target->f.vk != vk_srgb_as(target->f.vk, 0)) flags |= SH_BLEND_SRGB;
@@ -8296,7 +8348,7 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* texture) {
     call.xfb_control = 0;
     DrawOwner owner = texture->owner;
     int heaps = g_vk.has_descriptor_heaps;
-    render_draw(&state, &call, &owner, texture);
+    render_draw(&state, &call, &owner, texture, NULL);
     g_vk.has_descriptor_heaps = heaps;
     draw_forget();
 }

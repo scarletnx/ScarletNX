@@ -5,6 +5,7 @@
    render target can be copied to and from guest memory as is. */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include <string.h>
@@ -196,6 +197,7 @@ static u32 native_blocks(void) {
 }
 int vk_bc1_tight(const char* why) {
     if (g_vk.bc1_tight) return 0;
+    SNX_ZONE_T(z, "vk mem BC1 to ETC2", "%s", why);
     g_vk.bc1_tight = 1;
     /* said only where it changes what BC1 becomes */
     if (g_vk.feat.textureCompressionBC && g_settings.native_bc) return 0;

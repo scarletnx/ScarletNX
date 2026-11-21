@@ -63,6 +63,7 @@
 static u64 g_pages_system; /* granules that took system memory, the GPU's having none */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define PG_REGION_SHIFT 30
 #define PG_REGION       (1ull << PG_REGION_SHIFT)
@@ -136,6 +137,9 @@ typedef struct PgRegion {
 } PgRegion;
 
 enum { PG_NO_LONG, PG_NO_RUN, PG_NO_REGION, PG_NO_ALIGN, PG_NO_TRACK, PG_NO_OWNED, PG_NO_HOT, PG_NO_MEMORY, PG_NO_N };
+/* why a range could not be served, for the zone's text */
+static const char* const k_refuse[PG_NO_N] = {"too long", "not one run", "across a region", "alignment",
+                                              "no tracking", "owned pages", "changed after a read", "no memory"};
 /* why a range to be written in place was refused, beside those */
 enum { PG_WNO_ASK, PG_WNO_CPU, PG_WNO_OWNER, PG_WNO_N };
 /* a range of a region's bytes a draw or a dispatch read or wrote in place, by guest address, and which one (the count
@@ -226,6 +230,8 @@ int vk_pages_on(void) {
 }
 
 static int refuse(u32 why) {
+    if (why >= PG_NO_N) why = 0;
+    SNX_ZONE_T(z, "vk mem page refuse", "%s", k_refuse[why]);
     g_pages.stats.refused[why]++;
     return 0;
 }
@@ -1019,8 +1025,13 @@ void vk_pages_frame(void) {
    granule, which on a GPU of 2 GB held 150 to 190 MB while a racing game's textures were evicted for room every
    few frames. The bytes let go */
 u64 vk_pages_reclaim(u32 before, u64 want) {
+    SNX_ZONE(z, "vk mem pages reclaim");
     u64 freed = 0;
-    if (g_pages.on <= 0 || !g_pages.bound || g_pages.slabs) return 0;
+    if (g_pages.on <= 0 || !g_pages.bound || g_pages.slabs) {
+        SNX_ZONE_TEXT(z, "%s", "off, nothing bound or placed");
+        SNX_ZONE_VALUE(z, 0);
+        return 0;
+    }
     for (u32 rg = 0; rg < g_pages.regions && freed < want; rg++) {
         PgRegion* r = g_pages.region[rg];
         if (!r) continue;
@@ -1032,6 +1043,8 @@ u64 vk_pages_reclaim(u32 before, u64 want) {
             if (g_pages.bound < had) freed += PG_SIZE;
         }
     }
+    SNX_ZONE_TEXT(z, "%s", freed ? "idle granules unbound, memory given back" : "no granule old enough");
+    SNX_ZONE_VALUE(z, freed);
     return freed;
 }
 

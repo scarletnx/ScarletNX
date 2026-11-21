@@ -5,6 +5,7 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* the file, opened at the first pipeline (lock) */
 static struct {
@@ -79,12 +80,21 @@ static void stats_rows(VkPipeline p, const char* what, const u64 programs[6]) {
         VkPipelineExecutableInfoKHR ei = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = p, .executableIndex = e};
         uint32_t ns = 0;
-        if (vkGetPipelineExecutableStatisticsKHR(g_vk.dev, &ei, &ns, NULL) != VK_SUCCESS || !ns) continue;
         VkPipelineExecutableStatisticKHR st[64];
-        if (ns > 64) ns = 64;
-        for (uint32_t i = 0; i < ns; i++)
-            st[i] = (VkPipelineExecutableStatisticKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
-        if (vkGetPipelineExecutableStatisticsKHR(g_vk.dev, &ei, &ns, st) < 0) continue;
+        /* Inside the lock, around the driver's query only: neither the wait for the lock nor the file's I/O is
+           this zone's time */
+        SNX_ZONE(z, "vk pipe stats write");
+        int got = vkGetPipelineExecutableStatisticsKHR(g_vk.dev, &ei, &ns, NULL) == VK_SUCCESS && ns;
+        if (got) {
+            if (ns > 64) ns = 64;
+            for (uint32_t i = 0; i < ns; i++)
+                st[i] = (VkPipelineExecutableStatisticKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+            got = vkGetPipelineExecutableStatisticsKHR(g_vk.dev, &ei, &ns, st) >= 0;
+        }
+        SNX_ZONE_TEXT(z, "%s: executable %u, %s", what, e, got ? "statistics read" : "no statistics");
+        SNX_ZONE_VALUE(z, got ? ns : 0);
+        SNX_ZONE_END(z);
+        if (!got) continue;
         char stages[64];
         stage_names(props[e].stages, stages, sizeof stages);
         for (uint32_t i = 0; i < ns; i++) {

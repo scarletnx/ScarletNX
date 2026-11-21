@@ -23,6 +23,7 @@
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 static VkDescriptorSetLayout g_vic_ds;
 static VkPipelineLayout g_vic_layout;
@@ -184,6 +185,7 @@ static int band_fail(const VicJob* j, u32 r0, u32 r1, const char* what, u64 byte
 
 /* the target's rows [r0, r1) as v lays them out */
 static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
+    SNX_ZONE(z_vic, "vk pres vic");
     u64 al = vk_stage_align(), total = v->total;
     u32 in_offs[16] = {0};
     VicGpuParams p;
@@ -239,6 +241,10 @@ static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
     done = plane_stage(&oy, host, v->at[16], done, &cp);
     done = plane_stage(&oc, host, v->at[17], done, &cp);
     memset(host + done, 0, total - done);
+    /* Why the job took this path: the shader build (aligned or not) and how many planes were copied on the GPU. */
+    SNX_ZONE_VALUE(z_vic, total);
+    SNX_ZONE_TEXT(z_vic, "aligned %u, gpu copies %u", (u32)vic_gpu_aligned(j), cp.n);
+    SNX_PLOT("vk pres vic bytes", (double)total);
 
     VkDescriptorBufferInfo buffers[3] = {{w->buf, 0, sizeof(VicGpuParams)},
                                          /* from 0: in_offs count from the start of the buffer */
@@ -300,6 +306,9 @@ static int compose_bands(const VicJob* j) {
     u32 unit = 2;
     if (j->oy.blk && 8u << j->oy.bh > unit) unit = 8u << j->oy.bh;
     if (j->oc.p && j->oc.blk && 16u << j->oc.bh > unit) unit = 16u << j->oc.bh; /* a chroma row is two of luma */
+    if (j->th > 1 && band_need(j, j->ty0, j->th) > (range < g_vk.alloc_cap ? range : g_vk.alloc_cap))
+        SNX_MSG("vk pres: a VIC job split into bands, bigger than one buffer",
+                sizeof("vk pres: a VIC job split into bands, bigger than one buffer") - 1);
     VkBands bands = {range < g_vk.alloc_cap ? range : g_vk.alloc_cap, unit, j->ty0, band_need, j};
     for (u32 y = 0, n; y < j->th; y += n) {
         u64 most = 0;

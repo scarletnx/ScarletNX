@@ -110,6 +110,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #if defined(__ANDROID__)
 #include <vulkan/vulkan_android.h>
 #endif
@@ -2063,6 +2064,9 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
     if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
+    SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");
+    SNX_ZONE_VALUE(z, len);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_all_barrier_by(VK_BAR_UMA,
