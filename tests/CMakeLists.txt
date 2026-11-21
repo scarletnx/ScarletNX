@@ -152,6 +152,7 @@ endfunction()
 # every argument of its command, used or not, so -Wextra's unused-parameter warning is off
 function(snx_service_swipc target)
     target_compile_options(${target} PRIVATE -Wno-unused-parameter)
+    # snx_test_target already links snx_recompiler_base; the service files' plots use its host clock
     snx_swipc(${target} ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc ${ARGN})
 endfunction()
 
@@ -183,7 +184,19 @@ function(snx_test_target target dialect)
     if(NOT WIN32)
         target_compile_definitions(${target} PRIVATE _FILE_OFFSET_BITS=64)
     endif()
-    target_link_libraries(${target} PRIVATE Threads::Threads)
+    target_link_libraries(${target} PRIVATE Threads::Threads snx_recompiler_base)
+    if(SNX_TRACY AND NOT target STREQUAL snx-test-tracy-state)
+        # A test may compile a runtime source that emits zones. Give every target the stand-in and the client; a
+        # target that does not see SNX_TRACY compiles the stub to an empty object.
+        set(_snx_test_stubs "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c")
+        get_target_property(_snx_test_sources ${target} SOURCES)
+        if(NOT "tracy_stubs.c" IN_LIST _snx_test_sources AND NOT _snx_test_stubs IN_LIST _snx_test_sources)
+            target_sources(${target} PRIVATE "${_snx_test_stubs}")
+            target_include_directories(${target} SYSTEM PRIVATE
+                $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>)
+        endif()
+        target_link_libraries(${target} PRIVATE Tracy::TracyClient)
+    endif()
     if(TARGET snx_settings) # g_settings, its header, and the tables a test uses (cmake/settings.cmake)
         target_link_libraries(${target} PRIVATE snx_settings_runtime snx_settings)
     endif()
@@ -2437,7 +2450,8 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
 
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as SDL names them
-    add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+    add_executable(snx-test-overlay overlay.c tracy_stubs.c
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
@@ -2449,7 +2463,12 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
     if(SNX_TRACY)
         # the keys page has the capture's row in a build with the client, which the test expects of either
-        target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1)
+        target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1
+            $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
+        # the platform files this test compiles now include tracy.h, which needs the client's headers. The client
+        # library is linked once, by snx_test_target, from the SNX_TRACY definition above
+        target_include_directories(snx-test-overlay SYSTEM PRIVATE
+            $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>)
     endif()
     snx_test_target(snx-test-overlay gnu23)
     target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
