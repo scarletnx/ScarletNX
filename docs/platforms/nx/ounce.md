@@ -89,8 +89,15 @@ shared fonts' calls. The runtime answers it in the game's own SDK function (`src
 the shared fonts': it fills the caller's `BuiltInFontDataOunce` as the SDK fills it from the service's answer, two
 bytes of flags, the font's address at +8 and its size at +0x10, and answers whether the type has a font.
 
+Its set takes a count, an array of the same structure, an array of one-byte types and their number, a language code
+and a bool. The SDK reads no more than six types, and fills one structure for each entry of the service's answer, as
+the single function does, and the count with the answer's. Which fonts the service picks is not in the SDK: the runtime
+gives, for each type asked in its order, the font the single function gives it (a type with no font gives none),
+whatever the language, and the count of those. It always answers true, since every font is loaded from the start.
+
 The fonts are the shared fonts: each is a plain TrueType font after its header, so the same memory, mapped read only
-in the game at the first ask, answers both. `tests/pl_fonts.c` checks the structure for each type.
+in the game at the first ask, answers both. `tests/pl_fonts.c` checks the structure for each type, and the set's
+entries and count.
 
 ## Shaders
 

@@ -196,6 +196,54 @@ static void hooks(void) {
     memset(mem, 0xee, 0x40);
     CHECK(nnpl_get_built_in_font_data(c, 0x10, 6, 0) == 0 && nnpl_get_built_in_font_data(c, 0x10, 0xff, 0) == 0);
     CHECK(mem[0x10] == 0xee && mem[0x18] == 0xee && g_maps == 1);
+    /* the set: the types (bytes at 0x20) read up to six, each with a font giving the next structure (0x18 bytes at
+       0x100) as the single function does, a type with no font none; the count (at 0x10) is the fonts given, and the
+       answer true even with none */
+    {
+        static const struct {
+            i32 n;
+            u8 types[8];
+            u32 count;
+            u8 fonts[6]; /* the type of each structure given */
+        } sets[] = {
+            {6, {0, 1, 2, 3, 4, 5}, 6, {0, 1, 2, 3, 4, 5}},       /* every type in order */
+            {2, {4, 0, 1}, 2, {4, 0}},                            /* fewer: the types past n unread */
+            {8, {5, 4, 3, 2, 1, 0, 0, 1}, 6, {5, 4, 3, 2, 1, 0}}, /* more than six: the seventh and eighth unread */
+            {5, {6, 3, 0xff, 1, 7}, 2, {3, 1}},                   /* no font past the six: skipped */
+            {0, {0, 1}, 0, {0}},                                  /* none asked */
+            {-1, {0, 1}, 0, {0}},
+        };
+        /* the memory is not mapped yet: the set maps it at its first font, not before */
+        g_hle.pl.base = 0;
+        g_maps = 0;
+        memset(mem, 0xee, sizeof mem);
+        mem[0x20] = 6;
+        CHECK(nnpl_get_built_in_font_data_set(c, 0x10, 0x100, 0x20, 1, 0, 0) == 1 && snx_ld_le32(mem + 0x10) == 0);
+        CHECK(!g_maps && !g_hle.pl.base && mem[0x100] == 0xee);
+        for (size_t s = 0; s < sizeof sets / sizeof *sets; s++) {
+            memset(mem, 0xee, sizeof mem);
+            memcpy(mem + 0x20, sets[s].types, sizeof sets[s].types);
+            CHECK(nnpl_get_built_in_font_data_set(c, 0x10, 0x100, 0x20, sets[s].n, 0x53552d6e65ull, 0) == 1);
+            CHECK(snx_ld_le32(mem + 0x10) == sets[s].count && mem[0x14] == 0xee);
+            for (u32 i = 0; i < sets[s].count; i++) {
+                const u8* f = mem + 0x100 + 0x18 * i;
+                u8 t = sets[s].fonts[i];
+                CHECK(f[0] == 1 && f[1] == 0);
+                for (u32 b = 2; b < 8; b++) CHECK(f[b] == 0xee); /* the bytes between, left */
+                CHECK(snx_ld_le64(f + 8) == FONTS_BASE + g_hle.pl.font_off[t]);
+                CHECK(snx_ld_le64(f + 0x10) == g_hle.pl.font_size[t]);
+            }
+            CHECK(mem[0x100 + 0x18 * sets[s].count] == 0xee); /* nothing past the fonts given */
+            CHECK(!memcmp(mem + 0x20, sets[s].types, sizeof sets[s].types));
+        }
+        CHECK(g_maps == 1 && g_hle.pl.base == FONTS_BASE);
+        /* the flag changes nothing */
+        memset(mem, 0xee, sizeof mem);
+        mem[0x20] = 3;
+        CHECK(nnpl_get_built_in_font_data_set(c, 0x10, 0x100, 0x20, 1, 0, 1) == 1 && snx_ld_le32(mem + 0x10) == 1);
+        CHECK(snx_ld_le64(mem + 0x108) == FONTS_BASE + g_hle.pl.font_off[3] && mem[0x118] == 0xee);
+        CHECK(g_maps == 1);
+    }
     /* the three arrays, as many entries as max allows, and the count of all six */
     memset(mem, 0xee, sizeof mem);
     CHECK(nnpl_get_shared_font_in_order_of_priority(c, 0x10, 0x20, 0x100, 0x200, 4, 0x53552d6e65ull));
