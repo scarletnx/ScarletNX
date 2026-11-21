@@ -120,7 +120,9 @@ enum {
     SGX_K_UNDEF,      /* the runtime's undef(state, pc imm, word disp) */
     SGX_K_MACHINE,    /* the machine's own (x64_a64.h's: labels, jumps, calls), op its kind */
     SGX_K_VEC,        /* an SSE form (vf): its operand k is in[k] (none for the result's unless vtied, or the memory's) */
-    SGX_K_COLD        /* def = cc on flags_from's flags ? sym(state, in[1..w]) : in[0], the call out of the hot code */
+    SGX_K_COLD,       /* def = cc on flags_from's flags ? sym(state, in[1..w]) : in[0], the call out of the hot code */
+    SGX_K_PGET,       /* def = the host register imm (a guest register the function keeps there: x64_codegen.c) */
+    SGX_K_PSET        /* the host register imm = in[0] */
 };
 
 typedef struct {
@@ -968,12 +970,40 @@ static inline void sg_d_set_slice(SgCtx* g, SgD* a, long long hi, long long lo, 
 }
 
 static inline SgD sg_d_replicate(SgCtx* g, SgD a, long long n) {
-    sgx_flat(sgx(g), &a);
-
+    SgX* x = sgx(g);
+    unsigned w = a.w * (unsigned)n;
+    sgx_flat(x, &a);
+    if (sgx_is_const(&a)) {
+        /* its bits, n times */
+        SnxU64 k = 0;
+        long long i;
+        if (w > 64) goto concat;
+        for (i = 0; i < n; ++i) k |= a.k << (a.w * (unsigned)i);
+        return sgx_const(w, k);
+    }
+    if (a.w == 1 && w <= 64) {
+        /* one bit everywhere: 0 - the bit (SBFM's Replicate(src<S>), the sign of ASR) */
+        SgD r = sg_d_sub(g, sgx_const(w, 0), sg_d_zext(g, a, w));
+        r.w = w;
+        return r;
+    }
+    if (w <= 64 && n > 1) {
+        /* the bits times 1 every a.w bits: one multiplication */
+        SnxU64 pattern = 0;
+        long long i;
+        unsigned pw = sgx_width(w);
+        SgD r;
+        for (i = 0; i < n; ++i) pattern |= 1ull << (a.w * (unsigned)i);
+        r = SGX_OP(x, mul, pw, sg_d_zext(g, a, pw), sgx_const(pw, pattern));
+        r.w = w;
+        return r;
+    }
+concat : {
     SgD r = a;
     long long i;
     for (i = 1; i < n; ++i) r = sg_d_concat(g, r, a);
     return r;
+}
 }
 
 /* ---- bools ---- */
@@ -1098,7 +1128,15 @@ static inline SgB sg_b_and(SgCtx* g, SgB a, SgB b) { return sgx_bool_op(g, 0, a,
 static inline SgB sg_b_or(SgCtx* g, SgB a, SgB b) { return sgx_bool_op(g, 1, a, b); }
 static inline SgB sg_b_eq(SgCtx* g, int ne, SgB a, SgB b) {
     SgX* x = sgx(g);
-    SgD va = sgx_bool_bits(x, a), vb = sgx_bool_bits(x, b);
+    SgD va, vb;
+    /* against a constant: the other or its negation (CBZ's IsZero(x) == TRUE stays a condition code) */
+    if (x->b[a].kind == SGX_B_CONST) {
+        SgB t = a;
+        a = b;
+        b = t;
+    }
+    if (x->b[b].kind == SGX_B_CONST) return (x->b[b].v != 0) != (ne != 0) ? a : sg_b_not(g, a);
+    va = sgx_bool_bits(x, a), vb = sgx_bool_bits(x, b);
     SgD r = SGX_OP(x, xor, 32, va, vb);
     r.w = 1;
     if (!ne) r = SGX_OP(x, xor_i, 32, r, sgx_const(32, 1));
@@ -1471,6 +1509,7 @@ static inline void sgx_optimize(SgX* x) {
     {
         static _Thread_local unsigned stamp[SGX_STATE_WORDS];
         static _Thread_local unsigned now = 1;
+        unsigned pset = 0; /* the pinned host registers a later PSET writes */
         if (++now == 0) {
             memset(stamp, 0, sizeof stamp);
             now = 1;
@@ -1485,6 +1524,21 @@ static inline void sgx_optimize(SgX* x) {
                     memset(stamp, 0, sizeof stamp);
                     now = 1;
                 }
+                if (s->kind != SGX_K_VEC) pset = 0; /* the machine's own flush the pinned registers */
+                continue;
+            }
+            if (s->kind == SGX_K_PGET) {
+                pset &= ~(1u << (s->imm & 15));
+                continue;
+            }
+            if (s->kind == SGX_K_PSET) {
+                /* a pinned register's write a later one replaces, nothing reading it between */
+                if ((pset >> (s->imm & 15)) & 1) {
+                    s->dead = 1;
+                    s->side = 0;
+                    s->in[0] = 0;
+                } else
+                    pset |= 1u << (s->imm & 15);
                 continue;
             }
             if (s->kind != SGX_K_LOAD && s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
@@ -1615,6 +1669,7 @@ typedef struct SgXAsm {
     /* a helper's call: by a relocation reloc records (an object's), or else at the address resolve gives */
     void (*reloc)(void* machine, size_t at, const char* sym, long long addend);
     SnxU64 (*resolve)(const char* sym);
+    void (*pin_flush)(void* machine); /* the guest registers kept in host ones to the state (before UNDEF's call) */
     /* the constant pool (16 bytes each) the function's RIP-relative operands read, after its code
        (sgx_pool_emit), and where each such operand's displacement is */
     SnxU64 (*pool)[2];
@@ -2368,6 +2423,14 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         case SGX_K_SEL: sgx_assemble_sel(a, i); break;
         case SGX_K_VEC: sgx_assemble_vec(a, i); break;
         case SGX_K_COLD: sgx_assemble_cold(a, i); break;
+        case SGX_K_PGET: {
+            int d = sgx_free_reg(a, i, 0);
+            sgx_mov_rr(a, d, (int)s->imm);
+            a->owner[d] = s->def;
+            x->v[s->def].reg = (signed char)d;
+            break;
+        }
+        case SGX_K_PSET: sgx_mov_rr(a, (int)s->imm, sgx_in_reg(a, s->in[0], i, 0)); break;
         case SGX_K_LOAD: {
             int d = sgx_free_reg(a, i, 0);
             sgx_mov_mem(a, 1, s->w == 64 ? 64 : 32, d, x->base, s->disp);

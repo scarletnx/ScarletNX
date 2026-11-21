@@ -87,6 +87,8 @@ typedef struct {
     const SnxCodegen* codegen;
     const SnxX64Options* options;
     const SnxFunction* f;
+    int pinned;          /* the function keeps guest registers in host ones (pin): RBP, R12-R15 pushed */
+    signed char pin[32]; /* each X register's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
     SnxU32 word; /* the instruction being made: SNX_X64_STATS names it where the function goes to LLVM */
     int dispatch, d_label, mismatch_label;
@@ -224,8 +226,26 @@ static void jmp(Unit* u, int label) {
     rel_label(u, label);
 }
 
+/* the guest registers the function keeps in host ones: to the state (store), or from it */
+static void pins(Unit* u, int store) {
+    int n;
+    if (!u->pinned) return;
+    for (n = 0; n < 32; ++n)
+        if (u->pin[n] >= 0) {
+            int p = u->pin[n];
+            byte(u, (unsigned char)(0x48 | (p >> 3) << 2));
+            byte(u, store ? 0x89 : 0x8B);
+            byte(u, (unsigned char)(0x83 | (p & 7) << 3)); /* [rbx + disp32] */
+            imm(u, (long long)(offsetof(CPU, x) + 8 * (size_t)n), 4);
+        }
+}
+static void pins_flush(void* machine) { pins((Unit*)machine, 1); }
+
 static void prologue(Unit* u) {
     byte(u, 0x53); /* push rbx */
+    if (u->pinned) /* push rbp, r12, r13, r14, r15 */
+        byte(u, 0x55), byte(u, 0x41), byte(u, 0x54), byte(u, 0x41), byte(u, 0x55), byte(u, 0x41), byte(u, 0x56),
+            byte(u, 0x41), byte(u, 0x57);
     mov_rdi_rbx(u);
     u->b.p[u->b.n - 2] = 0x89, u->b.p[u->b.n - 1] = 0xFB; /* mov rbx, rdi (the other way) */
     byte(u, 0x48); /* sub rsp, imm32 */
@@ -234,7 +254,9 @@ static void prologue(Unit* u) {
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = u->b.n;
     imm(u, 0, 4);
+    pins(u, 0);
 }
+/* the frame and the registers the prologue pushed given back (a pinned guest register to the state before: pins) */
 static void epilogue(Unit* u) {
     byte(u, 0x48); /* add rsp, imm32 */
     byte(u, 0x81);
@@ -242,9 +264,13 @@ static void epilogue(Unit* u) {
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = u->b.n;
     imm(u, 0, 4);
+    if (u->pinned) /* pop r15, r14, r13, r12, rbp */
+        byte(u, 0x41), byte(u, 0x5F), byte(u, 0x41), byte(u, 0x5E), byte(u, 0x41), byte(u, 0x5D), byte(u, 0x41),
+            byte(u, 0x5C), byte(u, 0x5D);
     byte(u, 0x5B); /* pop rbx */
 }
 static void leave(Unit* u) {
+    pins(u, 1);
     epilogue(u);
     byte(u, 0xC3); /* ret */
 }
@@ -275,10 +301,12 @@ static void calldyn(Unit* u, int tail) {
     load_rax(u, (int)offsetof(CPU, rt));
     byte(u, 0x48), byte(u, 0x8B), byte(u, 0x80), imm(u, (long long)offsetof(RtAPI, miss), 4); /* mov rax, [rax+miss] */
     bind(u, found);
+    pins(u, 1); /* the callee reads the guest's registers from the state */
     mov_rdi_rbx(u); /* before the epilogue: its pop gives RBX back to the caller */
     if (tail) epilogue(u);
     byte(u, 0xFF);
     byte(u, tail ? 0xE0 : 0xD0); /* jmp rax / call rax */
+    if (!tail) pins(u, 0);
 }
 
 /* call(): F_target directly where the target is one of the codegen's functions (not routed through its slot), the
@@ -297,10 +325,12 @@ static void call_target(Unit* u, SnxU64 target, int tail) {
         calldyn(u, tail);
         return;
     }
+    pins(u, 1);
     mov_rdi_rbx(u);
     if (tail) epilogue(u);
     byte(u, tail ? 0xE9 : 0xE8);
     rel_sym(u, sym);
+    if (!tail) pins(u, 0);
 }
 
 /* if (c->pc != next) return: the callee changed the code it returns to, or left for another pc */
@@ -358,6 +388,7 @@ static void poll_then(Unit* u, SnxU64 resume) {
     char sym[40];
     byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00); /* cmp dword [rbx+poll], 0 */
     jcc(u, 0x4, run);
+    pins(u, 1);
     set_pc(u, resume);
     mov_rdi_rbx(u);
     call_rt(u, (int)offsetof(RtAPI, poll));
@@ -375,7 +406,7 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
-    for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = 0;
+    for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
     g->fp_state[0] = g->fp_state[1] = 0;
     g->mem = 0;
     g->origin = -1;
@@ -912,6 +943,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_UNDEF:
     undef:
         flush(u);
+        pins(u, 1);
         set_pc(u, address);
         mov_rdi_rbx(u);
         mov_rsi_imm(u, address);
@@ -1010,6 +1042,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_SVC: {
         unsigned n = (word >> 5) & 0xFFFF;
         flush(u);
+        pins(u, 1); /* the SVC reads and writes the guest's registers in the state */
         set_pc(u, next);
         mov_rdi_rbx(u);
         byte(u, 0xBE), imm(u, (long long)n, 4); /* mov esi, n */
@@ -1020,10 +1053,12 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             byte(u, 0xFF), byte(u, 0x90), imm(u, (long long)(8 * n), 4); /* call [rax + 8n] */
         } else
             call_rt(u, (int)offsetof(RtAPI, svc));
+        pins(u, 0);
         break;
     }
     case SNX_A64_FLOW_BRK:
         flush(u);
+        pins(u, 1);
         set_pc(u, address);
         mov_rdi_rbx(u);
         mov_rsi_imm(u, address);
@@ -1041,6 +1076,63 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         call_target(u, next, 1);
     }
     return 1;
+}
+
+/* the guest registers the function keeps in host registers (RBP, R12-R15, callee-saved: no call changes them) for
+   its whole run, written to the state where something else may read it (a call, SVC, BRK, UNDEF, a poll, the
+   exits) and read back after: the five most used, a register field of an instruction counting 1, 8 inside a loop
+   (a backward branch's span). None in a small function, or one with a call of the runtime inside a block that may
+   read the state (a system register's helper, WFE, SEV) */
+static void choose_pins(Unit* u, const SnxFunction* f) {
+    static const signed char hosts[5] = {5, 12, 13, 14, 15};
+    unsigned weight[32], k, best;
+    unsigned char* loop;
+    size_t i;
+    memset(u->pin, -1, sizeof u->pin);
+    u->pinned = 0;
+    if (f->count < 8 || getenv("SNX_X64_NO_PINS")) return;
+    loop = (unsigned char*)calloc(f->count + 1, 1);
+    if (!loop) return;
+    memset(weight, 0, sizeof weight);
+    for (i = 0; i < f->count; ++i) {
+        SnxU64 a = snx_function_address(f, i);
+        SnxU32 w = 0;
+        SnxA64Insn insn;
+        (void)snx_codegen_word((SnxCodegen*)u->codegen, a, &w);
+        snx_a64_decode_word(w, u->codegen->features, &insn);
+        if (insn.op == SNX_A64_OP_SYS || insn.op == SNX_A64_OP_WFE || insn.op == SNX_A64_OP_SEV ||
+            insn.op == SNX_A64_OP_SEVL) {
+            free(loop);
+            return;
+        }
+        if (insn.flow == SNX_A64_FLOW_B || insn.flow == SNX_A64_FLOW_BC) {
+            SnxU64 t = snx_a64_branch_target(&insn, a);
+            if (t <= a && snx_function_contains(f, t)) {
+                size_t j;
+                for (j = index_of(f, t); j <= i; ++j) loop[j] = 1;
+            }
+        }
+    }
+    for (i = 0; i < f->count; ++i) {
+        SnxU32 w = 0;
+        unsigned wt;
+        (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
+        wt = loop[i] ? 8 : 1;
+        weight[w & 31] += wt;
+        weight[w >> 5 & 31] += wt;
+        weight[w >> 16 & 31] += wt;
+        weight[w >> 10 & 31] += wt;
+    }
+    free(loop);
+    for (k = 0; k < 5; ++k) {
+        unsigned r, top = 0;
+        best = 32;
+        for (r = 0; r < 32; ++r)
+            if (u->pin[r] < 0 && weight[r] > top) top = weight[r], best = r;
+        if (best == 32 || top < 16) break;
+        u->pin[best] = hosts[k];
+        u->pinned = 1;
+    }
 }
 
 /* the function's code, or 0 (the unit as it was) where an instruction isn't this back end's */
@@ -1074,6 +1166,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->syms[u->nsyms].at = u->b.n;
     u->nsyms++;
     flush(u); /* no block state of another function's */
+    choose_pins(u, f);
+    u->g->pinned = u->pinned;
+    memcpy(u->g->pin, u->pin, sizeof u->pin);
+    u->a.pin_flush = pins_flush;
     prologue(u);
     if (u->options->stale) {
         /* if (snx_stale[index]) { c->pc = e; return; } */
@@ -1154,8 +1250,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         bind(u, u->d_label);
         byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00);
         jcc(u, 0x4, run);
+        pins(u, 1);
         mov_rdi_rbx(u);
         call_rt(u, (int)offsetof(RtAPI, poll));
+        pins(u, 0);
         bind(u, run);
         load_rax(u, (int)offsetof(CPU, pc));
         for (i = 0; i < f->count; ++i)
@@ -1182,7 +1280,8 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     sgx_pool_emit(&u->a);
     /* the frame's size, in the prologue and every epilogue */
     {
-        int size = (u->a.slots_max * 8 + 15) & ~15;
+        /* RSP 16-aligned in the body: the return address and RBX (and RBP, R12-R15 where pinned: 8 more) */
+        int size = ((u->a.slots_max * 8 + 15) & ~15) + (u->pinned ? 8 : 0);
         for (i = 0; i < u->nframe; ++i)
             if (u->frame_at[i] + 4 <= u->b.cap) {
                 unsigned char* p = u->b.p + u->frame_at[i];
