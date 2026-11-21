@@ -117,9 +117,11 @@ else()
                 break()
             endif()
         endforeach()
-        # a path relative to the JSON: the copy a game's runtime has in its own folder finds its driver there
+        # The loader hands library_path to dlopen as it stands, and a name with no separator is looked up only in dyld's
+        # paths: "./" makes it a path, resolved against the JSON's own folder, so the copy a game's runtime has in its
+        # folder finds its driver there and the app's copy is relocatable.
         set(kk_icd "${PROJECT_BINARY_DIR}/libkosmickrisp_icd.json")
-        file(WRITE "${kk_icd}" "{\n    \"file_format_version\": \"1.0.0\",\n    \"ICD\": {\n        \"library_path\": \"libvulkan_kosmickrisp.dylib\",\n        \"api_version\": \"${kk_api}\"\n    }\n}\n")
+        file(WRITE "${kk_icd}" "{\n    \"file_format_version\": \"1.0.0\",\n    \"ICD\": {\n        \"library_path\": \"./libvulkan_kosmickrisp.dylib\",\n        \"api_version\": \"${kk_api}\"\n    }\n}\n")
         # the library each name stands for: install() keeps a symbolic link as it is, and a link into the SDK's or
         # Homebrew's own folder would break in the app, or in a game's folder that has no such folder
         get_filename_component(kk_driver "${kk_driver}" REALPATH)
