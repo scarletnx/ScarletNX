@@ -1785,12 +1785,33 @@ jobs:
       # the app, signed ad hoc, and its zip, by CPack (cmake/apple_package.cmake)
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
+        env:
+          # Carrying KosmicKrisp needs a LunarG Vulkan SDK's macOS folder. The archive is not downloaded here yet: the
+          # repo verifies every download against a SHA-256 it holds, and no verified hash for a SDK archive exists in
+          # this tree. Set both the version and the hash (of the macOS archive) and the app carries KosmicKrisp beside
+          # the MoltenVK it already carries; leave the hash empty and it carries MoltenVK alone, as it does today.
+          SNX_KOSMICKRISP_SDK_VERSION: ""
+          SNX_KOSMICKRISP_SDK_SHA256: ""
         run: |
           curl -fL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o moltenvk-macos.tar \
             "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-macos.tar"
           echo "$MOLTENVK_MACOS_SHA256  moltenvk-macos.tar" | shasum -a 256 -c
           mkdir moltenvk-macos && tar -xf moltenvk-macos.tar -C moltenvk-macos
-          cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos"
+          # KosmicKrisp, only against a hash this repository holds: an unverified download is worse than no driver,
+          # because it lands inside the app that a player runs
+          kosmickrisp=""
+          if [ -n "$SNX_KOSMICKRISP_SDK_SHA256" ]; then
+            curl -fL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o vulkansdk-macos.tar.xz \
+              "https://sdk.lunarg.com/sdk/download/$SNX_KOSMICKRISP_SDK_VERSION/mac/vulkansdk-macos-$SNX_KOSMICKRISP_SDK_VERSION.tar.xz"
+            echo "$SNX_KOSMICKRISP_SDK_SHA256  vulkansdk-macos.tar.xz" | shasum -a 256 -c
+            mkdir vulkansdk && tar -xf vulkansdk-macos.tar.xz -C vulkansdk
+            # apple_package.cmake takes the SDK's macOS folder, its lib/ or its macOS/lib: this is the lib/ one
+            kosmickrisp="$(dirname "$(find "$PWD/vulkansdk" -path '*/macOS/lib/libvulkan_kosmickrisp.dylib' -print -quit)")"
+            echo "the app carries KosmicKrisp from $kosmickrisp"
+          else
+            echo "::notice::SNX_KOSMICKRISP_SDK_SHA256 is empty: the app carries MoltenVK alone (docs/hosts/apple.md)"
+          fi
+          cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos" -DSNX_KOSMICKRISP="$kosmickrisp"
           # The executable and the install rules must come from the same dependency configuration.
           cmake --build --preset macos --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
           cpack --config build/macos/CPackConfig.cmake -B app-macos \
