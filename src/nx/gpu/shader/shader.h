@@ -447,16 +447,17 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    payload_stride words for each task workgroup, then a count of each, then the indirect mesh draw's record
    (sm86.h's sm86_mesh_task_cap) */
 #define SNX_VKB_MESHBUF  (SNX_VKB_CAPTURE + 1)
-#define SNX_VKB_TEXARRAY (SNX_VKB_MESHBUF + 1)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+/* An Ounce program's per-draw block (a storage buffer the program only reads): the draw's pc[] words (SNX_DRAW_WORDS),
+   which the renderer copies into the frame's staging ring in place of the per-draw push constants. The binding is a
+   window of the ring's chunk (SNX_DRAW_WINDOW), and the push constant word 0 is where the draw's block starts in that
+   window, in 16-byte units. Every graphics stage reads its words there. A buffer before the texture arrays, which are
+   the last bindings: a layout with no arrays leaves out those at the end (pipeline.c) */
+#define SNX_VKB_DRAW     (SNX_VKB_MESHBUF + 1)
+#define SNX_VKB_TEXARRAY (SNX_VKB_DRAW + 1)      /* up to SNX_TEX_ARRAY distinct indexed handles */
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)  /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */
-/* the per-draw push block (storage buffer), a graphics stage's, at its draw id (the push constant word 0): the draw's
-   pc[] the renderer writes there in place of the per-draw push constants (SNX_DRAW_WORDS). Every stage reads its own
-   words at its draw id: a vertex program's, the fragment stage's (the scaled targets, the constant buffer windows and
-   the texture words), and a mesh or task program's first workgroup, depth fix and params */
-#define SNX_VKB_DRAW     (SNX_VKB_TEXMAP + 1)
-#define SNX_VKB_END      (SNX_VKB_DRAW + 1)      /* one past the last binding */
+#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)    /* one past the last binding */
 /* Transform feedback by stores (g_spirv_translate.xfb_stores), in the global buffer slots after a program's own (at
    most SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then
    the 4 buffers from where the capture starts */
@@ -486,10 +487,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    uvec4 at this byte, and the push block's size */
 #define SH_PUSH_TEX_WORDS       224
 #define SH_PUSH_BYTES_TABLE     240
-/* The per-draw block of SNX_VKB_DRAW: the push constants' words a draw (pc[SH_PUSH_BYTES_TABLE / 4]), SNX_DRAW_MAX of
-   them in the buffer (render.c writes each draw's, the shader reads them at its draw id) */
-#define SNX_DRAW_WORDS (SH_PUSH_BYTES_TABLE / 4)
-#define SNX_DRAW_MAX   (1u << 16)
+/* The per-draw block of SNX_VKB_DRAW: the push constants' words of a draw (pc[SH_PUSH_BYTES_TABLE / 4]). The window
+   that the binding gives is at most SNX_DRAW_WINDOW bytes (a ring chunk, vk_stage_chunk), which a program declares
+   whole, so that each block the push word 0 names is inside the declared array */
+#define SNX_DRAW_WORDS  (SH_PUSH_BYTES_TABLE / 4)
+#define SNX_DRAW_WINDOW (16u << 20)
 /* The texture table (ShCaps.tex_table): one descriptor set after the stages' (table_set), images at binding 0 and
    samplers at binding 1. A vertex or fragment program reads its words, one for each plain texture slot, from a window
    of the staging ring at SNX_VKB_TEXWORDS, the binding only compute programs use otherwise */

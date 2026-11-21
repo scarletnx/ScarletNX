@@ -566,6 +566,29 @@ static void test_game_forms(const char* dir) {
 
 /* ---- programs run on the CPU (support/spv_eval.c) ---- */
 
+/* An Ounce draw's per-draw block (SNX_VKB_DRAW) for the evaluator: a window of two blocks, with the draw's pc[] words in
+   the second one, and the push constant word 0 that names it (in 16-byte units). A program that reads at the wrong
+   place gets the first block's zeros or reads past the window. Returns the draw's pc[] */
+/* spv_eval with a zero per-draw block where the test binds none: what a draw whose pc[] words are 0 gives each
+   graphics stage (its depth fix, base instance, windows) */
+static const char* eval_draw(const u32* spv, size_t count, SpvEvalEnv* env) {
+    static u32 zero[SNX_DRAW_WORDS];
+    if (!env->ubo[SNX_VKB_DRAW]) {
+        memset(zero, 0, sizeof zero);
+        env->ubo[SNX_VKB_DRAW] = zero;
+        env->ubo_words[SNX_VKB_DRAW] = SNX_DRAW_WORDS;
+    }
+    return spv_eval(spv, count, env);
+}
+#define DRAW_AT (SNX_DRAW_WORDS / 4)
+static u32* draw_block(SpvEvalEnv* env, u32 window[2 * SNX_DRAW_WORDS]) {
+    memset(window, 0, 2 * SNX_DRAW_WORDS * sizeof *window);
+    env->ubo[SNX_VKB_DRAW] = window;
+    env->ubo_words[SNX_VKB_DRAW] = 2 * SNX_DRAW_WORDS;
+    env->push[0] = DRAW_AT;
+    return window + 4 * DRAW_AT;
+}
+
 static u32 f2u(float f) {
     u32 u;
     memcpy(&u, &f, 4);
@@ -595,7 +618,7 @@ static int run_fs_at(const u8* code, u32 n, u32 lane, const u32* cb1, u32 cb1_wo
     for (u32 k = 0; cb1 && k < cb1_words && k < 1024; k++) bank1[k] = cb1[k];
     env.ubo[SNX_VKB_CB + 1] = bank1;
     env.ubo_words[SNX_VKB_CB + 1] = 1024;
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     free(spv);
     if (why) fprintf(stderr, "run_fs: the evaluator stops at %s\n", why);
     for (u32 k = 0; k < 4; k++) out[k] = env.out[0][k];
@@ -1061,7 +1084,7 @@ static void test_minmax_samples(const char* dir) {
             env.image_size[SNX_VKB_TEX][0] = env.image_size[SNX_VKB_TEX][1] = 4;
             for (u32 g = 0; g < 4; g++)
                 for (u32 t = 0; t < 4; t++) env.gather[SNX_VKB_TEX][g][t] = f2u(gathered[g][t]);
-            const char* why = spv_eval(spv, count, &env);
+            const char* why = eval_draw(spv, count, &env);
             const float* want = greatest ? at[c].greatest : at[c].least;
             int same = !why && env.out_written[0];
             for (u32 g = 0; same && g < 4; g++) same = u2f(env.out[0][g]) == want[g];
@@ -1379,7 +1402,7 @@ static void test_shfl_operands(const char* dir) {
                         SpvEvalEnv env = {0};
                         env.builtin[41][0] = lane;
                         env.shuffle_id = ~0u;
-                        const char* why = spv_eval(spv, count, &env);
+                        const char* why = eval_draw(spv, count, &env);
                         if (why || !env.out_written[0] || env.out[0][0] != ok || env.shuffle_id != (j & 31)) {
                             if (!bad++)
                                 fprintf(stderr,
@@ -1611,7 +1634,7 @@ static void test_shared_no_uniform(const char* dir) {
     CHECK(spv != NULL);
     if (!spv) return;
     SpvEvalEnv env = {0};
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     if (why) fprintf(stderr, "shared: the evaluator stops at %s\n", why);
     CHECK(!why && env.shared_words >= 9 && env.shared[8] == 7);
     CHECK(keep_module(dir, "cs_shared", spv, count));
@@ -1627,7 +1650,7 @@ static int run_stage(int stage, const u8* code, u32 n, const u32* sph, SpvEvalEn
         fprintf(stderr, "run_stage: %s\n", si.first_unsupported);
         return 0;
     }
-    const char* why = spv_eval(spv, count, env);
+    const char* why = eval_draw(spv, count, env);
     free(spv);
     if (why) fprintf(stderr, "run_stage: the evaluator stops at %s\n", why);
     return !why;
@@ -1964,11 +1987,12 @@ static void test_resolution_scale(const char* dir) {
         env.builtin[15][1] = f2u(cases[k].fy);
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
-        env.draw[8] = cases[k].scaled;  /* the per-draw block at byte 32: slot 0's bit */
-        env.draw[24] = cases[k].own;    /* and at byte 96: slot 0's target has the size drawn to */
+        u32 window[2 * SNX_DRAW_WORDS], *pc = draw_block(&env, window);
+        pc[8] = cases[k].scaled; /* the per-draw block at byte 32: slot 0's bit */
+        pc[24] = cases[k].own;   /* and at byte 96: slot 0's target has the size drawn to */
         env.image_size[SNX_VKB_TEX][0] = 32;
         env.image_size[SNX_VKB_TEX][1] = 16;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         if (why) fprintf(stderr, "resolution scale: the evaluator stops at %s\n", why);
         CHECK(!why && env.out_written[0]);
         free(spv);
@@ -2019,7 +2043,7 @@ static void test_resolution_scale(const char* dir) {
     for (u32 k = 0; k < nv && k < 64; k++) pushed += spv[vars[k] + 3] == 9; /* PushConstant */
     CHECK(!pushed);
     SpvEvalEnv env = {0};
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     if (why) fprintf(stderr, "resolution scale, compute: the evaluator stops at %s\n", why);
     CHECK(!why && env.fetched[SNX_VKB_TEX][0] == 5 && env.fetched[SNX_VKB_TEX][1] == 3);
     free(spv);
@@ -2248,7 +2272,7 @@ static void test_tex_f16(const char* dir) {
     SpvEvalEnv env = {0};
     const u32 texel[4] = {f2u(0.25f), f2u(0.5f), f2u(0.75f), f2u(0.625f)};
     memcpy(env.texel[SNX_VKB_TEX], texel, sizeof texel);
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     if (why) fprintf(stderr, "tex f16: the evaluator stops at %s\n", why);
     const u32* o = env.out[0];
     int ok = !why && env.out_written[0] && o[0] == f2u(0.875f) && o[1] == f2u(0.5f) && o[2] == f2u(0.75f) &&
@@ -2383,7 +2407,7 @@ static void test_integer_targets(const char* dir) {
                     kind ? kind : '0', kinds[rt]);
     }
     SpvEvalEnv env = {0};
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     if (why) fprintf(stderr, "integer targets: the evaluator stops at %s\n", why);
     CHECK(!why);
     for (u32 i = 0; !why && i < 12; i++) {
@@ -3203,7 +3227,7 @@ static void test_global_indirect(const char* dir) {
         env.ubo_words[SNX_VKB_SSBO + 2] = 64;
         env.ubo[SNX_VKB_WPAGES] = log;
         env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         int ok = !why && b[1] == (pick_b ? 0xdefu : 0xabcu) && b[2] == 0x777 && a[1] == 0;
         CHECK(ok);
         if (!ok)
@@ -3271,7 +3295,7 @@ static void test_global_table(const char* dir) {
     env.ubo_words[SNX_VKB_SSBO + 1] = 64;
     env.ubo[SNX_VKB_WPAGES] = log;
     env.ubo_words[SNX_VKB_WPAGES] = 16 * SH_WLOG_PART;
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     int ok = !why && a[0x42] == 0xabc && a[0x43] == 13 && a[0x44] == 10;
     for (u32 k = 0; k < 64; k++) ok &= !b[k];
     CHECK(ok);
@@ -3288,7 +3312,7 @@ static void test_global_table(const char* dir) {
     if (spv) {
         memset(log, 0, sizeof log);
         a[0x43] = 10, a[0x44] = 0;
-        why = spv_eval(spv, count, &env);
+        why = eval_draw(spv, count, &env);
         ok = !why && a[0x43] == 13 && a[0x44] == 10;
         CHECK(ok);
         if (!ok)
@@ -3352,7 +3376,7 @@ static void test_global_table_cells(const char* dir) {
     env.ubo_words[SNX_VKB_SSBO + 1] = 64;
     env.ubo[SNX_VKB_WPAGES] = log;
     env.ubo_words[SNX_VKB_WPAGES] = 16 * SH_WLOG_PART;
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     CHECK(!why && a[0x42] == 0xdef);
     if (why || a[0x42] != 0xdef) fprintf(stderr, "global table cells: %s, word %x\n", why ? why : "ran", a[0x42]);
     CHECK(keep_module(dir, "global_table_cells", spv, count));
@@ -3902,7 +3926,7 @@ static void test_atomic_fadd(const char* dir) {
         env.ubo_words[SNX_VKB_SSBO] = 16;
         env.ubo[SNX_VKB_WPAGES] = log;
         env.ubo_words[SNX_VKB_WPAGES] = SH_WLOG_PART;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         int ok = !why && buffer[1] == f2u(2.0f) && buffer[2] == f2u(3.25f) && buffer[3] == f2u(1.0f);
         CHECK(ok);
         if (!ok)
@@ -3991,7 +4015,7 @@ static void test_global_two_bases(const char* dir) {
         env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
         env.ubo[SNX_VKB_WPAGES] = log;
         env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         int ok = !why && buffer[4] == f2u(offset ? 1.0f : 3.5f) && !other[0] && !other[1] && !other[2] && !other[3];
         CHECK(ok);
         if (!ok) fprintf(stderr, "global two bases (offset %x): %s, word %08x\n", offset, why ? why : "ran", buffer[4]);
@@ -4055,7 +4079,7 @@ static void test_global_atomic_same_register(const char* dir) {
     env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
     env.ubo[SNX_VKB_WPAGES] = log;
     env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     int ok = !why && buffer[4] == 8 && buffer[5] == 5 && !other[0];
     CHECK(ok);
     if (!ok)
@@ -4169,14 +4193,15 @@ static void test_mesh(const char* dir) {
         SpvEvalEnv env = {0};
         static u32 first_ubo[4]; /* SNX_VKB_RS, which only an indirect draw's flag reads (test_task) */
         env.builtin[26][0] = 2; /* WorkgroupId.x, after the draw's first group 5 */
-        env.draw[0] = 5;                         /* the first workgroup (pc[0], read at the draw id) */
-        env.draw[1] = fix_depth ? f2u(1.0f) : 0; /* the depth fix (pc[1]) */
+        u32 window[2 * SNX_DRAW_WORDS], *pc = draw_block(&env, window);
+        pc[0] = 5;                         /* the first workgroup */
+        pc[1] = fix_depth ? f2u(1.0f) : 0; /* the depth fix */
         env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.arrays[32] = position, env.array_words[32] = 40 * 4;
         env.arrays[1] = generic1, env.array_words[1] = 40 * 4;
         env.arrays[0] = generic0, env.array_words[0] = 2 * 4;
         env.arrays[33] = indices, env.array_words[33] = 2 * 3;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "mesh: the evaluator stops at %s\n", why);
         CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 40 && env.mesh_outputs[1] == 2);
@@ -4230,11 +4255,12 @@ static void test_task(const char* dir) {
         SpvEvalEnv env = {0};
         u32 first_ubo[4] = {variant == 2 ? first : 0x777, 0, 0, 0};
         env.builtin[26][0] = 2;
-        env.draw[0] = variant == 2 ? 99 : first;                 /* the first workgroup (pc[0]) */
-        env.draw[2] = variant == 2 ? SH_PUSH_GPU_MESH_FIRST : 0; /* the flags (pc[2]) */
+        u32 window[2 * SNX_DRAW_WORDS], *pc = draw_block(&env, window);
+        pc[0] = variant == 2 ? 99 : first;                 /* the first workgroup */
+        pc[2] = variant == 2 ? SH_PUSH_GPU_MESH_FIRST : 0; /* the flags */
         env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.payload[1] = 77;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "task: the evaluator stops at %s\n", why);
         /* index 2: 3 groups; index 7: the EXIT leaves the count at 0 */
@@ -4276,11 +4302,12 @@ static void test_mesh_after_task(const char* dir) {
     static u32 position[4], generic0[4];
     SpvEvalEnv env = {0};
     env.builtin[26][0] = 2;
-    env.draw[0] = 5; /* the first workgroup (pc[0]), which a mesh after a task does not add */
+    u32 window[2 * SNX_DRAW_WORDS];
+    draw_block(&env, window)[0] = 5; /* the first workgroup, which a mesh after a task does not add */
     env.payload[5] = f2u(3.0f);
     env.arrays[32] = position, env.array_words[32] = 4;
     env.arrays[0] = generic0, env.array_words[0] = 4;
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     free(spv);
     if (why) fprintf(stderr, "mesh after a task: the evaluator stops at %s\n", why);
     CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 1 && env.mesh_outputs[1] == 1);
@@ -4325,7 +4352,7 @@ static void test_mesh_task_compute(const char* dir) {
         env.push[2] = SH_PUSH_GPU_MESH_FIRST | cap << 8;
         env.ubo[SNX_VKB_RS] = first_word, env.ubo_words[SNX_VKB_RS] = 4;
         env.ubo[SNX_VKB_MESHBUF] = buffer, env.ubo_words[SNX_VKB_MESHBUF] = 256;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "task compute: the evaluator stops at %s\n", why);
         CHECK(!why);
@@ -4392,7 +4419,7 @@ static void test_mesh_task_compute(const char* dir) {
         env.ubo[SNX_VKB_MESHBUF] = buffer, env.ubo_words[SNX_VKB_MESHBUF] = 256;
         env.arrays[32] = position, env.array_words[32] = 4;
         env.arrays[0] = generic0, env.array_words[0] = 4;
-        const char* why = spv_eval(mspv, mcount, &env);
+        const char* why = eval_draw(mspv, mcount, &env);
         free(mspv);
         if (why) fprintf(stderr, "mesh compute: the evaluator stops at %s\n", why);
         CHECK(!why && env.set_outputs == 1);
@@ -4572,7 +4599,7 @@ static void test_geometry(const char* dir) {
                 env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
             }
         env.builtin[7][0] = 42; /* PrimitiveId */
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         if (why) fprintf(stderr, "geometry: the evaluator stops at %s\n", why);
         CHECK(!why);
         if (culled) {
@@ -4709,8 +4736,9 @@ static void test_geometry_emit(const char* dir) {
                 env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
                 env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
             }
-        env.push[1] = f2u(1.0f);
-        const char* why = spv_eval(spv, count, &env);
+        u32 window[2 * SNX_DRAW_WORDS];
+        draw_block(&env, window)[1] = f2u(1.0f); /* the depth fix, in the per-draw block of every graphics stage */
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "geometry emit: the evaluator stops at %s\n", why);
         CHECK(!why);
@@ -4758,8 +4786,9 @@ static void test_geometry_adjacency(void) {
                 env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
                 env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
             }
-        env.push[1] = f2u(1.0f);
-        const char* why = spv_eval(spv, count, &env);
+        u32 window[2 * SNX_DRAW_WORDS];
+        draw_block(&env, window)[1] = f2u(1.0f); /* the depth fix, in the per-draw block of every graphics stage */
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "geometry adjacency: the evaluator stops at %s\n", why);
         CHECK(!why);
@@ -4840,7 +4869,7 @@ static void test_fragment_unfed(const char* dir) {
         SpvEvalEnv env = {0};
         env.in[0][0] = f2u(0.75f);
         env.builtin[15][3] = f2u(1.0f); /* FragCoord.w, which IPA's perspective divides by */
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         free(spv);
         if (why) fprintf(stderr, "fragment unfed: the evaluator stops at %s\n", why);
         CHECK(!why && env.out[0][0] == (unfed ? 0 : f2u(0.75f)));
@@ -4931,7 +4960,7 @@ static int fold_run(const Word* insns, u32 n, float x, float w, u32* r0) {
     env.in[0][0] = f2u(x);
     for (u32 k = 0; k < 3; k++) env.builtin[15][k] = f2u(1.0f); /* FragCoord */
     env.builtin[15][3] = f2u(w);
-    const char* why = spv_eval(spv, count, &env);
+    const char* why = eval_draw(spv, count, &env);
     free(spv);
     if (why) fprintf(stderr, "perspective fold: the evaluator stops at %s\n", why);
     *r0 = env.out[0][0];
@@ -5188,7 +5217,7 @@ static void test_clip_distances(const char* dir) {
         int has = cases[i].mask != 0;
         int ok = spv && si.uses_clip_mask == cases[i].mask && spv_has_builtin(spv, count, 3 /* ClipDistance */) == has;
         memset(&env, 0, sizeof env);
-        const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+        const char* why = spv ? eval_draw(spv, count, &env) : "not translated";
         ok &= !why;
         for (u32 plane = 0; plane < 8 && has; plane++) {
             u32 want = plane == 0 && (cases[i].mask & 1)   ? f2u(0.5f)
@@ -5224,7 +5253,7 @@ static void test_clip_distances(const char* dir) {
     memset(&env, 0, sizeof env);
     for (u32 v = 0; v < 3; v++)
         for (u32 k = 0; k < 4; k++) env.gs_in[32][4 * v + k] = f2u((float)(v + 1) + 0.25f * (float)k);
-    const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+    const char* why = spv ? eval_draw(spv, count, &env) : "not translated";
     int ok = !why && si.uses_clip_mask == 1 && env.emitted == 3;
     for (u32 v = 0; v < 3 && v < env.emitted; v++)
         for (u32 plane = 0; plane < 8; plane++) ok &= env.vertex_clip[v][plane] == (plane ? 0 : f2u(0.75f));
@@ -5849,7 +5878,7 @@ static void test_hfma2_once(const char* dir) {
         SpvEvalEnv env = {0};
         env.ubo[SNX_VKB_CB + 1] = bank1;
         env.ubo_words[SNX_VKB_CB + 1] = 4;
-        const char* why = spv_eval(spv, count, &env);
+        const char* why = eval_draw(spv, count, &env);
         u32 got = env.out[0][0], wanted = want[0] | want[1] << 16;
         tried++;
         if ((why || got != wanted) && bad++ < 6)
