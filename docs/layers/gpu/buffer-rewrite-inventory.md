@@ -434,6 +434,13 @@ between.**
 - Comment: `mirror.c`, `vk_mirror_landed`.
 - Check: `check_mirror` in `tests/vulkan_mirror.inc`, the binding after the CPU touch.
 
+**D40. On Windows the scanner starts no scan while a check scans.**
+
+- Without the rule: the write watch calls of two threads slow each other down. In one game a check took about 47 us a
+  leaf against the scanner's 4, on the thread that records the draws, and 12 us with the scanner waiting.
+- Comment: `buffer.c`, above `g_wcheck_scans`.
+- Check: `vk_write_scan` (`tests/vk_write_scan.c`), on any host.
+
 ## Results that the GPU writes
 
 **R1. A result byte lands only where the shader changed it and guest memory still holds what the shader read.**

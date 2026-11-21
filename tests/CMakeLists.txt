@@ -3390,6 +3390,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-buffer-pages gnu23)
     target_link_libraries(snx-test-vk-buffer-pages PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
+    # the scans of written pages on Windows (gpu/vk/buffer.c, WW_SCANS_SERIAL), on any host: the scanner starts no scan
+    # while a check scans
+    add_executable(snx-test-vk-write-scan vk_write_scan.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-write-scan gnu23)
+    target_link_libraries(snx-test-vk-write-scan PRIVATE snx_nx_flags)
+    add_test(NAME vk_write_scan COMMAND snx-test-vk-write-scan)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
