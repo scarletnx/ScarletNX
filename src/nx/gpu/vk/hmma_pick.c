@@ -363,7 +363,7 @@ static double outputs_apart(const u32* a, const u32* b) {
 static int bench_run(int rule, int half, double* us, u64* took, char* why, size_t n) {
     u32 ref[2 * SH_HMMA_BENCH_LOCAL];
     u64 t0 = plat_ns();
-    int ok = 1, ref_way = 0;
+    int ok = 1, ref_way = 0, refused = 0;
     for (int w = 0; w < SH_HMMA_WAYS; w++) us[w] = 0;
     *took = 0;
     Bench* b = calloc(1, sizeof *b); /* its ways' ShaderInfo are large for a stack */
@@ -389,9 +389,11 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
         }
         int made = way_make(b, x, w, b->code, bytes);
         if (made < 0) {
-            /* The driver refused a whole module that the ways all take. Every other way asks for a pipeline of a
-               program the driver has already failed to compile, and a driver that loses its shader compiler spends
-               its retry time on each of them: one attempt says what the bench needs to know */
+            /* A driver that loses its shader compiler spends its retry time on each pipeline, so the bench stops at a
+               refusal. Not at the first one while no way has run: that is the rules' way, which is the pick when the
+               bench stops, and each way is a module of its own, so the next one may compile. A second refusal in a
+               row says the driver refuses them all */
+            if (!ref_way && !refused++) continue;
             snprintf(why, n, "the %s way: %s", g_shader_hmma_names[w], x->why);
             ok = -1;
             break;
