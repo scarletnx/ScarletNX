@@ -191,6 +191,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_hdr_metadata` | `auto` | `VK_EXT_hdr_metadata` |
 | `vk_ext_image_view_min_lod` | `auto` | `VK_EXT_image_view_min_lod` |
 | `vk_ext_index_type_uint8` | `auto` | `VK_EXT_index_type_uint8` |
+| `vk_ext_legacy_vertex_attributes` | `auto` | `VK_EXT_legacy_vertex_attributes`: a vertex stream whose stride isn't a multiple of its attributes' components is bound as the game has it; off, each draw of it reads a copy restrided on the GPU |
 | `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
 | `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
 | `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |

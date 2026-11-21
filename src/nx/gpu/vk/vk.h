@@ -258,6 +258,9 @@ typedef struct {
     /* VK_EXT_primitive_topology_list_restart: the guest's restart index restarts lists as it does strips (render.c),
        and patch lists with its patch list feature */
     int has_list_restart, has_patch_list_restart;
+    /* VK_EXT_legacy_vertex_attributes' legacyVertexAttributes, with the vertex layout as dynamic state: an attribute is
+       read at any byte, so a stream whose stride isn't a multiple of its components is bound as it is (render.c) */
+    int has_legacy_vertex;
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
@@ -3285,6 +3288,9 @@ int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+/* vertex streams restrided on the GPU for a draw so far (render.c's restride): a stride that isn't a multiple of its
+   attributes' components, without VK_EXT_legacy_vertex_attributes */
+u64 vk_render_restrided(void);
 /* draws whose depth the console clips and clamps, and of them those that write depth or take a depth bias (render.c) */
 extern u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */

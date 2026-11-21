@@ -14,10 +14,11 @@ static void restride_stream(u8* start, u32 stride, const float color[4]) {
         }
 }
 
-/* A vertex stream whose stride (69) isn't a multiple of its attributes' 4-byte components, which Vulkan can't read
-   (RADV's fetches hung the GPU on one game's): the draw reads a copy restrided on the GPU (render.c's restride), as the
-   CPU's copy before it did. From a stream that starts in the middle of a word, after the CPU changed it, and from a
-   stream the DMA engine wrote on the GPU, which the copy reads where it is */
+/* A vertex stream whose stride (69) isn't a multiple of its attributes' 4-byte components, which Vulkan reads only with
+   VK_EXT_legacy_vertex_attributes (RADV's fetches hung the GPU on one game's without it): the draw binds the stream as
+   it is where the device has the extension, else reads a copy restrided on the GPU (render.c's restride), as the CPU's
+   copy before it did. From a stream that starts in the middle of a word, after the CPU changed it, and from a stream
+   the DMA engine wrote on the GPU, which the copy reads where it is */
 static int check_vertex_restride(void) {
     const u64 address = 0x488000000ull, cpu = HEAP_BASE + 0x740000;
     const u64 stream = address + 0x12001, twin = address + 0x13000, target = address + 0x18000;
@@ -58,6 +59,7 @@ static int check_vertex_restride(void) {
     r[0x7c0] = (u32)((stream + len - 1) >> 32);
     r[0x7c1] = (u32)(stream + len - 1);
     u8 bytes[3 * 69];
+    const u64 restrides = vk_render_restrided();
     restride_stream(bytes, stride, green);
     CHECK(!gmem_write(stream, bytes, len));
     channel->r3d_dirty = ~0u;
@@ -78,7 +80,17 @@ static int check_vertex_restride(void) {
     channel->r3d_dirty = ~0u;
     CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 255, 255, 255}));
     CHECK(!memcmp(GP(cpu + 0x12001), bytes, len)); /* and the copy lands when the CPU reads it */
-    printf("vertex restride: a stride of %u drawn from CPU and GPU writes\n", stride);
+    /* each of the three draws restrided its stream, or none did */
+    const u64 restrided = vk_render_restrided() - restrides;
+    if (restrided != (g_vk.has_legacy_vertex ? 0u : 3u))
+        fprintf(stderr,
+                "vertex restride: %llu of 3 draws restrided their stream, %u expected (legacy vertex "
+                "attributes %s)\n",
+                (unsigned long long)restrided, g_vk.has_legacy_vertex ? 0u : 3u, g_vk.has_legacy_vertex ? "on" : "off");
+    CHECK(restrided == (g_vk.has_legacy_vertex ? 0u : 3u));
+    printf("vertex restride: a stride of %u drawn from CPU and GPU writes, %s\n", stride,
+           g_vk.has_legacy_vertex ? "the stream bound as it is (VK_EXT_legacy_vertex_attributes)"
+                                  : "each draw from a copy restrided on the GPU");
     free(channel);
     return 0;
 }
