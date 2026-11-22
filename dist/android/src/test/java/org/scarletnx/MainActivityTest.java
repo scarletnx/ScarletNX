@@ -17,6 +17,8 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.DocumentsContract;
@@ -214,6 +216,38 @@ public class MainActivityTest {
         // the icon's own tap asks nothing
         menu.onNewIntent(MainActivity.fromIcon(menu));
         assertArrayEquals(new byte[0], menu.takePlay());
+    }
+
+    /** a game the menu started (main.c's shortcut_played): with a title ID, first on the app's icon, opening it
+        through PLAY; without one, none, and it is the game that runs either way */
+    @Test
+    public void aGameStartedIsTheIconsFirstShortcut() {
+        ShortcutManager shortcuts = menu.getSystemService(ShortcutManager.class);
+        shadowOf(shortcuts).setMaxShortcutCountPerActivity(4);
+        byte[] id = "0100ABCD00010000".getBytes(StandardCharsets.UTF_8);
+        assertArrayEquals(new byte[0], menu.played(id, "a game".getBytes(StandardCharsets.UTF_8), null));
+        assertEquals("0100ABCD00010000", MainActivity.playing());
+        assertEquals(1, shortcuts.getDynamicShortcuts().size());
+        ShortcutInfo shortcut = shortcuts.getDynamicShortcuts().get(0);
+        assertEquals("a game", shortcut.getShortLabel().toString());
+        assertEquals("0100ABCD00010000", shortcut.getIntent().getStringExtra(PlayActivity.TITLE_ID));
+        assertArrayEquals(new byte[0], menu.played(new byte[0], "a homebrew".getBytes(StandardCharsets.UTF_8), null));
+        assertEquals("", MainActivity.playing());
+        assertEquals(1, shortcuts.getDynamicShortcuts().size());
+    }
+
+    /** the box's Add to Home Screen: the home screen asked, or why not, as UTF-8 */
+    @Test
+    public void aGameToTheHomeScreenOrWhyNot() {
+        ShortcutManager shortcuts = menu.getSystemService(ShortcutManager.class);
+        byte[] id = "0100ABCD00010000".getBytes(StandardCharsets.UTF_8);
+        byte[] name = "a game".getBytes(StandardCharsets.UTF_8);
+        shadowOf(shortcuts).setIsRequestPinShortcutSupported(false);
+        assertEquals("This home screen takes no shortcuts",
+                     new String(menu.pin(id, name, null), StandardCharsets.UTF_8));
+        shadowOf(shortcuts).setIsRequestPinShortcutSupported(true);
+        assertArrayEquals(new byte[0], menu.pin(id, name, null));
+        assertEquals("0100ABCD00010000", shortcuts.getPinnedShortcuts().get(0).getId());
     }
 
     /** the recent apps' list starts a task that has gone with the intent it began with: its PLAY was played then */

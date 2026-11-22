@@ -94,6 +94,35 @@ public class MainActivity extends SDLActivity {
         return id;
     }
 
+    /** the title ID of the game the menu started last, "" for one without: while its process runs, a PLAY of it brings
+        it back (PlayActivity). The process's, which a game outlives when Android ends the menu's */
+    private static volatile String playing = "";
+
+    static String playing() {
+        return playing;
+    }
+
+    private static String text(byte[] utf8) {
+        return utf8 != null ? new String(utf8, StandardCharsets.UTF_8) : null;
+    }
+
+    /** src/gui/android.c: the game the menu started, its title ID ("" for none), name and icon file (null for none), as
+        UTF-8: one with an ID first of the shortcuts on the app's icon (Shortcuts.played). What failed, or empty */
+    public byte[] played(byte[] id, byte[] name, byte[] icon) {
+        String game = id != null ? text(id) : "";
+        playing = game;
+        String failed =
+            game.isEmpty() ? "" : Shortcuts.played(this, Build.VERSION.SDK_INT, game, text(name), text(icon));
+        return failed.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** src/gui/android.c: the game's box's Add to Home Screen, its title ID, name and icon file (null for none), as
+        UTF-8: empty when the home screen was asked, else why not (Shortcuts.pin) */
+    public byte[] pin(byte[] id, byte[] name, byte[] icon) {
+        String failed = Shortcuts.pin(this, Build.VERSION.SDK_INT, text(id), text(name), text(icon));
+        return failed.getBytes(StandardCharsets.UTF_8);
+    }
+
     /** src/gui/android.c: Back on the menu's first screen, as an app's first screen takes it: the app goes behind */
     public void toBack() {
         moveTaskToBack(true);

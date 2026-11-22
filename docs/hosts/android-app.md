@@ -66,8 +66,12 @@ recompiles on the phone, then the game opens.
 
   The menu comes in front and starts the game. An ID no recompiled game has, or one that is no title ID (16 hex
   digits), is said with that ID; while the setup shows, the game starts once it ends, and a run on the screen or a box
-  over it keeps it from starting, said the same way. While a game plays, that game comes back in front, and a toast
-  names the one asked for.
+  over it keeps it from starting, said the same way. While a game plays, a PLAY of that game brings it back in front;
+  of another, a toast names the one asked for.
+- **Shortcuts**: a long press on the app's icon lists the games played last, newest first, as many as the home screen
+  shows (Android 7.1 and later), and a game's box in *Games* (a finger held on it) has *Add to Home Screen*, which
+  the home screen asks about before it adds the game (Android 8 and later). Both are for a game whose folder its title
+  ID names, with its name and icon as *Games* shows them, and open it as the PLAY above does.
 - **GPU drivers**: on arm64 with an Adreno, a Mali or an Xclipse GPU, from Android 9, a game can run with a Vulkan
   driver package the player added (Turnip's releases for an Adreno and PanVK's for a Mali, as Eden takes them;
   [RADV's port to Xclipse](https://github.com/JimVulkan/radv-xclipse), from Android 14) in place of the system's,
@@ -181,6 +185,6 @@ gradle -p dist/android testDebugUnitTest -Pscarletnx.stage=$HOME/android-build/s
 JUnit alone checks what needs nothing of Android: the setting a maker's phone gets, that each method the native code
 calls by name is in the app and that each native method is in the native code. Robolectric runs the rest on Android's
 own classes: the data folder's provider, what the menu hands the Files app and the share sheet, a game's arguments,
-what a PLAY hands the menu and the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
+what a PLAY hands the menu, the shortcuts and the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
 210 MB, into `~/.m2`). The CI runs the tests at the end of its Android job: one that fails fails the job, with the APKs
 already uploaded.

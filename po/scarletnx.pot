@@ -27,6 +27,10 @@ msgstr ""
 msgid "MainActivity.%s did not run."
 msgstr ""
 
+#: src/gui/android.c src/gui/main.c
+msgid "Out of memory"
+msgstr ""
+
 #: src/gui/apple.m
 msgid "The document picker did not open."
 msgstr ""
@@ -3798,10 +3802,6 @@ msgid "%s is no recompiled Switch game: only one has settings of its own"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Out of memory"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "%s holds what no setting takes, which the next change leaves out: %s"
 msgstr ""
@@ -4915,6 +4915,24 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "AOT Pack"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add to Home Screen"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No game in focus with a title ID to add."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The home screen was asked to add %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not on the home screen: %s"
 msgstr ""
 
 #: src/gui/main.c

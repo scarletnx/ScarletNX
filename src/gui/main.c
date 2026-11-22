@@ -15881,6 +15881,19 @@ static char* play_handover(const char* game) {
     free(folder);
     return path;
 }
+/* The game whose program is game, started in the game activity, to the app (gui_android_played): which game plays, and
+   for one with a title ID (title_game) the first of the app icon's shortcuts, named and drawn as Games shows it. What
+   failed goes to the log: the game plays all the same */
+static void shortcut_played(const char* game) {
+    char id[17], why[512];
+    char *program = title_game(game, id), *name = program ? gui_game_shown(program) : NULL,
+         *icon = program ? gui_game_icon(program) : NULL;
+    if (!gui_android_played(id, name ? name : id, icon, why, sizeof why))
+        gui_log("The app icon's shortcut of %s, %s, not made: %s", id, name ? name : "?", why);
+    free(icon);
+    free(name);
+    free(program);
+}
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
 static int play_as(App* app, const char* asked, bool next) {
     GuiSettings* s = settings_of(app);
@@ -15904,6 +15917,7 @@ static int play_as(App* app, const char* asked, bool next) {
     if (ok) {
         free(app->played_game);
         app->played_game = snx_strdup(game);
+        shortcut_played(game);
     }
     free(argv);
     play_args_free(&own);
@@ -17518,6 +17532,10 @@ static void subfolders_switch(App* app, int kind, int at) {
    out as Checkpoint or Vita3K keep them, a .sav as the emulators keep one, and back in (saves_start) */
 #define SAY_GAME_EXPORT_SAVES SNX_TR_NOOP("Export Saves")
 #define SAY_GAME_IMPORT_SAVES SNX_TR_NOOP("Import Saves")
+#ifdef SDL_PLATFORM_ANDROID
+/* a game whose folder its title ID names (title_game): its shortcut on the home screen */
+#define SAY_GAME_HOME SNX_TR_NOOP("Add to Home Screen")
+#endif
 static void play_focus(App* app);
 static void queue_show(App* app, int i);
 static void recompile_focus(App* app);
@@ -17542,6 +17560,35 @@ static int game_box_game(App* app, int* queued, char* name, size_t size) {
     *queued = path ? gui_queue_find(&app->queue, path) : -1;
     return 1;
 }
+/* the focused row's game, recent or of the page, as title_game has it: its program (owned) and title ID; NULL for a
+   row that is no game, or a game whose folder no title ID names. On Android its box has Add to Home Screen */
+[[maybe_unused]] static char* game_box_title(const App* app, char id[17]) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    id[0] = 0;
+    if (!games_play_focus(app)) return NULL;
+    return title_game(row < head ? app->recent.game[recent_index(app, (int)row)].path
+                                 : app->games.paths[app->browser.page * app->browser.page_size + row - head],
+                      id);
+}
+#ifdef SDL_PLATFORM_ANDROID
+/* the box's Add to Home Screen: the focused game's shortcut asked of the home screen, named and drawn as Games shows
+   it, which asks the player first; else why not */
+static void home_focus(App* app) {
+    char id[17], why[sizeof app->message - 160];
+    char *program = game_box_title(app, id), *name = program ? gui_game_shown(program) : NULL,
+         *icon = program ? gui_game_icon(program) : NULL;
+    if (!program)
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus with a title ID to add."));
+    else if (gui_android_pin(id, name ? name : id, icon, why, sizeof why))
+        snprintf(app->message, sizeof app->message, snx_tr("The home screen was asked to add %s"), name ? name : id);
+    else
+        snprintf(app->message, sizeof app->message, snx_tr("%s is not on the home screen: %s"), name ? name : id, why);
+    gui_log("Add to Home Screen, %s: %s", id[0] ? id : "no title ID", app->message);
+    free(icon);
+    free(name);
+    free(program);
+}
+#endif
 /* the focused row's game a made 3DS, Vita, GBA or NDS game: its program into *path (the row's, not owned) and its
    console into *driver; 0 for any other row */
 static int game_box_raw(const App* app, const char** path, int* driver) {
@@ -17581,6 +17628,13 @@ static void game_box_open(App* app) {
         }
     }
     if (aot_said(app)) app->game_picks[n++] = SAY_GAME_AOT; /* as B builds it, where it can, last */
+#ifdef SDL_PLATFORM_ANDROID
+    {
+        char id[17], *program = game_box_title(app, id);
+        if (program) app->game_picks[n++] = SAY_GAME_HOME;
+        free(program);
+    }
+#endif
     app->game_picks[n] = NULL;
     picks_open(app, GUI_PICKS_GAME);
 }
@@ -17603,6 +17657,10 @@ static void game_box_take(App* app, const char* pick) {
         settings_focus(app);
     else if (!strcmp(pick, SAY_GAME_AOT))
         aot_focus(app);
+#ifdef SDL_PLATFORM_ANDROID
+    else if (!strcmp(pick, SAY_GAME_HOME))
+        home_focus(app);
+#endif
     else if (!strcmp(pick, SAY_GAME_EXPORT_SAVES) || !strcmp(pick, SAY_GAME_IMPORT_SAVES)) {
         const char* path;
         int driver;

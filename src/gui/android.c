@@ -276,3 +276,49 @@ void gui_android_ran(const char* result) {
         (*env)->ExceptionClear(env);
     (*env)->DeleteLocalRef(env, arg.l);
 }
+
+/* a game's title ID, name and icon file (NULL: null) as MainActivity's three byte[], into args: 0, the three left
+   NULL and the exception cleared, when memory ran out */
+static int game_bytes(JNIEnv* env, jvalue args[3], const char* id, const char* name, const char* icon) {
+    args[0].l = bytes(env, id);
+    args[1].l = bytes(env, name);
+    args[2].l = icon ? bytes(env, icon) : NULL;
+    if (args[0].l && args[1].l && (args[2].l || !icon)) return 1;
+    (*env)->ExceptionClear(env);
+    for (int i = 0; i < 3; ++i)
+        if (args[i].l) (*env)->DeleteLocalRef(env, args[i].l);
+    args[0].l = args[1].l = args[2].l = NULL;
+    return 0;
+}
+/* MainActivity's answer of a game's method, empty when it did: 1; else 0 with it, or why there was none, in message.
+   The arrays are let go */
+static int game_said(JNIEnv* env, jvalue args[3], char* text, char* message, size_t size) {
+    int ok = text && !text[0];
+    if (text && text[0]) snprintf(message, size, "%s", text);
+    free(text);
+    for (int i = 0; i < 3; ++i)
+        if (args[i].l) (*env)->DeleteLocalRef(env, args[i].l);
+    return ok;
+}
+
+int gui_android_played(const char* id, const char* name, const char* icon, char* message, size_t size) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jvalue args[3];
+    if (!env) return call("played", "", NULL, message, size);
+    if (!game_bytes(env, args, id, name, icon)) {
+        snprintf(message, size, "%s", snx_tr("Out of memory"));
+        return 0;
+    }
+    return game_said(env, args, ask("played", "([B[B[B)[B", args, message, size), message, size);
+}
+
+int gui_android_pin(const char* id, const char* name, const char* icon, char* message, size_t size) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jvalue args[3];
+    if (!env) return call("pin", "", NULL, message, size);
+    if (!game_bytes(env, args, id, name, icon)) {
+        snprintf(message, size, "%s", snx_tr("Out of memory"));
+        return 0;
+    }
+    return game_said(env, args, ask("pin", "([B[B[B)[B", args, message, size), message, size);
+}
