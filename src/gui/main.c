@@ -21400,86 +21400,18 @@ static int SDLCALL listing_run(void* arg) {
     SDL_SetAtomicInt(&l->done, 1);
     return 0;
 }
-/* An event while the list is read (listing_wait): a press, a move, the wheel or typing dropped, as each would act on a
-   list that is not there yet; a stick's or a trigger's move kept as its last place, so the pads' held directions
-   follow where the sticks are once the list is there; a release kept, which ends what its press began before (a
-   finger's tap only follows its own press, list_finger's); any other (the window's, a close, a pad come or gone, a
-   file dropped) kept */
-enum { LISTING_DROP, LISTING_LAST, LISTING_KEEP };
-static int listing_take(Uint32 type) {
-    switch (type) {
-        case SDL_EVENT_KEY_DOWN:
-        case SDL_EVENT_TEXT_INPUT:
-        case SDL_EVENT_TEXT_EDITING:
-        case SDL_EVENT_MOUSE_MOTION:
-        case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        case SDL_EVENT_MOUSE_WHEEL:
-        case SDL_EVENT_FINGER_DOWN:
-        case SDL_EVENT_FINGER_MOTION:
-        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-        case SDL_EVENT_JOYSTICK_AXIS_MOTION:
-        case SDL_EVENT_JOYSTICK_BALL_MOTION:
-        case SDL_EVENT_JOYSTICK_HAT_MOTION:
-        case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
-        case SDL_EVENT_JOYSTICK_BUTTON_UP:
-        case SDL_EVENT_PEN_DOWN:
-        case SDL_EVENT_PEN_MOTION: return LISTING_DROP;
-        case SDL_EVENT_GAMEPAD_AXIS_MOTION: return LISTING_LAST;
-        default: return LISTING_KEEP;
-    }
-}
-/* The events taken while the list is read (listing_poll), to hand back to the loop's queue once it is there
-   (listing_give_back), in their order: GUI_LISTING_KEPT at most, past them the last one's place going to a close, so
-   the window still closes, and the rest dropped, counted in lost. since_ns: when the reading began (SDL_GetTicksNS,
-   the events' clock) */
-#define GUI_LISTING_KEPT 128
-typedef struct {
-    SDL_Event kept[GUI_LISTING_KEPT];
-    int n, lost;
-    Uint64 since_ns;
-} ListingEvents;
-/* the events SDL holds, polled and taken as listing_take says, those from before the reading began kept as they are
-   (the loop had not come to them yet); the window drawn anew at its next frame after one of its own, as event()
-   does */
-static void listing_poll(ListingEvents* q) {
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-        int take = e.common.timestamp < q->since_ns ? LISTING_KEEP : listing_take(e.type), i = q->n;
-        if (e.type < SDL_EVENT_KEY_DOWN || (e.type >= SDL_EVENT_RENDER_TARGETS_RESET && e.type < SDL_EVENT_PRIVATE0))
-            gui_drawn_stale();
-        if (take == LISTING_DROP) continue;
-        if (take == LISTING_LAST) /* in place of the same axis' of the same pad, since the reading began */
-            for (i = 0; i < q->n && !(q->kept[i].type == e.type && q->kept[i].common.timestamp >= q->since_ns &&
-                                      q->kept[i].gaxis.which == e.gaxis.which && q->kept[i].gaxis.axis == e.gaxis.axis);
-                 ++i)
-                continue;
-        if (i < q->n)
-            q->kept[i] = e;
-        else if (q->n < GUI_LISTING_KEPT)
-            q->kept[q->n++] = e;
-        else {
-            q->lost++;
-            if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) q->kept[q->n - 1] = e;
-        }
-    }
-}
-static void listing_give_back(ListingEvents* q) {
-    for (int i = 0; i < q->n; ++i)
-        if (!SDL_PushEvent(&q->kept[i])) q->lost++;
-    q->n = 0;
-}
-/* until the listing is done: the events taken (listing_poll), and past shown_ms the screen drawn with Games' loading
-   line each frame, so the window goes on while it is read; then the events handed back, and those dropped for want of
-   room said in the log. Games opened shows it past GUI_LISTING_OPEN_MS, two frames, so the tab comes at once; a list
-   read again under the player's eyes (a game made, the folders changed) past GUI_LISTING_SHOWN_MS, so a quick one goes
-   on showing the list it had */
+/* until the listing is done: the window's events pumped into SDL's queue, which keeps every one of them, presses with
+   the rest, for the loop to take once the list is there, as a read on this thread left them: Games is read again each
+   second or so while the driver names its dumps, under the player's presses; and past shown_ms the screen drawn with
+   Games' loading line each frame, so the window goes on while it is read. Games opened
+   shows it past GUI_LISTING_OPEN_MS, two frames, so the tab comes at once; a list read again under the player's eyes
+   (a game made, the folders changed) past GUI_LISTING_SHOWN_MS, so a quick one goes on showing the list it had */
 #define GUI_LISTING_OPEN_MS  30
 #define GUI_LISTING_SHOWN_MS 150
 static void listing_wait(App* app, GamesListing* l, Uint64 shown_ms) {
-    ListingEvents q = {.since_ns = SDL_GetTicksNS()};
     Uint64 start = SDL_GetTicks();
     while (!SDL_GetAtomicInt(&l->done)) {
-        listing_poll(&q);
+        SDL_PumpEvents(); /* the system's, which a window that stops taking them is said to hang over */
         if (!app->games_loading && SDL_GetTicks() - start >= shown_ms) app->games_loading = true;
 #ifdef SDL_PLATFORM_ANDROID
         if (app->games_loading && !app->hidden) render(app); /* nothing drawn behind other apps, as the loop does */
@@ -21488,12 +21420,6 @@ static void listing_wait(App* app, GamesListing* l, Uint64 shown_ms) {
 #endif
         SDL_Delay(16);
     }
-    listing_poll(&q); /* those since the last pass */
-    listing_give_back(&q);
-    if (q.lost)
-        gui_log("Games took %llu ms to read: %d event(s) of the window's, the app's or the pads' of then dropped past "
-                "the %d kept",
-                (unsigned long long)(SDL_GetTicks() - start), q.lost, GUI_LISTING_KEPT);
     app->games_loading = false;
 }
 /* Games' list read (on a thread of its own, its loading line past shown_ms: listing_wait), and the rows' facts with it */

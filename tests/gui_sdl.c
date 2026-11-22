@@ -1781,28 +1781,33 @@ static bool games_lists(const App* app, const char* shown) {
 /* Games' View box (V): Recent Games and Dumps, on by default, and Sort, by title; each changed by Enter, Left, Right
    or a click, kept in app.ini at once and Games listed again by it; an app.ini without them (an older version's) has
    the defaults, iOS's off; a word it does not know named with the one it keeps */
-/* an event of type pushed on SDL's queue, at SDL's clock now (a timestamp of 0) or at ts */
-static void push_at(Uint32 type, Uint64 ts, SDL_Event* e) {
-    e->type = type;
-    e->common.timestamp = ts;
-    assert(SDL_PushEvent(e));
+/* the presses of a player who goes on while Games is read: Tab, then a pad's R1 (RB, Tab's button) and their
+   releases, pushed on SDL's queue from SDL's timer thread, after which the listing is done */
+static const Uint32 pressed_during[] = {SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP, SDL_EVENT_GAMEPAD_BUTTON_DOWN,
+                                        SDL_EVENT_GAMEPAD_BUTTON_UP};
+static Uint32 SDLCALL press_during(void* listing, SDL_TimerID id, Uint32 interval) {
+    (void)id;
+    (void)interval;
+    for (size_t i = 0; i < sizeof pressed_during / sizeof *pressed_during; ++i) {
+        SDL_Event e = {0};
+        e.type = pressed_during[i];
+        if (i < 2)
+            e.key.key = SDLK_TAB;
+        else
+            e.gbutton.button = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+        assert(SDL_PushEvent(&e));
+    }
+    SDL_SetAtomicInt(&((GamesListing*)listing)->done, 1);
+    return 0;
 }
 /* Games while its list is read (list_games, on a thread of its own): past GUI_LISTING_SHOWN_MS its loading line where
-   the list goes, in ink, the list's rows not drawn, and the list back once read. The events of the reading
-   (listing_poll): a press, a move and the wheel dropped; a release and the window's kept, in their order; a stick's
-   last place kept in the place of its first; those from before the reading as they were; past a full queue, a close
-   still kept in the last place, the rest counted lost. Handed back, the queue holds what was kept, in its order */
+   the list goes, in ink, the list's rows not drawn, and the list back once read. What the player presses while it is
+   read stays on SDL's queue, every press with its release in their order, for the loop to take once the list is there
+   (a tab key or a pad's R1 then is a tab that changes) */
 static void games_listing(App* app) {
-    ListingEvents q = {.n = 0};
-    SDL_Event e = {0}, got;
-    const Uint32 order[] = {SDL_EVENT_KEY_DOWN,
-                            SDL_EVENT_KEY_UP,
-                            SDL_EVENT_MOUSE_BUTTON_UP,
-                            SDL_EVENT_GAMEPAD_AXIS_MOTION,
-                            SDL_EVENT_WINDOW_EXPOSED,
-                            SDL_EVENT_GAMEPAD_AXIS_MOTION,
-                            SDL_EVENT_QUIT};
-    int k = 0;
+    GamesListing l = {.app = app};
+    SDL_Event got;
+    size_t k = 0;
     app->games_loading = true;
     render(app);
     shows(app, "Loading games", rgb(app->theme.ink));
@@ -1812,47 +1817,14 @@ static void games_listing(App* app) {
     hides(app, "Loading games", rgb(app->theme.ink));
     shows(app, "Recent Games", rgb(app->theme.soft));
     SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
-    e.key.key = SDLK_DOWN;
-    push_at(SDL_EVENT_KEY_DOWN, 1, &e); /* before the reading: the loop's, as it came */
-    q.since_ns = SDL_GetTicksNS();
-    push_at(SDL_EVENT_KEY_DOWN, 0, &e);
-    push_at(SDL_EVENT_KEY_UP, 0, &e);
-    push_at(SDL_EVENT_MOUSE_BUTTON_DOWN, 0, &e);
-    push_at(SDL_EVENT_MOUSE_BUTTON_UP, 0, &e);
-    e = (SDL_Event){0};
-    e.gaxis.which = 7;
-    e.gaxis.axis = SDL_GAMEPAD_AXIS_LEFTX;
-    e.gaxis.value = 30000;
-    push_at(SDL_EVENT_GAMEPAD_AXIS_MOTION, 0, &e);
-    push_at(SDL_EVENT_WINDOW_EXPOSED, 0, &e);
-    e.gaxis.value = 0; /* back: in the first's place */
-    push_at(SDL_EVENT_GAMEPAD_AXIS_MOTION, 0, &e);
-    e.gaxis.axis = SDL_GAMEPAD_AXIS_LEFTY;
-    e.gaxis.value = -30000;
-    push_at(SDL_EVENT_GAMEPAD_AXIS_MOTION, 0, &e);
-    push_at(SDL_EVENT_FINGER_DOWN, 0, &e);
-    push_at(SDL_EVENT_MOUSE_WHEEL, 0, &e);
-    push_at(SDL_EVENT_MOUSE_MOTION, 0, &e);
-    push_at(SDL_EVENT_GAMEPAD_BUTTON_DOWN, 0, &e);
-    push_at(SDL_EVENT_QUIT, 0, &e);
-    listing_poll(&q);
-    assert(q.n == 7 && !q.lost);
-    for (int i = 0; i < q.n; ++i) assert(q.kept[i].type == order[i]);
-    assert(q.kept[0].common.timestamp == 1 && q.kept[0].key.key == SDLK_DOWN);
-    assert(q.kept[3].gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX && q.kept[3].gaxis.value == 0);
-    assert(q.kept[5].gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY && q.kept[5].gaxis.value == -30000);
-    listing_give_back(&q);
-    assert(!q.n && !q.lost);
-    while (SDL_PollEvent(&got)) assert(k < 7 && got.type == order[k++]);
-    assert(k == 7);
-    /* a full queue: the window's past it lost, a close still kept */
-    q.since_ns = SDL_GetTicksNS();
-    for (int i = 0; i < GUI_LISTING_KEPT + 5; ++i) push_at(SDL_EVENT_WINDOW_EXPOSED, 0, &e);
-    push_at(SDL_EVENT_QUIT, 0, &e);
-    listing_poll(&q);
-    assert(q.n == GUI_LISTING_KEPT && q.lost == 6 && q.kept[GUI_LISTING_KEPT - 1].type == SDL_EVENT_QUIT);
-    q.n = 0;
-    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    assert(SDL_AddTimer(50, press_during, &l));
+    listing_wait(app, &l, 0); /* its loading line drawn meanwhile */
+    assert(!app->games_loading);
+    while (SDL_PollEvent(&got))
+        if (got.type == SDL_EVENT_KEY_DOWN || got.type == SDL_EVENT_KEY_UP ||
+            got.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || got.type == SDL_EVENT_GAMEPAD_BUTTON_UP)
+            assert(k < sizeof pressed_during / sizeof *pressed_during && got.type == pressed_during[k++]);
+    assert(k == sizeof pressed_during / sizeof *pressed_during);
 }
 static void view_box(App* app, const char* temporary) {
     char *was_games = app->games_dir, *was_data = app->data_dir, *was_app = app->app_file;
