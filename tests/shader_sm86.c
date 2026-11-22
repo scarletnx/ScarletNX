@@ -3314,6 +3314,89 @@ static void test_global_indirect(const char* dir) {
     }
 }
 
+static Word mov_cbuf(u32 dst, u32 bank, u32 off);
+/* IADD3 dst, a, c[bank][off], RZ */
+static Word iadd3_cb(u32 dst, u32 a, u32 bank, u32 off) {
+    Word x = alu(0x010, 5, dst, a);
+    cbuf(&x, bank, off);
+    set(&x, 64, 8, 255);
+    set(&x, 81, 3, 7);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 4, 7);
+    set(&x, 77, 4, 7);
+    return x;
+}
+/* Two paths that meet at an LDG with an address in a different storage buffer on each, as one game's instanced
+   vertex programs fetch their matrices: where P0 holds, R6:R7 is buffer B's base (c[0][0x120]) plus an index the
+   program loads from buffer A (c[0][0x110]), and @P0 BRA skips the other path, where it is buffer C's base
+   (c[0][0x130]) plus R2. The loaded index makes the address a value from memory, so the LDG compares it with the
+   program's buffers as it runs (global_dynamic): B and C must be among them, and each path reads its own word. The
+   word goes to buffer D (c[0][0x140]). With only A and D compared, the load read 0 on both paths */
+static void test_global_join_bases(const char* dir) {
+    for (u32 pick = 0; pick < 2; pick++) {
+        u8 code[16 * 16] = {0};
+        u32 n = 0;
+        put(code, n++, setp_const(0, pick ? 0 : 1)); /* P0 = pick */
+        put(code, n++, mov_imm(2, 8));
+        put(code, n++, predicated(mov_cbuf(0, 0, 0x110), 0));
+        put(code, n++, predicated(mov_cbuf(1, 0, 0x114), 0));
+        put(code, n++, predicated(ldg_nou(3, 0, 0, 4), 0)); /* @P0 LDG R3, [R0]: the index, A's word 0 */
+        put(code, n++, predicated(iadd3_cb(6, 3, 0, 0x120), 0));
+        put(code, n++, predicated(mov_cbuf(7, 0, 0x124), 0));
+        put(code, n, bra(n, 10, 0, 0));
+        n++;
+        put(code, n++, iadd3_cb(6, 2, 0, 0x130));
+        put(code, n++, mov_cbuf(7, 0, 0x134));
+        put(code, n++, ldg_nou(8, 6, 0, 4)); /* LDG R8, [R6]: B's or C's */
+        put(code, n++, mov_cbuf(10, 0, 0x140));
+        put(code, n++, mov_cbuf(11, 0, 0x144));
+        put(code, n++, stg_nou(10, 0, 8));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "global join bases: %s\n", si.first_unsupported);
+            continue;
+        }
+        static u32 bank0[1024], a[16], b[16], cbuf_c[16], d[16], log[2 * SH_WLOG_PART];
+        static const u32 bases[4] = {0x110, 0x120, 0x130, 0x140};
+        u32* data[4] = {a, b, cbuf_c, d};
+        memset(bank0, 0, sizeof bank0);
+        memset(a, 0, sizeof a), memset(b, 0, sizeof b), memset(cbuf_c, 0, sizeof cbuf_c), memset(d, 0, sizeof d);
+        a[0] = 4;
+        b[1] = 0xbbb;
+        cbuf_c[2] = 0xccc;
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_WPAGES] = log; /* the store's write log, a compute program's */
+        env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+        int bound = 0;
+        for (u32 k = 0; k < 4; k++) {
+            bank0[bases[k] / 4] = 0, bank0[bases[k] / 4 + 1] = k + 1, bank0[bases[k] / 4 + 2] = 64;
+            for (int slot = 0; slot < si.ngbuf; slot++)
+                if (si.gbuf_cbuf_off[slot] == bases[k]) {
+                    env.ubo[SNX_VKB_SSBO + slot] = data[k];
+                    env.ubo_words[SNX_VKB_SSBO + slot] = 16;
+                    bound++;
+                }
+        }
+        CHECK(bound == 4 && si.ngbuf == 4);
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && d[0] == (pick ? 0xbbbu : 0xcccu);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "global join bases (%s): %s, %d buffers, D word 0 %x\n", pick ? "B" : "C",
+                    why ? why : "ran", si.ngbuf, d[0]);
+        CHECK(keep_module(dir, pick ? "global_join_bases_b" : "global_join_bases_c", spv, count));
+        free(spv);
+    }
+}
+
 /* ATOMG.E.ADD (no uniform, 0x3a8) of 32-bit data into dst, at [addr + imm], as one game's culling programs encode it */
 static Word atomg_add(u32 dst, u32 addr, u32 imm, u32 data) {
     Word x = fix(0x3a8);
@@ -7645,6 +7728,7 @@ int main(int argc, char** argv) {
     test_base_instance_word(dir);
     test_u64_conversions();
     test_global_indirect(dir);
+    test_global_join_bases(dir);
     test_global_table(dir);
     test_global_table_cells(dir);
     test_f2ip(dir);

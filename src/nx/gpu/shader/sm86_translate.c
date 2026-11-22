@@ -1629,13 +1629,28 @@ static u32 table_ssbo_id(Ctx* c, u32 key) {
 }
 /* where two keys meet (a predicated write over the register's key, or two paths): an indirect key against another
    key takes neither, and the address is then compared with each at run time (global_dynamic), which the two are
-   candidates of. Two constant buffer keys keep track_globals's own rules */
+   candidates of. Two constant buffer keys keep track_globals's own rules, but where two paths meet and a value from
+   memory reaches the register on either side the access is compared at run time anyway, and the two are its
+   candidates too (track_candidates) */
 static void track_conflict(Ctx* c, u32 a, u32 b) {
     for (u32 k = 0; k < 2; k++) {
         u32 key = k ? b : a, seen = 0;
         if (!key) continue;
         for (u32 j = 0; j < c->ndyn_keys; j++) seen |= c->dyn_keys[j] == key - 1;
         if (!seen && c->ndyn_keys < 16) c->dyn_keys[c->ndyn_keys++] = key - 1;
+    }
+}
+/* the keys of two constant buffer words whose paths meet where a value from memory reaches the register:
+   global_dynamic's candidates, each that can hold a buffer's address (a storage buffer descriptor of cbuf 0, or a bare
+   16-byte aligned address in a program's own cbuf, as shader_gbuf_tag and shader_gbuf_tag_any take them). Any other
+   word an add took as a base takes no buffer slot */
+static void track_candidates(Ctx* c, u32 a, u32 b) {
+    for (u32 k = 0; k < 2; k++) {
+        u32 key = k ? b : a;
+        if (!key) continue;
+        u32 bank = SH_GBUF_BANK(key - 1), off = SH_GBUF_OFFSET(key - 1);
+        if ((off & 15) || bank >= 18 || (bank == 0 && !shader_gbuf_sized(c->stage, off))) continue;
+        track_conflict(c, key, 0);
     }
 }
 /* the key of a register source of a global access or an ALU instruction (0 for none) */
@@ -1921,7 +1936,8 @@ static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, u8* tab, u8* tabx, 
             if (key_indirect(key[r]) || key_indirect(key2[r])) {
                 track_conflict(c, key[r], key2[r]);
                 dyn[r] = 1;
-            }
+            } else if (dyn[r] || dyn2[r])
+                track_candidates(c, key[r], key2[r]);
             key[r] = 0, exact[r] = 0;
         } else
             exact[r] &= exact2[r];
