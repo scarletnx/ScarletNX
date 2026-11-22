@@ -45,6 +45,21 @@ In the game's menu a value the picks hold has `*` after it, and Delete or a cont
 goes back to the launcher's, else the `.ini`'s, at once. Its **Settings** page sets the rest of these sections for the
 game alone ([Usage](usage.md#playing)).
 
+From the game's first frame, for 30 seconds, a notification over the game names each setting off its default that
+changes how fast the game runs where nothing on the screen shows it, so a choice left from a test is not forgotten:
+`perf` in `settings.txt`. They are TV mode, `tv_refresh_rate`, `tv_resolution`, `resolution`, `dlss_upscaler`,
+`dlss_render_size`, `fsr_sharpness`, `vsync`, `frame_pacing`, `anisotropy`, `vulkan_video`, `apple_video`,
+`vulkan_driver`, `vertex_input_dynamic_state`, `vulkan_ban_ignore`, `astc_mode`, `texture_shed`, `texture_half_res`,
+`astc_lines_bc1`, `texture_sysmem`, `bc7_queue`, `astc_compute_queue`, `astc_quick_mtexels`, `astc_background`, every
+`vk_ext_*`, every Performance setting, `gpu_driver`, `freedreno_env`, `microphone`, `mic_noise_reduction`, and how the
+game's code was made: `opt`, `llvm_batch`, `unit_instructions` and LLVM Internals, as its stamp's made line says them
+([Usage](usage.md)). The screen shows the others by itself (`stats`, `showcase`, `fullscreen`, `controls`, `shadows`,
+`upscaler`, `anti_aliasing`, `hdr_game`), and the `[Debug]` settings are named at the top of the picture the whole
+run. The notification gives their keys alone, a line each: after a gamepad the game's own (its picks, its `.ini`),
+after a globe the launcher's for every game, this run's command line's and how the code was made. A line names as
+many as fit it, three lines at most, and the last says how many more there are. A value nobody gave, one the runtime
+picks for a game (an Ounce program's `async_pipelines`), is not named.
+
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
 **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,

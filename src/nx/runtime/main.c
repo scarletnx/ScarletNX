@@ -1557,6 +1557,11 @@ int snx_main(int argc, char** argv) {
         if (options_debug(INI_CHANGED_DEFAULT, list, sizeof list))
             LOG("debug: %s; shown at the top of the picture while the game runs\n", list);
     }
+    {
+        char base[sizeof g_exedir + sizeof g_exename];
+        snprintf(base, sizeof base, "%s%s", g_exedir, g_exename); /* the program's .abi says how its code was made */
+        options_perf_notice(base);
+    }
     /* after the header, so the client's own lines do not come before it and a capture that cannot start still leaves
        a log: it is asked for by a setting, and a run without it is better than no run */
     if (snx_tracy_init(title)) WARN("tracy: no capture this run; it goes on without one\n");

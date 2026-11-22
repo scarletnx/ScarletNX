@@ -138,6 +138,25 @@ void overlay_state_toast(const char* text, u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows: from any thread */
+/* The settings off their default that change how fast the game runs where nothing on the screen shows it, as the game
+   starts (options_perf_notice): notification lines from the game's first frame for SNX_OVERLAY_SETTINGS_MS, a reminder
+   that they are not the defaults. game: the game's own keys, after a gamepad; global: the launcher's for every game,
+   this run's command line's and how its code was made, after a globe; keys alone between ", ", either "" for none.
+   From any thread; nothing shows before the game's first frame, whose present gives the lines (overlay_settings_start) */
+#define SNX_OVERLAY_SETTINGS_MS 30000
+void overlay_settings_notice(const char* game, const char* global);
+/* 1 while a notice waits for the game's first frame: from any thread, the renderer's present, at a relaxed load */
+int overlay_settings_waiting(void);
+/* the waiting notice's lines, from now_ns, the game's first frame's time. Under ui_lock */
+void overlay_settings_start(u64 now_ns);
+/* game's and global's keys as the notice's lines, each line's icon into icon and its text, at most cols letters, into
+   text: as many keys a line as fit it, the game's lines first, OVERLAY_SETTINGS_LINES in all, one kept for global's while
+   it has keys. Keys past a list's last line end that line with "+N more", N the keys left out. How many lines. One
+   line fewer than the notifications hold, so the one a first run gives as it starts (overlay_cold_cache's) takes the
+   room left and never one of these */
+#define OVERLAY_SETTINGS_LINES (OVERLAY_TOASTS - 1)
+int overlay_settings_lines(const char* game, const char* global, int cols, unsigned icon[OVERLAY_SETTINGS_LINES],
+                           char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1]);
 /* A save state loading for long (state.c, past wait_screen.h's SNX_WAIT_LOADING_MS): the game under it greyed out as the
    launcher greys its screen behind a question (black at half over everything, coming in over OVERLAY_LOADING_FADE_MS
    from shown_ns as its box's shade does), and over it a box in the menu's look, its head the save states' page's, the

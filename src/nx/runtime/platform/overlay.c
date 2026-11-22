@@ -913,7 +913,7 @@ static void toast_out(int i) {
 }
 /* text after icon on the line of its subject (key, a setting's; "" for another, whose icon is its subject), or a new
    one under the others */
-static void toast_give(unsigned icon, const char* key, const char* text, u64 now_ns) {
+static void toast_give(unsigned icon, const char* key, const char* text, u64 now_ns, u32 ms) {
     int i;
     toasts_drop(now_ns);
     for (i = 0; i < ntoasts; ++i)
@@ -932,10 +932,12 @@ static void toast_give(unsigned icon, const char* key, const char* text, u64 now
     /* a line already in keeps its fade in: its words change, it does not come in again */
     snprintf(toasts[i].text, sizeof toasts[i].text, "%s", text);
     toasts[i].icon = icon;
-    toasts[i].until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
+    toasts[i].until = now_ns + (u64)ms * 1000000u;
     toasts_changed();
 }
-void overlay_toast(unsigned icon, const char* text, u64 now_ns) { toast_give(icon, "", text, now_ns); }
+void overlay_toast(unsigned icon, const char* text, u64 now_ns) {
+    toast_give(icon, "", text, now_ns, SNX_OVERLAY_TOAST_MS);
+}
 int overlay_toasting(u64 now_ns) { return now_ns < atomic_load_explicit(&toasts_until, memory_order_relaxed); }
 unsigned overlay_setting_icon(const char* key) {
     int s, t;
@@ -949,7 +951,7 @@ unsigned overlay_setting_icon(const char* key) {
     return GUI_ICON_NONE;
 }
 void overlay_setting_toast(const char* key, const char* text, u64 now_ns) {
-    toast_give(overlay_setting_icon(key), key, text, now_ns);
+    toast_give(overlay_setting_icon(key), key, text, now_ns, SNX_OVERLAY_TOAST_MS);
 }
 unsigned overlay_key_icon(int action) {
     size_t i;
@@ -1105,12 +1107,99 @@ static struct {
         _Atomic int state; /* read unlocked by the present, which takes ui_lock only while there is one */
         DialogRows rows;
     } loading;
+    /* the settings' notice (overlay_settings_notice) until the game's first frame takes it, under notice_lock */
+    struct {
+        char game[1024], global[1024];
+        _Atomic int waiting; /* given, not yet taken: the present reads it unlocked */
+    } settings;
 } g_overlay
 #ifdef __ANDROID__
     = {.input = {1, "A", "B"}}
 #endif
 ;
 enum { LOADING_NONE, LOADING_SHOWN, LOADING_LOADED };
+void overlay_settings_notice(const char* game, const char* global) {
+    pm_lock(&notice_lock);
+    snprintf(g_overlay.settings.game, sizeof g_overlay.settings.game, "%s", game);
+    snprintf(g_overlay.settings.global, sizeof g_overlay.settings.global, "%s", global);
+    atomic_store_explicit(&g_overlay.settings.waiting, game[0] || global[0], memory_order_release);
+    pm_unlock(&notice_lock);
+}
+int overlay_settings_waiting(void) { return atomic_load_explicit(&g_overlay.settings.waiting, memory_order_relaxed); }
+/* the key that starts at list (", " between) and the next one's start into *next */
+static size_t key_at(const char* list, const char** next) {
+    size_t len = strcspn(list, ",");
+    *next = list + len;
+    while (**next == ',' || **next == ' ') ++*next;
+    return len;
+}
+/* keys of list from at as line's text, ", " between, cols letters at most (one key at the least, cut there): how many */
+static int line_keys(const char* at, int keys, int cols, char* line) {
+    size_t used = 0;
+    int n = 0;
+    line[0] = 0;
+    while (*at && (keys < 0 || n < keys)) {
+        const char* next;
+        size_t len = key_at(at, &next), need = used + (used ? 2 : 0) + len;
+        if (used && need > (size_t)cols) break;
+        snprintf(line + used, (size_t)cols + 1 - used, "%s%.*s", used ? ", " : "", (int)len, at);
+        used = need < (size_t)cols ? need : (size_t)cols;
+        ++n;
+        at = next;
+    }
+    return n;
+}
+/* how many keys list holds, ", " between */
+static int keys_in(const char* list) {
+    int n = 0;
+    for (const char* next; *list; list = next, ++n) key_at(list, &next);
+    return n;
+}
+int overlay_settings_lines(const char* game, const char* global, int cols, unsigned icon[OVERLAY_SETTINGS_LINES],
+                           char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1]) {
+    const char* lists[2] = {game, global};
+    const unsigned icons[2] = {GUI_ICON_GAMEPAD_2, GUI_ICON_GLOBE};
+    int n = 0;
+    if (cols > OVERLAY_COLS_MAX) cols = OVERLAY_COLS_MAX;
+    for (int k = 0; k < 2; ++k) {
+        const char *at = lists[k], *last = at;
+        int room = OVERLAY_SETTINGS_LINES - n - (!k && global[0]), took = 0;
+        for (; *at && room > 0; --room, ++n) {
+            last = at;
+            took = line_keys(at, -1, cols, text[n]);
+            icon[n] = icons[k];
+            for (int i = 0; i < took; ++i) key_at(at, &at);
+        }
+        if (!*at) continue;
+        /* keys left: the last line says how many, as many of its own keys left out as that takes */
+        int left = keys_in(at);
+        for (int keep = took; keep >= 0; --keep) {
+            char more[24];
+            snprintf(more, sizeof more, "+%d more", left + took - keep);
+            line_keys(last, keep, cols, text[n - 1]);
+            size_t used = strlen(text[n - 1]);
+            if (keep && used + 2 + strlen(more) > (size_t)cols) continue;
+            snprintf(text[n - 1] + used, (size_t)cols + 1 - used, "%s%s", used ? ", " : "", more);
+            break;
+        }
+    }
+    return n;
+}
+void overlay_settings_start(u64 now_ns) {
+    unsigned icon[OVERLAY_SETTINGS_LINES];
+    char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1];
+    int n = 0;
+    pm_lock(&notice_lock);
+    if (atomic_load_explicit(&g_overlay.settings.waiting, memory_order_acquire))
+        n = overlay_settings_lines(g_overlay.settings.game, g_overlay.settings.global, OVERLAY_COLS_MAX, icon, text);
+    atomic_store_explicit(&g_overlay.settings.waiting, 0, memory_order_relaxed);
+    pm_unlock(&notice_lock);
+    for (int i = 0; i < n; ++i) {
+        char subject[16];
+        snprintf(subject, sizeof subject, "@settings %d", i); /* a line each, apart from any setting's own */
+        toast_give(icon[i], subject, text[i], now_ns, SNX_OVERLAY_SETTINGS_MS);
+    }
+}
 void overlay_loading(const char* slot, u64 shown_ns) {
     snprintf(g_overlay.loading.slot, sizeof g_overlay.loading.slot, "%s", slot ? slot : "");
     g_overlay.loading.since_ns = shown_ns;

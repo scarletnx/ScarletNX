@@ -2319,6 +2319,61 @@ int main(void) {
         toasts_gone();
         assert(!overlay_toasting(0));
     }
+    /* the settings off their default that change how fast the game runs (options_perf_notice): nothing before the
+       game's first frame, then the game's keys after a gamepad and the launcher's after a globe, a line each, for
+       SNX_OVERLAY_SETTINGS_MS from that frame; given once, and none for no key */
+    {
+        const u64 ms = 1000000ull, t0 = 9000 * ms;
+        SnxUiFade fades[SNX_UI_FADES];
+        float x, y;
+        overlay_settings_notice("", "");
+        assert(!overlay_settings_waiting());
+        overlay_settings_notice("fps_limit, jit_opt", "opt, llvm_batch");
+        assert(overlay_settings_waiting());
+        draw_fades(t0, fades);
+        assert(!list.n && !overlay_toasting(t0)); /* no frame of the game's yet */
+        overlay_settings_start(t0);
+        assert(!overlay_settings_waiting());
+        draw_fades(t0 + 1000 * ms, fades);
+        assert(text_xy("fps_limit, jit_opt", &x, &y) && y == 16.0f * (float)stats_scale(s) &&
+               toast_icon("fps_limit, jit_opt") == GUI_ICON_GAMEPAD_2);
+        assert(text_xy("opt, llvm_batch", &x, &y) && y == 32.0f * (float)stats_scale(s) &&
+               toast_icon("opt, llvm_batch") == GUI_ICON_GLOBE);
+        assert(overlay_toasting(t0 + (u64)SNX_OVERLAY_SETTINGS_MS * ms - 1) &&
+               !overlay_toasting(t0 + (u64)SNX_OVERLAY_SETTINGS_MS * ms) && SNX_OVERLAY_SETTINGS_MS == 30000);
+        overlay_settings_start(t0 + 2000 * ms); /* taken already: nothing again */
+        draw_fades(t0 + (u64)SNX_OVERLAY_SETTINGS_MS * ms, fades);
+        assert(!list.n);
+        toasts_gone();
+    }
+    /* its lines: as many keys a line as fit it, the game's first and one kept for the launcher's while it has keys,
+       OVERLAY_SETTINGS_LINES in all; keys past a list's last line end it with how many more there are, as many of its
+       own keys left out as that takes; a key longer than a line cut there */
+    {
+        unsigned icon[OVERLAY_SETTINGS_LINES];
+        char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1];
+        assert(OVERLAY_SETTINGS_LINES == 3);
+        assert(overlay_settings_lines("", "", 72, icon, text) == 0);
+        assert(overlay_settings_lines("a, b", "", 72, icon, text) == 1 && !strcmp(text[0], "a, b") &&
+               icon[0] == GUI_ICON_GAMEPAD_2);
+        assert(overlay_settings_lines("", "opt", 72, icon, text) == 1 && !strcmp(text[0], "opt") &&
+               icon[0] == GUI_ICON_GLOBE);
+        assert(overlay_settings_lines("alpha, beta, gamma", "", 12, icon, text) == 2 &&
+               !strcmp(text[0], "alpha, beta") && !strcmp(text[1], "gamma") && icon[1] == GUI_ICON_GAMEPAD_2);
+        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "opt", 12, icon, text) == 3);
+        assert(!strcmp(text[0], "alpha, beta") && !strcmp(text[1], "+3 more") && icon[1] == GUI_ICON_GAMEPAD_2);
+        assert(!strcmp(text[2], "opt") && icon[2] == GUI_ICON_GLOBE);
+        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "", 16, icon, text) == 3);
+        assert(!strcmp(text[0], "alpha, beta") && !strcmp(text[1], "gamma, delta") &&
+               !strcmp(text[2], "epsilon")); /* three lines of its own: all of them */
+        assert(overlay_settings_lines("a, b, c, d, e, f, g, h, i, j", "", 7, icon, text) == 3);
+        assert(!strcmp(text[0], "a, b, c") && !strcmp(text[1], "d, e, f") && !strcmp(text[2], "+4 more"));
+        assert(overlay_settings_lines("vk_ext_vertex_input_dynamic_state", "", 12, icon, text) == 1 &&
+               !strcmp(text[0], "vk_ext_verte"));
+        assert(overlay_settings_lines("x", "a, b, c, d, e, f, g", 7, icon, text) == 3 && !strcmp(text[0], "x") &&
+               !strcmp(text[1], "a, b, c") && !strcmp(text[2], "+4 more") && icon[2] == GUI_ICON_GLOBE);
+    }
+
     /* the caches of earlier runs found empty as the game starts: the shaders' words, else the textures'; none for
        neither, nor while the shader cache is still read (-1), which then says nothing to keep; said once a run, as
        the next frame's notification */

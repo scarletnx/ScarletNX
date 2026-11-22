@@ -72,6 +72,14 @@ int options_debug(int flags, char* out, size_t n);
 /* the Display, Graphics, Audio and Performance settings not at their default, each "key=value (default D)" between
    ", ": how many. The log's header says them, and a reload that changes them says them again */
 int options_settings(char* out, size_t n);
+/* The settings off their default that change how fast the game runs where nothing on the screen shows it (settings.txt's
+   perf, ini.h's INI_PERF), as ini_open took them, handed to the notice over the game's first frame
+   (overlay_settings_notice), keys alone between ", ": the game's own (its picks, its .ini) apart from the launcher's for
+   every game and this run's command line's. A value no file nor command line gave is none (one the runtime picked
+   itself: an Ounce program's async_pipelines). And with the launcher's, how the game at base (<folder>/<name>) was
+   made, its .abi's made line: opt where its code was made ahead of time at another level than opt's default, and the
+   recompile's other perf settings off their default it lists (snx_game_made_off). How many keys in all */
+int options_perf_notice(const char* base);
 /* memory_fit's value old as memory_fit_mode's (0 Auto, 1 Off): 1 is 0; 0 is 1 where memory_fit's default was 1 (ios),
    else -1, memory_fit_mode's default, as 0 was then memory_fit's own, which every game's .ini had written; -2 for
    any other value */
