@@ -107,6 +107,52 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 	return 0;
 }
 
+/* async_pipelines: a kept draw whose pipeline a worker still makes is dropped
+ * on the GPU thread before its setup, where the recording thread dropped it
+ * after all of that, and it is drawn once the pipeline is made. The workers are
+ * held so that the new fragment program's pipeline stays pending.
+ */
+static int check_async_kept_drop(GpuChannel *channel, u64 address,
+				 u64 *fragment)
+{
+	int async = g_settings.async_pipelines, written,
+	    check = g_settings.draw_state_check != 0;
+	u64 early, kept, drawn, held_early, held_kept, held_drawn;
+
+	if (!vk_rec_threaded() || !g_vk.has_feedback_dynamic) {
+		puts("SKIP async_pipelines' early drop: no recording thread or "
+		     "no dynamic feedback loop");
+		return 0;
+	}
+	fragment[11] = invalidate_mov(0, 0x3f400000);
+	written = invalidate_write_code(address, fragment, 64);
+	maxwell3d_method(channel, 0x369, 1, 1);
+	g_settings.async_pipelines = 1;
+	vk_pipeline_hold(1);
+	early = g_vk_async_early;
+	drawn = g_vk_drawn;
+	invalidate_draw(channel); /* its new pipeline queued: the recording thread drops it */
+	kept = g_vk_draw_kept;
+	invalidate_draw(channel); /* the same state, kept: dropped before its setup */
+	held_early = g_vk_async_early - early;
+	held_kept = g_vk_draw_kept - kept;
+	held_drawn = g_vk_drawn - drawn;
+	vk_pipeline_hold(0);
+	vk_pipeline_quiesce();
+	drawn = g_vk_drawn;
+	invalidate_draw(channel); /* made now: drawn */
+	g_settings.async_pipelines = async;
+	CHECK(written);
+	/* draw_state_check makes each kept draw again: no early drop, and the
+	 * recording thread drops both */
+	CHECK(held_early == !check && held_kept == 1 &&
+	      held_drawn == 1u + check);
+	CHECK(g_vk_drawn == drawn + 1 && g_vk_async_early == early + !check);
+	puts("async_pipelines: a kept draw of a pipeline being made is dropped "
+	     "before its setup, and drawn once it is made");
+	return 0;
+}
+
 /* Replacing instructions during a submission must refresh the address lookup,
  * while an unchanged program still shares its translated module.
  */
@@ -156,6 +202,7 @@ static int check_shader_invalidation(void)
 	CHECK(g_vk.shader_generation == generation + 3);
 	CHECK(invalidate_fragment(channel, address) == second);
 	CHECK(!check_kept_shader_invalidation(channel, address, code));
+	CHECK(!check_async_kept_drop(channel, address, code));
 
 	/* A valid compute program first populates the address lookup. KIL is
 	 * fragment-only, so replacing it must reject the next compute dispatch.

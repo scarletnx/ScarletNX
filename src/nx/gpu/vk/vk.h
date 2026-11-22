@@ -3049,6 +3049,8 @@ void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
    returns from main sooner can run the driver's exit handlers under a worker's vkCreateGraphicsPipelines (any thread,
    without vk_lock) */
 void vk_pipeline_quiesce(void);
+/* a test's: on, the workers take no job, so a draw's new pipeline stays pending (async_pipelines); off lets them go */
+void vk_pipeline_hold(int on);
 /* what is made before the game draws, so far (the renderer's prepare) */
 struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
@@ -3251,6 +3253,8 @@ extern u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 /* draws that kept an earlier draw's shaders and pipeline key, and those of them draw_state_check made again to
    compare */
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
+/* kept draws async_pipelines dropped on the GPU thread, before their setup, while their pipelines were made */
+extern u64 g_vk_async_early;
 /* What the lookups of the draws found, counted since the start (gpu/vk/render.c). A constant buffer slot: its inline
    block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
    CPU, a range from the buffer cache, or a range under a pending result (not kept); and of the kept ones, those kept

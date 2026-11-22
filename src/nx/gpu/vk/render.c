@@ -4420,6 +4420,7 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
+u64 g_vk_async_early;
 /* draws whose depth the console both clips and clamps (its clamp off), and of them those that write their own depth or
    take a depth bias, whose depth may leave the viewport's range: undefined there without VK_EXT_depth_clip_enable */
 u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
@@ -6698,6 +6699,30 @@ retry:
                                        (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.sprite_origin)
                      : 0;
     if (kept && fs_spec != ke->k.fs_spec) kept = 0;
+    /* async_pipelines: a kept draw whose pipeline a worker still makes is dropped here, before its vertex buffers,
+       storage, sets, per-draw block, indices and pass. The recording thread drops such a draw at its bind
+       (rec_drop_draw), after all of that was made for it. The kept key is this draw's key but for the feedback loop,
+       topology class and polygon mode, which are known only below. So only where those can't differ from the kept
+       key's: feedback is dynamic state (0 in each key), and the draw isn't made into lines or points (edges, which
+       stays 0 below when it is 0 here). Not a draw that captures transform feedback: its buffers' counters go on
+       from what the draws before it bound */
+    if (kept && !check && g_settings.async_pipelines && g_vk.has_feedback_dynamic && !edges && !xfb_on &&
+        ke->k.topo_class == (mesh ? 0 : topology_class(topology_vk(topology))) &&
+        ke->k.polygon == polygon_mode(&ds->rkey)) {
+        int pending;
+        (void)vk_pipeline_now(ke->pipe, &pending);
+        if (pending) {
+            g_vk_draw_kept++;
+            ke->used = ++g_draw.use;
+            g_draw.last = found;
+            g_draw.fs = fs;
+            g_vk_skipped++;
+            if (g_vk_async_early++ % 1000 == 0)
+                LOG("vulkan: %llu draws skipped before their setup while their pipelines were made (async_pipelines)\n",
+                    (unsigned long long)g_vk_async_early);
+            return;
+        }
+    }
     PipeKey made_k;
     VertexPlan made_pl;
     const PipeKey* k = kept ? &ke->k : &made_k;
