@@ -286,6 +286,16 @@ int snx_ir_volatile(void);
    that are dead after it. Once per process, before any module is made; the caches' keys carry it */
 void snx_ir_abi_contract(int on);
 int snx_ir_abi_contract_on(void);
+/* Whether the generated code marks the pages it writes (the setting write_marks, off by default): on, each store
+   to guest memory is followed by a store of 1 into the byte of its 4 KiB page in the array of SNX_WMARK_BELOW bytes
+   below CPU.mem (cpu.h), so the runtime finds written pages by reading those bytes instead of asking the host
+   (ir_marks.c); 2 marks the stores off the stack pointer too (a check of what leaving them out misses). Once per
+   process, before any module is made; the caches' keys carry it */
+void snx_ir_write_marks(int on);
+int snx_ir_write_marks_on(void);
+/* the counts of what ir_write_marks did since the last call, which clears them: guest stores seen, stores off the
+   stack pointer left unmarked, and mark stores emitted */
+void snx_ir_write_marks_counts(SnxU64* stores, SnxU64* stack, SnxU64* marks);
 /* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for code the JIT loader loads into this process (code_loader.h): the host's target, CPU and calling
@@ -347,6 +357,11 @@ void ir_summaries_free(SnxIr* ir);
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */
 void ir_stats_function(SnxIr* ir, LLVMValueRef fn);
+/* the write marks (snx_ir_write_marks) after the guest stores of fn, as it is emitted, before its promotion */
+void ir_write_marks(SnxIr* ir, LLVMValueRef fn);
+/* the marks of a write of bytes at the guest address (an i64) through M, at the builder's place: for helpers whose
+   stores ir_write_marks doesn't see (a call's, or a helper function's own) */
+void ir_mark_write(SnxIr* ir, LLVMValueRef M, LLVMValueRef address, unsigned bytes);
 /* Starts a function body: entry block, c and M */
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function);
 

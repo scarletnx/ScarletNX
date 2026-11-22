@@ -1360,6 +1360,12 @@ target_link_libraries(snx-test-llvm-promote-edges PRIVATE snx_llvm snx_driver ${
 add_test(NAME llvm_promote_edges COMMAND snx-test-llvm-promote-edges)
 set_tests_properties(llvm_promote_edges PROPERTIES TIMEOUT 120)
 
+# the write marks (ir_marks.c) after every kind of guest store, none off the stack pointer, at O2 and O0
+add_executable(snx-test-llvm-write-marks llvm_write_marks.c llvm_steps.c)
+snx_test_target(snx-test-llvm-write-marks c23)
+target_link_libraries(snx-test-llvm-write-marks PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_write_marks COMMAND snx-test-llvm-write-marks)
+
 add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
 snx_test_target(snx-test-llvm-promote-sync c23)
 target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

@@ -79,9 +79,12 @@ static int describe(char* error, size_t error_size) {
     char* text = g_llvm_tuning.text;
     size_t size = sizeof g_llvm_tuning.text, at;
     const IniOpt* o;
-    int n = snprintf(text, size, "pipeline=%s\nslp_vectorizer=%d\nfpsr_flags=%d\nvolatile_memory=%d\n",
+    /* write_marks only when on, so the text of every module made without them stays what it was */
+    char marks[24] = "";
+    if (snx_ir_write_marks_on()) snprintf(marks, sizeof marks, "write_marks=%d\n", snx_ir_write_marks_on());
+    int n = snprintf(text, size, "pipeline=%s\nslp_vectorizer=%d\nfpsr_flags=%d\nvolatile_memory=%d\n%s",
                      g_llvm_tuning.tuning.pipeline ? g_llvm_tuning.tuning.pipeline : "default", snx_ir_slp(),
-                     snx_ir_fpsr_exact(), snx_ir_volatile());
+                     snx_ir_fpsr_exact(), snx_ir_volatile(), marks);
     for (at = (size_t)n, o = g_llvm_ini; n >= 0 && at < size && o->key; o++, at += (size_t)n) {
         char value[64];
         ini_format(o, value, sizeof value);

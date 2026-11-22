@@ -853,6 +853,7 @@ static int make_program(const MakeArgs* a, int index) {
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
         snx_ir_abi_contract(g_settings.abi_contract);
+        snx_ir_write_marks(g_settings.write_marks);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
         snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
         old_branch_profile();
@@ -909,6 +910,14 @@ static int make_program(const MakeArgs* a, int index) {
         }
         free(kept);
         if (i) goto done;
+        if (g_settings.write_marks) {
+            SnxU64 stores, stack, marks;
+            snx_ir_write_marks_counts(&stores, &stack, &marks);
+            if (!compile.quiet)
+                printf("write marks: %llu guest stores, %llu of them off the stack pointer left unmarked, %llu mark "
+                       "stores\n",
+                       (unsigned long long)stores, (unsigned long long)stack, (unsigned long long)marks);
+        }
     }
     if (ios) { /* the iOS app is the runtime: only the code is made here */
         if (!compile.quiet) printf("Built %s\n", code);

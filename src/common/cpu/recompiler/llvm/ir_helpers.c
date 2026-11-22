@@ -424,6 +424,7 @@ static void build_stx(SnxIr* ir, LLVMValueRef function) {
         LLVMPositionBuilderAtEnd(B, s.blocks[i]);
         expected = ir_cpu_load(ir, ir->t_i64, offsetof(CPU, excl_val));
         s.values[i] = cas(ir, a, 8u << i, expected, v);
+        if (snx_ir_write_marks_on()) ir_mark_write(ir, ir->M, a, 1u << i);
         LLVMBuildBr(B, s.join);
     }
     LLVMValueRef ok = size_join(ir, &s, ir->t_i32);
@@ -482,6 +483,8 @@ static void build_stxp(SnxIr* ir, LLVMValueRef function) {
     LLVMPositionBuilderAtEnd(B, pair32);
     LLVMValueRef packed = LLVMBuildOr(B, ir_u64(ir, ir_u32(ir, v1)), LLVMBuildShl(B, v2, ir_i64(ir, 32), ""), "");
     LLVMValueRef ok32 = cas(ir, a, 64, ir_cpu_load(ir, ir->t_i64, offsetof(CPU, excl_val)), packed);
+    if (snx_ir_write_marks_on()) ir_mark_write(ir, ir->M, a, 8);
+    pair32 = LLVMGetInsertBlock(B);
     LLVMBuildBr(B, finish);
     LLVMPositionBuilderAtEnd(B, pair64);
     params[0] = params[1] = ir->t_ptr;
@@ -493,6 +496,8 @@ static void build_stxp(SnxIr* ir, LLVMValueRef function) {
     args[4] = v1;
     args[5] = v2;
     LLVMValueRef ok128 = ir_call(ir, ir_extern(ir, "snx_cas128", ir->t_i32, params, 6), args, 6);
+    if (snx_ir_write_marks_on()) ir_mark_write(ir, ir->M, a, 16);
+    pair64 = LLVMGetInsertBlock(B);
     LLVMBuildBr(B, finish);
     LLVMPositionBuilderAtEnd(B, finish);
     LLVMValueRef ok = LLVMBuildPhi(B, ir->t_i32, "");
@@ -544,6 +549,7 @@ static void build_dc_zva(SnxIr* ir, LLVMValueRef function) {
         LLVMValueRef a = LLVMBuildAnd(B, P(1), ir_i64(ir, ~(SnxU64)63), ""),
                      zero = LLVMConstNull(LLVMVectorType(ir->t_i8, 16));
         for (unsigned i = 0; i < 4; ++i) ir_wr_bytes(ir, LLVMBuildAdd(B, a, ir_i64(ir, 16 * i), ""), zero);
+        if (snx_ir_write_marks_on()) ir_mark_write(ir, ir->M, a, 1); /* 64 aligned bytes: one page */
     }
     LLVMBuildRetVoid(B);
 }

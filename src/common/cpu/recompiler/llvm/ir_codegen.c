@@ -556,6 +556,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         LLVMPositionBuilderAtEnd(B, other);
         must_tail(ir, call_dynamic(ir, ir_pc(ir)));
     }
+    if (snx_ir_write_marks_on()) ir_write_marks(ir, fn);
     /* At O0 LLVM runs no SROA or mem2reg, so the locals promotion makes stay stack slots and its site copies remain:
        call-heavy code regresses and the JIT's batch arena grows. O1 and above only (ir_promote.c) */
     if (ir->dump_active) {
