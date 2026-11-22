@@ -76,7 +76,7 @@ int options_settings(char* out, size_t n);
    perf, ini.h's INI_PERF), as ini_open took them, handed to the notice over the game's first frame
    (overlay_settings_notice), keys alone between ", ": the game's own (its picks, its .ini) apart from the launcher's for
    every game and this run's command line's. A value no file nor command line gave is none (one the runtime picked
-   itself: an Ounce program's async_pipelines). And with the launcher's, how the game at base (<folder>/<name>) was
+   itself: an Ounce program's emulated_cores). And with the launcher's, how the game at base (<folder>/<name>) was
    made, its .abi's made line: opt where its code was made ahead of time at another level than opt's default, and the
    recompile's other perf settings off their default it lists (snx_game_made_off). How many keys in all */
 int options_perf_notice(const char* base);

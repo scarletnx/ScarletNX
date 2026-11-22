@@ -666,8 +666,8 @@ setting Async pipelines
     words Off|On
     perf
     help 1 = what a new shader draws is skipped while its pipeline is made, instead of the game waiting for it: no
-    help pause where a new shader first appears, and the things it draws show up a few frames late. An Ounce game runs
-    help On unless you pick Off in its settings, the launcher or the command line
+    help pause where a new shader first appears, and the things it draws show up a few frames late. Only into what the
+    help game draws over every frame; into anything else the draw waits for its pipeline, as with 0
 setting Pipeline libraries
     key pipeline_libraries
     int 0 1
