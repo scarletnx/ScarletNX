@@ -129,8 +129,8 @@ enum { OWN_BY_RUNTIME, OWN_BY_READ, OWN_BY_WRITE, OWN_BY_N };
 void own_landings_by(u64 by[OWN_BY_N]);
 /* for the statistics, by what asked: the bytes landed, and the nanoseconds of the wait for the GPU, of the producer's
    copy and of the copy into the trapped pages (own.c's g_own.by_bytes and the rest) */
-/* own_begin's calls so far, the refusals of mem_own_prepare, their bytes, and those over own_begin's runs */
-void own_begin_stats(u64* begins, u64* refused, u64* refused_bytes, u64* refused_runs);
+/* own_begin's calls so far, the refusals of mem_own_prepare, their bytes, and those of more than 16 runs */
+void own_begin_stats(u64* begins, u64* refused, u64* refused_bytes, u64* many_runs);
 void own_land_times(u64 bytes[OWN_BY_N], u64 wait_ns[OWN_BY_N], u64 copy_ns[OWN_BY_N], u64 fill_ns[OWN_BY_N]);
 int own_traps(void);
 u64 own_faults(void);
@@ -173,9 +173,9 @@ typedef struct {
        landing: the wait for the GPU's work on the entries (OwnHooks' wait), the producer's copy (land, or land_start
        to land_end), the copy of the bytes into the trapped pages (no mirror) */
     _Atomic u64 by_bytes[OWN_BY_N], wait_ns[OWN_BY_N], copy_ns[OWN_BY_N], fill_ns[OWN_BY_N];
-    /* atomic: for the statistics, own_begin's calls, those that mem_own_prepare refused and their bytes, and of those
-       the ones over the runs that own_begin takes */
-    _Atomic u64 begins, refused, refused_bytes, refused_runs;
+    /* atomic: for the statistics, own_begin's calls, those that mem_own_prepare refused and their bytes, and the ones
+       of more runs of pool pages than own_begin keeps room for (own_runs) */
+    _Atomic u64 begins, refused, refused_bytes, many_runs;
     PMutex lk;  /* the entries' lock */
     /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
        trapped (taken before lk) */
