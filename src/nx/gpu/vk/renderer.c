@@ -95,6 +95,12 @@ static int vkr_mem_pending(u64 gva, u64 size) {
     pend_unlock();
     return hit;
 }
+static int vkr_gpu_holds(u64 gva, u64 size) {
+    pend_lock();
+    int hit = pend_hit(&g_pend_any, gva, size) || vk_rt_pages_hit(gva, size);
+    pend_unlock();
+    return hit;
+}
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_mirror_mem_need(gva, size); /* the GPU mirror's programs' writes there landed */
     vk_buf_mem_need(gva, size);
@@ -1632,6 +1638,7 @@ const Renderer vk_renderer = {
     .dispatch = vkr_dispatch,
     .cs_mem_need = vk_compute_mem_need,
     .mem_pending = vkr_mem_pending,
+    .gpu_holds = vkr_gpu_holds,
     .gfx_mem_need = vkr_gfx_mem_need,
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,

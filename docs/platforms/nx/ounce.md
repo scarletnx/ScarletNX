@@ -286,6 +286,17 @@ its kart's contact shadow as a box that samples a 128x128 texture array with tri
 footprint, drawn into level 0 from a 256x256 texture, and this program writes levels 1 to 3. Without them the box read
 zeros at the title camera's distance and drew a dark square under the kart.
 
+A memory pool that ends while results of the GPU over it are not in guest memory yet (render targets not written
+back, pending results: `Renderer.gpu_holds`) waits in `nvnMemoryPoolFinalize` until the GPU thread has made the pool's
+unmap, which lands them first (`gmmu_later_wait`, bounded at 5 s). The console's GPU wrote them into the storage as it
+ran, and a game may hand a pool's storage to other uses as soon as the pool has ended. Without the wait the unmap,
+made later on the GPU thread, landed a render target's old pixels over memory that one engine's allocator had given to
+its object hash tables in the meantime (a watchpoint on the tables' array caught the GPU thread's landing writing zeros
+there): the game looped for good in a hash chain. The same boot also stopped at a property its struct didn't have, at a
+different point from run to run, most runs at `-O2`; that is taken for the same overwrite, as it no longer happened in
+about 20 runs with the wait, but no write was caught for it. A pool with nothing of the GPU's over it ends at once, as a
+Switch device's always does: 60 of one boot's 72 pool ends waited, about 4 ms each.
+
 ## Driver offsets
 
 The `sdk` module's `.text` loads at `0xbd0c000` with no offset, so a game address `A` is sdk offset `A - 0xbd0c000`.

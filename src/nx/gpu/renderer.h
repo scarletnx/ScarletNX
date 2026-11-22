@@ -139,6 +139,10 @@ typedef struct Renderer {
     void (*cs_mem_need)(u64 a, u64 n);
     /* 0 when no pending result or queued release covers [a, a + n): a read needs none of the mem_need hooks */
     int (*mem_pending)(u64 a, u64 n);
+    /* 1 when results of the GPU over the GPU range [a, a + n) are not in guest memory yet: pending results, queued
+       releases, render targets not written back, which a change of the range's mapping lands there first. Any thread.
+       Optional */
+    int (*gpu_holds)(u64 a, u64 n);
     void (*gfx_mem_need)(u64 a, u64 n);
     void (*before_syncwait)(void); /* the stream is about to wait on a syncpoint: flush everything in flight */
     void (*stream_incr)(u32 id);   /* a syncpoint increment in the stream, after everything before it is done */

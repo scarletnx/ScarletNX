@@ -7,6 +7,7 @@
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -182,6 +183,13 @@ u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap) {
     return 1;
 }
 void gmmu_later_post(u32 seq) { (void)seq; }
+int gmmu_later_wait(u32 seq, i64 timeout_ns) {
+    (void)seq, (void)timeout_ns;
+    return 1;
+}
+/* a renderer with nothing of the GPU's held anywhere (Renderer.gpu_holds unset) */
+static Renderer g_test_renderer;
+const Renderer* g_renderer = &g_test_renderer;
 void nvn_cmd_memory_back(u64 memory, u64 size) {
     (void)memory;
     (void)size;
