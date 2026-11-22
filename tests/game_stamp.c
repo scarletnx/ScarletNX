@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* common/utilities/mods.c's game stamp, a recompiled game's <name>.abi: what it is compared by, the made line after it
-   (how the code was made, which no comparison reads), and the save states' copy of it (state_header.c) */
+   (how the code was made, which no comparison reads), the recompile's perf settings off their default at its end, and
+   the save states' copy of it (state_header.c) */
 #include "common/utilities/mods.h"
 #include "common/utilities/state_header.h"
 #include <assert.h>
@@ -26,7 +27,10 @@ int main(void) {
     g_base = snx_path_join(folder, "Game");
 
     /* the line as the recompile writes it after the stamp */
-    line = snx_game_made_line(&full);
+    line = snx_game_made_line(&full, NULL);
+    assert(!strcmp(line, "\nmade opt=3 aot=1 found=812345 code=1003210\n"));
+    free(line);
+    line = snx_game_made_line(&full, ""); /* nothing off its default: the line as before */
     assert(!strcmp(line, "\nmade opt=3 aot=1 found=812345 code=1003210\n"));
     free(line);
 
@@ -42,7 +46,7 @@ int main(void) {
     assert(!strcmp(kept, "14 mods 0123456789abcdef"));
 
     /* with it: compared without it, read back whole, and out of the save states' copy */
-    line = snx_game_made_line(&full);
+    line = snx_game_made_line(&full, NULL);
     {
         char* text = snx_format("14 mods 0123456789abcdef%s", line);
         stamp(text);
@@ -55,8 +59,38 @@ int main(void) {
     snx_state_stamp(g_base, kept, sizeof kept);
     assert(!strcmp(kept, "14 mods 0123456789abcdef"));
 
+    assert(!snx_game_made_off(g_base)); /* a line with no off list, an older version's too */
+
+    /* the recompile's perf settings off their default after the line's fields: read back whole, while the stamp, the
+       fields and the save states' copy read as before, as an older version reads them */
+    line = snx_game_made_line(&full, "llvm_batch,unit_instructions,llvm_pass_gvn");
+    assert(
+        !strcmp(line, "\nmade opt=3 aot=1 found=812345 code=1003210 off=llvm_batch,unit_instructions,llvm_pass_gvn\n"));
+    {
+        char* text = snx_format("14 mods 0123456789abcdef%s", line);
+        stamp(text);
+        free(text);
+    }
+    free(line);
+    assert(snx_game_stamp_is(g_base, "14 mods 0123456789abcdef"));
+    assert(snx_game_made_read(g_base, &made) && made.opt == '3' && made.aot == 1 && made.found == 812345 &&
+           made.code == 1003210);
+    snx_state_stamp(g_base, kept, sizeof kept);
+    assert(!strcmp(kept, "14 mods 0123456789abcdef"));
+    {
+        char* off = snx_game_made_off(g_base);
+        assert(off && !strcmp(off, "llvm_batch,unit_instructions,llvm_pass_gvn"));
+        free(off);
+    }
+    stamp("14\nmade opt=2 aot=1 found=1 code=2 off=llvm_batch"); /* the file's last bytes, no newline after them */
+    {
+        char* off = snx_game_made_off(g_base);
+        assert(snx_game_made_read(g_base, &made) && off && !strcmp(off, "llvm_batch"));
+        free(off);
+    }
+
     /* --jit-only's: no code ahead of time */
-    line = snx_game_made_line(&jit);
+    line = snx_game_made_line(&jit, NULL);
     {
         char* text = snx_format("14%s", line);
         stamp(text);
@@ -85,6 +119,8 @@ int main(void) {
     assert(!snx_game_made_read(g_base, &made) && !made.code);
     stamp("14\nmade opt=2 aot=1");
     assert(snx_game_stamp_is(g_base, "14") && !snx_game_made_read(g_base, &made));
+    stamp("14 off=llvm_batch"); /* no made line: no list, whatever the stamp holds */
+    assert(!snx_game_made_off(g_base));
 
     assert(!snx_remove_tree(root));
     free(g_base);

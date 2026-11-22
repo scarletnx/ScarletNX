@@ -372,7 +372,10 @@ Run the same command again to retry after a failure or interruption:
   aot=1 found=812345 code=1003210`, the `-O`, `aot=0` for `--jit-only` (the JIT compiles it all), and of the
   instructions in the modules' code (`code`) those the analysis found and compiled ahead of time (`found`; both 0 for a
   32-bit game). The launcher's side panel shows them. A version from before it reads a stamp with it as another
-  build's, and recompiles the game once.
+  build's, and recompiles the game once. After them, ` off=llvm_batch,unit_instructions` names the recompile's
+  settings that change the code it makes and were off their default (`perf` in `settings.txt`: `llvm_batch`,
+  `unit_instructions` and LLVM Internals), which the game names over its picture as it starts
+  ([Settings](settings.md)); a line without it, an older version's too, names none.
 - Changing directory and running the game happen on every launch. A game failure never invalidates the build.
 
 Failures stop the workflow and print the failed stage and exit status or signal. On POSIX, stopping a

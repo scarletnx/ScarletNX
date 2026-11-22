@@ -38,6 +38,16 @@ const IniOpt* snx_recompile_setting(const char* key) {
     if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
+/* the recompile's settings off their default that change the code it makes (settings.txt's perf), which the game
+   names over its picture as it starts: owned, "" for none. opt is the made line's own field */
+static char* made_off(void) {
+    size_t made = ini_perf_keys(g_recompile_ini, "opt", NULL, 0), llvm = ini_perf_keys(g_llvm_ini, NULL, NULL, 0);
+    char* off = (char*)snx_alloc(made + llvm + 2);
+    ini_perf_keys(g_recompile_ini, "opt", off, made + 1);
+    if (made && llvm) off[made++] = ',';
+    ini_perf_keys(g_llvm_ini, NULL, off + made, llvm + 1);
+    return off;
+}
 static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS folder, .nro, or an XCI or NSP dump (read in place)\n"
@@ -888,11 +898,13 @@ static int make_program(const MakeArgs* a, int index) {
         /* what the launcher says the game was made with: the AArch64 analysis's instructions of the modules' code (a
            32-bit game's blocks are counted otherwise: 0, unknown) */
         SnxGameMade made = {compile.opt[0], !gen.interp_only, found, 0};
-        char *stamp = snx_format("%s.abi", base), *version = snx_game_stamp(mods_stamp), *line, *text;
+        char *stamp = snx_format("%s.abi", base), *version = snx_game_stamp(mods_stamp), *line, *text, *off;
         size_t m;
         for (m = 0; program.npdm.is64 && m < program.module_count; ++m) made.code += program.modules[m].text_size / 4;
         if (made.found > made.code) made.found = made.code;
-        line = snx_game_made_line(&made);
+        off = made_off();
+        line = snx_game_made_line(&made, off);
+        free(off);
         text = snx_format("%s%s", version, line);
         i = snx_write_file(stamp, text, strlen(text));
         free(text);
