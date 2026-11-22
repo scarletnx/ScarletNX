@@ -429,7 +429,9 @@ int main(int argc, char** argv) {
         ++failures;
     }
     g_mem0 = mem[0];
+#ifdef SIGBUS
     signal(SIGBUS, on_fault);
+#endif
     signal(SIGSEGV, on_fault);
     signal(SIGILL, on_fault);
     snx_runtime_defaults(&rt);
