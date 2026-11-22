@@ -283,6 +283,20 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     }
     return sg_v(spv_emit_load(&c->e, c->t_u32, c->primitive_id), SGT_U32);
 }
+/* the layer, an integer: BuiltIn Layer, which a fragment program reads with the Geometry capability or ShaderLayer, as
+   spirv_translate.c's rule has it. With neither it is 0, as there */
+[[maybe_unused]] static SgV sg_LayerIn(SgG* g) {
+    Ctx* c = g->c;
+    if (!c->layer_in && (g_spirv_translate.geometry || g_spirv_translate.output_layer)) {
+        c->layer_in = spv_emit_builtin_input_u32(&c->e, c->t_u32, SPV_BUILT_IN_LAYER); /* Flat */
+        if (g_spirv_translate.geometry)
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY);
+        else
+            spv_emit_layer_capability(&c->e);
+        add_interface(c, c->layer_in);
+    }
+    return sg_v(c->layer_in ? spv_emit_load(&c->e, c->t_u32, c->layer_in) : c->zero, SGT_U32);
+}
 [[maybe_unused]] static int64_t sg_LegacyAddress(SgG* g, int64_t addr) {
     (void)g;
     return shader_legacy_group((u32)addr) >= 0 ? shader_legacy_address((u32)addr) : addr;

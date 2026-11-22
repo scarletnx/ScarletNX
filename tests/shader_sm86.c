@@ -5449,6 +5449,29 @@ static void test_layer_store(const char* dir) {
         if (spv && feature) CHECK(keep_module(dir, "vs_layer", spv, count));
         free(spv);
     }
+    /* IPA a[0x64] in a fragment program, the layer: BuiltIn Layer with the Geometry capability, else with
+       ShaderLayer, else 0 with no input at all. Before, the translator refused it */
+    u8 fs[16 * 3] = {0};
+    put(fs, 0, fold_ipa(0, 0x64));
+    put(fs, 1, exit_insn());
+    put(fs, 2, bra(2, 2, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    const int had_geometry = g_spirv_translate.geometry;
+    for (int way = 0; way < 3; way++) { /* Geometry, ShaderLayer, neither */
+        g_spirv_translate.geometry = way == 0;
+        g_spirv_translate.output_layer = way == 1;
+        ShaderInfo f = {0};
+        spv = sm86_to_spirv(fs, 3 * 16, ST_FS, fsph, &f, &count);
+        CHECK(spv && spv_has_builtin(spv, count, 9 /* Layer */) == (way < 2) &&
+              spv_declares(spv, count, 2 /* Geometry */) == (way == 0) &&
+              spv_declares(spv, count, 69 /* ShaderLayer */) == (way == 1));
+        if (!spv) fprintf(stderr, "layer input: %s\n", f.first_unsupported);
+        static const char* const names[2] = {"fs_layer_geometry", "fs_layer_shader_layer"};
+        if (spv && way < 2) CHECK(keep_module(dir, names[way], spv, count));
+        free(spv);
+    }
+    g_spirv_translate.geometry = had_geometry;
     g_spirv_translate.output_layer = had;
 }
 /* AST a[0x2c0] of two words, ClipDistance0 = 0.5 and ClipDistance1 = 0.25. A vertex program before the rasterizer

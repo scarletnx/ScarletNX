@@ -107,7 +107,7 @@ typedef struct {
     u32 tex_images[SH_MAXTEX]; /* a table slot's image table, 0 for a slot of its own variable */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
-    u32 point_coord, front_facing, primitive_id;
+    u32 point_coord, front_facing, primitive_id, layer_in;
     u32 frag_size; /* FragmentSizeNV or ShadingRateKHR (g_spirv_translate.shading_rate) */
     /* a geometry program: its input position (an array of the input primitive's vertices, as its in_attr are), its
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
