@@ -2579,6 +2579,7 @@ void vk_mirror_mem_need(u64 gva, u64 len);
    their landing in guest memory */
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit);
 void vk_mirror_done(u64 done);
+void vk_mirror_diff_log(void); /* the time and the bytes of its compares of CPU-written pages, since the last */
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room);
 /* statistics: the granules with memory that no binding took in the last presents presents */
 u64 vk_mirror_idle(u32 presents);

@@ -30,6 +30,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "common/platform/time.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -316,10 +317,18 @@ typedef struct {
     u64 base, lo; /* the granule's guest address, and the page of it the runs count from */
     Up* u;
 } Diff;
+/* For the statistics (the GPU plan's M12m), under vk_lock: diff_run's nanoseconds; the pages it compared whole (no
+   program's write pending) and those of them that changed and went whole; the pages it compared byte by byte, and
+   the bytes and runs of them that went. What the compares saved is the pages and bytes that did not go */
+typedef struct {
+    u64 ns, whole, whole_sent, bytewise, bytes_sent, runs_sent, land_pages;
+} MirDiff;
+static MirDiff g_mir_diff;
 /* the bytes of a run of written pages that differ from the shadow, those of valid pages, into the copy and the
    shadow */
 static void diff_run(void* user, u64 at, u64 n) {
     const Diff* d = user;
+    u64 t0 = plat_ns();
     for (u64 p = d->lo + (at >> 12); p < d->lo + ((at + n + 4095) >> 12); p++) {
         if (!(atomic_load_explicit(&d->r->valid[p / 64], memory_order_relaxed) >> (p % 64) & 1)) continue;
         /* read without touching a trapped page: a page written, then made GPU-owned, is copied from its owner
@@ -335,12 +344,15 @@ static void diff_run(void* user, u64 at, u64 n) {
         /* a page no program's write is pending on: whole, if anything changed, as nothing of the GPU's is there to
            keep. A page written on the CPU in scattered bytes made one region of each run, 194,545 in one copy */
         if (!pend_hit_pages(&g_mir_pend, a >> 12, a >> 12)) {
+            g_mir_diff.whole++;
             if (memcmp(page, sh, 4096)) {
                 memcpy(up_bytes(d->u, a, 4096), page, 4096);
                 memcpy(sh, page, 4096);
+                g_mir_diff.whole_sent++;
             }
             continue;
         }
+        g_mir_diff.bytewise++;
         for (u32 k = 0; k < 4096;) {
             if (now[k] == sh[k]) { /* eight at a time where they agree */
                 u64 x, y;
@@ -359,9 +371,25 @@ static void diff_run(void* user, u64 at, u64 n) {
             while (e < 4096 && now[e] != sh[e]) e++;
             memcpy(up_bytes(d->u, d->base + p * 4096 + k, e - k), now + k, e - k);
             memcpy(sh + k, now + k, e - k);
+            g_mir_diff.bytes_sent += e - k;
+            g_mir_diff.runs_sent++;
             k = e;
         }
     }
+    g_mir_diff.ns += plat_ns() - t0;
+}
+void vk_mirror_diff_log(void) {
+    vk_lock();
+    if (g_mir_diff.whole || g_mir_diff.bytewise || g_mir_diff.land_pages)
+        LOG("vulkan: the mirror's compares of CPU-written pages over the last 600 presents: %.2f ms; %llu pages "
+            "whole (%llu of them changed and sent), %llu byte by byte (%.2f MB sent in %llu runs); %llu pages landed "
+            "into it\n",
+            (double)g_mir_diff.ns / 1e6, (unsigned long long)g_mir_diff.whole,
+            (unsigned long long)g_mir_diff.whole_sent, (unsigned long long)g_mir_diff.bytewise,
+            (double)g_mir_diff.bytes_sent / 1048576.0, (unsigned long long)g_mir_diff.runs_sent,
+            (unsigned long long)g_mir_diff.land_pages);
+    g_mir_diff = (MirDiff){0};
+    vk_unlock();
 }
 
 /* the bits of word w of a granule's page mask that are pages [lo, hi) (w within them) */
@@ -909,6 +937,7 @@ static void land_entry(const u32* e) {
             if (s) memcpy(s, d, b - a);
         }
         g_mir_stats.landed_bytes += b - a;
+        g_mir_diff.land_pages++;
         a = b;
     }
     gpu_mem_written_cpu(cpu, 4096); /* caches built from the page take its new bytes */
