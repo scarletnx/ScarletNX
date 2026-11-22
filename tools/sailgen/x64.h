@@ -99,11 +99,13 @@ typedef struct {
    its operands (nops), which of them ModRM.reg, ModRM.rm and VEX.vvvv encode (-1 none), which are XMM registers
    (xmask's bit k: operand k; the others general-purpose), and its immediate's bytes. Operand k's register goes in
    the encoder's r[k], 16 + a base register for the memory an r/m operand may be */
-typedef struct {
+typedef struct SgXVForm {
     void (*enc)(SgXBuf* b, const unsigned char* r, long long imm, int cc);
     unsigned feature;
     signed char nops, reg, rm, vvvv;
     unsigned char xmask, imm_bytes;
+    const struct SgXVForm* vex; /* a two-operand SSE form's AVX twin (VPADDD for PADDD: untied, the first source in
+                                   VEX.vvvv), which sailgen --isel found in the manual's page; NULL for none */
 } SgXVForm;
 
 #include "x64_isel.inc"
@@ -341,6 +343,11 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
                            int mode, int base, int index, int disp, SnxU64 lo, SnxU64 hi) {
     SgXIns* i;
     int k;
+    if (tied > 0 && mode == SGX_VM_NONE && f->vex && (x->features & SGX_F_AVX) && out == 0 && f->nops == 2 && in) {
+        /* the AVX twin: a op= b is c = a op b, no copy of a where a is read after */
+        int vin[4] = {0, in[0], in[1], 0};
+        return sgx_vins(x, f->vex, 0, 0, vin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
     if (mode == SGX_VM_NONE && out >= 0 && tied >= 0 && in) {
         int v = sgx_vcse_find(x, f, out, tied, in, imm);
         if (v) return v;

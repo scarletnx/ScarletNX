@@ -1093,9 +1093,37 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
                instruction */
             jump_if(u, g->taken, branch_label(u, address, target), target);
             if (target <= address && u->exits && u->exits[index]) {
-                /* a loop's latch: past it the loop has ended, so what the block knows is let go (read again from the
-                   state or the pins once) rather than kept live, and spilled, through the loop's body */
+                /* a loop's latch: the registers the loop doesn't read again (dead at its header) but the code after
+                   it may are stored here, on the way out alone: the store pass then drops the ones in the body, dead
+                   on both ways now */
+                SnxU64 dead = dead_at(u, target);
+                SnxU32 vdead = vdead_at(u, target);
                 int k;
+                for (k = 0; k < 31; ++k)
+                    if ((dead >> k & 1) && g->gpr[k] && !(g->pinned && g->pin[k] >= 0)) {
+                        SgXIns* st = sgx_append(x, SGX_K_STORE);
+                        st->w = 64;
+                        st->in[0] = g->gpr[k];
+                        st->disp = (int)(offsetof(CPU, x) + 8 * (size_t)k);
+                    }
+                for (k = 0; k < 32; ++k)
+                    if ((vdead >> k & 1) && !(g->pinned && g->vpin[k] >= 0)) {
+                        if (g->vx[k]) {
+                            int in[4] = {0, g->vx[k], 0, 0};
+                            sgx_vins(x, &sgx_v_movdqu_st, 0, 0, in, 0, 0, SGX_VM_STATE, 0, 0, sgx_vd_offset(k, 0), 0, 0);
+                        } else {
+                            int h;
+                            for (h = 0; h < 2; ++h)
+                                if (g->vd[k][h]) {
+                                    SgXIns* st = sgx_append(x, SGX_K_STORE);
+                                    st->w = 64;
+                                    st->in[0] = g->vd[k][h];
+                                    st->disp = sgx_vd_offset(k, h);
+                                }
+                        }
+                    }
+                /* past it the loop has ended, so what the block knows is let go (read again from the state or the
+                   pins once) rather than kept live, and spilled, through the loop's body */
                 for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
                 g->mem = 0;
             }
@@ -1337,8 +1365,14 @@ static SnxU32 vreg_run(unsigned first, unsigned n) {
 }
 static void vregs_of(SnxU32 w, SnxU32* use, SnxU32* def) {
     unsigned rd = w & 31, rn = w >> 5 & 31, rm = w >> 16 & 31, ra = w >> 10 & 31;
-    /* Rm & 15 too: a by-element form of halfwords takes Rm from bits 19-16 alone (bit 20 is the index's) */
-    SnxU32 fields = 1u << rd | 1u << rn | 1u << rm | 1u << (rm & 15) | 1u << ra;
+    /* the register fields a form has: Rm (and Rm & 15: a by-element form of halfwords takes it from bits 19-16, bit
+       20 is the index's) but in the groups whose bits 20-16 are an opcode or an immediate (2-register misc, across
+       lanes, copy, shift and modified immediate, scalar FP's conversions); Ra in the 4-register crypto forms alone
+       (EOR3, BCAX, SM3SS1: elsewhere bits 14-10 are an opcode or an immediate) */
+    int no_rm = (w & 0x0F3E0C00) == 0x0E200800 || (w & 0x0F3E0C00) == 0x0E300800 || (w & 0x0FE08400) == 0x0E000400 ||
+                (w & 0x0F800400) == 0x0F000400 || (w & 0x5F20FC00) == 0x1E200000 || (w & 0x5F200000) == 0x1E000000;
+    SnxU32 fields = 1u << rd | 1u << rn | (no_rm ? 0 : 1u << rm | 1u << (rm & 15)) |
+                    ((w & 0xFF800000) == 0xCE000000 ? 1u << ra : 0);
     *def = 0;
     if ((w >> 25 & 7) == 7) { /* SIMD and FP data processing */
         *use = fields;
@@ -1462,9 +1496,9 @@ static void liveness(Unit* u, const SnxFunction* f) {
     if (getenv("SNX_X64_LIVE_DEBUG")) fprintf(stderr, "live F_%llX: %d passes, changed %d\n", (unsigned long long)f->start, passes, changed);
     if (getenv("SNX_X64_LIVE_DEBUG"))
         for (i = 0; i < n; ++i)
-            fprintf(stderr, "live %llX: in %09llX use %09llX def %09llX\n",
+            fprintf(stderr, "live %llX: in %09llX use %09llX def %09llX v in %08X use %08X def %08X\n",
                     (unsigned long long)snx_function_address(f, i), (unsigned long long)u->live[i],
-                    (unsigned long long)use[i], (unsigned long long)def[i]);
+                    (unsigned long long)use[i], (unsigned long long)def[i], u->vlive[i], vuse[i], vdef[i]);
     free(use), free(succ), free(vuse);
     if (changed) u->live = NULL, u->vlive = NULL; /* no fixed point: none known */
 }
