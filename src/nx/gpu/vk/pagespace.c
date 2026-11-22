@@ -479,7 +479,7 @@ static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
         if (!cb) {
             vk_render_end(); /* copies happen outside rendering passes */
             cb = vk_cmd();
-            vk_all_barrier(cb);
+            vk_all_barrier_by(VK_BAR_PAGESPACE, cb);
         }
         const VkBufferCopy all = {0, (u64)(old->g0 - lo) << PG_SHIFT, (u64)old->n << PG_SHIFT};
         rec_CmdCopyBuffer(cb, old->buf, made.buf, 1, &all);
@@ -489,7 +489,7 @@ static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
         g = last;
     }
     if (cb) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_PAGESPACE, cb);
         made.late = sub;
         g_pages.stats.joins++;
     }
@@ -530,7 +530,7 @@ static void order_begin(void) {
     if (g_pages.order.sub == sub) return;
     g_pages.order.sub = sub;
     order_reset();
-    vk_all_barrier(vk_cmd_upload(0));
+    vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd_upload(0));
 }
 static int order_meets(const PgUse* u, u32 n, int all, u64 lo, u64 hi, u64 work) {
     if (all) return 1;
@@ -563,7 +563,7 @@ static void order_use(u64 lo, u64 hi, int write, int ordered) {
     }
     if (wait) {
         vk_render_end();
-        vk_all_barrier(vk_cmd());
+        vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd());
         order_reset();
         g_pages.stats.barriers++;
     }
