@@ -34,9 +34,15 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
                       size_t* consumed, SnxX64ArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_x64_arm_why(const SnxX64Arm* c);
-/* the ELF object of the blocks made since the last one (malloc'd), 0; -1 out of memory. Its count of blocks in
-   *blocks where not NULL; the compiler starts a new object after */
+/* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
+   Its count of blocks in *blocks where not NULL; the compiler starts a new object after */
 int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_t* blocks);
+/* the blocks another compiler (another thread's) made, taken into c's next object: 0; -1 out of memory */
+int snx_x64_arm_absorb(SnxX64Arm* c, SnxX64Arm* from);
+/* the x86-64 back end's blocks go on to another of theirs past its checks (its function's X and its name: the code
+   there reads no R15): a block another back end makes (key: the address, bit 0 set for Thumb) gets that entry here,
+   R15 stored and its function jumped to, in c's next object: 0; -1 out of memory */
+int snx_x64_arm_entry(SnxX64Arm* c, uint32_t key);
 /* for tests: values in the first pool host registers alone (sailgen's sgx_pool), so they spill; 0 for all of them.
    And the host's features as if it had only these (SGX_F_*: BMI1 1, BMI2 2, LZCNT 4), ~0u for its own */
 void snx_x64_arm_limit(SnxX64Arm* c, int pool, unsigned features);

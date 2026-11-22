@@ -58,7 +58,8 @@ typedef struct {
     SnxU32* work;
     size_t work_count, work_capacity;
     int collect; /* queue only lists the keys in work, for one block's successors (block_next) */
-    /* the x86-64 back end, which makes each A32 block it can as it is found, into its object; NULL for none */
+    /* the x86-64 back end, which makes each A32 block it can as it is found (the first thread's, whose object takes the
+       others' blocks); NULL for none */
     SnxX64Arm* x64;
     size_t x64_made;
     Why whys[WHYS];
@@ -303,34 +304,177 @@ static size_t x64_next(void* user, uint32_t pc, uint32_t word, uint32_t keys[2])
     a32_next(&s, pc, word);
     return s.work_count;
 }
-/* the A32 block at address made by the x86-64 back end into its object: 1 with *units the words it covers, 0 where it
+/* one thread of discovery's: its x86-64 back end (whose blocks go into the module's object), its scratch module for
+   LLVM's, and what it counted */
+typedef struct {
+    SnxX64Arm* x64;
+    SnxIr* scratch;
+    Why whys[WHYS];
+    size_t nwhys, x64_made;
+    char error[256];
+} Finder;
+/* a key of a round: the words its block covers, the words the block compiler was given (Thumb's successors read them
+   as it walked them), and whether the x86-64 back end made it */
+typedef struct {
+    SnxU32 key;
+    size_t units, count;
+    int x64;
+} Found;
+/* a round: the keys queued before it, made on the threads, each taking the next */
+typedef struct {
+    const SnxProgram* program;
+    Found* found;
+    size_t count, next;
+    int failed;
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+#else
+    pthread_mutex_t lock;
+#endif
+    Finder* finder;
+} Round;
+
+/* the A32 block at address made by the x86-64 back end into f's blocks: 1 with *units the words it covers, 0 where it
    leaves it to LLVM (why counted). It reads the guest's code in place, as far as the block goes */
-static int x64_block(Discovery* d, SnxU32 address, size_t* units) {
+static int x64_block(Finder* f, const SnxProgram* p, SnxU32 address, size_t* units) {
     size_t bytes, count, consumed = 0, k;
-    const unsigned char* code = code_at(d->program, address, &bytes);
+    const unsigned char* code = code_at(p, address, &bytes);
     count = bytes / 4;
     if (count > BLOCK_LIMIT) count = BLOCK_LIMIT;
-    if (!snx_x64_arm_block(d->x64, NULL, code, count, address, &consumed, x64_next, (void*)d->program)) {
-        const char* why = snx_x64_arm_why(d->x64);
-        for (k = 0; k < d->nwhys && strcmp(d->whys[k].why, why); ++k) {}
-        if (k == d->nwhys && k < WHYS) d->whys[d->nwhys++].why = why;
-        if (k < d->nwhys) ++d->whys[k].count;
+    if (!snx_x64_arm_block(f->x64, NULL, code, count, address, &consumed, x64_next, (void*)p)) {
+        const char* why = snx_x64_arm_why(f->x64);
+        for (k = 0; k < f->nwhys && strcmp(f->whys[k].why, why); ++k) {}
+        if (k == f->nwhys && k < WHYS) f->whys[f->nwhys++].why = why;
+        if (k < f->nwhys) ++f->whys[k].count;
         return 0;
     }
     *units = consumed;
-    ++d->x64_made;
+    ++f->x64_made;
     return 1;
 }
+/* one key: made by the x86-64 back end where it can, else compiled into the scratch module to learn where it ends */
+static int find(Finder* f, const SnxProgram* p, Found* k) {
+    k->x64 = !(k->key & 1) && f->x64 && x64_block(f, p, k->key, &k->units);
+    if (!k->x64) {
+        LLVMValueRef fn = compile_block(f->scratch->mod, p, k->key, "block", &k->units, &k->count);
+        if (!fn || !k->units) {
+            char name[16];
+            block_name(name, k->key);
+            snprintf(f->error, sizeof f->error, "the AArch32 block compiler refused the block %s", name);
+            return -1;
+        }
+        LLVMDeleteFunction(fn);
+    }
+    return 0;
+}
+static void round_lock(Round* r) {
+#ifdef _WIN32
+    EnterCriticalSection(&r->lock);
+#else
+    pthread_mutex_lock(&r->lock);
+#endif
+}
+static void round_unlock(Round* r) {
+#ifdef _WIN32
+    LeaveCriticalSection(&r->lock);
+#else
+    pthread_mutex_unlock(&r->lock);
+#endif
+}
+static void round_work(Round* r, Finder* f) {
+    for (;;) {
+        size_t i;
+        round_lock(r);
+        i = r->failed ? r->count : r->next++;
+        round_unlock(r);
+        if (i >= r->count) return;
+        if (find(f, r->program, &r->found[i])) {
+            round_lock(r);
+            r->failed = 1;
+            round_unlock(r);
+            return;
+        }
+    }
+}
+typedef struct {
+    Round* round;
+    Finder* finder;
+} RoundArg;
+#ifdef _WIN32
+static DWORD WINAPI round_main(LPVOID p) {
+    round_work(((RoundArg*)p)->round, ((RoundArg*)p)->finder);
+    return 0;
+}
+#else
+static void* round_main(void* p) {
+    round_work(((RoundArg*)p)->round, ((RoundArg*)p)->finder);
+    return NULL;
+}
+#endif
+/* the round's keys made on threads threads, the calling one among them: 0, or -1 with the first failure's finder */
+static int run_round(Round* r, Finder* finders, unsigned threads) {
+    RoundArg args[64];
+    unsigned i, made = 0;
+#ifdef _WIN32
+    HANDLE ids[64];
+    InitializeCriticalSection(&r->lock);
+#else
+    pthread_t ids[64];
+    pthread_mutex_init(&r->lock, NULL);
+#endif
+    if (threads > 64) threads = 64;
+    for (i = 1; i < threads; ++i) {
+        args[i].round = r;
+        args[i].finder = &finders[i];
+#ifdef _WIN32
+        if (!(ids[made + 1] = snx_compile_thread(round_main, &args[i]))) break;
+#else
+        if (snx_compile_thread(&ids[made + 1], round_main, &args[i])) break;
+#endif
+        ++made;
+    }
+    round_work(r, &finders[0]);
+    for (i = 1; i <= made; ++i) {
+#ifdef _WIN32
+        WaitForSingleObject(ids[i], INFINITE);
+        CloseHandle(ids[i]);
+#else
+        pthread_join(ids[i], NULL);
+#endif
+    }
+#ifdef _WIN32
+    DeleteCriticalSection(&r->lock);
+#else
+    pthread_mutex_destroy(&r->lock);
+#endif
+    return r->failed ? -1 : 0;
+}
 
-/* Every block reachable from the known code. An A32 one the x86-64 back end makes is made then, into its object; any
-   other is compiled once into a scratch module to learn where it ends (the block compiler decides that), and thrown
-   away: the units compile them again, in parallel */
-static int discover(Discovery* d, const SnxCodegenOptions* options, char* error, size_t error_size) {
+/* Every block reachable from the known code, found in rounds: each round makes the keys queued so far on the threads
+   (the x86-64 back end makes an A32 block then, into its thread's blocks; any other is compiled once into its
+   thread's scratch module to learn where it ends, the block compiler decides that, and thrown away: the units compile
+   them again, in parallel), then queues what follows each, in their order, for the next round. A small round runs on
+   the calling thread alone */
+static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned threads, char* error, size_t error_size) {
     const SnxProgram* p = d->program;
-    SnxIr* scratch;
+    Finder* finders;
+    Round r;
     size_t i, j;
-    scratch = snx_ir_new("discovery", '0', error, error_size);
-    if (!scratch) return -1;
+    int rc = 0;
+    if (threads < 1) threads = 1;
+    if (threads > 64) threads = 64;
+    finders = (Finder*)snx_alloc(threads * sizeof(*finders));
+    memset(finders, 0, threads * sizeof(*finders));
+    for (i = 0; i < threads; ++i) {
+        finders[i].scratch = snx_ir_new("discovery", '0', error, error_size);
+        finders[i].x64 = d->x64 && i ? snx_x64_arm_new() : d->x64;
+        if (!finders[i].scratch || (d->x64 && !finders[i].x64)) {
+            if (finders[i].scratch) snprintf(error, error_size, "out of memory");
+            rc = -1;
+            threads = (unsigned)i + 1;
+            goto done;
+        }
+    }
     for (i = 0; i < p->module_count; ++i) {
         const SnxModuleImage* m = &p->modules[i];
         queue(d, (SnxU32)(m->base + m->text_off), 0); /* the module's start: Loader enters rtld's in A32 state */
@@ -338,36 +482,66 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, char* error,
         for (j = 0; j < m->relptr_count; ++j) queue_pointer(d, m->base + m->relptrs[j]);
     }
     for (i = 0; i < options->hint_count; ++i) queue_pointer(d, options->hints[i]);
+    memset(&r, 0, sizeof r);
+    r.program = p;
     while (d->work_count) {
-        SnxU32 key = d->work[--d->work_count], address = key & ~1u;
-        size_t units, count = 0, bytes;
-        const unsigned char* code = code_at(p, address, &bytes);
-        int x64 = !(key & 1) && d->x64 && x64_block(d, address, &units);
-        if (!x64) {
-            LLVMValueRef fn = compile_block(scratch->mod, p, key, "block", &units, &count);
-            if (!fn || !units) {
-                char name[16];
-                block_name(name, key);
-                snprintf(error, error_size, "the AArch32 block compiler refused the block %s", name);
-                snx_ir_free(scratch);
-                return -1;
+        unsigned n = threads;
+        r.count = d->work_count;
+        r.found = (Found*)snx_realloc(r.found, r.count * sizeof(*r.found));
+        for (i = 0; i < r.count; ++i) {
+            r.found[i].key = d->work[i];
+            r.found[i].units = r.found[i].count = 0;
+        }
+        d->work_count = 0;
+        r.next = 0;
+        r.failed = 0;
+        if (r.count < 256) n = 1; /* a thread's start costs more than a few blocks */
+        if (run_round(&r, finders, n)) {
+            for (i = 0; i < n; ++i)
+                if (finders[i].error[0]) snprintf(error, error_size, "%s", finders[i].error);
+            rc = -1;
+            goto done;
+        }
+        for (i = 0; i < r.count; ++i) {
+            const Found* k = &r.found[i];
+            SnxU32 address = k->key & ~1u;
+            size_t bytes;
+            const unsigned char* code = code_at(p, address, &bytes);
+            if (d->count == d->capacity) {
+                d->capacity = d->capacity ? d->capacity * 2 : 4096;
+                d->blocks = (Block*)snx_realloc(d->blocks, d->capacity * sizeof(*d->blocks));
             }
-            LLVMDeleteFunction(fn);
+            d->blocks[d->count].key = k->key;
+            d->blocks[d->count].x64 = (unsigned char)k->x64;
+            d->blocks[d->count++].units = (SnxU32)k->units;
+            if (k->key & 1)
+                thumb_next(d, address, code, k->units, k->count);
+            else
+                a32_next(d, address + (SnxU32)(k->units - 1) * 4, snx_ld_le32(code + (k->units - 1) * 4));
         }
-        if (d->count == d->capacity) {
-            d->capacity = d->capacity ? d->capacity * 2 : 4096;
-            d->blocks = (Block*)snx_realloc(d->blocks, d->capacity * sizeof(*d->blocks));
-        }
-        d->blocks[d->count].key = key;
-        d->blocks[d->count].x64 = (unsigned char)x64;
-        d->blocks[d->count++].units = (SnxU32)units;
-        if (key & 1)
-            thumb_next(d, address, code, units, count);
-        else
-            a32_next(d, address + (SnxU32)(units - 1) * 4, snx_ld_le32(code + (units - 1) * 4));
     }
-    snx_ir_free(scratch);
-    return 0;
+done:
+    free(r.found);
+    for (i = 0; i < threads; ++i) {
+        /* each thread's counts, and its blocks into the first's object */
+        size_t k, w;
+        d->x64_made += finders[i].x64_made;
+        for (w = 0; w < finders[i].nwhys; ++w) {
+            for (k = 0; k < d->nwhys && strcmp(d->whys[k].why, finders[i].whys[w].why); ++k) {}
+            if (k == d->nwhys && k < WHYS) d->whys[d->nwhys++].why = finders[i].whys[w].why;
+            if (k < d->nwhys) d->whys[k].count += finders[i].whys[w].count;
+        }
+        if (i && finders[i].x64) {
+            if (!rc && snx_x64_arm_absorb(d->x64, finders[i].x64)) {
+                snprintf(error, error_size, "out of memory");
+                rc = -1;
+            }
+            snx_x64_arm_free(finders[i].x64);
+        }
+        snx_ir_free(finders[i].scratch);
+    }
+    free(finders);
+    return rc;
 }
 
 /* the keys of what follows the block at key, covering units of code, as discover queues them, into next */
@@ -815,7 +989,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         }
     }
     start = snx_seconds();
-    if (discover(&d, options, error, sizeof(error))) {
+    if (discover(&d, options, build->jobs ? build->jobs : 1, error, sizeof(error))) {
         snx_error("AArch32: %s", error);
         goto done;
     }
@@ -823,11 +997,18 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     if (!options->quiet) printf("AArch32: %lu blocks found (%.1f s)\n", (unsigned long)d.count, snx_seconds() - start);
     if (d.x64) {
         size_t made = 0;
+        /* the entry the x86-64 back end's blocks jump to, for each block LLVM makes */
+        for (i = 0; i < d.count; ++i)
+            if (!d.blocks[i].x64 && snx_x64_arm_entry(d.x64, d.blocks[i].key)) {
+                snx_error("x86-64 back end: out of memory");
+                goto done;
+            }
         if (snx_x64_arm_object(d.x64, &x64_object, &x64_size, &made)) {
             snx_error("x86-64 back end: out of memory");
             goto done;
         }
         if (!options->quiet) {
+            made = d.x64_made;
             printf("x86-64 back end: %lu of %lu AArch32 blocks%s\n", (unsigned long)made, (unsigned long)d.count,
                    made == d.count ? "" : ", LLVM the rest");
             /* what kept the others from it, the most common first */
@@ -887,7 +1068,15 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     }
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
-    if (q.count) run(&q, build->jobs, build->jobs_open);
+    /* LLVM's few units the x86-64 back end left are small: their threads all at once, not opened one a second while the
+       memory holds them (as module_llvm.c runs its x86-64 units) */
+    if (q.count && d.x64 && build->jobs_open && !options->quiet) {
+        unsigned threads = build->jobs < 1 ? 1 : build->jobs;
+        if (threads > q.count) threads = (unsigned)q.count;
+        printf("aot_threads=0 (Auto): %u thread%s at once, LLVM's units of the blocks the x86-64 back end left\n",
+               threads, threads == 1 ? "" : "s");
+    }
+    if (q.count) run(&q, build->jobs, d.x64 ? 0 : build->jobs_open);
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
         goto done;
