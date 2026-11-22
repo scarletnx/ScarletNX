@@ -236,6 +236,8 @@ typedef struct {
 enum { GUI_AOT_NONE, GUI_AOT_NO_CACHE, GUI_AOT_CACHE, GUI_AOT_BAD };
 #define GUI_ICONS     96  /* the games' icons kept drawn: a page's rows and the recent ones, with room */
 #define GUI_ICON_SIDE 128 /* the pixels square they are drawn at, scaled to their rows */
+/* the games' icons read from their files in one frame at most (game_icon): 7 ms of it on a Ryzen 5 7500F */
+#define GUI_ICONS_A_FRAME 6
 /* a game's icon as its rows show it: its program's path, and its texture; NULL for a game without one */
 typedef struct {
     char* path;
@@ -584,6 +586,9 @@ typedef struct App {
     size_t user_jpeg_size;
     SDL_Texture* user_picture; /* drawn user_side pixels square, in the shape it was drawn for */
     GuiIcon icons[GUI_ICONS];  /* the games' icons drawn so far (game_icon), the oldest replaced first */
+    /* in a frame (render), one more than the icons it read from their files, which stops at GUI_ICONS_A_FRAME, so a
+       page of them comes over a few frames instead of holding one; 0 outside a frame, which reads them all */
+    int icons_spent;
     SDL_Texture* icon_loading; /* what a dump's row shows while the driver is asked for its icon */
     SDL_Texture* icon_none;    /* what a game's row shows with no icon of its own: Wimsy in grey */
     SDL_Texture* icon_more;    /* Show More's, as a game's cover: a grey + on white */
@@ -4939,6 +4944,8 @@ static SDL_Texture* game_icon(App* app, const char* path) {
     for (i = 0; i < GUI_ICONS; ++i)
         if (app->icons[i].path && !strcmp(app->icons[i].path, path))
             return app->icons[i].loading ? icon_loading(app) : app->icons[i].texture;
+    if (app->icons_spent > GUI_ICONS_A_FRAME) return icon_loading(app); /* this frame read its share: the next does */
+    if (app->icons_spent) ++app->icons_spent;
     icon = &app->icons[app->icons_next];
     app->icons_next = (app->icons_next + 1) % GUI_ICONS;
     free(icon->path);
@@ -15726,7 +15733,13 @@ static void render_help(App* app) {
         text_in(app, text, x, y, key, rgb(t->focus_bar ? t->page : t->focus));
     }
 }
+static void render_frame(App* app);
 static void render(App* app) {
+    app->icons_spent = 1;
+    render_frame(app);
+    app->icons_spent = 0;
+}
+static void render_frame(App* app) {
     gui_drawn_begin(app->renderer); /* its draws listed until its present, which draws them only when they changed */
     layout(app);
     app->slider_bar = gui_rect(0, 0, 0, 0); /* none until a screen with UI scale's draws it */

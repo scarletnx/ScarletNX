@@ -2228,6 +2228,61 @@ static GuiRect grid_model(const UiFlow* f, const bool* label, size_t r, int* lin
     }
     return gui_rect(0, 0, 0, 0);
 }
+/* Games' icons read from their files GUI_ICONS_A_FRAME a frame at most (render), the rest showing the loading mark
+   until a later frame reads them, so a page of icons does not hold one frame; outside a frame one is read at once */
+static void icons_a_frame(App* app, const char* temporary) {
+    char *was_games = app->games_dir, *was_data = app->data_dir, *was_app = app->app_file,
+         *was_recent_file = app->recent_file;
+    GuiRecent was_recent = app->recent;
+    int was_folders = app->folder_count, read = 0;
+    char *root = snx_path_join(temporary, "icons a frame"), *games[GUI_ICONS_A_FRAME + 3];
+    const int n = GUI_ICONS_A_FRAME + 3;
+    IconJpeg jpeg = {{0}, 0};
+    app->data_dir = root;
+    app->games_dir = snx_path_join(root, "recompiled");
+    app->app_file = snx_path_join(root, "app.ini");
+    app->recent_file = NULL;
+    app->folder_count = 0;
+    app->recent = (GuiRecent){0};
+    assert(!snx_splash_jpeg("wimsy-fuddles", 32, 90, icon_jpeg_write, &jpeg));
+    for (int i = 0; i < n; ++i) { /* game a, game b... each with its icon */
+        char name[16], *icon;
+        snprintf(name, sizeof name, "game %c", 'a' + i);
+        games[i] = folder_game_in(app->games_dir, name);
+        icon = snx_format("%s/%s/%s_data/icon.jpg", app->games_dir, name, name);
+        assert(!snx_write_file(icon, jpeg.data, (size_t)jpeg.size));
+        free(icon);
+    }
+    app->options[GUI_OPTION_VIEW] = 1; /* Grid: a tile each, its icon over its name */
+    layout(app);
+    go_tab(app, GUI_TAB_GAMES);
+    assert(games_listed(app) == (size_t)n);
+    render(app);
+    for (int i = 0; i < GUI_ICONS; ++i) read += app->icons[i].path && app->icons[i].texture;
+    assert(read == GUI_ICONS_A_FRAME && !app->icons_spent);
+    render(app); /* the rest */
+    read = 0;
+    for (int i = 0; i < GUI_ICONS; ++i) read += app->icons[i].path && app->icons[i].texture;
+    assert(read == n);
+    icons_free(app);
+    assert(game_icon(app, games[0]) && game_icon(app, games[n - 1])); /* outside a frame: at once */
+    games_defaults(app);
+    app->recent = was_recent;
+    app->recent_file = was_recent_file;
+    app->folder_count = was_folders;
+    free(app->games_dir);
+    free(app->app_file);
+    app->games_dir = was_games;
+    app->data_dir = was_data;
+    app->app_file = was_app;
+    layout(app);
+    go_tab(app, GUI_TAB_MENU);
+    app->games_stamp = stamp_now(app);
+    app->message[0] = 0;
+    assert(!snx_remove_tree(root));
+    for (int i = 0; i < n; ++i) free(games[i]);
+    free(root);
+}
 /* View's Grid: Games' rows as tiles, as many a line as fit, "Recent Games" and the groups' headings each on a line of
    its own; the arrows go to the tile beside, above or under the focus, PgUp and PgDn by the lines that show, the
    pointer takes a tile and a click opens it; the lines scroll to the focus. Kept as games_view = grid */
@@ -10782,6 +10837,7 @@ int main(int argc, char** argv) {
 
     view_box(&app, temporary);
     grid_view(&app, temporary);
+    icons_a_frame(&app, temporary);
     /* 3DS: its own driver for drops, CIA browser and recents, with no Switch
        flags or direct execution, even when another item is hovered. */
     {
