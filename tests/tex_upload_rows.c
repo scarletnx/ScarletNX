@@ -816,6 +816,11 @@ void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
 }
+/* owned.c's: the barrier counted by where it is from, which these checks count as one */
+void vk_all_barrier_by(int site, VkCommandBuffer cb) {
+    (void)site;
+    vk_all_barrier(cb);
+}
 /* no memory, but for a move of check_tex_moves that is given some */
 VkResult vk_devmem_image(const VkImageCreateInfo* ii, const DevMemWant* ai, VkImage* img, DevMem* mem) {
     (void)ii;

@@ -61,6 +61,11 @@ void vk_all_barrier(VkCommandBuffer cb) {
     CHECK(cb == CMD);
     note('b');
 }
+/* owned.c's: the barrier counted by where it is from, which these checks count as one */
+void vk_all_barrier_by(int site, VkCommandBuffer cb) {
+    (void)site;
+    vk_all_barrier(cb);
+}
 u64 vk_compute_adds(void) { return 0; }
 /* owned.c's: the stages a buffer barrier names */
 VkPipelineStageFlags2 vk_buffer_stages(void) { return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; }
