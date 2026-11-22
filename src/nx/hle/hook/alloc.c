@@ -25,6 +25,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -788,4 +789,105 @@ int alloc_new_shape(u64 addr) {
         said = 1;
     }
     return !count;
+}
+
+/* ============================================================ a game's own allocator objects */
+/* A game may define malloc itself, as code that takes the block from an allocator object of its own through the
+   object's virtual table: one game's malloc calls a static object's Allocate, and its operator new the thread's
+   current allocator's. Such objects keep their own books (the bytes and blocks handed out, against a capacity), and
+   the game's code frees through the objects themselves as well as through free and operator delete. A block of the
+   arena that reaches an object's Free, which no hook takes, is counted off books that never counted it: that game's
+   went below zero, and every allocation after was refused. So where the program's malloc (or calloc, realloc,
+   aligned_alloc) is such code, the family is off (alloc_kept): the game's allocator runs whole, as on the console.
+   An operator new alone that calls an object, beside a malloc that is the SDK allocator's, keeps the family: another
+   game's does (alloc_new_shape's), its free asking the SDK heap, whose functions the family answers.
+
+   The call through the table, a C++ virtual call: on the function's walk (its first ALLOC_SCAN instructions, up to
+   where it ends past every forward branch), a 64-bit load of an object's first word (ldr xt, [xn] or ldraa/ldrab with
+   no offset) into another register, a 64-bit load at an offset from that table (ldr xe, [xt, #imm]), and an indirect
+   branch or call to the entry (br, blr and their pointer-authenticated forms) with the object in x0, the load's own
+   x0 or a mov's copy of the object; each register keeps what it holds until another instruction writes it (written).
+   A PLT stub's single load from its GOT, a function pointer in a global, a table of functions a global points to
+   (no object passed) and the SDK's own functions' direct calls are not one */
+#define ALLOC_SCAN 128u
+/* the register instruction w loads a 64-bit word into from [xn, #imm] (ldr, or ldraa/ldrab: *imm 0 when their offset
+   is), -1 for another instruction */
+static int load64(u32 w, u32* n, u32* imm) {
+    if ((w & 0xFFC00000u) == 0xF9400000u) { /* ldr xt, [xn, #imm12 * 8] */
+        *n = w >> 5 & 31, *imm = (w >> 10 & 0xFFFu) * 8;
+        return (int)(w & 31);
+    }
+    if ((w & 0xFF200400u) == 0xF8200400u) { /* ldraa, ldrab: S:imm9, scaled by 8 */
+        *n = w >> 5 & 31, *imm = (w >> 12 & 0x1FFu) | (w >> 22 & 1u) << 9;
+        return (int)(w & 31);
+    }
+    return -1;
+}
+/* the register an indirect branch or call (br, blr, braa, brab, blraa, blrab and their zero-modifier forms) goes to,
+   -1 for another instruction */
+static int branch_reg(u32 w) {
+    if ((w & 0xFFDFFC1Fu) == 0xD61F0000u || (w & 0xFEDFF800u) == 0xD61F0800u) return (int)(w >> 5 & 31);
+    return -1;
+}
+/* whether the function at addr (size bytes, 0 when unknown) calls through an object's table */
+int alloc_object_call(u64 addr, u64 size) {
+    u32 table = 0, entry = 0, object = 0; /* registers that hold an object's table, an entry of it, the object */
+    u64 end = addr + (size && size < ALLOC_SCAN * 4 ? size : ALLOC_SCAN * 4), furthest = addr;
+    for (u64 a = addr; a < end && in_module(a, 4); a += 4) {
+        u32 w = snx_ld_le32(GP(a)), n = 0, imm = 0, gone = written(w);
+        int b = branch_reg(w), t = load64(w, &n, &imm), ends = 0;
+        if (b >= 0 && (entry >> b & 1) && (object & 1)) return 1;
+        u32 was_table = t >= 0 && (table >> n & 1);
+        u32 copy = (w & 0xFFE0FFE0u) == 0xAA0003E0u && (object >> (w >> 16 & 31) & 1);
+        table &= ~gone, entry &= ~gone, object &= ~gone;
+        if (copy) object |= 1u << (w & 31); /* mov xd, xm of the object */
+        if (t >= 0 && t != 31) {
+            if (was_table)
+                entry |= 1u << t;
+            else if (!imm && (u32)t != n)
+                table = 1u << t, entry = 0, object = n != 31 ? 1u << n : 0;
+        }
+        /* where the function ends: an unconditional branch, a return or an indirect branch past every forward
+           branch's target */
+        if ((w & 0xFC000000u) == 0x14000000u) { /* b: a jump within the function, else its end (a tail call) */
+            u64 to = a + (u64)(i64)((i32)(w << 6) >> 4);
+            if (to > a && to < end) {
+                if (to > furthest) furthest = to;
+            } else
+                ends = 1;
+        } else if ((w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u) { /* b.cond, cbz, cbnz */
+            u64 to = a + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
+            if (to > furthest) furthest = to;
+        } else if ((w & 0x7E000000u) == 0x36000000u) { /* tbz, tbnz */
+            u64 to = a + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
+            if (to > furthest) furthest = to;
+        } else if ((w & 0xFFFFFC1Fu) == 0xD65F0000u || (w & 0xFFFFFBFFu) == 0xD65F0BFFu || (b >= 0 && !(w >> 21 & 1)))
+            ends = 1; /* ret, retaa, retab, br and its authenticated forms */
+        if (ends && a >= furthest) break;
+    }
+    return 0;
+}
+/* the reason the family is off for the game's own allocator, NULL when it may run (said once) */
+const char* alloc_kept(void) {
+    static const char* const names[] = {"malloc", "calloc", "realloc", "aligned_alloc"};
+    static int done;
+    static char why[256];
+    const char* name;
+    u64 a;
+    if (done) return why[0] ? why : NULL;
+    done = 1;
+    for (u32 i = 0; kernel_symbol(i, &a, &name); i++) {
+        u32 m;
+        if (!name || !listed(name, names, sizeof names / sizeof *names) || !alloc_object_call(a, kernel_symbol_size(i)))
+            continue;
+        for (m = 0; g_mod && m < g_mod->nmods; m++)
+            if (a >= g_mod->mods[m].base && a - g_mod->mods[m].base < g_mod->mods[m].size) break;
+        snprintf(why, sizeof why,
+                 "the game's %s (%s+%llx) takes its blocks from an allocator object of its own through the object's "
+                 "table, and the game frees through such objects too, which no hook takes",
+                 name, g_mod && m < g_mod->nmods && g_mod->mods[m].name ? g_mod->mods[m].name : "?",
+                 (unsigned long long)(g_mod && m < g_mod->nmods ? a - g_mod->mods[m].base : a));
+        return why;
+    }
+    return NULL;
 }

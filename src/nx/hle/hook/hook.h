@@ -273,6 +273,11 @@ int libc_wide_ready(void);
 /* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
    family is then off */
 int alloc_ready(void);
+/* alloc.c: why the game keeps its own allocator, whose malloc takes its blocks from an allocator object of its own (the
+   family is then off), NULL when the family may run */
+const char* alloc_kept(void);
+/* alloc.c: whether the function at addr (size bytes, 0 when unknown) calls through an object's virtual table */
+int alloc_object_call(u64 addr, u64 size);
 /* os_sync.c: the game's SDK exports every function that writes the lock and condition variable words the os_sync
    family owns, which it takes all of or none of */
 int os_sync_ready(void);

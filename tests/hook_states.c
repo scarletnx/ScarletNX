@@ -95,6 +95,7 @@ void fatal(const char* fmt, ...) {
     exit(1);
 }
 int alloc_ready(void) { return 0; }
+const char* alloc_kept(void) { return NULL; }
 int libc_wide_ready(void) { return 0; }
 static int g_os_ready = 1;
 int os_sync_ready(void) { return g_os_ready; }
