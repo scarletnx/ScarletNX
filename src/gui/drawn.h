@@ -24,6 +24,12 @@ typedef struct {
     Uint8 *now, *shown;      /* this frame's list, and the list of what the window shows */
     size_t n, room, shown_n, shown_room;
     bool stale;           /* the window may show something else than `shown`: the next frame is drawn */
+    /* the renderer's target, viewport and clip as the frame began, which its first draws were listed under: set again
+       before its list is drawn, as a flush comes while a later viewport or clip is set (a list box's, as the rows load
+       their icons) and its first draws would be cut to it */
+    SDL_Texture* start_target;
+    SDL_Rect start_view, start_clip;
+    bool start_clipped;
     unsigned drawn, kept; /* the frames drawn and presented, and those left as the window had them */
 } GuiDrawn;
 static GuiDrawn g_drawn = {.stale = true};
@@ -116,6 +122,9 @@ static bool gui_drawn_list(Uint8 code, const void* what, size_t size) {
 /* the draws of a list, n bytes at at, to the renderer in their order */
 static void gui_drawn_replay(SDL_Renderer* r, const Uint8* at, size_t n) {
     const Uint8* end = at + n;
+    SDL_SetRenderTarget(r, g_drawn.start_target);
+    SDL_SetRenderViewport(r, &g_drawn.start_view);
+    SDL_SetRenderClipRect(r, g_drawn.start_clipped ? &g_drawn.start_clip : NULL);
     while (at < end) {
         Uint8 code = *at++;
         switch (code) {
@@ -232,6 +241,9 @@ static void gui_drawn_begin(SDL_Renderer* r) {
     if (g_drawn.renderer || g_drawn.shown_for != r) g_drawn.stale = true; /* a frame never presented, another window */
     g_drawn.renderer = r;
     g_drawn.n = 0;
+    g_drawn.start_target = SDL_GetRenderTarget(r);
+    SDL_GetRenderViewport(r, &g_drawn.start_view);
+    g_drawn.start_clipped = SDL_RenderClipEnabled(r) && SDL_GetRenderClipRect(r, &g_drawn.start_clip);
 }
 /* the frame's end. Its list the one the window shows: nothing drawn, nothing presented. Else its draws to the
    renderer, and the present. Outside a frame, the present as it is */

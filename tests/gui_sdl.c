@@ -6530,6 +6530,33 @@ int main(int argc, char** argv) {
             assert(!memcmp(rgba->pixels, green, 4));
             SDL_DestroySurface(rgba);
             SDL_DestroySurface(read);
+            /* and one freed while a later viewport and clip are set, as Games' rows read their icons inside the list's
+               box: the draws listed before them are made as they were listed, not cut to that box (Windows' Compile
+               tab, drawn so, showed nothing) */
+            once = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, 2, 2);
+            assert(once && SDL_UpdateTexture(once, NULL, green, 8));
+            assert(SDL_SetRenderDrawColor(app.renderer, 255, 0, 0, 255) &&
+                   SDL_RenderFillRect(app.renderer, &at)); /* red */
+            gui_drawn_begin(app.renderer);
+            assert(SDL_RenderTexture(app.renderer, once, NULL, &at));
+            {
+                SDL_Rect box = {view.x + 40, view.y + 40, 20, 20}, cut = {2, 2, 8, 8};
+                assert(SDL_SetRenderViewport(app.renderer, &box) && SDL_SetRenderClipRect(app.renderer, &cut));
+            }
+            SDL_DestroyTexture(once);
+            assert(SDL_RenderPresent(app.renderer));
+            assert(SDL_SetRenderClipRect(app.renderer, NULL) && SDL_SetRenderViewport(app.renderer, NULL));
+            read = SDL_RenderReadPixels(app.renderer, &view);
+            rgba = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+            assert(rgba);
+            if (memcmp(rgba->pixels, green, 4))
+                fprintf(stderr,
+                        "gui_sdl: a draw listed before a viewport and a clip, then a flush: %u,%u,%u at its place, "
+                        "not green\n",
+                        ((Uint8*)rgba->pixels)[0], ((Uint8*)rgba->pixels)[1], ((Uint8*)rgba->pixels)[2]);
+            assert(!memcmp(rgba->pixels, green, 4));
+            SDL_DestroySurface(rgba);
+            SDL_DestroySurface(read);
             drawn = gui_drawn_drawn();
             render(&app); /* drawn again after it, whatever its list */
             assert(gui_drawn_drawn() == drawn + 1);
