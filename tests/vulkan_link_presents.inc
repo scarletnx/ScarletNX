@@ -99,13 +99,26 @@ static int check_blend_one_pipeline(void) {
     b.blend[0].sc = VK_BLEND_FACTOR_SRC_ALPHA;
     b.blend[0].dc = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     b.blend[0].mask = 7;
+    /* the pipelines compared, not the handles a read gets: a stand-in where it is still being made, the pipeline once
+       it is (vk_pipeline_ready), so a's read and b's may differ for one pipeline; and the link stays (gpl_hold), as its
+       optimized pipeline would take its place between the two. The workers' done between the reads, as a slow
+       device's are */
+    const int hold = g_vk.gpl_hold;
+    g_vk.gpl_hold = 1;
     vk_lock();
-    VkPipeline pa = vk_pipeline_get_deferred(&a), pb = vk_pipeline_get_deferred(&b);
+    VkPipeline pa = vk_pipeline_get_deferred(&a);
+    vk_unlock();
+    vk_pipeline_quiesce();
+    vk_lock();
+    VkPipeline pb = vk_pipeline_get_deferred(&b);
     vk_unlock();
     CHECK(pa && pb);
-    if (pa != pb) fprintf(stderr, "one pipeline for every blend: two blends of one draw state made two pipelines\n");
-    CHECK(pa == pb);
-    CHECK(vk_pipeline_resolve(pa)); /* made, with the blend as dynamic state */
+    VkPipeline ra = vk_pipeline_resolve(pa), rb = vk_pipeline_resolve(pb);
+    g_vk.gpl_hold = hold;
+    if (ra != rb)
+        fprintf(stderr, "one pipeline for every blend: two blends of one draw state made two pipelines, %p and %p\n",
+                (void*)ra, (void*)rb);
+    CHECK(ra && ra == rb); /* made, with the blend as dynamic state */
     puts("PASS one pipeline for every blend: two blends of one draw state bind one pipeline");
     return 0;
 }
