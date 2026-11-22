@@ -10,7 +10,7 @@
 # DSP's AAC, and for the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter, and the Ounce's AV1 through dav1d
 # where cmake/dav1d.cmake builds it (snx_dav1d_ready). With the Android driver (SNX_BUILD_ANDROID), its
 # images (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
-# libswscale for their pixel formats; PNG needs zlib, the build's own static one (snx_zlib in cmake/dependencies.cmake).
+# libswscale for their pixel formats; PNG needs zlib, the build's own static one (snx_zlib in cmake/zlib.cmake).
 # Its MediaPlayer and SoundPool (src/android/runtime/audio.c) add the MP3, Vorbis, FLAC, PCM and ADPCM decoders and the
 # MP3, Ogg, WAV, FLAC and AAC demuxers.
 # No programs, other formats, filters, devices, network or autodetected system libraries, so

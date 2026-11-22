@@ -236,30 +236,10 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
     set(snx_ffmpeg_images OFF)
     if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
         set(snx_ffmpeg_images ON)
-        # zlib (zlib license) for FFmpeg's PNG decoder and encoder, which call its inflate and deflate, and for the
-        # Android driver's libz.so, the NDK's zlib that an app's native code links (src/android/bridge/hle_zlib.c).
-        # libdeflate has no stream interface, so they get zlib itself: static, as libz.a in a folder of its own that
-        # FFmpeg's configure finds with -lz
+        # zlib for FFmpeg's PNG decoder and encoder and the Android driver's libz.so (cmake/zlib.cmake)
         AddJsonPackage(NAME zlib DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
         snx_cpmfile(snx_zlib_hash zlib hash)
-        add_library(snx_zlib STATIC
-            "${zlib_SOURCE_DIR}/adler32.c" "${zlib_SOURCE_DIR}/compress.c" "${zlib_SOURCE_DIR}/crc32.c"
-            "${zlib_SOURCE_DIR}/deflate.c" "${zlib_SOURCE_DIR}/infback.c" "${zlib_SOURCE_DIR}/inffast.c"
-            "${zlib_SOURCE_DIR}/inflate.c" "${zlib_SOURCE_DIR}/inftrees.c" "${zlib_SOURCE_DIR}/trees.c"
-            "${zlib_SOURCE_DIR}/uncompr.c" "${zlib_SOURCE_DIR}/zutil.c" "${zlib_SOURCE_DIR}/gzclose.c"
-            "${zlib_SOURCE_DIR}/gzlib.c" "${zlib_SOURCE_DIR}/gzread.c" "${zlib_SOURCE_DIR}/gzwrite.c")
-        target_include_directories(snx_zlib SYSTEM PUBLIC "${zlib_SOURCE_DIR}")
-        if(NOT WIN32)
-            # what zlib's own configure finds: gz*.c's read, write and close
-            target_compile_definitions(snx_zlib PRIVATE Z_HAVE_UNISTD_H)
-        endif()
-        # position independent: FFmpeg is built with --enable-pic, and the Android runtime is a shared library. The
-        # folder is a generator expression so that a multi-config generator (Xcode) adds no folder for the
-        # configuration to it
-        set(snx_zlib_lib_dir "${PROJECT_BINARY_DIR}/zlib/lib")
-        set_target_properties(snx_zlib PROPERTIES OUTPUT_NAME z POSITION_INDEPENDENT_CODE ON
-                                                  ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
-        snx_quiet(snx_zlib)
+        include("${PROJECT_SOURCE_DIR}/cmake/zlib.cmake")
     endif()
     snx_cpmfile(snx_ffmpeg_hash ffmpeg hash)
     AddJsonPackage(NAME ffmpeg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
