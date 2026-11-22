@@ -1210,8 +1210,9 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     u64 submitted = 0, done = 0;
     vk_submit_progress(&submitted, &done);
     if (done) vk_land_through(done);
-    /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them */
-    if (mir_pending(gva, len)) vk_finish();
+    /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them. The GPU
+       thread may record meanwhile: what it submits after is published below, and lands at the CPU's touch */
+    if (mir_pending(gva, len)) vk_finish_letting_go();
     vk_mirror_publish();
     vk_unlock();
 }
