@@ -1397,24 +1397,28 @@ static struct {
     int line;
     u64 n, ns;
 } g_finish_sites[FINISH_SITES];
-/* with let_go, the wait lets go of vk_lock as vk_submit_upload_wait's does, and what it lands is what it waited for:
-   other threads submit meanwhile */
-static void finish(const char* file, int line, int let_go) {
-    u64 t0 = plat_ns();
-    SNX_ZONE(z_finish, "vk finish");
-    submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
-    const u64 at = atomic_load_explicit(&g_gval, memory_order_relaxed);
+/* the wait for submission at (kind: VK_WAIT_*): with let_go it lets go of vk_lock as vk_submit_upload_wait's does */
+static void wait_letting_go(u64 at, int kind, int let_go) {
     int paused = 0;
     if (let_go && !g_rec_unsafe && !g_landing && !g_letting_go) {
         g_letting_go = 1;
         paused = vk_lock_pause();
         if (!paused) g_letting_go = 0;
     }
-    timeline_wait(at, VK_WAIT_FINISH);
+    timeline_wait(at, kind);
     if (paused) {
         vk_lock_resume(1);
         g_letting_go = 0;
     }
+}
+void vk_wait_submit_letting_go(u64 value) { wait_letting_go(value, VK_WAIT_SUBMIT, 1); }
+/* with let_go, what it lands is what it waited for: other threads submit meanwhile */
+static void finish(const char* file, int line, int let_go) {
+    u64 t0 = plat_ns();
+    SNX_ZONE(z_finish, "vk finish");
+    submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
+    const u64 at = atomic_load_explicit(&g_gval, memory_order_relaxed);
+    wait_letting_go(at, VK_WAIT_FINISH, let_go);
     land_through(at);
     u64 ns = plat_ns() - t0;
     g_vk_finishes++;
