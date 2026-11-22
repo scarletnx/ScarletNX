@@ -18,6 +18,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* memory/mem.c's write marks, kept here a bit a byte of the test's memory: the records the runtime writes in guest
+   memory are marked, as the game's own stores are, so a cache that trusts the marks sees them */
+static u8 g_marked[(1 << 22) / 8];
+void mem_wrote(u64 a, u64 size) {
+    for (u64 i = a; i < a + size && i < (1u << 22); i++) g_marked[i / 8] |= (u8)(1u << (i % 8));
+}
+static int marked(u64 a, u64 size) {
+    for (u64 i = a; i < a + size; i++)
+        if (!(g_marked[i / 8] >> (i % 8) & 1)) return 0;
+    return 1;
+}
 
 u32 nvn_program_subroutine(u64 program, i32 stage) {
     (void)program;
@@ -201,6 +212,11 @@ int main(void) {
     check(a.at[0] == 0x11000 && a.at[1] >= 0x80000 && a.at[3] >= 0x80000,
           "the source's clear in the game's memory, the records past the driver's bytes in the runtime's");
     check(gr64(a.at[0] + 32 + 8) == a.at[1], "the JUMP after the clear, in the 16 bytes the driver's spare");
+    {
+        int all = marked(a.at[0] + 32, 16);
+        for (int i = 0; i < a.n; i++) all &= marked(a.at[i], a.size[i]);
+        check(all, "the source's records and its JUMP marked written, in the game's memory and the runtime's");
+    }
 
     /* copied into another command buffer, the source's records then overwritten */
     nvn_CommandBufferInitialize(&cpu, cb2, 0);

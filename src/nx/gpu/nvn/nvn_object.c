@@ -2564,6 +2564,7 @@ void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     gpu_cpu_signal(); /* a stream's wait on the event takes in what the CPU wrote before (nvn_replay.c) */
     atomic_thread_fence(memory_order_release);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
+    mem_wrote(a, 4); /* the GPU reads the event's word: the write marks must see it */
     gpu_kick();
 }
 u64 nvn_EventBuilderGetMemoryPool(CPU* c, u64 b) {

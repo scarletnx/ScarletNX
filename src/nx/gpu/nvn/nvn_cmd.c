@@ -146,6 +146,7 @@ static void put_jump(u64 at, u64 to) {
     memcpy(GP(at + 8), &to, 8);
     atomic_thread_fence(memory_order_release);
     put_hdr(at, OP_JUMP, 16, 0);
+    mem_wrote(at, 16); /* the write marks see the runtime's writes of guest memory as the game's own */
 }
 
 /* ---- the runtime's memory for the records the game's memory has no room for */
@@ -882,6 +883,9 @@ static u64 rec(CPU* c, u64 cb, u32 op, size_t payload, u32 cost) {
     u32 size = (u32)((8 + payload + 7) & ~(size_t)7);
     u64 at = alloc_rec(c, cb, op, size, cost);
     memset(GP(at + 8), 0, size - 8); /* guest memory: every byte the game sees */
+    /* the record's pages, for the write marks: its payload's stores right after this land on the same pages, which the
+       next record marks again, and the recording's end marks its last one (nvn_CommandBufferEndRecording) */
+    mem_wrote(at, size);
     return at + 8;
 }
 #define REC(c, cb, OP, T, COST) ((T*)(void*)GP(rec((c), (cb), (OP), sizeof(T), (COST))))
@@ -1120,6 +1124,7 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
         memcpy(&r, GP(o->last), sizeof r);
         r.op |= NVN_REC_LAST;
         memcpy(GP(o->last), &r, sizeof r);
+        mem_wrote(o->last, r.size); /* the last record, its payload in: for the write marks */
         no_command = o->origin + o->used == o->anchor;
         /* bytes of its own, the driver's being control memory: no callback, which the driver wouldn't call */
         if (no_command && o->used + 4 <= o->game_end - o->origin) o->used += 4;

@@ -2142,14 +2142,24 @@ static _Atomic u64 *g_wseen, *g_wmissed;
    ownership, and a page let go reads as written to the host by design, so a report of one with no mark is no miss */
 static _Atomic u64* g_wgpu;
 static u64 g_wcheck_pages, g_wcheck_missed, g_wcheck_stale, g_wcheck_gpu; /* under vk_lock */
+/* missed pages a later scan took a mark on: the store's own late mark (the host's scan came between it and its
+   mark), or a later write's. Either way the marks see the page written from then on */
+static _Atomic u64 g_wcheck_late;
+/* the pages g_wgpu took in the stats window, kept: a query that read as written for a missed page a GPU-side write
+   stamped in the window is counted apart (g_wcheck_stale_gpu), as the caches check the GPU's generations too */
+static _Atomic u64* g_wgpu_window;
+static u64 g_wcheck_stale_gpu;
 static void ww_bits_set(_Atomic u64* bits, u64 cpu, u64 n) {
     if (!bits || !n || cpu >= AS_SIZE) return;
     for (u64 pg = cpu >> 12, pe = ((n > AS_SIZE - cpu ? AS_SIZE : cpu + n) + 4095) >> 12; pg < pe; pg++)
         atomic_fetch_or_explicit(&bits[pg >> 6], 1ull << (pg & 63), memory_order_relaxed);
 }
-static void ww_gpu_wrote(u64 cpu, u64 n) { ww_bits_set(g_wgpu, cpu, n); }
+static void ww_gpu_wrote(u64 cpu, u64 n) {
+    ww_bits_set(g_wgpu, cpu, n);
+    ww_bits_set(g_wgpu_window, cpu, n);
+}
 static void ww_trap_opened(u8* p, u64 n) { ww_bits_set(g_wgpu, (u64)(p - g_mem), n); }
-void vk_ww_gpu_wrote(u64 cpu, u64 n) { ww_bits_set(g_wgpu, cpu, n); }
+void vk_ww_gpu_wrote(u64 cpu, u64 n) { ww_gpu_wrote(cpu, n); }
 #define WW_MISS_N 8 /* a stats window's: the ranges named again in each */
 static u64 g_wmiss[WW_MISS_N];
 static int g_wmiss_n;
@@ -2161,8 +2171,13 @@ static u64 ww_missed_in(u64 o, u64 len) {
 }
 static void ww_seen_note(u8* p, u64 n) {
     u64 a = (u64)(p - g_mem);
-    for (u64 pg = a >> 12, pe = (a + n + 4095) >> 12; pg < pe; pg++)
-        atomic_fetch_or_explicit(&g_wseen[pg >> 6], 1ull << (pg & 63), memory_order_relaxed);
+    for (u64 pg = a >> 12, pe = (a + n + 4095) >> 12; pg < pe; pg++) {
+        const u64 bit = 1ull << (pg & 63);
+        atomic_fetch_or_explicit(&g_wseen[pg >> 6], bit, memory_order_relaxed);
+        /* a mark on a missed page: from here on the marks see it written again, which ends what the miss could hide */
+        if (atomic_fetch_and_explicit(&g_wmissed[pg >> 6], ~bit, memory_order_relaxed) & bit)
+            atomic_fetch_add_explicit(&g_wcheck_late, 1, memory_order_relaxed);
+    }
 }
 static void ww_check_marks(u64 o, u64 e) {
     if (g_wmarks_scan != 2 || !g_wseen) return;
@@ -2600,6 +2615,7 @@ static int ww_take(const u8* host, u64 len) {
             g_wmarks_scan = 0;
         /* the GPU's writes by guest address, where unified memory's hazard count does not hold the watch */
         if (g_wmarks_scan == 2 && !vk_uma() && (g_wgpu = calloc(AS_SIZE >> 15, 1))) {
+            g_wgpu_window = calloc(AS_SIZE >> 15, 1);
             gpu_set_write_watch(ww_gpu_wrote);
             plat_trap_open_watch(ww_trap_opened); /* a page let go reads as written to the host */
         }
@@ -2675,6 +2691,9 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         u64 o = (u64)(host - g_mem), pg = ww_missed_in(o, len);
         if (pg != ~0ull && ww_written_unmissed(o, len, since) == ~0ull) {
             g_wcheck_stale++;
+            if (g_wgpu_window &&
+                atomic_load_explicit(&g_wgpu_window[pg >> 18], memory_order_relaxed) >> (pg >> 12 & 63) & 1)
+                g_wcheck_stale_gpu++;
             int i;
             for (i = 0; i < g_wmiss_n && g_wmiss[i] != o >> 21; i++) {}
             if (i == g_wmiss_n && g_wmiss_n < WW_MISS_N) {
@@ -2759,12 +2778,20 @@ void vk_ww_stats(u32 presents) {
             "(%.2f ms), the checks %.1f (%.2f ms, and %.1f the scanner had)\n",
             presents, (double)(e - epoch0) / presents, (double)l[0] / presents, (double)ns[0] / 1e6 / presents,
             (double)l[1] / presents, (double)ns[1] / 1e6 / presents, (double)g_wscan_skipped / presents);
-    if (g_wmarks_scan == 2 && presents)
+    if (g_wmarks_scan == 2 && presents) {
+        u64 still = 0; /* the pages missed with no mark taken since: what the marks may still miss */
+        for (u64 w = 0; g_wmissed && w < AS_SIZE >> 18; w++)
+            still += snx_popcount64(atomic_load_explicit(&g_wmissed[w], memory_order_relaxed));
         LOG("vulkan: write marks check over %u presents: %llu pages the host found written, %llu of them with no "
-            "mark; %llu queries read as written for such a page; %llu more had a GPU-side write or a landing\n",
+            "mark (%llu marked by a later scan, %llu pages with no mark since); %llu queries read as written for such "
+            "a page, %llu of them on a page a GPU-side write stamped; %llu more had a GPU-side write or a landing\n",
             presents, (unsigned long long)g_wcheck_pages, (unsigned long long)g_wcheck_missed,
-            (unsigned long long)g_wcheck_stale, (unsigned long long)g_wcheck_gpu);
-    g_wcheck_pages = g_wcheck_missed = g_wcheck_stale = g_wcheck_gpu = 0;
+            (unsigned long long)atomic_exchange_explicit(&g_wcheck_late, 0, memory_order_relaxed),
+            (unsigned long long)still, (unsigned long long)g_wcheck_stale, (unsigned long long)g_wcheck_stale_gpu,
+            (unsigned long long)g_wcheck_gpu);
+        if (g_wgpu_window) memset((void*)g_wgpu_window, 0, AS_SIZE >> 15);
+    }
+    g_wcheck_pages = g_wcheck_missed = g_wcheck_stale = g_wcheck_gpu = g_wcheck_stale_gpu = 0;
     g_wmiss_n = 0;
     epoch0 = e;
     g_wscan_skipped = 0;
