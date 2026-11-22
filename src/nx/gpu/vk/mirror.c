@@ -879,6 +879,7 @@ static void land_entry(const u32* e) {
     const u8* data = (const u8*)(e + 132);
     u64 p = (cpu % MIR_G) >> 12;
     u32 any = 0;
+    g_mir_diff.land_pages++;
     for (u32 w = 0; w < 128; w++) any |= mask[w];
     if (!any) {
         gpu_mem_written_cpu(cpu, 4096);
@@ -937,7 +938,6 @@ static void land_entry(const u32* e) {
             if (s) memcpy(s, d, b - a);
         }
         g_mir_stats.landed_bytes += b - a;
-        g_mir_diff.land_pages++;
         a = b;
     }
     gpu_mem_written_cpu(cpu, 4096); /* caches built from the page take its new bytes */
