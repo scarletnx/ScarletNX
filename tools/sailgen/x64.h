@@ -159,7 +159,7 @@ typedef struct {
        alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
        alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's */
     unsigned char cstate, cfpcr, ckat, cw32, zacc;
-    unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] what is dead where it goes (sgx_dead_words' mask) */
+    unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] and kv[0] what is dead where it goes (sgx_dead_words') */
 } SgXIns;
 
 typedef struct {
@@ -190,9 +190,9 @@ typedef struct {
 
 #define SGX_MAXI 4096
 #define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
-/* the guest's (x64_a64.h's): the state's words a mask of dead registers and flags names, at most 72 of them, into
-   words[]; their count */
-static inline int sgx_dead_words(SnxU64 dead, unsigned short* words);
+/* the guest's (x64_a64.h's): the state's words masks of dead registers and flags (dead) and V registers (vdead) name,
+   at most 200 of them, into words[]; their count */
+static inline int sgx_dead_words(SnxU64 dead, SnxU32 vdead, unsigned short* words);
 #define SGX_MAXV 8192
 #define SGX_MAXB 4096
 
@@ -211,6 +211,7 @@ typedef struct {
                       spilling) */
     SnxU64 end_dead; /* the guest's state nothing reads past the region's end (sgx_dead_words' mask), for the store
                         pass; 0 for none known */
+    SnxU32 end_vdead; /* and its V registers */
 } SgX;
 
 typedef int SgB;
@@ -1633,14 +1634,14 @@ static inline void sgx_optimize(SgX* x) {
         static _Thread_local unsigned stamp[SGX_STATE_WORDS];
         static _Thread_local unsigned now = 1;
         unsigned pset = 0; /* the pinned host registers a later PSET writes */
-        unsigned short dw[72];
+        unsigned short dw[200];
         int ndw, e;
         if (++now == 0) {
             memset(stamp, 0, sizeof stamp);
             now = 1;
         }
         /* past the end: what nothing reads is as good as overwritten */
-        ndw = x->end_dead ? sgx_dead_words(x->end_dead, dw) : 0;
+        ndw = x->end_dead || x->end_vdead ? sgx_dead_words(x->end_dead, x->end_vdead, dw) : 0;
         for (e = 0; e < ndw; ++e) stamp[dw[e]] = now;
         for (i = x->n - 1; i >= 0; --i) {
             SgXIns* s = &x->ins[i];
@@ -1669,8 +1670,8 @@ static inline void sgx_optimize(SgX* x) {
             }
             if (s->kind == SGX_K_MACHINE && s->jdead) {
                 /* a jump: a word is dead before it where it is on both ways, the jump's (its mask) and on (its mark) */
-                unsigned char keep[72];
-                ndw = sgx_dead_words(s->kv[1], dw);
+                unsigned char keep[200];
+                ndw = sgx_dead_words(s->kv[1], (SnxU32)s->kv[0], dw);
                 for (e = 0; e < ndw; ++e) keep[e] = stamp[dw[e]] == now;
                 if (++now == 0) {
                     memset(stamp, 0, sizeof stamp);
@@ -1737,6 +1738,23 @@ static inline void sgx_optimize(SgX* x) {
         if (s->kind == SGX_K_SEL && s->def && !vlive[s->def] && s->alt) {
             s->sel = s->alt;
             s->def = 0;
+        }
+        if (s->kind == SGX_K_SEL && s->def && !flive[i] && s->mplace < 0 && (s->w == 32 || s->w == 64)) {
+            /* an addition whose flags nothing reads: LEA, which ties no input and writes no flags */
+            const SgXSel* t = s->sel;
+            int w64 = s->w == 64;
+            unsigned na = w64 ? sgx_sel_add_64_n : sgx_sel_add_32_n, nas = w64 ? sgx_sel_adds_64_n : sgx_sel_adds_32_n;
+            unsigned nai = w64 ? sgx_sel_add_i_64_n : sgx_sel_add_i_32_n,
+                     nasi = w64 ? sgx_sel_adds_i_64_n : sgx_sel_adds_i_32_n;
+            const SgXSel *a0 = w64 ? sgx_sel_add_64 : sgx_sel_add_32, *a1 = w64 ? sgx_sel_adds_64 : sgx_sel_adds_32;
+            const SgXSel *i0 = w64 ? sgx_sel_add_i_64 : sgx_sel_add_i_32, *i1 = w64 ? sgx_sel_adds_i_64 : sgx_sel_adds_i_32;
+            if (((t >= a0 && t < a0 + na) || (t >= a1 && t < a1 + nas)) && !t->imm && s->in[0] && s->in[1]) {
+                s->sel = s->fsel = w64 ? &sgx_sel_lea_64[0] : &sgx_sel_lea_32[0];
+                s->alt = NULL;
+            } else if (((t >= i0 && t < i0 + nai) || (t >= i1 && t < i1 + nasi)) && t->imm == 2 && s->in[0]) {
+                s->sel = s->fsel = w64 ? &sgx_sel_leai_64[0] : &sgx_sel_leai_32[0];
+                s->alt = NULL;
+            }
         }
         for (k = 0; k < 7; ++k)
             if (s->in[k]) vlive[s->in[k]] = 1;

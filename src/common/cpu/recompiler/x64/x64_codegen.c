@@ -90,6 +90,9 @@ typedef struct {
     int pinned;          /* the function keeps guest registers in host ones (pin): RBP, R12-R15 pushed */
     SnxU64* live;        /* each instruction's live-in guest registers (bits 0-31) and flags (32-35), or NULL */
     SnxU64* live_buf;    /* live's room */
+    SnxU32* vlive;       /* each instruction's live-in V registers, with live */
+    SnxU32* vlive_buf;
+    size_t cap_vlive;
     unsigned char* exits; /* each instruction's: a loop's back edge whose fall-through leaves that loop, or NULL */
     unsigned char* exits_buf;
     size_t cap_exits;
@@ -437,6 +440,7 @@ static void flush(Unit* u) {
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
     g->x.end_dead = 0;
+    g->x.end_vdead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
     g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
     g->mem = 0;
@@ -446,8 +450,10 @@ static void flush(Unit* u) {
 
 /* flush where control goes on at target (the next instruction, a branch's): what is dead there needs no store */
 static SnxU64 dead_at(Unit* u, SnxU64 target);
+static SnxU32 vdead_at(Unit* u, SnxU64 target);
 static void flush_to(Unit* u, SnxU64 target) {
     u->g->x.end_dead = dead_at(u, target);
+    u->g->x.end_vdead = vdead_at(u, target);
     flush(u);
 }
 
@@ -484,7 +490,8 @@ static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
     i->disp = label;
     i->flags_from = from;
     i->kv[1] = dead_at(u, target);
-    i->jdead = i->kv[1] != 0;
+    i->kv[0] = vdead_at(u, target);
+    i->jdead = i->kv[1] != 0 || i->kv[0] != 0;
 }
 
 /* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
@@ -1318,10 +1325,75 @@ static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
     }
 }
 
+/* the V registers an instruction reads and writes, as regs_of: a write only where it is the whole register and
+   nothing of it is read (loads, scalar FP, TBL, the 3-same forms that don't accumulate), every register field read
+   otherwise; a register list (TBL's, a structure store's) read whole */
+static SnxU32 vreg_run(unsigned first, unsigned n) {
+    SnxU32 m = 0;
+    unsigned k;
+    for (k = 0; k < n; ++k) m |= 1u << ((first + k) & 31);
+    return m;
+}
+static void vregs_of(SnxU32 w, SnxU32* use, SnxU32* def) {
+    unsigned rd = w & 31, rn = w >> 5 & 31, rm = w >> 16 & 31, ra = w >> 10 & 31;
+    SnxU32 fields = 1u << rd | 1u << rn | 1u << rm | 1u << ra;
+    *def = 0;
+    if ((w >> 25 & 7) == 7) { /* SIMD and FP data processing */
+        *use = fields;
+        if ((w & 0xDF000000) == 0x1F000000) { /* FMADD, FMSUB, FNMADD, FNMSUB */
+            *use = 1u << rn | 1u << rm | 1u << ra, *def = 1u << rd;
+        } else if ((w & 0x5F200000) == 0x1E200000) { /* scalar FP */
+            unsigned t = w >> 10 & 63;
+            if ((t & 3) == 2 || (t & 3) == 3) *use = 1u << rn | 1u << rm, *def = 1u << rd; /* 2-source, FCSEL */
+            else if ((t & 3) == 1 || (t & 15) == 8)
+                *use = 1u << rn | 1u << rm; /* FCCMP, FCMP */
+            else if ((t & 7) == 4)
+                *use = 0, *def = 1u << rd; /* FMOV (immediate) */
+            else if ((t & 31) == 16)
+                *use = 1u << rn, *def = 1u << rd; /* 1-source */
+        } else if ((w & 0x9F200400) == 0x0E200400) { /* AdvSIMD 3-same */
+            unsigned op = w >> 11 & 31, uu = w >> 29 & 1, size = w >> 22 & 3;
+            int whole = op == 3 ? !(uu && size) : op < 24 ? (0xFB7FF7u >> op & 1) : !(op == 25 || (op == 29 && !uu));
+            if (whole) *use = 1u << rn | 1u << rm, *def = 1u << rd;
+        } else if ((w & 0xBF208C00) == 0x0E000000) { /* TBL, TBX */
+            *use = 1u << rm | vreg_run(rn, (w >> 13 & 3) + 1);
+            if (w >> 12 & 1) *use |= 1u << rd; /* TBX keeps what's out of range */
+            *def = 1u << rd;
+        }
+        return;
+    }
+    if ((w >> 25 & 5) == 4 && (w >> 26 & 1)) { /* SIMD&FP loads and stores */
+        unsigned l = w >> 22 & 1;
+        if ((w >> 27 & 7) == 5) { /* pairs */
+            SnxU32 m = 1u << rd | 1u << ra;
+            *use = l ? 0 : m, *def = l ? m : 0;
+            return;
+        }
+        if ((w >> 27 & 7) == 3 && !(w >> 24 & 1)) { /* literal */
+            *use = 0, *def = 1u << rd;
+            return;
+        }
+        if ((w >> 27 & 7) == 7) {
+            unsigned idx = w >> 10 & 3;
+            if ((w >> 24 & 1) || (!(w >> 21 & 1) && idx != 2) || ((w >> 21 & 1) && idx == 2)) {
+                *use = l ? 0 : 1u << rd, *def = l ? 1u << rd : 0; /* bit 22: LDR's opc has bit 0 set */
+                return;
+            }
+            *use = ~0u;
+            return;
+        }
+        /* structures: a store reads its list (4 at the most), a load may keep lanes */
+        *use = vreg_run(rd, 4);
+        return;
+    }
+    *use = 0; /* the general-purpose groups */
+}
+
 /* each instruction's live-in set (u->live), by the successors (the next where it falls through, an inner branch's
    target; LIVE_ALL past the function): backward passes until nothing changes. NULL where it can't be had */
 static void liveness(Unit* u, const SnxFunction* f) {
     SnxU64 *use, *def;
+    SnxU32 *vuse, *vdef;
     int* succ;
     size_t i, n = f->count;
     int changed, passes = 0;
@@ -1330,15 +1402,20 @@ static void liveness(Unit* u, const SnxFunction* f) {
         return;
     }
     u->live = NULL;
+    u->vlive = NULL;
     u->live_buf = (SnxU64*)grow(u->live_buf, &u->cap_live, n, sizeof *u->live_buf);
+    u->vlive_buf = (SnxU32*)grow(u->vlive_buf, &u->cap_vlive, n, sizeof *u->vlive_buf);
     use = (SnxU64*)malloc(2 * n * sizeof *use);
     succ = (int*)malloc(2 * n * sizeof *succ);
-    if (!use || !succ) {
-        free(use), free(succ);
+    vuse = (SnxU32*)malloc(2 * n * sizeof *vuse);
+    if (!use || !succ || !vuse || !u->live_buf || !u->vlive_buf) {
+        free(use), free(succ), free(vuse);
         return;
     }
     u->live = u->live_buf;
+    u->vlive = u->vlive_buf;
     def = use + n;
+    vdef = vuse + n;
     for (i = 0; i < n; ++i) {
         SnxU64 a = snx_function_address(f, i);
         SnxU32 w = 0;
@@ -1347,10 +1424,11 @@ static void liveness(Unit* u, const SnxFunction* f) {
         (void)snx_codegen_word((SnxCodegen*)u->codegen, a, &w);
         snx_a64_decode_word(w, u->codegen->features, &insn);
         regs_of(w, &use[i], &def[i]);
+        vregs_of(w, &vuse[i], &vdef[i]);
         if (insn.flow == SNX_A64_FLOW_UNDEF || insn.flow == SNX_A64_FLOW_BL || insn.flow == SNX_A64_FLOW_BLR ||
             insn.flow == SNX_A64_FLOW_SVC || insn.flow == SNX_A64_FLOW_BRK || insn.flow == SNX_A64_FLOW_RET ||
-            insn.flow == SNX_A64_FLOW_BR || insn.op == SNX_A64_OP_UNDEF)
-            use[i] = LIVE_ALL, def[i] = 0;
+            insn.flow == SNX_A64_FLOW_BR || insn.op == SNX_A64_OP_UNDEF || use[i] == LIVE_ALL)
+            use[i] = LIVE_ALL, def[i] = 0, vuse[i] = ~0u, vdef[i] = 0; /* what isn't classified reads V too */
         falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
                 insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
         succ[2 * i] = falls ? (i + 1 < n && snx_function_address(f, i + 1) == a + 4 ? (int)i + 1 : -2) : -1;
@@ -1360,20 +1438,23 @@ static void liveness(Unit* u, const SnxFunction* f) {
             succ[2 * i + 1] = snx_function_contains(f, t) ? (int)index_of(f, t) : -2; /* -2: out, all live */
         }
         u->live[i] = 0;
+        u->vlive[i] = 0;
     }
     do {
         changed = 0;
         for (i = n; i-- > 0;) {
             SnxU64 out = 0, in;
+            SnxU32 vout = 0, vin;
             int k;
             for (k = 0; k < 2; ++k) {
                 int sx = succ[2 * i + k];
-                if (sx == -2) out = LIVE_ALL;
+                if (sx == -2) out = LIVE_ALL, vout = ~0u;
                 else if (sx >= 0)
-                    out |= u->live[sx];
+                    out |= u->live[sx], vout |= u->vlive[sx];
             }
             in = use[i] | (out & ~def[i]);
-            if (in != u->live[i]) u->live[i] = in, changed = 1;
+            vin = vuse[i] | (vout & ~vdef[i]);
+            if (in != u->live[i] || vin != u->vlive[i]) u->live[i] = in, u->vlive[i] = vin, changed = 1;
         }
     } while (changed && ++passes < 64);
     if (getenv("SNX_X64_LIVE_DEBUG")) fprintf(stderr, "live F_%llX: %d passes, changed %d\n", (unsigned long long)f->start, passes, changed);
@@ -1382,14 +1463,18 @@ static void liveness(Unit* u, const SnxFunction* f) {
             fprintf(stderr, "live %llX: in %09llX use %09llX def %09llX\n",
                     (unsigned long long)snx_function_address(f, i), (unsigned long long)u->live[i],
                     (unsigned long long)use[i], (unsigned long long)def[i]);
-    free(use), free(succ);
-    if (changed) u->live = NULL; /* no fixed point: none known */
+    free(use), free(succ), free(vuse);
+    if (changed) u->live = NULL, u->vlive = NULL; /* no fixed point: none known */
 }
 /* what is dead where control goes to instruction index (or past the function: nothing), for the store pass; SP and
    what no register is never */
 static SnxU64 dead_at(Unit* u, SnxU64 target) {
     if (!u->live || !snx_function_contains(u->f, target)) return 0;
     return ~u->live[index_of(u->f, target)] & LIVE_ALL & ~((SnxU64)1 << 31);
+}
+static SnxU32 vdead_at(Unit* u, SnxU64 target) {
+    if (!u->vlive || !snx_function_contains(u->f, target)) return 0;
+    return ~u->vlive[index_of(u->f, target)];
 }
 
 /* the guest registers the function keeps in host registers (RBP, R12-R15, callee-saved: no call changes them) for
@@ -2101,7 +2186,7 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
-    free(u.live_buf), free(u.exits_buf);
+    free(u.live_buf), free(u.exits_buf), free(u.vlive_buf);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
