@@ -31,6 +31,7 @@
 #include "nx/gpu/vk/shader_objects.h"
 #include "nx/gpu/vk/cb_fold.h"
 #include "nx/gpu/vk/cb_windows.h"
+#include "nx/gpu/vk/cb_dynamic.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/texture_arrays.h"
@@ -672,12 +673,13 @@ static VkDescriptorType binding_type(u32 i) {
    has texture arrays: a pool counts them for array_sets of its sets. A driver may make a pool's memory for all it can
    hold when the pool is made: Qualcomm's took 470 MiB for 1024 sets that could all hold the arrays (792 bytes a
    combined image sampler), where most sets have none */
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
-    static const VkDescriptorType ty[VK_POOL_TYPES] = {
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE};
+u32 vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
+    static const VkDescriptorType ty[VK_POOL_TYPES - 1] = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE};
     int k;
-    for (k = 0; k < VK_POOL_TYPES; k++) {
+    for (k = 0; k < VK_POOL_TYPES - 1; k++) {
         u32 n = ty[k] == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ? 2 : 0; /* auxiliary source/validity fetches */
         u32 arrays = 0, i;
         for (i = 0; i < SNX_VKB_END; i++) {
@@ -689,6 +691,12 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
         }
         sz[k] = (VkDescriptorPoolSize){ty[k], n * sets + arrays * array_sets};
     }
+    /* the dynamic constant buffers of the vertex or the fragment set, whichever has more (cb_dynamic.h): a set of any
+       layout takes its uniform buffers from the count above, which counts those slots too. A pool has no size of a
+       type with none (VUID-VkDescriptorPoolSize-descriptorCount-00302) */
+    const u32 v = snx_popcount64(g_cb_dynamic.mask[0]), f = snx_popcount64(g_cb_dynamic.mask[1]);
+    sz[k] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, (v > f ? v : f) * sets};
+    return sz[k].descriptorCount ? VK_POOL_TYPES : VK_POOL_TYPES - 1;
 }
 
 /* The stages that see set s: a layout for each set, the same bindings, each visible to the stage that uses the set
@@ -780,6 +788,11 @@ void vk_pipeline_init(void) {
         if (line[0]) LOG("%s\n", line);
     }
     cbufs_fit_limits();
+    snprintf(g_pipeline.cache_dir, sizeof g_pipeline.cache_dir, "%sshader_cache", g_cachedir);
+    plat_mkdir(g_pipeline.cache_dir);
+    /* which constant buffers the vertex and fragment sets bind as dynamic uniform buffers: from the moves the game's
+       last run kept there, before the set layouts that give them that type */
+    vk_cb_dynamic_choose(g_pipeline.cache_dir);
     /* a stage's textures in a set of their own (shader_vk_tex_set): with plain sets, where all five stage sets are and
        the device binds ten. Descriptor buffers and heaps keep one set a stage */
     g_spirv_translate.split_sets = g_vk_stage_sets == 5 && g_vk.props.limits.maxBoundDescriptorSets >= 10 &&
@@ -877,7 +890,9 @@ void vk_pipeline_init(void) {
             if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_CAPTURE && i - SNX_VKB_IMGBUF >= buffer_slots) continue;
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
-                .descriptorType = binding_type(i),
+                /* the vertex and fragment sets' dynamic constant buffers (cb_dynamic.h) */
+                .descriptorType = s < 2 && i < SNX_VKB_CB + VK_CB_DYNAMIC_SLOTS ? vk_cb_dynamic_type(s, i - SNX_VKB_CB)
+                                                                                : binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_spirv_translate.tex_array : 1,
                 .stageFlags = vk_set_stages(s)};
         }
@@ -977,8 +992,6 @@ void vk_pipeline_init(void) {
             fatal("vulkan: cannot create compute pipeline layout");
     }
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
-    snprintf(g_pipeline.cache_dir, sizeof g_pipeline.cache_dir, "%sshader_cache", g_cachedir);
-    plat_mkdir(g_pipeline.cache_dir);
     /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c): started now, or by
        astc_mode's Auto once it holds them as BC7 (vk_astc_auto_present) */
     g_pipeline.bc7_cache = 1;

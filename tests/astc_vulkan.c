@@ -228,7 +228,7 @@ int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     return 0;
 }
 u32 vk_texture_array_elements(void) { return 0; }
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
+u32 vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     (void)array_sets;
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
     sz[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets};
@@ -236,6 +236,8 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     sz[3] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets};
     sz[4] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, sets};
     sz[5] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 2};
+    sz[6] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 0};
+    return 6;
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsEXT severity,

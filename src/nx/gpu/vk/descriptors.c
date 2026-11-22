@@ -317,16 +317,18 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     return (VkDescriptorSet)(uintptr_t)(base + 1);
 }
 void vk_descriptors_invalidate(void) { g_descriptors.bound_cb = 0; }
-void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets) {
+void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
+                         u32 ndyn, const u32* dyn) {
     if (g_vk.has_descriptor_heaps) {
         vk_descriptors_invalidate();
         vk_descriptor_heaps_bind(cb, first, count, sets);
         return;
     }
     if (!g_vk.has_descriptor_buffers) {
-        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, sets, 0, NULL);
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, sets, ndyn, dyn);
         return;
     }
+    if (ndyn) fatal("vulkan: dynamic descriptors with descriptor buffers or heaps");
     if (count > 5) fatal("vulkan: too many graphics descriptor stages");
     u32 begun = vk_cb_begun();
     u64 binds = vk_rec_set_binds();
