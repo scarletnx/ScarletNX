@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <stdatomic.h>
 #else
 #include <time.h>
 #endif
@@ -17,17 +18,34 @@
 static uint64_t ticks_ns(uint64_t ticks, uint64_t freq) {
     return ticks / freq * 1000000000u + ticks % freq * 1000000000u / freq;
 }
+/* QueryPerformanceFrequency's frequency, which the system fixes at boot: read once. g_ns_tick: 10^9 / freq when freq
+   divides 10^9 (10 MHz from Windows 10 on), 0 when not. Then ticks * g_ns_tick is ticks_ns's nanoseconds exactly, as
+   ticks = q * freq + r gives q * 10^9 + r * 10^9 / freq = ticks * (10^9 / freq), with one multiply in place of a call
+   and three divisions. The thread that records the draws read the clock so often that plat_ns itself, without the
+   counter's reads, was 1.2% of its samples */
+static _Atomic uint64_t g_qpf, g_ns_tick;
+static uint64_t qpc_freq(uint64_t* ns_tick) {
+    uint64_t f = atomic_load_explicit(&g_qpf, memory_order_acquire);
+    if (!f) {
+        LARGE_INTEGER x;
+        QueryPerformanceFrequency(&x);
+        f = (uint64_t)x.QuadPart;
+        atomic_store_explicit(&g_ns_tick, 1000000000u % f ? 0 : 1000000000u / f, memory_order_relaxed);
+        atomic_store_explicit(&g_qpf, f, memory_order_release); /* after g_ns_tick, which the acquire then sees */
+    }
+    *ns_tick = atomic_load_explicit(&g_ns_tick, memory_order_relaxed);
+    return f;
+}
 uint64_t plat_ns(void) {
-    LARGE_INTEGER counter, freq;
-    QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER counter;
+    uint64_t m, f = qpc_freq(&m);
     QueryPerformanceCounter(&counter);
-    return ticks_ns((uint64_t)counter.QuadPart, (uint64_t)freq.QuadPart);
+    return m ? (uint64_t)counter.QuadPart * m : ticks_ns((uint64_t)counter.QuadPart, f);
 }
 uint64_t plat_monotonic_ns(void) { return 0; }
 uint64_t plat_qpc_ns(uint64_t ticks) {
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
-    return ticks_ns(ticks, (uint64_t)freq.QuadPart);
+    uint64_t m, f = qpc_freq(&m);
+    return m ? ticks * m : ticks_ns(ticks, f);
 }
 int64_t plat_unix_ns(void) {
     FILETIME ft;
