@@ -5783,8 +5783,9 @@ static void check_play_args(App* app, const char* root) {
     puts("the game activity's arguments name each console's driver, its folder and its settings alone");
 }
 /* A PLAY's title ID (play_asked, Android's org.scarletnx.action.PLAY): the game whose folder it names (title_game), the
-   row of Games that Play plays (title_row); each one it does not start said with that ID: one that is no title ID, one
-   no game has, one waiting for the setup's end and then taken, a run on the screen and a box over it */
+   row of Games that Play plays (title_row), and the one in focus (game_box_title); each one it does not start said
+   with that ID: one that is no title ID, one no game has, one waiting for the setup's end and then taken, a run on the
+   screen and a box over it */
 static void play_asked_said(App* app, const char* temporary) {
     char *was_games = app->games_dir, *was_recent_file = app->recent_file;
     int was_folders = app->folder_count;
@@ -5821,6 +5822,16 @@ static void play_asked_said(App* app, const char* temporary) {
            !strcmp(app->message, "No recompiled game has the title ID 0100ABCD00020000"));
     row = title_row(app, "0100ABCD00010000");
     assert(row >= 0 && snx_same_file(app->games.paths[row], game) && title_row(app, "0100ABCD00020000") < 0);
+    /* in focus, its box's Add to Home Screen (Android) is that game's; a game whose folder no title ID names has none */
+    app->browser.page = 0;
+    app->browser.selected = app->browser.head + (size_t)row;
+    named = game_box_title(app, id);
+    assert(named && snx_same_file(named, game) && !strcmp(id, "0100ABCD00010000"));
+    free(named);
+    for (size_t i = 0; i < app->games.count; ++i)
+        if (!strcmp(app->games.shown[i], "alpha game")) app->browser.selected = app->browser.head + i;
+    named = game_box_title(app, id);
+    assert(!named && !id[0] && games_play_focus(app));
     /* the setup's pages first: the ID waits, said, and is taken once they end */
     app->setup_on = true;
     play_asked(app, "0100ABCD00020000");

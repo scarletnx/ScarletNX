@@ -15,7 +15,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ResolveInfo;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
@@ -28,6 +30,12 @@ import org.robolectric.shadows.ShadowToast;
 @RunWith(RobolectricTestRunner.class)
 public class PlayActivityTest {
     private static final int TO_THE_MENU = Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP;
+
+    /** the game that runs is the process's (MainActivity.playing), kept from one test to the next: none */
+    @After
+    public void noGamePlays() {
+        Robolectric.buildActivity(MainActivity.class).get().played(new byte[0], new byte[0], null);
+    }
 
     /** PLAY with title_id given (null: none), as adb's am start sends it: what PlayActivity started, after it ended */
     private static Intent played(String given) {
@@ -94,6 +102,28 @@ public class PlayActivityTest {
         assertNull(started.getStringExtra(PlayActivity.TITLE_ID));
         assertEquals(0, started.getFlags() & TO_THE_MENU);
         asTheIcon(started);
+        assertEquals("A game is running: close it to play 0100ABCD00010000", ShadowToast.getTextOfLatestToast());
+    }
+
+    /** the game that runs, asked again (its shortcut tapped while it plays): it comes back, and no toast */
+    @Test
+    public void theGameThatRunsAskedAgainComesBack() {
+        Context app = RuntimeEnvironment.getApplication();
+        ActivityManager.RunningAppProcessInfo game = new ActivityManager.RunningAppProcessInfo();
+        game.processName = app.getPackageName() + ":game";
+        shadowOf((ActivityManager)app.getSystemService(Context.ACTIVITY_SERVICE))
+            .setProcesses(Collections.singletonList(game));
+        MainActivity menu = Robolectric.buildActivity(MainActivity.class).get();
+        menu.played("0100ABCD00010000".getBytes(StandardCharsets.UTF_8), "a game".getBytes(StandardCharsets.UTF_8),
+                    null);
+        Intent started = played("0100abcd00010000");
+        assertNull(started.getStringExtra(PlayActivity.TITLE_ID));
+        assertEquals(0, started.getFlags() & TO_THE_MENU);
+        asTheIcon(started);
+        assertNull(ShadowToast.getTextOfLatestToast());
+        // a game with no title ID started since: the one asked is another
+        menu.played(new byte[0], "a game".getBytes(StandardCharsets.UTF_8), null);
+        played("0100ABCD00010000");
         assertEquals("A game is running: close it to play 0100ABCD00010000", ShadowToast.getTextOfLatestToast());
     }
 

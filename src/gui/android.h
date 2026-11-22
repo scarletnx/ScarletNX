@@ -26,6 +26,13 @@ int gui_android_play(const char* const* argv, char* message, size_t size);
 /* The title ID a PLAY intent asked MainActivity to play since the last call (dist/android's PlayActivity): owned, ""
    for none; NULL with why in message when the activity did not answer */
 char* gui_android_take_play(char* message, size_t size);
+/* The game started in the game activity, to the app: its title ID ("" for a game with none), which a PLAY of it while
+   it plays brings back, and for one with an ID the first of the shortcuts a long press on the app's icon shows, named
+   name and drawn from icon, an image file (NULL: the app's own). 1, or 0 with what failed in message */
+int gui_android_played(const char* id, const char* name, const char* icon, char* message, size_t size);
+/* The game's shortcut, as gui_android_played makes it, asked of the home screen (Android 8 and later), which asks the
+   player before it adds it: 1 when asked, or 0 with why not in message */
+int gui_android_pin(const char* id, const char* name, const char* icon, char* message, size_t size);
 /* The app behind the others, as it is, for Back on the menu's first screen; 0 with message when it cannot */
 int gui_android_background(char* message, size_t size);
 /* Opens a folder of the data folder or of the shared storage in the system's Files app; 0 with why in message when it

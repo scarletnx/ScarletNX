@@ -38,23 +38,25 @@ public class PlayActivity extends Activity {
     }
 
     /** id, as given, to the menu. With none, one that is no title ID, or a game running, the menu comes in front as
-        its icon brings it (the game that runs over it) and a toast says why, naming what was given */
+        its icon brings it (the game that runs over it) and a toast says why, naming what was given; none for the game
+        that runs, which comes back */
     static void play(Activity from, String given) {
         String id = given != null ? given.trim().toUpperCase(Locale.ROOT) : "", refused = null;
+        boolean runs = gameRuns(from);
         if (id.isEmpty())
             refused = "No title_id: PLAY names the game by its title ID";
         else if (!id.matches("[0-9A-F]{16}"))
             refused = "title_id " + given + " is not a title ID (16 hex digits)";
-        else if (gameRuns(from))
+        else if (runs && !id.equals(MainActivity.playing()))
             refused = "A game is running: close it to play " + id;
-        if (refused != null) {
-            Toast.makeText(from.getApplicationContext(), refused, Toast.LENGTH_LONG).show();
+        if (refused != null) Toast.makeText(from.getApplicationContext(), refused, Toast.LENGTH_LONG).show();
+        if (refused != null || runs) {
             from.startActivity(MainActivity.fromIcon(from));
             return;
         }
         // CLEAR_TOP closes what the menu opened over itself (the folder picker, a settings screen), so the intent
-        // reaches the menu itself, never a second one on top: a game would be on top too, which is why one running
-        // is refused above
+        // reaches the menu itself, never a second one on top; it would close a game too, so one running only comes
+        // back, above
         from.startActivity(MainActivity.fromIcon(from).putExtra(TITLE_ID, id).addFlags(
             Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
     }
