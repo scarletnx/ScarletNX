@@ -7,6 +7,7 @@
    service's choice: the SDK sizes a pool with 991 and reads an image only through the descriptors */
 #include "nx/hle/services/native_video.h"
 #include "common/utilities/bits.h"
+#include <stdlib.h>
 #include <string.h>
 
 u32 nvideo_mime(const u8* p, u64 size) {
@@ -139,6 +140,61 @@ void nvideo_input_pop(NativeVideoCodec* c) {
     c->inputs[c->input_head] = (NativeVideoInput){0};
     c->input_head = (c->input_head + 1) % NVIDEO_INPUTS;
     c->input_count--;
+}
+int nvideo_backlog_push(NativeVideoBacklog* b, void* payload, u32 size, u64 timestamp, u32 eos) {
+    if (b->count == b->cap) {
+        u32 cap = b->cap ? b->cap * 2 : 64;
+        struct NativeVideoWaiting* e = malloc(sizeof *e * (size_t)cap);
+        if (!e) return -1;
+        for (u32 i = 0; i < b->count; i++) e[i] = b->e[(b->head + i) % b->cap]; /* oldest first, from 0 */
+        free(b->e);
+        b->e = e;
+        b->head = 0;
+        b->cap = cap;
+    }
+    b->e[(b->head + b->count++) % b->cap] = (struct NativeVideoWaiting){payload, {timestamp, size, eos}};
+    b->bytes += size;
+    if (b->bytes > b->most) b->most = b->bytes;
+    return 0;
+}
+u32 nvideo_backlog_refill(NativeVideoBacklog* b, NativeVideoCodec* c, void (*take)(void* user, int slot, void* payload),
+                          void* user) {
+    u32 n = 0;
+    for (; b->count; n++) {
+        const struct NativeVideoWaiting* w = &b->e[b->head];
+        int slot = nvideo_input_push(c, w->in.size, w->in.timestamp, w->in.eos);
+        if (slot < 0) break;
+        take(user, slot, w->payload);
+        b->bytes -= w->in.size;
+        b->head = (b->head + 1) % b->cap;
+        b->count--;
+    }
+    return n;
+}
+void nvideo_backlog_keep(NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos) {
+    b->kept = (NativeVideoInput){timestamp, size, eos != 0};
+}
+void nvideo_backlog_forget(NativeVideoBacklog* b) { b->kept = (NativeVideoInput){0, ~0u, 0}; }
+int nvideo_backlog_again(const NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos) {
+    return b->kept.size == size && b->kept.timestamp == timestamp && b->kept.eos == (eos != 0);
+}
+int nvideo_end_pending(const NativeVideoCodec* c, const NativeVideoBacklog* b) {
+    if (b->count) return b->e[(b->head + b->count - 1) % b->cap].in.eos != 0;
+    if (c->input_count) return c->inputs[(c->input_head + c->input_count - 1) % NVIDEO_INPUTS].eos != 0;
+    return c->eos != 0;
+}
+int nvideo_submit_way(const NativeVideoCodec* c, const NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos) {
+    int again = nvideo_backlog_again(b, size, timestamp, eos);
+    if (eos && !size && !again && nvideo_end_pending(c, b)) return NVIDEO_TAKE_SAME_END;
+    if (again) return b->count ? NVIDEO_REFUSE_AGAIN : NVIDEO_TAKE_AGAIN;
+    u32 need = (size != 0) + (eos != 0);
+    return b->count || c->input_count + need > NVIDEO_INPUTS ? NVIDEO_REFUSE_KEEP : NVIDEO_TAKE;
+}
+void nvideo_backlog_free(NativeVideoBacklog* b, void (*drop)(void* user, void* payload), void* user) {
+    for (; b->count; b->count--, b->head = (b->head + 1) % b->cap) drop(user, b->e[b->head].payload);
+    free(b->e);
+    *b = (NativeVideoBacklog){0};
+    nvideo_backlog_forget(b);
 }
 void nvideo_props(u32 props[NVIDEO_PROPS], u32 image, u32 width, u32 height, u32 pic_w, u32 pic_h, u64 timestamp_us,
                   int eos) {

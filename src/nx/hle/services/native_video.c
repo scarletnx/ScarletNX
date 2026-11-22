@@ -163,7 +163,27 @@ int native_video_busy(void) {
 static u32 codec_index(const NativeVideoCodec* s) { return (u32)(s - NV->codecs); }
 #define HOST(s) (&g_host.native_video.codecs[codec_index(s)])
 
+static void backlog_drop(void* user, void* payload) {
+    (void)user;
+    AVPacket* pkt = payload;
+    av_packet_free(&pkt);
+}
+/* a packet of the backlog into the ring's slot (nvideo_backlog_refill) */
+static void backlog_take(void* user, int slot, void* payload) {
+    AVPacket* pkt = payload;
+    if (!pkt) return; /* the end of the stream: no bytes */
+    av_packet_move_ref(HOST((NativeVideoCodec*)user)->packets[slot], pkt);
+    av_packet_free(&pkt);
+}
+static void backlog_free(NativeVideoCodec* s) {
+    NativeVideoBacklog* b = &HOST(s)->backlog;
+    if (b->most)
+        LOG("gsv: video codec %u: up to %llu KB of packets waited for the decoder\n", codec_index(s),
+            (unsigned long long)(b->most >> 10));
+    nvideo_backlog_free(b, backlog_drop, NULL);
+}
 static void host_free(NativeVideoCodec* s) {
+    backlog_free(s);
     nvideo_decoder_close(&HOST(s)->decoder);
     av_frame_free(&HOST(s)->frame);
     for (u32 i = 0; i < NVIDEO_INPUTS; i++) av_packet_free(&HOST(s)->packets[i]);
@@ -177,10 +197,10 @@ static void codec_reset(NativeVideoCodec* s) {
     if (s->event) kobj_unref(kobj_at(s->event));
     *s = (NativeVideoCodec){.obj = s->obj, .encoder = s->encoder};
 }
-/* signaled while the input ring has room */
+/* signaled while the input ring has room and no packet waits for it */
 static void submission_event(NativeVideoCodec* s) {
     if (!s->event) return;
-    if (s->input_count < NVIDEO_INPUTS)
+    if (s->input_count < NVIDEO_INPUTS && !HOST(s)->backlog.count)
         ev_signal(s->event);
     else
         ev_clear(s->event);
@@ -373,6 +393,7 @@ static void codec_pump(NativeVideoCodec* s) {
             WARN_LIMIT(8, "gsv: the video decoder failed (%d)\n", r);
             break;
         }
+        nvideo_backlog_refill(&HOST(s)->backlog, s, backlog_take, s);
         if (!s->input_count) break;
         NativeVideoInput* in = &s->inputs[s->input_head];
         AVPacket* pkt = HOST(s)->packets[s->input_head];
@@ -468,6 +489,7 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
                             cfg->height, h264_config ? GP(mime.addr) : NULL, h264_config ? mime.size : 0, hw, no_hw);
     HOST(s)->frame = ok ? av_frame_alloc() : NULL;
     ok = ok && HOST(s)->frame;
+    nvideo_backlog_forget(&HOST(s)->backlog);
     for (u32 i = 0; i < NVIDEO_INPUTS && ok; i++) ok = (HOST(s)->packets[i] = av_packet_alloc()) != NULL;
     if (!ok) {
         WARN("gsv: video codec %u: FFmpeg's decoder couldn't be opened\n", codec_index(s));
@@ -559,6 +581,7 @@ static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
         av_packet_unref(HOST(s)->packets[s->input_head]);
         nvideo_input_pop(s);
     }
+    backlog_free(s);
     s->started = 0;
     s->eos = 0;
     submission_event(s);
@@ -570,13 +593,51 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
     R_UNLESS(input.size <= INT_MAX && (!input.size || mem_mapped_run(input.addr, input.size) == input.size),
              NVIDEO_BAD_ARGUMENT);
-    u32 need = (input.size != 0) + (eos != 0);
-    if (s->input_count + need > NVIDEO_INPUTS) {
-        codec_pump(s);
-        if (s->input_count + need > NVIDEO_INPUTS) {
-            ev_clear(s->event);
+    /* NativeVideoBacklog: a packet the ring has no room for is refused and kept, and the end of the stream, which the
+       movie library sends again until its output comes, is queued once */
+    NativeVideoBacklog* b = &HOST(s)->backlog;
+    int way = nvideo_submit_way(s, b, (u32)input.size, timestamp, eos);
+    if (way == NVIDEO_REFUSE_AGAIN || way == NVIDEO_REFUSE_KEEP) {
+        codec_pump(s); /* the decoder may take some first */
+        way = nvideo_submit_way(s, b, (u32)input.size, timestamp, eos);
+    }
+    if (way == NVIDEO_TAKE_SAME_END) {
+        *consumed = 0;
+        R_SUCCEED();
+    }
+    if (way == NVIDEO_REFUSE_AGAIN) {
+        ev_clear(s->event);
+        R_THROW(NVIDEO_INPUT_FULL);
+    }
+    nvideo_backlog_forget(b);
+    if (way == NVIDEO_TAKE_AGAIN) { /* queued when it was refused */
+        submission_event(s);
+        *consumed = input.size;
+        R_SUCCEED();
+    }
+    if (way == NVIDEO_REFUSE_KEEP) {
+        ev_clear(s->event);
+        if (b->bytes + input.size > NVIDEO_BACKLOG_BYTES) {
+            WARN_LIMIT(4, "gsv: video codec %u: %llu KB of packets wait for the decoder: one more is dropped\n",
+                       codec_index(s), (unsigned long long)(b->bytes >> 10));
             R_THROW(NVIDEO_INPUT_FULL);
         }
+        AVPacket* pkt = NULL;
+        if (input.size) {
+            if (!(pkt = av_packet_alloc()) || av_new_packet(pkt, (int)input.size) < 0) {
+                av_packet_free(&pkt);
+                R_THROW(NVIDEO_INPUT_FULL);
+            }
+            memcpy(pkt->data, GP(input.addr), (size_t)input.size);
+            pkt->pts = (i64)timestamp;
+            if (nvideo_backlog_push(b, pkt, (u32)input.size, timestamp, 0)) {
+                av_packet_free(&pkt);
+                R_THROW(NVIDEO_INPUT_FULL);
+            }
+        }
+        if (eos && nvideo_backlog_push(b, NULL, 0, timestamp, 1)) R_THROW(NVIDEO_INPUT_FULL);
+        nvideo_backlog_keep(b, (u32)input.size, timestamp, eos);
+        R_THROW(NVIDEO_INPUT_FULL);
     }
     if (input.size) {
         int slot = nvideo_input_push(s, (u32)input.size, timestamp, 0);
