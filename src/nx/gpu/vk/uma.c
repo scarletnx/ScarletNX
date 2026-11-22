@@ -1757,7 +1757,7 @@ static void order(u64 cpu, u64 len, int write) {
     g_uma.order_n[why]++;
     if (vk_render_begun()) g_uma.order_pass[why]++;
     vk_render_end();
-    vk_all_barrier(vk_cmd());
+    vk_all_barrier_by(VK_BAR_UMA, vk_cmd());
     g_uma.barrier_no++;
     g_uma.barriers++;
 }
@@ -2005,12 +2005,13 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
-    vk_all_barrier(cb); /* the producer's writes, and what read or wrote the bytes in place before, first */
+    vk_all_barrier_by(VK_BAR_UMA,
+                      cb); /* the producer's writes, and what read or wrote the bytes in place before, first */
     VkBufferCopy c = {off, io, len};
     rec_CmdCopyBuffer(cb, src, ib, 1, &c);
     /* and what comes after it, before it is set up: a draw that reads the result in the next pass reads it there,
        with no barrier of its own to end that pass for (order) */
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_UMA, cb);
     out_add(0, cpu, len);
     g_uma.barrier_no += 2;
     g_uma.barriers += 2;

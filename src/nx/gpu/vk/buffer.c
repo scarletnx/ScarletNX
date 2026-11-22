@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pagespace.h"
@@ -917,7 +918,27 @@ static void out_free(GfxOut* o) {
     out_block_free(o);
 }
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
+/* for the statistics, under vk_lock: vk_buf_frame_done's calls, and the nanoseconds of its parts (the walk of g_out,
+   the landing of the results, the retire of the dispatches' logs, vk_mirror_done, vk_uma_frame_done) */
+enum { TAIL_WALK, TAIL_LAND, TAIL_RETIRE, TAIL_MIRROR, TAIL_UMA, TAIL_N };
+static u64 g_tail_calls, g_tail_ns[TAIL_N];
+void vk_buf_frame_done_log(void) {
+    vk_lock();
+    u64 calls = g_tail_calls, ns[TAIL_N];
+    memcpy(ns, g_tail_ns, sizeof ns);
+    g_tail_calls = 0;
+    memset(g_tail_ns, 0, sizeof g_tail_ns);
+    vk_unlock();
+    if (calls)
+        LOG("vulkan: the landings of finished submissions over the last 600 presents: %llu calls, %.2f ms finding the "
+            "outputs, %.2f ms landing them, %.2f ms retiring logs, %.2f ms in the mirror's done, %.2f ms in the UMA "
+            "done\n",
+            (unsigned long long)calls, (double)ns[TAIL_WALK] / 1e6, (double)ns[TAIL_LAND] / 1e6,
+            (double)ns[TAIL_RETIRE] / 1e6, (double)ns[TAIL_MIRROR] / 1e6, (double)ns[TAIL_UMA] / 1e6);
+}
 void vk_buf_frame_done(u64 frame) {
+    u64 t_part = plat_ns(), t_next;
+    g_tail_calls++;
     GfxOut *done = NULL, *done_tail = NULL;
     for (GfxOut** pp = &g_out; *pp;) {
         GfxOut* o = *pp;
@@ -938,6 +959,9 @@ void vk_buf_frame_done(u64 frame) {
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
     atomic_store_explicit(&g_gfx_any, g_out != NULL || done != NULL, memory_order_relaxed);
     DevMem invalidated = 0;
+    t_next = plat_ns();
+    g_tail_ns[TAIL_WALK] += t_next - t_part;
+    t_part = t_next;
     t_buffer.out_landing++;
     while (done) {
         GfxOut* o = done;
@@ -976,6 +1000,9 @@ void vk_buf_frame_done(u64 frame) {
         out_free(o);
     }
     t_buffer.out_landing--;
+    t_next = plat_ns();
+    g_tail_ns[TAIL_LAND] += t_next - t_part;
+    t_part = t_next;
     /* the dispatches' references to their logs, of the submits done (the results' own, just dropped, came first) */
     u32 kept = 0;
     for (u32 i = 0; i < g_nretire; i++)
@@ -984,9 +1011,16 @@ void vk_buf_frame_done(u64 frame) {
         else
             g_retire[kept++] = g_retire[i];
     g_nretire = kept;
+    t_next = plat_ns();
+    g_tail_ns[TAIL_RETIRE] += t_next - t_part;
+    t_part = t_next;
     vk_mirror_done(frame);
+    t_next = plat_ns();
+    g_tail_ns[TAIL_MIRROR] += t_next - t_part;
+    t_part = t_next;
     atomic_store_explicit(&g_gfx_any, g_out != NULL, memory_order_relaxed);
     vk_uma_frame_done(frame);
+    g_tail_ns[TAIL_UMA] += plat_ns() - t_part;
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly, or takes a logged one's runs. A result whose copy can't be allocated is read where the
@@ -2932,7 +2966,7 @@ static int back_record(GfxOut* o) {
     }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
-    vk_all_barrier(cb); /* the program's writes, and what read or wrote the bytes before it, first */
+    vk_all_barrier_by(VK_BAR_BUFFER, cb); /* the program's writes, and what read or wrote the bytes before it, first */
     int ok = 1;
     for (i = 0; i < n && ok; i++) {
         u32 from = (u32)(p[i].cpu - o->cpu), to = from + (u32)p[i].len;
@@ -2941,7 +2975,7 @@ static int back_record(GfxOut* o) {
         else
             ok = vk_wlog_merge(w->log, w->part, from, to, o->buf, o->off, p[i].res->buf, p[i].res_off);
     }
-    vk_all_barrier(cb); /* and what reads or writes them next, after it */
+    vk_all_barrier_by(VK_BAR_BUFFER, cb); /* and what reads or writes them next, after it */
     if (!ok) {          /* out of descriptors: the bytes merged so far are the ones its landing writes there too */
         back_unref(p, n);
         return 0;
@@ -4011,7 +4045,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
         if ((res->borrowed || res->by == VK_OWN_BY_DRAW) &&
             atomic_load_explicit(&res->written, memory_order_acquire) == vk_submit_number()) {
             vk_render_end();
-            vk_all_barrier(vk_cmd());
+            vk_all_barrier_by(VK_BAR_BUFFER, vk_cmd());
         }
         sb = ((const VkOwnRes*)o[0].res)->buf;
         so = o[0].res_off;

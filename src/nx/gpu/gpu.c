@@ -32,6 +32,7 @@
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/memory/own.h"
+#include "common/platform/time.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/inline_to_memory_regs.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -438,6 +439,22 @@ static void upload_block_linear(const GpuI2m* t) {
     }
     gpu_mem_written_by(u->dest.address + lo, hi - lo, GPU_WRITE_INLINE, 0, 0);
 }
+GpuInlineStat g_gpu_inline[GPU_INLINE_N];
+_Atomic u64 g_gpu_rcond[GPU_RCOND_N], g_gpu_rcond_cpu_ns;
+GpuInlineMark gpu_inline_begin(void) {
+    GpuInlineMark m = {own_landings(), own_land_bytes(), plat_ns()};
+    return m;
+}
+void gpu_inline_end(int kind, u64 bytes, GpuInlineMark m) {
+    GpuInlineStat* s = &g_gpu_inline[kind];
+    atomic_fetch_add_explicit(&s->n, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s->bytes, bytes, memory_order_relaxed);
+    u64 lands = own_landings();
+    if (lands == m.lands) return;
+    atomic_fetch_add_explicit(&s->forced, lands - m.lands, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s->forced_bytes, own_land_bytes() - m.land_bytes, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s->forced_ns, plat_ns() - m.t0, memory_order_relaxed);
+}
 /* Eden's ProcessData: a data word's bytes, low byte first, up to copy_size; the last of them writes the launch */
 void i2m_data(GpuChannel* ch, u32 v) {
     GpuI2m* t = &ch->i2m;
@@ -449,10 +466,12 @@ void i2m_data(GpuChannel* ch, u32 v) {
     memcpy(t->inner_buffer + t->write_offset, b, n);
     t->write_offset += n;
     if (t->write_offset < t->copy_size) return;
+    GpuInlineMark m = gpu_inline_begin();
     if (t->is_linear)
         upload_linear(t);
     else
         upload_block_linear(t);
+    gpu_inline_end(t->is_linear ? GPU_INLINE_LINEAR : GPU_INLINE_BLOCK, t->copy_size, m);
 }
 
 /* ------------------------------------------------------------ channels */

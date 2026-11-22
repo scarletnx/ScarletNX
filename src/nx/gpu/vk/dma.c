@@ -49,7 +49,34 @@ static struct {
     SnapChunk c[SNAP_CHUNKS];
     u64 bytes;                /* held, for the test */
     u64 copies, bands, moved; /* vk_dma_stats: the launches, the bands of big ones, the bytes moved (vk.h) */
-} g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0};
+    /* for the statistics, under vk_lock: the launches whose guest bytes do not overlap those of the launch before
+       (no write of one meets a byte of the other), and that launch's source and destination bounds */
+    u64 apart, last[2][2];
+} g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0, 0, {{0}}};
+
+/* the guest bytes that a side of o can touch, or more: a block linear surface from its start to the end of the slab of
+   slice z */
+static void side_bounds(const GpuDmaSide* s, u32 lines, u32 line, u64 b[2]) {
+    if (!s->bl) {
+        b[0] = s->addr + (u64)gpu_dma_low(s, lines);
+        b[1] = b[0] + gpu_dma_span(s, lines, line);
+        return;
+    }
+    u64 rows = ((u64)s->h + (8ull << s->bh) - 1) / (8ull << s->bh) * (8ull << s->bh);
+    b[0] = s->addr;
+    b[1] = s->addr + ((u64)s->wb + 63) / 64 * 64 * rows * ((((u64)s->z >> s->bd) + 1) << s->bd);
+}
+static int bounds_meet(const u64 a[2], const u64 b[2]) { return a[0] < b[1] && b[0] < a[1]; }
+static void note_apart(const GpuDmaOp* o) {
+    u64 now[2][2] = {{0, 0}, {0, 0}};
+    if (!o->fill) side_bounds(&o->src, o->lines, o->line_in, now[0]);
+    side_bounds(&o->dst, o->lines, o->line_out, now[1]);
+    /* apart: this write meets nothing of the last, and the last's write meets nothing of this */
+    if (g_dma.copies > 1 && !bounds_meet(now[1], g_dma.last[0]) && !bounds_meet(now[1], g_dma.last[1]) &&
+        !bounds_meet(g_dma.last[1], now[0]))
+        g_dma.apart++;
+    memcpy(g_dma.last, now, sizeof now);
+}
 
 static int snap_chunk_new(SnapChunk* c) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -202,6 +229,18 @@ void vk_dma_stats(u64* copies, u64* bands, u64* bytes) {
     *bands = g_dma.bands;
     *bytes = g_dma.moved;
 }
+void vk_dma_log(void) {
+    static u64 copies_was, bands_was, moved_was, apart_was;
+    vk_lock();
+    u64 copies = g_dma.copies, bands = g_dma.bands, moved = g_dma.moved, apart = g_dma.apart;
+    vk_unlock();
+    if (copies != copies_was)
+        LOG("vulkan: DMA launches of the last 600 presents: %llu (%llu bands, %.2f MB), %llu of them apart from the "
+            "launch before\n",
+            (unsigned long long)(copies - copies_was), (unsigned long long)(bands - bands_was),
+            (double)(moved - moved_was) / 1048576.0, (unsigned long long)(apart - apart_was));
+    copies_was = copies, bands_was = bands, moved_was = moved, apart_was = apart;
+}
 
 /* o's lines that could not be copied, the bytes it lacked them for and where they go */
 static int dma_fail(const GpuDmaOp* o, const char* what, u64 bytes) {
@@ -265,7 +304,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         }
     if (!d) return dma_fail(o, "could not read its destination's", dlen);
     cb = vk_cmd();
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_DMA, cb);
     /* the lines in: the source's rows (block linear: their GOB columns taken apart, rows past its surface zero) */
     VkBuffer ib = sb;
     u64 iat = sat - need->slo; /* line 0, above the lowest when the pitch steps down */
@@ -306,19 +345,19 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         tat = at_b + o->dst.ox - need->dx0 * 64;
         tp = pb;
     }
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_DMA, cb);
     if (ok && tl) {
         if (remap) { /* the lines as the destination holds them (what keeps its bytes), then remapped, then back */
             vk_copy_rows(cb, tb, tat, tp, scr, at_c, pc, o->line_out, tl);
-            vk_all_barrier(cb);
+            vk_all_barrier_by(VK_BAR_DMA, cb);
             ok = vk_tc_dma_remap(cb, o, tl, ib, iat, ip, scr, at_c, pc);
-            vk_all_barrier(cb);
+            vk_all_barrier_by(VK_BAR_DMA, cb);
             vk_copy_rows(cb, scr, at_c, pc, tb, tat, tp, o->line_out, tl);
         } else
             vk_copy_rows(cb, ib, iat, ip, tb, tat, tp, o->line_out, tl);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_DMA, cb);
         if (ok && o->dst.bl) ok = vk_bl_move(cb, &md, 1, d->buf, 0, scr, at_b);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_DMA, cb);
     }
     /* the textures over a block linear destination take its rows now in scratch */
     Surf* hit[8];
@@ -437,6 +476,7 @@ int vk_dma_copy(const GpuDmaOp* o) {
     }
     vk_lock();
     g_dma.copies++;
+    note_apart(o);
     vk_own_room();
     /* a copy of the CPU's bytes may come with no draw before it (uploads one after another): the frame is checked here
        as at a draw's start, so the stream's bytes go to the GPU and come free */

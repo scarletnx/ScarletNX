@@ -2380,7 +2380,7 @@ static int tex_copy_pending(Surf* t) {
                            .bufferRowLength = t->pitch / f->bpp,
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {t->w, t->h, 1}};
-    vk_all_barrier(cb); /* the writer's, in stream order */
+    vk_all_barrier_by(VK_BAR_TEXTURE, cb); /* the writer's, in stream order */
     vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     rec_CmdCopyBufferToImage(cb, ib, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &r);
@@ -3531,7 +3531,7 @@ static int tex_zero(Surf* t) {
                 }
         }
     if (n) rec_CmdCopyBufferToImage(cb, buf, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), n, r);
-    vk_all_barrier(cb); /* the blocks loaded next go over the zeros */
+    vk_all_barrier_by(VK_BAR_TEXTURE, cb); /* the blocks loaded next go over the zeros */
     return 1;
 }
 /* t, a texture with holes in its mapping: its image cleared, then the blocks of its mapped runs loaded; loaded whole

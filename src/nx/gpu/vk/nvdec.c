@@ -168,7 +168,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     VkOwnRes* rc = ry ? surface_load(cb, p->chroma, p->ext_c) : NULL;
     int ok = rc != NULL;
     if (ok) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         /* the surfaces as rows, and a CPU picture's NV12 chroma from U and V */
         ok = p->pitch_linear ||
              (vk_bl_move(cb, &my, 0, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 0, rc->buf, 0, scratch, at_c));
@@ -178,17 +178,17 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         }
     }
     if (ok) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         /* the picture's rows over the surfaces' (pitch linear: straight into the surfaces) */
         int pl = p->pitch_linear;
         vk_copy_rows(cb, rows, at_rows, w, pl ? ry->buf : scratch, 0, ly, w, h);
         /* a media engine picture's chroma is staged as rows (semi), the interleaved one is scratch's */
         vk_copy_rows(cb, p->semi ? rows : scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw,
                      ch);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         if (!pl)
             ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
     }
     if (ok) {
         vk_own_publish(p->luma, p->ext_y, ry, 0);
