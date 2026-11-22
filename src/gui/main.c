@@ -917,7 +917,8 @@ typedef struct App {
     /* the setup (common/utilities/setup.h) in place of the menu while setup_on, a page at a time: the notices, then
        each step setup.ini has left */
     bool setup_on;
-    SnxSetup setup; /* setup.ini as it was read, a newer one's numbers kept when it is written */
+    char play_held[17]; /* the title ID a PLAY asked for while the setup shows, played once it ends (play_asked) */
+    SnxSetup setup;     /* setup.ini as it was read, a newer one's numbers kept when it is written */
     int setup_pages[SNX_SETUP_STEPS + 3], setup_count, setup_page;
     GuiChoice setup_choice; /* the page's choices, the one in focus */
     int setup_top;          /* the notice shown, one a page: the last one's OK goes on; the old files' folder */
@@ -960,6 +961,7 @@ typedef struct App {
 #ifdef SDL_PLATFORM_ANDROID
     bool hidden;     /* behind other apps: nothing is drawn, a run is still read */
     bool play_later; /* a game made ready while hidden, which opens once the menu shows */
+    bool play_due;   /* the menu came in front, as a PLAY brings it: what MainActivity holds is asked (play_take) */
     char told[340];  /* the run's notification: its step's line, its percent, when; 0 before its first */
     int told_percent;
     Uint64 told_ms;
@@ -2764,12 +2766,16 @@ static unsigned screen_mark(const App* app) {
     return (unsigned)app->editing | (unsigned)form << 1 | (unsigned)app->menu.view << 5 | (unsigned)app->setup_on << 9 |
            (unsigned)app->setup_page << 10 | (unsigned)group << 16 | (unsigned)(page + 1) << 22 | 1u << 31;
 }
+/* whether any box is over the screen: a question, a pick, a list, the text being typed */
+static bool any_box(const App* app) {
+    return app->confirm.shown || app->sizes_shown || (app->editing && app->editor.typing) || app->users_shown ||
+           app->addons_shown || app->options_shown || app->states_shown || app->cleaned_shown || app->dests_shown ||
+           app->picks_shown || app->help_shown;
+}
 /* what changed since the last frame: a screen come, whose fade starts now, a box opened or closed, whose shade does */
 static void fades_mark(App* app) {
     unsigned mark = screen_mark(app);
-    bool boxed = app->confirm.shown || app->sizes_shown || (app->editing && app->editor.typing) || app->users_shown ||
-                 app->addons_shown || app->options_shown || app->states_shown || app->cleaned_shown ||
-                 app->dests_shown || app->picks_shown || app->help_shown;
+    bool boxed = any_box(app);
     if (mark != app->screen_was && app->screen_was) app->switch_ms = SDL_max(now_ms(app), 1);
     if (boxed != app->boxed_was) app->box_ms = SDL_max(now_ms(app), 1);
     app->screen_was = mark;
@@ -15839,6 +15845,32 @@ typedef struct {
     free(own->freedreno);
     free(own->ini);
 }
+/* The game whose program, one of its collection's programs, or folder is at path, a game of a folder of its own named
+   by its title ID as the library names a Switch game's (snx_title_text): its program as Games lists it, owned, the ID
+   into id. NULL, id "", for a game whose folder no title ID names */
+static char* title_game(const char* path, char id[17]) {
+    char* folder = !path ? NULL : snx_is_dir(path) ? snx_strdup(path) : snx_dirname(path);
+    char *parent = folder ? snx_dirname(folder) : NULL, *game = NULL;
+    const char* leaf = folder ? snx_path_leaf(folder) : "";
+    SnxU64 value;
+    id[0] = 0;
+    if (parent && snx_title_parse(leaf, &value)) game = gui_folder_game(parent, leaf);
+    if (game) snprintf(id, 17, "%s", leaf);
+    free(parent);
+    free(folder);
+    return game;
+}
+/* Games' row of the game whose title ID is id (title_game), the first of its copies: -1 for none */
+static int title_row(const App* app, const char* id) {
+    char named[17];
+    for (size_t i = 0; i < app->games.count; ++i) {
+        char* game = gui_games_heading(&app->games, i) ? NULL : title_game(app->games.paths[i], named);
+        bool found = game && !strcmp(named, id);
+        free(game);
+        if (found) return (int)i;
+    }
+    return -1;
+}
 #ifdef SDL_PLATFORM_ANDROID
 /* the hand-over's file of the game whose program is game, owned */
 static char* play_handover(const char* game) {
@@ -21283,6 +21315,65 @@ static void go_tab(App* app, int tab) {
     else if (tab == GUI_TAB_SETTINGS)
         open_settings(app);
 }
+/* ---- a game asked for by its title ID from outside the menu: Android's org.scarletnx.action.PLAY, from adb or a
+   shortcut (dist/android's PlayActivity). Its row of Games plays as Games' Play key plays it, so the game activity
+   gets the arguments the menu gives that game. While the setup shows, the game waits for its end; a run on the
+   screen, a box over it or a theme edited and not saved keep it from starting, said with the ID ---- */
+[[maybe_unused]] static void play_asked(App* app, const char* id) {
+    SnxU64 value;
+    int row = -1;
+    app->play_held[0] = 0;
+    if (!snx_title_parse(id, &value))
+        snprintf(app->message, sizeof app->message, snx_tr("%s is not a title ID: 16 hex digits in capitals"), id);
+    else if (app->setup_on) { /* the setup's pages first */
+        snprintf(app->play_held, sizeof app->play_held, "%s", id);
+        snprintf(app->message, sizeof app->message, snx_tr("%s plays once the setup ends"), id);
+    } else if (app->menu.running)
+        snprintf(app->message, sizeof app->message, snx_tr("%s did not start: a run is on the screen"), id);
+    else if (any_box(app))
+        snprintf(app->message, sizeof app->message, snx_tr("%s did not start: a box is open on the screen"), id);
+    else {
+        if (app->finished) leave_run(app); /* a run's end, which its log keeps */
+        if (tab_shown(app) == GUI_TAB_GAMES)
+            list_games(app); /* a game made since is listed too */
+        else
+            go_tab(app, GUI_TAB_GAMES);
+        if (app->editing) /* a theme edited and not saved keeps its screen */
+            snprintf(app->message, sizeof app->message, snx_tr("%s did not start: the theme edited is not saved"), id);
+        else if ((row = title_row(app, id)) < 0)
+            snprintf(app->message, sizeof app->message, snx_tr("No recompiled game has the title ID %s"), id);
+    }
+    if (row < 0) {
+        gui_log("PLAY %s: %s", id, app->message);
+        return;
+    }
+    gui_log("PLAY %s: %s", id, app->games.paths[row]);
+    open_game(app, (size_t)row, true);
+}
+/* the game a PLAY asked for while the setup showed, played once it ended */
+[[maybe_unused]] static void play_held_take(App* app) {
+    char id[sizeof app->play_held];
+    if (!app->play_held[0] || app->setup_on) return;
+    snprintf(id, sizeof id, "%s", app->play_held);
+    play_asked(app, id);
+}
+#ifdef SDL_PLATFORM_ANDROID
+/* what MainActivity holds of a PLAY (its takePlay), with the menu in front: played as play_asked has it, unless a
+   game started here plays, its activity over the menu */
+static void play_take(App* app) {
+    char why[640], *id;
+    app->play_due = false;
+    id = gui_android_take_play(why, sizeof why);
+    if (!id)
+        gui_log("PLAY: %s", why);
+    else if (id[0] && app->playing) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s did not start: a game plays"), id);
+        gui_log("PLAY %s: %s", id, app->message);
+    } else if (id[0])
+        play_asked(app, id);
+    free(id);
+}
+#endif
 /* the focus on the grid's row */
 static void grid_focus(App* app, size_t row) {
     app->browser.page = 0;
@@ -22451,6 +22542,7 @@ static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
         gui_drawn_stale();                           /* the window shows nothing of the menu's yet */
         app->played = app->playing;
         app->hidden = app->playing = false;
+        app->play_due = true; /* a PLAY's new intent comes with a pause and a resume, so with this */
     }
     return true;
 }
@@ -23485,6 +23577,9 @@ int snx_gui_main(const char* self) {
     app->dump_icons.live = true; /* the dumps' icons asked on a thread of their own */
     space_start(app);            /* the footer's disk */
     splash_start(app);
+#ifdef SDL_PLATFORM_ANDROID
+    app->play_due = true; /* the PLAY that started the app, if one did */
+#endif
     while (!app->menu.quit) {
         SDL_Event e;
 #ifdef SDL_PLATFORM_ANDROID
@@ -23495,6 +23590,10 @@ int snx_gui_main(const char* self) {
         while (SDL_PollEvent(&e)) event(app, &e);
         pads_repeat(app);
         pump(app);
+#ifdef SDL_PLATFORM_ANDROID
+        if (app->play_due && !app->hidden) play_take(app); /* after pump, which reads how the game before ended */
+        play_held_take(app);
+#endif
 #ifdef SDL_PLATFORM_ANDROID
         if (!app->hidden)
 #endif

@@ -145,10 +145,7 @@ public class RecompileService extends Service {
     private Notification notification(boolean going) {
         Notification.Builder note =
             Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        Intent menu = new Intent(this, MainActivity.class)
-                          .setAction(Intent.ACTION_MAIN)
-                          .addCategory(Intent.CATEGORY_LAUNCHER)
-                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Intent menu = MainActivity.fromIcon(this);
         note.setSmallIcon(R.drawable.notification)
             .setContentTitle(game)
             .setContentText(going ? step : result)

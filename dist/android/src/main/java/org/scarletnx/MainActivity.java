@@ -34,6 +34,8 @@ public class MainActivity extends SDLActivity {
     private static final int ASKED_NOTIFICATIONS = 0x10000, ASKED_BATTERY = 0x10001, PICKED_FOLDER = 0x10002;
     /** the state: line's watch, once a process (stateWatch) */
     private static DeviceState state;
+    /** the title ID a PLAY asked for (PlayActivity), until the menu takes it (takePlay) */
+    private String asked;
 
     @Override
     protected String[] getLibraries() {
@@ -43,6 +45,8 @@ public class MainActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // a menu Android makes again from its saved state has its first intent again: its PLAY was taken then
+        if (state == null) asked(getIntent());
         // dumps and keys are read by their path: all files from Android 11, the shared storage before it
         if (Build.VERSION.SDK_INT >= 30) {
             if (!Environment.isExternalStorageManager())
@@ -56,6 +60,38 @@ public class MainActivity extends SDLActivity {
     /** src/gui/android.c: the runtime with these arguments, in the game activity's process */
     public void play(String[] args) {
         startActivity(new Intent(this, GameActivity.class).putExtra("args", args));
+    }
+
+    /** the menu as the app's icon starts it, the intent Android finds its task by: started so (PlayActivity, the
+        notification's tap), it brings that task back as the icon does, never a second menu over a game, which SDL ends
+        the app for */
+    static Intent fromIcon(Context context) {
+        return new Intent(context, MainActivity.class)
+            .setAction(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+
+    /** a PLAY of the menu in front (PlayActivity): it pauses and resumes the menu, which then asks (takePlay) */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        asked(intent);
+    }
+
+    /** the title ID intent asks to play, kept for the menu. None from the recent apps' list, which starts a task that
+        has gone again with the intent it started with: that PLAY was played then */
+    private synchronized void asked(Intent intent) {
+        String id = intent != null ? intent.getStringExtra(PlayActivity.TITLE_ID) : null;
+        if (id != null && (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) asked = id;
+    }
+
+    /** src/gui/android.c: the title ID a PLAY asked for since the last call, as UTF-8; empty for none. The menu asks as
+        it starts and each time it comes in front */
+    public synchronized byte[] takePlay() {
+        byte[] id = asked != null ? asked.getBytes(StandardCharsets.UTF_8) : new byte[0];
+        asked = null;
+        return id;
     }
 
     /** src/gui/android.c: Back on the menu's first screen, as an app's first screen takes it: the app goes behind */

@@ -56,6 +56,18 @@ recompiles on the phone, then the game opens.
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
   settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
   its window is made anew when it comes back.
+- **A game by its title ID**: the intent `org.scarletnx.action.PLAY` (`PlayActivity`), its extra `title_id` the
+  game's title ID, plays the recompiled game whose folder that ID names (`recompiled/<title ID>/`) as *Play* on its
+  row of *Games* does, with the updates, settings and GPU driver it has there. From a computer:
+
+  ```sh
+  adb shell am start -a org.scarletnx.action.PLAY --es title_id 0100ABCD00010000
+  ```
+
+  The menu comes in front and starts the game. An ID no recompiled game has, or one that is no title ID (16 hex
+  digits), is said with that ID; while the setup shows, the game starts once it ends, and a run on the screen or a box
+  over it keeps it from starting, said the same way. While a game plays, that game comes back in front, and a toast
+  names the one asked for.
 - **GPU drivers**: on arm64 with an Adreno, a Mali or an Xclipse GPU, from Android 9, a game can run with a Vulkan
   driver package the player added (Turnip's releases for an Adreno and PanVK's for a Mali, as Eden takes them;
   [RADV's port to Xclipse](https://github.com/JimVulkan/radv-xclipse), from Android 14) in place of the system's,
@@ -168,7 +180,7 @@ gradle -p dist/android testDebugUnitTest -Pscarletnx.stage=$HOME/android-build/s
 
 JUnit alone checks what needs nothing of Android: the setting a maker's phone gets, that each method the native code
 calls by name is in the app and that each native method is in the native code. Robolectric runs the rest on Android's
-own classes: the data folder's provider, what the menu hands the Files app and the share sheet, a game's arguments and
-the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
+own classes: the data folder's provider, what the menu hands the Files app and the share sheet, a game's arguments,
+what a PLAY hands the menu and the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
 210 MB, into `~/.m2`). The CI runs the tests at the end of its Android job: one that fails fails the job, with the APKs
 already uploaded.
