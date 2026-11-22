@@ -253,14 +253,36 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
     }
     return ext;
 }
-/* async_pipelines skips a draw whose pipeline a worker still makes, and a later frame draws it only where the game
-   draws the target again. A target drawn once and kept (a menu's layers, sampled after) kept the hole for good: a
-   racing game's character select lost its background, its text and its cards' fill. So a draw is skipped only
-   into targets the frame before drew too (redraw.h); one into any other waits for its pipeline, as without it */
-static int targets_redrawn(Surf* const* rt, u32 n, const Surf* zt) {
-    for (u32 i = 0; i < n; i++)
-        if (rt[i] && !snx_vk_redrawn(&rt[i]->redraw, g_vk_present)) return 0;
-    return !zt || snx_vk_redrawn(&zt->redraw, g_vk_present);
+/* async_pipelines skips a draw whose pipeline a worker still makes, and a skipped draw comes back only where a later
+   frame draws the target over again. A target drawn once and kept (a menu's layers, sampled after) kept the hole for
+   good: a racing game's character select lost its background, its text and its cards' fill. So a draw is skipped only
+   into targets the game regenerates every frame (redraw.h): drawn SNX_VK_REDRAW_FRAMES frames in a row and cleared
+   whole this frame, a color target also where the pass's depth target was (a scene drawn over a cleared depth). Into
+   any other the draw waits for its pipeline, as without async_pipelines, and so does a pass with no target */
+/* a test's: on, every target counts as one the game regenerates every frame (vk_async_every) */
+static int g_async_every;
+void vk_async_every(int on) { g_async_every = on; }
+static int target_skippable(const Surf* s, int depth_cleared) {
+    if (g_async_every) return 1;
+    return snx_vk_redraw_run(&s->redraw, g_vk_present) >= SNX_VK_REDRAW_FRAMES &&
+           (depth_cleared || snx_vk_redraw_cleared_now(&s->redraw, g_vk_present));
+}
+static int targets_skippable(Surf* const* rt, u32 n, const Surf* zt) {
+    int any = zt != NULL, depth_cleared = zt && snx_vk_redraw_cleared_now(&zt->redraw, g_vk_present);
+    if (zt && !target_skippable(zt, 0)) return 0;
+    for (u32 i = 0; i < n; i++) {
+        if (!rt[i]) continue;
+        any = 1;
+        if (!target_skippable(rt[i], depth_cleared)) return 0;
+    }
+    return any;
+}
+/* what the recording thread was last told (rec_async_pass): told again only where a draw's answer differs */
+static int g_async_told;
+static void async_tell(int may_skip) {
+    if (may_skip == g_async_told) return;
+    rec_async_pass(vk_cmd(), may_skip);
+    g_async_told = may_skip;
 }
 
 /* opens a rendering pass on these targets (begun at its first command: rp_record), or keeps the open one if it is the
@@ -287,7 +309,6 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     for (u32 i = 0; i < n; i++)
         if (rt[i]) snx_vk_redraw_seen(&rt[i]->redraw, g_vk_present);
     if (zt) snx_vk_redraw_seen(&zt->redraw, g_vk_present);
-    rec_async_pass(cb, targets_redrawn(rt, n, zt));
     u32 loops = 0;
     VkRenderingAttachmentInfo ca[8];
     VkExtent2D ext = {~0u, ~0u};
@@ -397,8 +418,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
         g_rp.layers == layers)
         return 1;
     vk_render_end();
-    /* no attachment: what its draws keep is only what they store, which no target tells, so they wait */
-    rec_async_pass(vk_cmd(), 0);
+    async_tell(0); /* no attachment: what its draws keep is only what they store, which no target tells */
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
     vk_predraw_pass_begin(vk_cmd());
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
@@ -900,6 +920,10 @@ static void clear_targets(const DsState* ds, const DrawClear* c, const DrawOwner
        or a predicated one (a load op clears the render area, always), or a color clear of some components only */
     int whole = rect.rect.offset.x == 0 && rect.rect.offset.y == 0 && rect.rect.extent.width == g_rp.ext.width &&
                 rect.rect.extent.height == g_rp.ext.height;
+    if (whole && !o->pred && layers == 1) { /* the frame regenerates what it clears whole (targets_skippable) */
+        if (color_clear) snx_vk_redraw_cleared(&g_rp.rt[slot]->redraw, g_vk_present);
+        if (za & VK_IMAGE_ASPECT_DEPTH_BIT) snx_vk_redraw_cleared(&g_rp.zt->redraw, g_vk_present);
+    }
     if (!g_rp.begun && !o->pred && layers == 1 && whole && (!color || color_clear) && (color_clear || za)) {
         if (color_clear) {
             VkRenderingAttachmentInfo* a = &g_rp.ca[slot];
@@ -6728,7 +6752,7 @@ retry:
        stays 0 below when it is 0 here). Not a draw that captures transform feedback: its buffers' counters go on
        from what the draws before it bound */
     if (kept && !check && g_settings.async_pipelines && g_vk.has_feedback_dynamic && !edges && !xfb_on &&
-        targets_redrawn(rt, n, zt) && ke->k.topo_class == (mesh ? 0 : topology_class(topology_vk(topology))) &&
+        targets_skippable(rt, n, zt) && ke->k.topo_class == (mesh ? 0 : topology_class(topology_vk(topology))) &&
         ke->k.polygon == polygon_mode(&ds->rkey)) {
         int pending;
         (void)vk_pipeline_now(ke->pipe, &pending);
@@ -7445,6 +7469,7 @@ retry:
                                                   bound) &&
                                   feedback_order(fb, writes, strict_feedback);
     g_rp.rate_want = RATE_KEEP;
+    if (begun) async_tell(!programmable_blend && targets_skippable(rt, n, zt));
     if (!begun) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
