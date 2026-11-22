@@ -116,6 +116,7 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             if (link->sh_offset > input->size || link->sh_size > input->size - link->sh_offset)
                 return snx_link_fail(error, error_size, "%s: truncated section%s", input->name, "");
             o->strtab = (const char*)input->data + link->sh_offset;
+            o->strtab_size = link->sh_size;
         }
         if (!(s->sh_flags & SHF_ALLOC)) continue;
         if (s->sh_flags & SHF_TLS)
@@ -144,6 +145,14 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
         unsigned section = o->syms[j].st_shndx;
         int bind = ELF64_ST_BIND(o->syms[j].st_info);
         char what[80];
+        /* its name inside the linked string table and ended there: each reader takes it with strlen or strcmp */
+        if (ELF64_ST_TYPE(o->syms[j].st_info) != STT_SECTION &&
+            (o->syms[j].st_name >= o->strtab_size ||
+             !memchr(o->strtab + o->syms[j].st_name, 0, o->strtab_size - o->syms[j].st_name))) {
+            snprintf(what, sizeof(what), "symbol %zu's name at %u passes its %zu-byte string table", j,
+                     (unsigned)o->syms[j].st_name, o->strtab_size);
+            return snx_link_fail(error, error_size, "%s: %s", input->name, what);
+        }
         if (section < o->eh->e_shnum || section == SHN_ABS ||
             (section == SHN_COMMON && (bind == STB_GLOBAL || bind == STB_WEAK)))
             continue;

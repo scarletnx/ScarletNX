@@ -248,6 +248,7 @@ typedef struct {
     const Elf64_Sym* syms;
     size_t nsyms;
     const char* strtab;
+    size_t strtab_size;
     int* kind;          /* per section: SNX_ELF_*, -1 when not loaded */
     uint64_t* address;  /* per section: final address */
     uint64_t* position; /* per section: offset inside its kind */
