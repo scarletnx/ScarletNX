@@ -2385,6 +2385,13 @@ static void note_sent(int sig, const siginfo_t* si) {
 /* SIGSEGV or SIGBUS of a write that may be the freeze's: a protection fault (Darwin reports one as SIGBUS) */
 static int access_fault(int sig, const siginfo_t* si) { return sig == SIGBUS || si->si_code == SEGV_ACCERR; }
 
+#if defined(__PROSPERO__)
+#include <stddef.h>
+/* the console puts 48 bytes between uc_sigmask and uc_mcontext that the payload SDK's FreeBSD header lacks: with it,
+   context_write's error code and context_pc's rip would be read 48 bytes off */
+static_assert(offsetof(ucontext_t, uc_mcontext.mc_rip) == 0xe0,
+              "the PS5's ucontext layout: build with the payload SDK's PS5 fork, whose sys/_ucontext.h has it");
+#endif
 /* whether the fault the context holds was a write: 0 where the system doesn't tell */
 static int context_write(void* ctx) {
     ucontext_t* uc = (ucontext_t*)ctx;
