@@ -55,6 +55,76 @@ static int check_owned_readback(void) {
     return 0;
 }
 
+/* The barriers of a landing name the stages that write and read buffers (vk_buffer_stages), not ALL_COMMANDS, which
+   also waits for the targets' color and depth output: a wrapper of vkCmdPipelineBarrier2 looks at each barrier recorded
+   while an owned range lands, and the bytes land as before. Before, the landing's first barrier waited for every
+   stage */
+static _Atomic u32 g_bs_on, g_bs_seen, g_bs_wide;
+static PFN_vkCmdPipelineBarrier2 g_bs_real;
+#define BS_WIDE                                                                                                        \
+    (VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |                                     \
+     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |                  \
+     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)
+static VKAPI_ATTR void VKAPI_CALL bs_barrier(VkCommandBuffer cb, const VkDependencyInfo* d) {
+    if (atomic_load_explicit(&g_bs_on, memory_order_acquire))
+        for (u32 i = 0; i < d->memoryBarrierCount; i++) {
+            atomic_fetch_add_explicit(&g_bs_seen, 1, memory_order_relaxed);
+            if (d->pMemoryBarriers[i].srcStageMask & BS_WIDE)
+                atomic_fetch_add_explicit(&g_bs_wide, 1, memory_order_relaxed);
+        }
+    g_bs_real(cb, d);
+}
+static int check_owned_landing_stages(void) {
+    const u64 cpu = HEAP_BASE + 0x708000, gva = 0xa008000;
+    const VkPipelineStageFlags2 s = vk_buffer_stages();
+    CHECK(!(s & BS_WIDE) && (s & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) && (s & VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT));
+    CHECK((s & VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT) && (s & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT));
+    CHECK((s & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) && (s & VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT));
+    CHECK(!(s & VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT) == !g_vk.has_xfb);
+    if (!own_traps()) {
+        puts("landing barriers: needs traps, skipped");
+        return 0;
+    }
+    gmmu_map(gva, cpu, 0x1000);
+    vk_lock();
+    vk_finish();
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
+    CHECK(owner);
+    memset(GP(cpu), 0x11, 0x1000);
+    VkBuffer upload;
+    u64 at;
+    u8* data = vk_stage_upload(256, 16, &upload, &at);
+    CHECK(data);
+    memset(data, 0x33, 256);
+    VkBufferCopy copy = {at, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), upload, owner->buf, 1, &copy);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_wait_submit(vk_last_submit());
+    vk_own_publish_owned(cpu, 256, owner, 0);
+    CHECK(own_lookup(cpu, 256, NULL, 0) == 1);
+    vk_finish(); /* the recording thread idle: it reads the function pointer after the ring hands it work */
+    g_bs_real = vkCmdPipelineBarrier2;
+    vkCmdPipelineBarrier2 = bs_barrier;
+    atomic_store_explicit(&g_bs_on, 1, memory_order_release);
+    own_acquire(cpu, 256);
+    atomic_store_explicit(&g_bs_on, 0, memory_order_release);
+    vk_finish();
+    vkCmdPipelineBarrier2 = g_bs_real;
+    const u32 seen = atomic_load_explicit(&g_bs_seen, memory_order_relaxed),
+              wide = atomic_load_explicit(&g_bs_wide, memory_order_relaxed);
+    if (!seen || wide)
+        fprintf(stderr, "landing barriers: %u recorded, %u of them waiting for every stage or a target's output\n",
+                seen, wide);
+    CHECK(seen && !wide);
+    CHECK(own_lookup(cpu, 256, NULL, 0) == 0);
+    for (u32 i = 0; i < 256; i++) CHECK(GP(cpu)[i] == 0x33);
+    for (u32 i = 256; i < 4096; i++) CHECK(GP(cpu)[i] == 0x11);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("landing barriers: an owned range lands with barriers on the stages that touch buffers");
+    return 0;
+}
+
 static int owned_test_fill(VkBuffer dst, u64 off, u32 len, u8 value) {
     VkBuffer src;
     u64 at;

@@ -1898,6 +1898,11 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 int vk_guest_owned_by(u64 gva, u64 size, u64 serial);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
+/* The stages that read or write buffers: indirect arguments, vertex and index input, every shader, the transfers, and
+   transform feedback, conditional rendering and indirect copies where the device has them. A barrier between buffers'
+   writers and readers names these, not ALL_COMMANDS, which also waits for the color and depth targets' output (images
+   alone write there, behind barriers of their own) */
+VkPipelineStageFlags2 vk_buffer_stages(void);
 /* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row; a negative
    pitch steps down from row 0's offset */
 void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, i64 src_pitch, VkBuffer dst, u64 dst_at, i64 dst_pitch,

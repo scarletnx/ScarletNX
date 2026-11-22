@@ -89,6 +89,8 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { return (void)since, (void)a,
 u64 gpu_mem_generation(void) { return 1; }
 void vk_submit_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
 void vk_land_through(u64 value) { (void)value; }
+/* owned.c's: the stages a buffer barrier names */
+VkPipelineStageFlags2 vk_buffer_stages(void) { return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; }
 int own_hash(u64 addr, u64 size, u64* h) { return (void)addr, (void)size, (void)h, 0; }
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { return (void)addr, (void)size, (void)out, (void)max, 0; }
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) { return (void)addr, (void)size, (void)dst, (void)out, (void)max, 0; }

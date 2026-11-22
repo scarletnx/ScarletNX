@@ -1495,7 +1495,7 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
     c.dst = dst;
     if (!gap) { /* into a buffer the draws recorded so far read in place: after all of their work, not the writers' alone */
         vk_render_end();
-        copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
+        copy_barrier(vk_buffer_stages(), out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
                      VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
         c.started = 1;
     }
@@ -1643,7 +1643,7 @@ static GfxOut* out_absorb(GfxOut* h) {
     memset(&c, 0, sizeof c);
     c.dst = h->buf;
     vk_render_end();
-    copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
+    copy_barrier(vk_buffer_stages(), out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     c.started = 1;
     for (u32 i = 0; i < n; i++) {
