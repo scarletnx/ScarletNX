@@ -2065,6 +2065,7 @@ static unsigned host_features(void);
 int snx_x64_available(void) {
     return (host_features() & X64_BASELINE) == X64_BASELINE;
 }
+unsigned snx_x64_features(void) { return host_features(); }
 
 /* CPUID's BMI1, BMI2 and LZCNT (ABM) */
 static unsigned host_features(void) {
@@ -2159,6 +2160,7 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
 
 #else
 int snx_x64_available(void) { return 0; }
+unsigned snx_x64_features(void) { return 0; }
 /* no x86-64 back end in this build */
 int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options, unsigned char* made,
                    unsigned char** object, size_t* size, char* error, size_t error_size) {

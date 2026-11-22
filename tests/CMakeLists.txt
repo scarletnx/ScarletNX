@@ -3394,6 +3394,16 @@ if(NOT WIN32)
         add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
         add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool 3 --states 32)
         set_tests_properties(sail_x64 sail_x64_spill PROPERTIES TIMEOUT 600)
+        # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
+        # same results from random states, the A32 instructions it makes alone and in rows; again with three host
+        # registers (the values spill) and without BMI1, BMI2 and LZCNT
+        add_executable(snx-test-arm-x64 arm_x64.c)
+        snx_test_target(snx-test-arm-x64 gnu23)
+        target_link_libraries(snx-test-arm-x64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+        add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
+        add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool 3 --blocks 2000 --seed 2)
+        add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
+        set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endif()
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
