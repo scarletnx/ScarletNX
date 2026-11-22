@@ -853,26 +853,22 @@ void resources_text(char* out, size_t size) {
 /* the guest's pages in files (guest_files), before the game allocates: the disk must hold the game's memory and 2 GiB
    more, as the system writes the changed pages out */
 static void guest_files(void) {
-    char* dir;
-    SnxU64 free_bytes, need = mem_total() + (2ull << 30);
     if (!g_settings.guest_files) {
         LOG("memory: guest pages are anonymous (guest_files=0)\n");
         return;
     }
-    dir = snx_temp_root();
+    char* dir = snx_temp_root();
     if (!dir) {
         LOG("memory: guest pages are anonymous: no temporary folder\n");
         return;
     }
-    free_bytes = snx_free_space(dir);
-    if (free_bytes < need)
-        LOG("memory: guest pages are anonymous: %llu MiB free on the disk of %s, %llu needed\n",
-            (unsigned long long)(free_bytes >> 20), dir, (unsigned long long)(need >> 20));
+    char room[1024];
+    if (mem_files_room(dir, mem_total() + (2ull << 30), room, sizeof room))
+        LOG("memory: guest pages are anonymous: %s\n", room);
     else if (mem_files_on(dir))
         LOG("memory: guest pages are anonymous: their files in %s failed: %s\n", dir, strerror(errno));
     else
-        LOG("memory: guest pages in unlinked files in %s (%llu MiB of disk free)\n", dir,
-            (unsigned long long)(free_bytes >> 20));
+        LOG("memory: guest pages in unlinked files in %s (%s)\n", dir, room);
     free(dir);
 }
 /* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU

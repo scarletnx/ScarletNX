@@ -1216,6 +1216,16 @@ int mem_files_on(const char* dir) {
     mem_unlock();
     return r;
 }
+int mem_files_room(const char* dir, u64 need, char* out, size_t size) {
+    SnxU64 free_bytes = 0, total = 0;
+    if (snx_disk_room(dir, &free_bytes, &total)) {
+        snprintf(out, size, "the free space on the disk of %s could not be read: %s", dir, strerror(errno));
+        return -1;
+    }
+    snprintf(out, size, "%llu MiB free on the disk of %s, %llu needed", (unsigned long long)(free_bytes >> 20), dir,
+             (unsigned long long)(need >> 20));
+    return free_bytes < need ? -1 : 0;
+}
 
 /* ============================================================ mapping */
 int mem_map(u64 addr, u64 size, u32 state, u32 perm) {

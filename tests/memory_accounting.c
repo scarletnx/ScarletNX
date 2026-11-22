@@ -3,6 +3,7 @@
 /* Exercise the production memory SVCs and block list without game files. The POSIX backing is sparse, with
    injectable commit failures. Thread/handle/GPU services are stubs, not the code under test. */
 #include "nx/memory/own.h"
+#include "common/utilities/common.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
@@ -174,6 +175,18 @@ void plat_vm_decommit(u8* p, u64 size) {
 int plat_vm_files(u8* base, u64 size, const char* dir) {
     (void)base, (void)size, (void)dir;
     return -1;
+}
+/* the disk the guest files would take (mem_files_room): its free bytes, or the error that reading them gives */
+static SnxU64 disk_free;
+static int disk_error;
+int snx_disk_room(const char* path, SnxU64* free_bytes, SnxU64* total) {
+    (void)path;
+    if (disk_error) {
+        errno = disk_error;
+        return -1;
+    }
+    *free_bytes = *total = disk_free;
+    return 0;
 }
 /* no alias pool here: views are copies (memory_alias tests the pool) */
 int plat_alias_init(u64 size) {
@@ -976,6 +989,20 @@ static void test_ladder(void) {
    MapPhysicalMemory), so the region is 16 GiB. GetInfo names each region as the layout lays it out, a physical mapping
    goes up to the alias region's last page and not past it, and the stack region keeps a free GiB before the kernel's
    pages */
+/* the disk check before the guest files (mem_files_room): the free space against the need, or the error of reading it,
+   never a free space nobody read */
+static void test_files_room(void) {
+    char out[256], want[256];
+    disk_error = ENOENT;
+    snprintf(want, sizeof want, "the free space on the disk of /gone could not be read: %s", strerror(ENOENT));
+    CHECK(mem_files_room("/gone", 1, out, sizeof out) == -1 && !strcmp(out, want));
+    disk_error = 0;
+    disk_free = 3ull << 30;
+    CHECK(mem_files_room("/tmp", 4ull << 30, out, sizeof out) == -1 &&
+          !strcmp(out, "3072 MiB free on the disk of /tmp, 4096 needed"));
+    CHECK(mem_files_room("/tmp", 2ull << 30, out, sizeof out) == 0 &&
+          !strcmp(out, "3072 MiB free on the disk of /tmp, 2048 needed"));
+}
 static void test_alias_layouts(void) {
     static const u64 sizes[] = {32, 48}; /* GiB */
     for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
@@ -1190,6 +1217,7 @@ int main(void) {
     }
     test_ladder();
     test_alias_layouts();
+    test_files_room();
     /* a system that gives less than 128 GiB: the largest tier it gives, in a smaller layout of that size */
     host_page = (u64)sysconf(_SC_PAGESIZE);
     refuse_above = 24ull << 30;

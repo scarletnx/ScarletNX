@@ -142,6 +142,9 @@ void mem_init(void);
 /* the guest's pages in unlinked files of 1 GiB in dir (plat_vm_files), before the game commits any: 0, or -1 with
    errno (EBUSY once the game has memory, ENOTSUP under NCE) */
 int mem_files_on(const char* dir);
+/* whether the disk of dir has need bytes free for those files: 0, or -1; out says the free space and the need, or why
+   the free space could not be read */
+int mem_files_room(const char* dir, u64 need, char* out, size_t size);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0, MEM_BADSTATE when it isn't free, MEM_NOMEM */
 int mem_unmap(u64 addr, u64 size);
 /* Physical memory in the alias region, and the heap, under the memory lock against one combined budget in bytes.
