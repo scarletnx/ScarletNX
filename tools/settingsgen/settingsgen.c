@@ -47,6 +47,7 @@ typedef struct {
     const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
     int slider;  /* drawn on a slider (ini.h's INI_SLIDER): an int with words */
+    int perf;    /* changes how fast the game runs where the player can't see it (ini.h's INI_PERF) */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
        character), the setter's argument type (LLVMBool, int or unsigned) */
@@ -589,6 +590,8 @@ static void read_spec(const char* path) {
             s->recompile = 1;
         } else if (!strcmp(word, "slider")) {
             s->slider = 1;
+        } else if (!strcmp(word, "perf")) {
+            s->perf = 1;
         } else if (!strcmp(word, "set")) {
             s->set = dup(rest);
         } else if (!strcmp(word, "each")) {
@@ -614,6 +617,13 @@ static void read_spec(const char* path) {
             fail(s->line, "%s: recompile takes a game's setting of one value, without default-if or set", s->name);
         if (s->slider && (s->type != T_INT || !s->words))
             fail(s->line, "%s: slider takes an int with words, the steps its slider shows", s->name);
+        if (s->perf && tables[s->table].scope == S_LAUNCHER)
+            fail(s->line,
+                 "%s: perf takes a game's or the recompile's setting: a launcher table's never reaches the game",
+                 s->name);
+        /* a once row's default is NULL (out_row): ini_at_default takes an empty text for it, and nothing else */
+        if (s->perf && s->once && (s->type != T_TEXT || *s->def))
+            fail(s->line, "%s: perf takes a once setting only as a text whose default is empty", s->name);
     }
 }
 
@@ -1144,6 +1154,8 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         if (s->startup) at = snprintf(flags, sizeof flags, "INI_STARTUP");
         if (s->in_game) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_IN_GAME", at ? " | " : "");
         if (s->slider) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_SLIDER", at ? " | " : "");
+        if (s->perf || scope_of_setting(s) == S_VULKAN || scope_of_setting(s) == S_LLVM)
+            at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PERF", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);
         if (s->needs) {
             char* u = upper(s->needs);
