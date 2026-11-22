@@ -1536,24 +1536,23 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
         }
         at = hi;
     }
-    /* the runs of pool pages, in order */
+    /* the runs of pool pages, in order: past max they are counted, not stored, so the caller can ask again with room
+       for all of them */
+    MemPoolRun last = {0};
     for (at = a; at < end;) {
         const MemBlock* b = &g_blk[blk_index_nl(at)];
         u64 hi = blk_end(b) < end ? blk_end(b) : end, off = b->pool - 1 + (at - b->addr);
-        if (*n && runs[*n - 1].addr + runs[*n - 1].size == at && runs[*n - 1].pool + runs[*n - 1].size == off)
-            runs[*n - 1].size += hi - at;
-        else if (*n == max) {
-            r = -1;
-            goto out;
+        if (*n && last.addr + last.size == at && last.pool + last.size == off) {
+            last.size += hi - at;
+            if (*n <= max) runs[*n - 1].size = last.size;
         } else {
-            runs[*n].addr = at;
-            runs[*n].size = hi - at;
-            runs[*n].pool = off;
+            last = (MemPoolRun){.addr = at, .size = hi - at, .pool = off};
+            if (*n < max) runs[*n] = last;
             ++*n;
         }
         at = hi;
     }
-    r = 0;
+    r = *n > max ? -1 : 0;
 out:
     mem_unlock();
     return r;

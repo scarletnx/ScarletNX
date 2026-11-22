@@ -228,15 +228,14 @@ static void land_log(const char* const* by) {
     static u64 bytes_was[OWN_BY_N], wait_was[OWN_BY_N], copy_was[OWN_BY_N], fill_was[OWN_BY_N];
     u64 bytes[OWN_BY_N], wait[OWN_BY_N], copy[OWN_BY_N], fill[OWN_BY_N];
     own_land_times(bytes, wait, copy, fill);
-    static u64 begins_was, refused_was, refused_bytes_was, refused_runs_was;
-    u64 begins, refused, refused_bytes, refused_runs;
-    own_begin_stats(&begins, &refused, &refused_bytes, &refused_runs);
-    if (refused != refused_was)
-        LOG("vulkan: ownership refused for %llu of %llu publishes (%.2f MB), %llu of them only for the count of runs\n",
+    static u64 begins_was, refused_was, refused_bytes_was, many_runs_was;
+    u64 begins, refused, refused_bytes, many_runs;
+    own_begin_stats(&begins, &refused, &refused_bytes, &many_runs);
+    if (refused != refused_was || many_runs != many_runs_was)
+        LOG("vulkan: ownership refused for %llu of %llu publishes (%.2f MB), %llu owned in more than 16 runs\n",
             (unsigned long long)(refused - refused_was), (unsigned long long)(begins - begins_was),
-            (double)(refused_bytes - refused_bytes_was) / 1048576.0,
-            (unsigned long long)(refused_runs - refused_runs_was));
-    begins_was = begins, refused_was = refused, refused_bytes_was = refused_bytes, refused_runs_was = refused_runs;
+            (double)(refused_bytes - refused_bytes_was) / 1048576.0, (unsigned long long)(many_runs - many_runs_was));
+    begins_was = begins, refused_was = refused, refused_bytes_was = refused_bytes, many_runs_was = many_runs;
     vk_lock();
     for (u32 k = 0; k < VK_OWN_BY_N; k++) {
         u64 un = atomic_exchange_explicit(&g_owned.unread[k], 0, memory_order_relaxed),
