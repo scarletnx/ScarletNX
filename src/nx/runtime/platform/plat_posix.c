@@ -1335,7 +1335,25 @@ void plat_vm_decommit(u8* p, u64 size) {
             u64 off;
             plat_vm_files_slot(p + done, &fd, &off);
             len = g_files.slot - off < size - done ? g_files.slot - off : size - done;
-            if (!files_punch(fd, off, len)) continue;
+            /* the hole leaves a wired page (a GPU's import of it, uma.c) in the file's cache with its bytes, which its
+               next commit reads: MS_INVALIDATE drops the cached pages, and refuses (EBUSY) where one is wired; then
+               page by page, a wired one zeroed in place */
+            if (!files_punch(fd, off, len)) {
+                if (!msync(p + done, (size_t)len, MS_INVALIDATE)) continue;
+                const u64 page = (u64)sysconf(_SC_PAGESIZE);
+                for (u64 at = done; at < done + len; at += page) {
+                    if (!msync(p + at, (size_t)page, MS_INVALIDATE)) continue;
+                    if (errno != EBUSY)
+                        WARN_LIMIT(4,
+                                   "memory: a page of the game's memory files was freed but its cache not dropped "
+                                   "(error %d): zeroed in place\n",
+                                   errno);
+                    if (mprotect(p + at, (size_t)page, PROT_READ | PROT_WRITE))
+                        fatal("Could not zero a page of the game's memory files (error %d)", errno);
+                    memset(p + at, 0, (size_t)page);
+                }
+                continue;
+            }
             /* the range must still read zero at its next commit: zeroed in place, its blocks kept */
             WARN_LIMIT(4, "memory: could not free %llu KiB of the game's memory files (error %d): zeroed in place\n",
                        (unsigned long long)(len >> 10), errno);
