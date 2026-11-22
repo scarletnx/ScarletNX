@@ -1073,6 +1073,22 @@ static void test_guest_files(const char* dir) {
         CHECK(a[page] == 0x5A, "the guest page is not the file's page");
         munmap(view, (size_t)page);
     }
+    /* a page the GPU imported (VK_EXT_external_memory_host) stays wired while mem.c decommits it, until the import
+       goes after the decommit (uma.c's pages_replaced, then vk_uma_mapping_end); mlock wires it as the import does.
+       Committed again, it reads zero all the same */
+    u8* w = p + 8 * page;
+    u8 byte = 0xFF;
+    CHECK(!plat_vm_commit(w, page), "commit the page to wire");
+    memset(w, 0xEE, (size_t)page);
+    int wired = !mlock(w, (size_t)page);
+    if (!wired) printf("mlock of a guest file's page: %s\n", strerror(errno));
+    CHECK(wired, "the page could not be wired");
+    plat_vm_decommit(w, page);
+    if (wired) munlock(w, (size_t)page);
+    CHECK(!plat_vm_commit(w, page), "commit the wired page again");
+    CHECK(w[0] == 0 && w[page - 1] == 0, "a page wired through its decommit kept its bytes");
+    CHECK(plat_vm_files_slot(w, &fd, &off) && pread(fd, &byte, 1, (off_t)off) == 1 && byte == 0,
+          "the file kept the bytes of a page wired through its decommit");
     /* a reservation past 64 GiB takes slots of 2 GiB, so its descriptors stay within 64 */
     u64 big = 65 * slot;
     u8* q = plat_vm_reserve(big);
