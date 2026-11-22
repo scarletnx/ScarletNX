@@ -1511,8 +1511,9 @@ static int host_module(void) {
 #endif
 
 /* An object no compiler wrote (a cached one a disk damaged): a section whose offset plus its size wraps past 2^64 to
-   inside the file, a symbol in a section the object has not, a section header table whose offset wraps, and a string
-   table a symbol table links whose range passes the file, are refused by snx_elf_parse, which every reader of its
+   inside the file, a symbol in a section the object has not, a section header table whose offset wraps, a string
+   table a symbol table links whose range passes the file, and a symbol's name past that table or not ended in it, are
+   refused by snx_elf_parse, which every reader of its
    sections and of its symbols' addresses then relies on. The object is a null section, a symbol table of two symbols
    and its string table */
 static void malformed_objects(void) {
@@ -1537,19 +1538,23 @@ static void malformed_objects(void) {
     whole.sections[2] = (Elf64_Shdr){
         .sh_type = SHT_STRTAB, .sh_offset = offsetof(typeof(whole), strings), .sh_size = sizeof(whole.strings)};
     whole.symbols[1] = (Elf64_Sym){.st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT), .st_shndx = 2};
-    for (unsigned kind = 0; kind < 6; ++kind) {
+    for (unsigned kind = 0; kind < 8; ++kind) {
         static const char* const names[] = {"a whole object",
                                             "a section that wraps past 2^64",
                                             "a symbol in section 8 of 3",
                                             "a local common symbol",
                                             "a section header table that wraps past 2^64",
-                                            "a linked string table whose range passes the file"};
+                                            "a linked string table whose range passes the file",
+                                            "a symbol's name past its string table",
+                                            "a symbol's name not ended in its string table"};
         static const char* const wants[] = {"",
                                             "truncated section",
                                             "symbol 1 is in section 8 of 3",
                                             "symbol 1 is in section 65522 of 3",
                                             "not an x86-64",
-                                            "truncated section"};
+                                            "truncated section",
+                                            "symbol 1's name at 8 passes its 8-byte string table",
+                                            "symbol 1's name at 1 passes its 8-byte string table"};
         unsigned machine = 0, abi = 0;
         int rc;
         image = whole;
@@ -1559,6 +1564,8 @@ static void malformed_objects(void) {
         if (kind == 4) image.header.e_shoff = UINT64_MAX - 0x40;
         /* its own check skips a section that holds no bytes, so only the symbol table's check of its names can see it */
         if (kind == 5) image.sections[2].sh_type = SHT_NOBITS, image.sections[2].sh_size = UINT64_MAX;
+        if (kind == 6) image.symbols[1].st_name = 8;
+        if (kind == 7) memset(image.strings + 1, 'a', sizeof(image.strings) - 1), image.symbols[1].st_name = 1;
         error[0] = 0;
         rc = snx_elf_parse(&o, &input, &machine, &abi, error, sizeof(error));
         if ((rc != 0) != (kind != 0) || !strstr(error, wants[kind])) {
