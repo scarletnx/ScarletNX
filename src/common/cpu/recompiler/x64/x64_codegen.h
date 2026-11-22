@@ -25,7 +25,7 @@ typedef struct {
 } SnxX64Options;
 
 /* 1 where this host runs the x86-64 back end's code and its objects load (x86-64, ELF: not Windows, whose objects are
-   COFF). SNX_RECOMPILER_BACKEND=llvm in the environment takes it back to LLVM */
+   COFF) */
 int snx_x64_available(void);
 /* the object of the functions [first, last) of codegen it can make, made[i - first] 1 for each (an AOT module's
    unit: the others are LLVM's); for a JIT unit all of them or none (0 and no object then). The object's size, or 0
