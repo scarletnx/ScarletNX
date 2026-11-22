@@ -593,6 +593,62 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
     return 0;
 }
 
+/* ---- an MSR that may set CPSR.E: its block ends there, and the next is entered through its checks (llvm.c's
+   block_begin), which stop on E with that block's first word; the entry past them (X) would run it as little-endian */
+static size_t endian_next(void* user, uint32_t pc, uint32_t word, uint32_t keys[2]) {
+    (void)user, (void)word;
+    if (pc != PC) return 0;
+    keys[0] = PC + 4;
+    return 1;
+}
+static int run_endian_chain(SnxX64Arm* x64) {
+    static const uint32_t msr[1] = {0xe122f000u}, mov[1] = {0xe3a01001u}; /* MSR CPSR_x, R0 (E its bit 9); MOV R1, #1 */
+    unsigned char* object = NULL;
+    size_t consumed = 0, size = 0, failures = 0;
+    char error[512] = "", name[16];
+    snprintf(name, sizeof name, "A_%08x", PC);
+    SnxCodeLoader* loader = NULL;
+    if (!snx_x64_arm_block(x64, NULL, (const unsigned char*)msr, 1, PC, &consumed, endian_next, NULL) ||
+        !snx_x64_arm_block(x64, NULL, (const unsigned char*)mov, 1, PC + 4, &consumed, endian_next, NULL) ||
+        snx_x64_arm_object(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
+        fprintf(stderr, "FAIL: the MSR's chain: %s%s\n", snx_x64_arm_why(x64), error);
+        return 1;
+    }
+    SnxLinkInput input = {.data = object, .size = size, .name = "chain"};
+    const char* names[1] = {name};
+    SnxU64 addr = 0;
+    RunState* s = (RunState*)malloc(sizeof *s);
+    if (!s || snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
+        fprintf(stderr, "FAIL: the MSR's chain's object: %s\n", error);
+        free(s), free(object);
+        snx_code_loader_free(loader);
+        return 1;
+    }
+    for (int e = 0; e < 2; ++e) {
+        start(s, 1);
+        s->cpu.cpsr = 0x10u;
+        s->cpu.r[0] = e ? SNX_ARM_E : 0;
+        s->cpu.r[1] = 0;
+        ((SnxArmBlock)(uintptr_t)addr)(&s->cpu);
+        /* E set: the MOV's block stops at its entry, R15 its address; clear: the MOV runs, R15 past it */
+        uint32_t exit = e ? SNX_ARM_ENDIAN_UNSUPPORTED : SNX_ARM_OK, r1 = e ? 0 : 1, r15 = e ? PC + 4 : PC + 8;
+        if (s->cpu.exit != exit || (e && s->cpu.syndrome != mov[0]) || s->cpu.r[1] != r1 || s->cpu.r[15] != r15) {
+            fprintf(
+                stderr,
+                "FAIL: the MSR's chain with E %s: exit %u, syndrome %08x, R1 %u, R15 %08x; wanted exit %u, %s R1 %u, "
+                "R15 %08x\n",
+                e ? "set" : "clear", s->cpu.exit, s->cpu.syndrome, s->cpu.r[1], s->cpu.r[15], exit,
+                e ? "syndrome e3a01001," : "", r1, r15);
+            ++failures;
+        }
+    }
+    printf("an MSR's block and the next, E set and clear: %zu failures\n", failures);
+    g_test.failures += failures;
+    free(s), free(object);
+    snx_code_loader_free(loader);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir = NULL;
@@ -639,6 +695,7 @@ int main(int argc, char** argv) {
     snx_x64_arm_limit(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
     if (!g_test.nonly && run_witnesses(ir, x64)) ++g_test.failures;
+    if (!g_test.nonly && run_endian_chain(x64)) ++g_test.failures;
     if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
             blocks[i].words[0] = g_test.only[i];

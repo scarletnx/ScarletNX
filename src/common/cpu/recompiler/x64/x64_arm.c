@@ -380,8 +380,9 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
             SgD c = sg_d_or(g, sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask)), sg_d_and(g, v, sgx_const(32, mask)));
             g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
             g->origin = -1;
-            /* a block reads E only on entry: one that may have changed it ends here */
-            return (w & (1u << 17)) ? 1 : 0;
+            /* a block reads E only on entry: one that may have changed it ends here, the next one's entry checked */
+            g->e_written = !!(w & (1u << 17));
+            return g->e_written;
         }
         default: sg_fail("an A32 instruction this back end does not make", kind, 0);
     }
