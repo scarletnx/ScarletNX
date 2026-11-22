@@ -242,7 +242,7 @@ static void core_unlock(void) {
    until a holder hands it a core */
 void core_enter(KThread* t) {
     int got = 1;
-    if (!t || !g_settings.emulated_cores) return;
+    if (!t || !kernel_emulated_cores()) return;
     if (atomic_load_explicit(&t->on_core, memory_order_acquire) < 0) {
         pm_lock(&g_host.thread.core_lk);
         if (atomic_load_explicit(&t->on_core, memory_order_relaxed) < 0) got = core_take_nl(t);
@@ -252,7 +252,7 @@ void core_enter(KThread* t) {
     core_pin(t);
 }
 void core_leave(KThread* t) {
-    if (!t || !g_settings.emulated_cores) return;
+    if (!t || !kernel_emulated_cores()) return;
     pm_lock(&g_host.thread.core_lk);
     if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0) core_release_nl(t);
     core_unlock();
@@ -265,7 +265,7 @@ void core_leave(KThread* t) {
 void core_leave_waiting(void) {
     KThread* t = kthread_cur();
     int k = -1;
-    if (!t || !g_settings.emulated_cores || !atomic_load_explicit(&t->in_svc, memory_order_seq_cst)) return;
+    if (!t || !kernel_emulated_cores() || !atomic_load_explicit(&t->in_svc, memory_order_seq_cst)) return;
     pm_lock(&g_host.thread.core_lk);
     if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0) {
         k = atomic_load_explicit(&t->on_core, memory_order_relaxed);
@@ -294,7 +294,7 @@ static void core_switch(KThread* t, int stopped) {
     if (!t || !atomic_load_explicit(&t->cpu.poll, memory_order_relaxed)) return;
     if (stopped && t->tls) count = gr16(t->tls + SNX_TLS_DISABLE_COUNT); /* its own TLS: only t's thread is here */
     pm_lock(&g_host.thread.core_lk);
-    if (!g_settings.emulated_cores) { /* only a game pause sets poll: kernel_hold, under core_lk */
+    if (!kernel_emulated_cores()) { /* only a game pause sets poll: kernel_hold, under core_lk */
         if (!atomic_load_explicit(&g_hle.thread.hold, memory_order_relaxed))
             atomic_store_explicit(&t->cpu.poll, 0u, memory_order_relaxed);
         pm_unlock(&g_host.thread.core_lk);
@@ -358,7 +358,7 @@ void core_synchronize(KThread* t) {
    and on_core change together, under core_lk, as when a thread leaves its core */
 void kthread_fault_lend(u32 tid) {
     KThread* t = NULL;
-    if (!g_settings.emulated_cores || !tid) return;
+    if (!kernel_emulated_cores() || !tid) return;
     /* a slot keeps the host thread of a thread that exited, whose number the system may give another thread: only a
        live one holds a core */
     for (int i = 0; i < KTHREAD_MAX && !t; i++)
@@ -379,7 +379,7 @@ void kthread_fault_lend(u32 tid) {
 #define CORE_WATCH_NS 250000000u
 #define CORE_WATCH_LINES 50u
 void kernel_core_watch(void) {
-    if (!g_settings.emulated_cores || g_host.thread.preempt_lines >= CORE_WATCH_LINES) return;
+    if (!kernel_emulated_cores() || g_host.thread.preempt_lines >= CORE_WATCH_LINES) return;
     u64 now = plat_ns();
     for (int k = 0; k < NCORES; k++) {
         u64 since = atomic_load_explicit(&g_host.thread.preempt_since[k], memory_order_relaxed);
@@ -438,7 +438,7 @@ void core_yield(KThread* t, int migrate) {
     int k, j, got = 1;
     KThread* w;
     if (!t) return;
-    if (!g_settings.emulated_cores) { /* the host's threads are the cores: let it run another */
+    if (!kernel_emulated_cores()) { /* the host's threads are the cores: let it run another */
         plat_yield();
         return;
     }
@@ -523,6 +523,10 @@ void klock_unlock(void) {
 KThread* kthread_cur(void) { return t_hle.thread.cur; }
 
 /* the host's CPUs, which the cores pin to (the locks and the cores' wait lists start in hle_init) */
+int kernel_emulated_cores(void) {
+    int mode = g_settings.emulated_cores_mode;
+    return mode == SNX_KERNEL_CORES_AUTO ? !g_ounce : mode != 0;
+}
 void kernel_init(void) {
     g_hle.thread.host_ncpu = plat_cpus(g_hle.thread.host_cpu, 256);
     g_gpu_mapping_waits = core_leave_waiting;
@@ -895,7 +899,7 @@ int kernel_hold(int timeout_ms) {
     /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
     pm_lock(&g_host.thread.core_lk);
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
-    if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
+    if (!kernel_emulated_cores()) { /* no thread holds a core: each one running game code is asked itself */
         pm_lock(&g_host.kernel.pool_lk);
         FOR_LIVE_THREADS(t) {
             atomic_store_explicit(&t->cpu.poll, 1u, memory_order_relaxed);

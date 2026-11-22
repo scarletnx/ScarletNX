@@ -619,9 +619,9 @@ static void npdm_layout(void) {
         LOG("npdm: an Ounce program\n");
         /* An Ounce program's eight cores run best with no emulated core ordering: the ordering makes each guest thread
            yield at SVC and poll points for the priority of the core it holds, which costs the CPU its threads contend
-           with the GPU thread for. One game's race went from 8 to 24 frames a second to 16 to 35 with this off. A
-           value the player gave still wins */
-        options_kind_value("emulated_cores", "0", "an Ounce program");
+           with the GPU thread for. One game's race went from 8 to 24 frames a second to 16 to 35 with this off.
+           emulated_cores_mode's Auto runs it Off (kernel_emulated_cores), named here; Off and On stay the player's */
+        options_kind_value("emulated_cores_mode", "0", "an Ounce program");
     }
     if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
     if (!g_arm_mod && g_ounce) {

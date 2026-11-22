@@ -856,14 +856,27 @@ int main(void) {
         }
     }
 
-    /* without emulated cores (emulated_cores off) the threads run at once, holding no core, so a pause asks each one
-       that runs itself; the poll that leaves set is cleared at its first poll after the pause */
+    /* emulated_cores_mode: Off and On as they are, whatever the program; Auto Off for an Ounce program alone */
+    for (int mode = 0; mode < 3; mode++)
+        for (int ounce = 0; ounce < 2; ounce++) {
+            int want = mode == SNX_KERNEL_CORES_AUTO ? !ounce : mode;
+            g_settings.emulated_cores_mode = mode;
+            g_ounce = ounce;
+            CHECK(kernel_emulated_cores() == want, "emulated_cores_mode=%d, %s program: cores %s", mode,
+                  ounce ? "an Ounce" : "a Switch", want ? "on" : "off");
+        }
+    g_ounce = 0;
+    g_settings.emulated_cores_mode = SNX_KERNEL_CORES_AUTO;
+    CHECK(kernel_emulated_cores(), "the default, Auto, on a Switch program: cores on");
+
+    /* without emulated cores (emulated_cores_mode Off) the threads run at once, holding no core, so a pause asks each
+       one that runs itself; the poll that leaves set is cleared at its first poll after the pause */
     {
         static SnxKctGame g[2];
         pthread_t gh[2];
         u64 seen[2];
         reset();
-        g_settings.emulated_cores = 0;
+        g_settings.emulated_cores_mode = 0;
         for (int i = 0; i < 2; i++) {
             g[i].t = &g_hle.thread.threads[i];
             g[i].t->state = 1;
@@ -901,7 +914,7 @@ int main(void) {
         for (int i = 0; i < 2; i++) pthread_join(gh[i], NULL);
         CHECK(g[0].steps > seen[0] && g[1].steps > seen[1], "both went on after the pause");
         for (int i = 0; i < 2; i++) g[i].t->state = 2;
-        g_settings.emulated_cores = 1;
+        g_settings.emulated_cores_mode = SNX_KERNEL_CORES_AUTO;
     }
 
     /* a wake under g_klock: the woken thread's word moves at once, so a wait that read the word before the wake
