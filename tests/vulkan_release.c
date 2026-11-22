@@ -21,6 +21,8 @@ void vk_land_through(u64);
 void vk_mirror_publish(void);
 void vk_wait_submit(u64);
 void vk_compute_wait(u64);
+void vk_submit_progress(u64* submitted, u64* done);
+void vk_compute_progress(u64* submitted, u64* done);
 void vk_gfx_image_land(void);
 void vk_gfx_image_put_aside(void);
 void vk_rt_publish_drawn(void);
@@ -222,6 +224,13 @@ void vk_wait_submit(u64 gate) {
 void vk_compute_wait(u64 gate) {
     if (gate > waited_compute) waited_compute = gate;
 }
+/* the GPU has done every submit up to gpu_done, and every compute batch */
+static u64 gpu_done = ~0ull;
+void vk_submit_progress(u64* submitted, u64* done) {
+    *submitted = next_graphics;
+    *done = gpu_done < next_graphics ? gpu_done : next_graphics;
+}
+void vk_compute_progress(u64* submitted, u64* done) { *submitted = *done = ~0ull; }
 void vk_gfx_image_land(void) {}
 void vk_gfx_image_put_aside(void) {}
 void vk_rt_publish_drawn(void) {}
@@ -503,6 +512,29 @@ int main(void) {
     unsubmitted = 0;
     vk_release_retire(6);
     assert(completed[6] == 1 && g_rhead == g_rtail && events_signaled == 3 && !events_due);
+    pending = 0;
+    /* A syncpoint's waiter performs the queued increments up to its value itself (vk_release_wait, nvdrv.c's
+       syncpt_wait), with the release before them, once their submit is done: no release thread between the GPU and
+       it. Not while the stream holds them; not, without block, before the GPU did the submit; the second increment
+       stays queued until a wait for it */
+    pending = 1;
+    value = 29;
+    vk_release_write(0x10060, &value, 1);
+    vk_release_incr(7);
+    u64 gate7 = g_rq[(g_rhead - 1) % RQ_N].gate;
+    vk_submit(0, 0, 0); /* the second increment after work of a later submit */
+    vk_release_incr(7);
+    assert(g_rq[(g_rhead - 1) % RQ_N].gate > gate7);
+    assert(!vk_release_wait(7, 1, 1) && completed[7] == 0); /* held: the stream has not stopped */
+    vk_release_submit(); /* stops: the release thread would take them once their submit is done */
+    assert(completed[7] == 0 && g_rhead == g_rtail + 3);
+    gpu_done = 0;
+    assert(!vk_release_wait(7, 1, 0) && completed[7] == 0); /* the GPU has not done their submit */
+    gpu_done = ~0ull;
+    assert(vk_release_wait(7, 1, 0) && completed[7] == 1 && memory[1 + 0x60] == 29 && g_rhead == g_rtail + 1);
+    assert(waited_graphics >= gate7 && events_signaled == 4 && !events_due);
+    assert(vk_release_wait(7, 2, 1) && completed[7] == 2 && g_rhead == g_rtail && events_signaled == 5);
+    assert(!vk_release_wait(7, 3, 1) && !vk_release_wait(200, 1, 1)); /* none queued; past the table */
     pending = 0;
     /* a read over queued releases takes their payloads, in their order, without waiting for the work before them or
        writing memory; the same memory through another address or another pending result there make it decline, and

@@ -1639,6 +1639,7 @@ const Renderer vk_renderer = {
     .render_predicate = vk_render_predicate,
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
+    .release_wait = vk_release_wait,
     .report_stall = vk_report_stall,
     .memory_text = vk_memory_text,
     .memory_blocks = vk_memory_blocks,

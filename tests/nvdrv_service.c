@@ -212,6 +212,10 @@ static void run_held(u32 k) {
 }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
+int gpu_release_wait(u32 id, u32 thresh, int block) {
+    (void)id, (void)thresh, (void)block;
+    return 0;
+}
 void gpu_kick(void) { test_gpu.kicks++; }
 void gpu_cpu_signal(void) {}
 void gpu_mem_written(u64 gva, u64 size) {

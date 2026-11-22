@@ -179,6 +179,10 @@ typedef struct Renderer {
     /* a GPFIFO submission ran to its end or waits (gpu_park): what the guest may look at now goes to the GPU */
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
+    /* a syncpoint wait's (nvdrv.c syncpt_wait): the queued increments of syncpoint id up to the one that brings it to
+       thresh, with the releases before them, performed on the waiting thread once their GPU work is done, which it
+       waits for only with block. 1 when it performed them */
+    int (*release_wait)(u32 id, u32 thresh, int block);
     void (*report_stall)(void); /* the stall watchdog: what the renderer holds back. Any thread, unlocked */
     /* what the renderer's memory holds, as text for the line of a low memory warning. Any thread, also one that never
        calls Vulkan, unlocked */
