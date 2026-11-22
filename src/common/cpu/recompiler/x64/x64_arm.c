@@ -18,6 +18,7 @@
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/simd.h"
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,6 +131,7 @@ static void flush(SnxX64Arm* c) {
     g->cpsr = 0;
     g->limit = g->mem = 0;
     g->origin = -1;
+    g->vfp_ok[0] = g->vfp_ok[1] = 0;
     g->x.flags_ins = -1;
 }
 
@@ -485,6 +487,302 @@ static void state_set(SgCtx* g, size_t field, SnxU32 v) {
     i->disp = (int)field;
 }
 
+/* ---- VFP: llvm_vector.inc's scalar part (vector_memory, vector_transfer, vector_fp), its hot paths fp_call's ---- */
+
+/* the D bank's byte offset off (S2n at Dn's, S2n+1 4 past it: the host's little-endian words) as a state field */
+static int voff(unsigned off) { return (int)(offsetof(SnxArmCPU, d) + off); }
+/* FPSCR, as a field the D bank's offsets reach */
+#define FPSCR_OFF ((unsigned)(offsetof(SnxArmCPU, fpscr) - offsetof(SnxArmCPU, d)))
+/* a VFP register's bits (32 or 64) in a general-purpose register */
+static SgD vbits(SgCtx* g, unsigned off, unsigned width) {
+    SgX* x = sgx(g);
+    SgXIns* i = sgx_append(x, SGX_K_LOAD);
+    i->w = (unsigned char)(width == 64 ? 64 : 32);
+    i->disp = voff(off);
+    i->def = sgx_vreg(x, x->n - 1, width == 64 ? 64 : 32);
+    return sgx_val(width, i->def);
+}
+/* the VFP register = v (bits of 32 or 64, or an XMM value of them) */
+static void vset(SgCtx* g, unsigned off, unsigned width, SgD v) {
+    SgX* x = sgx(g);
+    if (v.x) {
+        int in[4] = {0, v.x, 0, 0};
+        sgx_vins(x, width == 64 ? &sgx_v_movq_st : &sgx_v_movss_st, 0, 0, in, 0, 0, SGX_VM_STATE, 0, 0, voff(off), 0,
+                 0);
+        return;
+    }
+    {
+        int r = sgx_reg(x, &v);
+        SgXIns* i = sgx_append(x, SGX_K_STORE);
+        i->w = (unsigned char)(width == 64 ? 64 : 32);
+        i->in[0] = r;
+        i->disp = voff(off);
+    }
+}
+/* a VFP register as an XMM value (MOVSS or MOVQ from the state) */
+static SgD vxmm(SgCtx* g, unsigned off, unsigned width) {
+    return sgx_xval(width, sgx_vins(sgx(g), width == 64 ? &sgx_v_movq_ld : &sgx_v_movss_ld, 0, 0, NULL, 0, 1,
+                                    SGX_VM_STATE, 0, 0, voff(off), 0, 0));
+}
+/* FPSCR lets the hot path run: round to nearest and no trap enabled, and for arithmetic (not a compare) IXC set already
+   (the inline code raises no flag): fp_call's mask. Once a region, until a VMSR or a call */
+static SgB fp_state(SgCtx* g, int arithmetic) {
+    SgX* x = sgx(g);
+    if (!g->vfp_ok[arithmetic]) {
+        SnxU32 mask = 0x00c09f00u | (arithmetic ? 0x10u : 0);
+        SgD f = sg_d_and(g, vbits(g, FPSCR_OFF, 32), sgx_const(32, mask));
+        g->vfp_ok[arithmetic] = sg_d_eq(g, f, sgx_const(32, arithmetic ? 0x10u : 0));
+    }
+    (void)x;
+    return g->vfp_ok[arithmetic];
+}
+/* fp_plain of bits (w 32 or 64): finite, and normal, or a zero where zero_ok (0: always). The bits doubled (the sign
+   out) less the smallest normal's, below the span of the finite exponents, unsigned; or 0 */
+static SgB fp_plain(SgCtx* g, SgD bits, unsigned w, SgB zero_ok) {
+    SnxU64 low = w == 32 ? 1ull << 24 : 1ull << 53, span = w == 32 ? 0xFE000000ull : 0xFFC0000000000000ull;
+    SgD t = sg_d_lsl(g, bits, 1);
+    SgB normal = sgx_d_ult(g, sg_d_sub(g, t, sgx_const(w, low)), sgx_const(w, span));
+    SgB zero = sg_d_is_zero(g, t);
+    if (zero_ok) zero = sg_b_and(g, zero, zero_ok);
+    return sg_b_or(g, normal, zero);
+}
+/* bits are a zero (either sign) */
+static SgB fp_zero(SgCtx* g, SgD bits) { return sg_d_is_zero(g, sg_d_lsl(g, bits, 1)); }
+/* snx_arm_fp's arguments after the operands, for snx_arm_fp_x64 */
+static long long fp_desc(SnxArmVectorOp op, unsigned width, SnxU32 param) {
+    return (long long)((SnxU64)op | (SnxU64)width << 8 | (SnxU64)param << 32);
+}
+/* fp_call's helper, always: the state's registers and CPSR read again after it */
+static SgD fp_helper(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, SgD a, SgD b, SgD c) {
+    SgX* x = sgx(g);
+    SgD args[4];
+    sgx_flat(x, &a);
+    sgx_flat(x, &b);
+    sgx_flat(x, &c);
+    args[0] = sg_d_zext(g, a, 64);
+    args[1] = sg_d_zext(g, b, 64);
+    args[2] = sg_d_zext(g, c, 64);
+    args[3] = sgx_const(64, (SnxU64)fp_desc(op, width, param));
+    sgx_a32_call(g, "snx_arm_fp_x64", args, 4, 1);
+    return sgx_val(64, x->ins[x->n - 1].def);
+}
+/* an x86 form of a and b (XMM values of width w) */
+static SgD fp_op(SgCtx* g, const SgXVForm* f32, const SgXVForm* f64, SgD a, SgD b, unsigned w) {
+    SgX* x = sgx(g);
+    int ax = sgx_xreg(x, &a), bx = sgx_xreg(x, &b);
+    return sgx_xval(w, sgx_v2(x, w == 64 ? f64 : f32, ax, bx, 0));
+}
+/* v with its sign flipped (an XMM value): XORPS of the sign's bit */
+static SgD fp_neg(SgCtx* g, SgD v, unsigned w) {
+    SgX* x = sgx(g);
+    int vx = sgx_xreg(x, &v), k = sgx_xconst(x, w == 64 ? 1ull << 63 : 1ull << 31, 0);
+    return sgx_xval(w, sgx_v2(x, &sgx_v_xorps, vx, k, 0));
+}
+
+/* fp_call for the arithmetic and the compares: the host's IEEE operation where fp_call's guards say it gives the
+   console's result and flags (FPSCR's mode and IXC; operands finite and normal or zero; a result normal, or a zero that
+   is exact), snx_arm_fp on a cold path where they don't; the other operations snx_arm_fp alone */
+static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, SgD xv, SgD yv, SgD zv) {
+    SgX* x = sgx(g);
+    int compare = op == AV_FCMP || op == AV_FCMPE;
+    int arithmetic = op == AV_FADD || op == AV_FSUB || op == AV_FMUL || op == AV_FDIV || op == AV_FMLA ||
+                     op == AV_FMLS || op == AV_FNMLA || op == AV_FNMLS || op == AV_FNMUL;
+    SgD xb, yb, zb, r, args[3];
+    SgB ok;
+    if ((width != 32 && width != 64) || (!compare && !arithmetic)) return fp_helper(g, op, width, param, xv, yv, zv);
+    xb = xv, yb = yv, zb = zv;
+    sgx_flat(x, &xb);
+    sgx_flat(x, &yb);
+    sgx_flat(x, &zb);
+    ok = sg_b_and(g, fp_state(g, !compare), sg_b_and(g, fp_plain(g, xb, width, 0), fp_plain(g, yb, width, 0)));
+    if (compare) {
+        /* NZCV: less 8, equal 6, greater 2: UCOMISS's below, equal and not below (no NaN reaches it) */
+        int in[4] = {sgx_xreg(x, &xv), sgx_xreg(x, &yv), 0, 0}, ins;
+        SgB n, z, c;
+        SgD nib;
+        sgx_vins(x, width == 64 ? &sgx_v_ucomisd : &sgx_v_ucomiss, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        ins = x->flags_ins;
+        n = sgx_bool(x, SGX_B_CC, ins, 2);
+        z = sgx_bool(x, SGX_B_CC, ins, 4);
+        c = sgx_bool(x, SGX_B_CC, ins, 3);
+        nib = sg_d_concat(g, sg_d_concat(g, sgx_bool_bits(x, n), sgx_bool_bits(x, z)),
+                          sg_d_concat(g, sgx_bool_bits(x, c), sgx_const(1, 0)));
+        r = sg_d_zext(g, nib, 64);
+    } else {
+        SgB xz = fp_zero(g, xb), yz = fp_zero(g, yb), zero_ok;
+        SgD rb;
+        switch (op) {
+            case AV_FADD: r = fp_op(g, &sgx_v_addss, &sgx_v_addsd, xv, yv, width); break;
+            case AV_FSUB: r = fp_op(g, &sgx_v_subss, &sgx_v_subsd, xv, yv, width); break;
+            case AV_FDIV:
+                ok = sg_b_and(g, ok, sg_b_not(g, yz));
+                r = fp_op(g, &sgx_v_divss, &sgx_v_divsd, xv, yv, width);
+                break;
+            default: r = fp_op(g, &sgx_v_mulss, &sgx_v_mulsd, xv, yv, width); break;
+        }
+        rb = r;
+        sgx_flat(x, &rb);
+        zero_ok = op == AV_FADD || op == AV_FSUB ? 0 : op == AV_FDIV ? xz : sg_b_or(g, xz, yz);
+        ok = sg_b_and(g, ok, fp_plain(g, rb, width, zero_ok));
+        if (op != AV_FADD && op != AV_FSUB && op != AV_FMUL && op != AV_FDIV) {
+            /* the multiply-accumulates: the product, negated for FMLS, FNMLA and FNMUL, then added (two roundings) */
+            if (op == AV_FMLS || op == AV_FNMLA || op == AV_FNMUL) r = fp_neg(g, r, width);
+            if (op != AV_FNMUL) {
+                SgD addend = zv, sb;
+                ok = sg_b_and(g, ok, fp_plain(g, zb, width, 0));
+                if (op == AV_FNMLA || op == AV_FNMLS) addend = fp_neg(g, addend, width);
+                r = fp_op(g, &sgx_v_addss, &sgx_v_addsd, addend, r, width);
+                sb = r;
+                sgx_flat(x, &sb);
+                ok = sg_b_and(g, ok, fp_plain(g, sb, width, 0));
+            }
+        }
+    }
+    args[0] = sg_d_zext(g, xb, 64);
+    args[1] = sg_d_zext(g, yb, 64);
+    args[2] = sg_d_zext(g, zb, 64);
+    return sgx_cold_fp(x, sg_b_not(g, ok), r, "snx_arm_fp_x64", args, 3, -1, 3, fp_desc(op, width, param),
+                       (int)offsetof(SnxArmCPU, fpscr), (int)offsetof(SnxArmCPU, fpscr), 0, 0);
+}
+
+/* VLDR, VSTR, VLDM, VSTM, VPUSH, VPOP (vector_memory): word aligned, the words in their order (a doubleword's two at
+   once) */
+static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
+    SgD base = reg(g, v->n), end, addr, offset = sgx_const(32, (SnxU32)v->imm);
+    int single = (v->flags & AV_PRE) && !(v->flags & AV_WB);
+    unsigned i, step;
+    end = v->flags & AV_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
+    addr = single || (v->flags & AV_PRE) ? end : base;
+    sgx_reg(sgx(g), &addr);
+    sgx_a32_bounds(g, addr, v->bytes, 4);
+    for (i = 0; i < v->bytes; i += step) {
+        step = !((v->d + i) & 7) && i + 8 <= v->bytes ? 8 : 4;
+        if (v->flags & AV_LOAD)
+            vset(g, v->d + i, step * 8, sgx_a32_load(g, addr, (int)step, (int)i));
+        else
+            sgx_a32_store(g, addr, (int)step, (int)i, vbits(g, v->d + i, step * 8));
+    }
+    if (!(v->flags & AV_LOAD)) sgx_a32_monitor(g, addr, v->bytes); /* one check for the words stored, as memory's */
+    if (v->flags & AV_WB) sg_GPR_write(g, v->n, end);
+}
+/* VMRS, VMSR, VMOV between core registers and S registers or a D register's word (vector_transfer) */
+static void vfp_transfer(SgCtx* g, const SnxArmVector* v) {
+    if (v->op == AV_STATUS) {
+        if (v->flags & AV_LOAD) {
+            SgD f = vbits(g, FPSCR_OFF, 32);
+            if (v->n == 15) { /* VMRS APSR_nzcv: CPSR's flags from FPSCR's */
+                int k;
+                for (k = 0; k < 4; ++k) sg_PSTATE_write(g, SG_PSTATE_N + k, 1, sg_d_slice(g, f, 31 - k, 31 - k));
+            } else
+                sg_GPR_write(g, v->n, f);
+        } else {
+            vset(g, FPSCR_OFF, 32, sg_d_and(g, reg(g, v->n), sgx_const(32, 0xffc0009fu)));
+            g->vfp_ok[0] = g->vfp_ok[1] = 0;
+        }
+    } else if (v->op == AV_CORE_PAIR) {
+        if (v->flags & AV_LOAD) {
+            SgD a = vbits(g, v->d, 32), b = vbits(g, v->d + 4, 32);
+            sg_GPR_write(g, v->n, a);
+            sg_GPR_write(g, v->m, b);
+        } else {
+            SgD a = reg(g, v->n), b = reg(g, v->m);
+            vset(g, v->d, 32, a);
+            vset(g, v->d + 4, 32, b);
+        }
+    } else {
+        if (v->width != 32) sg_fail("a VMOV of a D register's byte or halfword", v->width, 0);
+        if (v->flags & AV_LOAD)
+            sg_GPR_write(g, v->n, vbits(g, v->d, 32));
+        else if (v->op == AV_DUP) {
+            SgD r = reg(g, v->n);
+            for (unsigned i = 0; i < v->bytes; i += 4) vset(g, v->d + i, 32, r);
+        } else
+            vset(g, v->d, 32, reg(g, v->n));
+    }
+}
+/* the scalar data processing (vector_fp's, one lane) */
+static void vfp_data(SgCtx* g, const SnxArmVector* v) {
+    unsigned width = v->width, outwidth = width, inwidth, xo;
+    SnxU32 param = 0;
+    int unary = v->op == AV_MOV || (v->op >= AV_FABS && v->op <= AV_FSQRT) || v->op == AV_FCVT || v->op == AV_FTOI ||
+                v->op == AV_ITOF || v->op == AV_FROUND || v->op == AV_FRECPE || v->op == AV_FRSQRTE ||
+                v->op == AV_URECPE || v->op == AV_URSQRTE;
+    /* the operations fp_call has a hot path for, whose operands are XMM values; the others' are bits */
+    int hot = v->op == AV_FADD || v->op == AV_FSUB || v->op == AV_FMUL || v->op == AV_FDIV || v->op == AV_FMLA ||
+              v->op == AV_FMLS || v->op == AV_FNMLA || v->op == AV_FNMLS || v->op == AV_FNMUL || v->op == AV_FCMP ||
+              v->op == AV_FCMPE;
+    SgD xv, yv, zv, r;
+    if (v->op == AV_FCVT)
+        outwidth = v->aux;
+    else if (v->op == AV_FTOI)
+        outwidth = v->bytes * 8;
+    if (width == 16 || outwidth == 16) sg_fail("a half-precision conversion", width, outwidth);
+    if (v->flags & AV_UNSIGNED) param |= 1u << 28;
+    if (v->op == AV_FCVT) param |= v->aux | ((SnxU32)v->imm << 24);
+    if (v->op == AV_FTOI || v->op == AV_ITOF)
+        param |= v->aux << 8 | (((SnxU32)v->imm >> 8) & 255) << 16 | ((SnxU32)v->imm & 15) << 24;
+    if (v->op == AV_FROUND) param |= (SnxU32)v->imm << 24 | v->aux;
+    inwidth = v->op == AV_ITOF ? v->aux : width;
+    xo = unary ? v->m : v->n;
+    if (inwidth == 16)
+        xv = sg_d_slice(g, vbits(g, xo, 32), 15, 0);
+    else
+        xv = hot ? vxmm(g, xo, inwidth) : vbits(g, xo, inwidth);
+    if ((v->op == AV_FCMP || v->op == AV_FCMPE) && v->aux)
+        yv = sgx_const(width, 0);
+    else
+        yv = hot ? vxmm(g, v->m, width) : vbits(g, v->m, width);
+    /* the destination, which the multiply-accumulates add to, and which fp_call hands the helper for every operation
+       (the fused ones read it there) */
+    zv = v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
+         : hot                                 ? sgx_const(outwidth, 0)
+                                               : vbits(g, v->d, outwidth);
+    switch (v->op) {
+        case AV_MOV: r = xv; break;
+        case AV_FABS: r = sg_d_and(g, xv, sgx_const(width, sg_ones(width - 1))); break;
+        case AV_FNEG: r = sg_d_xor(g, xv, sgx_const(width, 1ull << (width - 1))); break;
+        case AV_FSELECT: {
+            static const unsigned conds[4] = {0, 6, 10, 12}; /* VSELEQ, VSELVS, VSELGE, VSELGT */
+            r = sg_d_select(g, sgx_a32_condition(g, conds[v->aux & 3]), xv, yv);
+            break;
+        }
+        default: r = fp_call(g, v->op, width, param, xv, yv, zv); break;
+    }
+    if (v->op == AV_FCMP || v->op == AV_FCMPE) {
+        SgD f = vbits(g, FPSCR_OFF, 32);
+        vset(g, FPSCR_OFF, 32,
+             sg_d_or(g, sg_d_and(g, f, sgx_const(32, 0x0fffffffu)), sg_d_lsl(g, sg_d_slice(g, r, 31, 0), 28)));
+        return;
+    }
+    if (v->op == AV_FTOI) {
+        r = sg_d_slice(g, r, v->aux - 1, 0);
+        r = v->flags & AV_UNSIGNED ? sg_d_zext(g, r, outwidth) : sg_d_sext(g, r, outwidth);
+    } else if (!r.x && r.w != outwidth)
+        r = sg_d_slice(g, r, outwidth - 1, 0);
+    vset(g, v->d, outwidth, r);
+}
+/* a VFP word (llvm_vector.inc's vector_instruction on the Cortex-A57): the scalar ones; Advanced SIMD is LLVM's */
+static void vfp(SgCtx* g) {
+    SnxArmVector v;
+    condition(g);
+    if (!snx_arm_vector_decode(g->word, &v)) {
+        sg_undefined(g);
+        return;
+    }
+    if ((v.flags & AV_SIMD) || v.op == AV_STRUCT || v.op == AV_CRYPTO) sg_fail("an Advanced SIMD instruction", v.op, 0);
+    if (v.op == AV_MEM)
+        vfp_memory(g, &v);
+    else if (v.op == AV_CORE || v.op == AV_CORE_PAIR || v.op == AV_STATUS || v.op == AV_DUP)
+        vfp_transfer(g, &v);
+    else if (v.op == AV_IMM) {
+        if (v.aux) sg_fail("an Advanced SIMD immediate", v.aux, 0);
+        for (unsigned i = 0; i < v.bytes; i += v.width / 8) vset(g, v.d + i, v.width, sgx_const(v.width, v.imm));
+    } else if (v.op == AV_MOV || (v.op >= AV_FADD && v.op <= AV_FSELECT))
+        vfp_data(g, &v);
+    else
+        sg_fail("an Advanced SIMD instruction", v.op, 0);
+}
+
 /* llvm.c's instruction() for the kinds the Sail's clauses don't take: 1 where the block ends after it, 0 where it
    goes on; a kind this back end doesn't make refuses the block */
 static int instruction(SgCtx* g, SnxA32Kind kind) {
@@ -514,6 +812,7 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
             sgx_a32_machine(g, SGX_A32_FENCE, 0);
             return 0;
         case SNX_A32_HINT: return 0; /* hints may complete without waiting */
+        case SNX_A32_VECTOR: vfp(g); return 0;
         case SNX_A32_COPROC: { /* the backend's (SnxArmRt.coproc): it reads or writes the registers, or stops here */
             SgD word = sgx_const(32, w);
             SgXIns* i;

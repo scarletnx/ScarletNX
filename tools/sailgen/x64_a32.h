@@ -51,11 +51,13 @@ struct SgCtx {
     int cpsr;      /* the region's CPSR, 0 for none */
     SgD field[32]; /* PSTATE's fields written and not stored yet (pending's bits) */
     unsigned pending;
-    int origin;             /* the instruction whose x86 flags NZCV was last written from, -1 for none */
-    SgB when;               /* the instruction's condition, its skip not made yet (0: none) */
-    int skip;               /* the label past the instruction its condition jumps to, -1 for none */
-    int limit;              /* min(mem_size, 2^32), once a region (0: none yet) */
-    int mem;                /* CPU.mem, once a region */
+    int origin; /* the instruction whose x86 flags NZCV was last written from, -1 for none */
+    SgB when;   /* the instruction's condition, its skip not made yet (0: none) */
+    int skip;   /* the label past the instruction its condition jumps to, -1 for none */
+    int limit;  /* min(mem_size, 2^32), once a region (0: none yet) */
+    int mem;    /* CPU.mem, once a region */
+    SgB vfp_ok
+        [2]; /* FPSCR lets the VFP's hot paths run (x64_arm.c's fp_state): a compare's, arithmetic's; 0 none yet */
     int group, group_write; /* a multiple transfer's range checked (GuestTransfer) */
     SgD group_start;
     unsigned deferred; /* the registers a multiple load wrote, stored as it ends (sg_registers_flush) */
@@ -476,6 +478,7 @@ static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs,
     for (k = 0; k < 15; ++k) g->gpr[k] = 0;
     g->cpsr = 0;
     g->origin = -1;
+    g->vfp_ok[0] = g->vfp_ok[1] = 0;
 }
 
 /* ---- guest memory ---- */

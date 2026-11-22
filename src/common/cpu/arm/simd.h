@@ -172,6 +172,9 @@ int snx_arm_vector_decode(uint32_t word, SnxArmVector* out);
    [7:0], integer width [15:8], fractional bits [23:16], rounding [27:24]
    (8=current FPSCR), unsigned [28], StandardFPSCR [30]. No host FP or fenv. */
 uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32_t op, uint32_t width, uint32_t param);
+/* The same, op in desc's bits 7:0, width 15:8 and param 63:32: the x86-64 back end's call (its cold calls take four
+   arguments after the state) */
+uint64_t snx_arm_fp_x64(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint64_t desc);
 /* Portable ARM AES/SHA primitives. Operands are byte offsets into D[]. */
 void snx_arm_crypto(SnxArmCPU* cpu, uint32_t d, uint32_t n, uint32_t m, uint32_t op);
 #endif
