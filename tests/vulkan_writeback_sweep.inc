@@ -69,8 +69,8 @@ static int ws_case(u64 gva, u64 cpu, const WsFormat* f, int pitch_linear, u32 bh
                     want[at] = f->red[k];
                 }
     for (u64 i = 0; i < size && !bad; i++) {
-        const int near = f->unorm && want[i] == 128 && (got[i] == 127 || got[i] == 128);
-        if (got[i] != want[i] && !near) {
+        const int half_step = f->unorm && want[i] == 128 && (got[i] == 127 || got[i] == 128);
+        if (got[i] != want[i] && !half_step) {
             fprintf(stderr,
                     "write-back sweep: format %#x, %s%s%u, %u layers: byte %llu (layer %llu) is %#x, the CPU's "
                     "reference has %#x\n",
