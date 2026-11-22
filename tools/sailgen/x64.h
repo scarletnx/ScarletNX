@@ -370,8 +370,24 @@ static inline int sgx_v1(SgX* x, const SgXVForm* f, int b, long long imm) {
 }
 /* 16 bytes from the constant pool (lo the low doubleword) */
 static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi) {
+    /* the region's loads of the pool, a few: one a constant (a value it holds is checked against the instruction that
+       made it, which a new region has replaced) */
+    static _Thread_local int seen[8];
+    static _Thread_local unsigned next;
+    int k, v;
     if (!lo && !hi) return sgx_vins(x, &sgx_v_pxor, 0, -1, NULL, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    return sgx_vins(x, &sgx_v_movdqu_ld, 0, 0, NULL, 0, 1, SGX_VM_POOL, 0, 0, 0, lo, hi);
+    for (k = 0; k < 8; ++k) {
+        int d;
+        v = seen[k];
+        if (v <= 0 || v >= x->nv) continue;
+        d = x->v[v].def;
+        if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_VEC && x->ins[d].mrip && x->ins[d].def == v &&
+            x->ins[d].kv[0] == lo && x->ins[d].kv[1] == hi)
+            return v;
+    }
+    v = sgx_vins(x, &sgx_v_movdqu_ld, 0, 0, NULL, 0, 1, SGX_VM_POOL, 0, 0, 0, lo, hi);
+    seen[next++ & 7] = v;
+    return v;
 }
 
 static inline SgB sgx_bool(SgX* x, int kind, int v, int cc) {
@@ -1675,17 +1691,17 @@ static inline void sgx_optimize(SgX* x) {
                 continue;
             }
             if (s->kind == SGX_K_PGET) {
-                pset &= ~(1u << (s->imm & 15));
+                pset &= ~(1u << (s->imm & 31));
                 continue;
             }
             if (s->kind == SGX_K_PSET) {
                 /* a pinned register's write a later one replaces, nothing reading it between */
-                if ((pset >> (s->imm & 15)) & 1) {
+                if ((pset >> (s->imm & 31)) & 1) {
                     s->dead = 1;
                     s->side = 0;
                     s->in[0] = 0;
                 } else
-                    pset |= 1u << (s->imm & 15);
+                    pset |= 1u << (s->imm & 31);
                 continue;
             }
             if (s->kind != SGX_K_LOAD && s->kind != SGX_K_STORE && s->kind != SGX_K_STORE_FLAG) continue;
@@ -1817,6 +1833,10 @@ typedef struct SgXAsm {
     void (*reloc)(void* machine, size_t at, const char* sym, long long addend);
     SnxU64 (*resolve)(const char* sym);
     void (*pin_flush)(void* machine); /* the guest registers kept in host ones to the state (before UNDEF's call) */
+    /* the pins in caller-saved registers (R10, R11, XMM8-15) to the state (store) or back, around a call; the host
+       registers pins hold, which no value is given (reserved, xreserved) */
+    void (*pin_cs)(void* machine, int store);
+    unsigned reserved, xreserved;
     /* the constant pool (16 bytes each) the function's RIP-relative operands read, after its code
        (sgx_pool_emit), and where each such operand's displacement is */
     SnxU64 (*pool)[2];
@@ -1895,7 +1915,9 @@ static inline void sgx_spill_at(SgXAsm* a, int r, int at) {
     SgXV* vv = &a->x->v[v];
     if (vv->slot < 0 && vv->xmm < 0 && a->next_call && at >= 0 && a->next_call[at] > vv->last)
         for (k = 0; k < 16; ++k) {
-            if (a->xowner[k] < 0 || (a->xowner[k] > 0 && a->x->v[a->xowner[k]].last >= at)) continue;
+            if ((a->xreserved >> k & 1) || a->xowner[k] < 0 ||
+                (a->xowner[k] > 0 && a->x->v[a->xowner[k]].last >= at))
+                continue;
             if (a->xowner[k] > 0) {
                 if (a->x->v[a->xowner[k]].cls) a->x->v[a->xowner[k]].reg = -1;
                 else
@@ -1929,6 +1951,7 @@ static inline void sgx_spill(SgXAsm* a, int r) { sgx_spill_at(a, r, -1); }
 static inline int sgx_free_reg(SgXAsm* a, int at, unsigned avoid) {
     unsigned k, n = a->x->pool && (unsigned)a->x->pool < sizeof sgx_pool ? (unsigned)a->x->pool : sizeof sgx_pool;
     int best = -1;
+    avoid |= a->reserved;
     for (k = 0; k < n; ++k) {
         int r = sgx_pool[k];
         if (avoid & (1u << r)) continue;
@@ -1995,7 +2018,7 @@ static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
 /* a caller-saved register none of held's, for a call's argument of no fixed register */
 static inline int sgx_arg_free(SgXAsm* a, unsigned held) {
     unsigned k;
-    (void)a;
+    held |= a->reserved;
     for (k = 0; k < sizeof sgx_pool; ++k)
         if (!(held & (1u << sgx_pool[k]))) return sgx_pool[k];
     sg_fail("no register for a call's argument", (long long)held, 0);
@@ -2011,6 +2034,31 @@ static inline unsigned sgx_inputs_in_regs(SgXAsm* a, int at, unsigned avoid) {
     return held;
 }
 
+/* a pinned value read last at (tv) by a tied form whose result (def) a PSET soon puts back in the same pinned register,
+   through a cold check or tied forms (an XMM clear) that take it in turn, nothing else between reading the register:
+   the form may write the pinned register itself, and the PSET moves nothing */
+static inline int sgx_pin_inplace(SgXAsm* a, int at, int tv, int def) {
+    SgX* x = a->x;
+    int j, cur = def, key;
+    if (!def || !x->v[tv].pinned || x->v[tv].last != at) return 0;
+    key = x->v[tv].cls ? 16 + x->v[tv].reg : x->v[tv].reg;
+    for (j = at + 1; j < x->n && j <= at + 8; ++j) {
+        SgXIns* s = &x->ins[j];
+        int k, reads = 0;
+        if (s->dead) continue;
+        if (s->kind == SGX_K_PSET) return s->imm == key && s->in[0] == cur;
+        if (s->kind == SGX_K_PGET || s->kind == SGX_K_MACHINE || s->kind == SGX_K_UNDEF) return 0;
+        for (k = 0; k < 7; ++k) reads += s->in[k] == cur;
+        if (!reads) continue;
+        if (x->v[cur].last != j || reads != 1) return 0;
+        if (s->kind == SGX_K_COLD && s->in[0] == cur) cur = s->def;
+        else if (s->kind == SGX_K_VEC && s->vtied && s->vout >= 0 && s->in[(int)s->vout] == cur)
+            cur = s->def;
+        else
+            return 0;
+    }
+    return 0;
+}
 static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     SgX* x = a->x;
     SgXIns* i = &x->ins[at];
@@ -2063,7 +2111,8 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
             out_reg = s->out - 16;
             if (a->owner[out_reg] > 0 && a->owner[out_reg] != i->def) sgx_evict(a, out_reg, at, fixed | held);
         } else if (tv) {
-            int from = x->v[tv].reg, dies = x->v[tv].last == at && !x->v[tv].pinned;
+            int from = x->v[tv].reg,
+                dies = x->v[tv].last == at && (!x->v[tv].pinned || sgx_pin_inplace(a, at, tv, i->def));
             for (k = 0; k < 4; ++k)
                 if (k != tied_in && i->in[k] == tv) dies = 0;
             if (dies) {
@@ -2152,6 +2201,7 @@ static inline void sgx_xspill(SgXAsm* a, int k, int at) {
    latest, spilled */
 static inline int sgx_xfree(SgXAsm* a, int at, unsigned avoid) {
     int k, best = -1;
+    avoid |= a->xreserved;
     for (k = 0; k < 16; ++k) {
         int o = a->xowner[k];
         if ((avoid >> k) & 1) continue;
@@ -2274,7 +2324,8 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
     if (out >= 0 && out != i->mplace) {
         isx = (f->xmask >> out) & 1;
         if (i->vtied) {
-            int tv = i->in[out], from = r[out], dies = x->v[tv].last == at;
+            int tv = i->in[out], from = r[out],
+                dies = x->v[tv].last == at && (!x->v[tv].pinned || sgx_pin_inplace(a, at, tv, i->def));
             for (k = 0; k < f->nops; ++k)
                 if (k != out && i->in[k] == tv) dies = 0;
             if (dies) {
@@ -2530,6 +2581,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             else
                 sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
         }
+        if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins, which the call changes, to the state */
         sgx_byte(c, 0x48); /* mov rdi, rbx */
         sgx_byte(c, 0x89);
         sgx_byte(c, 0xDF);
@@ -2565,6 +2617,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             if (saved_g[k] && x->v[a->owner[k]].last > at) sgx_mov_mem(a, 1, 64, k, SGX_RSP, 8 * gslot[k]);
             if (saved_x[k]) sgx_vmem(a, &sgx_v_movdqu_ld, k, SGX_RSP, 8 * xslot[k]);
         }
+        if (a->pin_cs) a->pin_cs(a->machine, 0);
         sgx_byte(c, 0xE9); /* jmp back */
         sgx_cjump(a, c->n, back, 1);
         sgx_imm(c, 0, 4);
@@ -2633,14 +2686,33 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         case SGX_K_VEC: sgx_assemble_vec(a, i); break;
         case SGX_K_COLD: sgx_assemble_cold(a, i); break;
         case SGX_K_PGET:
-            /* the value is the pinned register's own, no copy (until a PSET of it, which moves it if still read) */
-            a->owner[s->imm & 15] = s->def;
-            x->v[s->def].reg = (signed char)s->imm;
+            /* the value is the pinned register's own, no copy (until a PSET of it, which moves it if still read); an
+               XMM register's for imm 16 and up */
+            if (s->imm >= 16) a->xowner[s->imm & 15] = s->def;
+            else
+                a->owner[s->imm & 15] = s->def;
+            x->v[s->def].reg = (signed char)(s->imm & 15);
             x->v[s->def].pinned = 1;
             break;
-        case SGX_K_PSET: {
+        case SGX_K_PSET:
+            if (s->imm >= 16) {
+                int p = (int)(s->imm & 15), o = a->xowner[p], src;
+                if (o > 0 && o != s->in[0] && x->v[o].pinned && x->v[o].reg == p && x->v[o].last > i) {
+                    int d = sgx_xfree(a, i, 1u << p);
+                    sgx_vrr(a, &sgx_v_movaps, d, p);
+                    a->xowner[d] = o;
+                    x->v[o].reg = (signed char)d;
+                    x->v[o].pinned = 0;
+                }
+                src = sgx_xin(a, s->in[0], i, 0);
+                if (src != p) sgx_vrr(a, &sgx_v_movaps, p, src), a->xowner[p] = 0;
+                else /* made in place: the value is the register's, as a PGET's */
+                    x->v[s->in[0]].pinned = 1;
+                break;
+            }
+            {
             int p = (int)s->imm, o = a->owner[p], src;
-            if (o > 0 && x->v[o].pinned && x->v[o].reg == p && x->v[o].last > i) {
+            if (o > 0 && o != s->in[0] && x->v[o].pinned && x->v[o].reg == p && x->v[o].last > i) {
                 int d = sgx_free_reg(a, i, 1u << p);
                 sgx_mov_rr(a, d, p);
                 a->owner[d] = o;
@@ -2648,10 +2720,11 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                 x->v[o].pinned = 0;
             }
             src = sgx_in_reg(a, s->in[0], i, 0);
-            sgx_mov_rr(a, p, src);
-            a->owner[p] = 0;
+            if (src != p) sgx_mov_rr(a, p, src), a->owner[p] = 0;
+            else
+                x->v[s->in[0]].pinned = 1;
+            }
             break;
-        }
         case SGX_K_LOAD: {
             int d = sgx_free_reg(a, i, 0);
             if (s->w == 8) {
