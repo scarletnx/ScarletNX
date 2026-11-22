@@ -1938,6 +1938,7 @@ add_executable(snx-test-nvn-replay-split nvn_replay_split.c "${PROJECT_SOURCE_DI
 snx_test_target(snx-test-nvn-replay-split gnu23)
 target_compile_options(snx-test-nvn-replay-split PRIVATE -Wno-missing-field-initializers) # renderer.c's records
 add_dependencies(snx-test-nvn-replay-split snx_settings)
+target_link_libraries(snx-test-nvn-replay-split PRIVATE scarletnx-platform) # gpu_queue.c times the waits
 target_include_directories(snx-test-nvn-replay-split PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
 add_test(NAME nvn_replay_split COMMAND snx-test-nvn-replay-split)
 set_tests_properties(nvn_replay_split PROPERTIES TIMEOUT 30) # a wait in the queue that never ends would hang ctest

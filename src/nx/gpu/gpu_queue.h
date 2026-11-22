@@ -30,6 +30,7 @@ void gq_read_wait(u64 gva, u64 size);
 int gq_forward(u64 gva, void* dst, u64 size);
 /* every queued record done, for the front end's points that need the whole renderer side */
 void gq_drain(void);
+void gq_stats_log(u64 presents); /* the stats line's: the front end's waits and the renderer thread's runs */
 /* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that
    gq_call_begin returns, in the call's place in the queue. The front end fills them, then calls gq_call_end */
 typedef void (*GqFn)(const void* arg, u64 bytes);
