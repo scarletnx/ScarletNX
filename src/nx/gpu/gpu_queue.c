@@ -21,6 +21,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 
 enum { GQ_WRITE, GQ_WRITE_CB, GQ_RELEASE, GQ_I2M_BLOCK, GQ_CALL, GQ_SKIP };
 typedef struct {
@@ -110,6 +111,41 @@ static void gq_run(const GqRecord* r) {
     }
     t_gq_run = 0;
 }
+/* For the stats line: the front end's waits on the renderer thread, by what it waited for (a full ring, a drain, a
+   queued write before a read), the
+   drains asked and those that found every record run, and the renderer thread's records and its time in them. The
+   front end adds the waits, the renderer thread its runs, and the present's thread takes them (gq_stats_log) */
+enum { GQW_ROOM, GQW_DRAIN, GQW_READ }; /* gq_wait's: what the front end waits for */
+enum {
+    GQS_ROOM_N,
+    GQS_ROOM_NS,
+    GQS_DRAIN_N,
+    GQS_DRAIN_NS,
+    GQS_READ_N,
+    GQS_READ_NS,
+    GQS_DRAINS,
+    GQS_DRAINS_IDLE,
+    GQS_RUNS,
+    GQS_RUN_BYTES,
+    GQS_RUN_NS,
+    GQS_N
+};
+static _Atomic u64 g_gqs[GQS_N];
+static void gqs_add(int at, u64 v) { atomic_fetch_add_explicit(&g_gqs[at], v, memory_order_relaxed); }
+void gq_stats_log(u64 presents) {
+    if (!g_gq.started || !presents) return;
+    u64 v[GQS_N];
+    for (int i = 0; i < GQS_N; i++) v[i] = atomic_exchange_explicit(&g_gqs[i], 0, memory_order_relaxed);
+    double n = (double)presents;
+    LOG("gpu: split: the front end waited on a full ring %.2f times a present (%.3f ms), on drains %.2f (%.3f ms; "
+        "%.2f drains asked a present, %.2f of them with every record run), for queued writes before reads %.2f (%.3f "
+        "ms); the renderer thread ran %.0f records a "
+        "present (%.1f KB) in %.3f ms\n",
+        (double)v[GQS_ROOM_N] / n, (double)v[GQS_ROOM_NS] / 1e6 / n, (double)v[GQS_DRAIN_N] / n,
+        (double)v[GQS_DRAIN_NS] / 1e6 / n, (double)v[GQS_DRAINS] / n, (double)v[GQS_DRAINS_IDLE] / n,
+        (double)v[GQS_READ_N] / n, (double)v[GQS_READ_NS] / 1e6 / n, (double)v[GQS_RUNS] / n,
+        (double)v[GQS_RUN_BYTES] / 1024.0 / n, (double)v[GQS_RUN_NS] / 1e6 / n);
+}
 /* the next record run, and the taker's position and the fence published: 0 when there was none */
 static int gq_take_one(void) {
     u64 tail = atomic_load_explicit(&g_gq.tail, memory_order_relaxed);
@@ -117,7 +153,11 @@ static int gq_take_one(void) {
     const GqRecord* r = (const GqRecord*)(g_gq.ring + tail % GQ_RING);
     u64 fence = r->fence;
     u32 bytes = r->bytes;
+    u64 t0 = plat_ns();
     gq_run(r);
+    gqs_add(GQS_RUN_NS, plat_ns() - t0);
+    gqs_add(GQS_RUNS, 1);
+    gqs_add(GQS_RUN_BYTES, bytes);
     atomic_store_explicit(&g_gq.tail, tail + bytes, memory_order_release);
     atomic_store_explicit(&g_gq.done, fence, memory_order_release);
     atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);
@@ -139,7 +179,9 @@ static void gq_thread(void* arg) {
 }
 /* the front end waits until ok(arg) holds, which the renderer thread's progress makes true. Without the thread the
    records run here instead */
-static void gq_wait(int (*ok)(u64), u64 arg) {
+static void gq_wait(int (*ok)(u64), u64 arg, int why) {
+    u64 t0 = 0;
+    if (g_gq.started && !ok(arg)) t0 = plat_ns();
     while (!ok(arg)) {
         if (!g_gq.started) {
             if (!gq_take_one()) fatal("gpu: the queue waits for a record it doesn't have\n");
@@ -150,6 +192,11 @@ static void gq_wait(int (*ok)(u64), u64 arg) {
         if (!ok(arg)) plat_wait_word(&g_gq.progress, w, GQ_SLEEP_NS);
         atomic_store_explicit(&g_gq.putter_sleeps, 0, memory_order_relaxed);
     }
+    if (t0) {
+        int at = why == GQW_DRAIN ? GQS_DRAIN_N : why == GQW_READ ? GQS_READ_N : GQS_ROOM_N;
+        gqs_add(at, 1);
+        gqs_add(at + 1, plat_ns() - t0); /* each count's nanoseconds come after it */
+    }
 }
 static int gq_done_by(u64 fence) { return atomic_load_explicit(&g_gq.done, memory_order_acquire) >= fence; }
 /* head: only the front end stores it, so its own loads of it are relaxed */
@@ -158,7 +205,11 @@ static int gq_room(u64 bytes) {
     return GQ_RING - (gq_head() - atomic_load_explicit(&g_gq.tail, memory_order_acquire)) >= bytes;
 }
 void gq_drain(void) {
-    if (g_gq.queued) gq_wait(gq_done_by, g_gq.queued);
+    if (g_gq.started) {
+        gqs_add(GQS_DRAINS, 1);
+        if (gq_done_by(g_gq.queued)) gqs_add(GQS_DRAINS_IDLE, 1);
+    }
+    if (g_gq.queued) gq_wait(gq_done_by, g_gq.queued, GQW_DRAIN);
 }
 /* head moved past the records written before it: the renderer thread may take them from this store on */
 static void gq_publish(u64 head) {
@@ -185,14 +236,14 @@ static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
     u64 at = gq_head() % GQ_RING;
     if (at + bytes > GQ_RING) { /* the ring's end: a filler record to it, and this one from the ring's start */
         u64 fill = GQ_RING - at;
-        gq_wait(gq_room, fill);
+        gq_wait(gq_room, fill, GQW_ROOM);
         GqRecord* f = (GqRecord*)(g_gq.ring + at);
         *f = (GqRecord){GQ_SKIP, (u32)fill, ++g_gq.queued, 0, 0};
         gq_publish(gq_head() + fill);
         if (!g_gq.started) gq_drain();
         at = 0;
     }
-    gq_wait(gq_room, bytes);
+    gq_wait(gq_room, bytes, GQW_ROOM);
     GqRecord* r = (GqRecord*)(g_gq.ring + at);
     *r = (GqRecord){kind, (u32)bytes, ++g_gq.queued, gva, size};
     return r;
@@ -311,12 +362,12 @@ static int gq_read(u64 gva, void* dst, u64 size) {
                 memcpy(dst, (const u8*)(r + 1) + (gva - e->gva), (size_t)size);
                 return 1;
             }
-            gq_wait(gq_done_by, e->fence); /* every older write is done by then too */
+            gq_wait(gq_done_by, e->fence, GQW_READ); /* every older write is done by then too */
             return 0;
         }
         return 0;
     }
-    gq_wait(gq_done_by, need);
+    gq_wait(gq_done_by, need, GQW_READ);
     return 0;
 }
 void gq_read_wait(u64 gva, u64 size) { gq_read(gva, NULL, size); }
