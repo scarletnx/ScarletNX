@@ -37,6 +37,9 @@ _Atomic int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ *
 #define POOL      0x1000u
 #define POOL_B    0x1100u
 #define POOL_MEM  0x100000u
+#define POOL3     0x1400u
+#define POOL3_B   0x1500u
+#define POOL3_MEM 0x80000u
 #define CMDBUF    0x2000u
 #define TEX       0x3000u
 #define TEX_B     0x3100u
@@ -215,6 +218,13 @@ u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap) {
     return 1;
 }
 void gmmu_later_post(u32 seq) { (void)seq; }
+/* the waits for the GPU thread's changes, counted: made at once here */
+static int g_later_waits;
+int gmmu_later_wait(u32 seq, i64 timeout_ns) {
+    (void)seq;
+    g_later_waits += timeout_ns > 0;
+    return 1;
+}
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     *cpu = gva;
     return max;
@@ -387,6 +397,41 @@ static u32 replay(NvnDraw* d, u64 p, u32 want) {
         if (h.op & NVN_REC_LAST) return found;
         p += h.size;
     }
+}
+
+/* what the renderer answers of the GPU's results over a range (Renderer.gpu_holds), and the range it was asked of */
+static int g_holds;
+static u64 g_holds_at, g_holds_size;
+static int r_gpu_holds(u64 gva, u64 size) {
+    g_holds_at = gva;
+    g_holds_size = size;
+    return g_holds;
+}
+/* an Ounce pool that ends while the GPU's results over it haven't landed waits until its unmap has landed them,
+   within a bound; one with none over it, and a Switch device's pool, go at once */
+static void test_pool_end_waits(void) {
+    g_test_renderer.gpu_holds = r_gpu_holds;
+    nvn_MemoryPoolBuilderSetDefaults(NULL, POOL3_B);
+    nvn_MemoryPoolBuilderSetStorage(NULL, POOL3_B, POOL3_MEM, 0x10000);
+    g_ounce = 1;
+    g_holds = 1;
+    g_later_waits = 0;
+    g_holds_size = 0;
+    check(nvn_MemoryPoolInitialize(NULL, POOL3, POOL3_B), "an Ounce pool initializes");
+    const u64 gva = nvn_MemoryPoolGetBufferAddress(NULL, POOL3);
+    nvn_MemoryPoolFinalize(NULL, POOL3);
+    check(g_later_waits == 1 && g_holds_at == gva && g_holds_size == 0x10000,
+          "an Ounce pool ending with the GPU's results over it waits for them to land");
+    g_holds = 0;
+    check(nvn_MemoryPoolInitialize(NULL, POOL3, POOL3_B), "it initializes again");
+    nvn_MemoryPoolFinalize(NULL, POOL3);
+    check(g_later_waits == 1, "with none over it, it ends at once");
+    g_ounce = 0;
+    g_holds = 1;
+    check(nvn_MemoryPoolInitialize(NULL, POOL3, POOL3_B), "a Switch device's pool initializes");
+    nvn_MemoryPoolFinalize(NULL, POOL3);
+    check(g_later_waits == 1, "a Switch device's pool ends at once, as before");
+    g_test_renderer.gpu_holds = NULL;
 }
 
 static void pool_init(void) {
@@ -1516,6 +1561,7 @@ int main(void) {
     test_device();
     pool_init();
     test_pool_own_address();
+    test_pool_end_waits();
     test_command_buffer();
     test_tessellation_metadata();
     test_ounce_program_records();

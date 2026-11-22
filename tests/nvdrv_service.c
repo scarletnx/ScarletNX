@@ -937,6 +937,33 @@ static void test_gmmu_later(void) {
     CHECK(!gmmu_translate(g) && !gmmu_translate(g + 99 * 0x1000));
     test_hold = 0;
 }
+/* a wait for a change queued for the GPU thread (gmmu_later_wait): with no time left it says the change isn't made yet
+   (nothing here waits), and once the GPU thread has made it and those before it, it returns at once; on the GPU
+   thread it makes them itself, and the call posted for them finds nothing left */
+static void test_gmmu_later_wait(void) {
+    const u64 g = 0x7300000000ull, c = 0xB0000000ull;
+    test_hold = 1;
+    test_nheld = 0;
+    u32 a = gmmu_later(GMMU_LATER_MAP, g, c, 0x1000, 0);
+    gmmu_later_post(a);
+    u32 b = gmmu_later(GMMU_LATER_MAP, g + 0x1000, c + 0x1000, 0x1000, 0);
+    gmmu_later_post(b);
+    CHECK(!gmmu_later_wait(a, 0) && !gmmu_later_wait(b, 0));
+    run_held(0); /* a's call makes the changes up to a, not the newer b */
+    CHECK(gmmu_later_wait(a, 0) && gmmu_later_wait(a, -1) && !gmmu_later_wait(b, 0));
+    run_held(1);
+    CHECK(gmmu_later_wait(b, 0) && gmmu_later_wait(a, 0));
+    u32 u = gmmu_later(GMMU_LATER_UNMAP, g, 0, 0x2000, 0);
+    gmmu_later_post(u);
+    CHECK(!gmmu_later_wait(u, 0) && gmmu_translate(g) == c);
+    test_on_gpu = 1;
+    CHECK(gmmu_later_wait(u, -1) && g_host.nvdrv.nlater == 0);
+    test_on_gpu = 0;
+    CHECK(!gmmu_translate(g) && !gmmu_translate(g + 0x1000) && gmmu_later_wait(u, 0));
+    run_held(2);
+    CHECK(g_host.nvdrv.nlater == 0);
+    test_hold = 0;
+}
 /* gmmu_run against gmmu_translate page by page: runs longer than an entry's count, across a table's end, broken by a
    page mapped elsewhere, and what an own unmap keeps */
 static u64 run_by_pages(u64 gva, u64 max, u64* cpu) {
@@ -1239,6 +1266,7 @@ int main(void) {
     test_nvmap_as();
     test_gmmu_freed();
     test_gmmu_later();
+    test_gmmu_later_wait();
     test_gmmu_runs();
     test_gmmu_aliases();
     nvdrv = new_nvdrv();

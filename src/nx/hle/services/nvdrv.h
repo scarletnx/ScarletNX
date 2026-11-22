@@ -67,6 +67,10 @@ void gmmu_space_free(u64 gva, u64 size);
 typedef enum { GMMU_LATER_MAP, GMMU_LATER_UNMAP, GMMU_LATER_FREE } GmmuLaterKind;
 u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap);
 void gmmu_later_post(u32 seq);
+/* 1 once the GPU thread has made the change seq and every one queued before it (each gmmu_later_post'ed), the results
+   pending over their ranges landed as with any change; 0 when timeout_ns ran out first (negative: no limit). The guest
+   thread waits off its core. On the GPU thread, the changes are made at once */
+int gmmu_later_wait(u32 seq, i64 timeout_ns);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the
@@ -295,6 +299,7 @@ typedef struct {
     u32 later_head;
     _Atomic u32 nlater;
     u32 caplater, later_seq;
+    u32 later_done; /* the newest change the GPU thread made, under sync_lk: gmmu_later_wait's waiters use sync_cv */
     PCond sync_cv;
     PMutex sync_lk;
     PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */

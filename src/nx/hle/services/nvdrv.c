@@ -164,9 +164,34 @@ static void later_apply(void* arg) {
         atomic_store_explicit(&h->nlater, atomic_load_explicit(&h->nlater, memory_order_relaxed) - 1,
                               memory_order_release);
         pm_unlock(&h->later_lock);
+        pm_lock(&h->sync_lk);
+        h->later_done = c.seq;
+        pc_broadcast(&h->sync_cv);
+        pm_unlock(&h->sync_lk);
     }
 }
 void gmmu_later_post(u32 seq) { gpu_call(later_apply, (void*)(uintptr_t)seq, NULL, 0); }
+int gmmu_later_wait(u32 seq, i64 timeout_ns) {
+    HostNvdrv* h = &g_host.nvdrv;
+    if (gpu_on_thread()) {
+        later_apply((void*)(uintptr_t)seq);
+        return 1;
+    }
+    u64 deadline = timeout_ns > 0 ? guest_ns() + (u64)timeout_ns : 0;
+    int done;
+    pm_lock(&h->sync_lk);
+    while (!(done = !later_after(seq, h->later_done))) {
+        i64 left = -1;
+        if (timeout_ns >= 0) {
+            u64 now = guest_ns();
+            if (!timeout_ns || now >= deadline) break;
+            left = (i64)(deadline - now);
+        }
+        kthread_wait(&h->sync_cv, &h->sync_lk, left);
+    }
+    pm_unlock(&h->sync_lk);
+    return done;
+}
 /* the guest address of a GPU address, 0 when its page isn't mapped. On the GPU thread, while ioctl_as maps and unmaps
    on others */
 u64 gmmu_translate(u64 gva) {

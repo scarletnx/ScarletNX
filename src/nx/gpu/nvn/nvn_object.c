@@ -10,6 +10,7 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/gpu/guest_pools.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_replay.h"
@@ -454,6 +455,20 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
          (unsigned long long)o.memory, (unsigned long long)o.size, (unsigned long long)o.gpu, o.flags);
     return 1;
 }
+/* An Ounce pool that ends while results of the GPU over it are not in guest memory yet: its unmap, queued for the GPU
+   thread, lands them, and the end waits for it. The console's GPU wrote them into the storage as it ran, and the game
+   may hand the storage to other uses as soon as the pool has ended: landed later, they wrote the GPU's old pixels over
+   memory its allocator had given to its own tables since, which then read as zeros. The wait has a bound, past which
+   it says so and goes on */
+#define POOL_END_WAIT_NS (5000ll * 1000 * 1000)
+static int pool_end_holds(const NvnPool* o, u64 gva, u64 size) {
+    return g_ounce && o->memory && g_renderer->gpu_holds && g_renderer->gpu_holds(gva, size);
+}
+static void pool_end_wait(u64 pool, u32 seq) {
+    if (!gmmu_later_wait(seq, POOL_END_WAIT_NS))
+        WARN_LIMIT(4, "nvn: memory pool %llx ended with results of the GPU over it, which hadn't landed after %u ms\n",
+                   (unsigned long long)pool, (unsigned)(POOL_END_WAIT_NS / 1000000));
+}
 void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     NvnPool* o = NVN_OBJ(NvnPool, p);
     u64 lead = o->gpu & 0xfff;
@@ -461,12 +476,16 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u32 nvmap =
         o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? atomic_exchange_explicit(&o->nvmap, 0, memory_order_acq_rel) : 0;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) { /* the handle goes after the unmap, as it went before */
+        int held = pool_end_holds(o, o->gpu - lead, lead + o->size);
         gpu_pool_remove(o->gpu);
+        u32 seq;
         if (pool_own_address(o)) {
             gmmu_space_give_back(o->gpu - lead, lead + o->size);
-            gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, o->gpu - lead, 0, lead + o->size, nvmap));
+            seq = gmmu_later(GMMU_LATER_UNMAP, o->gpu - lead, 0, lead + o->size, nvmap);
         } else
-            gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
+            seq = gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap);
+        gmmu_later_post(seq);
+        if (held) pool_end_wait(p, seq);
         nvmap = 0;
     }
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
