@@ -2690,6 +2690,16 @@ add_test(NAME host_tools_emulator COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SO
 add_test(NAME curl_cache_key COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/curl-cache-key-test" "-DGENERATOR=${CMAKE_GENERATOR}"
          "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/curl_cache_key_test.cmake")
+# libz.a, which FFmpeg's configure links its zlib check against with no -flto, stays machine code with SNX_LTO
+# (cmake/zlib.cmake). Not on Apple, where cmake/lto.cmake refuses SNX_LTO, nor in a cross build, whose target flags the
+# test's project would not get
+if(TARGET snx_zlib AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+    add_test(NAME zlib_lto COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DZLIB=${zlib_SOURCE_DIR}"
+             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/zlib-lto-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+             "-DMAKE=${CMAKE_MAKE_PROGRAM}" "-DCC=${CMAKE_C_COMPILER}" "-DCXX=${CMAKE_CXX_COMPILER}" -P
+             "${CMAKE_CURRENT_SOURCE_DIR}/zlib_lto_test.cmake")
+    set_tests_properties(zlib_lto PROPERTIES SKIP_REGULAR_EXPRESSION "zlib_lto skipped:")
+endif()
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
