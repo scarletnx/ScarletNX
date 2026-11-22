@@ -378,8 +378,18 @@ void vk_rec_run(void (*fn)(void*), void* arg) {
     vk_rec_sync(); /* the packet, and the commands queued before it */
 }
 
+/* The submissions queued before (their binds just before each) are on q once the ring has run past the last of them:
+   what the ring holds after it, the next submission's commands, is no business of q's. Draining the whole ring held a
+   compute batch's submission until those commands were recorded too */
+static u64 g_submit_end; /* the ring's position after the last submission's packet (vk_lock) */
 void vk_rec_queue(VkQueue q) {
-    if (q == g_vk.gfx) vk_rec_sync();
+    if (q != g_vk.gfx || g_rec <= 0) return;
+    if (atomic_load_explicit(&g_rec_tid, memory_order_acquire) == plat_tid()) return; /* vk_rec_sync_until's */
+    vk_lock();                                                                        /* no packet is added meanwhile */
+    publish();
+    if (atomic_load_explicit(&g_tail, memory_order_seq_cst) < g_submit_end)
+        room_wait(REC_CAP - (g_pending - g_submit_end), VK_REC_FOREVER);
+    vk_unlock();
 }
 
 /* The graphics and the compute queue's locks (vk_queue_lock): this thread submits, presents and binds sparse memory
@@ -487,6 +497,7 @@ void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubm
         return;
     }
     *(Submit*)rec_push(submit_run, sizeof x) = x;
+    g_submit_end = g_pending;
     publish(); /* the timeline value is waited for by whoever needs the work done */
 }
 

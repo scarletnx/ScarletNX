@@ -896,6 +896,7 @@ u32 vk_texture_array_elements(void); /* each texture array's elements, 0 where t
 void vk_memory_text(char* out, size_t size);
 u64 vk_memory_blocks(void);              /* the bytes of devmem.c's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
+u32 vk_frame_cbs(void);                  /* the command buffers the slot being recorded has */
 /* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets, array_sets of them with the
    texture arrays (gpu/vk/pipeline.c). */
 #define VK_POOL_TYPES 6 /* uniform/storage buffers, combined textures, storage images/texels, sampled images */
@@ -950,6 +951,8 @@ int vk_rec_threaded(void); /* the frame's commands go through the recording thre
 int vk_rec_ring(VkCommandBuffer cb); /* cb's commands go through that thread's ring (vk_lock) */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
 u64 vk_rec_gfx_queued(void); /* the graphics timeline value of the last submission on the queue (any thread) */
+/* the slots' command buffers grown in use, each after a wait for the recording thread (cmd.c vk_cmd; vk_lock) */
+extern u64 g_vk_cb_grows_waited;
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
 void vk_rec_begin_upload(VkCommandBuffer cb); /* begins cb, the submission's upload command buffer (vk_cmd_upload) */
 /* ends and submits up (the upload command buffer, VK_NULL_HANDLE for none) and then cb with those semaphores (s[0]
@@ -967,7 +970,8 @@ int vk_rec_sync_until(u64 until);
    runs on (tests/vulkan_headless.c's check_recorder_self_sync). A call from the recording thread itself returns at
    once (vk_rec_sync), so fn would run after it: the caller is another thread */
 void vk_rec_run(void (*fn)(void*), void* arg);
-void vk_rec_queue(VkQueue q); /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* before submitting to or presenting on q outside the ring (vk_lock): the submissions the ring holds are on q first */
+void vk_rec_queue(VkQueue q);
 /* fn with a copy of size bytes of arg (a quarter of the ring at most), on the recording thread in order with the
    commands, submissions and presents queued around it (vk_lock); at once without that thread */
 void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size);

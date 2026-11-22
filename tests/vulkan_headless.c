@@ -122,6 +122,84 @@ static int check_recorder_self_sync(void) {
     return 0;
 }
 
+/* A submission to the graphics queue from outside the ring (a compute batch's where the queue is shared, a landing's)
+   waits for the ring's submissions before it (vk_rec_queue), not for the commands queued after the last of them: a
+   packet after the submission blocks until a thread lets it go, 3 s on, and vk_rec_queue returns before that. Before,
+   it drained the whole ring, and waited for the blocked packet */
+static _Atomic int g_rq_go;
+static void rq_block(const void* arg) {
+    (void)arg;
+    while (!atomic_load_explicit(&g_rq_go, memory_order_acquire)) plat_sleep_ns(100000);
+}
+static void rq_go_later(void* arg) {
+    (void)arg;
+    const u64 end = plat_ns() + 3000000000ull;
+    while (plat_ns() < end && !atomic_load_explicit(&g_rq_go, memory_order_acquire)) plat_sleep_ns(1000000);
+    atomic_store_explicit(&g_rq_go, 1, memory_order_release);
+}
+static int check_rec_queue_submissions(void) {
+    if (!vk_rec_threaded()) {
+        puts("SKIP the ring's submissions before a queue's: vk_record=0 runs the commands on the GPU thread");
+        return 0;
+    }
+    const u8 nothing = 0;
+    vk_lock();
+    vk_finish();
+    (void)vk_cmd();
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    const u64 submitted = vk_last_submit();
+    vk_rec_call(rq_block, &nothing, sizeof nothing);
+    CHECK(!plat_thread(rq_go_later, NULL, 1u << 16));
+    vk_rec_queue(g_vk.gfx);
+    const int early = !atomic_load_explicit(&g_rq_go, memory_order_acquire);
+    const u64 queued = vk_rec_gfx_queued();
+    atomic_store_explicit(&g_rq_go, 1, memory_order_release);
+    vk_rec_sync();
+    vk_unlock();
+    if (!early || queued < submitted)
+        fprintf(stderr,
+                "ring before a queue: vk_rec_queue returned %s the packet after the submission ran, with "
+                "submission %llu on the queue (%llu made)\n",
+                early ? "before" : "after", (unsigned long long)queued, (unsigned long long)submitted);
+    CHECK(early && queued >= submitted);
+    puts("ring before a queue: its submissions on the queue, not the commands after them");
+    return 0;
+}
+
+/* A slot whose use took every command buffer it had gets as many again at its next recycle, when its pool is reset and
+   no thread records in it: that use, as busy plus one submission, grows none in use, each of which waited for the
+   recording thread first (g_vk_cb_grows_waited). Before, it grew in use at its last submission */
+static int check_cb_grow_at_recycle(void) {
+    vk_lock();
+    vk_finish();
+    vk_frame_next(); /* a slot of its own: its first vk_cmd recycles it */
+    const u32 slot = vk_frame_slot();
+    (void)vk_cmd();
+    const u32 had = vk_frame_cbs();
+    for (u32 i = 0; i < had; i++) {
+        (void)vk_cmd();
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
+    CHECK(vk_frame_cbs() == had);
+    for (u32 k = 0; k < VK_FRAMES; k++) vk_frame_next();
+    CHECK(vk_frame_slot() == slot);
+    const u64 grows = g_vk_cb_grows_waited;
+    for (u32 i = 0; i <= had; i++) {
+        (void)vk_cmd();
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
+    vk_finish();
+    vk_unlock();
+    if (g_vk_cb_grows_waited != grows)
+        fprintf(stderr,
+                "command buffers at the recycle: a slot of %u that used them all grew %llu times in its next "
+                "use of %u submissions\n",
+                had, (unsigned long long)(g_vk_cb_grows_waited - grows), had + 1);
+    CHECK(g_vk_cb_grows_waited == grows && vk_frame_cbs() > had);
+    puts("command buffers at the recycle: a slot that used them all grew before its next use");
+    return 0;
+}
+
 /* An error or a crash on the recording thread stops it inside a packet for good, with what the packet took: a submit or
    a present keeps the graphics queue's lock. The window's release for the error's screen, which the main thread makes
    (sdl3.c's fatal_screen), waited for that ring to drain with no end: the window froze, no error showed and the process
@@ -8368,6 +8446,8 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_recorder_self_sync());
         CHECK(!check_release_stopped_recorder());
         CHECK(!check_full_ring_sleeps());
+        CHECK(!check_rec_queue_submissions());
+        CHECK(!check_cb_grow_at_recycle());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
@@ -8376,6 +8456,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_recorder_self_sync());
     CHECK(!check_release_stopped_recorder());
     CHECK(!check_full_ring_sleeps());
+    CHECK(!check_rec_queue_submissions());
+    CHECK(!check_cb_grow_at_recycle());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
