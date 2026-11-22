@@ -68,6 +68,14 @@ void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(pred);
 }
 const Renderer* gpu_renderer_now(void) { return g_renderer; }
+#ifndef SNX_TEST_GPU_QUEUE /* gpu.c's statistics of inline data, for a test that doesn't link gpu.c */
+GpuInlineMark gpu_inline_begin(void) { return (GpuInlineMark){0}; }
+void gpu_inline_end(int kind, u64 bytes, GpuInlineMark m) {
+    (void)kind;
+    (void)bytes;
+    (void)m;
+}
+#endif
 /* gpu_queue.c's call record, for a test that doesn't link it (SNX_TEST_GPU_QUEUE says one does): the call runs at
    once, as the queue runs it without gpu_split */
 #ifndef SNX_TEST_GPU_QUEUE
