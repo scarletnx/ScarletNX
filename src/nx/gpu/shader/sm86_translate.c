@@ -113,6 +113,7 @@ typedef struct {
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
        whether its SPH asks for passthrough */
     u32 position_in, primitive_id_in, primitive_id_out, viewport_mask;
+    u32 layer_out; /* the layer's output (BuiltIn Layer), made at its first store */
     /* a vertex or geometry program's ClipDistance output, 8 planes (clip_var) */
     u32 clip;
     int passthrough;
@@ -1010,6 +1011,19 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
            a pixel, is what the translation gives without it. The game's driver writes no table for the index (the
            hardware's reset table), so the rate it selects is not known */
         return;
+    } else if (addr == 0x64) {
+        /* the layer: BuiltIn Layer, which a geometry program writes with the Geometry capability it has, and another
+           stage with ShaderLayer where the device has it (spirv_translate.c's rule): without it the write is dropped,
+           as there */
+        if (c->stage != ST_GS && !g_spirv_translate.output_layer) return;
+        if (!c->layer_out) {
+            if (c->stage != ST_GS) spv_emit_layer_capability(&c->e);
+            c->layer_out = spv_emit_layer_output(&c->e, c->t_i32);
+            add_interface(c, c->layer_out);
+        }
+        spv_emit_store(&c->e, c->layer_out, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, bits));
+        c->si->writes_layer = 1;
+        return;
     } else if (addr == 0x6c) {
         /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the
            Maxwell translator leaves it (spirv_translate.c declares the output only with
@@ -1075,6 +1089,7 @@ static void gs_passthrough(Ctx* c) {
         saved[a] = written ? spv_emit_load(e, c->t_v4f, out[a]) : empty;
     }
     u32 size = c->point_size ? spv_emit_load(e, c->t_f32, c->point_size) : 0;
+    u32 layer = c->layer_out ? spv_emit_load(e, c->t_i32, c->layer_out) : 0;
     /* and the clip distances, which EmitVertex leaves undefined too (emit_io.c's saved_clip for Maxwell's) */
     u32 clip_saved[8] = {0};
     for (u32 plane = 0; plane < 8 && c->clip; plane++)
@@ -1105,6 +1120,7 @@ static void gs_passthrough(Ctx* c) {
             spv_emit_store(e, out[a], value);
         }
         if (c->point_size) spv_emit_store(e, c->point_size, size);
+        if (c->layer_out) spv_emit_store(e, c->layer_out, layer);
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), clip_saved[plane]);
         spv_emit_store(e, c->primitive_id_out, id);
@@ -3568,10 +3584,12 @@ static u32 image_scalar(Ctx* c, u32 kind) { return kind == 0 ? c->t_f32 : kind =
 /* NAK's ImageDim (bits 61-63): the SPIR-V dimension, arrayed, and the integer coordinates */
 static int image_dim(u32 dim, u32* sdim, u32* array, u32* coords, u32* type) {
     /* ShaderInfo.img[].type is the code itself (0 1D, 1 1D buffer, 2 1D array, 3 2D, 4 2D array, 5 3D), which the
-       renderer reads as Maxwell's SUST dimension */
+       renderer reads as Maxwell's SUST dimension. A 1D buffer is a storage texel buffer (SPIR-V's Buffer, 5), which the
+       renderer binds at SNX_VKB_IMGBUF as for a Maxwell program */
     *type = dim;
     switch (dim) {
         case 0: *sdim = 0, *array = 0, *coords = 1; return 1;
+        case 1: *sdim = 5, *array = 0, *coords = 1; return 1;
         case 2: *sdim = 0, *array = 1, *coords = 2; return 1;
         case 3: *sdim = 1, *array = 0, *coords = 2; return 1;
         case 4: *sdim = 1, *array = 1, *coords = 3; return 1;
@@ -3610,23 +3628,27 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         si->img[slot].bl_cbuf = (u8)bank;
         si->img[slot].kind = (u8)kind;
         if (kind != 1) spv_emit_capability(&c->e, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
-        c->img[slot] =
-            spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
-                                   sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
+        c->img[slot] = spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage),
+                                              (sdim == 5 ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)slot,
+                                              sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
         add_interface(c, c->img[slot]);
     }
-    /* integer coordinates, a 1D image's as a 2D one's */
-    u32 a = sm86_field(in, 24, 8), v[4], count = 0;
-    for (u32 k = 0; k < coords; k++) {
-        if (sdim == 0 && k == 1) v[count++] = c->zero;
-        v[count++] = rd(c, a >= SM86_RZ ? a : a + k);
-    }
-    if (sdim == 0 && coords == 1) v[count++] = c->zero;
-    u32 ivec = count == 2 ? spv_emit_type_vec2(&c->e, c->t_i32) : spv_emit_type_vec3(&c->e, c->t_i32);
-    u32 uvec = count == 2 ? c->t_v2u : c->t_v3u;
-    u32 coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
+    /* integer coordinates, a 1D image's as a 2D one's, a buffer's one element index */
+    u32 a = sm86_field(in, 24, 8), v[4], count = 0, coord;
+    if (sdim == 5)
+        coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, a));
+    else {
+        for (u32 k = 0; k < coords; k++) {
+            if (sdim == 0 && k == 1) v[count++] = c->zero;
+            v[count++] = rd(c, a >= SM86_RZ ? a : a + k);
+        }
+        if (sdim == 0 && coords == 1) v[count++] = c->zero;
+        u32 ivec = count == 2 ? spv_emit_type_vec2(&c->e, c->t_i32) : spv_emit_type_vec3(&c->e, c->t_i32);
+        u32 uvec = count == 2 ? c->t_v2u : c->t_v3u;
+        coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
                                count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
                                           : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
+    }
     if (atomic) {
         /* SURED: NAK's set_atom_op at 87-89 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor) and atom type at 73-75 (0
            u32, 1 s32), the data at 32 */

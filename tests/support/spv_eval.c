@@ -760,6 +760,7 @@ static const char* run(Ev* e) {
                     if (e->env->emitted < 8 && slot < 34) memcpy(e->env->vertex[e->env->emitted][slot], b->words, words * 4);
                     if (e->env->emitted < 8 && v->builtin == 3 + 1) /* ClipDistance */
                         memcpy(e->env->vertex_clip[e->env->emitted], b->words, (b->n < 8 ? b->n : 8) * 4);
+                    if (e->env->emitted < 8 && v->builtin == 9 + 1) e->env->vertex_layer[e->env->emitted] = b->words[0];
                     /* the emit leaves every output undefined: a program that relies on one after it reads this */
                     for (uint32_t k = 0; k < b->n; k++) b->words[k] = 0xdeadbeefu;
                 }

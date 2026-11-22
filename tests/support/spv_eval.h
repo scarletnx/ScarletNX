@@ -49,10 +49,12 @@ typedef struct {
     uint32_t array_words[34];
     /* a geometry program: its input arrays' words (up to 6 vertices of a vec4) by location, 32 for Position; and each
        vertex it emits (the first 8), its outputs by location, then 32 for Position and 33 for PrimitiveId, with the
-       counts of OpEmitVertex and OpEndPrimitive. vertex_clip is each emitted vertex's ClipDistance */
+       counts of OpEmitVertex and OpEndPrimitive. vertex_clip is each emitted vertex's ClipDistance, vertex_layer its
+       Layer */
     uint32_t gs_in[33][6 * 4];
     uint32_t vertex[8][34][4];
     uint32_t vertex_clip[8][8];
+    uint32_t vertex_layer[8];
     uint32_t emitted, primitives;
 } SpvEvalEnv;
 /* Runs the module's first entry point: NULL when it returned, else why it stopped (a static string) */

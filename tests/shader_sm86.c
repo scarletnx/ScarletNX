@@ -953,6 +953,63 @@ static void test_image_kinds(const char* dir) {
     }
 }
 
+/* SUST.P, SULD.P and SUATOM of 1D buffers (dimension 1): storage texel buffers (ImageBuffer), bound at SNX_VKB_IMGBUF
+   plus their slot as a Maxwell program's buffer images are, with one integer coordinate. The store and the load share
+   the handle in c[0][0x30] and a slot; the atomic's R32ui image in c[0][0x40] is another. Before, the translator
+   refused each of them */
+static void test_buffer_images(const char* dir) {
+    u8 code[16 * 5] = {0};
+    Word x = fix(0xb9b); /* SUST.P.1D.BUFFER.RGBA [R0], R4, c[0][0x30] */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 4);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 72, 4, 0xf);
+    put(code, 0, x);
+    x = fix(0xb97); /* SULD.P.1D.BUFFER.R R8, [R0], c[0][0x30] */
+    set(&x, 16, 8, 8);
+    set(&x, 24, 8, 0);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 72, 4, 1);
+    set(&x, 81, 3, 7);
+    put(code, 1, x);
+    x = fix(0x593); /* SUATOM.1D.BUFFER.ADD R12, [R0], R4, c[0][0x40] */
+    set(&x, 16, 8, 12);
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 4);
+    set(&x, 40, 14, 0x40 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 81, 3, 7);
+    put(code, 2, x);
+    put(code, 3, exit_insn());
+    put(code, 4, bra(4, 4, 7, 0));
+    ShaderInfo si = {0};
+    si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 5 * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "buffer images: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.nimg == 2 && si.img[0].type == 1 && si.img[0].kind == 2 && si.img[0].cbuf_off == 0x30 / 4);
+    CHECK(si.img[1].type == 1 && si.img[1].kind == 1 && si.img[1].cbuf_off == 0x40 / 4);
+    int buffer_cap = 0;
+    for (size_t i = 5; i < count && spv[i] >> 16; i += spv[i] >> 16)
+        buffer_cap |= spv[i] == (2u << 16 | 17) && spv[i + 1] == 47; /* OpCapability ImageBuffer */
+    CHECK(buffer_cap);
+    /* each image's Binding: SNX_VKB_IMGBUF plus its slot */
+    u32 bindings = 0;
+    for (size_t i = 5; i < count && spv[i] >> 16; i += spv[i] >> 16)
+        if ((spv[i] & 0xffff) == 71 && spv[i] >> 16 == 4 && spv[i + 2] == 33 && spv[i + 3] >= SNX_VKB_IMGBUF &&
+            spv[i + 3] < SNX_VKB_IMGBUF + 2)
+            bindings |= 1u << (spv[i + 3] - SNX_VKB_IMGBUF);
+    CHECK(bindings == 3);
+    CHECK(keep_module(dir, "cs_buffer_images", spv, count));
+    free(spv);
+}
+
 /* A fragment program's KILL says so in has_discard, which the renderer reads before it tests depth ahead of the
    program; one without a KILL leaves it 0 */
 static void test_kill_discard(void) {
@@ -5347,6 +5404,53 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
         if ((words[i] & 0xffff) == 71 && words[i] >> 16 == 4 && words[i + 2] == 11 && words[i + 3] == builtin) return 1;
     return 0;
 }
+/* AST a[0x64], the layer: BuiltIn Layer, which a geometry program writes with the Geometry capability it has and a
+   vertex program with ShaderLayer where the device has it (g_spirv_translate.output_layer); without it a vertex
+   program's store is dropped, as the Maxwell translator drops it. writes_layer says it is written. Before, the
+   translator refused the store */
+static void test_layer_store(const char* dir) {
+    u8 code[16 * 4] = {0};
+    put(code, 0, mov_imm(1, 3));
+    put(code, 1, ast(0x64, 1, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.rt_int_mask = 3; /* a triangle's vertices */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_GS, sph, &si, &count);
+    CHECK(spv && si.writes_layer && spv_has_builtin(spv, count, 9 /* Layer */));
+    if (!spv) fprintf(stderr, "layer store: %s\n", si.first_unsupported);
+    if (spv) {
+        CHECK(keep_module(dir, "gs_layer", spv, count));
+        /* the passthrough's three vertices each carry layer 3, though each EmitVertex leaves the outputs undefined */
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        const char* why = eval_draw(spv, count, &env);
+        if (why) fprintf(stderr, "layer store: the evaluator stops at %s\n", why);
+        CHECK(!why && env.emitted == 3 && env.vertex_layer[0] == 3 && env.vertex_layer[1] == 3 &&
+              env.vertex_layer[2] == 3);
+    }
+    free(spv);
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    int had = g_spirv_translate.output_layer;
+    for (int feature = 0; feature < 2; feature++) {
+        g_spirv_translate.output_layer = feature;
+        ShaderInfo v = {0};
+        spv = sm86_to_spirv(code, 4 * 16, ST_VS, vsph, &v, &count);
+        CHECK(spv && v.writes_layer == feature && spv_has_builtin(spv, count, 9 /* Layer */) == feature &&
+              spv_declares(spv, count, 69 /* ShaderLayer */) == feature);
+        if (spv && feature) CHECK(keep_module(dir, "vs_layer", spv, count));
+        free(spv);
+    }
+    g_spirv_translate.output_layer = had;
+}
 /* AST a[0x2c0] of two words, ClipDistance0 = 0.5 and ClipDistance1 = 0.25. A vertex program before the rasterizer
    writes only the planes that SetUserClipEnable enables (ShaderInfo.clip_enable's low bits) into an 8-plane
    ClipDistance output that it names in uses_clip_mask, and the other planes are 0, as the program starts them: the
@@ -7682,6 +7786,7 @@ int main(int argc, char** argv) {
     test_alu_group(dir);
     test_compute_forms(dir);
     test_image_kinds(dir);
+    test_buffer_images(dir);
     test_kill_discard();
     test_root_tables(dir);
     test_texel_offsets(dir);
@@ -7750,6 +7855,7 @@ int main(int argc, char** argv) {
     test_mesh_output_bytes();
     test_mesh_refused();
     test_geometry(dir);
+    test_layer_store(dir);
     test_geometry_emit(dir);
     test_geometry_adjacency();
     test_fragment_per_primitive(dir);
