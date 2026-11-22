@@ -174,9 +174,12 @@ snx_sailgen_a64(snx_llvm)
 # generates with its instruction selection derived from the Intel SDM (cmake/sdm.cmake); the default code generator
 # where it is built, LLVM making what it can't
 target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_codegen.c"
-                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_elf.c")
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_elf.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_arm.c")
 include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
 if(SNX_X64)
     snx_sailgen_a64_x64(snx_llvm)
+    # and the AArch32 blocks' (x64_arm.c), from the AArch32 Sail's emitters
+    snx_sailgen_a32_x64(snx_llvm)
     target_compile_definitions(snx_llvm PRIVATE SNX_HAVE_X64=1)
 endif()
