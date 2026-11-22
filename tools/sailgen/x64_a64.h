@@ -479,12 +479,13 @@ static inline SgB sgx_fp_hot_of(SgCtx* g, SgD r, SgD fpcr, unsigned w, const SgD
     return ok;
 }
 /* the cold path of an operation sgx_fp_hot tests: the helper's call where not ok, but a zero result the hot path's
-   where FPCR rounds to nearest without FZ and (zargs, a mask of ops) one of those operands is a zero (none: any zero
-   is exact, as a sum's is) */
+   where FPCR rounds to nearest, under FZ no operand is a denormal (llvm.h's sg_fp_unflushed: many games run with FZ
+   set and compute zeros), and (zargs, a mask of ops) one of those operands is a zero (none: any zero is exact, as a
+   sum's is) */
 static inline SgD sgx_fp_cold_z(SgCtx* g, SgB ok, SgD fast, const char* sym, SgD* ops, int nops, SnxU32 desc,
                                 unsigned zargs) {
     return sgx_cold_fp(sgx(g), sg_b_not(g, ok), fast, sym, ops, nops, nops, nops + 1, desc, (int)offsetof(CPU, fpcr),
-                       (int)offsetof(CPU, fpsr), 0x80 | zargs, SGX_FPCR_RMODE | SGX_FPCR_FZ);
+                       (int)offsetof(CPU, fpsr), 0xC0 | zargs, SGX_FPCR_RMODE);
 }
 static inline SgB sgx_fp_zero(SgCtx* g, SgD bits) { return sg_d_is_zero(g, sg_d_lsl(g, bits, 1)); }
 static inline SgB sgx_fp_nan(SgCtx* g, SgD bits, unsigned w) {
