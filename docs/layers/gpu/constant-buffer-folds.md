@@ -2,6 +2,14 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Constant buffer words folded into a translation
 
+## Index
+
+* [Which words](#which-words)
+* [How many translations](#how-many-translations)
+* [Made beside the draws](#made-beside-the-draws)
+* [What it costs](#what-it-costs)
+* [Where](#where)
+
 A fragment program loads most of its constant buffer words at constant places: the bank and the offset are in the
 instruction. Its draws mostly find the same words there (a material's switches, a light count, a zero that turns a
 term off), and a driver that knew them would drop the multiply, the add or the branch they feed. So a translation
@@ -36,15 +44,22 @@ programs cost.
 ## How many translations
 
 A program's translations differ in the words they hold, and a draw takes the one that holds most of those whose words
-its buffers still have (`sh_holder`, `src/nx/gpu/vk/pipeline.c`). One more is made when none holds, or when the one
-that holds left a load whose word now folds (`vk_cb_fold_more`), by `vk_cb_fold_mode` of how many the program has:
+its buffers still have (`sh_holder`, `src/nx/gpu/vk/pipeline.c`). The first, made when none holds, folds none
+(`VK_CB_FOLD_LOADS`): it holds for every draw, and records each load. The first draw of each submit that takes a
+translation counts the words one made now would fold where it left loads (`vk_cb_fold_words`); after
+`SH_CB_FOLD_STABLE`, 4, submits in a row that found the same words (`vk_cb_stable_note`), that one is made, by
+`vk_cb_fold_mode` of how many folds the program has:
 
 1. The first `SH_CB_FOLD_VARIANTS`, 2, fold by value: every word the draw holds that `shader_cb_fold_value` takes.
 2. The next folds only the words those agree on: a word one of them left a load, or folded to another value, stays a
    load. It serves a program whose words change from draw to draw.
 3. After it, none folds.
 
-A scene of the game played for 2,000 presents from an empty shader file, by that count:
+A translation with nothing more to fold is asked again only when another of its program stops holding: the words
+changed. Words that change from submit to submit are never folded, and their draws go on with the first translation.
+
+A scene of the game played for 2,000 presents from an empty shader file, with each fold made at the first draw that had
+its words (before the count of submits):
 
 | By value | Translations | Pipeline parts | Folded words a draw runs with | Draws with folded words |
 | --- | --- | --- | --- | --- |
@@ -58,6 +73,21 @@ A scene of the game played for 2,000 presents from an empty shader file, by that
 The second by value adds 3.2% to the translations and 7.2% to the folded words; the third adds 3.7% and 3.5%, and
 each one after it less for more.
 
+## Made beside the draws
+
+A fold is made on the pipeline workers (`vk_shader_fold_draw`, `sh_fold_queue`), after the draws' own pipelines and
+before the shader file's, and the draws go on with the translation they had. The worker reads no guest memory: the
+draw gives it the program and copies of the words its translation read and of those at its loads, so the fold holds
+the words the draws had then. Once it is made, the next draws of the translation they had make its pipeline with their
+keys on the workers too (its twins, behind the shader file's pipelines), and it goes in the tables a submit after the
+last of them was queued, once all are made: the draw that takes it finds its pipeline made and waits for no compile. A
+state of the program first drawn after that makes its pipeline as any new state does.
+
+A fold serves only a draw whose words it holds: each draw checks its folded words against its buffers, as it does for
+any translation. A word that changed after the fold was made, before it went in the tables or after, makes the draw
+take the translation that loads it, so no draw is drawn with an old word. A fold whose words no draw had in
+`SH_CB_FOLD_STABLE` submits is dropped, and one with a pipeline the device could not make is never put in the tables.
+
 ## What it costs
 
 - **A draw checks its fragment shader's folds.** `vk_cb_folds_hold` (`src/nx/gpu/vk/cb_fold.c`) reads a bank's
@@ -65,8 +95,11 @@ each one after it less for more.
   from 4.15 to 4.33 us (+4.3%; -O2, the shader file warm, 8 million draws of the scene). A check's answer kept for
   the draws of a submit that bind the same buffers answers 79% of the checks and measures the same, 4.27 us against
   4.09, so each draw checks.
-- **A scene's first run translates and compiles more**, the table's 54% and 52% at 2. The translations are kept in the
-  shader file with the words they hold, as a translation that read a BRX's jump table is, so a later run finds them.
+- **A scene's first run translates and compiles more**, the table's 54% and 52% at 2, and a program whose words stay
+  once more, for the translation that folds none. The folds are translated and their pipelines made on the workers.
+  A fold being translated holds the translator's lock, which a draw's own translation then waits for. The
+  translations are kept in the shader file with the words they hold, as a translation that read a BRX's jump table
+  is, so a later run finds them.
 - **Words the GPU holds are not read.** A buffer with a result kept on the GPU (`memory/own.c`) or pending over it is
   read by a draw on the GPU; reading it here would land it. `gmem_cpu_bytes` gives no bytes there: the word stays a
   load, and a translation that folded it does not hold.
@@ -78,8 +111,9 @@ each one after it less for more.
 | The rule and the cap | `shader_cb_fold_value`, `SH_CB_FOLD_VARIANTS` in `src/nx/gpu/shader/shader.h` |
 | The translator's question at a load | `cbuf_entry` in `src/nx/gpu/shader/emit_memory.c`, `g_shader_cb_fold` |
 | What a translation records, when it holds, which is made next | `src/nx/gpu/vk/cb_fold.c`, with no GPU |
-| The lookup | `vk_shader_get_ex` in `src/nx/gpu/vk/pipeline.c`: `sh_holder`, `sh_fold_plan`, `sh_fold_settled` |
+| The lookup | `vk_shader_get_ex` in `src/nx/gpu/vk/pipeline.c`: `sh_holder`, `sh_fold_plan` |
+| The draws' count and the folds made beside them | `vk_shader_fold_draw` in `src/nx/gpu/vk/pipeline.c` (`ShFold`), called by `render.c` |
 | Tests | `vk_cb_fold` (the unit), `shader_direct_regressions` (the translator), `vulkan_headless` (draws and lookups) |
 
-The log's periodic line of shaders translated is followed by how many of them were translated again to hold more of
-their draws' words.
+The log's periodic line of shaders translated is followed by how many of them were translated again on the workers to
+hold their draws' words, the pipelines made for them before a draw took one, and those dropped.

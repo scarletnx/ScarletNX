@@ -787,6 +787,10 @@ static inline int shader_cb_fold_value(u32 word) { return word < 256 || word == 
 /* the translations of a program that fold by value (vk/cb_fold.h, vk_cb_fold_mode): the count past which one more
    costs more translations than it folds words in the draws (the same doc's table) */
 #define SH_CB_FOLD_VARIANTS 2u
+/* the submits in a row whose first draw of a program's translation found the same words a fold would take before a
+   translation that folds them is made, beside the draws: a word that changes from draw to draw makes none (vk/cb_fold.h,
+   vk_cb_stable_note) */
+#define SH_CB_FOLD_STABLE   4u
 /* The programs are SM86 (sm86.h), not Maxwell: an Ounce game's. nvn_direct sets it once, from the game's NVN API
    version, before the game's first draw */
 extern int g_shader_sm86;

@@ -149,6 +149,43 @@ typedef struct WarmItem {
     u32 part;          /* VK_PART_PR or VK_PART_FS */
     struct WarmItem* next;
 } WarmItem;
+/* A translation that folds the words a program's draws found SH_CB_FOLD_STABLE submits in a row (cb_fold.h), made on a
+   pipeline worker while the draws go on with the translation they have (from): the program as a lookup reads it, and
+   copies of the words the translation reads, so that the worker reads no guest memory and no draw state. Its pipelines
+   for the keys of from's draws (twins) are made before a draw takes it, so the draw that does finds them made. In one
+   block: the struct, nrec records (the reads, the loads' words, the others'), SH_CODE bytes of code */
+/* made or warmed at once: past them, one made whose from was not drawn in SH_CB_FOLD_STABLE submits is dropped to make
+   room, else the draws that would queue one count on */
+#define SH_FOLD_JOBS  64
+#define SH_FOLD_TWINS 16 /* the keys of from's draws whose pipelines one is made with before a draw takes it */
+enum { SH_FOLD_QUEUED = 1, SH_FOLD_MAKING, SH_FOLD_MADE };
+typedef struct {
+    int state;  /* SH_FOLD_* (pj_lock) */
+    int warm;   /* its module is made, and its twins are being made (the GPU thread's) */
+    int mode;   /* VkCbFold.mode */
+    u64 seq;    /* the order of the queue: a worker takes the oldest */
+    VkSh* from; /* the translation whose draws found the words */
+    u64 h, qh;
+    u32 mask[SH_KEY_WORDS];
+    u32 len, mlen;
+    /* the records after the struct: the reads from's translation made (VK_CB_READ or VK_CB_UNBOUND), the words the
+       draw had at its loads (VK_CB_READ, where it could read them), and the others' (VK_CB_FOLD_AGREE), nother[i] of
+       each, then the code */
+    u32 nrec, nreads, nloads, nothers, nother[SH_CB_FOLD_VARIANTS];
+    /* a read the translation made that from's did not (the worker's until made): the translation is dropped */
+    int missed;
+    u32 missed_idx, missed_off;
+    /* made: the translation (NULL for none), its SPIR-V and the worker's time */
+    VkSh* made;
+    u32* spv;
+    size_t nw;
+    u64 ns;
+    /* warming: its twins' pipelines, the submit when the last was queued, the one it began warming in, and the last
+       with a draw of from (from the queue on) */
+    Pipe* twins[SH_FOLD_TWINS];
+    u32 ntwins;
+    u64 twin_submit, warm_submit, seen_submit;
+} ShFold;
 /* The file's state */
 static struct {
     /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started
@@ -172,8 +209,15 @@ static struct {
     VkCbReads* rec;
     int rec_failed;
     const VkCbFold* fold; /* how the translation running folds its constant buffer words (fold_read) */
-    int fold_off;         /* vk_cb_fold_switch: no translation folds */
+    _Atomic int fold_off; /* vk_cb_fold_switch: no translation folds (atomic: the workers translate too) */
     u32 fold_gen;         /* counts the shaders put in shh, for ShA.fold_top */
+    /* the translations that fold a program's draws' words, by slot (VkSh.fold_job - 1): the GPU thread takes and frees
+       a slot under pj_lock, where the workers look for one queued (ShFold.state), fold_queued of them */
+    ShFold* fold_jobs[SH_FOLD_JOBS];
+    u32 fold_queued;
+    u64 fold_seq;
+    /* for the stats line: the pipelines made for them before a draw took one, and those not put in the tables */
+    u64 fold_twins, fold_dropped;
     /* vk_corpus_dir's answer once asked for, and the folder it made for it */
     char corpus_dir[sizeof g_exedir + sizeof "captures/shaders"];
     const char* corpus_at;
@@ -302,6 +346,12 @@ static struct {
                 .modinfo_lock = PMUTEX_INIT,
                 .pj_lock = PMUTEX_INIT,
                 .plib = {.lock = PMUTEX_INIT}};
+/* a pipeline worker's: the fold it translates, whose copies its reads answer from (fold_job_read), and the word of
+   them fold_job_bytes last gave */
+static _Thread_local struct {
+    ShFold* fold;
+    u8 word[4];
+} t_pipeline;
 static void pcache_note(void);
 void vk_pipeline_bc7_cache(void) {
     if (!g_pipeline.bc7_cache) return;
@@ -1164,8 +1214,8 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[S
                   stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
                                                                                               : "stage?",
                   (unsigned)h);
-    u32* spv =
-        vk_translate_spirv_fold(code, SH_CODE, stage, &s->si, nw, read, &s->cbr, g_pipeline.fold_off ? NULL : fold);
+    u32* spv = vk_translate_spirv_fold(code, SH_CODE, stage, &s->si, nw, read, &s->cbr,
+                                       atomic_load_explicit(&g_pipeline.fold_off, memory_order_relaxed) ? NULL : fold);
     s->nfold = vk_cb_fold_count(&s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
@@ -1301,16 +1351,12 @@ static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len
                        .others = others,
                        .nothers = made < SH_CB_FOLD_VARIANTS ? made : SH_CB_FOLD_VARIANTS};
 }
-/* whether a draw takes s, a translation of its program that holds, as it is: 0 when one that folds more of the
-   draw's words is to be made first. Asked once a translation, and once more when another's words stopped holding
-   (again), so that a program whose words change from draw to draw is not asked at each */
-static int sh_fold_settled(VkSh* s, int again) {
-    VkCbFold fold;
-    const VkCbReads* others[SH_CB_FOLD_VARIANTS];
-    if (s->failed || (s->fold_asked && !again)) return 1;
-    s->fold_asked = 1;
-    sh_fold_plan(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a, &fold, others);
-    return fold.mode == VK_CB_FOLD_NONE || !vk_cb_fold_more(&s->cbr, &fold);
+/* s's draws are asked again whether a translation that folds more of their words is to be made (vk_shader_fold_draw):
+   another translation of the program stopped holding, its words changed */
+static void sh_fold_ask(VkSh* s) {
+    if (s->fold_job) return; /* one is being made from them */
+    s->fold_asked = 0;
+    s->fold_stable = (VkCbStable){0};
 }
 
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
@@ -1409,12 +1455,14 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
                 s = sh_holder(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a);
                 if (s) ca->fold_top = sh_fold_top(s);
             }
-            if (s && sh_fold_settled(s, again)) {
+            /* a translation that folds more of the draws' words is made beside them, never here: the draw takes the
+               one that holds, and the draws count their words again when the program's changed */
+            if (s) {
+                if (again) sh_fold_ask(s);
                 ca->s = s;
                 return s;
             }
-            /* none holds, or one more is to be made: from the program's code, below */
-            if (s) s->fold_asked = 0;
+            /* none holds: one is made from the program's code, below */
         }
     } else { /* an empty way, else the one used longest ago */
         ca = &set[0];
@@ -1467,41 +1515,30 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         g_pipeline.shh[h & 1023] = s;
         g_pipeline.fold_gen++;
     }
-    if (!s || !sh_fold_settled(s, 0)) {
-        VkCbFold fold;
-        const VkCbReads* others[SH_CB_FOLD_VARIANTS];
-        if (!s && vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
+    if (!s) {
+        if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
             ShaderInfo si;
             sh_key_info(&si, stage, mask, xfb);
             sh_mesh_sph(&si, stage, code, mask);
             shader_corpus_save(vk_corpus_dir(), code, mlen, SH_CODE, stage, &si, h ^ mix);
         }
         u64 t0 = plat_ns();
-        sh_fold_plan(h, stage, mask, len, qh, len_a, qh_a, &fold, others);
-        VkSh* made = sh_make(code, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read, &fold);
-        if (!made && !s) {
+        /* folding none of the draw's words: those its draws keep finding are folded beside them, later
+           (vk_shader_fold_draw) */
+        const VkCbFold loads = {.mode = VK_CB_FOLD_LOADS};
+        s = sh_make(code, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read, &loads);
+        if (!s) {
             free(code);
             return NULL;
         }
-        if (made && made->failed && !s)
+        if (s->failed)
             WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
-                 made->si.first_unsupported[0] ? made->si.first_unsupported : "unsupported feature or float controls");
-        if (made && made->failed && s) { /* the one that holds serves, as before the question */
-            free(made->cbr.r);
-            free(made->spv);
-            free(made);
-            made = NULL;
-        }
-        if (made) {
-            g_pipeline.sh_new++;
-            g_pipeline.sh_folds += s != NULL;
-            g_pipeline.sh_ns += plat_ns() - t0;
-            made->fold_asked = 1; /* it folded what the draw's words allow */
-            made->next = g_pipeline.shh[h & 1023];
-            g_pipeline.shh[h & 1023] = made;
-            g_pipeline.fold_gen++;
-            if (!s || made->nfold > s->nfold) s = made;
-        }
+                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
+        g_pipeline.sh_new++;
+        g_pipeline.sh_ns += plat_ns() - t0;
+        s->next = g_pipeline.shh[h & 1023];
+        g_pipeline.shh[h & 1023] = s;
+        g_pipeline.fold_gen++;
     }
     free(code);
     ca->gva = gva;
@@ -2411,6 +2448,8 @@ static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
    shader's parts waited (docs/layers/gpu/pipeline-libraries.md, "Results"). One worker optimizes, the others stay free */
 #define PIPE_OPT_WORKERS 1
 static void pipe_queue(Pipe* e, int queue);
+static void sh_fold_make(ShFold* f);
+static ShFold* fold_take(void);
 /* on a worker: make a shipped program's part into the pipeline cache, then drop the module and the part pipeline (a
    draw's own module later hits the cache by its SPIR-V, which is the cache's key) */
 static void warm_run(WarmItem* w) {
@@ -2442,10 +2481,22 @@ static void pipe_worker(void* low) {
         Pipe* e;
         VkPipeline p;
         pm_lock(&g_pipeline.pj_lock);
-        while (g_pipeline.held || (!g_pipeline.pj_head && !g_pipeline.pw_head &&
+        while (g_pipeline.held || (!g_pipeline.pj_head && !g_pipeline.fold_queued && !g_pipeline.pw_head &&
                !(g_pipeline.po_head && g_pipeline.po_busy < PIPE_OPT_WORKERS) &&
                !(g_pipeline.warm_head && g_pipeline.warm_busy < WARM_WORKERS)))
             pc_wait(&g_pipeline.pj_work, &g_pipeline.pj_lock, -1);
+        if (!g_pipeline.pj_head && g_pipeline.fold_queued) { /* after the draws' pipelines, before the file's */
+            ShFold* f = fold_take();
+            g_pipeline.pj_busy++;
+            pm_unlock(&g_pipeline.pj_lock);
+            sh_fold_make(f);
+            pm_lock(&g_pipeline.pj_lock);
+            g_pipeline.pj_busy--;
+            f->state = SH_FOLD_MADE;
+            pc_broadcast(&g_pipeline.pj_done);
+            pm_unlock(&g_pipeline.pj_lock);
+            continue;
+        }
         if (!g_pipeline.pj_head && !g_pipeline.pw_head &&
             !(g_pipeline.po_head && g_pipeline.po_busy < PIPE_OPT_WORKERS)) {
             WarmItem* w = g_pipeline.warm_head;
@@ -2524,7 +2575,8 @@ void vk_pipeline_quiesce(void) {
     /* the optimized pipelines still to make are left: the fast links serve until the end */
     for (Pipe* e = g_pipeline.po_head; e; e = e->job) e->queued = 0;
     g_pipeline.po_head = g_pipeline.po_tail = NULL;
-    while (g_pipeline.pj_threads && (g_pipeline.pj_head || g_pipeline.pw_head || g_pipeline.pj_busy))
+    while (g_pipeline.pj_threads &&
+           (g_pipeline.pj_head || g_pipeline.pw_head || g_pipeline.fold_queued || g_pipeline.pj_busy))
         pc_wait(&g_pipeline.pj_done, &g_pipeline.pj_lock, -1);
     pm_unlock(&g_pipeline.pj_lock);
 }
@@ -2817,6 +2869,335 @@ void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h) 
     else
         vkCmdBindPipeline(cb, bp, p ? atomic_load_explicit(&p->p, memory_order_acquire) : h);
 }
+/* ------------------------------------------------------------ folds made beside the draws (ShFold) */
+/* a fold's records from at on (the reads, the loads' words, the others'), and its code after them */
+static VkCbRead* fold_rec(ShFold* f, u32 at) { return (VkCbRead*)(void*)(f + 1) + at; }
+static u8* fold_code(ShFold* f) { return (u8*)fold_rec(f, f->nrec); }
+static const VkCbRead* fold_copy(const VkCbRead* r, u32 n, u32 idx, u32 off) {
+    for (u32 i = 0; i < n; i++)
+        if (r[i].idx == idx && r[i].off == off) return &r[i];
+    return NULL;
+}
+/* on a worker, the reader of a fold's translation: what from's translation read there. A read it did not make is the
+   fold's to drop, as nothing says what the draws hold there */
+static int fold_job_read(u32 idx, u32 off, u32* out) {
+    ShFold* f = t_pipeline.fold;
+    const VkCbRead* c = fold_copy(fold_rec(f, 0), f->nreads, idx, off);
+    if (!c) {
+        if (!f->missed) {
+            f->missed_idx = idx;
+            f->missed_off = off;
+        }
+        f->missed = 1;
+        return 0;
+    }
+    *out = c->v;
+    return c->ok == VK_CB_READ;
+}
+/* and its bytes (VkCbBytes): the word the draw had at a load, NULL where it had none that it could read */
+static const u8* fold_job_bytes(u32 idx, u32 off, u32 size) {
+    ShFold* f = t_pipeline.fold;
+    const VkCbRead* c = size == 4 ? fold_copy(fold_rec(f, f->nreads), f->nloads, idx, off) : NULL;
+    if (!c) return NULL;
+    snx_st_le32(t_pipeline.word, c->v);
+    return t_pipeline.word;
+}
+/* on a worker, with no lock held: f translated from its copies, into f->made (NULL when it can't be) */
+static void sh_fold_make(ShFold* f) {
+    VkCbReads others[SH_CB_FOLD_VARIANTS];
+    const VkCbReads* other[SH_CB_FOLD_VARIANTS];
+    u32 at = f->nreads + f->nloads;
+    for (u32 i = 0; i < f->nothers; i++) {
+        others[i] = (VkCbReads){fold_rec(f, at), f->nother[i]};
+        other[i] = &others[i];
+        at += f->nother[i];
+    }
+    const VkCbFold fold = {.mode = f->mode, .bytes = fold_job_bytes, .others = other, .nothers = f->nothers};
+    VkSh* s = calloc(1, sizeof *s);
+    size_t nw = 0;
+    u64 t0 = plat_ns();
+    t_pipeline.fold = f;
+    u32* spv =
+        s ? sh_spirv(s, fold_code(f), f->h, ST_FS, f->mask, f->len, f->qh, 0, 0, NULL, fold_job_read, &fold, 0, &nw)
+          : NULL;
+    t_pipeline.fold = NULL;
+    f->ns = plat_ns() - t0;
+    if (spv && !f->missed && s->nfold) {
+        s->fold_asked = 1; /* it folds what the draws' words allow */
+        f->made = s;
+        f->spv = spv;
+        f->nw = nw;
+        return;
+    }
+    if (!s)
+        WARN_LIMIT(
+            8,
+            "vulkan: no memory for fragment program %016llx's fold of its draws' words: the translation that folds "
+            "none draws them\n",
+            (unsigned long long)f->h);
+    else if (f->missed)
+        WARN_LIMIT(
+            8,
+            "vulkan: fragment program %016llx's fold of its draws' words read c[%u][%#x], which their translation "
+            "did not: dropped, that one draws them\n",
+            (unsigned long long)f->h, f->missed_idx, f->missed_off);
+    else if (!spv)
+        WARN_LIMIT(
+            8,
+            "vulkan: fragment program %016llx's fold of its draws' words failed (%s): the translation that folds "
+            "none draws them\n",
+            (unsigned long long)f->h,
+            s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
+    else
+        WARN_LIMIT(8,
+                   "vulkan: fragment program %016llx's fold of its draws' words folded none of the %u they had at its "
+                   "loads: dropped\n",
+                   (unsigned long long)f->h, f->nloads);
+    free(spv);
+    if (s) free(s->cbr.r);
+    free(s);
+}
+/* the queued fold a worker takes, the oldest (pj_lock) */
+static ShFold* fold_take(void) {
+    ShFold* oldest = NULL;
+    for (u32 i = 0; i < SH_FOLD_JOBS; i++) {
+        ShFold* f = g_pipeline.fold_jobs[i];
+        if (f && f->state == SH_FOLD_QUEUED && (!oldest || f->seq < oldest->seq)) oldest = f;
+    }
+    oldest->state = SH_FOLD_MAKING;
+    g_pipeline.fold_queued--;
+    return oldest;
+}
+/* whether a fold of s's program is being made or warmed: one at a time, so that the next one's mode counts it */
+static int sh_fold_pending(const VkSh* s) {
+    for (u32 i = 0; i < SH_FOLD_JOBS; i++) {
+        const ShFold* f = g_pipeline.fold_jobs[i];
+        if (f && sh_same_program(f->from, s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a)) return 1;
+    }
+    return 0;
+}
+/* a fold of s's program for fold's words, which the draw state's buffers (sh_ds) hold now, queued to the workers:
+   the program read from gva again, and copies of what its translation reads. With no worker it is made here, and
+   put in the tables at once, as a draw's translation was before. Nothing when no slot is free (s's draws count on) */
+static void sh_fold_end(ShFold* f, int publish, int again);
+static int sh_fold_adopt(ShFold* f);
+/* a free slot for a fold, SH_FOLD_JOBS for none: where every one is taken, a made fold whose from no draw took in
+   SH_CB_FOLD_STABLE submits is dropped for it (its from's draws count again when they come) */
+static u32 sh_fold_slot(void) {
+    const u64 submit = vk_submit_number();
+    u32 slot = 0;
+    while (slot < SH_FOLD_JOBS && g_pipeline.fold_jobs[slot]) slot++;
+    for (u32 i = 0; i < SH_FOLD_JOBS && slot == SH_FOLD_JOBS; i++) {
+        ShFold* f = g_pipeline.fold_jobs[i];
+        pm_lock(&g_pipeline.pj_lock);
+        int made = f->warm || f->state == SH_FOLD_MADE;
+        pm_unlock(&g_pipeline.pj_lock);
+        if (made && submit - f->seen_submit >= SH_CB_FOLD_STABLE) {
+            sh_fold_end(f, 0, 1);
+            slot = i;
+        }
+    }
+    return slot;
+}
+static void sh_fold_queue(VkSh* s, u64 gva, const VkCbFold* fold) {
+    u32 slot = sh_fold_slot(), nrec = s->cbr.n;
+    if (slot == SH_FOLD_JOBS) return;
+    for (u32 i = 0; i < fold->nothers; i++) nrec += fold->others[i]->n;
+    if ((u64)nrec > (SIZE_MAX - sizeof(ShFold) - SH_CODE) / sizeof(VkCbRead)) return;
+    ShFold* f = calloc(1, sizeof *f + nrec * sizeof(VkCbRead) + SH_CODE);
+    if (!f) return;
+    f->nrec = nrec;
+    u8* code = fold_code(f);
+    u32 len = 0;
+    vk_shader_read_code(gva, code, &len, sh_cb_read);
+    u64 qh = vk_hash(code, len);
+    u32 mlen = len;
+    u64 h = vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
+    /* the code at gva is no longer s's program: its draws are as they are */
+    if (h != s->hash || len != s->clen || qh != s->qh || s->clen_a) {
+        free(f);
+        s->fold_asked = 1;
+        return;
+    }
+    VkCbRead* r = fold_rec(f, 0);
+    for (u32 i = 0; i < s->cbr.n; i++)
+        if (s->cbr.r[i].ok <= VK_CB_READ) r[f->nreads++] = s->cbr.r[i];
+    VkCbRead* l = fold_rec(f, f->nreads);
+    for (u32 i = 0; i < s->cbr.n; i++) {
+        const VkCbRead* c = &s->cbr.r[i];
+        const u8* p = c->ok == VK_CB_LOAD ? sh_cb_bytes(c->idx, c->off, 4) : NULL;
+        if (p) l[f->nloads++] = (VkCbRead){c->idx, c->off, VK_CB_READ, snx_ld_le32(p)};
+    }
+    VkCbRead* o = fold_rec(f, f->nreads + f->nloads);
+    for (u32 i = 0; i < fold->nothers; i++) {
+        if (fold->others[i]->n) memcpy(o, fold->others[i]->r, fold->others[i]->n * sizeof *o);
+        f->nother[i] = fold->others[i]->n;
+        o += f->nother[i];
+    }
+    f->nothers = fold->nothers;
+    f->mode = fold->mode;
+    f->from = s;
+    f->h = h;
+    f->qh = qh;
+    f->len = len;
+    f->mlen = mlen;
+    f->seen_submit = vk_submit_number();
+    memcpy(f->mask, s->mask, sizeof f->mask);
+    s->fold_asked = 1;
+    s->fold_job = (u8)(slot + 1);
+    pm_lock(&g_pipeline.pj_lock);
+    int workers = pipe_workers();
+    g_pipeline.fold_jobs[slot] = f;
+    if (workers) {
+        f->state = SH_FOLD_QUEUED;
+        f->seq = ++g_pipeline.fold_seq;
+        g_pipeline.fold_queued++;
+        pc_signal(&g_pipeline.pj_work);
+    }
+    pm_unlock(&g_pipeline.pj_lock);
+    if (workers) return;
+    sh_fold_make(f);
+    if (sh_fold_adopt(f))
+        sh_fold_end(f, 1, 0);
+    else
+        sh_fold_end(f, 0, 0);
+}
+/* on the GPU thread, f made: its module, as a draw's translation's is made and kept (0 when it can't be). Its
+   pipelines are made from the draws' keys next */
+static int sh_fold_adopt(ShFold* f) {
+    VkSh* s = f->made;
+    if (!s) return 0;
+    VkShaderModuleCreateInfo mi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = f->nw * 4, .pCode = f->spv};
+    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &s->mod))) {
+        WARN_LIMIT(8,
+                   "vulkan: vkCreateShaderModule failed for fragment program %016llx's fold of its draws' words: the "
+                   "translation that folds none draws them\n",
+                   (unsigned long long)s->hash);
+        return 0;
+    }
+    modinfo_put(s->mod, s->hash, s->stage, f->nw);
+    vk_so_keep_spirv(s->mod, f->spv, f->nw);
+    g_pipeline.sh_new++;
+    g_pipeline.sh_folds++;
+    g_pipeline.sh_ns += f->ns;
+    f->warm = 1;
+    f->warm_submit = vk_submit_number();
+    return 1;
+}
+/* f's end: its translation put in the tables (publish), where the next lookups give it to the draws whose words it
+   holds, and kept for the next run with its twins' pipelines; or dropped, and from's draws count their words again
+   (again) or go on as they are. A dropped translation's module stays, as every module does for the run: a twin's
+   pipeline may be made from it */
+static void sh_fold_end(ShFold* f, int publish, int again) {
+    VkSh* from = f->from;
+    VkSh* s = f->made;
+    if (publish) {
+        pf_shader_record(s, f->spv, f->nw, fold_code(f), src_bytes(f->mlen), NULL);
+        for (u32 i = 0; i < f->ntwins; i++) pf_pipe_record(&f->twins[i]->k);
+        s->next = g_pipeline.shh[s->hash & 1023];
+        g_pipeline.shh[s->hash & 1023] = s;
+        g_pipeline.fold_gen++;
+    } else {
+        if (s) free(s->cbr.r);
+        free(s);
+        g_pipeline.fold_dropped++;
+        from->fold_asked = !again;
+        from->fold_stable = (VkCbStable){0};
+    }
+    free(f->spv);
+    pm_lock(&g_pipeline.pj_lock);
+    g_pipeline.fold_jobs[from->fold_job - 1] = NULL;
+    pm_unlock(&g_pipeline.pj_lock);
+    from->fold_job = 0;
+    free(f);
+}
+/* a draw of from, with key k, while its fold is made or warmed: the fold's module once made, then its pipeline with
+   k's state where the fold holds the draw's words, made by the workers beside the draws. The fold goes in the tables
+   once every one of them is made, a submit after the last was queued, so a draw that takes it waits for none; a twin
+   that could not be made keeps it out. One whose words no draw had in SH_CB_FOLD_STABLE submits is dropped */
+static void sh_fold_warm(VkSh* from, const PipeKey* k) {
+    ShFold* f = g_pipeline.fold_jobs[from->fold_job - 1];
+    f->seen_submit = vk_submit_number();
+    if (!f->warm) {
+        pm_lock(&g_pipeline.pj_lock);
+        int made = f->state == SH_FOLD_MADE;
+        pm_unlock(&g_pipeline.pj_lock);
+        if (!made) return;
+        if (!sh_fold_adopt(f)) {
+            sh_fold_end(f, 0, 0);
+            return;
+        }
+    }
+    VkSh* s = f->made;
+    u64 submit = vk_submit_number();
+    if (k && f->ntwins < SH_FOLD_TWINS && vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes)) {
+        PipeKey twin = *k;
+        twin.fs = s->mod;
+        u32 i = 0;
+        while (i < f->ntwins && memcmp(&f->twins[i]->k, &twin, sizeof twin)) i++;
+        if (i == f->ntwins) {
+            int had = 0;
+            Pipe* p = pipe_entry(&twin, &had);
+            if (p && !had) {
+                pm_lock(&g_pipeline.pj_lock);
+                int queued = pipe_workers() != 0;
+                if (queued) pipe_queue(p, 2);
+                pm_unlock(&g_pipeline.pj_lock);
+                if (!queued) (void)pipe_make_here(p, 0);
+            }
+            if (p) {
+                f->twins[f->ntwins++] = p;
+                f->twin_submit = submit;
+                g_pipeline.fold_twins++;
+            }
+        }
+    }
+    int ready = 1, made = 1;
+    for (u32 i = 0; i < f->ntwins; i++) {
+        int r = atomic_load_explicit(&f->twins[i]->ready, memory_order_acquire);
+        ready &= r;
+        made &= !r || atomic_load_explicit(&f->twins[i]->p, memory_order_acquire) != VK_NULL_HANDLE;
+    }
+    if (f->ntwins && ready && submit != f->twin_submit) {
+        if (!made)
+            LOG_LIMIT(8,
+                      "vulkan: a pipeline of fragment program %016llx's fold of its draws' words could not be made: "
+                      "dropped, the translation that folds none draws them\n",
+                      (unsigned long long)s->hash);
+        sh_fold_end(f, made, 0);
+    } else if (!f->ntwins && submit - f->warm_submit >= SH_CB_FOLD_STABLE)
+        sh_fold_end(f, 0, 1);
+}
+void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
+    if (!s->fold_job && (s->fold_asked || s->failed || s->stage != ST_FS)) return;
+    g_pipeline.sh_ds = ds;
+    g_pipeline.sh_bind = sh_bind_stage(ST_FS);
+    if (s->fold_job) {
+        sh_fold_warm(s, k);
+        return;
+    }
+    u64 submit = vk_submit_number();
+    /* this submit's first draw was counted: no word read for the others */
+    if (s->fold_stable.same && s->fold_stable.submit == submit) return;
+    if (atomic_load_explicit(&g_pipeline.fold_off, memory_order_relaxed) || sh_fold_pending(s)) return;
+    VkCbFold fold;
+    const VkCbReads* others[SH_CB_FOLD_VARIANTS];
+    sh_fold_plan(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a, &fold, others);
+    switch (vk_cb_stable_note(&s->fold_stable, submit, vk_cb_fold_words(&s->cbr, &fold))) {
+        case VK_CB_STABLE_NONE: s->fold_asked = 1; break; /* none would fold more: as it is, until its words change */
+        case VK_CB_STABLE_NOW:
+            s->fold_stable = (VkCbStable){0};
+            sh_fold_queue(s, gva, &fold);
+            break;
+        default: break;
+    }
+}
+void vk_shader_fold_stats(u64* made, u64* twins, u64* dropped) {
+    *made = g_pipeline.sh_folds;
+    *twins = g_pipeline.fold_twins;
+    *dropped = g_pipeline.fold_dropped;
+}
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms) {
     *pipes = g_pipeline.pipes_new;
     *hits = atomic_load_explicit(&g_pipeline.pipe_hits, memory_order_relaxed);
@@ -2830,7 +3211,7 @@ int vk_pipeline_cache_cold(void) {
     return g_pipeline.pf.on ? atomic_load_explicit(&g_pipeline.pf.cold, memory_order_acquire) : 0;
 }
 u64 vk_shader_folds(void) { return g_pipeline.sh_folds; }
-void vk_cb_fold_switch(int on) { g_pipeline.fold_off = !on; }
+void vk_cb_fold_switch(int on) { atomic_store_explicit(&g_pipeline.fold_off, !on, memory_order_relaxed); }
 
 #include "nx/gpu/vk/pipeline_cache_save.inc"
 

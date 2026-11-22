@@ -8674,6 +8674,8 @@ static int run_headless(int argc, char** argv) {
             result = check_targetless_stores();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
+        else if (!strcmp(name, "index_draws"))
+            result = check_index_draws();
         else if (!strcmp(name, "memory_release"))
             result = check_memory_release();
         else if (!strcmp(name, "cross_stage_blend"))

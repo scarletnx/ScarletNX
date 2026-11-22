@@ -2827,6 +2827,12 @@ typedef struct {
     VkCbRead* r;
     u32 n;
 } VkCbReads;
+/* a translation's count of the submits whose first draw found the same words a fold would take (cb_fold.h,
+   vk_cb_stable_note) */
+typedef struct {
+    u64 words, submit; /* the hash of the words the last draw counted found (vk_cb_fold_words), and its submit */
+    u32 same;          /* the submits in a row that found them */
+} VkCbStable;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
 /* the window of a program's bytes that vk_shader_get reads from its SPH (pipeline.c says why it is this wide) */
 #define SH_CODE 0x100000u
@@ -2869,10 +2875,12 @@ typedef struct VkSh {
     int shipped; /* a program the game ships, translated before a draw asked for it: 2 once one found it */
     u32 clen, clen_a;
     u64 qh, qh_a;
-    /* cb_fold.h: the constant buffer words the translation holds as constants; whether a draw asked for one that
-       folds more; whether those words stopped holding once */
+    /* cb_fold.h: the constant buffer words the translation holds as constants; whether its draws were asked whether
+       one that folds more is to be made; whether those words stopped holding once; the slot + 1 of the one that folds
+       more being made from its draws' words (pipeline.c's fold jobs), 0 for none; its draws' words, counted */
     u32 nfold;
-    u8 fold_asked, fold_broke;
+    u8 fold_asked, fold_broke, fold_job;
+    VkCbStable fold_stable;
     struct VkSh* next;
 } VkSh;
 /* Generated graphics modules share the persistent shader/pipeline ownership and cache. Caller holds vk_lock. */
@@ -3078,6 +3086,15 @@ int vk_pipeline_cache_cold(void);
 /* of those shaders, the ones translated beside a translation of their program that held, to hold more of a draw's
    constant buffer words as constants (cb_fold.h) */
 u64 vk_shader_folds(void);
+/* A draw of s, a translation of the fragment program at gva, with the pipeline of key k (NULL for none), after its
+   pipeline and before what its setup read is checked (it can read guest memory). s's first draw in each submit counts
+   the words a translation that folds more would hold (cb_fold.h); after SH_CB_FOLD_STABLE submits in a row of the same
+   words, that translation is made on the pipeline workers, then its pipelines with the keys of s's draws, and it goes
+   in the tables once they are made: the draws go on with s meanwhile, and the one that takes it waits for nothing */
+void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k);
+/* so far: the translations that fold a program's draws' words made beside the draws (vk_shader_folds), the pipelines
+   made for them before a draw took one, and those dropped (their words gone, or a pipeline of theirs not made) */
+void vk_shader_fold_stats(u64* made, u64* twins, u64* dropped);
 /* with pipeline libraries, so far: the parts made by part (vertex input, pre-rasterization, fragment shader,
    fragment output), how many of them the pipeline cache had and ms making them; the fast links and their ms; the
    optimized pipelines made in the background and their ms */
@@ -3387,6 +3404,7 @@ typedef struct {
 void vk_draw_counts(VkDrawCounts* c);
 void vk_render_stats_log(void); /* the counts of the last 600 presents in the log (each 600 presents) */
 void vk_render_draws_forget(void); /* no draw keeps an earlier draw's state (a save state's load) */
+const VkSh* vk_render_last_fs(void); /* tests: the fragment translation the last draw drew with, NULL for none */
 /* draws, clears and the like that kept the last one's render targets, found again through the surface table before */
 extern u64 g_vk_targets_kept;
 /* draws that sampled a color target they render to in place, the barriers ordering them within a pass, the passes

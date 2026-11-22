@@ -24,9 +24,11 @@ static int index_program(u64 address, const u64* ops, u32 count, int fragment) {
     return invalidate_write_code(address, code, 64);
 }
 
-/* the 4x4 target's pixels after a draw call: how many are green and blue (the clear), and whether any has red */
+/* the 4x4 target's pixels after a draw call: how many are green and blue (the clear), and whether any has red; and
+   the first pixel's bytes */
 typedef struct {
     u32 green, blue, red;
+    u8 first[4];
 } IndexPixels;
 
 /* the 4x4 target's pixels once the work recorded so far is done (the rendering pass ended), under vk_lock */
@@ -43,6 +45,7 @@ static int index_pixels(u64 target, IndexPixels* px) {
     vk_finish();
     vk_readback_ready();
     *px = (IndexPixels){0};
+    memcpy(px->first, data, sizeof px->first);
     for (u32 i = 0; i < 16; i++) {
         const u8* p = data + i * 4;
         px->green += !p[0] && p[1] == 255 && !p[2];
@@ -1123,9 +1126,11 @@ static int minmax_fragment_case(GpuChannel* channel, u64 target, u64 address) {
 
 /* Constant buffer words folded into a fragment program's translation (gpu/vk/cb_fold.h). The program's red and green
    are the first two words of its constant buffer 2, so a quad shows which words its translation computed with: each
-   draw's own, whether a translation holds them as constants or loads them. The count of translations says which was
-   made: one for each of the first SH_CB_FOLD_VARIANTS pairs of words that fold, one more that folds nothing the
-   others disagree on, and none after it */
+   draw's own, whether a translation holds them as constants or loads them. A program's first translation folds none.
+   SH_CB_FOLD_STABLE submits whose draws found the same words that fold (index_draw submits) make one that folds them,
+   on the pipeline workers beside the draws, then its pipeline with the draws' key, and the draw after it went in the
+   tables takes it. The count of translations says which were made: one for each of the first SH_CB_FOLD_VARIANTS pairs
+   of words that fold, then only what they agree on, and none after it */
 static int cb_fold_words(u64 cbuf, float red, float green) {
     u8 bytes[8];
     u32 word;
@@ -1139,6 +1144,11 @@ static u64 cb_fold_translated(void) {
     u64 ignored, shaders;
     vk_pipeline_stats(&ignored, &ignored, &ignored, &ignored, &shaders, &ignored);
     return shaders;
+}
+static u64 cb_fold_pipes(void) {
+    u64 ignored, pipes;
+    vk_pipeline_stats(&pipes, &ignored, &ignored, &ignored, &ignored, &ignored);
+    return pipes;
 }
 /* the fragment shader a draw of the bound state takes for the program at address, as a draw of no textures and
    float targets asks for it */
@@ -1168,63 +1178,106 @@ static u64 cb_fold_hash(const u64* ops, u32 count) {
     free(window);
     return hash;
 }
+/* n draws of the bound state with the words of pair, each quad red and green as its own words say (cut: the green
+   word lies past the buffer the draw binds, where the console reads zero) */
+static int cb_fold_draws(GpuChannel* channel, u64 target, u64 cbuf, const float pair[2], u32 n, int cut) {
+    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    const int red = (int)lroundf(pair[0] * 255.0f), green = cut ? 0 : (int)lroundf(pair[1] * 255.0f);
+    IndexPixels px;
+    for (u32 i = 0; i < n; i++) {
+        CHECK(!cb_fold_words(cbuf, pair[0], pair[1]));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (abs(px.first[0] - red) > 1 || abs(px.first[1] - green) > 1 || px.first[2] || px.blue)
+            fprintf(stderr, "constant buffer folds: words %g, %g drawn as %u, %u, %u, not %d, %d, 0\n", (double)pair[0],
+                    (double)pair[1], px.first[0], px.first[1], px.first[2], red, green);
+        CHECK(abs(px.first[0] - red) <= 1 && abs(px.first[1] - green) <= 1 && !px.first[2] && !px.blue);
+        CHECK(px.red == (red ? 16u : 0u));
+    }
+    return 0;
+}
+/* the draws of pair, whose translation counted count submits of them, until a translation that folds them is in the
+   tables and drawn: the draws to SH_CB_FOLD_STABLE, the last of which queues it to the workers; a wait for them, and a
+   draw that makes its pipeline with the draw's key beside the draws, drawn with the translation it had; a wait for that,
+   and a draw that puts it in the tables, the same; then a draw that takes it and finds its pipeline made. *made is it */
+static int cb_fold_settle(GpuChannel* channel, u64 target, u64 cbuf, const float pair[2], u32 count, int cut,
+                          const VkSh** made) {
+    const u64 translated = cb_fold_translated(), folds = vk_shader_folds();
+    CHECK(count < SH_CB_FOLD_STABLE);
+    CHECK(!cb_fold_draws(channel, target, cbuf, pair, SH_CB_FOLD_STABLE - count - 1, cut));
+    const VkSh* from = vk_render_last_fs();
+    CHECK(from && !from->fold_job); /* a draw counted before this pair's, or the one before the last */
+    CHECK(!cb_fold_draws(channel, target, cbuf, pair, 1, cut));
+    from = vk_render_last_fs();
+    CHECK(from && from->fold_job && cb_fold_translated() == translated && vk_shader_folds() == folds);
+    vk_pipeline_quiesce();
+    CHECK(!cb_fold_draws(channel, target, cbuf, pair, 1, cut));
+    CHECK(vk_render_last_fs() == from && from->fold_job);
+    CHECK(cb_fold_translated() == translated + 1 && vk_shader_folds() == folds + 1);
+    vk_pipeline_quiesce();
+    const u64 pipes = cb_fold_pipes();
+    CHECK(!cb_fold_draws(channel, target, cbuf, pair, 1, cut));
+    CHECK(vk_render_last_fs() == from && !from->fold_job);
+    CHECK(!cb_fold_draws(channel, target, cbuf, pair, 1, cut));
+    *made = vk_render_last_fs();
+    CHECK(*made && *made != from && (*made)->nfold && cb_fold_pipes() == pipes);
+    CHECK(cb_fold_translated() == translated + 1 && vk_shader_folds() == folds + 1);
+    return 0;
+}
 static int cb_fold_case(GpuChannel* channel, u64 target, u64 address) {
-    const u64 program = address + 0x8000, plain = address + 0x8200, asked = address + 0x8400, cbuf = address + 0x1D000;
+    const u64 program = address + 0x8000, plain = address + 0x8200, asked = address + 0x8400, late = address + 0x8A00,
+              cbuf = address + 0x1D000;
     u64 fragment[6] = {0x4c98078800070000ull, /* MOV R0, c[2][0]: the red */
                        0x4c98078800170001ull, /* MOV R1, c[2][4]: the green */
                        0x0100000000071002ull, /* MOV32I R2, 0 */
                        0x0103f80000071003ull, /* MOV32I R3, 1.0 */
                        0xe30000000007000full};
-    /* pairs of words that fold, each a colour of its own */
-    const float folds[3][2] = {{0, 1}, {1, 0}, {0, 0}};
-    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
-    IndexPixels px;
-    u8 first[4] = {0};
+    /* pairs of words that fold, each a colour of its own; a pair of them that no translation by value folds; pairs
+       of which a word does not fold */
+    const float folds[3][2] = {{0, 1}, {1, 0}, {0, 0}}, both[2] = {1, 1}, half[2] = {0.5f, 0.25f},
+                halves[3][2] = {{0.5f, 1}, {0.5f, 0}, {1, 0.25f}};
     u32* r = channel->r3d;
-    CHECK(SH_CB_FOLD_VARIANTS <= 3);
+    CHECK(SH_CB_FOLD_VARIANTS <= 3 && SH_CB_FOLD_STABLE >= 2);
     CHECK(index_program(program, fragment, 5, 1));
     channel->ds.bind.cb_addr[4][2] = cbuf;
     channel->ds.bind.cb_size[4][2] = 256;
     r[0x851] = (u32)(program - address); /* the fragment program's offset */
     u64 translated = cb_fold_translated(), again = vk_shader_folds();
+    /* the program's first draw: a translation that folds none, each of whose loads its draws' words are counted at */
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], 1, 0));
+    VkSh* loads = cb_fold_shader(channel, program);
+    CHECK(loads && !loads->failed && !loads->nfold && loads->cbr.n == 2 && vk_render_last_fs() == loads);
+    CHECK(cb_fold_translated() == translated + 1 && vk_shader_folds() == again);
+    /* the same words in each submit: the translation that folds both, made beside the draws */
+    const VkSh* by_value[3] = {NULL, NULL, NULL};
+    CHECK(!cb_fold_settle(channel, target, cbuf, folds[0], 1, 0, &by_value[0]));
+    CHECK(by_value[0]->nfold == 2 && cb_fold_shader(channel, program) == by_value[0]);
+    /* the words it holds change to another pair that folds: the next draw is drawn with its own words, by the
+       translation that folds none, then with the first pair by the one that folds them; and the second pair's
+       translation follows as the first's did */
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[1], 1, 0));
+    CHECK(vk_render_last_fs() == loads);
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], 1, 0));
+    CHECK(vk_render_last_fs() == by_value[0]);
+    CHECK(!cb_fold_settle(channel, target, cbuf, folds[1], 1, 0, &by_value[1]));
+    CHECK(by_value[1]->nfold == 2 && by_value[1] != by_value[0]);
+    CHECK(cb_fold_translated() == translated + 3 && vk_shader_folds() == again + 2);
+    /* words that fold, of a pair no translation holds and the two by value disagree on: none more, drawn by the
+       translation that folds none */
+    CHECK(!cb_fold_draws(channel, target, cbuf, both, SH_CB_FOLD_STABLE + 1, 0));
+    CHECK(vk_render_last_fs() == loads && cb_fold_translated() == translated + 3 && vk_shader_folds() == again + 2);
+    /* words that do not fold, then each pair again: no translation more, each draw its own words */
+    CHECK(!cb_fold_draws(channel, target, cbuf, half, SH_CB_FOLD_STABLE + 1, 0));
+    CHECK(vk_render_last_fs() == loads);
     for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
-        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
-        CHECK(!index_draw(channel, target, &call, &px));
-        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
-        CHECK(cb_fold_translated() == translated + i + 1);
+        CHECK(!cb_fold_draws(channel, target, cbuf, folds[i], 1, 0));
+        CHECK(vk_render_last_fs() == by_value[i]);
     }
-    /* words that fold, of a pair no translation holds: the one more, which folds neither */
-    CHECK(!cb_fold_words(cbuf, 1, 1));
-    CHECK(!index_draw(channel, target, &call, &px) && !index_first_pixel(target, first));
-    CHECK(first[0] == 255 && first[1] == 255 && !first[2]);
-    CHECK(cb_fold_translated() == translated + SH_CB_FOLD_VARIANTS + 1);
-    /* words that do not fold, and then each pair again: no translation more, and each draw its own words */
-    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
-    CHECK(!index_draw(channel, target, &call, &px) && !index_first_pixel(target, first));
-    CHECK(first[0] >= 127 && first[0] <= 128 && first[1] >= 63 && first[1] <= 64 && !first[2]);
-    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
-        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
-        CHECK(!index_draw(channel, target, &call, &px));
-        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
-    }
-    CHECK(cb_fold_translated() == translated + SH_CB_FOLD_VARIANTS + 1 && vk_shader_folds() == again);
-
-    /* the same program by its lookup: the translation of each pair holds both words, the one of the pairs the others
-       disagree on holds none, and a draw takes the one that holds most of its words */
-    VkSh* by_value[3] = {NULL, NULL, NULL};
-    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
-        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
-        by_value[i] = cb_fold_shader(channel, program);
-        CHECK(by_value[i] && !by_value[i]->failed && by_value[i]->nfold == 2);
-        for (u32 k = 0; k < i; k++) CHECK(by_value[k] != by_value[i]);
-    }
-    CHECK(!cb_fold_words(cbuf, 1, 1));
-    VkSh* agreed = cb_fold_shader(channel, program);
-    CHECK(agreed && !agreed->failed && agreed->nfold == 0);
-    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
-    CHECK(cb_fold_shader(channel, program) == agreed);
-    CHECK(!cb_fold_words(cbuf, folds[0][0], folds[0][1]));
-    CHECK(cb_fold_shader(channel, program) == by_value[0]);
+    CHECK(cb_fold_translated() == translated + 3 && vk_shader_folds() == again + 2);
+    /* and the lookup alone gives the same: each pair's translation, the one that folds none for the rest */
+    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++)
+        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]) && cb_fold_shader(channel, program) == by_value[i]);
+    CHECK(!cb_fold_words(cbuf, both[0], both[1]) && cb_fold_shader(channel, program) == loads);
+    CHECK(!cb_fold_words(cbuf, half[0], half[1]) && cb_fold_shader(channel, program) == loads);
 
     /* without the fold: one translation whatever the words, each draw still its own */
     fragment[2] = 0x0100000000171002ull; /* another program: MOV32I R2, 1 (a denormal, no blue) */
@@ -1232,73 +1285,96 @@ static int cb_fold_case(GpuChannel* channel, u64 target, u64 address) {
     r[0x851] = (u32)(plain - address);
     vk_cb_fold_switch(0);
     translated = cb_fold_translated();
-    for (u32 i = 0; i < 2; i++) {
-        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
-        CHECK(!index_draw(channel, target, &call, &px));
-        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
-    }
+    again = vk_shader_folds();
+    for (u32 i = 0; i < 2; i++) CHECK(!cb_fold_draws(channel, target, cbuf, folds[i], SH_CB_FOLD_STABLE, 0));
+    vk_pipeline_quiesce();
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], 1, 0));
     vk_cb_fold_switch(1);
-    CHECK(cb_fold_translated() == translated + 1);
+    CHECK(cb_fold_translated() == translated + 1 && vk_shader_folds() == again);
 
-    /* a translation made before its draw's words were known (an earlier run's, the shipped programs' pass): the first
-       draw that finds it asks for one that folds its words, and that one is made beside it */
+    /* a translation made before its draws' words were known (a lookup with no buffer bound, as an earlier run's or
+       the shipped programs' pass's come back): its draws count their words, and one by value folds those that fold */
     fragment[2] = 0x0100000000271002ull; /* a third program: MOV32I R2, 2 */
     CHECK(index_program(asked, fragment, 5, 1));
     channel->ds.bind.cb_addr[4][2] = 0;
     channel->ds.bind.cb_size[4][2] = 0;
     VkSh* unbound = cb_fold_shader(channel, asked);
-    CHECK(unbound && !unbound->failed && unbound->nfold == 0);
-    unbound->fold_asked = 0; /* as a translation of an earlier run comes back */
+    CHECK(unbound && !unbound->failed && unbound->nfold == 0 && unbound->cbr.n == 2);
     channel->ds.bind.cb_addr[4][2] = cbuf;
     channel->ds.bind.cb_size[4][2] = 256;
-    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
-    again = vk_shader_folds();
-    CHECK(cb_fold_shader(channel, asked) == unbound && vk_shader_folds() == again); /* nothing there folds */
-    unbound->fold_asked = 0;
-    CHECK(!cb_fold_words(cbuf, 0.5f, 1));
-    VkSh* green = cb_fold_shader(channel, asked); /* its first word a load, its second the constant 1.0 */
-    CHECK(green && green != unbound && green->nfold == 1 && vk_shader_folds() == again + 1);
-    /* the folded word changes to another that folds: the translation no longer holds, and the one asked again of
-       the program makes the second by value */
-    CHECK(!cb_fold_words(cbuf, 0.5f, 0));
-    VkSh* dark = cb_fold_shader(channel, asked);
-    CHECK(dark && dark != green && dark != unbound && dark->nfold == 1 && vk_shader_folds() == again + 2);
-    CHECK(!cb_fold_words(cbuf, 0.5f, 1));
-    CHECK(cb_fold_shader(channel, asked) == green);
-    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
-    CHECK(cb_fold_shader(channel, asked) == unbound && vk_shader_folds() == again + 2);
+    r[0x851] = (u32)(asked - address);
+    const VkSh *green = NULL, *dark = NULL, *red = NULL;
+    CHECK(!cb_fold_settle(channel, target, cbuf, halves[0], 0, 0, &green)); /* a load, and the constant 1.0 */
+    CHECK(green->nfold == 1);
+    /* the folded word changes to another that folds: drawn by the one that folds none, whose draws then count the
+       new words, and the second by value folds them */
+    CHECK(!cb_fold_draws(channel, target, cbuf, halves[1], 1, 0));
+    CHECK(vk_render_last_fs() == unbound);
+    CHECK(!cb_fold_settle(channel, target, cbuf, halves[1], 1, 0, &dark));
+    CHECK(dark->nfold == 1 && dark != green);
+    CHECK(!cb_fold_draws(channel, target, cbuf, halves[0], 1, 0) && vk_render_last_fs() == green);
+    CHECK(!cb_fold_draws(channel, target, cbuf, half, 1, 0) && vk_render_last_fs() == unbound);
+    /* a translation the shipped programs' pass made is not one of the program's two by value: one more by value is
+       made, where the third would fold only what they agree on (green's first word is a load: nothing) */
+    ((VkSh*)green)->shipped = 2;
+    unbound->fold_asked = 0; /* as a translation of an earlier run comes back */
+    CHECK(!cb_fold_settle(channel, target, cbuf, halves[2], 0, 0, &red));
+    CHECK(red->nfold == 1 && red != green && red != dark);
+    ((VkSh*)green)->shipped = 0;
 
-    /* a translation the shipped programs' pass made is not one of the program's two by value: one more is */
-    green->shipped = 2;
-    unbound->fold_asked = 0;
-    CHECK(!cb_fold_words(cbuf, 1, 0.25f));
-    VkSh* red = cb_fold_shader(channel, asked);
-    CHECK(red && red != unbound && red->nfold == 1 && vk_shader_folds() == again + 3);
-    green->shipped = 0;
+    /* the words a fold was made from change before it is in the tables: no draw takes it, each draws its own words
+       by the translation that folds none, and it is dropped once SH_CB_FOLD_STABLE submits found none of its words;
+       the new words' fold follows */
+    fragment[2] = 0x0100000000471002ull; /* a fifth program: MOV32I R2, 4 */
+    CHECK(index_program(late, fragment, 5, 1));
+    r[0x851] = (u32)(late - address);
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], SH_CB_FOLD_STABLE, 0));
+    const VkSh* first = vk_render_last_fs();
+    CHECK(first && !first->nfold && first->fold_job);
+    u64 made, warmed, dropped;
+    vk_shader_fold_stats(&made, &warmed, &dropped);
+    vk_pipeline_quiesce();
+    u32 drawn = 0;
+    while (first->fold_job && drawn++ <= SH_CB_FOLD_STABLE) {
+        CHECK(!cb_fold_draws(channel, target, cbuf, folds[1], 1, 0));
+        CHECK(vk_render_last_fs() == first);
+    }
+    u64 made_after, warmed_after, dropped_after;
+    vk_shader_fold_stats(&made_after, &warmed_after, &dropped_after);
+    CHECK(!first->fold_job && made_after == made + 1 && warmed_after == warmed && dropped_after == dropped + 1);
+    CHECK(cb_fold_shader(channel, late) == first);
+    const VkSh* later = NULL;
+    CHECK(!cb_fold_settle(channel, target, cbuf, folds[1], 0, 0, &later));
+    CHECK(later->nfold == 2 && cb_fold_shader(channel, late) == later);
 
-    /* another program whose hash falls where that one's does in the shader table: its first translation folds by
-       value, whatever the other's count */
+    /* another program whose hash falls where asked's does in the shader table: its first fold is by value, whatever
+       the other's count */
     u64 bucket = unbound->hash & 1023, twin = 0;
     for (u32 n = 16; n < 60000 && !twin; n++) {
         fragment[2] = 0x0100000000071002ull | (u64)n << 20; /* MOV32I R2, n */
         if ((cb_fold_hash(fragment, 5) & 1023) == bucket) twin = address + 0x8C00;
     }
     CHECK(twin && index_program(twin, fragment, 5, 1));
-    CHECK(!cb_fold_words(cbuf, 0, 1));
-    VkSh* beside = cb_fold_shader(channel, twin);
-    CHECK(beside && !beside->failed && (beside->hash & 1023) == bucket && beside->hash != unbound->hash &&
-          beside->nfold == 2);
+    r[0x851] = (u32)(twin - address);
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], 1, 0));
+    const VkSh* beside = NULL;
+    CHECK(!cb_fold_settle(channel, target, cbuf, folds[0], 1, 0, &beside));
+    CHECK(!beside->failed && (beside->hash & 1023) == bucket && beside->hash != unbound->hash && beside->nfold == 2);
 
     /* a word past the buffer the draw binds is a load, whatever guest memory holds there */
     fragment[2] = 0x0100000000371002ull; /* a fourth program: MOV32I R2, 3 */
     CHECK(index_program(address + 0x8800, fragment, 5, 1));
+    r[0x851] = 0x8800;
     channel->ds.bind.cb_size[4][2] = 4;
-    CHECK(!cb_fold_words(cbuf, 0, 1));
-    VkSh* cut = cb_fold_shader(channel, address + 0x8800);
-    CHECK(cut && !cut->failed && cut->nfold == 1);
+    CHECK(!cb_fold_draws(channel, target, cbuf, folds[0], 1, 1));
+    const VkSh* cut = NULL;
+    CHECK(!cb_fold_settle(channel, target, cbuf, folds[0], 1, 1, &cut));
+    CHECK(!cut->failed && cut->nfold == 1);
     channel->ds.bind.cb_size[4][2] = 256;
 
     /* two draws of one submit that bind other buffers: the second is not drawn with the first one's constants */
+    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    IndexPixels px;
     const u64 other = cbuf + 0x100;
     r[0x851] = (u32)(program - address);
     CHECK(!cb_fold_words(cbuf, folds[0][0], folds[0][1]) && !cb_fold_words(other, folds[1][0], folds[1][1]));
@@ -1326,18 +1402,20 @@ static int cb_fold_case(GpuChannel* channel, u64 target, u64 address) {
     channel->ds.bind.cb_size[0][2] = 256;
     CHECK(!cb_fold_words(cbuf, 0, 1));
     vk_lock();
-    VkSh* loads =
+    VkSh* vloads =
         vk_shader_get(&channel->ds, address + 0x8600, 0, ST_VS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0);
     vk_unlock();
-    CHECK(loads && !loads->failed && loads->nfold == 0 && loads->cbr.n == 0);
+    CHECK(vloads && !vloads->failed && vloads->nfold == 0 && vloads->cbr.n == 0);
     channel->ds.bind.cb_addr[0][2] = 0;
     channel->ds.bind.cb_size[0][2] = 0;
 
     r[0x851] = 0x10000; /* the harness's fragment program again */
     channel->ds.bind.cb_addr[4][2] = 0;
     channel->ds.bind.cb_size[4][2] = 0;
-    puts("constant buffer folds: a fragment program's translations hold the words of their draws that fold, each "
-         "draw takes the one whose words it has, and one more is made only as the rule allows");
+    printf("constant buffer folds: a fragment program's first translation folds none; its draws' words, the same for "
+           "%u submits, are folded beside the draws, with its pipeline made before a draw takes it; a draw whose "
+           "words a fold does not hold is drawn with its own; one more is made only as the rule allows\n",
+           SH_CB_FOLD_STABLE);
     return 0;
 }
 
