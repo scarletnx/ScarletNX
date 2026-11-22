@@ -238,6 +238,14 @@ static struct {
     _Atomic u64 pipe_wait_ns; /* the GPU thread's and the recording thread's waits, added atomically */
     _Atomic u64 pipe_make_ns; /* the workers' time making pipelines, added atomically */
     _Atomic u64 pipe_hits;    /* pipelines the pipeline cache had */
+    /* Pipelines made in under PIPE_FAST_NS, the file's apart (pf.fast). A driver may leave the creation feedback's
+       cache hit bit clear for every pipeline: NVIDIA's (driver d4-10de-00002684) made 963 pipelines of earlier runs in
+       about 1.5 s, where one it compiles takes 80 to 130 ms, and set the bit for none. One made this fast came from a
+       cache, the application's or the driver's own */
+    _Atomic u64 pipe_fast;
+    /* the draws' pipelines made as shader objects (vk_so_make), which no pipeline cache serves: their binaries of
+       earlier runs do. One game's draws were all shader objects, and its stats line read "0 from the cache" */
+    _Atomic u64 pipe_so;
     VkShaderModule null_fs; /* an empty fragment shader for depth-only passes, made when first asked for */
     Pipe* pipeh[PIPEH];
     /* The shaders and pipelines of earlier runs (pipeline_file.c), so that each run doesn't translate the same shaders
@@ -288,6 +296,7 @@ static struct {
         char apart[64];
         /* atomics, written by the GPU thread and the pipeline workers */
         _Atomic u64 made, hits; /* the file's pipelines made, and those the pipeline cache had */
+        _Atomic u64 fast;       /* of them, those made in under PIPE_FAST_NS (pipe_make) */
         _Atomic u32 ship_used;  /* the shipped file's shaders a draw found */
         u32 ship_said;  /* ship_used as vk_pipeline_save last logged it (psave) */
     } pf;
@@ -2410,6 +2419,7 @@ void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
     *hit = atomic_load_explicit(&g_pipeline.plib.warm_hit, memory_order_relaxed);
     *ms = atomic_load_explicit(&g_pipeline.plib.warm_ns, memory_order_relaxed) / 1000000;
 }
+#define PIPE_FAST_NS 5000000ull /* a pipeline made faster than this came from a cache (g_pipeline.pipe_fast) */
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
 static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
@@ -2435,9 +2445,13 @@ static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
     if (p != PIPE_SO_MADE && (!e->lib[0] || *opt))
         pipe_stats(p, e, *opt ? "optimized" : "whole"); /* a fast link runs unoptimized code */
     if (p == PIPE_SO_MADE) {
+        if (!e->prewarm) atomic_fetch_add_explicit(&g_pipeline.pipe_so, 1, memory_order_relaxed);
         const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
         slow_say("a draw's shader objects", modules, plat_ns() - t0, 0);
     } else {
+        if (p && plat_ns() - t0 < PIPE_FAST_NS)
+            atomic_fetch_add_explicit(e->prewarm ? &g_pipeline.pf.fast : &g_pipeline.pipe_fast, 1,
+                                      memory_order_relaxed);
         pipe_slow_say(e, plat_ns() - t0, hit);
         pcache_note();
     }
@@ -4220,6 +4234,11 @@ static void pf_merge(void) {
             p->next = g_pipeline.pipeh[b];
             g_pipeline.pipeh[b] = p;
         }
+}
+void vk_pipeline_fast_stats(u64* fast, u64* early_fast, u64* so) {
+    *so = atomic_load_explicit(&g_pipeline.pipe_so, memory_order_relaxed);
+    *fast = atomic_load_explicit(&g_pipeline.pipe_fast, memory_order_relaxed);
+    *early_fast = atomic_load_explicit(&g_pipeline.pf.fast, memory_order_relaxed);
 }
 void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left) {
     *made = atomic_load_explicit(&g_pipeline.pf.made, memory_order_relaxed);
