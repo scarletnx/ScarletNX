@@ -3127,6 +3127,8 @@ void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
 void vk_pipeline_quiesce(void);
 /* a test's: on, the workers take no job, so a draw's new pipeline stays pending (async_pipelines); off lets them go */
 void vk_pipeline_hold(int on);
+/* a test's: on, async_pipelines may skip a draw into any target, as one the game regenerates every frame */
+void vk_async_every(int on);
 /* what is made before the game draws, so far (the renderer's prepare) */
 struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
