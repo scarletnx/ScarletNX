@@ -253,6 +253,16 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
     }
     return ext;
 }
+/* async_pipelines skips a draw whose pipeline a worker still makes, and a later frame draws it only where the game
+   draws the target again. A target drawn once and kept (a menu's layers, sampled after) kept the hole for good: a
+   racing game's character select lost its background, its text and its cards' fill. So a draw is skipped only
+   into targets the frame before drew too (redraw.h); one into any other waits for its pipeline, as without it */
+static int targets_redrawn(Surf* const* rt, u32 n, const Surf* zt) {
+    for (u32 i = 0; i < n; i++)
+        if (rt[i] && !snx_vk_redrawn(&rt[i]->redraw, g_vk_present)) return 0;
+    return !zt || snx_vk_redrawn(&zt->redraw, g_vk_present);
+}
+
 /* opens a rendering pass on these targets (begun at its first command: rp_record), or keeps the open one if it is the
    same set. zt_ro: the depth target is
    bound read-only, so draws can sample it too (soft particles test against depth they also read). fb: color slots the
@@ -274,6 +284,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    for (u32 i = 0; i < n; i++)
+        if (rt[i]) snx_vk_redraw_seen(&rt[i]->redraw, g_vk_present);
+    if (zt) snx_vk_redraw_seen(&zt->redraw, g_vk_present);
+    rec_async_pass(cb, targets_redrawn(rt, n, zt));
     u32 loops = 0;
     VkRenderingAttachmentInfo ca[8];
     VkExtent2D ext = {~0u, ~0u};
@@ -383,6 +397,8 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
         g_rp.layers == layers)
         return 1;
     vk_render_end();
+    /* no attachment: what its draws keep is only what they store, which no target tells, so they wait */
+    rec_async_pass(vk_cmd(), 0);
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
     vk_predraw_pass_begin(vk_cmd());
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
@@ -6712,7 +6728,7 @@ retry:
        stays 0 below when it is 0 here). Not a draw that captures transform feedback: its buffers' counters go on
        from what the draws before it bound */
     if (kept && !check && g_settings.async_pipelines && g_vk.has_feedback_dynamic && !edges && !xfb_on &&
-        ke->k.topo_class == (mesh ? 0 : topology_class(topology_vk(topology))) &&
+        targets_redrawn(rt, n, zt) && ke->k.topo_class == (mesh ? 0 : topology_class(topology_vk(topology))) &&
         ke->k.polygon == polygon_mode(&ds->rkey)) {
         int pending;
         (void)vk_pipeline_now(ke->pipe, &pending);

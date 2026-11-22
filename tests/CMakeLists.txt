@@ -794,6 +794,11 @@ add_executable(snx-test-arm-profile arm_profile.c)
 snx_test_target(snx-test-arm-profile gnu23)
 target_link_libraries(snx-test-arm-profile PRIVATE snx_arm_decode)
 add_test(NAME arm_isa_profiles COMMAND snx-test-arm-profile)
+# which targets async_pipelines may skip a draw into (src/nx/gpu/vk/redraw.h): those the frame before drew too
+add_executable(snx-test-vk-redraw vk_redraw.c)
+snx_test_target(snx-test-vk-redraw c23)
+target_include_directories(snx-test-vk-redraw PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME vk_redraw COMMAND snx-test-vk-redraw)
 # a game's cheats by their names, as the launcher lists them and cheats_off= leaves them out
 add_executable(snx-test-cheat-list cheat_list.c)
 snx_test_target(snx-test-cheat-list c23)
