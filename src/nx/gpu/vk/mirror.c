@@ -1289,6 +1289,35 @@ void vk_mirror_done(u64 done) {
 static int mir_pending(u64 gva, u64 len) {
     return len == ~0ull ? g_mir_nnow || g_mir_nbatch : pend_hit(&g_mir_pend, gva, len); /* ~0: anywhere */
 }
+/* the newest submission of a batch whose programs wrote guest memory [gva, gva + len), 0 for none, ~0 when the
+   commands being recorded wrote there. Anywhere (len ~0, as mir_pending) asks the batches alone: the walk below would
+   go over the 2^64 bytes of it a page at a time, with vk_lock held */
+static u64 mir_batch_over(u64 gva, u64 len) {
+    u64 at = 0;
+    if (len == ~0ull) {
+        for (u32 b = 0; b < g_mir_nbatch; b++)
+            if (g_mir_batch[b].submit > at) at = g_mir_batch[b].submit;
+        return g_mir_nnow ? ~0ull : at;
+    }
+    for (u64 o = 0; o < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, len - o, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > len - o) n = len - o;
+            o += n;
+            continue;
+        }
+        const u64 first = cpu >> 12, end = (cpu + n + 4095) >> 12;
+        for (u32 i = 0; i < g_mir_nnow; i++)
+            if (g_mir_now[i].first < end && first < g_mir_now[i].end) return ~0ull;
+        for (u32 b = 0; b < g_mir_nbatch; b++)
+            for (u32 i = 0; i < g_mir_batch[b].n; i++)
+                if (g_mir_batch[b].r[i].first < end && first < g_mir_batch[b].r[i].end && g_mir_batch[b].submit > at)
+                    at = g_mir_batch[b].submit;
+        o += n;
+    }
+    return at;
+}
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
     u64 t_need = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
@@ -1299,6 +1328,19 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     u64 submitted = 0, done = 0;
     vk_submit_progress(&submitted, &done);
     if (done) vk_land_through(done);
+    /* pages harvested and only waiting for their publish need nothing of the GPU: published first. Then those of a
+       batch submitted already: that submission waited for and landed, not every one the game has open, nor what is
+       being recorded. In one game, a draw's writable range over such pages finished all the GPU's work about once in
+       two presents, on the thread that records the draws */
+    if (mir_pending(gva, len)) vk_mirror_publish();
+    if (mir_pending(gva, len)) {
+        const u64 at = mir_batch_over(gva, len);
+        if (at && at != ~0ull && at <= submitted) {
+            vk_wait_submit_letting_go(at);
+            vk_land_through(at);
+            vk_mirror_publish();
+        }
+    }
     /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them. The GPU
        thread may record meanwhile: what it submits after is published below, and lands at the CPU's touch */
     if (mir_pending(gva, len)) {

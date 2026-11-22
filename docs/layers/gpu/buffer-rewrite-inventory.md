@@ -1098,6 +1098,15 @@ submission.**
 - Comment: `compute.c`, `vk_dispatch`, above `vk_buf_owned`.
 - Check: `check_compute_owned_input` and `check_compute_owned_chain` in `tests/vulkan_compute_owned_input.inc`.
 
+**W25. A read over pending mirror pages waits for the submission that wrote them, with `vk_lock` let go.**
+
+- Without the rule: the read finished all the GPU's work, also for pages of a submission that was made already, about
+  one time in two presents in one game. A finish is left for writes that are still being recorded. A change of guest
+  memory asks for pages anywhere, and looks at the batches alone: the walk of the whole GPU address space, a page at a
+  time with `vk_lock` held, did not end.
+- Comment: `mirror.c`, `mir_batch_over` and `vk_mirror_mem_need`.
+- Check: `check_mem_need` in `tests/mirror_landing.c`, and `check_mirror_batch` in `tests/vulkan_mirror_batch.inc`.
+
 ## Staging and rings
 
 **S1. The rings, the descriptor pools and the dead list of a frame are not used again before its last submission

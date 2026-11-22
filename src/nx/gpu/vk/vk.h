@@ -856,6 +856,9 @@ void vk_submit_progress_raw(u64* submitted, u64* done); /* the same, with no sto
 /* a lost device's stop: the fault and checkpoint reports, then fatal(msg). One thread reports, others wait for it */
 [[noreturn]] void vk_lost_stop(const char* msg);
 void vk_wait_submit(u64 value); /* until the GPU has done that submission (any thread, without vk_lock) */
+/* the same, under vk_lock: lets go of it while it waits, as vk_finish_letting_go does, for a caller whose state other
+   threads may change meanwhile */
+void vk_wait_submit_letting_go(u64 value);
 /* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
    (cmd.c), where a wait for good froze the game */
 void vk_wait_semaphore(VkSemaphore sem, u64 value);
