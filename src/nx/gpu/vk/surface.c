@@ -2440,6 +2440,18 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             vk_rt_note_read(s);
             return s;
         }
+    /* The same target, named with only its padding different. One layer's stride is padding, and a 2D copy knows the
+       pixels but not the stride: it passes 0, which becomes the smallest that holds them, while the draws that bind
+       the target give the stride the game laid out. Two targets at one address would leave the copy in the one nothing
+       draws to or samples, and the copy's pixels are lost (a minimap's terrain, every frame) */
+    if (layers == 1 && !volume)
+        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
+            if (s->gva == gva && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl && s->bh == bh &&
+                s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa) {
+                if (s->layer_size < layer_size) s->layer_size = layer_size;
+                vk_rt_note_read(s);
+                return s;
+            }
     /* another size, format or layout at this address: park the current one, reuse a parked one that fits */
     Surf* parked = NULL;
     /* the one parked here, whose freshness is asked while it holds the address (not when only the size changes, as
