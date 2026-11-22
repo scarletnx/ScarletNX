@@ -472,3 +472,49 @@ run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: e
 UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+
+### AArch32 (`x64_a32.h`)
+
+```sh
+sailgen --generate a32.roots --backend bits.h --backend x64.h --backend x64_a32.h --profile a32.profile \
+        -o a32_x64.inc a32.sail arm.sail
+```
+
+The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
+`src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` makes of an A32 block on the Cortex-A57
+with flat memory (a 32-bit NX program's) and leaves the rest to it: Thumb, Advanced SIMD, the ARMv6 media,
+saturating and DSP multiply instructions, the TLS register's reads, half-precision conversions. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
+does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
+overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
+into one store of CPSR at the instruction's end, and a condition read before another instruction writes the flags is
+the condition code itself (`sg_condition_origin`). An instruction's condition is a jump past it to a label, made at its
+first side effect (`sgx_a32_commit`; `sgx_flags_begin` in `sg_add_with_carry` makes it before the flags it keeps), so a
+clause that only reads and hands the word on (`sg_see`) emits nothing. Memory is `CPU.mem` plus the zero-extended
+address, each access checked first as `llvm.c`'s are: misaligned (where it must be) an ALIGNMENT exit, its last byte
+past `min(mem_size, 2^32)` a DATA_ABORT one, both with the address as the syndrome, on stubs after the block's code; a
+store's range against the exclusive reservation in one check (a cold path clears it where they overlap); STREX a LOCK
+CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (loads and stores, LDM and STM, the
+multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT,
+the coprocessor's) are written in `x64_arm.c` over the same SSA. The VFP's scalar instructions keep their values in XMM
+registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`
+takes the host's: FPSCR's rounding to nearest, no trap enabled and IXC already set (for the arithmetic), operands
+finite and normal or zero, a result normal or an exact zero the operation allows; anything else calls
+`snx_arm_fp_x64` on a cold path, which is `snx_arm_fp`. FZ on or off does not change the choice.
+
+A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 its address, CPSR.T and E clear) on a
+shared stub of the object; its end goes on to the block after it with a jump to that block's function where
+`nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
+nothing in the block can have changed them, and through them after an MSR that may set E. Each block is
+`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object, global and hidden as LLVM's are, so the two back ends' blocks call
+each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
+block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the
+x86-64 back end refused; `nx/loader/module_x64.c` writes the module's descriptor without LLVM. The recompile prints
+`x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM.
+
+**The test** (`tests/arm_x64.c`, `arm_x64`): random blocks of one to six words of 42 A32 and VFP classes made by
+both back ends and run from random states (registers in and out of memory, the flags, the monitor, FPSCR with FZ, DN,
+a rounding mode and a trap, denormals, zeros and NaNs): every register, CPSR, the exit and its syndrome, the monitor,
+FPSCR, the D registers and memory must match, and so must the words each block covers. Witnesses count the calls of
+`snx_arm_fp_x64` each VFP case makes (the hot path is taken exactly where `fp_call`'s is), the entry's checks are run
+with each of their failures, and an MSR of E is run into the next block. `arm_x64_spill` does it with three host
+registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT.

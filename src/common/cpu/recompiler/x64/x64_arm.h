@@ -6,8 +6,8 @@
    the rest written over the same SSA; the block ends where llvm.c's does, and the code it goes on to it reaches by a
    jump of its own where that is a block the caller names (the chaining nx/loader/module_arm.c gives LLVM's blocks).
    Each block is a function void name(SnxArmCPU*) of an ELF object, global and hidden as LLVM's blocks are, so the
-   two back ends' blocks call each other. A block with an instruction it doesn't make (Thumb, VFP and Advanced SIMD,
-   the ARMv6 media instructions) is refused: LLVM makes it */
+   two back ends' blocks call each other. A block with an instruction it doesn't make (Thumb, Advanced SIMD, the ARMv6
+   media, saturating and DSP multiply instructions) is refused: LLVM makes it */
 #ifndef SNX_RECOMPILER_X64_ARM_H
 #define SNX_RECOMPILER_X64_ARM_H
 
