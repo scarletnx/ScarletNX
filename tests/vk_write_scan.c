@@ -80,6 +80,7 @@ u8* gmem_host(u64 gva, u64 size) { abort(); }
 void gmem_need(u64 gva, u64 size) { abort(); }
 u8* gmem_ptr(u64 gva, u64 size) { abort(); }
 u8* gmem_ptr_untracked(u64 gva, u64 size) { abort(); }
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { abort(); }
 int gmem_read(u64 gva, void* dst, u64 size) { abort(); }
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { abort(); }
 u64 gpu_mem_generation(void) { abort(); }
@@ -91,6 +92,11 @@ int mem_alias_clear(u64 a, u64 size) { return 1; }
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void*, u64, u64), void* user) {} /* no views */
 int mem_pool_any(u64 a, u64 size) { abort(); }
 int mem_ww_probe(void (*cb)(u8*, u64)) { return 0; }
+/* the write marks (setting write_marks_scan), off here */
+int mem_marks_on(void) { return 0; }
+int mem_marks_scan(u64 a, u64 size, void (*cb)(u8*, u64)) { abort(); }
+u8 mem_mark_peek(u64 a) { abort(); }
+void mem_wrote(u64 a, u64 size) { abort(); }
 
 u64 own_first_trapped(u64 addr, u64 size) { abort(); }
 int own_hash(u64 addr, u64 size, u64* h) { abort(); }
@@ -106,6 +112,8 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) { return -1; } /* scanner
 int plat_vm_read(const void* p, void* dst, u64 size) { abort(); }
 void plat_ww_cool(u8* p, u64 size, void (*cb)(u8*, u64)) { abort(); }
 int plat_ww_hot_in(const u8* p, u64 size) { abort(); }
+int plat_trap_armed(const void* p) { abort(); }
+void plat_trap_open_watch(void (*fn)(u8*, u64)) { abort(); }
 void pm_lock(PMutex* m) {}
 void pm_unlock(PMutex* m) {}
 void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) { abort(); }

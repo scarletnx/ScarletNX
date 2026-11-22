@@ -2566,6 +2566,11 @@ void plat_trap_disarm(u8* p, u64 size) {
 }
 
 /* the landing writes through the pool's mirror here: no trap lands in place, nor is a landed page read in place */
+int plat_trap_armed(const void* p) {
+    (void)p;
+    return 0;
+}
+void plat_trap_open_watch(void (*fn)(u8* p, u64 size)) { (void)fn; }
 int plat_trap_fill(u8* p, const void* src, u64 size) {
     (void)p;
     (void)src;

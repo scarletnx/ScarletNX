@@ -2125,6 +2125,80 @@ static int ww_claim(u64 l) {
     return atomic_compare_exchange_strong_explicit(&g_wleaf_busy[l], &free, 1, memory_order_acquire,
                                                    memory_order_relaxed);
 }
+/* The write marks (setting write_marks_scan, memory/mem.c's mem_marks_scan) of a game made with write_marks: 0, the
+   host's tracking scans; 1, the marks are read in its place; 2, the host's, and the marks checked against it. A scan
+   of the marks reads a byte a page, eight at a time, and exchanges only the words that hold one: no system call, and
+   the threads that scan never slow each other down */
+static int g_wmarks_scan;
+/* Check mode (2): the marks each scan took after the host's, a bit a page, until a report of the host's for the page
+   takes its bit. A page the host found written with no mark taken nor set now is a write that made none (a writer of
+   guest memory that doesn't call mem_wrote, or a store off the stack pointer): counted, and kept in g_wmissed until a
+   report of the page comes with its mark. What matters is a cache's: a query of vk_written_since that a missed page
+   made "written" would have read "unchanged" from the marks alone, so those are counted apart, and the first ranges
+   they asked about named in the log */
+static _Atomic u64 *g_wseen, *g_wmissed;
+/* the pages a GPU-side write or a landing wrote, or a trap let go of, since the host last reported them
+   (gpu_set_write_watch, vk_ww_landed, plat_trap_open_watch): the caches take those from the GPU's generations or the
+   ownership, and a page let go reads as written to the host by design, so a report of one with no mark is no miss */
+static _Atomic u64* g_wgpu;
+static u64 g_wcheck_pages, g_wcheck_missed, g_wcheck_stale, g_wcheck_gpu; /* under vk_lock */
+static void ww_bits_set(_Atomic u64* bits, u64 cpu, u64 n) {
+    if (!bits || !n || cpu >= AS_SIZE) return;
+    for (u64 pg = cpu >> 12, pe = ((n > AS_SIZE - cpu ? AS_SIZE : cpu + n) + 4095) >> 12; pg < pe; pg++)
+        atomic_fetch_or_explicit(&bits[pg >> 6], 1ull << (pg & 63), memory_order_relaxed);
+}
+static void ww_gpu_wrote(u64 cpu, u64 n) { ww_bits_set(g_wgpu, cpu, n); }
+static void ww_trap_opened(u8* p, u64 n) { ww_bits_set(g_wgpu, (u64)(p - g_mem), n); }
+void vk_ww_gpu_wrote(u64 cpu, u64 n) { ww_bits_set(g_wgpu, cpu, n); }
+#define WW_MISS_N 8 /* a stats window's: the ranges named again in each */
+static u64 g_wmiss[WW_MISS_N];
+static int g_wmiss_n;
+/* the first page of [o, o + len) found written with no mark (check mode), ~0 for none */
+static u64 ww_missed_in(u64 o, u64 len) {
+    for (u64 pg = o >> 12, pe = (o + len + 4095) >> 12; pg < pe; pg++)
+        if (atomic_load_explicit(&g_wmissed[pg >> 6], memory_order_relaxed) >> (pg & 63) & 1) return pg << 12;
+    return ~0ull;
+}
+static void ww_seen_note(u8* p, u64 n) {
+    u64 a = (u64)(p - g_mem);
+    for (u64 pg = a >> 12, pe = (a + n + 4095) >> 12; pg < pe; pg++)
+        atomic_fetch_or_explicit(&g_wseen[pg >> 6], 1ull << (pg & 63), memory_order_relaxed);
+}
+static void ww_check_marks(u64 o, u64 e) {
+    if (g_wmarks_scan != 2 || !g_wseen) return;
+    for (u64 pg = o >> 12, pe = (e + 4095) >> 12; pg < pe; pg++) {
+        u64 bit = 1ull << (pg & 63);
+        g_wcheck_pages++;
+        int gpu = g_wgpu && (atomic_fetch_and_explicit(&g_wgpu[pg >> 6], ~bit, memory_order_relaxed) & bit);
+        if ((atomic_fetch_and_explicit(&g_wseen[pg >> 6], ~bit, memory_order_relaxed) & bit) ||
+            mem_mark_peek(pg << 12) || gpu) { /* a mark set since the scan: the next one takes it */
+            atomic_fetch_and_explicit(&g_wmissed[pg >> 6], ~bit, memory_order_relaxed);
+            if (gpu) g_wcheck_gpu++;
+            continue;
+        }
+        g_wcheck_missed++;
+        atomic_fetch_or_explicit(&g_wmissed[pg >> 6], bit, memory_order_relaxed);
+    }
+}
+/* a run of marked pages, but those a trap holds now: their marks set again, so they are reported once it lets go, as
+   the host's tracking leaves a trapped page for then (plat_ww_scan) */
+static void ww_marks_note(u8* p, u64 n) {
+    u8 *run = p, *e = p + n;
+    for (u8* q = p; q < e; q += 4096)
+        if (plat_trap_armed(q)) {
+            if (q > run) ww_note(run, (u64)(q - run));
+            mem_wrote((u64)(q - g_mem), 1);
+            run = q + 4096;
+        }
+    if (run < e) ww_note(run, (u64)(e - run));
+}
+/* [a, e) of guest memory scanned by the host's tracking or by the marks */
+static int ww_scan_range(u64 a, u64 e) {
+    if (g_wmarks_scan == 1) return mem_marks_scan(a, e - a, ww_marks_note);
+    int r = plat_ww_scan(GP(a), e - a, ww_note);
+    if (g_wmarks_scan == 2) (void)mem_marks_scan(a, e - a, ww_seen_note);
+    return r;
+}
 /* guest memory [a, e) scanned, but for the pages an import of unified memory holds: the driver takes them again at
    each submission, writable, which a scan would report as the CPU's writes, and after a scan protected them it faults
    every one of them in again (uma.c). vk_written_since can't tell there */
@@ -2132,7 +2206,7 @@ static int ww_scan_free(u64 a, u64 e) {
     int r = 0;
     while (a < e && !r) {
         u64 hi, lo = vk_uma_import_in(a, e, &hi);
-        if (lo > a) r = plat_ww_scan(GP(a), lo - a, ww_note);
+        if (lo > a) r = ww_scan_range(a, lo);
         a = hi;
     }
     return r;
@@ -2209,6 +2283,7 @@ static u32 g_wland_tmp_cap;
 static PMutex g_wland_lk = PMUTEX_INIT; /* after g_wres_lk */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) {
     if (!bytes || cpu >= AS_SIZE || size > AS_SIZE - cpu) return;
+    ww_bits_set(g_wgpu, cpu, size);
     pm_lock(&g_wland_lk);
     for (u64 o = 0; o + 4096 <= size; o += 4096) {
         if (g_wland_n == g_wland_cap) {
@@ -2310,13 +2385,13 @@ static void ww_mark_scanned(u64 o, u64 e) {
         u64 a = g_wland[i].page << 12;
         if (!g_wland[i].bytes) continue;
         if (a + 4096 <= e && landed_unchanged(&g_wland[i])) {
-            if (a > at) ww_mark_range(at, a);
+            if (a > at) ww_check_marks(at, a), ww_mark_range(at, a);
             at = a + 4096;
         }
         g_wland[i].bytes = NULL;
         if (i < g_wland_gone) g_wland_gone = i;
     }
-    if (at < e) ww_mark_range(at, e);
+    if (at < e) ww_check_marks(at, e), ww_mark_range(at, e);
 }
 /* marks what scans found written, newer than every baseline taken before: those were taken before the scans
    re-protected the pages, and their caches may have read memory before the writes */
@@ -2335,8 +2410,10 @@ static void ww_take_scanned(void) {
             if (g_wland[i].bytes) g_wland[n++] = g_wland[i];
         g_wland_n = g_wland_sorted = n;
     } else
-        for (int i = 0; i < atomic_load_explicit(&g_wres_n, memory_order_relaxed); i++)
+        for (int i = 0; i < atomic_load_explicit(&g_wres_n, memory_order_relaxed); i++) {
+            ww_check_marks(g_wres[i].a, g_wres[i].e);
             ww_mark_range(g_wres[i].a, g_wres[i].e);
+        }
     pm_unlock(&g_wland_lk);
     atomic_store_explicit(&g_wres_n, 0, memory_order_relaxed);
     pm_unlock(&g_wres_lk);
@@ -2512,9 +2589,26 @@ static void ww_take_peers(void) {
 static int ww_take(const u8* host, u64 len) {
     if (!g_ww || !host || !len) return -1;
     if (g_ww < 0) {
-        g_ww = mem_ww_probe(ww_mark) == 0;
-        LOG("vulkan: %s\n",
-            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
+        g_wmarks_scan = g_settings.write_marks_scan;
+        if (g_wmarks_scan && !mem_marks_on()) {
+            WARN("vulkan: write_marks_scan=%d needs a game made with write_marks=1, and the marks on: the host's "
+                 "tracking finds written pages\n",
+                 g_wmarks_scan);
+            g_wmarks_scan = 0;
+        }
+        if (g_wmarks_scan == 2 && (!(g_wseen = calloc(AS_SIZE >> 15, 1)) || !(g_wmissed = calloc(AS_SIZE >> 15, 1))))
+            g_wmarks_scan = 0;
+        /* the GPU's writes by guest address, where unified memory's hazard count does not hold the watch */
+        if (g_wmarks_scan == 2 && !vk_uma() && (g_wgpu = calloc(AS_SIZE >> 15, 1))) {
+            gpu_set_write_watch(ww_gpu_wrote);
+            plat_trap_open_watch(ww_trap_opened); /* a page let go reads as written to the host */
+        }
+        g_ww = g_wmarks_scan == 1 || mem_ww_probe(ww_mark) == 0;
+        LOG("vulkan: %s%s\n",
+            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)",
+            g_wmarks_scan == 1   ? ", from the game's write marks"
+            : g_wmarks_scan == 2 ? ", the host's, with the game's write marks checked against it"
+                                 : "");
         if (!g_ww) return -1;
         pc_init(&g_wscan_cv);
         if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
@@ -2558,7 +2652,43 @@ static int ww_take(const u8* host, u64 len) {
     if (peers.over) return -1;
     return 0;
 }
+static int written_since(const u8* host, u64 len, u32 since);
+/* the first page of [o, o + len) written after since that is no missed page (check mode), ~0 for none */
+static u64 ww_written_unmissed(u64 o, u64 len, u32 since) {
+    for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e; pg++) {
+        u64 l = pg >> (WW_LEAF_SHIFT - 12);
+        if (g_wleaf_max[l] <= since) {
+            pg = ((l + 1) << (WW_LEAF_SHIFT - 12)) - 1;
+            continue;
+        }
+        if ((!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) &&
+            !(atomic_load_explicit(&g_wmissed[pg >> 6], memory_order_relaxed) >> (pg & 63) & 1))
+            return pg << 12;
+    }
+    return ~0ull;
+}
 int vk_written_since(const u8* host, u64 len, u32 since) {
+    int r = written_since(host, len, since);
+    /* a query with a baseline (since 0 only asks whether the tracking works) that read "written" for missed pages
+       alone: from the marks it would have read "unchanged" */
+    if (r > 0 && since && g_wmarks_scan == 2) {
+        u64 o = (u64)(host - g_mem), pg = ww_missed_in(o, len);
+        if (pg != ~0ull && ww_written_unmissed(o, len, since) == ~0ull) {
+            g_wcheck_stale++;
+            int i;
+            for (i = 0; i < g_wmiss_n && g_wmiss[i] != o >> 21; i++) {}
+            if (i == g_wmiss_n && g_wmiss_n < WW_MISS_N) {
+                g_wmiss[g_wmiss_n++] = o >> 21;
+                LOG("vulkan: write marks check: %#llx (%llu bytes) read as written for a page with no mark, %#llx "
+                    "(the first in its 2 MiB, %d of %d named; asked from %p, vk_written_since at %p)\n",
+                    (unsigned long long)o, (unsigned long long)len, (unsigned long long)pg, g_wmiss_n, WW_MISS_N,
+                    __builtin_return_address(0), (void*)vk_written_since);
+            }
+        }
+    }
+    return r;
+}
+static int written_since(const u8* host, u64 len, u32 since) {
     int r = ww_take(host, len);
     if (r) return r;
     u64 o = (u64)(host - g_mem);
@@ -2629,6 +2759,13 @@ void vk_ww_stats(u32 presents) {
             "(%.2f ms), the checks %.1f (%.2f ms, and %.1f the scanner had)\n",
             presents, (double)(e - epoch0) / presents, (double)l[0] / presents, (double)ns[0] / 1e6 / presents,
             (double)l[1] / presents, (double)ns[1] / 1e6 / presents, (double)g_wscan_skipped / presents);
+    if (g_wmarks_scan == 2 && presents)
+        LOG("vulkan: write marks check over %u presents: %llu pages the host found written, %llu of them with no "
+            "mark; %llu queries read as written for such a page; %llu more had a GPU-side write or a landing\n",
+            presents, (unsigned long long)g_wcheck_pages, (unsigned long long)g_wcheck_missed,
+            (unsigned long long)g_wcheck_stale, (unsigned long long)g_wcheck_gpu);
+    g_wcheck_pages = g_wcheck_missed = g_wcheck_stale = g_wcheck_gpu = 0;
+    g_wmiss_n = 0;
     epoch0 = e;
     g_wscan_skipped = 0;
 }

@@ -442,6 +442,7 @@ static int trap_armed_at(const void* a) {
     u64 i;
     return trap_index(a, &i) && trap_bit(i);
 }
+int plat_trap_armed(const void* p) { return trap_armed_at(p); }
 /* the pages [*lo, *hi) of [p, p + size), whole 4 KiB pages in the reservation: 1, or 0 when they aren't */
 static int trap_pages(const u8* p, u64 size, u64* lo, u64* hi) {
     if (!size || ((uintptr_t)p | size) & 4095 || !trap_index(p, lo) || size > g_vm_size - (u64)(p - g_vm_base))
@@ -456,6 +457,10 @@ static void trap_wake(void) {
 /* the armed pages of [lo, hi) open (readable and writable), written once so the write watch reports them (a page a
    trap lets go reads as written, as on the other hosts), let go, and their waiters woken. Under own.c's trap lock, or
    on one thread (a test's) */
+static void (*_Atomic g_trap_open_watch)(u8* p, u64 size);
+void plat_trap_open_watch(void (*fn)(u8* p, u64 size)) {
+    atomic_store_explicit(&g_trap_open_watch, fn, memory_order_release);
+}
 static void trap_open(u64 lo, u64 hi) {
     u64 i = lo, run, k;
     int any = 0;
@@ -479,6 +484,10 @@ static void trap_open(u64 lo, u64 hi) {
             SNX_PLOT("plat pages opened", (double)(run - i));
             for (k = i; k < run; k++)
                 atomic_fetch_or_explicit((_Atomic u8*)(g_vm_base + (k << 12)), (u8)0, memory_order_relaxed);
+        }
+        {
+            void (*watch)(u8*, u64) = atomic_load_explicit(&g_trap_open_watch, memory_order_acquire);
+            if (watch) watch(a, (run - i) << 12);
         }
         /* before the bits go: a fault that raced this finds the count moved, and goes again (trap_fault) */
         atomic_fetch_add_explicit(&g_trap_opened, 1, memory_order_seq_cst);
@@ -704,6 +713,10 @@ int plat_trap_fill(u8* p, const void* src, u64 size) {
         n = (size_t)((hi < end ? hi : end) - p);
         memcpy(p, s, n);
         done += n;
+        {
+            void (*watch)(u8*, u64) = atomic_load_explicit(&g_trap_open_watch, memory_order_acquire);
+            if (watch) watch(lo, 4096); /* the GPU's bytes, as a page let go reads */
+        }
         p += n;
         s += n;
     }
