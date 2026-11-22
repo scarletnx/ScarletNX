@@ -283,8 +283,24 @@ static int fnot_roomy(SgCtx* g, unsigned sz, int r) {
     return vgt(g, size, vxor(g, t, vsplat(g, size, flip)), vsplat(g, size, (((inf - normal - 1) << 1) - 1) ^ flip), 0);
 }
 static int fzero(SgCtx* g, unsigned sz, int a) { return veq(g, sz + 2, vadd(g, sz + 2, a, a), vzero(g)); }
+/* the denormal lanes (the doubled magnitude less 2 below the doubled smallest normal less 2, unsigned: a signed
+   compare with their tops flipped) */
+static int fdenormal(SgCtx* g, unsigned sz, int a) {
+    unsigned size = sz + 2;
+    SnxU64 normal = sz ? 0x0010000000000000ull : 0x00800000u, flip = 1ull << ((8u << size) - 1);
+    int t = vsub(g, size, vadd(g, size, a, a), vsplat(g, size, 2));
+    return vgt(g, size, vsplat(g, size, ((normal << 1) - 2) ^ flip), vxor(g, t, vsplat(g, size, flip)), 0);
+}
 static int fnan(SgCtx* g, unsigned sz, int a) { return sgx_v2(X, k_fcmp[sz], a, a, 3); /* CMPUNORD */ }
 static SgB fstate(SgCtx* g, SnxU32 mask, int ixc) { return sgx_fp_bad(g, sg_FPCR_read(g), mask, ixc); }
+/* FPCR.FZ set and a denormal in the first n lanes of a, b or c (0: none), which it flushes, raising IDC: the helpers'
+   case (ir_vec_fp.c's unflushed) */
+static SgB fflushed(SgCtx* g, unsigned sz, int n, int a, int b, int c) {
+    int m = fdenormal(g, sz, a);
+    if (b) m = vor(g, m, fdenormal(g, sz, b));
+    if (c) m = vor(g, m, fdenormal(g, sz, c));
+    return sg_b_and(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, m, sz, n));
+}
 static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) {
     return sgx_vcold(X, bad, fast, "snx_x64_fp_vec", a, b, d, desc);
 }
@@ -300,8 +316,8 @@ static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
     else
         zok = vand(g, fzero(g, sz, r), fzero(g, sz, a));
     bad = vandn(g, zok, bad);
-    r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, b, 0,
-              FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
+    r = fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0)), vany(g, bad, sz, n)),
+              r, a, b, 0, FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
     if (op == SNX_FP_ABD) r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), r);
     return r;
 }
@@ -316,21 +332,23 @@ static int ffma(SgCtx* g, unsigned sz, int n_, int d, int a, int b, int sub) {
     }
     zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
     bad = vandn(g, zok, fnot_roomy(g, sz, r));
-    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n_)), r, d, a, b,
-                 FDESC(1, sz, n_));
+    return fcold(
+        g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n_, d, a, b)), vany(g, bad, sz, n_)), r,
+        d, a, b, FDESC(1, sz, n_));
 }
 /* FMAX, FMIN (numeric: FMAXNM, FMINNM): MAXPx's lanes, equal ones ANDed (ORed for the minimum); a NaN goes cold */
 static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int numeric) {
     int eq = sgx_v2(X, k_fcmp[sz], a, b, 0), t = minimum ? vor(g, a, b) : vand(g, a, b);
     int r = op2(g, minimum ? k_fmin[sz] : k_fmax[sz], a, b);
     r = vsel(g, eq, t, r);
-    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, vor(g, fnan(g, sz, a), fnan(g, sz, b)), sz, n)), r,
+    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, b, 0), vany(g, vor(g, fnan(g, sz, a), fnan(g, sz, b)), sz, n)), r,
                  a, b, 0, FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16);
 }
 static int fsqrt(SgCtx* g, unsigned sz, int n, int a) {
     int r = sgx_v1(X, k_fsqrt[sz], a, 0), bad = vandn(g, fzero(g, sz, a), fnot_roomy(g, sz, r));
-    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, 0, 0,
-                 FDESC(2, sz, n) | SNX_FP_SQRT << 12);
+    return fcold(g,
+                 sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)),
+                 r, a, 0, 0, FDESC(2, sz, n) | SNX_FP_SQRT << 12);
 }
 /* FCMEQ (cmp 0), FCMGE (1), FCMGT (2) of a and b (abs: FACGE, FACGT): CMPPx's EQ, LE and LT the other way; an
    unordered lane goes cold (a signalling NaN, or any NaN for GE and GT, raises IOC) */
@@ -342,8 +360,8 @@ static int fcompare(SgCtx* g, unsigned sz, int n, int a, int b, int cmp, int abs
         b = vand(g, b, m);
     }
     r = cmp == 0 ? sgx_v2(X, k_fcmp[sz], a, b, 0) : sgx_v2(X, k_fcmp[sz], b, a, cmp == 1 ? 2 : 1);
-    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n)), r, a, b,
-                 0, FDESC(4, sz, n) | (SnxU32)cmp << 12);
+    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, b, 0), vany(g, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n)), r, a, b, 0,
+                 FDESC(4, sz, n) | (SnxU32)cmp << 12);
 }
 /* FCVTZS, FCVTZU (to integers of the lanes' width, toward zero) of a scaled by 2^fbits */
 static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
@@ -372,8 +390,8 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
         if (uns) bad = vor(g, bad, vor(g, sgx_v2(X, &sgx_v_cmppd, x, fsplat(g, 1, 0xBFF0000000000000ull), 2),
                                        vgt(g, 3, vzero(g), r, 0)));
     }
-    return fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 1), vany(g, bad, sz, n)), r, a, 0, 0,
-                 FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | 4u << 24);
+    return fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, 0, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)), r, a, 0,
+                 0, FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | 4u << 24);
 }
 /* SCVTF, UCVTF (from integers of the lanes' width), scaled by 2^-fbits: exact where every integer fits the
    significand, else once IXC is set in round to nearest. Unsigned words as their halves (each exact, one rounding
@@ -536,7 +554,7 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         }
         src = q ? sgx_v1(X, &sgx_v_pshufd, vread(g, rn), 0xEE) : vread(g, rn);
         r = sgx_v1(X, &sgx_v_cvtps2pd, src, 0);
-        r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, fnan(g, 0, src), 0, 2)), r, src, 0, 0,
+        r = fcold(g, sg_b_or(g, fflushed(g, 0, 2, src, 0, 0), vany(g, fnan(g, 0, src), 0, 2)), r, src, 0, 0,
                   FDESC(5, 0, 2) | 8u << 12);
         vwrite(g, rd, r, 1);
         return 1;
@@ -574,9 +592,11 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         bits = sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskps, fnot_roomy(g, 0, r), 0)),
                         sg_d_not(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskpd, fzero(g, 1, a), 0))));
         bad = 0;
-        r = fcold(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1),
-                             sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, 3))))),
-                  r, a, 0, 0, FDESC(5, 1, 2) | 4u << 12);
+        /* a denormal double gives a zero single, not roomy: it goes cold whatever FZ is */
+        r = fcold(
+            g,
+            sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, 3))))),
+            r, a, 0, 0, FDESC(5, 1, 2) | 4u << 12);
         (void)bad;
         vwrite_narrow(g, rd, r, q);
         return 1;

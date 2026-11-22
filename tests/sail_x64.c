@@ -178,6 +178,72 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
 
 typedef u64 (*Step)(CPU* c);
 
+/* FPCR.FZ set, as many games run: operands and results the host's arithmetic gives exactly take the inline code, with
+   no helper call (snx_x64_fp_calls); a denormal operand, which FZ flushes, takes the helper and its IDC. FPSR's IXC is
+   set first, as the inline code needs where an operation may be inexact */
+static size_t check_fz_hot(void) {
+    static const struct {
+        u32 word;
+        const char* text;
+        u64 v1, v2, v3;
+        int cold;
+        u64 want; /* V0's low doubleword, or the NZCV nibble for FCMP */
+        u32 fpsr;
+    } cases[] = {
+        {0x1E222820u, "FADD s0, s1, s2", 0x3FC00000u, 0x40100000u, 0, 0, 0x40700000u, 0x10},
+        {0x1E222820u, "FADD s0, s1, s2 of a denormal", 0x3FC00000u, 0x00000001u, 0, 1, 0x3FC00000u, 0x90},
+        {0x1E620820u, "FMUL d0, d1, d2", 0x3FF8000000000000ull, 0x4002000000000000ull, 0, 0, 0x400B000000000000ull,
+         0x10},
+        {0x1F020C20u, "FMADD s0, s1, s2, s3", 0x3FC00000u, 0x40100000u, 0x3F800000u, 0, 0x408C0000u, 0x10},
+        {0x1E61C020u, "FSQRT d0, d1", 0x4010000000000000ull, 0, 0, 0, 0x4000000000000000ull, 0x10},
+        {0x1E222020u, "FCMP s1, s2", 0x3FC00000u, 0x40100000u, 0, 0, 0x8, 0x10},
+        {0x1E222020u, "FCMP s1, s2 of a denormal", 0x00000001u, 0x40100000u, 0, 1, 0x8, 0x90},
+        {0x1E22C020u, "FCVT d0, s1", 0x3FC00000u, 0, 0, 0, 0x3FF8000000000000ull, 0x10},
+    };
+    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    size_t failures = 0, k;
+    if (code == MAP_FAILED) {
+        fprintf(stderr, "FAIL: FZ's hot paths: no memory for the code\n");
+        return 1;
+    }
+    for (k = 0; k < sizeof cases / sizeof *cases; ++k) {
+        CPU c;
+        unsigned long calls;
+        u64 got;
+        int cold, want_cold;
+        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+            !snx_x64_step(cases[k].word, 0x1000, TARGET, host_features(), code, CODE_MAX) ||
+            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            fprintf(stderr, "FAIL: %s %08x: not made\n", cases[k].text, (unsigned)cases[k].word);
+            ++failures;
+            continue;
+        }
+        memset(&c, 0, sizeof c);
+        c.v[1].d[0] = cases[k].v1;
+        c.v[2].d[0] = cases[k].v2;
+        c.v[3].d[0] = cases[k].v3;
+        c.fpcr = 1u << 24; /* FZ, round to nearest */
+        c.fpsr = 0x10;     /* IXC */
+        c.pc = 0x1000;
+        calls = snx_x64_fp_calls();
+        ((Step)(void*)code)(&c);
+        cold = snx_x64_fp_calls() != calls;
+        got = cases[k].word == 0x1E222020u ? (u64)(c.n << 3 | c.z << 2 | c.cf << 1 | c.vf) : c.v[0].d[0];
+        /* FMADD is the helper's on a host without FMA */
+        want_cold = cases[k].cold || (cases[k].word == 0x1F020C20u && !(host_features() & SNX_X64_FMA));
+        if (got != cases[k].want || c.fpsr != cases[k].fpsr || cold != want_cold) {
+            fprintf(stderr,
+                    "FAIL: %s under FZ: %016llx (want %016llx), FPSR %08x (want %08x), %s the helper (want %s)\n",
+                    cases[k].text, (unsigned long long)got, (unsigned long long)cases[k].want, c.fpsr, cases[k].fpsr,
+                    cold ? "through" : "without", want_cold ? "through" : "without");
+            ++failures;
+        }
+    }
+    munmap(code, CODE_MAX);
+    printf("sail_x64: FZ's hot paths, %zu cases\n", sizeof cases / sizeof *cases);
+    return failures;
+}
+
 int main(int argc, char** argv) {
     unsigned states = 64, samples = 3, sequences = 4000, i, k;
     unsigned hosts[2];
@@ -232,6 +298,7 @@ int main(int argc, char** argv) {
         g_test.memory[k] = (unsigned char*)mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (g_test.memory[k] == MAP_FAILED) return 1;
     }
+    failures += check_fz_hot();
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);

@@ -33,8 +33,10 @@ struct SgCtx {
     signed char mempin;   /* the host register the guest memory's base (CPU.mem) is in, -1 none (pinned) */
     int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int vx[32];      /* each SIMD&FP register as an XMM value, where the block has it so (one cache or the other) */
-    SgB fp_state[2]; /* the hot paths' check of FPCR and FPSR (sgx_fp_bad), made once a region: without, with IXC */
+    SgB fp_state[2]; /* the hot paths' check of FPCR's mode and FPSR (sgx_fp_bad), once a region: without, with IXC */
     int fp_bound[2]; /* sgx_fp_bound's register for 32 and 64 bits, once a region with fp_state (0: none yet) */
+    int fp_dbound[2]; /* sgx_fp_flushed's register for 32 and 64 bits, once a region (0: none yet) */
+    SgB fp_fz;        /* sgx_fp_bad's check of FPCR.FZ alone, once a region */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
@@ -229,6 +231,8 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     sgx_flags_clobbered(x);
     g->fp_state[0] = g->fp_state[1] = 0;
     g->fp_bound[0] = g->fp_bound[1] = 0;
+    g->fp_dbound[0] = g->fp_dbound[1] = 0;
+    g->fp_fz = 0;
     i = sgx_append(x, SGX_K_MACHINE);
     i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
     i->sym = sym;
@@ -385,21 +389,23 @@ static inline SgD sgx_fp(SgCtx* g, const char* sym, SgB path, SgD fpcr, SgD* ops
 /* ---- the hot paths ----
    Each operation is the SSE instruction's, and the exact helper's (snx_x64_fp_*) on a cold path where the result
    may not be the console's: the guards are the LLVM back end's (llvm.h's sg_fp_fast_*). FPCR rounds to nearest
-   without FZ (DN matters to NaNs only, which go cold), FPSR's IXC is set already where the operation may be inexact
-   (the inline code doesn't raise it), and the result is a normal number above the smallest (no underflow, overflow
-   or NaN: no flag but IXC) or a zero that is exact. The host's MXCSR is its default, round to nearest without FTZ
-   or DAZ, as the runtime keeps it */
+   (DN matters to NaNs only, which go cold), under FZ no operand is a denormal (sgx_fp_flushed: many games run with FZ
+   set, and a guard of FZ clear sent all of their arithmetic to the helpers), FPSR's IXC is set already where the
+   operation may be inexact (the inline code doesn't raise it), and the result is a normal number above the smallest
+   (no underflow, overflow or NaN: no flag but IXC, and nothing FZ flushes) or a zero that is exact. The host's MXCSR
+   is its default, round to nearest without FTZ or DAZ, as the runtime keeps it */
 
 #define SGX_FPCR_RMODE (3u << 22)
 #define SGX_FPCR_FZ (1u << 24)
 #define SGX_FPCR_AHP (1u << 26)
 #define SGX_FPSR_IXC (1u << 4)
 /* FPCR's mask bits set, or (ixc) FPSR's IXC clear: the hot path may not be the console's. Made once a region for
-   FPCR's and FPSR's values then (an MSR or a call forgets it: sgx_call) */
+   FPCR's mode and FPSR's values, and for FZ alone (an MSR or a call forgets them: sgx_call) */
 static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
     SgX* x = sgx(g);
     SgD f, bad;
-    if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && g->fp_state[ixc]) return g->fp_state[ixc];
+    if (mask == SGX_FPCR_RMODE && g->fp_state[ixc]) return g->fp_state[ixc];
+    if (mask == SGX_FPCR_FZ && !ixc && g->fp_fz) return g->fp_fz;
     f = sg_d_and(g, sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 32), sgx_const(32, mask));
     if (ixc) {
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
@@ -413,7 +419,8 @@ static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
     bad = f;
     {
         SgB b = sg_b_not(g, sg_d_is_zero(g, bad));
-        if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ)) g->fp_state[ixc] = b;
+        if (mask == SGX_FPCR_RMODE) g->fp_state[ixc] = b;
+        if (mask == SGX_FPCR_FZ && !ixc) g->fp_fz = b;
         return b;
     }
 }
@@ -432,15 +439,14 @@ static inline SgB sgx_fp_roomy(SgCtx* g, SgD bits, unsigned w) {
 }
 /* the hot path's test of a result r (w 32 or 64): its doubled magnitude less the smallest normal's (and 1 more) below
    the bound, unsigned: a normal number above the smallest, below infinity. The bound is 0 where FPCR rounds otherwise
-   or flushes, or FPSR's IXC is clear: a register made once a region (sgx_fp_bound), so the test costs a MOVD, LEA,
-   CMP and Jcc and no load of FPCR or FPSR an operation */
+   or FPSR's IXC is clear: a register made once a region (sgx_fp_bound), so the test costs a MOVD, LEA, CMP and Jcc
+   and no load of FPCR or FPSR an operation */
 static inline SgD sgx_fp_bound(SgCtx* g, SgD fpcr, unsigned w) {
     SgX* x = sgx(g);
     SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull, inf = w == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
     SgD b;
     if (g->fp_bound[w == 64]) return sgx_val(w, g->fp_bound[w == 64]);
-    b = sg_d_select(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), sgx_const(w, 0),
-                    sgx_const(w, (inf - normal - 1) << 1));
+    b = sg_d_select(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE, 1), sgx_const(w, 0), sgx_const(w, (inf - normal - 1) << 1));
     sgx_reg(x, &b);
     g->fp_bound[w == 64] = b.v;
     return b;
@@ -449,6 +455,28 @@ static inline SgB sgx_fp_hot(SgCtx* g, SgD r, SgD fpcr, unsigned w) {
     SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull;
     SgD bound = sgx_fp_bound(g, fpcr, w), rb = sgx_fp_bits(g, r);
     return sgx_d_ult(g, sg_d_sub(g, sg_d_lsl(g, rb, 1), sgx_const(w, (normal + 1) << 1)), bound);
+}
+/* a denormal operand v (w 32 or 64) that FPCR.FZ flushes, raising IDC: the helpers' case (llvm.h's
+   sg_fp_unflushed). Its doubled magnitude less 2 below the bound, unsigned: the doubled smallest normal less 2 where
+   FZ is set, 0 where it is clear (never), a register made once a region, so the test costs a LEA, CMP and Jcc */
+static inline SgB sgx_fp_flushed(SgCtx* g, SgD fpcr, SgD v, unsigned w) {
+    SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull;
+    SgD b;
+    if (g->fp_dbound[w == 64])
+        b = sgx_val(w, g->fp_dbound[w == 64]);
+    else {
+        b = sg_d_select(g, sgx_fp_bad(g, fpcr, SGX_FPCR_FZ, 0), sgx_const(w, (normal << 1) - 2), sgx_const(w, 0));
+        sgx_reg(sgx(g), &b);
+        g->fp_dbound[w == 64] = b.v;
+    }
+    return sgx_d_ult(g, sg_d_sub(g, sg_d_lsl(g, sgx_fp_bits(g, v), 1), sgx_const(w, 2)), b);
+}
+/* sgx_fp_hot of r, and no operand FZ flushes */
+static inline SgB sgx_fp_hot_of(SgCtx* g, SgD r, SgD fpcr, unsigned w, const SgD* ops, int nops) {
+    SgB ok = sgx_fp_hot(g, r, fpcr, w);
+    int k;
+    for (k = 0; k < nops; ++k) ok = sg_b_and(g, ok, sg_b_not(g, sgx_fp_flushed(g, fpcr, ops[k], w)));
+    return ok;
 }
 /* the cold path of an operation sgx_fp_hot tests: the helper's call where not ok, but a zero result the hot path's
    where FPCR rounds to nearest without FZ and (zargs, a mask of ops) one of those operands is a zero (none: any zero
@@ -490,9 +518,9 @@ static inline SgD sgx_fp_binary(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsi
     }
     (void)ab, (void)bb, (void)rb;
     r = sgx_xval(w, sgx_v2(x, forms[op][w == 64], sgx_fx(g, &a), sgx_fx(g, &b), 0));
-    ok = sgx_fp_hot(g, r, fpcr, w);
     ops[0] = a;
     ops[1] = b;
+    ok = sgx_fp_hot_of(g, r, fpcr, w, ops, 2);
     return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_binary", ops, 2, w | op << 8,
                          op == SNX_FP_ADD || op == SNX_FP_SUB ? 0 : op == SNX_FP_MUL ? 3 : 1);
 }
@@ -524,7 +552,8 @@ static inline SgD sgx_fp_minmax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsi
     n = sgx_v2(x, &sgx_v_andnpd, m, r, 0); /* the MAXSD where not equal */
     t = sgx_v2(x, &sgx_v_andpd, m, t, 0);
     r = sgx_v2(x, &sgx_v_orpd, n, t, 0);
-    bad = sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_FZ, 0), sg_b_or(g, sgx_fp_nan(g, ab, w), sgx_fp_nan(g, bb, w)));
+    bad = sg_b_or(g, sg_b_or(g, sgx_fp_flushed(g, fpcr, ab, w), sgx_fp_flushed(g, fpcr, bb, w)),
+                  sg_b_or(g, sgx_fp_nan(g, ab, w), sgx_fp_nan(g, bb, w)));
     ops[0] = ab;
     ops[1] = bb;
     return sgx_fp_cold(g, bad, sgx_xval(w, r), "snx_x64_fp_minmax", ops, 2, fpcr, 1, w | minimum << 8 | numeric << 9);
@@ -550,10 +579,10 @@ static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD 
         r = sgx_xval(w, sgx_vins(x, w == 64 ? &sgx_v_vfmadd231sd : &sgx_v_vfmadd231ss, 0, 1, in, 0, 0, SGX_VM_NONE, 0,
                                  0, 0, 0, 0));
     }
-    ok = sgx_fp_hot(g, r, fpcr, w);
     ops[0] = addend;
     ops[1] = a;
     ops[2] = b;
+    ok = sgx_fp_hot_of(g, r, fpcr, w, ops, 3);
     return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_fma", ops, 3, w, 6);
 }
 static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
@@ -564,7 +593,7 @@ static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
     if ((w != 32 && w != 64) || path) return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | SNX_FP_SQRT << 8, a.w);
     (void)ab, (void)rb;
     r = sgx_xval(w, sgx_v1(x, w == 64 ? &sgx_v_sqrtsd : &sgx_v_sqrtss, sgx_fx(g, &a), 0));
-    ok = sgx_fp_hot(g, r, fpcr, w);
+    ok = sgx_fp_hot_of(g, r, fpcr, w, &a, 1);
     return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_unary", &a, 1, w | SNX_FP_SQRT << 8, 1);
 }
 #define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
@@ -590,8 +619,8 @@ static inline int sgx_round_imm(int rounding) {
     default: return -1;
     }
 }
-/* FRINTN, P, M, Z, X, I (FRINTA: the helper): ROUNDSx; a NaN, FZ or FPCR's other modes go cold, FRINTX's IXC too
-   until it is set */
+/* FRINTN, P, M, Z, X, I (FRINTA: the helper): ROUNDSx; a NaN, a denormal FZ flushes or FPCR's other modes go cold,
+   FRINTX's IXC too until it is set */
 static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, int exact) {
     SgX* x = sgx(g);
     unsigned w = a.w;
@@ -603,16 +632,16 @@ static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int roundin
         return sgx_fp(g, "snx_x64_fp_round", path, fpcr, &a, 1, 1, desc, a.w);
     ab = sgx_fp_bits(g, a);
     r = sgx_xval(w, sgx_v1(x, w == 64 ? &sgx_v_roundsd : &sgx_v_roundss, sgx_fx(g, &a), imm | 8));
-    bad = sg_b_or(g, sgx_fp_bad(g, fpcr, (rounding == SG_FP_ROUNDING_FPCR ? SGX_FPCR_RMODE : 0) | SGX_FPCR_FZ, exact),
-                  sgx_fp_nan(g, ab, w));
+    bad = sg_b_or(g, sgx_fp_bad(g, fpcr, rounding == SG_FP_ROUNDING_FPCR ? SGX_FPCR_RMODE : 0, exact),
+                  sg_b_or(g, sgx_fp_nan(g, ab, w), sgx_fp_flushed(g, fpcr, ab, w)));
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_round", &ab, 1, fpcr, 1, desc);
 }
 static inline SgD sg_FPRoundIntN(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, long long intsize) {
     return sgx_fp(g, "snx_x64_fp_round_int", path, fpcr, &a, 1, 1,
                   a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)intsize << 16, a.w);
 }
-/* FCVT between singles and doubles: CVTSS2SD (exact) and CVTSD2SS (a single's roomy result, or a zero's); a NaN
-   goes cold. Halves: the helper */
+/* FCVT between singles and doubles: CVTSS2SD (exact, but a denormal single FZ flushes) and CVTSD2SS (a single's roomy
+   result, or a zero's: a denormal double gives neither); a NaN goes cold. Halves: the helper */
 static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long long to_bits) {
     SgX* x = sgx(g);
     unsigned from = op.w, to = (unsigned)to_bits;
@@ -624,16 +653,16 @@ static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long lon
     ob = sgx_fp_bits(g, op);
     r = sgx_xval(to, sgx_v1(x, to == 64 ? &sgx_v_cvtss2sd : &sgx_v_cvtsd2ss, sgx_fx(g, &op), 0));
     if (to == 64)
-        bad = sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_FZ, 0), sgx_fp_nan(g, ob, 32));
+        bad = sg_b_or(g, sgx_fp_flushed(g, fpcr, ob, 32), sgx_fp_nan(g, ob, 32));
     else {
         SgD rb = sgx_fp_bits(g, r);
-        bad = sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1),
+        bad = sg_b_or(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE, 1),
                       sg_b_not(g, sg_b_or(g, sgx_fp_roomy(g, rb, 32), sgx_fp_zero(g, ob))));
     }
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_convert", &ob, 1, fpcr, 1, from | to << 8);
 }
-/* the NZCV nibble (N bit 3 ... V bit 0): UCOMISx's flags, ordered (an unordered pair, which may raise IOC, and FZ go
-   cold): N below, Z equal, C not below, V 0 */
+/* the NZCV nibble (N bit 3 ... V bit 0): UCOMISx's flags, ordered (an unordered pair, which may raise IOC, and a
+   denormal FZ flushes go cold): N below, Z equal, C not below, V 0 */
 static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD fpcr) {
     SgX* x = sgx(g);
     unsigned w = a.w;
@@ -658,7 +687,7 @@ static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD
     un = sgx_bool(x, SGX_B_CC, ins, 10); /* P */
     nib = sg_d_concat(g, sg_d_concat(g, sgx_bool_bits(x, n), sgx_bool_bits(x, z)),
                       sg_d_concat(g, sgx_bool_bits(x, c), sgx_const(1, 0)));
-    bad = sg_b_or(g, un, sgx_fp_bad(g, fpcr, SGX_FPCR_FZ, 0));
+    bad = sg_b_or(g, un, sg_b_or(g, sgx_fp_flushed(g, fpcr, ab, w), sgx_fp_flushed(g, fpcr, bb, w)));
     ops[0] = ab;
     ops[1] = bb;
     return sg_d_slice(g, sgx_fp_cold(g, bad, sg_d_zext(g, nib, 32), "snx_x64_fp_compare", ops, 2, fpcr, 1, desc), 3, 0);
@@ -697,8 +726,8 @@ static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int 
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_from_int", &v, 1, fpcr, 1, desc);
 }
 /* FCVTZS, FCVTZU and the other modes' (FCVTAS, TIEAWAY: the helper): times 2^fbits, ROUNDSx to the mode, CVTTSx2SI
-   to 64 bits; out of range (CVTT's 'indefinite' integer, a negative or too large unsigned one), a NaN, FZ, or IXC
-   still clear goes cold */
+   to 64 bits; out of range (CVTT's 'indefinite' integer, a negative or too large unsigned one), a NaN, a denormal FZ
+   flushes, or IXC still clear goes cold */
 static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
                                long long integer) {
     SgX* x = sgx(g);
@@ -728,7 +757,7 @@ static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int 
         bad = sg_d_eq(g, r, sgx_const(64, 1ull << 63));
     else /* INT32_MIN to INT32_MAX: r + 2^31 below 2^32 */
         bad = sg_b_not(g, sgx_d_ult(g, sg_d_add(g, r, sgx_const(64, 1ull << 31)), sgx_const(64, 1ull << 32)));
-    bad = sg_b_or(g, bad, sgx_fp_bad(g, fpcr, SGX_FPCR_FZ, 1));
+    bad = sg_b_or(g, bad, sg_b_or(g, sgx_fp_bad(g, fpcr, 0, 1), sgx_fp_flushed(g, fpcr, ob, w)));
     r = sgx_fp_cold(g, bad, r, "snx_x64_fp_to_int", &ob, 1, fpcr, 1, desc);
     return sg_d_slice(g, r, iw - 1, 0);
 }

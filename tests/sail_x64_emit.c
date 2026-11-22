@@ -47,15 +47,59 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 extern const u32 snx_x64_crc32_table[256];
+/* the floating-point helpers counted: a hot path's operation calls none */
+static unsigned long g_fp_calls;
+unsigned long snx_x64_fp_calls(void) { return g_fp_calls; }
+static u64 counted_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_binary(c, a, b, fpcr, desc);
+}
+static u64 counted_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_fma(c, add, a, b, fpcr, desc);
+}
+static u64 counted_unary(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_unary(c, a, fpcr, desc);
+}
+static u64 counted_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_minmax(c, a, b, fpcr, desc);
+}
+static u64 counted_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_compare(c, a, b, fpcr, desc);
+}
+static u64 counted_convert(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_convert(c, a, fpcr, desc);
+}
+static u64 counted_round(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_round(c, a, fpcr, desc);
+}
+static u64 counted_to_int(CPU* c, u64 a, u64 fpcr, u32 desc) {
+    ++g_fp_calls;
+    return snx_x64_fp_to_int(c, a, fpcr, desc);
+}
 #define SNX_X64_FN(name) {#name, (void*)name}
+#define SNX_X64_COUNTED(name, f) {#name, (void*)f}
 static SnxU64 resolve(const char* sym) {
     static const struct {
         const char* name;
         void* f;
-    } table[] = {SNX_X64_FN(snx_x64_fp_binary),   SNX_X64_FN(snx_x64_fp_fma),       SNX_X64_FN(snx_x64_fp_unary),
-                 SNX_X64_FN(snx_x64_fp_minmax),   SNX_X64_FN(snx_x64_fp_compare),   SNX_X64_FN(snx_x64_fp_convert),
-                 SNX_X64_FN(snx_x64_fp_round),    SNX_X64_FN(snx_x64_fp_round_int), SNX_X64_FN(snx_x64_fp_to_int),
-                 SNX_X64_FN(snx_x64_fp_from_int), SNX_X64_FN(snx_x64_fp_jcvt),      SNX_X64_FN(snx_x64_fp_bfcvt),
+    } table[] = {SNX_X64_COUNTED(snx_x64_fp_binary, counted_binary),
+                 SNX_X64_COUNTED(snx_x64_fp_fma, counted_fma),
+                 SNX_X64_COUNTED(snx_x64_fp_unary, counted_unary),
+                 SNX_X64_COUNTED(snx_x64_fp_minmax, counted_minmax),
+                 SNX_X64_COUNTED(snx_x64_fp_compare, counted_compare),
+                 SNX_X64_COUNTED(snx_x64_fp_convert, counted_convert),
+                 SNX_X64_COUNTED(snx_x64_fp_round, counted_round),
+                 SNX_X64_FN(snx_x64_fp_round_int),
+                 SNX_X64_COUNTED(snx_x64_fp_to_int, counted_to_int),
+                 SNX_X64_FN(snx_x64_fp_from_int),
+                 SNX_X64_FN(snx_x64_fp_jcvt),
+                 SNX_X64_FN(snx_x64_fp_bfcvt),
                  {"snx_x64_crc32_table", (void*)snx_x64_crc32_table}};
     for (size_t i = 0; i < sizeof table / sizeof *table; ++i)
         if (!strcmp(sym, table[i].name)) return (SnxU64)(uintptr_t)table[i].f;
