@@ -492,6 +492,7 @@ void gpu_verify_channel_free(GpuChannel* ch);
 void gpu_verify_word(GpuChannel* ch, u32 w);
 void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
+int gpu_release_wait(u32 id, u32 thresh, int block); /* the renderer's release_wait, 0 without one */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
    or reach it (geq), before its next method. Met already, nothing waits. Otherwise the method that asked returns and
    the stream stops after it (a macro after the method too, mme_resume), and the GPU thread goes on with other

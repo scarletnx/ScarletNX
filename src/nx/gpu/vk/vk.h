@@ -2708,6 +2708,7 @@ void vk_release_events(void);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
 void vk_release_retire(u32 id);
+int vk_release_wait(u32 id, u32 thresh, int block); /* renderer.h's release_wait */
 void vk_release_drain(void);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it

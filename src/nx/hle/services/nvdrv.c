@@ -843,20 +843,25 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     if (!timeout_ns) return 0;
     deadline = timeout_ns > 0 ? guest_ns() + (u64)timeout_ns : 0;
     u64 started = plat_ns();
-    /* syncpt_bump broadcasts under it, so no increment slips between the check and the wait */
-    pm_lock(&g_host.nvdrv.sync_lk);
-    for (;;) {
-        i64 left = -1;
-        reached = syncpt_reached(id, thresh);
-        if (reached) break;
-        if (timeout_ns > 0) {
-            u64 now = guest_ns();
-            if (now >= deadline) break;
-            left = (i64)(deadline - now);
+    /* the increments the renderer queued up to thresh, performed here once their GPU work is done rather than by its
+       release thread, which wakes this one after; the GPU is waited for only by a wait with no limit */
+    reached = gpu_release_wait(id, thresh, timeout_ns < 0) && syncpt_reached(id, thresh);
+    if (!reached) {
+        /* syncpt_bump broadcasts under it, so no increment slips between the check and the wait */
+        pm_lock(&g_host.nvdrv.sync_lk);
+        for (;;) {
+            i64 left = -1;
+            reached = syncpt_reached(id, thresh);
+            if (reached) break;
+            if (timeout_ns > 0) {
+                u64 now = guest_ns();
+                if (now >= deadline) break;
+                left = (i64)(deadline - now);
+            }
+            kthread_wait(&g_host.nvdrv.sync_cv, &g_host.nvdrv.sync_lk, left);
         }
-        kthread_wait(&g_host.nvdrv.sync_cv, &g_host.nvdrv.sync_lk, left);
+        pm_unlock(&g_host.nvdrv.sync_lk);
     }
-    pm_unlock(&g_host.nvdrv.sync_lk);
     u64 waited_ns = plat_ns() - started;
     atomic_fetch_add_explicit(&g_host.nvdrv.syncpt_waits, 1, memory_order_relaxed);
     [[maybe_unused]] double ms = (double)waited_ns / 1e6;

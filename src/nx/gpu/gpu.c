@@ -1489,6 +1489,9 @@ void gpu_channel_close(u32 channel) {
 void gpu_release_retire(u32 channel) {
     if (g_renderer->release_retire) g_renderer->release_retire(channel);
 }
+int gpu_release_wait(u32 id, u32 thresh, int block) {
+    return g_renderer && g_renderer->release_wait && g_renderer->release_wait(id, thresh, block);
+}
 
 /* ------------------------------------------------------------ save states */
 /* With the GPU thread held (gpu_hold) and the renderer idle. A channel goes as its bytes, with its two allocations'

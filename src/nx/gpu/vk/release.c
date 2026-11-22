@@ -641,6 +641,42 @@ void vk_release_need(u64 gva, u64 len) {
 }
 void vk_release_drain(void) { release_match(0, 0, 0, 1); }
 void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
+/* The queued increments of syncpoint id up to the one that brings it to thresh, counted from its value now (increments
+   are performed under g_rlock, so the two agree), with every release before them: performed on the waiting thread once
+   the submit and the compute batch the last one waits for are done, as the release thread would perform them, so that
+   no wake of that thread comes between the GPU and the waiter. Only releases the stream holds no longer, whose submit
+   is made; with block 0, only when the GPU has done it already */
+int vk_release_wait(u32 id, u32 thresh, int block) {
+    if (id >= SYNC_N || !atomic_load_explicit(&g_rincr[id], memory_order_acquire)) return 0;
+    u64 gate = 0, cgate = 0;
+    int found = 0;
+    pm_lock(&g_rlock);
+    u32 v = syncpt_read(id);
+    for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed); i < g_rheld; i++) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (r->gva || r->id != id || (i32)(++v - thresh) < 0) continue;
+        gate = atomic_load_explicit(&r->gate, memory_order_relaxed);
+        cgate = atomic_load_explicit(&r->cgate, memory_order_relaxed);
+        found = 1;
+        break;
+    }
+    pm_unlock(&g_rlock);
+    if (!found || gate > vk_last_submit()) return 0;
+    if (!block) {
+        u64 submitted = 0, done = 0;
+        vk_submit_progress(&submitted, &done);
+        if (done < gate) return 0;
+        if (cgate) {
+            vk_compute_progress(&submitted, &done);
+            if (done < cgate) return 0;
+        }
+    }
+    SNX_ZONE(z, "vk release wait");
+    vk_wait_submit(gate);
+    vk_compute_wait(cgate);
+    release_through(gate, cgate);
+    return 1;
+}
 /* The render enable's comparison of a count with zero (renderer.h render_predicate), when the count is a samples report
    still queued: made on the GPU (query.c's predicates), or known without it. The report must be the last release
    queued over the count's 8 bytes, and the other side of the comparison zero, read without waiting for anything, or
