@@ -1786,6 +1786,13 @@ typedef struct VkOwnRes {
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
     u8 no_pool;  /* landed by vk_own_trim for the budget: deferred back to the heap instead of pooled */
     u8 landed;   /* a landing copied from it (owned.c land_note), for the statistics of results let go unread */
+    /* Its bytes copied early into host-cached memory (owned.c early_copy): the copy recorded right after the writes,
+       in submission early_value, of [early_off, early_off + early_size) of buf. A landing takes them while serial is
+       still early_serial (no write since) and that submission is done. early_key is the key it was hot by */
+    VkBuffer early;
+    DevMem early_mem;
+    u8* early_ptr;
+    u64 early_off, early_size, early_serial, early_value, early_key;
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
     /* buf's device address, 0 until an indirect copy or an in-place read asks for it (owned.c res_addr) */
     VkDeviceAddress addr;

@@ -54,7 +54,12 @@ static struct {
     struct {
         u64 key;
         u32 present;
+        u32 unread; /* early copies of the key let go in a row with no landing (early_copy stops at EARLY_UNREAD) */
     } land_key[1024];
+    /* early copies made (early_copy), their bytes, the landings that took one, and the ones let go unread, since the
+       last report; and the bytes copied early this present (EARLY_BUDGET), under vk_lock */
+    u64 early_n, early_bytes, early_hits, early_unread, early_now;
+    u32 early_present;
     /* atomic: the results let go with no landing, and their bytes, by what made them: what a copy back of each
        result as it is made would have copied for nothing */
     _Atomic u64 unread[VK_OWN_BY_N], unread_bytes[VK_OWN_BY_N];
@@ -251,6 +256,11 @@ static void land_log(const char* const* by) {
             (unsigned long long)g_owned.pred_n[k], (double)g_owned.pred_bytes[k] / 1048576.0, (unsigned long long)un,
             (double)unb / 1048576.0);
     }
+    if (g_owned.early_n || g_owned.early_hits)
+        LOG("vulkan: early copies back: %llu made (%.2f MB), %llu landings took one, %llu let go unread\n",
+            (unsigned long long)g_owned.early_n, (double)g_owned.early_bytes / 1048576.0,
+            (unsigned long long)g_owned.early_hits, (unsigned long long)g_owned.early_unread);
+    g_owned.early_n = g_owned.early_bytes = g_owned.early_hits = g_owned.early_unread = 0;
     memset(g_owned.land_n, 0, sizeof g_owned.land_n);
     memset(g_owned.land_bytes, 0, sizeof g_owned.land_bytes);
     memset(g_owned.pred_n, 0, sizeof g_owned.pred_n);
@@ -587,7 +597,16 @@ static void res_release(void* res) {
     vk_unlock();
 }
 /* under vk_lock: a resource no one refers to, its buffer to the pool or to the frame's end, and its record */
+static u32 land_slot_of(u64 key);
 static void res_free_buffer(VkOwnRes* r) {
+    if (r->early) { /* under vk_lock: the copy may still be on the GPU, so it goes with the frame */
+        if (!r->landed) {
+            u32 slot = land_slot_of(r->early_key);
+            if (g_owned.land_key[slot].key == r->early_key) g_owned.land_key[slot].unread++;
+            g_owned.early_unread++;
+        }
+        vk_defer_buffer(r->early, r->early_mem);
+    }
     /* the frame recording may still copy from it: the pool keeps it from the next result until the GPU has done what
        is recorded now. A full pool has it destroyed with the frame, as before the pool */
     /* one in system memory goes with the frame too: the next result is made in the device's, when it has room */
@@ -767,6 +786,88 @@ typedef struct {
     int apart, finished;
     VkQueue queue;
 } LandCtx;
+/* Early copy back (vk_early_copy_back, the GPU plan's M10a). A result the game's CPU reads lands when its first access
+   faults: the faulting thread waits for the GPU's work, submits a copy into host memory and waits for it, then copies
+   the bytes into guest memory. One racing game's title screen read about two render targets a present back that way,
+   98% of them at the same address and size as a read in the 1200 presents before. A result at such a key (hot: a read
+   of the game's at the same producer, start and size within EARLY_KEEP_PRESENTS presents, land_note) is copied into
+   host-cached memory in the producer's own submission, right after its writes. Its landing then copies those bytes,
+   with no submission and no second wait, while the result is unchanged (its serial, which every write of it moves)
+   and that submission is done. Else it lands as before. A key whose copies go unread EARLY_UNREAD times in a row
+   stops being copied until a read lands it again. Only render targets for now, on discrete GPUs */
+#define EARLY_KEEP_PRESENTS 1200u
+#define EARLY_UNREAD        8u
+#define EARLY_BUDGET        (64ull << 20) /* bytes copied early in one present, at most */
+static u64 land_key_of(u32 prod, u64 addr, u64 size) {
+    return snx_fnv_step(snx_fnv_step(snx_fnv_step(SNX_FNV_BASIS, prod), addr), size);
+}
+static u32 land_slot_of(u64 key) { return (u32)(key >> 54) & 1023; }
+/* under vk_lock: r's bytes [off, off + size), published at guest cpu, copied early when its key is hot */
+static void early_copy(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
+    if (!g_settings.early_copy_back || r->by != VK_OWN_BY_TARGET || r->borrowed || r->early || vk_uma() ||
+        size > g_vk.alloc_cap / 4)
+        return;
+    u64 key = land_key_of(r->by, cpu, size);
+    u32 slot = land_slot_of(key);
+    if (g_owned.land_key[slot].key != key || g_vk_present - g_owned.land_key[slot].present > EARLY_KEEP_PRESENTS ||
+        g_owned.land_key[slot].unread >= EARLY_UNREAD)
+        return;
+    if (g_owned.early_present != g_vk_present) g_owned.early_present = g_vk_present, g_owned.early_now = 0;
+    if (g_owned.early_now + size > EARLY_BUDGET) return;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &r->early, &r->early_mem, &info))) {
+        r->early = VK_NULL_HANDLE;
+        return;
+    }
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier(cb); /* the producer's writes, before the copy reads them */
+    VkBufferCopy c = {off, 0, size};
+    rec_CmdCopyBuffer(cb, r->buf, r->early, 1, &c);
+    /* the copy's bytes for the host, and a later write of buf after the copy's read */
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                          .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+    r->early_ptr = info.ptr;
+    r->early_off = off;
+    r->early_size = size;
+    r->early_serial = atomic_load_explicit(&r->serial, memory_order_relaxed);
+    r->early_value = vk_submit_number();
+    r->early_key = key;
+    g_owned.early_now += size;
+    g_owned.early_n++;
+    g_owned.early_bytes += size;
+}
+/* under vk_lock: the ranges landed from their results' early copies, when each has a valid one whose submission is
+   done. 0, with nothing copied, when one hasn't */
+static int early_land(const OwnRange* r, u8* const* dst, u32 n) {
+    u64 done = 0;
+    for (u32 k = 0; k < n; k++) {
+        const VkOwnRes* res = (const VkOwnRes*)r[k].res;
+        if (!res || !res->early || atomic_load_explicit(&res->serial, memory_order_acquire) != res->early_serial ||
+            r[k].res_off < res->early_off || r[k].res_off + r[k].size > res->early_off + res->early_size)
+            return 0;
+        if (done < res->early_value &&
+            (!VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, vk_gfx_timeline(), &done)) || done < res->early_value))
+            return 0;
+    }
+    for (u32 k = 0; k < n; k++) {
+        const VkOwnRes* res = (const VkOwnRes*)r[k].res;
+        if (!VK_OK(vk_devmem_invalidate(res->early_mem, 0, VK_WHOLE_SIZE)))
+            fatal("vulkan: could not read an early copy of a GPU result");
+        memcpy(dst[k], res->early_ptr + (r[k].res_off - res->early_off), r[k].size);
+    }
+    g_owned.early_hits++;
+    return 1;
+}
 /* under vk_lock: a landing's counts for the statistics (g_owned.land_n and the rest). Its producer is the one of its
    largest range */
 static void land_note(const OwnRange* r, u32 n, int by) {
@@ -783,12 +884,13 @@ static void land_note(const OwnRange* r, u32 n, int by) {
     g_owned.land_n[prod][by]++;
     g_owned.land_bytes[prod][by] += all;
     if (by == OWN_BY_RUNTIME) return;
-    u64 key = snx_fnv_step(snx_fnv_step(snx_fnv_step(SNX_FNV_BASIS, prod), r[0].addr), all);
-    u32 slot = (u32)(key >> 54) & 1023;
-    if (g_owned.land_key[slot].key == key && g_vk_present - g_owned.land_key[slot].present <= 1200) {
+    u64 key = land_key_of(prod, r[0].addr, all);
+    u32 slot = land_slot_of(key);
+    if (g_owned.land_key[slot].key == key && g_vk_present - g_owned.land_key[slot].present <= EARLY_KEEP_PRESENTS) {
         g_owned.pred_n[prod]++;
         g_owned.pred_bytes[prod] += all;
     }
+    g_owned.land_key[slot].unread = 0; /* a read of the game's: its copies are read again */
     g_owned.land_key[slot].key = key;
     g_owned.land_key[slot].present = g_vk_present;
 }
@@ -899,6 +1001,11 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n, int by) {
     u32 i = 0;
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
+    if (early_land(r, dst, n)) {
+        land_note(r, n, by);
+        vk_unlock();
+        return;
+    }
     LandCtx c = land_ctx(r, n, by);
     LandSlot* s = land_slot_take();
     while (i < n) {
@@ -923,6 +1030,16 @@ static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
     u64 cap = g_vk.alloc_cap / 4, all = 0;
     for (u32 k = 0; k < n; k++) all += r[k].size;
     LandCopy* h = n <= LAND_PIECES && all <= cap ? (LandCopy*)malloc(sizeof *h) : NULL;
+    if (h) { /* landed from an early copy: nothing for own_land_end */
+        vk_lock();
+        int early = early_land(r, dst, n);
+        if (early) land_note(r, n, by);
+        vk_unlock();
+        if (early) {
+            free(h);
+            return NULL;
+        }
+    }
     if (!h) {
         own_land(r, dst, n, by);
         return NULL;
@@ -1044,7 +1161,10 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     pend_lock();
     int owned = g_owned.traps && !own_begin(cpu, size, r, off);
     pend_unlock();
-    if (owned) return;
+    if (owned) {
+        if (in_place >= 0) early_copy(cpu, size, r, off); /* its writes are in the submission being recorded */
+        return;
+    }
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);
     /* Other owned bytes can still trap the edge pages after this range is
