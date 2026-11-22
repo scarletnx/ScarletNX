@@ -533,11 +533,14 @@ void vk_own_release_held(void) {
     while (t_held.n) res_release(t_held.r[--t_held.n]);
 }
 
-/* every write the GPU did so far visible to copies (before), the copies' writes to the host (after) */
-static void land_barrier(VkCommandBuffer cb, int before) {
+/* every write the GPU did so far to the results' buffers visible to copies (before), the copies' writes to the host
+   (after). On the compute queue (apart) the writer's submission's writes come with its semaphore, and the barrier
+   names the stages that queue has */
+static void land_barrier(VkCommandBuffer cb, int before, int apart) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     if (before) {
-        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.srcStageMask =
+            apart ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT : vk_buffer_stages();
         b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
         b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -712,12 +715,12 @@ static u64 land_submit(LandSlot* s, const LandCtx* c, const Piece* pc, u32 np, u
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     if (!VK_OK(vkResetCommandPool(g_vk.dev, s->pool, 0)) || !VK_OK(vkBeginCommandBuffer(cb, &bi)))
         fatal("vulkan: could not begin ownership readback");
-    land_barrier(cb, 1);
+    land_barrier(cb, 1, c->apart);
     for (u32 j = 0; j < np; j++) {
         VkBufferCopy cp = {pc[j].src, pc[j].at, pc[j].size};
         vkCmdCopyBuffer(cb, pc[j].res->buf, s->back, 1, &cp);
     }
-    land_barrier(cb, 0);
+    land_barrier(cb, 0, c->apart);
     VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
     /* on the compute queue, the writer's submission alone: its signal carries the writes to the copy */
     VkSemaphoreSubmitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -961,7 +964,7 @@ static void read_barrier(VkCommandBuffer cb, int before) {
     VkPipelineStageFlags2 copy =
         VK_PIPELINE_STAGE_2_COPY_BIT | (g_vk.has_copy_indirect ? VK_PIPELINE_STAGE_2_COPY_INDIRECT_BIT_KHR : 0);
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                          .srcStageMask = before ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : copy,
+                          .srcStageMask = before ? vk_buffer_stages() : copy,
                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                           .dstStageMask = before ? copy : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
@@ -988,10 +991,10 @@ typedef struct {
     int barrier;
 } InPlace;
 u64 g_vk_inplace_runs, g_vk_inplace_bytes;
-/* the results' writes, by any stage, before a dispatch's reads of them by address */
+/* the results' writes, by any stage that writes buffers, before a dispatch's reads of them by address */
 static void inplace_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .srcStageMask = vk_buffer_stages(),
                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                           .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
@@ -1501,6 +1504,14 @@ int vk_guest_owned_by(u64 gva, u64 size, u64 serial) {
            atomic_load_explicit(&((const VkOwnRes*)r.res)->serial, memory_order_acquire) == serial;
 }
 
+VkPipelineStageFlags2 vk_buffer_stages(void) {
+    return VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+           VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT |
+           (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0) |
+           (g_vk.has_cond_render ? VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT : 0) |
+           (g_vk.has_copy_indirect ? VK_PIPELINE_STAGE_2_COPY_INDIRECT_BIT_KHR : 0);
+}
 void vk_all_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

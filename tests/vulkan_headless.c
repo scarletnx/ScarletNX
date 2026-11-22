@@ -8895,6 +8895,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_chunk_written_first());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
+    CHECK(!check_owned_landing_stages());
     CHECK(!check_mapping_lock());
     CHECK(!check_landing_wait());
     CHECK(!check_frame_ready());

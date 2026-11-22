@@ -250,7 +250,7 @@ static int up_end(Up* u) {
             memcpy(sp, u->data, u->used);
             for (u32 i = 0; i < u->n; i++) u->r[i].srcOffset += so;
             VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                  .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                  .srcStageMask = vk_buffer_stages(), /* the mirror's readers and writers */
                                   .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                                   .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                   .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
@@ -302,7 +302,7 @@ static int up_owned(u64 cpu, u64 n) {
    after: up_owned's copies read those resources and write the mirror */
 static void copies_after_work(void) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .srcStageMask = vk_buffer_stages(),
                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
@@ -1030,11 +1030,11 @@ void vk_mirror_publish(void) {
         }
     }
     if (!up_end(&u)) fatal("vulkan: no staging to bring the GPU mirror up to date");
-    /* those copies before whatever reads the mirror next */
+    /* those copies before whatever reads the mirror next, a buffer's reader */
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstStageMask = vk_buffer_stages(),
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vk_render_end();

@@ -123,6 +123,8 @@ void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDev
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) { abort(); }
 void snx_thread_name(const char* name) { abort(); }
 void vk_all_barrier(VkCommandBuffer cb) { abort(); }
+/* owned.c's: the stages a buffer barrier names */
+VkPipelineStageFlags2 vk_buffer_stages(void) { return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; }
 VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
                           DevMem* memory, DevMemInfo* details) {
     abort();

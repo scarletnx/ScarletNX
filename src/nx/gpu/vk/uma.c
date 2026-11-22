@@ -1869,7 +1869,7 @@ void vk_uma_frame_done(u64 frame) {
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame) {
     if (!g_uma.nout || g_uma.out[g_uma.nout - 1].sub != frame) return;
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .srcStageMask = vk_buffer_stages(), /* the writes in place of buffers' writers */
                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
