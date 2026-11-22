@@ -627,6 +627,40 @@ static void bind_pipeline_run(const void* p) {
     if (graphics) g_rec_unbound = pipe ? 0 : pending ? 2 : 1;
     if (pipe) vk_pipeline_bind(x->cb, x->bp, pipe);
 }
+typedef struct {
+    VkCommandBuffer cb;
+    u32 n;
+    VkPipelineColorBlendAttachmentState cba[8];
+} ColorBlendArgs;
+static void color_blend_set(VkCommandBuffer cb, u32 n, const VkPipelineColorBlendAttachmentState* cba) {
+    VkBool32 enable[8];
+    VkColorBlendEquationEXT eq[8];
+    VkColorComponentFlags write[8];
+    for (u32 i = 0; i < n; i++) {
+        enable[i] = cba[i].blendEnable;
+        eq[i] = (VkColorBlendEquationEXT){cba[i].srcColorBlendFactor, cba[i].dstColorBlendFactor, cba[i].colorBlendOp,
+                                          cba[i].srcAlphaBlendFactor, cba[i].dstAlphaBlendFactor, cba[i].alphaBlendOp};
+        write[i] = cba[i].colorWriteMask;
+    }
+    vkCmdSetColorBlendEnableEXT(cb, 0, n, enable);
+    vkCmdSetColorBlendEquationEXT(cb, 0, n, eq);
+    vkCmdSetColorWriteMaskEXT(cb, 0, n, write);
+}
+static void color_blend_run(const void* p) {
+    const ColorBlendArgs* x = p;
+    color_blend_set(x->cb, x->n, x->cba);
+}
+void rec_CmdSetColorBlendState(VkCommandBuffer cb, u32 n, const VkPipelineColorBlendAttachmentState* cba) {
+    if (!rec_on(cb)) {
+        color_blend_set(cb, n, cba);
+        return;
+    }
+    ColorBlendArgs* x = rec_push(color_blend_run, sizeof *x);
+    x->cb = cb;
+    x->n = n;
+    memcpy(x->cba, cba, n * sizeof *cba);
+    rec_commit();
+}
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
     if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) {
         vk_descriptor_heaps_pipeline_state(0);

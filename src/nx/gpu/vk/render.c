@@ -4403,6 +4403,9 @@ static struct {
     int vb_strided;
     VkBuffer vb_buf[33];
     VkDeviceSize vb_off[33], vb_size[33], vb_stride[33];
+    /* the blending set as dynamic state (g_vk.dyn_blend): the targets' count, 0 for none since the last bind */
+    u32 blend_n;
+    VkPipelineColorBlendAttachmentState blend[8];
 } g_dyn;
 #define DYN(field, value, call)                                                                                        \
     do {                                                                                                               \
@@ -7483,6 +7486,7 @@ retry:
     }
     if (fresh || g_dyn.pipe != pipe) {
         g_dyn.pipe = pipe;
+        g_dyn.blend_n = 0; /* a pipeline with its blend static, or shader objects' bind, set it over */
         rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         /* a mesh pipeline has no topology, restart or vertex input state: the next draw's pipeline that has them
            dynamic takes them again after it (dynamic state set before a pipeline that has it static is lost) */
@@ -7498,6 +7502,16 @@ retry:
         }
     }
     if (g_vk.dyn_pr) pr_dynamic(cb, k, !ds->dyn.depth_mode, fresh);
+    /* the draw's blending, where its pipeline takes it as dynamic state (vk_pipe_blend_key's keys) */
+    if (g_vk.dyn_blend && k->ncolor && !k->advanced.operation) {
+        VkPipelineColorBlendAttachmentState cba[8];
+        vk_pipe_blend(k, cba);
+        if (g_dyn.blend_n != k->ncolor || memcmp(g_dyn.blend, cba, k->ncolor * sizeof *cba)) {
+            g_dyn.blend_n = k->ncolor;
+            memcpy(g_dyn.blend, cba, k->ncolor * sizeof *cba);
+            rec_CmdSetColorBlendState(cb, k->ncolor, cba);
+        }
+    }
     vk_vrs_draw(cb, dc->shading_rate);
     vk_descriptor_heaps_pipeline_state(g_vk.has_descriptor_heaps);
     if (g_vk.has_feedback_dynamic)

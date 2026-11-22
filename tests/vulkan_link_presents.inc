@@ -69,3 +69,43 @@ static int check_link_optimized_after_presents(void) {
            PIPE_OPT_PRESENTS, PIPE_OPT_PRESENTS - 1, PIPE_OPT_PRESENTS);
     return 0;
 }
+
+/* With the blending as dynamic state (g_vk.dyn_blend, vk_pipe_blend_key), draws of one program and state that blend
+   differently take one pipeline, or one set of shader objects: the same handle, where each blend made its own */
+static int check_blend_one_pipeline(void) {
+    if (!g_vk.dyn_blend) {
+        puts("SKIP one pipeline for every blend: the blending is no dynamic state on this device");
+        return 0;
+    }
+    size_t words = 0;
+    u32* code = snx_test_spirv_graphics(0, &words);
+    CHECK(code);
+    VkShaderModule vs = vk_module_spv(code, words);
+    if (vs) vk_so_keep_spirv(vs, code, words);
+    free(code);
+    const size_t fs_words = snx_null_fs_spv_size / sizeof *snx_null_fs_spv;
+    VkShaderModule fs = vk_module_spv(snx_null_fs_spv, fs_words);
+    CHECK(vs && fs);
+    vk_so_keep_spirv(fs, snx_null_fs_spv, fs_words);
+    PipeKey a = {.vs = vs,
+                 .fs = fs,
+                 .topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                 .ncolor = 1,
+                 .color = {VK_FORMAT_R8G8B8A8_UNORM}},
+            b;
+    a.blend[0].mask = 15;
+    b = a;
+    b.blend[0].en = 1;
+    b.blend[0].sc = VK_BLEND_FACTOR_SRC_ALPHA;
+    b.blend[0].dc = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    b.blend[0].mask = 7;
+    vk_lock();
+    VkPipeline pa = vk_pipeline_get_deferred(&a), pb = vk_pipeline_get_deferred(&b);
+    vk_unlock();
+    CHECK(pa && pb);
+    if (pa != pb) fprintf(stderr, "one pipeline for every blend: two blends of one draw state made two pipelines\n");
+    CHECK(pa == pb);
+    CHECK(vk_pipeline_resolve(pa)); /* made, with the blend as dynamic state */
+    puts("PASS one pipeline for every blend: two blends of one draw state bind one pipeline");
+    return 0;
+}

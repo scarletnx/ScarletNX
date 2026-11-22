@@ -289,6 +289,10 @@ typedef struct {
     u8 so_binary_uuid[VK_UUID_SIZE];
     u32 so_binary_version;
     u32 dyn_pr; /* VK_DYN_PR_*: the pre-rasterization state those pipelines take as dynamic state */
+    /* the three blend members of VK_EXT_extended_dynamic_state3 (enable, equation, write mask): a draw's pipeline
+       takes its blending as dynamic state (PIPE_BLEND_DYNAMIC), set by the draw (render.c), so one pipeline serves
+       every blend its programs are drawn with */
+    int dyn_blend;
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
     /* VK_KHR_present_id and VK_KHR_present_wait: presents carry ids, and display.c learns when each is displayed */
@@ -3000,6 +3004,12 @@ typedef struct {
        the lower-left window origin and the point sprite's flipped T */
     u32 fs_spec;
 } PipeKey;
+/* a write mask of PipeKey.blend that marks the key's blending as dynamic state (vk_pipe_blend_key): every target's
+   blend and write mask are set by the draw, which no static mask (4 bits) can be taken for */
+#define PIPE_BLEND_DYNAMIC 0x10u
+/* recorded: the blend enables, equations and write masks of a draw's n color targets as dynamic state (cba as
+   vk_pipe_blend gives them) */
+void rec_CmdSetColorBlendState(VkCommandBuffer cb, u32 n, const VkPipelineColorBlendAttachmentState* cba);
 #define PIPE_SPEC_ALPHA       7u
 #define PIPE_SPEC_LOWER_LEFT  8u
 #define PIPE_SPEC_SPRITE_FLIP 16u
