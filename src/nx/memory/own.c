@@ -179,6 +179,7 @@ static void scratch_put(Scratch* s, u8* p) {
 #define STAGE_KEEP ((u64)64 << 20) /* g_own.stage's */
 #define SNAP_KEEP  ((u64)8 << 20)  /* g_own.snap's */
 #define HELD_KEEP  ((u64)1 << 20)  /* g_own.held's, a byte a page */
+#define OWN_READY_NS 20000u          /* a wait for the GPU shorter than this found the result done (g_own.ready) */
 
 /* ---------------------------------------------------------------- the entries, under g_own.lk */
 /* the first entry ending after a */
@@ -585,7 +586,9 @@ static void land_pages(u64 lo, u64 hi, int by) {
     if (real && g_own.hooks.wait) {
         u64 t0 = plat_ns();
         g_own.hooks.wait(writer);
-        atomic_fetch_add_explicit(&g_own.wait_ns[by], plat_ns() - t0, memory_order_relaxed);
+        u64 waited = plat_ns() - t0;
+        atomic_fetch_add_explicit(&g_own.wait_ns[by], waited, memory_order_relaxed);
+        if (waited < OWN_READY_NS) atomic_fetch_add_explicit(&g_own.ready[by], 1, memory_order_relaxed);
         if (!region_owned(lo, hi)) return;
         pm_lock(&g_own.lk);
         any = owned_nl(lo, hi);
@@ -1322,6 +1325,9 @@ void own_land_times(u64 bytes[OWN_BY_N], u64 wait_ns[OWN_BY_N], u64 copy_ns[OWN_
         copy_ns[i] = atomic_load_explicit(&g_own.copy_ns[i], memory_order_relaxed);
         fill_ns[i] = atomic_load_explicit(&g_own.fill_ns[i], memory_order_relaxed);
     }
+}
+void own_land_ready(u64 ready[OWN_BY_N]) {
+    for (int i = 0; i < OWN_BY_N; i++) ready[i] = atomic_load_explicit(&g_own.ready[i], memory_order_relaxed);
 }
 void own_landings_by(u64 by[OWN_BY_N]) {
     for (int i = 0; i < OWN_BY_N; i++) by[i] = atomic_load_explicit(&g_own.lands_by[i], memory_order_relaxed);
