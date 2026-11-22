@@ -348,9 +348,8 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
 int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
                            unsigned char** object, size_t* size, char* error, size_t error_size) {
     SnxXElf* o = snx_xelf_new();
-    size_t i, at, n = count ? count : 1;
+    size_t at, n = count ? count : 1;
     char name[48];
-    int rc;
     if (!o) {
         snprintf(error, error_size, "out of memory");
         return -1;
@@ -362,15 +361,15 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
             snprintf(error, error_size, "out of memory");
             return -1;
         }
-        for (i = 0; i < count; ++i) addr[i] = keys[i];
+        for (size_t i = 0; i < count; ++i) addr[i] = keys[i];
         at = snx_xelf_put(o, SNX_ELF_RODATA, addr, n * sizeof *addr, 4);
         snx_xelf_symbol(o, "ENT_ADDR", SNX_ELF_RODATA, at, n * sizeof *addr, SNX_ELF_LOCAL);
         free(addr);
     }
     at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 8 * n, 8);
     snx_xelf_symbol(o, "ENT_FN", SNX_ELF_RELRO, at, 8 * n, SNX_ELF_LOCAL);
-    for (i = 0; i < count; ++i) {
-        snprintf(name, sizeof name, "%c_%08lx", keys[i] & 1 ? 'T' : 'A', (unsigned long)(keys[i] & ~1u));
+    for (size_t i = 0; i < count; ++i) {
+        snprintf(name, sizeof name, "%c_%08x", keys[i] & 1 ? 'T' : 'A', (unsigned)(keys[i] & ~1u));
         ptr(o, SNX_ELF_RELRO, at + 8 * i, name);
     }
     {
@@ -380,7 +379,7 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
             snprintf(error, error_size, "out of memory");
             return -1;
         }
-        for (i = 0; i < loaded->module_count; ++i) {
+        for (size_t i = 0; i < loaded->module_count; ++i) {
             const SnxModuleImage* m = &loaded->modules[i];
             mods[i].base = m->base;
             mods[i].size = m->size;
@@ -396,8 +395,8 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
         }
         at = snx_xelf_put(o, SNX_ELF_RELRO, mods, loaded->module_count * sizeof *mods, 8);
         snx_xelf_symbol(o, "MODS", SNX_ELF_RELRO, at, loaded->module_count * sizeof *mods, SNX_ELF_LOCAL);
-        for (i = 0; i < loaded->module_count; ++i) {
-            snprintf(name, sizeof name, "MOD_NAME_%lu", (unsigned long)i);
+        for (size_t i = 0; i < loaded->module_count; ++i) {
+            snprintf(name, sizeof name, "MOD_NAME_%zu", i);
             string(o, loaded->modules[i].name, name);
             ptr(o, SNX_ELF_RELRO, at + i * sizeof *mods + offsetof(SnxModInfo, name), name);
         }
@@ -410,9 +409,8 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
     }
     string(o, options->title ? options->title : "Game", "TITLE");
     {
-        SnxArmModule mod;
+        SnxArmModule mod = {0};
         const SnxNpdm* npdm = &loaded->npdm;
-        memset(&mod, 0, sizeof mod);
         mod.abi = SNX_ARM_MODULE_ABI;
         mod.nmods = (u32)loaded->module_count;
         mod.nentries = (u32)count;
@@ -430,7 +428,7 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, poll_offset), "snx_arm_poll_offset");
     }
     returns(o, "snx_module_arm", "MOD");
-    rc = snx_xelf_write(o, object, size);
+    int rc = snx_xelf_write(o, object, size);
     snx_xelf_free(o);
     if (rc) snprintf(error, error_size, "out of memory");
     return rc;

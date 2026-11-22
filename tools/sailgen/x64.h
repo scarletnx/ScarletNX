@@ -35,6 +35,16 @@ static inline void sgx_byte(SgXBuf* b, unsigned char x) {
     if (b->n < b->cap) b->p[b->n] = x;
     ++b->n;
 }
+static inline void sgx_bytes(SgXBuf* b, const char* hex) {
+    /* "F0 49 0F B1 14 32": the bytes as written */
+    while (*hex) {
+        unsigned v = 0, k;
+        while (*hex == ' ') ++hex;
+        if (!*hex) break;
+        for (k = 0; k < 2; ++k, ++hex) v = v * 16 + (unsigned)(*hex <= '9' ? *hex - '0' : *hex - 'A' + 10);
+        sgx_byte(b, (unsigned char)v);
+    }
+}
 static inline void sgx_imm(SgXBuf* b, long long v, int bytes) {
     int i;
     for (i = 0; i < bytes; ++i) sgx_byte(b, (unsigned char)((unsigned long long)v >> (8 * i)));
@@ -3164,12 +3174,9 @@ static inline SgB sg_i_cmp(SgCtx* g, int op, SgI a, SgI b) {
     static const int cond[6] = {SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_LT, SGX_ARM_LE, SGX_ARM_GT, SGX_ARM_GE};
     static const int mirror[6] = {0, 1, 4, 5, 2, 3}; /* a op b is b mirror[op] a */
     SgX* x = sgx(g);
-    SgD av, bv, in[2];
-    const SgXSel* s;
     if (op < 0 || op > 5) sg_fail("a comparison of integers it does not know", op, 5);
     if (a.kind == SGX_I_MUL || b.kind == SGX_I_MUL) sg_fail("a comparison of a product", op, 0);
-    av = sgx_i_val(g, &a);
-    bv = sgx_i_val(g, &b);
+    SgD av = sgx_i_val(g, &a), bv = sgx_i_val(g, &b);
     sgx_flat(x, &av);
     sgx_flat(x, &bv);
     if (sgx_is_const(&av) && sgx_is_const(&bv)) {
@@ -3183,8 +3190,9 @@ static inline SgB sg_i_cmp(SgCtx* g, int op, SgI a, SgI b) {
         bv = t;
         op = mirror[op];
     }
-    av = sgx_zext(x, av, 64);
-    in[0] = av;
+    SgD in[2];
+    const SgXSel* s;
+    in[0] = sgx_zext(x, av, 64);
     if (sgx_is_const(&bv) && sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, bv.k, 64)) {
         in[1] = sgx_const(32, bv.k);
         s = sgx_pick(x, sgx_sel_cmp_i_64, sgx_sel_cmp_i_64_n, bv.k, 64, 0);
@@ -3230,8 +3238,7 @@ static inline void sg_d_shift_c(SgCtx* g, SgD x, long long n, int kind, SgD* res
    the Sail's select drops it */
 static inline void sg_d_shift_c_dyn(SgCtx* g, SgD x, SgI n, int kind, SgD* result, SgD* carry) {
     SgX* xs = sgx(g);
-    SgD k = sgx_i_val(g, &n), u;
-    SgB ok;
+    SgD k = sgx_i_val(g, &n);
     if (x.w != 32) sg_fail("a shift with carry by a register of a value not of 32 bits", x.w, kind);
     sgx_flat(xs, &k);
     if (sgx_is_const(&k)) {
@@ -3247,35 +3254,26 @@ static inline void sg_d_shift_c_dyn(SgCtx* g, SgD x, SgI n, int kind, SgD* resul
     switch (kind) {
     case 0:
     case 1: {
-        SgD r, c;
-        if (kind == 0) {
-            u = SGX_OP(xs, lslv, 64, sg_d_zext(g, x, 64), k);
-            r = sg_d_slice(g, u, 31, 0);
-            c = sg_d_slice(g, u, 32, 32);
-        } else {
-            u = SGX_OP(xs, lsrv, 64, sg_d_lsl(g, sg_d_zext(g, x, 64), 1), k);
-            r = sg_d_slice(g, u, 32, 1);
-            c = sg_d_slice(g, u, 0, 0);
-        }
-        ok = sgx_d_ult(g, k, sgx_const(64, 64));
+        SgD u = kind == 0 ? SGX_OP(xs, lslv, 64, sg_d_zext(g, x, 64), k)
+                          : SGX_OP(xs, lsrv, 64, sg_d_lsl(g, sg_d_zext(g, x, 64), 1), k);
+        SgD r = kind == 0 ? sg_d_slice(g, u, 31, 0) : sg_d_slice(g, u, 32, 1);
+        SgD c = kind == 0 ? sg_d_slice(g, u, 32, 32) : sg_d_slice(g, u, 0, 0);
+        SgB ok = sgx_d_ult(g, k, sgx_const(64, 64));
         *result = sg_d_select(g, ok, r, sgx_const(32, 0));
         *carry = sg_d_select(g, ok, c, sgx_const(1, 0));
         return;
     }
     case 2: {
-        SgD kc, wide;
-        ok = sgx_d_ult(g, k, sgx_const(64, 64));
-        kc = sg_d_select(g, ok, k, sgx_const(64, 63));
-        wide = sg_d_lsl(g, sg_d_sext(g, x, 64), 1);
-        u = SGX_OP(xs, asrv, 64, wide, kc);
+        SgB ok = sgx_d_ult(g, k, sgx_const(64, 64));
+        SgD kc = sg_d_select(g, ok, k, sgx_const(64, 63)), wide = sg_d_lsl(g, sg_d_sext(g, x, 64), 1);
+        SgD u = SGX_OP(xs, asrv, 64, wide, kc);
         *result = sg_d_slice(g, u, 32, 1);
         *carry = sg_d_slice(g, u, 0, 0);
         return;
     }
     default:
-        u = SGX_OP(xs, rorv, 32, x, sg_d_slice(g, k, 31, 0));
-        *result = u;
-        *carry = sg_d_slice(g, u, 31, 31);
+        *result = SGX_OP(xs, rorv, 32, x, sg_d_slice(g, k, 31, 0));
+        *carry = sg_d_slice(g, *result, 31, 31);
         return;
     }
 }

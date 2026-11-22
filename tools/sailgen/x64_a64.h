@@ -1155,16 +1155,6 @@ static inline void sgx_epilogue(SgXAsm* a) {
 /* the machine's instructions, their inputs in r[] */
 /* ---- the inline sequences' bytes (sgx_mach's: R10 the memory's base, RSI the address, RBX the state) ---- */
 
-static inline void sgx_bytes(SgXBuf* b, const char* hex) {
-    /* "F0 49 0F B1 14 32": the bytes as written */
-    while (*hex) {
-        unsigned v = 0, k;
-        while (*hex == ' ') ++hex;
-        if (!*hex) break;
-        for (k = 0; k < 2; ++k, ++hex) v = v * 16 + (unsigned)(*hex <= '9' ? *hex - '0' : *hex - 'A' + 10);
-        sgx_byte(b, (unsigned char)v);
-    }
-}
 /* opcode op (and op | 1 past bytes) of [R10 + RSI] with reg, of 1 << sz bytes: its operand-size prefix, REX (W, B) */
 static inline void sgx_m_r10rsi(SgXBuf* b, int lock, unsigned sz, unsigned op8, int reg) {
     if (lock) sgx_byte(b, 0xF0);

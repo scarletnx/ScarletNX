@@ -115,12 +115,11 @@ static inline void sgx_a32_jmp(SgCtx* g, SgXBuf* b, int label) {
 }
 /* every jump to a label patched: 0, or -1 where one was never bound */
 static inline int sgx_a32_patch(SgCtx* g, SgXBuf* b) {
-    int k;
-    for (k = 0; k < g->nfix; ++k) {
-        long long to = g->label_at[g->fix[k].label], d;
+    for (int k = 0; k < g->nfix; ++k) {
+        long long to = g->label_at[g->fix[k].label];
         size_t at = g->fix[k].at;
         if (to < 0) return -1;
-        d = to - (long long)(at + 4);
+        long long d = to - (long long)(at + 4);
         if (at + 4 <= b->cap) {
             b->p[at] = (unsigned char)d;
             b->p[at + 1] = (unsigned char)(d >> 8);
@@ -162,9 +161,8 @@ static inline SgS sg_AArch32_CurrentCond(SgCtx* g) { return sg_s(g->word >> 28, 
    the selection gave Arm's cond on that form's flags. 0 otherwise: the Sail then reads PSTATE */
 static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
     SgX* x = sgx(g);
-    int cc;
     if (g->origin < 0 || x->flags_ins != g->origin || cond.v >= 14) return 0;
-    cc = x->ins[g->origin].fsel->cc_of[cond.v];
+    int cc = x->ins[g->origin].fsel->cc_of[cond.v];
     if (cc < 0) return 0;
     return sgx_bool(x, SGX_B_CC, g->origin, cc);
 }
@@ -184,19 +182,21 @@ static inline SgD sg_GPR_read(SgCtx* g, long long n) {
     return sgx_val(32, g->gpr[n]);
 }
 static inline void sgx_a32_commit(SgCtx* g);
+/* the state's field at disp (w bits: 32 or 64) = v: the register v is in */
+static inline int sgx_a32_put(SgCtx* g, size_t disp, unsigned w, SgD v) {
+    SgX* x = sgx(g);
+    int r = sgx_reg(x, &v);
+    SgXIns* i = sgx_append(x, SGX_K_STORE);
+    i->w = (unsigned char)w;
+    i->in[0] = r;
+    i->disp = (int)disp;
+    return r;
+}
 /* R[n] = v, stored at once (not where a multiple load defers it: sg_registers_flush) */
 static inline void sgx_a32_set(SgCtx* g, long long n, SgD v) {
-    SgX* x = sgx(g);
-    SgXIns* i;
-    int r;
     if (n < 0 || n > 14) sg_fail("a register past R14 written", n, 14);
     if (v.w != 32) sg_fail("a register written from a value of another width", n, v.w);
-    r = sgx_reg(x, &v);
-    i = sgx_append(x, SGX_K_STORE);
-    i->w = 32;
-    i->in[0] = r;
-    i->disp = (int)(offsetof(SnxArmCPU, r) + 4 * (size_t)n);
-    g->gpr[n] = r;
+    g->gpr[n] = sgx_a32_put(g, offsetof(SnxArmCPU, r) + 4 * (size_t)n, 32, v);
 }
 static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
     sgx_a32_commit(g);
@@ -210,8 +210,7 @@ static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
     sgx_a32_set(g, n, v);
 }
 static inline void sg_registers_flush(SgCtx* g) {
-    unsigned n;
-    for (n = 0; n < 15; ++n)
+    for (unsigned n = 0; n < 15; ++n)
         if (g->deferred >> n & 1) sgx_a32_set(g, n, g->dvalue[n]);
     g->deferred = 0;
 }
@@ -253,7 +252,6 @@ static inline SgD sg_PSTATE_read(SgCtx* g, long long field) {
    condition codes until those flags end (sgx_flags_clobbered makes them 0 or 1 in registers then) */
 static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, SgD v) {
     SgX* x = sgx(g);
-    long long f;
     sgx_a32_commit(g);
     if (first < 0 || count < 1 || first + count > 32)
         sg_fail("fields of PSTATE this back end does not keep", first, count);
@@ -262,8 +260,8 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
         int from = v.nzcv - 1;
         const SgXSel* fs = x->ins[from].fsel;
         if (x->flags_ins != from) sg_fail("NZCV written after the x86 flags that are them were overwritten", from, 0);
-        for (f = 0; f < 4; ++f) {
-            int cc = sgx_arm_flag_cc(fs, (int)f);
+        for (int f = 0; f < 4; ++f) {
+            int cc = sgx_arm_flag_cc(fs, f);
             g->field[f] = cc < 0 ? sgx_const(1, 0) : sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, from, cc));
             g->pending |= 1u << f;
         }
@@ -273,7 +271,7 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
     if (v.nzcv) sgx_reg(x, &v);
     if (first == SG_PSTATE_T && count == 1 && !(g->pending >> SG_PSTATE_T & 1) && sgx_is_const(&v) && !(v.k & 1))
         return; /* A32 (BL's SelectInstrSet): CPSR keeps it */
-    for (f = 0; f < count; ++f) {
+    for (long long f = 0; f < count; ++f) {
         (void)sg_pstate_bit(first + f);
         g->field[first + f] = sg_d_slice(g, v, count - 1 - f, count - 1 - f);
         g->pending |= 1u << (first + f);
@@ -282,24 +280,14 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
 }
 /* the fields written, in one store of CPSR: its other bits, each field ORed in at its bit */
 static inline void sg_flags_flush(SgCtx* g) {
-    SgX* x = sgx(g);
-    SgD c;
-    SnxU32 mask = 0;
-    unsigned k;
-    SgXIns* st;
-    int r;
     if (!g->pending) return;
-    for (k = 0; k < 32; ++k)
+    SnxU32 mask = 0;
+    for (unsigned k = 0; k < 32; ++k)
         if (g->pending >> k & 1) mask |= 1u << sg_pstate_bit(k);
-    c = sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask));
-    for (k = 0; k < 32; ++k)
+    SgD c = sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask));
+    for (unsigned k = 0; k < 32; ++k)
         if (g->pending >> k & 1) c = sg_d_or(g, c, sg_d_lsl(g, sg_d_zext(g, g->field[k], 32), sg_pstate_bit(k)));
-    r = sgx_reg(x, &c);
-    st = sgx_append(x, SGX_K_STORE);
-    st->w = 32;
-    st->in[0] = r;
-    st->disp = (int)offsetof(SnxArmCPU, cpsr);
-    g->cpsr = r;
+    g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
     g->pending = 0;
 }
 
@@ -324,10 +312,9 @@ static const signed char sgx_a32_args[4] = {6, 2, 1, 8};
    or read the state (a call). One that changes the flags (clobbers) ends the conditions on them first */
 static inline SgXIns* sgx_a32_machine(SgCtx* g, int op, int clobbers) {
     SgX* x = sgx(g);
-    SgXIns* i;
     sg_flags_flush(g);
     if (clobbers) sgx_flags_clobbered(x);
-    i = sgx_append(x, SGX_K_MACHINE);
+    SgXIns* i = sgx_append(x, SGX_K_MACHINE);
     i->op = (unsigned char)op;
     if (clobbers) x->flags_ins = -1;
     return i;
@@ -335,11 +322,9 @@ static inline SgXIns* sgx_a32_machine(SgCtx* g, int op, int clobbers) {
 /* a jump on c (its condition code on the flags as they are now) */
 static inline SgXIns* sgx_a32_on(SgCtx* g, int op, SgB c) {
     SgX* x = sgx(g);
-    int from, cc;
-    SgXIns* i;
     sg_flags_flush(g);
-    cc = sgx_bool_cc(x, c, &from);
-    i = sgx_append(x, SGX_K_MACHINE);
+    int from = 0, cc = sgx_bool_cc(x, c, &from);
+    SgXIns* i = sgx_append(x, SGX_K_MACHINE);
     i->op = (unsigned char)op;
     i->cc = (unsigned char)cc;
     i->flags_from = from;
@@ -349,10 +334,9 @@ static inline SgXIns* sgx_a32_on(SgCtx* g, int op, SgB c) {
 static inline void sgx_a32_exit(SgCtx* g, SgB c, unsigned code, SgD s, int pc_kept) {
     SgX* x = sgx(g);
     SgXBool b = x->b[c];
-    SgXIns* i;
     if (b.kind == SGX_B_CONST && !b.v) return;
     if (!sgx_is_const(&s)) sgx_reg(x, &s);
-    i = sgx_a32_on(g, SGX_A32_EXIT, c);
+    SgXIns* i = sgx_a32_on(g, SGX_A32_EXIT, c);
     i->imm = code;
     i->kv[1] = (SnxU32)g->pc;
     i->kv[0] = (SnxU64)(pc_kept ? 2 : 0) | (sgx_is_const(&s) ? 1 | (SnxU64)(SnxU32)s.k << 32 : 0);
@@ -364,12 +348,10 @@ static inline void sgx_flags_begin(SgCtx* g) { sgx_a32_commit(g); }
 /* the condition's skip, where the instruction first changes something: a jump past it where the condition fails */
 static inline void sgx_a32_commit(SgCtx* g) {
     SgB c = g->when;
-    SgXIns* i;
     if (!c) return;
     g->when = 0;
     g->skip = sgx_a32_label(g);
-    i = sgx_a32_on(g, SGX_A32_JCC, sg_b_not(g, c));
-    i->disp = g->skip;
+    sgx_a32_on(g, SGX_A32_JCC, sg_b_not(g, c))->disp = g->skip;
 }
 
 /* ---- the flow ---- */
@@ -399,54 +381,26 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
     g->target = when ? sg_d_select(g, when, target, sgx_const(32, g->next)) : target;
 }
 /* R15 = v */
-static inline void sgx_a32_pc(SgCtx* g, SgD v) {
-    SgX* x = sgx(g);
-    int r = sgx_reg(x, &v);
-    SgXIns* i = sgx_append(x, SGX_K_STORE);
-    i->w = 32;
-    i->in[0] = r;
-    i->disp = (int)(offsetof(SnxArmCPU, r) + 60);
-}
+static inline void sgx_a32_pc(SgCtx* g, SgD v) { sgx_a32_put(g, offsetof(SnxArmCPU, r) + 60, 32, v); }
 /* UNDEFINED: the backend's to run or stop at (llvm.c's trap): snx_arm_undefined(state, word, SNX_ARM_UNDEFINED) with
    R15 the instruction's; its exit returns, else the block goes on at the next instruction (x64_arm.c ends it there) */
 static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs, int result);
 static inline void sg_undefined(SgCtx* g) {
-    SgD args[2];
     sgx_a32_commit(g);
     sgx_a32_pc(g, sgx_const(32, (SnxU32)g->pc));
-    args[0] = sgx_const(32, g->word);
-    args[1] = sgx_const(32, SNX_ARM_UNDEFINED);
+    SgD args[2] = {sgx_const(32, g->word), sgx_const(32, SNX_ARM_UNDEFINED)};
     sgx_a32_call(g, "snx_arm_undefined", args, 2, 0);
-    {
-        SgXIns* i = sgx_a32_machine(g, SGX_A32_UNDEF_END, 1);
-        i->imm = g->next;
-    }
+    sgx_a32_machine(g, SGX_A32_UNDEF_END, 1)->imm = g->next;
     g->undefined = 1;
 }
 /* SVC and BKPT: R15 past the instruction and the exit, the immediate its syndrome (llvm_arm.h's sg_exception) */
 static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
-    SgX* x = sgx(g);
-    SgXIns* i;
-    int r;
     sgx_a32_commit(g);
     sg_flags_flush(g);
     sgx_a32_pc(g, sgx_const(32, g->next));
-    imm = sg_d_zext(g, imm, 32);
-    r = sgx_reg(x, &imm);
-    i = sgx_append(x, SGX_K_STORE);
-    i->w = 32;
-    i->in[0] = r;
-    i->disp = (int)offsetof(SnxArmCPU, syndrome);
-    {
-        SgD e = sgx_const(32, code);
-        r = sgx_reg(x, &e);
-    }
-    i = sgx_append(x, SGX_K_STORE);
-    i->w = 32;
-    i->in[0] = r;
-    i->disp = (int)offsetof(SnxArmCPU, exit);
-    i = sgx_a32_machine(g, SGX_A32_JMP, 0);
-    i->disp = g->ret;
+    sgx_a32_put(g, offsetof(SnxArmCPU, syndrome), 32, sg_d_zext(g, imm, 32));
+    sgx_a32_put(g, offsetof(SnxArmCPU, exit), 32, sgx_const(32, code));
+    sgx_a32_machine(g, SGX_A32_JMP, 0)->disp = g->ret;
     g->undefined = 1; /* the instruction's way leaves the block */
 }
 static inline void sg_AArch32_CallSupervisor(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_SVC, imm); }
@@ -464,19 +418,18 @@ static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) {
    may change any of the state, so the region's registers and CPSR are read again after it */
 static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs, int result) {
     SgX* x = sgx(g);
-    int regs[4], k;
-    SgXIns* i;
+    int regs[4];
     if (nargs > 4) sg_fail("a call of more than four arguments", nargs, 4);
-    for (k = 0; k < nargs; ++k) regs[k] = sgx_reg(x, &args[k]);
-    i = sgx_a32_machine(g, SGX_A32_CALL, 1);
+    for (int k = 0; k < nargs; ++k) regs[k] = sgx_reg(x, &args[k]);
+    SgXIns* i = sgx_a32_machine(g, SGX_A32_CALL, 1);
     i->sym = sym;
     i->calls = 1;
-    for (k = 0; k < nargs; ++k) {
+    for (int k = 0; k < nargs; ++k) {
         i->in[k] = regs[k];
         i->fixed[k] = sgx_a32_args[k];
     }
     if (result) i->def = sgx_vreg(x, x->n - 1, 64);
-    for (k = 0; k < 15; ++k) g->gpr[k] = 0;
+    for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
     g->cpsr = 0;
     g->origin = -1;
     g->vfp_ok[0] = g->vfp_ok[1] = 0;
@@ -489,12 +442,11 @@ static inline SgD sgx_a32_limit(SgCtx* g) {
     SgX* x = sgx(g);
     if (!g->limit) {
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
-        SgD size, top = sgx_const(64, 1ull << 32), l;
         i->w = 64;
         i->disp = (int)offsetof(SnxArmCPU, mem_size);
         i->def = sgx_vreg(x, x->n - 1, 64);
-        size = sgx_val(64, i->def);
-        l = sg_d_select(g, sgx_d_ult(g, top, size), top, size);
+        SgD size = sgx_val(64, i->def), top = sgx_const(64, 1ull << 32);
+        SgD l = sg_d_select(g, sgx_d_ult(g, top, size), top, size);
         g->limit = sgx_reg(x, &l);
     }
     return sgx_val(64, g->limit);
@@ -514,19 +466,17 @@ static inline int sgx_a32_mem(SgCtx* g) {
    ALIGNMENT exit, past the memory a DATA_ABORT one, both with the address as the syndrome (llvm.c's bounds) */
 static inline void sgx_a32_bounds(SgCtx* g, SgD address, unsigned bytes, unsigned alignment) {
     SgX* x = sgx(g);
-    SgD a = address, a64, end;
+    SgD a = address;
     sgx_reg(x, &a);
     if (alignment > 1)
         sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, a, sgx_const(32, alignment - 1)))), SNX_ARM_ALIGNMENT,
                      a, 0);
-    a64 = sgx_zext(x, a, 64);
-    end = sg_d_add(g, a64, sgx_const(64, bytes));
+    SgD end = sg_d_add(g, sgx_zext(x, a, 64), sgx_const(64, bytes));
     sgx_a32_exit(g, sgx_d_ult(g, sgx_a32_limit(g), end), SNX_ARM_DATA_ABORT, a, 0);
 }
 /* the candidate of table whose r/m operand is its input (a load: rm_out 0) or its result (a store) */
 static inline const SgXSel* sgx_a32_mem_form(const SgXSel* t, unsigned n, int rm_out) {
-    unsigned k;
-    for (k = 0; k < n; ++k)
+    for (unsigned k = 0; k < n; ++k)
         if (t[k].rm >= 0 && !t[k].feature && !t[k].zero && (rm_out ? t[k].out == t[k].rm : t[k].in[0] == t[k].rm))
             return &t[k];
     sg_fail("no form of a load or a store", (long long)n, rm_out);
@@ -620,11 +570,10 @@ static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int alig
 /* ---- conditions for the instructions the Sail has no clause for (ConditionPassed, as the Sail's) ---- */
 
 static inline SgB sgx_a32_condition(SgCtx* g, unsigned cond) {
-    SgB r, origin;
-    SgD one = sgx_const(1, 1), zero = sgx_const(1, 0);
     if (cond >= 14) return sg_bool(g, 1);
-    origin = sg_condition_origin(g, sg_s(cond, 4));
+    SgB origin = sg_condition_origin(g, sg_s(cond, 4)), r;
     if (origin) return origin;
+    SgD one = sgx_const(1, 1), zero = sgx_const(1, 0);
     switch (cond >> 1) {
         case 0: r = sg_d_eq(g, sg_PSTATE_read(g, SG_PSTATE_Z), one); break;
         case 1: r = sg_d_eq(g, sg_PSTATE_read(g, SG_PSTATE_C), one); break;
@@ -647,16 +596,6 @@ static inline SgB sgx_a32_condition(SgCtx* g, unsigned cond) {
 
 /* ---- the machine's bytes ---- */
 
-static inline void sgx_bytes(SgXBuf* b, const char* hex) {
-    /* "F0 49 0F B1 14 32": the bytes as written */
-    while (*hex) {
-        unsigned v = 0, k;
-        while (*hex == ' ') ++hex;
-        if (!*hex) break;
-        for (k = 0; k < 2; ++k, ++hex) v = v * 16 + (unsigned)(*hex <= '9' ? *hex - '0' : *hex - 'A' + 10);
-        sgx_byte(b, (unsigned char)v);
-    }
-}
 /* the rel32 at at, to b's end */
 static inline void sgx_a32_patch32(SgXBuf* b, size_t at) {
     long long d = (long long)b->n - (long long)(at + 4);
@@ -698,25 +637,23 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_JCC: sgx_a32_jcc(g, b, i->cc, i->disp); return;
         case SGX_A32_JMP: sgx_a32_jmp(g, b, i->disp); return;
         case SGX_A32_EXIT: {
-            SgA32Exit e;
-            e.label = sgx_a32_label(g);
-            e.exit = (unsigned)i->imm;
-            e.pc = (SnxU32)i->kv[1];
-            e.pc_kept = (signed char)(i->kv[0] >> 1 & 1);
-            e.reg = i->kv[0] & 1 ? (signed char)-1 : (signed char)r[0];
-            e.syndrome = (SnxU32)(i->kv[0] >> 32);
+            SgA32Exit e = {
+                .label = sgx_a32_label(g),
+                .exit = (unsigned)i->imm,
+                .reg = i->kv[0] & 1 ? (signed char)-1 : (signed char)r[0],
+                .pc_kept = (signed char)(i->kv[0] >> 1 & 1),
+                .syndrome = (SnxU32)(i->kv[0] >> 32),
+                .pc = (SnxU32)i->kv[1],
+            };
             g->exits = (SgA32Exit*)sgx_a32_grow(g->exits, &g->cap_exits, g->nexits + 1, sizeof *g->exits);
             g->exits[g->nexits++] = e;
             sgx_a32_jcc(g, b, i->cc, e.label);
             return;
         }
         case SGX_A32_MONITOR: {
-            SgA32Monitor m;
             sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exclusive_valid)); /* cmp dword [rbx + valid], imm8 */
             sgx_byte(b, 0);
-            m.label = sgx_a32_label(g);
-            m.reg = (signed char)r[0];
-            m.bytes = (unsigned)i->imm;
+            SgA32Monitor m = {.label = sgx_a32_label(g), .reg = (signed char)r[0], .bytes = (unsigned)i->imm};
             sgx_a32_jcc(g, b, 5, m.label); /* jne: armed */
             m.back = b->n;
             g->monitors =
@@ -743,7 +680,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             /* llvm.c's exclusive(): the reservation's address and size checked and the monitor cleared, then a
            compare-and-swap of the value the load-exclusive read: status 0 where it took, 1 otherwise */
             unsigned bytes = (unsigned)i->imm;
-            size_t fail[3], done;
+            size_t fail[3];
             sgx_a32_state(b, 0, 0x8B, 1, offsetof(SnxArmCPU, exclusive_valid)); /* mov ecx, [rbx + valid] */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, exclusive_valid), 0);
             sgx_bytes(b, "85 C9 0F 84"), fail[0] = b->n, sgx_imm(b, 0, 4);        /* test ecx, ecx; jz */
@@ -760,7 +697,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             sgx_bytes(b, bytes == 1 ? "0F B0" : "0F B1");
             sgx_bytes(b, "14 32");
             sgx_bytes(b, "0F 95 C0 0F B6 C0 E9"); /* setne al; movzx eax, al; jmp done */
-            done = b->n;
+            size_t done = b->n;
             sgx_imm(b, 0, 4);
             sgx_a32_patch32(b, fail[0]), sgx_a32_patch32(b, fail[1]), sgx_a32_patch32(b, fail[2]);
             sgx_bytes(b, "B8 01 00 00 00"); /* mov eax, 1 */
@@ -785,8 +722,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
 
 /* the block's exits and the monitor's cold paths, after its code: each exit's fields stored, then the block's return */
 static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
-    int k;
-    for (k = 0; k < g->nexits; ++k) {
+    for (int k = 0; k < g->nexits; ++k) {
         SgA32Exit* e = &g->exits[k];
         sgx_a32_bind(g, b, e->label);
         if (!e->pc_kept) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, e->pc);
@@ -797,9 +733,8 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
             sgx_a32_state(b, 0, 0x89, e->reg, offsetof(SnxArmCPU, syndrome)); /* mov [rbx + syndrome], reg32 */
         sgx_a32_jmp(g, b, g->ret);
     }
-    for (k = 0; k < g->nmonitors; ++k) {
+    for (int k = 0; k < g->nmonitors; ++k) {
         SgA32Monitor* m = &g->monitors[k];
-        size_t keep, clear;
         sgx_a32_bind(g, b, m->label);
         sgx_bytes(b, "50"); /* push rax */
         if (m->reg != 0) {  /* mov eax, reg */
@@ -810,7 +745,9 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
         /* (address - reserved) < size, or (reserved - address) < bytes: the two ranges overlap, 32-bit wrapping */
         sgx_a32_state(b, 0, 0x2B, 0, offsetof(SnxArmCPU, exclusive_address)); /* sub eax, [rbx + address] */
         sgx_a32_state(b, 0, 0x3B, 0, offsetof(SnxArmCPU, exclusive_size));    /* cmp eax, [rbx + size] */
-        sgx_bytes(b, "72"), clear = b->n, sgx_byte(b, 0);                     /* jb clear */
+        sgx_bytes(b, "72");                                                   /* jb clear */
+        size_t clear = b->n;
+        sgx_byte(b, 0);
         sgx_a32_state(b, 0, 0x8B, 0, offsetof(SnxArmCPU, exclusive_address)); /* mov eax, [rbx + address] */
         if (m->reg == 0)
             sgx_bytes(b, "2B 04 24"); /* sub eax, [rsp]: the address, pushed */
@@ -819,8 +756,10 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
             sgx_byte(b, 0x29); /* sub eax, reg */
             sgx_byte(b, (unsigned char)(0xC0 | (m->reg & 7) << 3));
         }
-        sgx_byte(b, 0x3D), sgx_imm(b, m->bytes, 4);      /* cmp eax, bytes */
-        sgx_bytes(b, "73"), keep = b->n, sgx_byte(b, 0); /* jae keep */
+        sgx_byte(b, 0x3D), sgx_imm(b, m->bytes, 4); /* cmp eax, bytes */
+        sgx_bytes(b, "73");                         /* jae keep */
+        size_t keep = b->n;
+        sgx_byte(b, 0);
         sgx_a32_patch8(b, clear);
         sgx_a32_state_imm(b, offsetof(SnxArmCPU, exclusive_valid), 0);
         sgx_a32_patch8(b, keep);
