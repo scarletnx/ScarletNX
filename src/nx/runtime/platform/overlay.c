@@ -1109,7 +1109,7 @@ static struct {
     } loading;
     /* the settings' notice (overlay_settings_notice) until the game's first frame takes it, under notice_lock */
     struct {
-        char game[1024], global[1024];
+        char game[1024], global[1024], kind[256];
         _Atomic int waiting; /* given, not yet taken: the present reads it unlocked */
     } settings;
 } g_overlay
@@ -1118,11 +1118,12 @@ static struct {
 #endif
 ;
 enum { LOADING_NONE, LOADING_SHOWN, LOADING_LOADED };
-void overlay_settings_notice(const char* game, const char* global) {
+void overlay_settings_notice(const char* game, const char* global, const char* kind) {
     pm_lock(&notice_lock);
     snprintf(g_overlay.settings.game, sizeof g_overlay.settings.game, "%s", game);
     snprintf(g_overlay.settings.global, sizeof g_overlay.settings.global, "%s", global);
-    atomic_store_explicit(&g_overlay.settings.waiting, game[0] || global[0], memory_order_release);
+    snprintf(g_overlay.settings.kind, sizeof g_overlay.settings.kind, "%s", kind);
+    atomic_store_explicit(&g_overlay.settings.waiting, game[0] || global[0] || kind[0], memory_order_release);
     pm_unlock(&notice_lock);
 }
 int overlay_settings_waiting(void) { return atomic_load_explicit(&g_overlay.settings.waiting, memory_order_relaxed); }
@@ -1155,32 +1156,42 @@ static int keys_in(const char* list) {
     for (const char* next; *list; list = next, ++n) key_at(list, &next);
     return n;
 }
-int overlay_settings_lines(const char* game, const char* global, int cols, unsigned icon[OVERLAY_SETTINGS_LINES],
+int overlay_settings_lines(const char* game, const char* global, const char* kind, int cols,
+                           unsigned icon[OVERLAY_SETTINGS_LINES],
                            char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1]) {
-    const char* lists[2] = {game, global};
-    const unsigned icons[2] = {GUI_ICON_GAMEPAD_2, GUI_ICON_GLOBE};
+    const char* lists[3] = {game, global, kind};
+    const unsigned icons[3] = {GUI_ICON_GAMEPAD_2, GUI_ICON_GLOBE, GUI_ICON_INFO};
+    /* what the kind's keys are, after them on its last line: no file nor command line gave them */
+    const char* const after[3] = {"", "", ", for this kind of game"};
     int n = 0;
     if (cols > OVERLAY_COLS_MAX) cols = OVERLAY_COLS_MAX;
-    for (int k = 0; k < 2; ++k) {
+    for (int k = 0; k < 3; ++k) {
         const char *at = lists[k], *last = at;
-        int room = OVERLAY_SETTINGS_LINES - n - (!k && global[0]), took = 0;
+        int later = 0, took = 0, first = n;
+        for (int j = k + 1; j < 3; ++j) later += lists[j][0] != 0; /* a line kept for each list after it */
+        int room = OVERLAY_SETTINGS_LINES - n - later, width = cols - (int)strlen(after[k]);
+        if (width < 1) width = cols; /* a line too narrow for the words after the keys: its keys, the words cut */
         for (; *at && room > 0; --room, ++n) {
             last = at;
-            took = line_keys(at, -1, cols, text[n]);
+            took = line_keys(at, -1, width, text[n]);
             icon[n] = icons[k];
             for (int i = 0; i < took; ++i) key_at(at, &at);
         }
-        if (!*at) continue;
-        /* keys left: the last line says how many, as many of its own keys left out as that takes */
-        int left = keys_in(at);
-        for (int keep = took; keep >= 0; --keep) {
-            char more[24];
-            snprintf(more, sizeof more, "+%d more", left + took - keep);
-            line_keys(last, keep, cols, text[n - 1]);
+        if (*at) { /* keys left: the last line says how many, as many of its own keys left out as that takes */
+            int left = keys_in(at);
+            for (int keep = took; keep >= 0; --keep) {
+                char more[24];
+                snprintf(more, sizeof more, "+%d more", left + took - keep);
+                line_keys(last, keep, width, text[n - 1]);
+                size_t used = strlen(text[n - 1]);
+                if (keep && used + 2 + strlen(more) > (size_t)width) continue;
+                snprintf(text[n - 1] + used, (size_t)width + 1 - used, "%s%s", used ? ", " : "", more);
+                break;
+            }
+        }
+        if (n > first && after[k][0]) {
             size_t used = strlen(text[n - 1]);
-            if (keep && used + 2 + strlen(more) > (size_t)cols) continue;
-            snprintf(text[n - 1] + used, (size_t)cols + 1 - used, "%s%s", used ? ", " : "", more);
-            break;
+            if (used < (size_t)cols) snprintf(text[n - 1] + used, (size_t)cols + 1 - used, "%s", after[k]);
         }
     }
     return n;
@@ -1191,7 +1202,8 @@ void overlay_settings_start(u64 now_ns) {
     int n = 0;
     pm_lock(&notice_lock);
     if (atomic_load_explicit(&g_overlay.settings.waiting, memory_order_acquire))
-        n = overlay_settings_lines(g_overlay.settings.game, g_overlay.settings.global, OVERLAY_COLS_MAX, icon, text);
+        n = overlay_settings_lines(g_overlay.settings.game, g_overlay.settings.global, g_overlay.settings.kind,
+                                   OVERLAY_COLS_MAX, icon, text);
     atomic_store_explicit(&g_overlay.settings.waiting, 0, memory_order_relaxed);
     pm_unlock(&notice_lock);
     for (int i = 0; i < n; ++i) {

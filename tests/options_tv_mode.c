@@ -57,7 +57,7 @@ static struct {
     char said[4096]; /* every line, one after the other */
     int write;       /* plat_replace_file replaces the file: ini_open writes it */
     /* the notice over the game's first frame (overlay_settings_notice): its lists, and how many were given */
-    char game[1024], global[1024];
+    char game[1024], global[1024], kind[256];
     int notices;
 } g_test;
 
@@ -122,9 +122,10 @@ int hud_debug_set(const char* text) {
     (void)text;
     return 0;
 }
-void overlay_settings_notice(const char* game, const char* global) {
+void overlay_settings_notice(const char* game, const char* global, const char* kind) {
     snprintf(g_test.game, sizeof g_test.game, "%s", game);
     snprintf(g_test.global, sizeof g_test.global, "%s", global);
+    snprintf(g_test.kind, sizeof g_test.kind, "%s", kind);
     g_test.notices++;
 }
 int unattended_known(const char* k) {
