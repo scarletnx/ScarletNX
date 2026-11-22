@@ -164,9 +164,18 @@ int syncpt_wait(u32 id, u32 value, i64 timeout) {
 static _Atomic u32 g_drawn, g_drawn_at_incr = ~0u, g_drawn_at_present = ~0u;
 static _Atomic int g_incr_on_front = -1;           /* the last increment ran on this thread (1) or the queue's (0) */
 static _Atomic u32 g_presents, g_presents_at_incr; /* the presents, and how many came before the last increment */
+/* the shading rate ids the draws gave the renderer, in their order, and the renderer's calls of shading_rate: the
+   first gives the id 7, the second none (0), as an image the renderer can't take */
+static u32 g_draw_rates[8];
+static _Atomic u32 g_rate_calls;
 static void draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    (void)ds, (void)dc, (void)o;
-    atomic_fetch_add_explicit(&g_drawn, 1, memory_order_seq_cst);
+    (void)ds, (void)o;
+    u32 n = atomic_fetch_add_explicit(&g_drawn, 1, memory_order_seq_cst);
+    if (n < 8) g_draw_rates[n] = dc->shading_rate;
+}
+static u32 shading_rate(const GpuShadingRate* r) {
+    (void)r;
+    return atomic_fetch_add_explicit(&g_rate_calls, 1, memory_order_seq_cst) ? 0 : 7;
 }
 static void stream_incr(u32 id) {
     u32 none = ~0u;
@@ -193,7 +202,8 @@ static const Renderer renderer = {.draw = draw,
                                   .stream_incr = stream_incr,
                                   .stream_end = stream_end,
                                   .release_value = release_value,
-                                  .present_buffer = present_buffer};
+                                  .present_buffer = present_buffer,
+                                  .shading_rate = shading_rate};
 const Renderer* g_renderer = &renderer;
 
 /* ------------------------------------------------ nvn's records: a draw goes to the renderer as nvn_draw.c's do */
@@ -275,6 +285,29 @@ int main(void) {
            "the increment that frees the window's texture did not come after the present on the renderer thread");
     expect(syncpt_read(id) == fenced && syncpt_read(nvn_replay_shown_syncpt()) == shown,
            "the queue's syncpoint and the presents' reach what the replay promised");
+    /* A shading rate image's id for the draws after it (gpu_shading_rate) is a record: the front end goes on while the
+       renderer thread is held, and each draw takes the id of the call before it, when it runs */
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 0;
+    pthread_mutex_unlock(&gate_lock);
+    gq_call(held, NULL, 0);
+    NvnDraw d = {0};
+    nvn_draw_init(&d, 9);
+    GpuShadingRate sr = {.addr = 0x8000, .new_image = 1};
+    DrawCall dc = {.count = 3, .instances = 1};
+    dc.shading_rate = gpu_shading_rate(&sr);
+    gpu_draw(&d.ds, &dc, &d.own);
+    dc.shading_rate = gpu_shading_rate(&sr);
+    gpu_draw(&d.ds, &dc, &d.own);
+    expect(!atomic_load_explicit(&g_rate_calls, memory_order_seq_cst),
+           "the front end asked the held renderer for a shading rate id");
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 1;
+    pthread_cond_broadcast(&gate_cv);
+    pthread_mutex_unlock(&gate_lock);
+    gq_drain();
+    expect(atomic_load_explicit(&g_drawn, memory_order_seq_cst) == 3 && g_draw_rates[1] == 7 && g_draw_rates[2] == 0,
+           "each draw takes the id of the shading rate call before it (7, then none)");
     if (!failures) puts("nvn_replay_split: ok");
     return failures != 0;
 }
