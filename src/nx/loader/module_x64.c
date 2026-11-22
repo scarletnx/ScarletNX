@@ -342,7 +342,107 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
     return rc;
 }
 
+/* a 32-bit program's SnxArmModule, as module_arm.c's emit_descriptor gives it: ENT_ADDR the blocks' keys, ENT_FN
+   their functions (A_ or T_ and the address), MODS, the title, the thread's settings and snx_arm_poll_offset, the
+   module's i64 the runtime writes (hidden: the blocks read it PC-relative), and snx_module_arm() returning &MOD */
+int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
+                           unsigned char** object, size_t* size, char* error, size_t error_size) {
+    SnxXElf* o = snx_xelf_new();
+    size_t i, at, n = count ? count : 1;
+    char name[48];
+    int rc;
+    if (!o) {
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+    {
+        u32* addr = (u32*)calloc(n, sizeof *addr);
+        if (!addr) {
+            snx_xelf_free(o);
+            snprintf(error, error_size, "out of memory");
+            return -1;
+        }
+        for (i = 0; i < count; ++i) addr[i] = keys[i];
+        at = snx_xelf_put(o, SNX_ELF_RODATA, addr, n * sizeof *addr, 4);
+        snx_xelf_symbol(o, "ENT_ADDR", SNX_ELF_RODATA, at, n * sizeof *addr, SNX_ELF_LOCAL);
+        free(addr);
+    }
+    at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 8 * n, 8);
+    snx_xelf_symbol(o, "ENT_FN", SNX_ELF_RELRO, at, 8 * n, SNX_ELF_LOCAL);
+    for (i = 0; i < count; ++i) {
+        snprintf(name, sizeof name, "%c_%08lx", keys[i] & 1 ? 'T' : 'A', (unsigned long)(keys[i] & ~1u));
+        ptr(o, SNX_ELF_RELRO, at + 8 * i, name);
+    }
+    {
+        SnxModInfo* mods = (SnxModInfo*)calloc(loaded->module_count ? loaded->module_count : 1, sizeof *mods);
+        if (!mods) {
+            snx_xelf_free(o);
+            snprintf(error, error_size, "out of memory");
+            return -1;
+        }
+        for (i = 0; i < loaded->module_count; ++i) {
+            const SnxModuleImage* m = &loaded->modules[i];
+            mods[i].base = m->base;
+            mods[i].size = m->size;
+            memcpy(mods[i].build_id, m->build_id, 32);
+            mods[i].text_off = m->text_off;
+            mods[i].text_size = m->text_size;
+            mods[i].ro_off = m->ro_off;
+            mods[i].ro_size = m->ro_size;
+            mods[i].data_off = m->data_off;
+            mods[i].data_size = m->data_size;
+            mods[i].bss_size = m->bss;
+            mods[i].is_nro = !!m->is_nro;
+        }
+        at = snx_xelf_put(o, SNX_ELF_RELRO, mods, loaded->module_count * sizeof *mods, 8);
+        snx_xelf_symbol(o, "MODS", SNX_ELF_RELRO, at, loaded->module_count * sizeof *mods, SNX_ELF_LOCAL);
+        for (i = 0; i < loaded->module_count; ++i) {
+            snprintf(name, sizeof name, "MOD_NAME_%lu", (unsigned long)i);
+            string(o, loaded->modules[i].name, name);
+            ptr(o, SNX_ELF_RELRO, at + i * sizeof *mods + offsetof(SnxModInfo, name), name);
+        }
+        free(mods);
+    }
+    {
+        i64 zero = 0;
+        at = snx_xelf_put(o, SNX_ELF_DATA, &zero, sizeof zero, 8);
+        snx_xelf_symbol(o, "snx_arm_poll_offset", SNX_ELF_DATA, at, sizeof zero, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN);
+    }
+    string(o, options->title ? options->title : "Game", "TITLE");
+    {
+        SnxArmModule mod;
+        const SnxNpdm* npdm = &loaded->npdm;
+        memset(&mod, 0, sizeof mod);
+        mod.abi = SNX_ARM_MODULE_ABI;
+        mod.nmods = (u32)loaded->module_count;
+        mod.nentries = (u32)count;
+        mod.title_id = npdm->title_id;
+        mod.main_stack = (u32)npdm->stack;
+        mod.main_prio = npdm->prio;
+        mod.main_core = npdm->core;
+        mod.aspace = npdm->aspace;
+        at = snx_xelf_put(o, SNX_ELF_RELRO, &mod, sizeof mod, 8);
+        snx_xelf_symbol(o, "MOD", SNX_ELF_RELRO, at, sizeof mod, SNX_ELF_LOCAL);
+        ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, mods), "MODS");
+        ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, entry_addr), "ENT_ADDR");
+        ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, entry_fn), "ENT_FN");
+        ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, title), "TITLE");
+        ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, poll_offset), "snx_arm_poll_offset");
+    }
+    returns(o, "snx_module_arm", "MOD");
+    rc = snx_xelf_write(o, object, size);
+    snx_xelf_free(o);
+    if (rc) snprintf(error, error_size, "out of memory");
+    return rc;
+}
+
 #else
+int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
+                           unsigned char** object, size_t* size, char* error, size_t error_size) {
+    (void)loaded, (void)options, (void)keys, (void)count, (void)object, (void)size;
+    snprintf(error, error_size, "no x86-64 back end on this host");
+    return -1;
+}
 int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
                        const SnxU64* imports, size_t import_count, unsigned char** object, size_t* size,
                        size_t* entry_count, char* error, size_t error_size) {
