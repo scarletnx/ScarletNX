@@ -609,9 +609,11 @@ VkResult vk_rec_present_result(void) {
    here, at its bind. One that couldn't be made binds nothing, and the draws after it until the next graphics bind are
    dropped, as the GPU thread drops a draw without its pipeline (the recording thread's own flag: 1). With
    async_pipelines one still being made isn't waited for: its draws are dropped the same way (2) until a later frame
-   binds it made. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
+   binds it made, and only in a pass render_begin found drawn the frame before (rec_async_pass): elsewhere the
+   bind waits. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
 static int g_rec_unbound;
 static u64 g_rec_dropped, g_rec_skipped;
+static int g_rec_async = 1; /* the pass's rec_async_pass */
 typedef struct {
     VkCommandBuffer cb;
     VkPipelineBindPoint bp;
@@ -620,8 +622,8 @@ typedef struct {
 static void bind_pipeline_run(const void* p) {
     const BindPipelineArgs* x = p;
     int graphics = x->bp == VK_PIPELINE_BIND_POINT_GRAPHICS, pending = 0;
-    VkPipeline pipe =
-        graphics && g_settings.async_pipelines ? vk_pipeline_now(x->p, &pending) : vk_pipeline_resolve(x->p);
+    VkPipeline pipe = graphics && g_settings.async_pipelines && g_rec_async ? vk_pipeline_now(x->p, &pending)
+                                                                            : vk_pipeline_resolve(x->p);
     if (graphics) g_rec_unbound = pipe ? 0 : pending ? 2 : 1;
     if (pipe) vk_pipeline_bind(x->cb, x->bp, pipe);
 }
@@ -634,6 +636,16 @@ void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline 
     }
     BindPipelineArgs* x = rec_push(bind_pipeline_run, sizeof *x);
     *x = (BindPipelineArgs){cb, bp, p};
+    rec_commit();
+}
+static void async_pass_run(const void* p) { g_rec_async = *(const int*)p; }
+void rec_async_pass(VkCommandBuffer cb, int may_skip) {
+    if (!rec_on(cb)) {
+        g_rec_async = may_skip;
+        return;
+    }
+    int* x = rec_push(async_pass_run, sizeof *x);
+    *x = may_skip;
     rec_commit();
 }
 static int rec_drop_draw(void) {

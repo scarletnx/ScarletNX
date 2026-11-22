@@ -41,6 +41,7 @@
 #include "nx/gpu/vk/coverage.h"
 #include "nx/gpu/vk/sample_locations.h"
 #include "nx/gpu/vk/advanced_blend.h"
+#include "nx/gpu/vk/redraw.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
@@ -978,6 +979,7 @@ VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWrit
 void vk_rec_frame_reset(u32 slot); /* the slot's new sets are done with: its pools are reset in order */
 u32 vk_rec_frame_sets(u32 slot);   /* new sets made in the slot since its reset */
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline pipe);
+void rec_async_pass(VkCommandBuffer cb, int may_skip); /* async_pipelines may skip the next draws (render.c) */
 void rec_CmdBindIndexBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkIndexType type);
 void rec_CmdDraw(VkCommandBuffer cb, u32 count, u32 instances, u32 first, u32 first_instance);
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first, i32 vertex_offset, u32 first_instance);
@@ -1231,6 +1233,7 @@ typedef struct Surf {
     VkAccessFlags2 access;
     u64 last_used;
     u32 wgen;    /* render targets: bumped when drawn to */
+    SnxVkRedraw redraw; /* render targets: drawn every frame, which async_pipelines asks (redraw.h) */
     u64 wseq;    /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
     u64 discard_wseq; /* a render target discarded (vk_render_discard) at this wseq: its next pass loads it as

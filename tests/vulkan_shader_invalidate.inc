@@ -109,8 +109,11 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 
 /* async_pipelines: a kept draw whose pipeline a worker still makes is dropped
  * on the GPU thread before its setup, where the recording thread dropped it
- * after all of that, and it is drawn once the pipeline is made. The workers are
- * held so that the new fragment program's pipeline stays pending.
+ * after all of that, and it is drawn once the pipeline is made: into a target
+ * the frame before drew too, which the next frame draws again. Into a target
+ * the frame before didn't draw (a menu's layer drawn once and kept) nothing is
+ * dropped: the draws wait for the pipeline. The workers are held so that the
+ * new fragment program's pipeline stays pending.
  */
 static int check_async_kept_drop(GpuChannel *channel, u64 address,
 				 u64 *fragment)
@@ -124,6 +127,8 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 		     "no dynamic feedback loop");
 		return 0;
 	}
+	invalidate_draw(channel); /* the target drawn in this frame */
+	g_vk_present++;		  /* and the next frame's draws go into it */
 	fragment[11] = invalidate_mov(0, 0x3f400000);
 	written = invalidate_write_code(address, fragment, 64);
 	maxwell3d_method(channel, 0x369, 1, 1);
@@ -148,8 +153,29 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	CHECK(held_early == !check && held_kept == 1 &&
 	      held_drawn == 1u + check);
 	CHECK(g_vk_drawn == drawn + 1 && g_vk_async_early == early + !check);
+
+	/* two frames later: the frame before didn't draw the target, so neither
+	 * draw of a new pipeline is dropped before its setup */
+	g_vk_present += 2;
+	fragment[11] = invalidate_mov(0, 0x3e800000);
+	written = invalidate_write_code(address, fragment, 64);
+	maxwell3d_method(channel, 0x369, 1, 1);
+	g_settings.async_pipelines = 1;
+	vk_pipeline_hold(1);
+	early = g_vk_async_early;
+	drawn = g_vk_drawn;
+	invalidate_draw(channel);
+	invalidate_draw(channel);
+	held_early = g_vk_async_early - early;
+	held_drawn = g_vk_drawn - drawn;
+	vk_pipeline_hold(0);
+	vk_pipeline_quiesce();
+	g_settings.async_pipelines = async;
+	CHECK(written);
+	CHECK(held_early == 0 && held_drawn == 2);
 	puts("async_pipelines: a kept draw of a pipeline being made is dropped "
-	     "before its setup, and drawn once it is made");
+	     "before its setup into a target drawn every frame, drawn once it is "
+	     "made, and waited for into one the frame before didn't draw");
 	return 0;
 }
 
