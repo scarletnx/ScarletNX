@@ -24,6 +24,7 @@ static int slot_armed(u32 fd, u32 slot) {
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
+int g_ounce;            /* main.c's: a Switch program unless a check says otherwise */
 void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
 static unsigned test_checks, test_kobjs;
@@ -1133,6 +1134,41 @@ static void test_gmmu_aliases(void) {
         alias_check();
     }
 }
+/* the VA allocator started over, for an Ounce program or not (va_init sees g_ounce at its first use) */
+static void va_restart(int ounce) {
+    g_ounce = ounce;
+    g_hle.nvdrv.va_ready = 0;
+    g_hle.nvdrv.nvafree = 0;
+}
+/* An Ounce program's GPU addresses: the allocator's own start past the guest's address space, and a range at a guest
+   address (a pool at its storage's own) is taken where all of it is free, refused where any of it is taken, and
+   taken again once given back. A Switch program's free ranges start at the big-page split, so no guest address below
+   it is taken. A queued unmap drops its nvmap handle once it is made */
+static void test_gmmu_own_addresses(void) {
+    const u64 s = 0x140000000ull, n = 0x3C0000;
+    u64 addr;
+    u32 size;
+    va_restart(1);
+    u64 a = gmmu_space_alloc(0x10000, 0);
+    CHECK(a == AS_SIZE);
+    CHECK(gmmu_space_alloc_at(s, n) == s);
+    CHECK(!gmmu_space_alloc_at(s, n) && !gmmu_space_alloc_at(s + n - 0x1000, 0x2000));
+    CHECK(!gmmu_space_alloc_at(s - 0x10000, 0x20000));
+    CHECK(gmmu_space_alloc_at(s + n, 0x1000) == s + n); /* the next page */
+    CHECK(gmmu_space_alloc_at(s + n + 0x1000, 0x800) == s + n + 0x1000 && !gmmu_space_alloc_at(s + n + 0x1000, 0x10));
+    CHECK(!gmmu_space_alloc_at(s + 0x10000123, 0x1000) && !gmmu_space_alloc_at(a, 0x1000));
+    gmmu_space_give_back(s, n);
+    CHECK(gmmu_space_alloc_at(s, n) == s && !gmmu_space_alloc_at(s + 0x10000, 0x1000));
+    for (int i = 0; i < 4; i++) CHECK(gmmu_space_alloc(0x100000, 0) >= AS_SIZE);
+    va_restart(0);
+    CHECK(gmmu_space_alloc(0x10000, 0) == VA_BASE && !gmmu_space_alloc_at(s, n));
+    u32 h = nvmap_handle_new(0x4000, 0x1000);
+    CHECK(h && nvmap_get(h, &addr, &size));
+    gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, VA_BASE, 0, 0x1000, h));
+    CHECK(!nvmap_get(h, &addr, &size));
+    va_restart(0);
+}
+
 int main(void) {
     hle_init();
     g_mem = calloc(1, 0x10000);
@@ -1273,6 +1309,7 @@ int main(void) {
     test_close_during_ioctl();
 
     CHECK(nv_close(ctrlgpu) == 0 && nv_close(ctrl) == 0);
+    test_gmmu_own_addresses();
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     CHECK(test_kobjs == 0 && test_locks == 0);
     svcobj_unref(nvdrv);
