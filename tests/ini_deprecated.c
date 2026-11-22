@@ -26,6 +26,10 @@ int main(void) {
            !ini_deprecated("user_uid"));
     assert(ini_deprecated("vk_descriptors") && strstr(ini_deprecated("vk_descriptors"), "now vk_descriptors_mode") &&
            !ini_deprecated("vk_descriptors_mode"));
+    /* write_tracking_hot: its 0, the default every .ini wrote, is write_tracking_hot_pages's Auto, so not a rename */
+    assert(ini_deprecated("write_tracking_hot") &&
+           strstr(ini_deprecated("write_tracking_hot"), "now write_tracking_hot_pages, whose 2 is Auto") &&
+           !ini_deprecated("write_tracking_hot_pages") && !ini_renamed("write_tracking_hot"));
     /* renamed, of the same values: the launcher carries a pick of it over */
     assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
            !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));

@@ -394,6 +394,9 @@ static const struct {
                       {"user", "now user_uid, the uid of the user it named"},
                       {"memory_fit", "now memory_fit_mode, whose 0 is Auto (memory_fit's 1) and 1 Off"},
                       {"astc_bc", "now astc_mode, whose 0 is Auto (astc_bc's 1), 1 Exact (RGBA8) and 2 BC7"},
+                      {"write_tracking_hot",
+                       "now write_tracking_hot_pages, whose 2 is Auto (write_tracking_hot's 0, its "
+                       "default) and 1 On"},
                       {"controls_opacity", "the on-screen controls are opaque"},
                       {"controls_alpha", "the on-screen controls are opaque"},
                       {"controls_skin", "the on-screen controls are white shapes, with no skin"},

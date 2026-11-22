@@ -124,7 +124,7 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    kernel's writes are tracked as they come (Linux's userfaultfd, Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
 void plat_ww_close(u8* p, u64 size);
-/* Hot pages (write_tracking_hot=1, with page protection only): a page the scans found written in a row is left
+/* Hot pages (write_tracking_hot_pages=1, with page protection only): a page the scans found written in a row is left
    writable and reported written by every scan, so a scan may report one nothing wrote. plat_ww_hot_in says whether
    [p, p + size) has one; plat_ww_cool protects its hot pages again and reports them to cb as written, as a scan
    would, so from then on a report of one stands for a write. A consumer whose "written" must be exact (a render

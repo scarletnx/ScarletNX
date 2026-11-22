@@ -221,8 +221,8 @@ void plat_vm_track(u8* p, u64 size) {
              p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
                                : "the reservation has no write watch, so the caches compare contents");
     if (g_settings.write_tracking_hot_pages == 1)
-        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, which has "
-             "no Windows version: no page is hot this run\n");
+        WARN("memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks the writes, "
+             "which has no Windows version: no page is hot this run\n");
     if (p != g_ww_watched || g_settings.write_tracking == 2) return;
     g_ww_base = p; /* mem_init runs before any thread that scans */
     g_ww_size = size;
