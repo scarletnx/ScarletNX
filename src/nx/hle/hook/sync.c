@@ -7,7 +7,9 @@
    guest object's address, made at its first use (std::mutex's constructor is the compiler's, inlined) and let go of at
    its destructor. The guest object's own bytes go unread and unwritten: every function that reads them is hooked, and
    the others (timed_mutex's, shared_timed_mutex's and condition_variable_any's, whose templates the game's code inlines
-   over their members) are left to the game's own code.
+   over their members) are left to the game's own code. libc++'s steady_clock waits are inlined too, and call the C
+   library's pthread_cond_clockwait with the std::mutex's words, which the SDK's code reads as a mutex nobody holds and
+   aborts on: the C library's waits are hooked as well, and wait on the host where the mutex is one of the family's.
 
    A thread that waits (a lock someone holds, a condition variable, a sleep) leaves its core first, as a waiting SVC
    does (hook_wait_begin): the core's other threads run meanwhile, the holder among them.
@@ -85,6 +87,14 @@ static void drop(u64 addr) {
             return;
         }
     pm_unlock(&g_sync.lk);
+}
+/* the host object of the guest object at addr, NULL when there is none (a mutex this family never locked) */
+static SyncObj* find(u64 addr) {
+    pm_lock(&g_sync.lk);
+    SyncObj* o = g_sync.bucket[bucket_of(addr)];
+    while (o && o->addr != addr) o = o->next;
+    pm_unlock(&g_sync.lk);
+    return o;
 }
 /* o's mutex, waited for off the core when another thread holds it */
 static void lock(SyncObj* o) {
@@ -176,6 +186,46 @@ void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
     hook_wait_begin();
     pc_wait(&o->c, &m->m, left);
     hook_wait_end();
+}
+
+/* ---- the C library's waits on a std::mutex of the family's (libc++'s inlined waits), on the host as the condition
+   variable's own: 0 when woken (or for no reason, as a condition variable may be), else ETIMEDOUT as the console's C
+   library numbers it. A wait on any other mutex runs the function's own code */
+#define GUEST_ETIMEDOUT  110
+#define GUEST_CLOCK_MONO 1
+static i32 host_wait(u64 cv, SyncObj* m, i64 left) {
+    SyncObj* o = obj(cv);
+    int out;
+    if (!left) return GUEST_ETIMEDOUT;
+    hook_wait_begin();
+    out = pc_wait(&o->c, &m->m, left);
+    hook_wait_end();
+    return out ? GUEST_ETIMEDOUT : 0;
+}
+/* the nanoseconds left until the timespec at abstime on the clock (at least 0): CLOCK_MONOTONIC's is steady_clock's,
+   the game's clock, as the SDK reads it; any other the host's real time, as system_clock's now */
+static i64 left_until(CPU* c, i32 clock, u64 abstime) {
+    const u8* t = hook_host(c, abstime);
+    i64 at = (i64)snx_ld_le64(t) * 1000000000 + (i64)snx_ld_le64(t + 8);
+    i64 left = at - (clock == GUEST_CLOCK_MONO ? (i64)guest_ns() : plat_unix_ns());
+    return left > 0 ? left : 0;
+}
+static i32 run_own(CPU* c) {
+    hook_run_original(c, c->pc);
+    return (i32)c->x[0];
+}
+i32 sync_pthread_cond_wait(CPU* c, u64 cv, u64 m) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, -1) : run_own(c);
+}
+/* a std::condition_variable has no clock attribute: the real time's, CLOCK_REALTIME */
+i32 sync_pthread_cond_timedwait(CPU* c, u64 cv, u64 m, u64 abstime) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, left_until(c, 0, abstime)) : run_own(c);
+}
+i32 sync_pthread_cond_clockwait(CPU* c, u64 cv, u64 m, i32 clock, u64 abstime) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, left_until(c, clock, abstime)) : run_own(c);
 }
 
 /* ---- the clocks: system_clock's microseconds since 1970, steady_clock's nanoseconds of the game's clock */
