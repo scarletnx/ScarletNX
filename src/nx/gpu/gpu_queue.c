@@ -146,29 +146,35 @@ void gq_stats_log(u64 presents) {
         (double)v[GQS_READ_N] / n, (double)v[GQS_READ_NS] / 1e6 / n, (double)v[GQS_RUNS] / n,
         (double)v[GQS_RUN_BYTES] / 1024.0 / n, (double)v[GQS_RUN_NS] / 1e6 / n);
 }
-/* the next record run, and the taker's position and the fence published: 0 when there was none */
-static int gq_take_one(void) {
+/* the next record run, and the taker's position and the fence published: its bytes, 0 when there was none */
+static u32 gq_take_one(void) {
     u64 tail = atomic_load_explicit(&g_gq.tail, memory_order_relaxed);
     if (tail == atomic_load_explicit(&g_gq.head, memory_order_acquire)) return 0;
     const GqRecord* r = (const GqRecord*)(g_gq.ring + tail % GQ_RING);
     u64 fence = r->fence;
     u32 bytes = r->bytes;
-    u64 t0 = plat_ns();
     gq_run(r);
-    gqs_add(GQS_RUN_NS, plat_ns() - t0);
-    gqs_add(GQS_RUNS, 1);
-    gqs_add(GQS_RUN_BYTES, bytes);
     atomic_store_explicit(&g_gq.tail, tail + bytes, memory_order_release);
     atomic_store_explicit(&g_gq.done, fence, memory_order_release);
     atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);
     if (atomic_load_explicit(&g_gq.putter_sleeps, memory_order_seq_cst)) plat_wake_word(&g_gq.progress);
-    return 1;
+    return bytes;
 }
 static void gq_thread(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("GPU renderer");
     for (;;) {
-        if (gq_take_one()) continue;
+        /* the records there are, timed and counted as one run: timed one by one, they were half of this thread's
+           reads of the clock, about 3,000 a present in one game */
+        if (atomic_load_explicit(&g_gq.tail, memory_order_relaxed) !=
+            atomic_load_explicit(&g_gq.head, memory_order_acquire)) {
+            u64 t0 = plat_ns(), n = 0, all = 0;
+            for (u32 b; (b = gq_take_one()) != 0; n++) all += b;
+            gqs_add(GQS_RUN_NS, plat_ns() - t0);
+            gqs_add(GQS_RUNS, n);
+            gqs_add(GQS_RUN_BYTES, all);
+            continue;
+        }
         u32 w = atomic_load_explicit(&g_gq.work, memory_order_seq_cst);
         atomic_store_explicit(&g_gq.taker_sleeps, 1, memory_order_seq_cst);
         if (atomic_load_explicit(&g_gq.tail, memory_order_relaxed) ==
