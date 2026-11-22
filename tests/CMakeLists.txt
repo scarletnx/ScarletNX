@@ -2533,7 +2533,8 @@ foreach(case old pick cli)
     add_test(NAME options_vk_descriptors_${case} COMMAND snx-test-options-tv-mode --vk-descriptors-${case})
 endforeach()
 # a game's own picks (<name>.picks) over the launcher's and its .ini, under this run's command line: a process each
-foreach(case order menu hand reload clean next perf perf-run kind kind-pick kind-auto kind-cli kind-old0 kind-launcher)
+foreach(case order menu hand reload clean next perf perf-run kind kind-pick kind-auto kind-cli kind-old0 kind-launcher
+        kind-oldpick)
     add_test(NAME options_picks_${case} COMMAND snx-test-options-tv-mode --picks-${case})
 endforeach()
 

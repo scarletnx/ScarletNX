@@ -855,6 +855,22 @@ static void picks_path(void) {
     snprintf(g_picks.path, sizeof g_picks.path, "%s", path);
     free(path);
 }
+/* emulated_cores, deprecated for emulated_cores_mode of the same 0 (Off) and 1 (On): the game's pick of it is its pick
+   of emulated_cores_mode while the picks give that one none, the file written with it at the next write, said once */
+static void picks_emulated_cores_old(void) {
+    static const char* const words[] = {"Off", "On"};
+    const Entry* e = picks_find("emulated_cores");
+    int now;
+    if (!e || picks_find("emulated_cores_mode")) return;
+    now = options_emulated_cores_old(e->value, 1);
+    if (now < 0) return; /* neither 0 nor 1: kept, said as no pick of this version's */
+    picks_put("emulated_cores", NULL);
+    picks_put("emulated_cores_mode", now ? "1" : "0");
+    g_picks.dirty = 1;
+    WARN("settings: emulated_cores=%d in %s, deprecated, is emulated_cores_mode=%d (%s) there now "
+         "(docs/user/deprecations.md)\n",
+         now, g_picks.path, now, words[now]);
+}
 /* the picks as they are on the disk now, none where there is no file; a key given twice takes its last line's. One no
    pick takes (a newer version's, a typo, a control's place) is said with its value, kept in the file and does
    nothing */
@@ -873,6 +889,7 @@ static void picks_load(void) {
         while (snx_ini_next(&ini, &key, &value)) picks_put(key, value);
     }
     free(text);
+    picks_emulated_cores_old();
     for (i = 0; i < g_picks.n; i++)
         if (!picks_key(g_picks.entry[i].key))
             WARN("settings: %s=%s in %s is no setting a game's picks take: it is kept there and does nothing\n",
