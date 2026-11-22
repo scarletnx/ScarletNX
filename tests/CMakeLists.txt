@@ -3778,6 +3778,9 @@ add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
          d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61)
+# one where no register of the pool is free when DIV takes RDX from the divisor it holds
+add_test(NAME recompiler_backends_div_divisor COMMAND snx-test-recompiler-backends --words d2800030 f9400ac7 1acc096b
+         d503201f aa0b00cd aa0b000a d503201f d503201f d503201f d503201f 9ac8092e d503201f f9401746 f1000610 54fffe61)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails
