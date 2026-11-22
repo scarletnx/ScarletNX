@@ -72,6 +72,7 @@ static void* alias_test_mremap(void* address, size_t old_size, size_t new_size, 
 #include <sys/resource.h> /* RLIMIT_NPROC: a thread the system refuses */
 #include <sys/wait.h>
 #include <stdatomic.h>
+#include <dirent.h> /* test_guest_files: no file keeps its name */
 #if defined(__linux__)
 #include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign */
 #endif
@@ -1040,8 +1041,9 @@ static void mark_seen(void* data, const SnxRunMark* mark) {
     (void)data;
     (void)mark;
 }
-/* the file slots (plat_vm_files): a decommit reads zero again, through the guest address and through the file, also
-   across the edge of two slots, and the partial last slot keeps its bytes. Last in main: the slots stay to the end */
+/* the file slots (plat_vm_files): no file keeps its name, a decommit leaves its range inaccessible and reading zero
+   again, through the guest address and through the file, also across the edge of two slots, the partial last slot
+   keeps its bytes and ends where the reservation does. Last in main: the slots stay to the end */
 static void test_guest_files(const char* dir) {
 #if defined(__APPLE__)
     u64 page = plat_vm_page(), slot = (u64)1 << 30, size = 2 * slot + page, off = 0;
@@ -1054,6 +1056,11 @@ static void test_guest_files(const char* dir) {
     CHECK(plat_vm_files(p, size, "/nonexistent/snx") == -1 && !plat_vm_files_slot(p, NULL, NULL),
           "a folder that does not exist gave files");
     CHECK(!plat_vm_files(p, size, dir), "no files");
+    DIR* d = opendir(dir);
+    int named = 0;
+    for (struct dirent* e; d && (e = readdir(d));) named += !strncmp(e->d_name, "snx-guest-", 10);
+    if (d) closedir(d);
+    CHECK(d && !named, "a guest file kept its name in the folder");
     CHECK(plat_vm_files_slot(p + slot + 5, &fd, &off) && off == 5, "the second slot's offset");
     CHECK(!plat_vm_files_slot(p + size, NULL, NULL), "a slot past the end");
     a = p + slot - page; /* the last page of the first slot and the first of the second */
@@ -1061,6 +1068,10 @@ static void test_guest_files(const char* dir) {
     memset(a, 0xAB, (size_t)(2 * page));
     memset(p + 2 * slot, 0xCD, (size_t)page);
     plat_vm_decommit(a, 2 * page);
+    int pipe_fd[2] = {-1, -1};
+    CHECK(!pipe(pipe_fd) && write(pipe_fd[1], a, 1) == -1 && errno == EFAULT, "a decommitted page can be read");
+    close(pipe_fd[0]);
+    close(pipe_fd[1]);
     CHECK(!plat_vm_commit(a, 2 * page), "commit again");
     CHECK(a[0] == 0 && a[page - 1] == 0 && a[page] == 0 && a[2 * page - 1] == 0, "a decommitted range kept its bytes");
     CHECK(p[2 * slot] == 0xCD && p[2 * slot + page - 1] == 0xCD, "the partial slot lost its bytes");
@@ -1098,6 +1109,16 @@ static void test_guest_files(const char* dir) {
         CHECK(plat_vm_files_slot(q, &fd0, NULL) && plat_vm_files_slot(q + slot, &fd, NULL) && fd == fd0,
               "two GiB in two files");
         CHECK(plat_vm_files_slot(q + 3 * slot, NULL, &off) && off == slot, "the middle of a 2 GiB slot");
+    }
+    /* nothing mapped past the end of a reservation that is not a whole number of slots */
+    u64 odd = slot + 4 * page;
+    u8* r = plat_vm_reserve(odd + slot);
+    CHECK(r != NULL, "no reservation of 1 GiB and 4 pages");
+    if (r) {
+        munmap(r + odd, (size_t)slot);
+        CHECK(!plat_vm_files(r, odd, dir), "no files for 1 GiB and 4 pages");
+        CHECK(msync(r + odd, (size_t)page, MS_ASYNC) == -1 && errno == ENOMEM,
+              "the last slot was mapped past the reservation's end");
     }
 #else
     (void)dir;
