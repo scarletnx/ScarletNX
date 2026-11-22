@@ -505,6 +505,8 @@ void vk_frame_ready(void) {
     timeline_wait(at, VK_WAIT_RECYCLE);
 }
 static void pool_recycle(Frame* f);
+static u32 cb_grow(u32 n);
+static void cbs_add(VkCommandPool pool, VkCommandBuffer** cbs, u32* count, u32 n);
 /* the frame's previous use is done, its results landed and what it held freed, before it records again. The landing
    can record and submit in the slot (vk_cmd): that work is part of the previous use, waited for and landed as well */
 static void frame_recycle(Frame* f) {
@@ -543,6 +545,10 @@ static void frame_recycle(Frame* f) {
     pool_recycle(f);
     vk_descriptors_reset((u32)(f - g_fr));
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
+    /* Its pool is reset, so no thread records in it: a slot whose last use took every command buffer it had (an
+       upload's too) gets as many again now, not in its next use, where growing waits for the recording thread first */
+    if (f->icb && f->icb >= f->ncb) cbs_add(f->pool, &f->cbs, &f->ncb, cb_grow(f->ncb));
+    if (f->nup && f->icb >= f->nup) cbs_add(f->pool, &f->ups, &f->nup, f->icb + 1 - f->nup + cb_grow(f->icb + 1));
     f->icb = 0;
     f->fresh = 0;
 }
@@ -563,6 +569,19 @@ static u32 cb_grow(u32 n) {
     const u32 want = n < 4 ? 4 : n;
     return n >= CB_MOST ? 1 : n + want > CB_MOST ? CB_MOST - n : want;
 }
+/* n more command buffers from pool at the end of *cbs (*count of them) */
+static void cbs_add(VkCommandPool pool, VkCommandBuffer** cbs, u32* count, u32 n) {
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                      .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                      .commandBufferCount = n};
+    VkCommandBuffer* more = realloc(*cbs, sizeof *more * (*count + n));
+    if (!more) fatal("vulkan: out of memory for command buffers");
+    *cbs = more;
+    VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &more[*count]));
+    *count += n;
+}
+u64 g_vk_cb_grows_waited;
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
     g_cmd_uses++;
@@ -581,16 +600,8 @@ VkCommandBuffer vk_cmd(void) {
                by as many as it has (CB_GROW), so it waits a few times as it grows to its most submissions, not at each
                one. One game's loads, which submit often, waited so up to 550 ms for one buffer */
             vk_rec_sync();
-            const u32 n = cb_grow(f->ncb);
-            VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                                              .commandPool = f->pool,
-                                              .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                              .commandBufferCount = n};
-            VkCommandBuffer* cbs = realloc(f->cbs, sizeof *cbs * (f->ncb + n));
-            if (!cbs) fatal("vulkan: out of memory for command buffers");
-            f->cbs = cbs;
-            VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &f->cbs[f->ncb]));
-            f->ncb += n;
+            g_vk_cb_grows_waited++;
+            cbs_add(f->pool, &f->cbs, &f->ncb, cb_grow(f->ncb));
         }
         vk_rec_begin(f->cbs[f->icb]);
         vk_gpuprof_cb_begin(f->cbs[f->icb]);
@@ -1226,16 +1237,8 @@ VkCommandBuffer vk_cmd_upload(int gpu) {
     if (!f->up) {
         if (f->icb >= f->nup) { /* up to this submission's, and as many again (cb_grow), as the frame's own grow */
             vk_rec_sync();
-            const u32 n = f->icb + 1 - f->nup + cb_grow(f->icb + 1);
-            VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                                              .commandPool = f->pool,
-                                              .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                              .commandBufferCount = n};
-            VkCommandBuffer* ups = realloc(f->ups, sizeof *ups * (f->nup + n));
-            if (!ups) fatal("vulkan: out of memory for command buffers");
-            f->ups = ups;
-            VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &f->ups[f->nup]));
-            f->nup += n;
+            g_vk_cb_grows_waited++;
+            cbs_add(f->pool, &f->ups, &f->nup, f->icb + 1 - f->nup + cb_grow(f->icb + 1));
         }
         vk_rec_begin_upload(f->ups[f->icb]);
         f->up = 1;
@@ -1522,6 +1525,7 @@ void vk_frame_hold(u64 frame_id) {
     g_fr[(g_cur + VK_FRAMES - 1) % VK_FRAMES].hold = vk_submit_number();
 }
 u32 vk_frame_slot(void) { return g_cur; }
+u32 vk_frame_cbs(void) { return g_fr[g_cur].ncb; }
 
 static _Atomic u32 g_desc_pools; /* the pools that exist: the GPU, recording and compute threads make them */
 VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
