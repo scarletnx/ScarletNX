@@ -3435,10 +3435,12 @@ void vk_mem_trim(u64 extra, int force) {
            targets in one pool, at offsets that move each frame, made about 30 targets a frame at 30 frames a
            second. A second of them held 5 to 8 GB of a 14.6 GB budget while the caches counted 3 GB of room in the
            blocks, so no trim ran until an image found no memory, every second and a half: the forced trim then freed
-           5 to 8 GB of targets, too late for that image, and its draws went without it */
+           5 to 8 GB of targets, too late for that image, and its draws went without it. The textures that took
+           targets' pixels where later targets drew all over go with them (tex_superseded) */
         if (g_heap_swept != g_vk_present + 1 && vk_mem_heap_use() + extra > vk_mem_trim_start(budget)) {
             g_heap_swept = g_vk_present + 1;
             g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
+            g_trimmed += vk_tex_reclaim_superseded(vk_present_before(0, 2), ~0ull);
         }
         return;
     }
