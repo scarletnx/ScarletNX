@@ -516,6 +516,48 @@ static void test_stage_dropped(void) {
     res_free(r);
 }
 
+/* staging a range of many pages with owners far apart: the runs of pages between them (copied whole) and the pages
+   an owner is on (one at a time) give the CPU's bytes everywhere but the owned parts, which stay for the caller's
+   copy, including bytes the CPU wrote on pages far from any owner, a byte before an owner on its page, and the bytes
+   of the range's last page before an owner at its end */
+static void test_stage_runs(void) {
+    const u64 size = 0x40000;
+    u64 a = region(R0 + 0x1400000, size), i;
+    Res* r0 = res_new(0x800, 0x71);
+    Res* r1 = res_new(0x1000, 0x72);
+    Res* r2 = res_new(0x200, 0x73);
+    static u8 dst[0x40000 - 0x800];
+    OwnRange o[4];
+    GP(a)[0x103ff] = 0xa2; /* just before the first owner, on its page: before it, as a write there would land it */
+    GP(a)[size - 0x201] = 0xa4; /* so before the last owner */
+    CHECK(own_begin(a + 0x10400, 0x800, r0, 0) == 0);        /* inside page 0x10 */
+    CHECK(own_begin(a + 0x31000, 0x1000, r1, 0) == 0);       /* page 0x31 whole */
+    CHECK(own_begin(a + size - 0x200, 0x200, r2, 0) == 0);   /* the range's end */
+    GP(a)[0x2345] = 0xa1;                                    /* written by the CPU, far from all */
+    GP(a)[0x20000] = 0xa3;
+    int lands = g_lands;
+    memset(dst, 0xee, sizeof dst);
+    CHECK(own_stage(a + 0x800, size - 0x800, dst, o, 4) == 3 && g_lands == lands);
+    CHECK(o[0].addr == a + 0x10400 && o[0].size == 0x800 && o[1].addr == a + 0x31000 && o[1].size == 0x1000);
+    CHECK(o[2].addr == a + size - 0x200 && o[2].size == 0x200 && o[2].res == r2);
+    int ok = 1;
+    for (i = 0x800; i < size; i++) {
+        u8 want = (i >= 0x10400 && i < 0x10c00) || (i >= 0x31000 && i < 0x32000) || i >= size - 0x200
+                      ? 0xee /* the owners': left for the caller's copy */
+                  : i == 0x2345        ? 0xa1
+                  : i == 0x103ff       ? 0xa2
+                  : i == 0x20000       ? 0xa3
+                  : i == size - 0x201  ? 0xa4
+                                       : (u8)(0x11 + i);
+        ok &= dst[i - 0x800] == want;
+    }
+    CHECK(ok);
+    CHECK(mem_unmap(a, size) == 0 && refs(r0) == 0 && refs(r1) == 0 && refs(r2) == 0);
+    res_free(r0);
+    res_free(r1);
+    res_free(r2);
+}
+
 /* a second mapping of owned memory lands it first: owned memory has one */
 static void test_view(void) {
     u64 a = region(R0 + 0x400000, 0x4000), v = STACK_BASE + 0x100000;
@@ -1332,6 +1374,7 @@ int main(int argc, char** argv) {
     test_drop();
     test_drop_sparse();
     test_stage();
+    test_stage_runs();
     test_stage_dropped();
     test_view();
 #if defined(_WIN32)

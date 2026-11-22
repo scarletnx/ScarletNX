@@ -954,16 +954,22 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     return n;
 }
 
-/* the CPU's bytes of [a, b) into dst at a - addr: page by page, a page an owner is on through the mirror (its CPU
-   bytes are in the pool), the others as they are. A page landed meanwhile reads the same through either */
+/* the CPU's bytes of [a, b) into dst at a - addr: a page an owner is on through the mirror (its CPU bytes are in the
+   pool), page by page, and each run of pages no entry is on as it is, with one look under the lock. A page landed
+   meanwhile reads the same through either. A look for each page, in a range of 16 MiB with two small owners that one
+   game's draws bound whole, was most of the renderer thread's locks (17 million in a minute) */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
         u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off;
         int owned;
-        if (end > b) end = b;
         pm_lock(&g_own.lk);
-        owned = page_owned_nl(page);
+        u32 i = first_after_nl(page);
+        owned = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < end;
+        /* none: no entry before the page of the next one, which starts past this page */
+        if (!owned)
+            end = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) ? g_own.ent[i].lo & ~(g_own.page - 1) : b;
         pm_unlock(&g_own.lk);
+        if (end > b) end = b;
         if (owned && !mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
             const u8* sh = NULL;
             /* through a buffer of this thread's: dst is written with no lock of ours held, as a write to it that
