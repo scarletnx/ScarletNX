@@ -20,6 +20,7 @@
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
+#include "common/utilities/bits.h"
 #include <setjmp.h>
 #include <stdlib.h>
 #if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
@@ -1661,9 +1662,9 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                 else
                     vuse = m;
             }
-            for (m = vuse & ~vwr & ~vrd; m; m &= m - 1) vweight[__builtin_ctz(m)] += wt;
+            for (m = vuse & ~vwr & ~vrd; m; m &= m - 1) vweight[snx_ctz32(m)] += wt;
             vrd |= vuse & ~vwr;
-            for (m = vdef & ~vwr; m; m &= m - 1) vweight[__builtin_ctz(m)] += wt;
+            for (m = vdef & ~vwr; m; m &= m - 1) vweight[snx_ctz32(m)] += wt;
             vwr |= vdef;
             regs_of(w, &use, &def);
             if (use == LIVE_ALL) continue; /* a call, a return, what isn't classified: a flush anyway */
