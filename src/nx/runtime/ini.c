@@ -287,13 +287,16 @@ const char* ini_only_words(int flags) {
         case INI_ONLY_LINUX: return SNX_TR_NOOP("Linux and Android only");
         case INI_ONLY_ARM64_LINUX: return SNX_TR_NOOP("arm64 Linux and Android only");
         case INI_ONLY_NONE: return SNX_TR_NOOP("Not offered");
+        case INI_ONLY_APPLE: return SNX_TR_NOOP("macOS and iOS only");
         default: return NULL;
     }
 }
 /* whether this system is one of those only names */
 static int only_here(int only) {
 #if defined(__APPLE__) && !defined(SNX_IOS)
-    return only == INI_ONLY_MACOS;
+    return only == INI_ONLY_MACOS || only == INI_ONLY_APPLE;
+#elif defined(__APPLE__)
+    return only == INI_ONLY_APPLE;
 #elif defined(_WIN32)
     return only == INI_ONLY_WINDOWS;
 #elif defined(__linux__)

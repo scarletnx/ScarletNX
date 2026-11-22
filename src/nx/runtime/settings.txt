@@ -35,10 +35,11 @@
 #                         the settings between do nothing in a build without FEATURE (ini.h's INI_NEEDS_BUILD): the
 #                         menus show them greyed and pick nothing, and a build with it takes them as any others
 #     once                written to the .ini only once it is set (the default stays its value until then)
-#     only SYSTEM         it does something on SYSTEM alone: macos, windows, android, linux (Android too) or
-#                         arm64-linux (the same on arm64); none for something ScarletNX does not offer, its help
-#                         saying why. On another system the launcher's Settings grey its row and say which beside it
-#                         (ini.h's ini_only, "Not offered" for none); its value is read and written there as anywhere
+#     only SYSTEM         it does something on SYSTEM alone: macos, apple (macOS and iOS), windows, android, linux
+#                         (Android too) or arm64-linux (the same on arm64); none for something ScarletNX does not
+#                         offer, its help saying why. On another system the launcher's Settings grey its row and say
+#                         which beside it (ini.h's ini_only, "Not offered" for none); its value is read and written
+#                         there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
@@ -1407,6 +1408,7 @@ setting Alias pool
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
 setting Guest files
     key guest_files
+    only apple
     int 0 1
     default 0
     default-if SNX_IOS 1

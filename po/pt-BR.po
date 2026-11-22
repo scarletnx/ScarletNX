@@ -7194,6 +7194,10 @@ msgstr "Só Linux e Android arm64"
 msgid "Not offered"
 msgstr ""
 
+#: src/nx/runtime/ini.c
+msgid "macOS and iOS only"
+msgstr "Só macOS e iOS"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
