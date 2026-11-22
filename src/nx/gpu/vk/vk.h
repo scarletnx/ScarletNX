@@ -2369,8 +2369,10 @@ void vk_tex_later_frame(void);
 void vk_tex_kind_frame(void);
 #define VK_KIND_FRAME_BLOCKS (1u << 18)
 /* After that, its own submission too: the textures in the block of device memory that is being emptied move to other
-   blocks, DEFRAG_BYTES at most (texture.c). Nothing on a GPU that shares the system's memory (devmem.c) */
-void vk_tex_defrag_frame(void);
+   blocks, DEFRAG_BYTES at most (texture.c), and DEFRAG_BYTES_LATE after a frame that came later than the game's pace:
+   frame_ns since the game's last frame, period_ns its pace (0 for none). Nothing on a GPU that shares the system's
+   memory (devmem.c) */
+void vk_tex_defrag_frame(u64 frame_ns, u64 period_ns);
 /* An owner that can move its allocation (vk_devmem_owner) is one of these, by its low two bits: a texture (Surf*,
    00), an own buffer of the buffer cache (its entry's index, 01), a block, brick or mip tail of a texture with memory
    where it is bound (its Surf*, 10: vk_image_sparse_mover), or a granule of the buffer cache's pages (pagespace.c's,

@@ -241,6 +241,9 @@ static struct {
     int give; /* vk_devmem_image gives memory */
     int ready;
     void* moving;
+    void* list[8]; /* or these, in one call (a block of several textures) */
+    u32 nlist;
+    u64 size; /* an allocation's bytes, 64 KiB when 0 */
     u64 moved;
     VkImageCopy reg[VK_TEX_MAX_LEVELS];
 } g_mv;
@@ -829,7 +832,7 @@ void vk_devmem_info(DevMem mem, DevMemInfo* info) {
     *info = (DevMemInfo){0};
     if (mem == MV_OLD || mem == MV_NEW) {
         info->tag = g_mv.tag;
-        info->size = 64 << 10;
+        info->size = g_mv.size ? g_mv.size : 64 << 10;
     }
 }
 /* texture.c creates allocations without memory.c and ledger.c, which have the real ones */
@@ -845,6 +848,15 @@ void vk_devmem_priority(DevMem mem, u32 prio) { (void)mem, (void)prio; }
 void vk_devmem_owner(DevMem mem, void* owner) { (void)mem, (void)owner; }
 u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
     (void)budget;
+    if (g_mv.nlist) {
+        u32 n = g_mv.nlist < max ? g_mv.nlist : max;
+        for (u32 i = 0; i < n; i++) {
+            mems[i] = MV_OLD;
+            owners[i] = g_mv.list[i];
+        }
+        g_mv.nlist = 0;
+        return n;
+    }
     if (!g_mv.moving || !max) return 0;
     mems[0] = MV_OLD;
     owners[0] = g_mv.moving;
@@ -2046,7 +2058,7 @@ static void check_tex_moves(void) {
         g_mv.moving = &t;
         g_mv.tracks = 0;
         g_mv.moved = 0;
-        vk_tex_defrag_frame();
+        vk_tex_defrag_frame(0, 0);
         CHECK(g_mv.want.at == DM_DEVICE && g_mv.want.existing && g_mv.want.low == !other);
         CHECK(g_mv.tracks == 1 && g_mv.owner == (other ? VK_OWN_IMAGE_OTHER : VK_OWN_TEXTURE));
         CHECK(g_mv.moved == 64 << 10 && !g_mv.stops);
@@ -2058,7 +2070,7 @@ static void check_tex_moves(void) {
     g_mv.tracks = 0;
     Surf v = mv_tex(16, 8, 4, 1, 2);
     g_mv.moving = &v;
-    vk_tex_defrag_frame();
+    vk_tex_defrag_frame(0, 0);
     CHECK(g_mv.want.existing && g_mv.want.low && !g_mv.tracks);
     check_move_copy(&v, 16, 8, 4, 1, 2);
     /* no run holds it: the block is left as it is */
@@ -2066,8 +2078,27 @@ static void check_tex_moves(void) {
     g_mv.give = 0;
     g_mv.moving = &u;
     const u32 copies = g_mv.copies;
-    vk_tex_defrag_frame();
+    vk_tex_defrag_frame(0, 0);
     CHECK(g_mv.stops == 1 && g_mv.copies == copies && u.mem == MV_OLD);
+    /* six textures of 4 MiB in the block: all move after a frame on the game's pace (16 ms of 33), two after a late one
+       (40 ms): DEFRAG_BYTES_LATE, 8 MiB. Before, a late frame moved all six too */
+    g_mv.give = 1;
+    g_mv.size = 4u << 20;
+    for (int late = 0; late < 2; late++) {
+        Surf ts[6];
+        for (u32 k = 0; k < 6; k++) {
+            ts[k] = mv_tex(16, 16, 1, 1, 1);
+            g_mv.list[k] = &ts[k];
+        }
+        g_mv.nlist = 6;
+        g_mv.moved = 0;
+        vk_tex_defrag_frame(late ? 40000000 : 16000000, 33333333);
+        if (g_mv.moved != (late ? 8ull : 24ull) << 20)
+            fprintf(stderr, "defrag after a %s frame: %llu MiB moved, %u expected\n", late ? "late" : "paced",
+                    (unsigned long long)(g_mv.moved >> 20), late ? 8 : 24);
+        CHECK(g_mv.moved == (late ? 8ull : 24ull) << 20);
+    }
+    g_mv.size = 0;
     g_mv.ready = 0;
     /* a copy of a render target that draws sample */
     Surf rt = tex(64, 64, 1, 1, 4, 0, 0, 1);

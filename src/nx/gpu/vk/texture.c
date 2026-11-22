@@ -1504,7 +1504,8 @@ void vk_tex_later_frame(void) {
    A texture moves when it is a cache texture with all its memory in one allocation (t->movable): not a render target,
    a copy of one, an image the GPU writes, or an image whose memory follows its mapping (sparse, bricks). One whose BC7
    image is being made waits for it. When an image finds no run, the block is left as it is (vk_devmem_moving_stop) */
-#define DEFRAG_BYTES (32ull << 20) /* the most a present copies */
+#define DEFRAG_BYTES      (32ull << 20) /* the most a present copies */
+#define DEFRAG_BYTES_LATE (8ull << 20)  /* after a frame later than the game's pace, which a move would make later */
 #define DEFRAG_MAX   32u           /* textures asked for a present */
 /* t's image into a new one of the same shape whose memory `want` places, copied on cb, under the old allocation's
    owner in the ledger (none when it had none): the new image takes the old one's place (tex_image_swap) and the layout
@@ -1688,8 +1689,9 @@ static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
     /* the compute queue's next batch after the copies back: a dispatch reads the buffer cache's pages in place */
     vk_compute_after_gfx(vk_last_submit());
 }
-void vk_tex_defrag_frame(void) {
+void vk_tex_defrag_frame(u64 frame_ns, u64 period_ns) {
     if (!vk_cmd_ready()) return;
+    const u64 cap = period_ns && frame_ns > period_ns ? DEFRAG_BYTES_LATE : DEFRAG_BYTES;
     DevMem mems[DEFRAG_MAX];
     void* owners[DEFRAG_MAX];
     u64 usage, budget;
@@ -1702,7 +1704,7 @@ void vk_tex_defrag_frame(void) {
     SparseMove sp[DEFRAG_MAX];
     u32 nsp = 0, slots = 0;
     VkBuffer scratch = VK_NULL_HANDLE;
-    for (u32 i = 0; i < n && moved < DEFRAG_BYTES; i++) {
+    for (u32 i = 0; i < n && moved < cap; i++) {
         if (!cb) {
             vk_render_end(); /* copies happen outside rendering passes */
             cb = vk_cmd();
