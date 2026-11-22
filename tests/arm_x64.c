@@ -43,6 +43,8 @@ static struct {
     size_t kinds[64], refusals[64];
     size_t exits[16];   /* the runs' exits, LLVM's: how many ran through and how many stopped, and at what */
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
+    /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
+    size_t fp_calls[256], fp_hot_calls;
 } g_test;
 
 static u64 rnd(void) {
@@ -97,6 +99,14 @@ static const Class classes[] = {
     {"MRC, MCR p15 c13 c0 2 and 3 (TLS)", 0x0fef0fdfu, 0x0e0d0f50u, SNX_A32_COPROC, 1},
     {"MRC, MCR p15", 0x0f000f10u, 0x0e000f10u, SNX_A32_COPROC, 1},
     {"UNDEFINED", 0x0ff000f0u, 0x07f000f0u, SNX_A32_UNDEFINED, 1},
+    /* VFP: its loads and stores, transfers, FPSCR's, and its data processing (the A57's, scalar) */
+    {"VLDR, VSTR", 0x0f200e00u, 0x0d000a00u, SNX_A32_VECTOR, 3},
+    {"VLDM, VSTM, VPUSH, VPOP", 0x0e000e00u, 0x0c000a00u, SNX_A32_VECTOR, 2},
+    {"VMOV core and S", 0x0fe00f7fu, 0x0e000a10u, SNX_A32_VECTOR, 1},
+    {"VMOV two cores", 0x0fe00ed0u, 0x0c400a10u, SNX_A32_VECTOR, 1},
+    {"VMRS, VMSR", 0x0fef0fffu, 0x0ee10a10u, SNX_A32_VECTOR, 1},
+    {"VFP data processing", 0x0f000e10u, 0x0e000a00u, SNX_A32_VECTOR, 8},
+    {"VSEL, VMINNM, VMAXNM, VRINT, VCVT", 0xff000e10u, 0xfe000a00u, SNX_A32_VECTOR, 1},
 };
 #define CLASSES (sizeof classes / sizeof *classes)
 
@@ -114,7 +124,20 @@ static uint32_t word_of(const Class* c) {
             static const unsigned at[4] = {0, 8, 12, 16};
             if (((x >> (40 + 3 * f)) & 7) == 0) w |= 15u << at[f] & ~c->mask;
         }
-        if (snx_a32_decode(w) == c->kind) return w;
+        if (snx_a32_decode(w) != c->kind) continue;
+        if (c->kind == SNX_A32_VECTOR) {
+            /* the scalar VFP the back end makes: no Advanced SIMD, no half-precision conversion, no byte or halfword
+               lane (LLVM's, by design) */
+            SnxArmVector v;
+            snx_arm_vector_decode(w, &v);
+            if ((v.flags & AV_SIMD) || v.op == AV_STRUCT || v.op == AV_CRYPTO || (v.op == AV_IMM && v.aux) ||
+                ((v.op == AV_CORE || v.op == AV_DUP) && v.width != 32) ||
+                (v.op == AV_FCVT && (v.width == 16 || v.aux == 16)) ||
+                (v.op != AV_MEM && v.op != AV_CORE && v.op != AV_CORE_PAIR && v.op != AV_STATUS && v.op != AV_DUP &&
+                 v.op != AV_IMM && v.op != AV_MOV && (v.op < AV_FADD || v.op > AV_FSELECT)))
+                continue;
+        }
+        return w;
     }
     fprintf(stderr, "FAIL: no word of class %s found\n", c->name);
     exit(1);
@@ -172,8 +195,49 @@ static void start(RunState* s, unsigned k) {
     }
     cpu->tpidrurw = (uint32_t)rnd();
     cpu->tpidruro = (uint32_t)rnd();
-    cpu->fpscr = (uint32_t)rnd() & 0xffc0009fu;
-    for (unsigned i = 0; i < 32; ++i) cpu->d[i] = rnd();
+    {
+        /* FPSCR: NZCV and the cumulative flags random, IXC set three times in five (the hot paths need it), FZ and DN
+           half the time, a rounding other than to nearest one time in five, a trap enabled one time in ten */
+        u64 x = rnd();
+        uint32_t f = (uint32_t)x & 0xf000009fu;
+        if (x >> 32 & 1) f |= 1u << 24;    /* FZ */
+        if (x >> 33 & 1) f |= 1u << 25;    /* DN */
+        if ((x >> 34) % 5 < 3) f |= 0x10u; /* IXC */
+        if ((x >> 38) % 5 == 0) f |= (uint32_t)((x >> 42) & 3) << 22;
+        if ((x >> 45) % 10 == 0) f |= 1u << (8 + (x >> 50) % 5);
+        cpu->fpscr = f;
+    }
+    for (unsigned i = 0; i < 32; ++i) {
+        /* singles and doubles near 1, zeros, denormals, infinities, NaNs and random bits */
+        uint64_t v = 0;
+        for (int half = 0; half < (i & 1 ? 1 : 2); ++half) {
+            u64 x = rnd();
+            int wide = i & 1, sign = (int)(x >> 63);
+            unsigned kind = (unsigned)(x >> 56) % 20;
+            uint64_t bits, mant = x & (wide ? 0xfffffffffffffull : 0x7fffffull);
+            if (kind < 8) /* normal, exponent near the bias */
+                bits =
+                    wide ? (uint64_t)(1020 + (x >> 52) % 8) << 52 | mant : (uint64_t)(124 + (x >> 40) % 8) << 23 | mant;
+            else if (kind < 10)
+                bits = 0;
+            else if (kind < 12)
+                bits = mant ? mant : 1; /* a denormal */
+            else if (kind < 13)
+                bits = wide ? 0x7ffull << 52 : 0xffull << 23; /* infinity */
+            else if (kind < 14)
+                bits = (wide ? 0x7ffull << 52 : 0xffull << 23) | (mant ? mant : 1); /* a NaN */
+            else if (kind < 15) /* the smallest normals, where a product lands under them */
+                bits = (wide ? 1ull << 52 : 1ull << 23) | (mant & 0xff);
+            else
+                bits = wide ? x & ~(1ull << 63) : x & 0x7fffffffu;
+            bits |= (uint64_t)sign << (wide ? 63 : 31);
+            if (wide)
+                v = bits;
+            else
+                v |= bits << (32 * half);
+        }
+        cpu->d[i] = v;
+    }
 }
 /* what differs between the two runs, "" for nothing */
 static const char* differs(const RunState* a, const RunState* b) {
@@ -197,7 +261,11 @@ static const char* differs(const RunState* a, const RunState* b) {
     if (x->tpidrurw != y->tpidrurw || x->tpidruro != y->tpidruro) return "the TLS registers";
     if (x->fpscr != y->fpscr)
         return snprintf(why, sizeof g_test.why, "fpscr %08x, x86-64 %08x", x->fpscr, y->fpscr), why;
-    if (memcmp(x->d, y->d, sizeof x->d)) return "the VFP registers";
+    for (unsigned i = 0; i < 32; ++i)
+        if (x->d[i] != y->d[i])
+            return snprintf(why, sizeof g_test.why, "d%u %016llx, x86-64 %016llx", i, (unsigned long long)x->d[i],
+                            (unsigned long long)y->d[i]),
+                   why;
     for (size_t i = 0; i < MEM_SIZE; ++i)
         if (a->mem[i] != b->mem[i])
             return snprintf(why, sizeof g_test.why, "guest memory at %04zx: %02x, x86-64 %02x", i, a->mem[i],
@@ -206,9 +274,16 @@ static const char* differs(const RunState* a, const RunState* b) {
     return "";
 }
 
+/* snx_arm_fp_x64, counted: an arithmetic op or a compare the hot path could have done (fp_call's), and the others */
+static uint64_t counted_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint64_t desc) {
+    unsigned op = (unsigned)desc & 255;
+    ++g_test.fp_calls[op];
+    return snx_arm_fp_x64(cpu, x, y, add, desc);
+}
 static SnxCodeLoader* new_loader(char* error, size_t size) {
     SnxCodeLoader* loader = snx_code_loader_new(0, error, size);
     if (loader && (snx_code_define(loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
+                   snx_code_define(loader, "snx_arm_fp_x64", (SnxU64)(uintptr_t)counted_fp) ||
                    snx_code_define(loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
                    snx_code_define(loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
                    snx_code_define(loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||
@@ -369,6 +444,120 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
     return rc;
 }
 
+/* ---- the VFP's hot paths, witnessed: each word with its operands and FPSCR, and how many times its x86-64 block calls
+   snx_arm_fp_x64 (0: the hot path made the result), its results LLVM's ---- */
+
+typedef struct {
+    const char* what;
+    uint32_t word, fpscr;
+    uint64_t d0, d1, d2; /* S0 S1 = D0's low and high words, S2 = D1's low one; or D0 to D2 */
+    int cold;
+} Witness;
+#define F32(a, b) ((uint64_t)(b) << 32 | (a))
+static const Witness witnesses[] = {
+    /* VADD.F32 S0, S1, S2 */
+    {"an add of normals, IXC set", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
+    {"an add of normals under FZ", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
+    {"an add under FZ whose exact zero stays hot", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0xbf800000u, 0, 0},
+    {"an add with IXC clear", 0xee300a81u, 0, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
+    {"an add rounding toward zero", 0xee300a81u, 0x00c00010u, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
+    {"an add of a denormal", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x00000001u, 0, 1},
+    {"an add of a NaN", 0xee300a81u, 0x10u, F32(0, 0x7fc00000u), 0x40000000u, 0, 1},
+    {"an add with a trap enabled", 0xee300a81u, 0x110u, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
+    /* VSUB, VMUL, VDIV, VMLA, VNMLS, VNMUL .F32 S0, S1, S2 */
+    {"a subtraction", 0xee300ac1u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
+    {"a product", 0xee200a81u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
+    {"a product under FZ", 0xee200a81u, 0x01000010u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
+    {"a product that underflows", 0xee200a81u, 0x10u, F32(0, 0x00800000u), 0x3f000000u, 0, 1},
+    {"a product of a zero", 0xee200a81u, 0x10u, F32(0, 0x00000000u), 0x40000000u, 0, 0},
+    {"a quotient", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x40000000u, 0, 0},
+    {"a quotient by zero", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x00000000u, 0, 1},
+    {"a multiply-accumulate", 0xee000a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0},
+    {"a multiply-accumulate of a denormal addend", 0xee000a81u, 0x10u, F32(0x00000001u, 0x3fc00000u), 0x40000000u, 0,
+     1},
+    {"a negated multiply-subtract", 0xee100a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0},
+    {"a negated product", 0xee200ac1u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
+    /* VCMP.F32 S0, S2 and VCMPE.F32 S0, #0 */
+    {"a compare, IXC clear", 0xeeb40a41u, 0, F32(0x3f800000u, 0), 0x40000000u, 0, 0},
+    {"a compare of a NaN", 0xeeb40a41u, 0, F32(0x7fc00000u, 0), 0x40000000u, 0, 1},
+    {"a compare with zero", 0xeeb50ac0u, 0x01000000u, F32(0xbf800000u, 0), 0, 0, 0},
+    /* VADD, VMUL, VDIV .F64 D0, D1, D2 */
+    {"a double add", 0xee310b02u, 0x10u, 0, 0x3ff0000000000000ull, 0x4000000000000000ull, 0},
+    {"a double product", 0xee210b02u, 0x10u, 0, 0x3ff8000000000000ull, 0x4000000000000000ull, 0},
+    {"a double quotient of a denormal", 0xee810b02u, 0x10u, 0, 0x0000000000000001ull, 0x4000000000000000ull, 1},
+};
+
+static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
+    size_t count = sizeof witnesses / sizeof *witnesses, failures = 0;
+    Block* blocks = (Block*)calloc(count, sizeof *blocks);
+    LLVMModuleRef module = LLVMModuleCreateWithNameInContext("witnesses", ir->ctx);
+    SnxCodeLoader *lloader, *xloader;
+    unsigned char *lobj = NULL, *xobj = NULL;
+    size_t lsize = 0, xsize = 0;
+    SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
+    RunState* s = (RunState*)malloc(2 * sizeof *s);
+    char error[512];
+    LLVMSetTarget(module, LLVMGetTarget(ir->mod));
+    LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
+    for (size_t i = 0; i < count; ++i) {
+        char name[16];
+        size_t consumed;
+        snprintf(name, sizeof name, "B_%zu", i);
+        blocks[i].words[0] = witnesses[i].word;
+        blocks[i].n = 1;
+        if (!snx_arm_llvm_block(module, name, blocks[i].words, 1, PC, &consumed) ||
+            !(blocks[i].made =
+                  snx_x64_arm_block(x64, name, (const unsigned char*)blocks[i].words, 1, PC, &consumed, NULL, NULL))) {
+            fprintf(stderr, "FAIL: the witness %s (%08x): a back end refused it\n", witnesses[i].what,
+                    witnesses[i].word);
+            return 1;
+        }
+    }
+    if (snx_ir_module_object(ir, module, '2', &lobj, &lsize, error, sizeof error) ||
+        snx_x64_arm_object(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
+        !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
+        load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)) {
+        fprintf(stderr, "FAIL: the witnesses' objects: %s\n", error);
+        return 1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const Witness* w = &witnesses[i];
+        size_t before = 0, after = 0;
+        const char* why;
+        u64 seed = g_test.seed;
+        for (int side = 0; side < 2; ++side) {
+            g_test.seed = seed;
+            start(&s[side], 1);
+            s[side].cpu.cpsr = 0x10u;
+            s[side].cpu.fpscr = w->fpscr;
+            s[side].cpu.d[0] = w->d0;
+            s[side].cpu.d[1] = w->d1;
+            s[side].cpu.d[2] = w->d2;
+            for (unsigned k = 0; k < 256; ++k) before += side ? g_test.fp_calls[k] : 0;
+            ((SnxArmBlock)(uintptr_t)(side ? xaddr[i] : laddr[i]))(&s[side].cpu);
+            for (unsigned k = 0; k < 256; ++k) after += side ? g_test.fp_calls[k] : 0;
+        }
+        why = differs(&s[0], &s[1]);
+        if (*why) {
+            fprintf(stderr, "FAIL: the witness %s (%08x): %s\n", w->what, w->word, why);
+            ++failures;
+        }
+        if ((int)(after - before) != w->cold) {
+            fprintf(stderr, "FAIL: the witness %s (%08x): %zu calls of the helper, %d wanted\n", w->what, w->word,
+                    after - before, w->cold);
+            ++failures;
+        }
+    }
+    printf("%zu witnesses of the VFP's hot paths: %zu failures\n", count, failures);
+    g_test.failures += failures;
+    for (unsigned k = 0; k < 256; ++k) g_test.fp_calls[k] = 0;
+    free(s), free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
+    snx_code_loader_free(lloader);
+    snx_code_loader_free(xloader);
+    LLVMDisposeModule(module);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir;
@@ -412,6 +601,7 @@ int main(int argc, char** argv) {
     x64 = snx_x64_arm_new();
     snx_x64_arm_limit(x64, g_test.pool, g_test.features | ~7u);
     blocks = (Block*)calloc(CHUNK, sizeof *blocks);
+    if (!g_test.nonly && run_witnesses(ir, x64)) ++g_test.failures;
     if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
             blocks[i].words[0] = g_test.only[i];
@@ -438,6 +628,15 @@ int main(int argc, char** argv) {
     printf("%zu blocks of %zu words (%zu in the blocks LLVM made of them), %zu compared from %u states each: %zu runs, "
            "%zu refused by the x86-64 back end\n",
            done, g_test.words, g_test.consumed_words, g_test.compared, g_test.states, g_test.ran, g_test.refused);
+    {
+        static const SnxArmVectorOp hot[] = {AV_FADD,  AV_FSUB,  AV_FMUL,  AV_FDIV, AV_FMLA, AV_FMLS,
+                                             AV_FNMLA, AV_FNMLS, AV_FNMUL, AV_FCMP, AV_FCMPE};
+        size_t cold = 0, other = 0;
+        for (unsigned k = 0; k < 256; ++k) other += g_test.fp_calls[k];
+        for (size_t k = 0; k < sizeof hot / sizeof *hot; ++k) cold += g_test.fp_calls[hot[k]];
+        printf("snx_arm_fp_x64: %zu calls of the hot paths' operations (their cold paths), %zu of the others\n", cold,
+               other - cold);
+    }
     printf("their exits:");
     for (unsigned e = 0; e < 16; ++e)
         if (g_test.exits[e])
