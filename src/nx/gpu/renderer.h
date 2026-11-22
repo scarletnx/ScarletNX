@@ -310,6 +310,12 @@ void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32
 void gpu_render_states_reset(void);
 /* the renderer for any other call of the front end: after every queued record */
 const Renderer* gpu_renderer_now(void);
+/* The shading rate id (Renderer.shading_rate) for the draws after it, from a record in its place in the queue: the
+   renderer's side keeps the id of its last call, and a draw that gives GPU_RATE_LAST in DrawCall.shading_rate takes
+   it there. The draws after the call run after it, so each takes the id the call gave, as the front end would have
+   had it after a drain. 0 with no shading_rate in the renderer */
+#define GPU_RATE_LAST 0xffffffffu
+u32 gpu_shading_rate(const GpuShadingRate* r);
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */

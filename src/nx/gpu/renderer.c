@@ -78,6 +78,8 @@ static const char* const g_ds_group_name[DS_GENS] = {"programs", "vertex format"
                                                       "vertex buffers", "index", "bindings", "inline",
                                                       "target formats"};
 enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD, DR_XFB };
+/* the renderer's side's: the id its last shading_rate call gave (gpu_shading_rate), for the draws after it */
+static u32 g_rate_last;
 /* a record of a call with a draw state: then the bytes of the groups in groups, in their order, then indices words */
 typedef struct {
     u32 kind;    /* DR_ */
@@ -144,6 +146,7 @@ static void ds_run(const void* arg, u64 bytes) {
     switch (r.kind) {
         case DR_DRAW: {
             DrawCall dc = r.call.dc;
+            if (dc.shading_rate == GPU_RATE_LAST) dc.shading_rate = g_rate_last;
             /* the words after the groups: their offset is a multiple of 4, which a u32 needs */
             if (dc.indexed == 3) dc.inline_indices = r.indices ? (const u32*)(const void*)p : NULL;
             g_renderer->draw(c, &dc, own);
@@ -153,6 +156,7 @@ static void ds_run(const void* arg, u64 bytes) {
         case DR_TEXTURE: {
             DrawTexture t = r.call.t;
             if (off >= 0) t.owner.pred = pred;
+            if (t.state.shading_rate == GPU_RATE_LAST) t.state.shading_rate = g_rate_last;
             g_renderer->draw_texture(c, &t);
             break;
         }
@@ -374,6 +378,20 @@ void gpu_samples_enable(u32 owner, int on) {
 }
 void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) call_queue(RC_PREDICATE_DROP, pred, 0);
+}
+static void rate_run(const void* arg, u64 bytes) {
+    GpuShadingRate r;
+    (void)bytes;
+    memcpy(&r, arg, sizeof r);
+    g_rate_last = g_renderer->shading_rate(&r);
+}
+/* A call that gave the draws their id at once waited for every record queued before it: one game binds its shading
+   rate image again in each frame's passes, and the front end waited 6 ms a present there */
+u32 gpu_shading_rate(const GpuShadingRate* r) {
+    if (!g_renderer->shading_rate) return 0;
+    if (!gq_queues()) return g_rate_last = g_renderer->shading_rate(r); /* on the renderer's side already */
+    gq_call(rate_run, r, sizeof *r);
+    return GPU_RATE_LAST;
 }
 /* any other call of the renderer: after every queued record, as it may read what they change or give a result that
    depends on them */
