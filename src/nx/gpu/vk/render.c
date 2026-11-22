@@ -1487,6 +1487,37 @@ static int hold_no(int why) {
     return 0;
 }
 static u64 g_dset_offset_only; /* desc_set_cached's count for the GPU plan's M3b, below */
+/* The index buffer a command buffer has bound (the GPU plan's B3): a draw of the same buffer and index type at a
+   later offset by a whole number of indices draws from that binding, its first index moved by them, instead of
+   binding the buffer again at its own offset. The GPU reads the same indices: firstIndex counts from the binding's
+   offset, and the binding holds to the buffer's end either way. A racing game bound it about 1,700 times a present,
+   once for each indexed draw. begun is vk_cb_begun's count when it was bound: a command buffer begun again (a handle
+   used again) binds anew. Draws with records of the guest's (indirect) hold their own first index, and keep the
+   binding only at the same offset */
+static struct {
+    u32 begun;
+    VkCommandBuffer cb;
+    VkBuffer buf;
+    VkDeviceSize at;
+    VkIndexType type;
+} g_ib;
+static u64 g_ib_binds, g_ib_kept; /* for the statistics */
+static u32 index_bind(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize at, VkIndexType type, int may_move) {
+    const u32 size = type == VK_INDEX_TYPE_UINT32 ? 4 : type == VK_INDEX_TYPE_UINT16 ? 2 : 1;
+    if (g_ib.cb == cb && g_ib.begun == vk_cb_begun() && g_ib.buf == buf && g_ib.type == type && at >= g_ib.at &&
+        (at == g_ib.at || (may_move && (at - g_ib.at) % size == 0 && (at - g_ib.at) / size < (1u << 30)))) {
+        g_ib_kept++;
+        return (u32)((at - g_ib.at) / size);
+    }
+    rec_CmdBindIndexBuffer(cb, buf, at, type);
+    g_ib.begun = vk_cb_begun();
+    g_ib.cb = cb;
+    g_ib.buf = buf;
+    g_ib.at = at;
+    g_ib.type = type;
+    g_ib_binds++;
+    return 0;
+}
 /* desc_set_cached's counts for the GPU plan's M3c, [0] the stages' sets, [1] their texture sets (split sets): the new
    sets, and those of them whose writes an earlier frame's set had */
 static u64 g_dset_new_kind[2], g_dset_earlier[2];
@@ -1557,6 +1588,9 @@ void vk_render_stats_log(void) {
         (unsigned long long)g_hold_fail[HOLD_CHOSEN], (unsigned long long)g_hold_fail[HOLD_CB],
         (unsigned long long)g_hold_fail[HOLD_NONE]);
     memset(g_hold_fail, 0, sizeof g_hold_fail);
+    LOG("vulkan: index buffer binds in the last %llu presents: %llu, and %llu draws kept the last binding\n",
+        (unsigned long long)presents, (unsigned long long)g_ib_binds, (unsigned long long)g_ib_kept);
+    g_ib_binds = g_ib_kept = 0;
     static u64 dset_new_was;
     LOG("vulkan: new descriptor sets in the last %llu presents: %llu, %llu of them the same as a set of the frame but "
         "for their buffers' offsets\n",
@@ -8085,11 +8119,11 @@ retry:
     else if (mesh)
         rec_CmdDrawMeshTasks(cb, count);
     else if (dc->indirect) {
-        if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
+        if (indexed) index_bind(cb, ibuf, ioff, itype, 0); /* the guest's records hold their first index */
         draw_indirect(cb, indexed, abuf, aoff, cntbuf, cntoff, dc->draw_count, astride);
     } else if (indexed) {
-        rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
-        rec_CmdDrawIndexed(cb, icount, instances, 0, voffset, base_instance);
+        const u32 first_index = index_bind(cb, ibuf, ioff, itype, 1);
+        rec_CmdDrawIndexed(cb, icount, instances, first_index, voffset, base_instance);
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
