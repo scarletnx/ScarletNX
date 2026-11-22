@@ -1095,7 +1095,7 @@ int options_settings(char* out, size_t n) {
     return count;
 }
 /* the value v a layer of value_of gave o is another than o's default: a value of o's that the runtime then changed (an
-   Ounce program's async_pipelines) is not the player's. A row with no default is a once text's, empty by default */
+   Ounce program's emulated_cores) is not the player's. A row with no default is a once text's, empty by default */
 static int layer_differs(const IniOpt* o, const char* v) {
     if (!o->def) return v[0] != 0;
     if (o->type == INI_TEXT) return strcmp(v, o->def) != 0;

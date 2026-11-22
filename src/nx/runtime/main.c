@@ -624,14 +624,6 @@ static void npdm_layout(void) {
             g_settings.emulated_cores = 0;
             LOG("npdm: an Ounce program: emulated_cores off, the host's threads are the cores\n");
         }
-        /* A first run's new shader combinations compile as the game goes, and each new pipeline stalls the frame 60 to
-           400 ms while it is made: a race hitches as new views come into sight. async_pipelines makes them on a worker
-           and skips the draw until its pipeline is ready, so what a new shader draws shows up a frame or two late
-           instead of the pause. A value the player gave still wins */
-        if (!ini_given("async_pipelines")) {
-            g_settings.async_pipelines = 1;
-            LOG("npdm: an Ounce program: async_pipelines on, a new shader's draws show up a frame or two late\n");
-        }
         LOG("npdm: an Ounce program\n");
     }
     if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
