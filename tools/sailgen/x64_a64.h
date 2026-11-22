@@ -45,6 +45,8 @@ struct SgCtx {
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
+/* x64.h's: nothing of A64's comes between flags and their reader */
+static inline void sgx_flags_begin(SgCtx* g) { (void)g; }
 
 /* a guest's feature, a64_decode.h's SNX_A64_FEAT_X (the decoder's profile) */
 #define SG_FEAT(x) SNX_A64_##x
