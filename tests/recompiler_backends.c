@@ -380,11 +380,20 @@ int main(int argc, char** argv) {
         uint64_t at = CODE + (uint64_t)i * SLOT * 4;
         unsigned n = nwords ? nwords : 1 + pick(SLOT - 2);
         hints[i] = at;
-        for (k = 0; k < n; ++k) {
+        /* a quarter of them a loop: MOVZ x16, #1-3, the words, SUBS x16, x16, #1, B.NE back to the first word (x16
+           no word writes); a branch forward in the words may leave it early */
+        int loop = !nwords && n >= 4 && !pick(4);
+        if (loop) {
+            put32(mem[0], at, 0xD2800000u | (1 + pick(3)) << 5 | 16u);
+            put32(mem[0], at + 4 * (n - 2), 0xF1000610u); /* SUBS x16, x16, #1 */
+            put32(mem[0], at + 4 * (n - 1), 0x54000001u | ((0x80000u - (n - 2)) & 0x7FFFF) << 5); /* B.NE word 1 */
+        }
+        for (k = loop ? 1 : 0; k < (loop ? n - 2 : n); ++k) {
             uint32_t w = nwords ? words[k] : word();
             if (!nwords && k + 1 < n && !pick(6)) {
-                /* a branch forward over 1 to 3 words (to the RET at the most): labels, and what is dead at them */
-                unsigned skip = 1 + pick(n - k < 4 ? n - k : 3), r = lo();
+                /* a branch forward over 1 to 3 words (to the RET at the most, to a loop's SUBS: past it the loop
+                   wouldn't end): labels, and what is dead at them */
+                unsigned end = loop ? n - 2 : n, skip = 1 + pick(end - k < 4 ? end - k : 3), r = lo();
                 switch (pick(3)) {
                 case 0: w = 0x54000000u | skip << 5 | pick(14); break;                                 /* B.cond */
                 case 1: w = pick(2) << 31 | 0x34000000u | pick(2) << 24 | skip << 5 | r; break;        /* CBZ, CBNZ */
@@ -394,7 +403,7 @@ int main(int argc, char** argv) {
             put32(mem[0], at + 4 * k, w);
         }
         put32(mem[0], at + 4 * n, 0xD65F03C0u);
-        for (; k + 1 < SLOT; ++k) put32(mem[0], at + 4 * (k + 1), 0xD65F03C0u);
+        for (k = n; k + 1 < SLOT; ++k) put32(mem[0], at + 4 * (k + 1), 0xD65F03C0u);
     }
     memcpy(mem[1], mem[0], MEMORY);
     {
