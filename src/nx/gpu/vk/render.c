@@ -5454,6 +5454,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         k->depth = zt->f.vk;
         k->stencil = zt->f.stencil ? zt->f.vk : VK_FORMAT_UNDEFINED;
     }
+    if (g_vk.has_unused_attachments) vk_pipe_unwritten_targets(k);
     /* Color attachments share a count. The coverage key already validated a separate depth/raster count. */
     TargetFormats tf;
     target_formats(rt, zt, n, &tf);

@@ -261,6 +261,9 @@ typedef struct {
     /* VK_EXT_legacy_vertex_attributes' legacyVertexAttributes, with the vertex layout as dynamic state: an attribute is
        read at any byte, so a stream whose stride isn't a multiple of its components is bound as it is (render.c) */
     int has_legacy_vertex;
+    /* VK_EXT_dynamic_rendering_unused_attachments' dynamicRenderingUnusedAttachments: a pipeline's color format is
+       UNDEFINED at a target its draws write nothing to, whatever the pass has there (vk_pipe_unwritten_targets) */
+    int has_unused_attachments;
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;

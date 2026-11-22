@@ -613,7 +613,29 @@ static void check_conservative_dilation(void) {
     CHECK(vk_conservative_dilation(3, 0.0f, NULL, 0) == 0.0f, "with no room for a line");
 }
 
+/* the color targets a draw writes nothing to, left out of its pipeline (VK_EXT_dynamic_rendering_unused_attachments):
+   two draws into passes that differ only there have one key, and a written target, target 0 under alpha to coverage
+   and the target of coverage to color keep theirs */
+static void check_unwritten_targets(void) {
+    PipeKey a = {.ncolor = 3, .color = {37, 44, 97}}, b;
+    a.blend[0].mask = 15;
+    a.blend[1].en = 1;
+    a.blend[1].sc = 6;
+    a.blend[2].mask = 1;
+    b = a;
+    b.color[1] = 50; /* another format where the draw writes nothing */
+    vk_pipe_unwritten_targets(&a);
+    vk_pipe_unwritten_targets(&b);
+    CHECK(!memcmp(&a, &b, sizeof a), "two passes that differ at an unwritten target give one key");
+    CHECK(a.color[0] == 37 && a.color[1] == 0 && a.color[2] == 97 && !a.blend[1].en && !a.blend[1].sc,
+          "the unwritten target UNDEFINED with no blend, the written ones as they were");
+    PipeKey c = {.ncolor = 2, .color = {37, 37}, .alpha_to_coverage = 1, .coverage_to_color = 2};
+    vk_pipe_unwritten_targets(&c);
+    CHECK(c.color[0] == 37 && c.color[1] == 37, "alpha to coverage's target 0 and coverage to color's target stay");
+}
+
 int main(void) {
+    check_unwritten_targets();
     check_conservative_dilation();
     check_off();
     check_dynamic();
