@@ -37,11 +37,14 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
-/* a word the emitters can't make (bits.h's sg_fail) refuses the block, which LLVM makes; why, for the caller */
-static _Thread_local jmp_buf* g_fail;
-static _Thread_local const char* t_why;
-#define SG_FAIL_JUMP             g_fail
-#define SG_FAIL_NOTE(what, a, b) (t_why = (what), (void)(a), (void)(b))
+/* the thread's: where a word the emitters can't make (bits.h's sg_fail) refuses the block, which LLVM makes, and why,
+   for the caller */
+static _Thread_local struct {
+    jmp_buf* fail;
+    const char* why;
+} t_x64_arm;
+#define SG_FAIL_JUMP             t_x64_arm.fail
+#define SG_FAIL_NOTE(what, a, b) (t_x64_arm.why = (what), (void)(a), (void)(b))
 
 #include "a32_x64.inc"
 
@@ -84,9 +87,8 @@ struct SnxX64Arm {
 int snx_x64_arm_available(void) { return snx_x64_available(); }
 
 SnxX64Arm* snx_x64_arm_new(void) {
-    SnxX64Arm* c;
     if (!snx_x64_available()) return NULL;
-    c = (SnxX64Arm*)calloc(1, sizeof *c);
+    SnxX64Arm* c = (SnxX64Arm*)calloc(1, sizeof *c);
     if (!c) return NULL;
     c->b.cap = 1u << 16;
     c->b.p = (unsigned char*)malloc(c->b.cap);
@@ -138,10 +140,9 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 /* the region so far assembled (what its fields wrote stored first), and what the block knows forgotten */
 static void flush(SnxX64Arm* c) {
     SgCtx* g = &c->g;
-    int k;
     sg_flags_flush(g);
     if (g->x.n) sgx_assemble_region(&c->a, &g->x);
-    for (k = 0; k < 15; ++k) g->gpr[k] = 0;
+    for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
     g->cpsr = 0;
     g->limit = g->mem = 0;
     g->origin = -1;
@@ -181,14 +182,11 @@ static void condition(SgCtx* g) {
 /* LDR, STR, LDRB, STRB and their T forms, LDRH, STRH, LDRSB, LDRSH, LDRD, STRD (llvm.c's memory) */
 static int memory(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
-    unsigned n = (w >> 16) & 15, d = (w >> 12) & 15, op = (w >> 5) & 3;
+    unsigned n = (w >> 16) & 15, d = (w >> 12) & 15, op = (w >> 5) & 3, bytes = 4;
     int pre = !!(w & (1u << 24)), up = !!(w & (1u << 23));
-    int wb = !pre || !!(w & (1u << 21)), load = !!(w & (1u << 20));
-    unsigned bytes = 4, alignment;
-    int sign = 0, pair = 0;
-    SgD base, offset, adjusted, addr, value, second;
+    int wb = !pre || !!(w & (1u << 21)), load = !!(w & (1u << 20)), sign = 0, pair = 0;
     condition(g);
-    base = reg(g, n);
+    SgD base = reg(g, n), offset;
     if (kind == SNX_A32_SINGLE) {
         bytes = w & (1u << 22) ? 1 : 4;
         offset = w & (1u << 25) ? shift_imm(g, reg(g, w & 15), (w >> 5) & 3, (w >> 7) & 31) : sgx_const(32, w & 4095);
@@ -202,28 +200,24 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
             sign = op >= 2;
         }
     }
-    adjusted = up ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
-    addr = pre ? adjusted : base;
+    SgD adjusted = up ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset), addr = pre ? adjusted : base;
     /* LDRD and STRD, and a load of the PC, word aligned (llvm.c's: unaligned support on, as ARMv6's SCTLR.U) */
-    alignment = pair || (load && d == 15) ? 4 : 1;
-    sgx_a32_bounds(g, addr, pair ? 8 : bytes, alignment);
+    sgx_a32_bounds(g, addr, pair ? 8 : bytes, pair || (load && d == 15) ? 4 : 1);
     if (load) {
-        value = sgx_a32_load(g, addr, (int)bytes, 0);
+        SgD value = sgx_a32_load(g, addr, (int)bytes, 0);
         if (sign)
             value = sg_d_sext(g, value, 32);
         else if (bytes < 4)
             value = sg_d_zext(g, value, 32);
-        if (pair) second = sgx_a32_load(g, addr, 4, 4); /* the range checked holds both: no wrap at 4 */
         if (d == 15)
             write_pc(g, value);
         else
             sg_GPR_write(g, d, value);
-        if (pair) sg_GPR_write(g, d + 1, second);
+        if (pair) sg_GPR_write(g, d + 1, sgx_a32_load(g, addr, 4, 4)); /* the range checked holds both: no wrap */
     } else {
-        value = reg(g, d); /* the Cortex-A57's PCStoreValue: the address plus 8 */
-        if (pair) second = reg(g, d + 1);
+        SgD value = reg(g, d); /* the Cortex-A57's PCStoreValue: the address plus 8 */
         sgx_a32_store(g, addr, (int)bytes, 0, bytes < 4 ? sg_d_slice(g, value, 8 * bytes - 1, 0) : value);
-        if (pair) sgx_a32_store(g, addr, 4, 4, second);
+        if (pair) sgx_a32_store(g, addr, 4, 4, reg(g, d + 1));
         /* one check of the monitor for the bytes stored: their range overlaps the reservation exactly where one of
            its words does (llvm.c checks each store) */
         sgx_a32_monitor(g, addr, pair ? 8 : bytes);
@@ -235,25 +229,25 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
 /* LDM, STM and their stack forms (llvm.c's multiple, on the Cortex-A57) */
 static int multiple(SgCtx* g) {
     SnxU32 w = g->word, list = w & 0xFFFF;
-    unsigned n = (w >> 16) & 15, count = 0, index = 0, i;
+    unsigned n = (w >> 16) & 15, count = 0, index = 0;
     int pre = !!(w & (1u << 24)), up = !!(w & (1u << 23)), load = !!(w & (1u << 20));
-    SgD base, adjusted, start, values[16];
+    SgD values[16];
     condition(g);
-    for (i = 0; i < 16; ++i) count += (list >> i) & 1;
-    base = reg(g, n);
-    adjusted = up ? sg_d_add(g, base, sgx_const(32, count * 4)) : sg_d_sub(g, base, sgx_const(32, count * 4));
-    start = up ? sg_d_add(g, base, sgx_const(32, pre ? 4 : 0)) : sg_d_add(g, adjusted, sgx_const(32, pre ? 0 : 4));
+    for (unsigned i = 0; i < 16; ++i) count += (list >> i) & 1;
+    SgD base = reg(g, n);
+    SgD adjusted = up ? sg_d_add(g, base, sgx_const(32, count * 4)) : sg_d_sub(g, base, sgx_const(32, count * 4));
+    SgD start = up ? sg_d_add(g, base, sgx_const(32, pre ? 4 : 0)) : sg_d_add(g, adjusted, sgx_const(32, pre ? 0 : 4));
     sgx_reg(sgx(g), &start);
     sgx_a32_bounds(g, start, count * 4, 4);
     /* every source read before any update, the base and the PC among them */
-    for (i = 0; i < 16; ++i)
+    for (unsigned i = 0; i < 16; ++i)
         if (list >> i & 1) {
             values[i] = load ? sgx_a32_load(g, start, 4, (int)(index * 4)) : reg(g, i);
             ++index;
         }
     if (load && (list >> 15 & 1)) write_pc(g, values[15]);
     index = 0;
-    for (i = 0; i < 16; ++i)
+    for (unsigned i = 0; i < 16; ++i)
         if (list >> i & 1) {
             if (load) {
                 if (i != 15) sg_GPR_write(g, i, values[i]);
@@ -278,14 +272,13 @@ static void multiply(SgCtx* g, SnxA32Kind kind) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
     unsigned n = (w >> 16) & 15, d = (w >> 12) & 15;
-    SgD a, b, r;
     condition(g);
-    a = reg(g, w & 15), b = reg(g, (w >> 8) & 15);
+    SgD a = reg(g, w & 15), b = reg(g, (w >> 8) & 15);
     if (kind == SNX_A32_MULL) {
         int umaal = (w & 0x00e00000) == 0x00400000, sign = !umaal && (w & (1u << 22));
         a = sign ? sg_d_sext(g, a, 64) : sg_d_zext(g, a, 64);
         b = sign ? sg_d_sext(g, b, 64) : sg_d_zext(g, b, 64);
-        r = SGX_OP(x, mul, 64, a, b);
+        SgD r = SGX_OP(x, mul, 64, a, b);
         if (umaal) /* Rn * Rm + RdHi + RdLo, unsigned: never past 64 bits */
             r = sg_d_add(g, r, sg_d_add(g, sg_d_zext(g, reg(g, d), 64), sg_d_zext(g, reg(g, n), 64)));
         else if (w & (1u << 21))
@@ -295,7 +288,7 @@ static void multiply(SgCtx* g, SnxA32Kind kind) {
         if (!umaal && (w & (1u << 20))) nz(g, r, 64);
         return;
     }
-    r = SGX_OP(x, mul, 32, a, b);
+    SgD r = SGX_OP(x, mul, 32, a, b);
     if (kind == SNX_A32_MLS)
         r = sg_d_sub(g, reg(g, d), r);
     else if (w & (1u << 21))
@@ -309,16 +302,13 @@ static void divide(SgCtx* g) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
     int u = !!(w & (1u << 21));
-    SgD n, m, q;
-    SgB zero;
     condition(g);
-    n = reg(g, w & 15), m = reg(g, (w >> 8) & 15);
     /* 64 bits: the most negative over -1 needs no care there, and its quotient's low word is the Arm ARM's */
-    n = u ? sg_d_zext(g, n, 64) : sg_d_sext(g, n, 64);
-    m = u ? sg_d_zext(g, m, 64) : sg_d_sext(g, m, 64);
-    zero = sg_d_is_zero(g, m);
+    SgD n = u ? sg_d_zext(g, reg(g, w & 15), 64) : sg_d_sext(g, reg(g, w & 15), 64);
+    SgD m = u ? sg_d_zext(g, reg(g, (w >> 8) & 15), 64) : sg_d_sext(g, reg(g, (w >> 8) & 15), 64);
+    SgB zero = sg_d_is_zero(g, m);
     m = sg_d_select(g, zero, sgx_const(64, 1), m);
-    q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, sg_d_asr(g, n, 63), m);
+    SgD q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, sg_d_asr(g, n, 63), m);
     sg_GPR_write(g, (w >> 16) & 15, sg_d_select(g, zero, sgx_const(32, 0), sg_d_slice(g, q, 31, 0)));
 }
 
@@ -327,9 +317,8 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
     unsigned d = (w >> 12) & 15, n = (w >> 16) & 15;
-    SgD v, r;
     condition(g);
-    v = reg(g, w & 15);
+    SgD v = reg(g, w & 15), r;
     switch (kind) {
         case SNX_A32_CLZ: r = sg_i_slice(g, sg_i_clz(g, v), 31, 0); break;
         case SNX_A32_REV:
@@ -364,16 +353,13 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
             break;
         }
         case SNX_A32_BITFIELD: {
-            unsigned lsb = (w >> 7) & 31, width;
-            SnxU32 mask;
+            unsigned lsb = (w >> 7) & 31;
             if ((w & 0x0fe00070) == 0x07c00010) { /* BFI, BFC */
-                width = ((w >> 16) & 31) - lsb + 1;
-                mask = UINT32_MAX >> (32 - width);
+                SnxU32 mask = UINT32_MAX >> (32 - (((w >> 16) & 31) - lsb + 1));
                 r = (w & 15) == 15 ? sgx_const(32, 0) : sg_d_lsl(g, sg_d_and(g, v, sgx_const(32, mask)), lsb);
                 r = sg_d_or(g, sg_d_and(g, reg(g, d), sgx_const(32, ~(mask << lsb))), r);
             } else { /* SBFX, UBFX */
-                width = ((w >> 16) & 31) + 1;
-                r = sg_d_slice(g, v, lsb + width - 1, lsb);
+                r = sg_d_slice(g, v, lsb + ((w >> 16) & 31), lsb);
                 r = w & (1u << 22) ? sg_d_zext(g, r, 32) : sg_d_sext(g, r, 32);
             }
             break;
@@ -384,8 +370,6 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
             break;
         case SNX_A32_MSR: {
             SnxU32 mask = (n & 8 ? 0xf8000000u : 0) | (n & 4 ? 0x000f0000u : 0) | (n & 2 ? SNX_ARM_E : 0);
-            SgD c;
-            int k;
             if (w & (1u << 25)) {
                 unsigned rot = ((w >> 8) & 15) * 2;
                 SnxU32 imm = w & 255;
@@ -393,15 +377,8 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
                 v = sgx_const(32, imm);
             }
             sg_flags_flush(g);
-            c = sg_d_or(g, sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask)), sg_d_and(g, v, sgx_const(32, mask)));
-            k = sgx_reg(x, &c);
-            {
-                SgXIns* st = sgx_append(x, SGX_K_STORE);
-                st->w = 32;
-                st->in[0] = k;
-                st->disp = (int)offsetof(SnxArmCPU, cpsr);
-            }
-            g->cpsr = k;
+            SgD c = sg_d_or(g, sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask)), sg_d_and(g, v, sgx_const(32, mask)));
+            g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
             g->origin = -1;
             /* a block reads E only on entry: one that may have changed it ends here */
             return (w & (1u << 17)) ? 1 : 0;
@@ -420,46 +397,30 @@ static void exclusive(SgCtx* g) {
     unsigned op = (w >> 20) & 7, n = (w >> 16) & 15, d = (w >> 12) & 15, t = w & 15;
     static const unsigned widths[] = {4, 8, 1, 2};
     unsigned bytes = widths[op >> 1];
-    SgD addr, value;
     condition(g);
-    addr = reg(g, n);
+    SgD addr = reg(g, n);
     sgx_reg(x, &addr);
     sgx_a32_bounds(g, addr, bytes, bytes);
     if (op & 1) {
-        SgXIns* i;
-        int k;
-        value = sgx_a32_load(g, addr, (int)bytes, 0);
-        value = sg_d_zext(g, value, 64);
-        k = sgx_reg(x, &value);
-        i = sgx_append(x, SGX_K_STORE);
-        i->w = 64, i->in[0] = k, i->disp = (int)offsetof(SnxArmCPU, exclusive_value);
-        k = sgx_reg(x, &addr);
-        i = sgx_append(x, SGX_K_STORE);
-        i->w = 32, i->in[0] = k, i->disp = (int)offsetof(SnxArmCPU, exclusive_address);
-        {
-            SgD size = sgx_const(32, bytes), one = sgx_const(32, 1);
-            k = sgx_reg(x, &size);
-            i = sgx_append(x, SGX_K_STORE);
-            i->w = 32, i->in[0] = k, i->disp = (int)offsetof(SnxArmCPU, exclusive_size);
-            k = sgx_reg(x, &one);
-            i = sgx_append(x, SGX_K_STORE);
-            i->w = 32, i->in[0] = k, i->disp = (int)offsetof(SnxArmCPU, exclusive_valid);
-        }
+        SgD value = sg_d_zext(g, sgx_a32_load(g, addr, (int)bytes, 0), 64);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_value), 64, value);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_address), 32, addr);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_size), 32, sgx_const(32, bytes));
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_valid), 32, sgx_const(32, 1));
         sg_GPR_write(g, d, sg_d_slice(g, value, 31, 0));
         if (bytes == 8) sg_GPR_write(g, d + 1, sg_d_slice(g, value, 63, 32));
     } else {
-        SgD in[3];
-        SgXIns* i;
         static const signed char fix[3] = {6, 2, 10}; /* RSI, RDX, R10 */
-        int k, regs[3];
-        value = reg(g, t);
+        SgD value = reg(g, t);
         if (bytes == 8) value = sg_d_concat(g, reg(g, t + 1), value);
+        SgD in[3];
+        int regs[3];
         in[0] = sgx_zext(x, addr, 64);
         in[1] = value;
         in[2] = sgx_val(64, sgx_a32_mem(g));
-        for (k = 0; k < 3; ++k) regs[k] = sgx_reg(x, &in[k]);
-        i = sgx_a32_machine(g, SGX_A32_STREX, 1);
-        for (k = 0; k < 3; ++k) i->in[k] = regs[k], i->fixed[k] = fix[k];
+        for (int k = 0; k < 3; ++k) regs[k] = sgx_reg(x, &in[k]);
+        SgXIns* i = sgx_a32_machine(g, SGX_A32_STREX, 1);
+        for (int k = 0; k < 3; ++k) i->in[k] = regs[k], i->fixed[k] = fix[k];
         i->imm = bytes;
         i->mclobber = 1u << 1; /* RCX */
         i->side = 1;
@@ -474,9 +435,8 @@ static void acquire_release(SgCtx* g) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
     unsigned op = (w >> 20) & 7, bytes = op >= 6 ? 2 : op >= 4 ? 1 : 4;
-    SgD addr;
     condition(g);
-    addr = reg(g, (w >> 16) & 15);
+    SgD addr = reg(g, (w >> 16) & 15);
     sgx_reg(x, &addr);
     sgx_a32_bounds(g, addr, bytes, bytes);
     if (op & 1) {
@@ -488,17 +448,6 @@ static void acquire_release(SgCtx* g) {
         sgx_a32_machine(g, SGX_A32_FENCE, 0);
         sgx_a32_monitor(g, addr, bytes);
     }
-}
-
-/* a state field of 32 bits = the constant v */
-static void state_set(SgCtx* g, size_t field, SnxU32 v) {
-    SgX* x = sgx(g);
-    SgD k = sgx_const(32, v);
-    int r = sgx_reg(x, &k);
-    SgXIns* i = sgx_append(x, SGX_K_STORE);
-    i->w = 32;
-    i->in[0] = r;
-    i->disp = (int)field;
 }
 
 /* ---- VFP: llvm_vector.inc's scalar part (vector_memory, vector_transfer, vector_fp), its hot paths fp_call's ---- */
@@ -601,30 +550,24 @@ static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, Sg
     int compare = op == AV_FCMP || op == AV_FCMPE;
     int arithmetic = op == AV_FADD || op == AV_FSUB || op == AV_FMUL || op == AV_FDIV || op == AV_FMLA ||
                      op == AV_FMLS || op == AV_FNMLA || op == AV_FNMLS || op == AV_FNMUL;
-    SgD xb, yb, zb, r, args[3];
-    SgB ok;
     if ((width != 32 && width != 64) || (!compare && !arithmetic)) return fp_helper(g, op, width, param, xv, yv, zv);
-    xb = xv, yb = yv, zb = zv;
+    SgD xb = xv, yb = yv, zb = zv, r, args[3];
     sgx_flat(x, &xb);
     sgx_flat(x, &yb);
     sgx_flat(x, &zb);
-    ok = sg_b_and(g, fp_state(g, !compare), sg_b_and(g, fp_plain(g, xb, width, 0), fp_plain(g, yb, width, 0)));
+    SgB ok = sg_b_and(g, fp_state(g, !compare), sg_b_and(g, fp_plain(g, xb, width, 0), fp_plain(g, yb, width, 0)));
     if (compare) {
         /* NZCV: less 8, equal 6, greater 2: UCOMISS's below, equal and not below (no NaN reaches it) */
-        int in[4] = {sgx_xreg(x, &xv), sgx_xreg(x, &yv), 0, 0}, ins;
-        SgB n, z, c;
-        SgD nib;
+        int in[4] = {0, 0, 0, 0};
+        in[0] = sgx_xreg(x, &xv);
+        in[1] = sgx_xreg(x, &yv);
         sgx_vins(x, width == 64 ? &sgx_v_ucomisd : &sgx_v_ucomiss, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-        ins = x->flags_ins;
-        n = sgx_bool(x, SGX_B_CC, ins, 2);
-        z = sgx_bool(x, SGX_B_CC, ins, 4);
-        c = sgx_bool(x, SGX_B_CC, ins, 3);
-        nib = sg_d_concat(g, sg_d_concat(g, sgx_bool_bits(x, n), sgx_bool_bits(x, z)),
-                          sg_d_concat(g, sgx_bool_bits(x, c), sgx_const(1, 0)));
-        r = sg_d_zext(g, nib, 64);
+        int ins = x->flags_ins;
+        SgD n = sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, ins, 2)), z = sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, ins, 4));
+        SgD c = sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, ins, 3));
+        r = sg_d_zext(g, sg_d_concat(g, sg_d_concat(g, n, z), sg_d_concat(g, c, sgx_const(1, 0))), 64);
     } else {
-        SgB xz = fp_zero(g, xb), yz = fp_zero(g, yb), zero_ok;
-        SgD rb;
+        SgB xz = fp_zero(g, xb), yz = fp_zero(g, yb);
         switch (op) {
             case AV_FADD: r = fp_op(g, &sgx_v_addss, &sgx_v_addsd, xv, yv, width); break;
             case AV_FSUB: r = fp_op(g, &sgx_v_subss, &sgx_v_subsd, xv, yv, width); break;
@@ -634,19 +577,19 @@ static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, Sg
                 break;
             default: r = fp_op(g, &sgx_v_mulss, &sgx_v_mulsd, xv, yv, width); break;
         }
-        rb = r;
+        SgD rb = r;
         sgx_flat(x, &rb);
-        zero_ok = op == AV_FADD || op == AV_FSUB ? 0 : op == AV_FDIV ? xz : sg_b_or(g, xz, yz);
+        SgB zero_ok = op == AV_FADD || op == AV_FSUB ? 0 : op == AV_FDIV ? xz : sg_b_or(g, xz, yz);
         ok = sg_b_and(g, ok, fp_plain(g, rb, width, zero_ok));
         if (op != AV_FADD && op != AV_FSUB && op != AV_FMUL && op != AV_FDIV) {
             /* the multiply-accumulates: the product, negated for FMLS, FNMLA and FNMUL, then added (two roundings) */
             if (op == AV_FMLS || op == AV_FNMLA || op == AV_FNMUL) r = fp_neg(g, r, width);
             if (op != AV_FNMUL) {
-                SgD addend = zv, sb;
+                SgD addend = zv;
                 ok = sg_b_and(g, ok, fp_plain(g, zb, width, 0));
                 if (op == AV_FNMLA || op == AV_FNMLS) addend = fp_neg(g, addend, width);
                 r = fp_op(g, &sgx_v_addss, &sgx_v_addsd, addend, r, width);
-                sb = r;
+                SgD sb = r;
                 sgx_flat(x, &sb);
                 ok = sg_b_and(g, ok, fp_plain(g, sb, width, 0));
             }
@@ -662,14 +605,13 @@ static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, Sg
 /* VLDR, VSTR, VLDM, VSTM, VPUSH, VPOP (vector_memory): word aligned, the words in their order (a doubleword's two at
    once) */
 static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
-    SgD base = reg(g, v->n), end, addr, offset = sgx_const(32, (SnxU32)v->imm);
+    SgD base = reg(g, v->n), offset = sgx_const(32, (SnxU32)v->imm);
     int single = (v->flags & AV_PRE) && !(v->flags & AV_WB);
-    unsigned i, step;
-    end = v->flags & AV_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
-    addr = single || (v->flags & AV_PRE) ? end : base;
+    SgD end = v->flags & AV_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
+    SgD addr = single || (v->flags & AV_PRE) ? end : base;
     sgx_reg(sgx(g), &addr);
     sgx_a32_bounds(g, addr, v->bytes, 4);
-    for (i = 0; i < v->bytes; i += step) {
+    for (unsigned i = 0, step; i < v->bytes; i += step) {
         step = !((v->d + i) & 7) && i + 8 <= v->bytes ? 8 : 4;
         if (v->flags & AV_LOAD)
             vset(g, v->d + i, step * 8, sgx_a32_load(g, addr, (int)step, (int)i));
@@ -685,8 +627,7 @@ static void vfp_transfer(SgCtx* g, const SnxArmVector* v) {
         if (v->flags & AV_LOAD) {
             SgD f = vbits(g, FPSCR_OFF, 32);
             if (v->n == 15) { /* VMRS APSR_nzcv: CPSR's flags from FPSCR's */
-                int k;
-                for (k = 0; k < 4; ++k) sg_PSTATE_write(g, SG_PSTATE_N + k, 1, sg_d_slice(g, f, 31 - k, 31 - k));
+                for (int k = 0; k < 4; ++k) sg_PSTATE_write(g, SG_PSTATE_N + k, 1, sg_d_slice(g, f, 31 - k, 31 - k));
             } else
                 sg_GPR_write(g, v->n, f);
         } else {
@@ -716,7 +657,7 @@ static void vfp_transfer(SgCtx* g, const SnxArmVector* v) {
 }
 /* the scalar data processing (vector_fp's, one lane) */
 static void vfp_data(SgCtx* g, const SnxArmVector* v) {
-    unsigned width = v->width, outwidth = width, inwidth, xo;
+    unsigned width = v->width, outwidth = width;
     SnxU32 param = 0;
     int unary = v->op == AV_MOV || (v->op >= AV_FABS && v->op <= AV_FSQRT) || v->op == AV_FCVT || v->op == AV_FTOI ||
                 v->op == AV_ITOF || v->op == AV_FROUND || v->op == AV_FRECPE || v->op == AV_FRSQRTE ||
@@ -725,7 +666,6 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
     int hot = v->op == AV_FADD || v->op == AV_FSUB || v->op == AV_FMUL || v->op == AV_FDIV || v->op == AV_FMLA ||
               v->op == AV_FMLS || v->op == AV_FNMLA || v->op == AV_FNMLS || v->op == AV_FNMUL || v->op == AV_FCMP ||
               v->op == AV_FCMPE;
-    SgD xv, yv, zv, r;
     if (v->op == AV_FCVT)
         outwidth = v->aux;
     else if (v->op == AV_FTOI)
@@ -736,21 +676,19 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
     if (v->op == AV_FTOI || v->op == AV_ITOF)
         param |= v->aux << 8 | (((SnxU32)v->imm >> 8) & 255) << 16 | ((SnxU32)v->imm & 15) << 24;
     if (v->op == AV_FROUND) param |= (SnxU32)v->imm << 24 | v->aux;
-    inwidth = v->op == AV_ITOF ? v->aux : width;
-    xo = unary ? v->m : v->n;
-    if (inwidth == 16)
-        xv = sg_d_slice(g, vbits(g, xo, 32), 15, 0);
-    else
-        xv = hot ? vxmm(g, xo, inwidth) : vbits(g, xo, inwidth);
-    if ((v->op == AV_FCMP || v->op == AV_FCMPE) && v->aux)
-        yv = sgx_const(width, 0);
-    else
-        yv = hot ? vxmm(g, v->m, width) : vbits(g, v->m, width);
+    unsigned inwidth = v->op == AV_ITOF ? v->aux : width, xo = unary ? v->m : v->n;
+    SgD xv = inwidth == 16 ? sg_d_slice(g, vbits(g, xo, 32), 15, 0)
+             : hot         ? vxmm(g, xo, inwidth)
+                           : vbits(g, xo, inwidth);
+    SgD yv = (v->op == AV_FCMP || v->op == AV_FCMPE) && v->aux ? sgx_const(width, 0)
+             : hot                                             ? vxmm(g, v->m, width)
+                                                               : vbits(g, v->m, width);
     /* the destination, which the multiply-accumulates add to, and which fp_call hands the helper for every operation
        (the fused ones read it there) */
-    zv = v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
-         : hot                                 ? sgx_const(outwidth, 0)
-                                               : vbits(g, v->d, outwidth);
+    SgD zv = v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
+             : hot                                 ? sgx_const(outwidth, 0)
+                                                   : vbits(g, v->d, outwidth);
+    SgD r;
     switch (v->op) {
         case AV_MOV: r = xv; break;
         case AV_FABS: r = sg_d_and(g, xv, sgx_const(width, sg_ones(width - 1))); break;
@@ -777,7 +715,7 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
 }
 /* a VFP word (llvm_vector.inc's vector_instruction on the Cortex-A57): the scalar ones; Advanced SIMD is LLVM's */
 static void vfp(SgCtx* g) {
-    SnxArmVector v;
+    SnxArmVector v = {0};
     condition(g);
     if (!snx_arm_vector_decode(g->word, &v)) {
         sg_undefined(g);
@@ -819,7 +757,7 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
         case SNX_A32_ACQUIRE_RELEASE: acquire_release(g); return 0;
         case SNX_A32_CLREX:
             condition(g);
-            state_set(g, offsetof(SnxArmCPU, exclusive_valid), 0);
+            sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_valid), 32, sgx_const(32, 0));
             return 0;
         case SNX_A32_BARRIER: /* stronger than each valid DMB and DSB scope, never just a compiler barrier */
             condition(g);
@@ -829,7 +767,6 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
         case SNX_A32_VECTOR: vfp(g); return 0;
         case SNX_A32_COPROC: { /* the backend's (SnxArmRt.coproc): it reads or writes the registers, or stops here */
             SgD word = sgx_const(32, w);
-            SgXIns* i;
             condition(g);
             sgx_a32_pc(g, sgx_const(32, (SnxU32)g->pc));
             sgx_a32_call(g, "snx_arm_coproc", &word, 1, 0);
@@ -853,7 +790,7 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
 /* ---- the block ---- */
 
 static void name_of(char* out, size_t size, SnxU32 key) {
-    snprintf(out, size, "%c_%08lx", key & 1 ? 'T' : 'A', (unsigned long)(key & ~1u));
+    snprintf(out, size, "%c_%08x", key & 1 ? 'T' : 'A', (unsigned)(key & ~1u));
 }
 
 /* the frame's room, patched once the block is done (sgx_patch_frame's sizes): SUB or ADD RSP of an 8-bit immediate,
@@ -924,9 +861,8 @@ static void epilogue(SnxX64Arm* c) {
 static void go_on(SnxX64Arm* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext, int public) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
-    size_t k;
-    char sym[24];
-    for (k = 0; k < nnext && next[k] != key; ++k) {}
+    size_t k = 0;
+    while (k < nnext && next[k] != key) ++k;
     if (k == nnext || public) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, key & ~1u);
     if (k == nnext) {
         sgx_a32_jmp(g, b, g->ret);
@@ -948,6 +884,7 @@ static void go_on(SnxX64Arm* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
     }
     sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
     epilogue(c);
+    char sym[24];
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
     if (!public) sym[0] = 'X';
     sgx_byte(b, 0xE9);
@@ -961,23 +898,20 @@ static SnxU32 word_at(const unsigned char* code, size_t i) {
     return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
 }
 
-/* one block into c->b: its size, 0 where refused (t_why says why) */
+/* one block into c->b: its size, 0 where refused (t_x64_arm.why says why) */
 static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU32 pc, size_t* consumed,
                     SnxX64ArmNext succ, void* user) {
     SgCtx* g = &c->g;
     SgX* x = &g->x;
     SgXBuf* b = &c->b;
     jmp_buf jb;
-    jmp_buf* saved = g_fail;
+    jmp_buf* saved = t_x64_arm.fail;
     volatile size_t i = 0;
-    size_t size = 0;
-    int bad, last_stop = 0;
-    SnxU32 nexts[2];
-    size_t nnext = 0;
-    t_why = NULL;
-    g_fail = &jb;
+    int bad = 0;
+    t_x64_arm.why = NULL;
+    t_x64_arm.fail = &jb;
     if (setjmp(jb)) {
-        g_fail = saved;
+        t_x64_arm.fail = saved;
         return 0;
     }
     b->n = 0;
@@ -1013,7 +947,6 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
     prologue(c, pc, &bad);
     for (i = 0; i < count; ++i) {
         SnxU32 w = word_at(code, i);
-        int stop;
         if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
             flush(c);
         g->word = w;
@@ -1024,13 +957,10 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
-        if (sg_decode_a32(g)) /* the Sail's: its condition and its end its own */
-            stop = g->branched || (g->undefined && g->skip < 0);
-        else
-            stop = instruction(g, snx_a32_decode(w));
+        /* the Sail's clauses' (their condition and their end their own), else the emitters here */
+        int stop = sg_decode_a32(g) ? g->branched || (g->undefined && g->skip < 0) : instruction(g, snx_a32_decode(w));
         if (x->unmade) sg_fail("a primitive this host has no form of", 0, 0);
         sgx_a32_finish(g);
-        last_stop = stop;
         if (stop || i + 1 == count) break;
         if (g->skip >= 0) {
             flush(c);
@@ -1038,7 +968,8 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
         }
     }
     *consumed = i + 1;
-    if (succ) nnext = succ(user, (SnxU32)g->pc, g->word, nexts);
+    SnxU32 nexts[2];
+    size_t nnext = succ ? succ(user, (SnxU32)g->pc, g->word, nexts) : 0;
     /* the end: the last instruction's way (a branch's target, the backend's exit, or on), then, past its condition's
        skip, the next instruction's */
     if (g->branched) {
@@ -1068,7 +999,6 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
         sgx_a32_bind(g, b, g->skip);
         go_on(c, g->next, pc, nexts, nnext, 0);
     }
-    (void)last_stop;
     sgx_a32_stubs(g, b);
     entry_exit(c, pc, word_at(code, 0), bad);
     sgx_a32_bind(g, b, g->ret);
@@ -1077,32 +1007,30 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
     sgx_cold_emit(&c->a);
     sgx_pool_emit(&c->a);
     if (patch_frame(c)) {
-        g_fail = saved;
+        t_x64_arm.fail = saved;
         c->big = 1; /* made again with 32-bit frame sizes */
         return (size_t)-1;
     }
     if (sgx_a32_patch(g, b)) sg_fail("a jump to a label never bound", 0, 0);
-    size = b->n;
-    g_fail = saved;
-    return size;
+    t_x64_arm.fail = saved;
+    return b->n;
 }
 
 /* a block's code (size bytes), relocations and record kept for the object: 1, or 0 out of memory */
 static int keep(SnxX64Arm* c, const unsigned char* code, size_t size, const Rel* rel, size_t nrel, SnxU32 pc,
                 const char* name, size_t own) {
-    Made* m;
     if (c->ntext + size > c->cap_text) {
         size_t cap = c->cap_text ? c->cap_text * 2 : (size_t)1 << 20;
-        unsigned char* p;
         while (cap < c->ntext + size) cap *= 2;
-        if (!(p = (unsigned char*)realloc(c->text, cap))) return 0;
+        unsigned char* p = (unsigned char*)realloc(c->text, cap);
+        if (!p) return 0;
         c->text = p, c->cap_text = cap;
     }
     if (c->nrels + nrel > c->cap_rels) {
         size_t cap = c->cap_rels ? c->cap_rels * 2 : 4096;
-        Rel* p;
         while (cap < c->nrels + nrel) cap *= 2;
-        if (!(p = (Rel*)realloc(c->rels, cap * sizeof *p))) return 0;
+        Rel* p = (Rel*)realloc(c->rels, cap * sizeof *p);
+        if (!p) return 0;
         c->rels = p, c->cap_rels = cap;
     }
     if (c->nmade == c->cap_made) {
@@ -1111,7 +1039,7 @@ static int keep(SnxX64Arm* c, const unsigned char* code, size_t size, const Rel*
         if (!p) return 0;
         c->made = p, c->cap_made = cap;
     }
-    m = &c->made[c->nmade++];
+    Made* m = &c->made[c->nmade++];
     m->pc = pc;
     snprintf(m->name, sizeof m->name, "%s", name);
     m->at = c->ntext;
@@ -1128,9 +1056,6 @@ static int keep(SnxX64Arm* c, const unsigned char* code, size_t size, const Rel*
 
 int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, SnxU32 pc,
                       size_t* consumed, SnxX64ArmNext next, void* user) {
-    size_t size, at = 0;
-    int k;
-    char own[24];
     *consumed = 0;
     c->why = NULL;
     if (!count || count > 65536 || (pc & 3)) {
@@ -1138,11 +1063,12 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
         return 0;
     }
     c->big = 0;
+    size_t size;
     for (;;) {
         size = block(c, code, count, pc, consumed, next, user);
         if (size == (size_t)-1) continue; /* its frame passes an 8-bit immediate: made again with 32-bit ones */
         if (!size) {
-            c->why = t_why ? t_why : "unknown";
+            c->why = t_x64_arm.why ? t_x64_arm.why : "unknown";
             *consumed = 0;
             return 0;
         }
@@ -1156,6 +1082,7 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
             return 0;
         }
     }
+    char own[24];
     if (!name) name_of(own, sizeof own, pc), name = own;
     if (strlen(name) >= sizeof c->made[0].name) {
         c->why = "a block's name too long";
@@ -1166,62 +1093,31 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
         c->why = "out of memory";
         return 0;
     }
-    (void)at, (void)k;
     return 1;
 }
 
 /* snx_x64_arm_entry_exit(state RDI, the block's address ESI, its first word EDX), each object's own, where a
    block's entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address;
    else CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
+static_assert(offsetof(SnxArmCPU, r) + 60 == 0x3C && offsetof(SnxArmCPU, cpsr) == 0x40 &&
+                  offsetof(SnxArmCPU, exit) == 0x44 && offsetof(SnxArmCPU, syndrome) == 0x48,
+              "entry_exit_fn's bytes reach R15, CPSR, the exit and the syndrome at their offsets");
+static_assert(SNX_ARM_BAD_ENTRY == 8 && SNX_ARM_ENDIAN_UNSUPPORTED == 9 && SNX_ARM_T == 0x20,
+              "entry_exit_fn's bytes write these exits and test this bit");
 static void entry_exit_fn(SnxXElf* o) {
-    static const unsigned char code[] = {
-        0x39,
-        0x77,
-        (unsigned char)(offsetof(SnxArmCPU, r) + 60), /* cmp [rdi + r15], esi */
-        0x75,
-        0x1D, /* jne pc */
-        0xF7,
-        0x47,
-        (unsigned char)offsetof(SnxArmCPU, cpsr),
-        0x20,
-        0,
-        0,
-        0, /* test dword [rdi + cpsr], T */
-        0x75,
-        0x09, /* jnz thumb */
-        0xC7,
-        0x47,
-        (unsigned char)offsetof(SnxArmCPU, exit),
-        SNX_ARM_ENDIAN_UNSUPPORTED,
-        0,
-        0,
-        0,
-        0xEB,
-        0x07, /* jmp word */
-        0xC7,
-        0x47,
-        (unsigned char)offsetof(SnxArmCPU, exit),
-        SNX_ARM_BAD_ENTRY,
-        0,
-        0,
-        0, /* thumb: */
-        0x89,
-        0x57,
-        (unsigned char)offsetof(SnxArmCPU, syndrome), /* word: mov [rdi + syndrome], edx */
-        0xC3,
-        0xC7,
-        0x47,
-        (unsigned char)offsetof(SnxArmCPU, exit),
-        SNX_ARM_BAD_ENTRY,
-        0,
-        0,
-        0, /* pc: */
-        0x89,
-        0x77,
-        (unsigned char)offsetof(SnxArmCPU, syndrome), /* mov [rdi + syndrome], esi */
-        0xC3};
-    size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, sizeof code, 16);
-    snx_xelf_symbol(o, "snx_x64_arm_entry_exit", SNX_ELF_TEXT, at, sizeof code, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+    SgXBuf b = {0};
+    unsigned char code[64];
+    b.p = code;
+    b.cap = sizeof code;
+    sgx_bytes(&b, "39 77 3C 75 1D");             /* cmp [rdi + r15], esi; jne pc */
+    sgx_bytes(&b, "F7 47 40 20 00 00 00 75 09"); /* test dword [rdi + cpsr], T; jnz thumb */
+    sgx_bytes(&b, "C7 47 44 09 00 00 00 EB 07"); /* mov dword [rdi + exit], ENDIAN_UNSUPPORTED; jmp word */
+    sgx_bytes(&b, "C7 47 44 08 00 00 00");       /* thumb: mov dword [rdi + exit], BAD_ENTRY */
+    sgx_bytes(&b, "89 57 48 C3");                /* word: mov [rdi + syndrome], edx; ret */
+    sgx_bytes(&b, "C7 47 44 08 00 00 00");       /* pc: mov dword [rdi + exit], BAD_ENTRY */
+    sgx_bytes(&b, "89 77 48 C3");                /* mov [rdi + syndrome], esi; ret */
+    size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
+    snx_xelf_symbol(o, "snx_x64_arm_entry_exit", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
 }
 static int by_address(const void* a, const void* b) {
     const Made *x = (const Made*)a, *y = (const Made*)b;
@@ -1230,14 +1126,12 @@ static int by_address(const void* a, const void* b) {
 }
 int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_t* blocks) {
     SnxXElf* o = snx_xelf_new();
-    size_t i, k;
-    int rc;
     *object = NULL;
     *size = 0;
     if (!o) return -1;
     entry_exit_fn(o);
     qsort(c->made, c->nmade, sizeof *c->made, by_address);
-    for (i = 0; i < c->nmade; ++i) {
+    for (size_t i = 0; i < c->nmade; ++i) {
         const Made* m = &c->made[i];
         size_t at = snx_xelf_put(o, SNX_ELF_TEXT, c->text + m->at, m->size, 16);
         /* a block's name the descriptor and LLVM's blocks call (global); an entry the object's own (X_, local) */
@@ -1250,7 +1144,7 @@ int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_
             /* the object's own: only its blocks jump there */
             snx_xelf_symbol(o, own, SNX_ELF_TEXT, at + m->own, m->size - m->own, SNX_ELF_LOCAL | SNX_ELF_FUNC);
         }
-        for (k = m->rel0; k < m->rel0 + m->nrel; ++k)
+        for (size_t k = m->rel0; k < m->rel0 + m->nrel; ++k)
             snx_xelf_reloc(o, SNX_ELF_TEXT, at + c->rels[k].at, c->rels[k].sym, c->rels[k].type, c->rels[k].addend);
     }
     if (blocks) *blocks = c->nmade;
@@ -1258,26 +1152,22 @@ int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_
     free(c->text), free(c->rels), free(c->made);
     c->text = NULL, c->rels = NULL, c->made = NULL;
     c->ntext = c->cap_text = c->nrels = c->cap_rels = c->nmade = c->cap_made = 0;
-    rc = snx_xelf_write(o, object, size);
+    int rc = snx_xelf_write(o, object, size);
     snx_xelf_free(o);
     return rc ? -1 : 0;
 }
 int snx_x64_arm_entry(SnxX64Arm* c, uint32_t key) {
     unsigned char code[12] = {0xC7, 0x47, (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9, 0, 0, 0, 0};
     SnxU32 address = key & ~1u;
-    Rel rel;
-    char name[24];
     memcpy(code + 3, &address, 4); /* mov dword [rdi + r15], address; jmp the block */
-    rel.at = 8;
+    Rel rel = {.at = 8, .type = R_X86_64_PLT32, .addend = -4};
     name_of(rel.sym, sizeof rel.sym, key);
-    rel.type = R_X86_64_PLT32;
-    rel.addend = -4;
+    char name[24];
     snprintf(name, sizeof name, "X%s", rel.sym);
     return keep(c, code, sizeof code, &rel, 1, address, name, (size_t)-1) ? 0 : -1;
 }
 int snx_x64_arm_absorb(SnxX64Arm* c, SnxX64Arm* from) {
-    size_t i;
-    for (i = 0; i < from->nmade; ++i) {
+    for (size_t i = 0; i < from->nmade; ++i) {
         const Made* m = &from->made[i];
         if (!keep(c, from->text + m->at, m->size, from->rels + m->rel0, m->nrel, m->pc, m->name, m->own)) return -1;
     }

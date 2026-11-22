@@ -296,8 +296,7 @@ static void block_name(char* out, SnxU32 key) {
 /* the successors an x86-64 block jumps to directly: the keys a32_next queues after its last instruction, which are blocks
    the module has (discover queues each) */
 static size_t x64_next(void* user, uint32_t pc, uint32_t word, uint32_t keys[2]) {
-    Discovery s;
-    memset(&s, 0, sizeof s);
+    Discovery s = {0};
     s.program = (const SnxProgram*)user;
     s.collect = 1;
     s.work = keys;
@@ -337,13 +336,13 @@ typedef struct {
 /* the A32 block at address made by the x86-64 back end into f's blocks: 1 with *units the words it covers, 0 where it
    leaves it to LLVM (why counted). It reads the guest's code in place, as far as the block goes */
 static int x64_block(Finder* f, const SnxProgram* p, SnxU32 address, size_t* units) {
-    size_t bytes, count, consumed = 0, k;
+    size_t bytes = 0, consumed = 0;
     const unsigned char* code = code_at(p, address, &bytes);
-    count = bytes / 4;
-    if (count > BLOCK_LIMIT) count = BLOCK_LIMIT;
+    size_t count = bytes / 4 < BLOCK_LIMIT ? bytes / 4 : BLOCK_LIMIT;
     if (!snx_x64_arm_block(f->x64, NULL, code, count, address, &consumed, x64_next, (void*)p)) {
         const char* why = snx_x64_arm_why(f->x64);
-        for (k = 0; k < f->nwhys && strcmp(f->whys[k].why, why); ++k) {}
+        size_t k = 0;
+        while (k < f->nwhys && strcmp(f->whys[k].why, why)) ++k;
         if (k == f->nwhys && k < WHYS) f->whys[f->nwhys++].why = why;
         if (k < f->nwhys) ++f->whys[k].count;
         return 0;
@@ -383,9 +382,8 @@ static void round_unlock(Round* r) {
 }
 static void round_work(Round* r, Finder* f) {
     for (;;) {
-        size_t i;
         round_lock(r);
-        i = r->failed ? r->count : r->next++;
+        size_t i = r->failed ? r->count : r->next++;
         round_unlock(r);
         if (i >= r->count) return;
         if (find(f, r->program, &r->found[i])) {
@@ -414,7 +412,7 @@ static void* round_main(void* p) {
 /* the round's keys made on threads threads, the calling one among them: 0, or -1 with the first failure's finder */
 static int run_round(Round* r, Finder* finders, unsigned threads) {
     RoundArg args[64];
-    unsigned i, made = 0;
+    unsigned made = 0;
 #ifdef _WIN32
     HANDLE ids[64];
     InitializeCriticalSection(&r->lock);
@@ -423,7 +421,7 @@ static int run_round(Round* r, Finder* finders, unsigned threads) {
     pthread_mutex_init(&r->lock, NULL);
 #endif
     if (threads > 64) threads = 64;
-    for (i = 1; i < threads; ++i) {
+    for (unsigned i = 1; i < threads; ++i) {
         args[i].round = r;
         args[i].finder = &finders[i];
 #ifdef _WIN32
@@ -434,7 +432,7 @@ static int run_round(Round* r, Finder* finders, unsigned threads) {
         ++made;
     }
     round_work(r, &finders[0]);
-    for (i = 1; i <= made; ++i) {
+    for (unsigned i = 1; i <= made; ++i) {
 #ifdef _WIN32
         WaitForSingleObject(ids[i], INFINITE);
         CloseHandle(ids[i]);
@@ -457,15 +455,13 @@ static int run_round(Round* r, Finder* finders, unsigned threads) {
    the calling thread alone */
 static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned threads, char* error, size_t error_size) {
     const SnxProgram* p = d->program;
-    Finder* finders;
-    Round r;
-    size_t i, j;
-    int rc = 0;
     if (threads < 1) threads = 1;
     if (threads > 64) threads = 64;
-    finders = (Finder*)snx_alloc(threads * sizeof(*finders));
-    memset(finders, 0, threads * sizeof(*finders));
-    for (i = 0; i < threads; ++i) {
+    Finder* finders = (Finder*)snx_alloc(threads * sizeof(*finders));
+    for (unsigned i = 0; i < threads; ++i) finders[i] = (Finder){0};
+    Round r = {0};
+    int rc = 0;
+    for (size_t i = 0; i < threads; ++i) {
         finders[i].scratch = snx_ir_new("discovery", '0', error, error_size);
         finders[i].x64 = d->x64 && i ? snx_x64_arm_new() : d->x64;
         if (!finders[i].scratch || (d->x64 && !finders[i].x64)) {
@@ -475,20 +471,19 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
             goto done;
         }
     }
-    for (i = 0; i < p->module_count; ++i) {
+    for (size_t i = 0; i < p->module_count; ++i) {
         const SnxModuleImage* m = &p->modules[i];
         queue(d, (SnxU32)(m->base + m->text_off), 0); /* the module's start: Loader enters rtld's in A32 state */
-        for (j = 0; j < m->function_count; ++j) queue_pointer(d, m->base + m->functions[j]);
-        for (j = 0; j < m->relptr_count; ++j) queue_pointer(d, m->base + m->relptrs[j]);
+        for (size_t j = 0; j < m->function_count; ++j) queue_pointer(d, m->base + m->functions[j]);
+        for (size_t j = 0; j < m->relptr_count; ++j) queue_pointer(d, m->base + m->relptrs[j]);
     }
-    for (i = 0; i < options->hint_count; ++i) queue_pointer(d, options->hints[i]);
-    memset(&r, 0, sizeof r);
+    for (size_t i = 0; i < options->hint_count; ++i) queue_pointer(d, options->hints[i]);
     r.program = p;
     while (d->work_count) {
         unsigned n = threads;
         r.count = d->work_count;
         r.found = (Found*)snx_realloc(r.found, r.count * sizeof(*r.found));
-        for (i = 0; i < r.count; ++i) {
+        for (size_t i = 0; i < r.count; ++i) {
             r.found[i].key = d->work[i];
             r.found[i].units = r.found[i].count = 0;
         }
@@ -497,15 +492,15 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
         r.failed = 0;
         if (r.count < 256) n = 1; /* a thread's start costs more than a few blocks */
         if (run_round(&r, finders, n)) {
-            for (i = 0; i < n; ++i)
+            for (unsigned i = 0; i < n; ++i)
                 if (finders[i].error[0]) snprintf(error, error_size, "%s", finders[i].error);
             rc = -1;
             goto done;
         }
-        for (i = 0; i < r.count; ++i) {
+        for (size_t i = 0; i < r.count; ++i) {
             const Found* k = &r.found[i];
             SnxU32 address = k->key & ~1u;
-            size_t bytes;
+            size_t bytes = 0;
             const unsigned char* code = code_at(p, address, &bytes);
             if (d->count == d->capacity) {
                 d->capacity = d->capacity ? d->capacity * 2 : 4096;
@@ -522,12 +517,12 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
     }
 done:
     free(r.found);
-    for (i = 0; i < threads; ++i) {
+    for (unsigned i = 0; i < threads; ++i) {
         /* each thread's counts, and its blocks into the first's object */
-        size_t k, w;
         d->x64_made += finders[i].x64_made;
-        for (w = 0; w < finders[i].nwhys; ++w) {
-            for (k = 0; k < d->nwhys && strcmp(d->whys[k].why, finders[i].whys[w].why); ++k) {}
+        for (size_t w = 0; w < finders[i].nwhys; ++w) {
+            size_t k = 0;
+            while (k < d->nwhys && strcmp(d->whys[k].why, finders[i].whys[w].why)) ++k;
             if (k == d->nwhys && k < WHYS) d->whys[d->nwhys++].why = finders[i].whys[w].why;
             if (k < d->nwhys) d->whys[k].count += finders[i].whys[w].count;
         }
@@ -1009,16 +1004,16 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         }
         if (!options->quiet) {
             made = d.x64_made;
-            printf("x86-64 back end: %lu of %lu AArch32 blocks%s\n", (unsigned long)made, (unsigned long)d.count,
+            printf("x86-64 back end: %zu of %zu AArch32 blocks%s\n", made, d.count,
                    made == d.count ? "" : ", LLVM the rest");
             /* what kept the others from it, the most common first */
-            for (i = 0; i < d.nwhys; ++i) {
-                size_t best = i, k;
-                Why t;
-                for (k = i + 1; k < d.nwhys; ++k)
+            for (size_t i = 0; i < d.nwhys; ++i) {
+                size_t best = i;
+                for (size_t k = i + 1; k < d.nwhys; ++k)
                     if (d.whys[k].count > d.whys[best].count) best = k;
-                t = d.whys[i], d.whys[i] = d.whys[best], d.whys[best] = t;
-                if (i < 8) printf("  %lu blocks: %s\n", (unsigned long)d.whys[i].count, d.whys[i].why);
+                Why t = d.whys[i];
+                d.whys[i] = d.whys[best], d.whys[best] = t;
+                if (i < 8) printf("  %zu blocks: %s\n", d.whys[i].count, d.whys[i].why);
             }
         }
     }

@@ -163,7 +163,7 @@ typedef struct {
 /* a random state of the kth kind */
 static void start(RunState* s, unsigned k) {
     SnxArmCPU* cpu = &s->cpu;
-    memset(cpu, 0, sizeof *cpu);
+    *cpu = (SnxArmCPU){0};
     for (size_t i = 0; i < MEM_SIZE; i += 8) {
         u64 x = rnd();
         memcpy(s->mem + i, &x, 8);
@@ -307,19 +307,20 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
     const char** names = (const char**)calloc(count + 1, sizeof *names);
     SnxU64* got = (SnxU64*)calloc(count + 1, sizeof *got);
     size_t* index = (size_t*)calloc(count + 1, sizeof *index);
-    SnxLinkInput input = {0};
     size_t n = 0;
-    int rc;
+    if (!storage || !names || !got || !index) {
+        fprintf(stderr, "FAIL: the %s object: out of memory for the names of %zu blocks\n", what, count);
+        free(names), free(storage), free(got), free(index);
+        return 1;
+    }
     for (size_t i = 0; i < count; ++i) {
         if (made_only && !blocks[i].made) continue;
         snprintf(storage[n], sizeof storage[n], "B_%zu", i);
         names[n] = storage[n];
         index[n++] = i;
     }
-    input.data = object;
-    input.size = size;
-    input.name = what;
-    rc = snx_code_load_private(loader, &input, 1, names, n, got, error, sizeof error);
+    SnxLinkInput input = {.data = object, .size = size, .name = what};
+    int rc = snx_code_load_private(loader, &input, 1, names, n, got, error, sizeof error);
     if (rc) fprintf(stderr, "FAIL: the %s object: %s\n", what, error);
     for (size_t k = 0; !rc && k < n; ++k) addr[index[k]] = got[k];
     free(names);
@@ -345,6 +346,13 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
     char error[512], text[100];
     RunState* s = (RunState*)malloc(2 * sizeof *s);
     int rc = 0;
+    if (!laddr || !xaddr || !s) {
+        fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
+        free(laddr), free(xaddr), free(s);
+        LLVMDisposeModule(module);
+        ++g_test.failures;
+        return -1;
+    }
     LLVMSetTarget(module, LLVMGetTarget(ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
     for (size_t i = 0; i < count; ++i) {
@@ -491,12 +499,18 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
     size_t count = sizeof witnesses / sizeof *witnesses, failures = 0;
     Block* blocks = (Block*)calloc(count, sizeof *blocks);
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("witnesses", ir->ctx);
-    SnxCodeLoader *lloader, *xloader;
+    SnxCodeLoader *lloader = NULL, *xloader = NULL;
     unsigned char *lobj = NULL, *xobj = NULL;
     size_t lsize = 0, xsize = 0;
     SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
     RunState* s = (RunState*)malloc(2 * sizeof *s);
     char error[512];
+    if (!blocks || !laddr || !xaddr || !s) {
+        fprintf(stderr, "FAIL: out of memory for the %zu witnesses\n", count);
+        free(blocks), free(laddr), free(xaddr), free(s);
+        LLVMDisposeModule(module);
+        return 1;
+    }
     LLVMSetTarget(module, LLVMGetTarget(ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
     for (size_t i = 0; i < count; ++i) {
@@ -581,10 +595,7 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
 
 int main(int argc, char** argv) {
     char error[512];
-    SnxIr* ir;
-    SnxX64Arm* x64;
-    Block* blocks;
-    size_t done = 0;
+    SnxIr* ir = NULL;
     g_test.states = 16;
     g_test.blocks = 6000;
     g_test.features = ~0u;
@@ -619,9 +630,14 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FAIL: no LLVM for this host: %s\n", error);
         return 1;
     }
-    x64 = snx_x64_arm_new();
+    SnxX64Arm* x64 = snx_x64_arm_new();
+    Block* blocks = (Block*)calloc(CHUNK, sizeof *blocks);
+    if (!x64 || !blocks) {
+        fprintf(stderr, "FAIL: out of memory for the x86-64 back end's compiler or the blocks\n");
+        return 1;
+    }
     snx_x64_arm_limit(x64, g_test.pool, g_test.features | ~7u);
-    blocks = (Block*)calloc(CHUNK, sizeof *blocks);
+    size_t done = 0;
     if (!g_test.nonly && run_witnesses(ir, x64)) ++g_test.failures;
     if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
