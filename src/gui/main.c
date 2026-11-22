@@ -8028,16 +8028,26 @@ static void draw_games(App* app) {
     SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink), failure = rgb(app->theme.failure);
     int y;
     if (app->games_loading) { /* its list being read: where it goes, the loading screen's words, dots and ring */
+        const GuiTheme* t = &app->theme;
+        int width, height, cw = cell_w(app), x, y;
+        float cy;
         games_boxes(app, &g);
         chrome(app, &g.place);
-        int x = g.place.list.x + cell_w(app), cy = g.place.list.y + cell_h(app);
+        area(app, &width, &height);
+        /* the ring where the theme's [run] ring puts the loading screen's (steps_draw): left of the words, which then
+           start three columns on, at the window's right, or past the words and the dots' whole width */
+        x = g.place.list.x + (t->ring == GUI_RING_LEFT ? 4 : 1) * cw;
+        y = g.place.list.y + cell_h(app);
+        cy = (float)y + (float)cell_h(app) / 2.0f;
         snprintf(line, sizeof line, "%s", snx_tr("Loading games"));
-        text_in(app, g.place.list, x, cy, line, ink);
-        x += gui_text_cols(line) * cell_w(app);
-        text_in(app, g.place.list, x, cy, dots(app, false), ink);
-        /* past the dots' whole width, as the loading screen's ring after the name, so it stays put */
-        ring_of(app, (float)(x + 4 * cell_w(app)) + 7.0f * letters(app), (float)cy + (float)cell_h(app) / 2.0f, false,
-                app->theme.dim, app->theme.soft, app->theme.ink);
+        text_in(app, g.place.list, x, y, line, ink);
+        x += gui_text_cols(line) * cw;
+        text_in(app, g.place.list, x, y, dots(app, false), ink);
+        if (t->ring == GUI_RING_LEFT)
+            ring_of(app, (float)(g.place.list.x + 2 * cw), cy, false, t->dim, t->soft, t->ink);
+        if (t->ring == GUI_RING_RIGHT) ring_of(app, (float)(width - 2 * cw), cy, false, t->dim, t->soft, t->ink);
+        if (t->ring == GUI_RING_NEAR_TEXT)
+            ring_of(app, (float)(x + 4 * cw) + 7.0f * letters(app), cy, false, t->dim, t->soft, t->ink);
         status_box(app, g.place.status);
         screen_foot(app, &g.place, "", "");
         return;

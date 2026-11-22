@@ -1800,6 +1800,56 @@ static Uint32 SDLCALL press_during(void* listing, SDL_TimerID id, Uint32 interva
     SDL_SetAtomicInt(&((GamesListing*)listing)->done, 1);
     return 0;
 }
+/* the pixels of color in the box of side pixels square centred at cx, cy of the viewport */
+static int colour_around(App* app, float cx, float cy, int side, SDL_Color color) {
+    SDL_Surface* image = read_px(app, (int)cx - side / 2, (int)cy - side / 2, side, side);
+    int n = 0;
+    assert(image);
+    for (int y = 0; y < image->h; ++y)
+        for (int x = 0; x < image->w; ++x) {
+            Uint8 r, g, b, a;
+            assert(SDL_ReadSurfacePixel(image, x, y, &r, &g, &b, &a));
+            n += r == color.r && g == color.g && b == color.b;
+        }
+    SDL_DestroySurface(image);
+    return n;
+}
+/* Games' loading line's ring where the theme's [run] ring puts the loading screen's: at the window's right on the
+   line's row, left of the words (which then start three columns on), past the words and the dots' whole width, or
+   none; its inner circle in the soft colour there and nowhere else of the three */
+static void games_loading_ring(App* app) {
+    const GuiRing was = app->theme.ring;
+    const float cw = (float)cell_w(app), ch = (float)cell_h(app), r = 7.0f * letters(app);
+    const int side = (int)(2 * r) + 4;
+    GuiGamesBoxes g;
+    int width, height;
+    area(app, &width, &height);
+    app->games_loading = true;
+    for (int ring = GUI_RING_NONE; ring <= GUI_RING_NEAR_TEXT; ++ring) {
+        float cy, at[3];
+        int text_x, text_y;
+        app->theme.ring = (GuiRing)ring;
+        render(app);
+        games_boxes(app, &g);
+        cy = (float)(g.place.list.y + cell_h(app)) + ch / 2;
+        at[0] = (float)g.place.list.x + 2 * cw;                                            /* left */
+        at[1] = (float)width - 2 * cw;                                                     /* right */
+        at[2] = (float)g.place.list.x + cw * (float)(1 + strlen("Loading games") + 4) + r; /* near the text */
+        assert(find_text(app, "Loading games", rgb(app->theme.ink), 1, &text_x, &text_y));
+        assert((float)text_x == (float)g.place.list.x + cw * (ring == GUI_RING_LEFT ? 4 : 1) &&
+               (float)text_y == cy - ch / 2);
+        for (int k = 0; k < 3; ++k) {
+            const int want = (ring == GUI_RING_LEFT && k == 0) || (ring == GUI_RING_RIGHT && k == 1) ||
+                             (ring == GUI_RING_NEAR_TEXT && k == 2);
+            const int n = colour_around(app, at[k], cy, side, rgb(app->theme.soft));
+            if ((n > 0) != want) fprintf(stderr, "ring %d place %d: %d soft pixels\n", ring, k, n);
+            assert((n > 0) == want);
+        }
+    }
+    app->theme.ring = was;
+    app->games_loading = false;
+    render(app);
+}
 /* Games while its list is read (list_games, on a thread of its own): past GUI_LISTING_SHOWN_MS its loading line where
    the list goes, in ink, the list's rows not drawn, and the list back once read. What the player presses while it is
    read stays on SDL's queue, every press with its release in their order, for the loop to take once the list is there
@@ -1812,6 +1862,7 @@ static void games_listing(App* app) {
     render(app);
     shows(app, "Loading games", rgb(app->theme.ink));
     hides(app, "Recent Games", rgb(app->theme.soft));
+    games_loading_ring(app);
     app->games_loading = false;
     render(app);
     hides(app, "Loading games", rgb(app->theme.ink));
