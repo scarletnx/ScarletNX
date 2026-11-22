@@ -2225,15 +2225,17 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         int counted =
             drawn == 2 && loops == 2 && !through &&
             (rounds[round].interlock || (orders == rounds[round].orders && predraws == rounds[round].predraws));
-        /* two draws of one state, each drawn two times: each one's probe keeps the state it made (neither draw of the
-           two keeps one), and the second's takes the first's from the table: its programs, where it made them again */
+        /* two draws of one state, each drawn two times: the first one's probe keeps the state it made (neither draw of
+           the two keeps one), and the second's takes it from the table: in place where its fragment key is the first's
+           (with --vertex-input-dynamic-state=off), else making its programs again and keeping them too, the first
+           draw having written the target it samples */
         const u64 probes_kept = kept[1].made - kept[0].made, probes_took = kept[1].table - kept[0].table;
         if (ok && counted && rounds[round].predraws == 2 && rounds[round].swaps[0] == rounds[round].swaps[1] &&
-            (probes_kept != 2 || !probes_took)) {
+            (!probes_kept || probes_kept > 2 || !probes_took)) {
             fprintf(
                 stderr,
-                "feedback intervals, %s: the two draws' probes kept %llu states (2 expected) and took %llu from the "
-                "table (1 or more expected)\n",
+                "feedback intervals, %s: the two draws' probes kept %llu states (1 or 2 expected) and took %llu from "
+                "the table (1 or more expected)\n",
                 rounds[round].name, (unsigned long long)probes_kept, (unsigned long long)probes_took);
             ok = 0;
         }
