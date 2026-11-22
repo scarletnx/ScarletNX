@@ -1661,8 +1661,9 @@ void vk_pipe_blend(const PipeKey* k, VkPipelineColorBlendAttachmentState cba[8])
                                                    .srcAlphaBlendFactor = (VkBlendFactor)k->blend[i].sa,
                                                    .dstAlphaBlendFactor = (VkBlendFactor)k->blend[i].da,
                                                    .alphaBlendOp = (VkBlendOp)k->blend[i].aop,
-                                                   /* no fragment shader: its outputs would be undefined */
-                                                   .colorWriteMask = k->fs ? k->blend[i].mask : 0};
+                                                   /* no fragment shader: its outputs would be undefined; a
+                                                      dynamic blend's mark is no component */
+                                                   .colorWriteMask = k->fs ? k->blend[i].mask & 15u : 0};
         if (!g_vk.feat.dualSrcBlend) { /* the second source's factors become the first's */
             VkBlendFactor* f[4] = {&a->srcColorBlendFactor, &a->dstColorBlendFactor, &a->srcAlphaBlendFactor,
                                    &a->dstAlphaBlendFactor};
@@ -1877,7 +1878,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .tess = k->tes != VK_NULL_HANDLE,
                          .mesh = k->mesh != 0,
                          .clamp_range = g_vk.has_depth_clamp_range,
-                         .rate_palette = g_vk.vrs == VK_VRS_NV};
+                         .rate_palette = g_vk.vrs == VK_VRS_NV,
+                         .blend = vk_pipe_blend_dynamic(k)};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) | vk_vrs_pipeline_flags() |
                vk_pipeline_stats_flags();
@@ -2744,6 +2746,10 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
    one is still being made is a stand-in too, so that a draw that keeps the handle binds the optimized one once it is
    there */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
+    /* with the blend as dynamic state, one pipeline for every blend of a draw's state: the draw sets its blend
+       (render.c). vk_pipeline_get's callers bind theirs with the blend in it */
+    PipeKey dyn;
+    if (g_vk.dyn_blend && vk_pipe_blend_key(k, &dyn)) k = &dyn;
     if (!vk_rec_threaded()) return vk_pipeline_get(k);
     int found;
     Pipe* p = pipe_entry(k, &found);

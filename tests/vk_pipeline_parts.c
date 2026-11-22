@@ -634,7 +634,36 @@ static void check_unwritten_targets(void) {
     CHECK(c.color[0] == 37 && c.color[1] == 37, "alpha to coverage's target 0 and coverage to color's target stay");
 }
 
+/* the blending as dynamic state: a key's blend and write masks give way to PIPE_BLEND_DYNAMIC, so two blends are one
+   key, and the fragment output part lists the three dynamic states; an advanced equation and a key with no color
+   target stay as they are */
+static void check_blend_key(void) {
+    PipeKey a = {.ncolor = 2, .color = {37, 37}}, b, ka, kb;
+    a.blend[0].mask = 15;
+    b = a;
+    b.blend[0].en = 1;
+    b.blend[0].sc = 6;
+    b.blend[1].mask = 3;
+    CHECK(vk_pipe_blend_key(&a, &ka) && vk_pipe_blend_key(&b, &kb), "two blends made dynamic");
+    CHECK(!memcmp(&ka, &kb, sizeof ka), "two blends of one draw state give one key");
+    CHECK(vk_pipe_blend_dynamic(&ka) && !vk_pipe_blend_dynamic(&a), "the dynamic mark, and a static key without it");
+    CHECK(ka.blend[1].mask == PIPE_BLEND_DYNAMIC && ka.blend[2].mask == 0, "the mark on the targets the key has");
+    PipeKey adv = a, none = {.ncolor = 0};
+    adv.advanced.operation = 1;
+    CHECK(!vk_pipe_blend_key(&adv, &ka) && !vk_pipe_blend_key(&none, &ka), "an advanced equation, no target: static");
+    VkDynamicState out[VK_PIPE_DYN_MAX];
+    const PipeDynIn in = {.blend = 1};
+    u32 n = vk_pipe_dynamic(VK_PART_FO, &in, out), found = 0;
+    for (u32 i = 0; i < n; i++)
+        found += out[i] == VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT ||
+                 out[i] == VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT || out[i] == VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+    CHECK(found == 3, "the fragment output part's three blend states");
+    CHECK(vk_pipe_dynamic(VK_PART_PR, &in, out) == vk_pipe_dynamic(VK_PART_PR, &(PipeDynIn){0}, out),
+          "no blend state in the pre-rasterization part");
+}
+
 int main(void) {
+    check_blend_key();
     check_unwritten_targets();
     check_conservative_dilation();
     check_off();

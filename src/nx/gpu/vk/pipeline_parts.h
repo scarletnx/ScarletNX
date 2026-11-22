@@ -66,13 +66,14 @@ float vk_conservative_dilation(u32 conservative, float most, char* line, size_t 
 #define VK_PART_FS  4u  /* fragment shader */
 #define VK_PART_FO  8u  /* fragment output interface */
 #define VK_PART_ALL 15u /* a whole pipeline */
-#define VK_PIPE_DYN_MAX 34  /* the most dynamic states a draw pipeline has */
+#define VK_PIPE_DYN_MAX 37  /* the most dynamic states a draw pipeline has */
 /* what decides a draw pipeline's dynamic states: dyn_pr (VK_DYN_PR_*), the feedback loop's dynamic state, a binding
    stride (a vertex layout with bindings and has_dynamic_stride), dynamic vertex input and tessellation. A mesh
    pipeline has no input assembly or vertex input: its topology, primitive restart, strides and layout aren't states */
 typedef struct {
     u32 dyn_pr;
     int feedback_dynamic, stride, vertex_input, tess, mesh;
+    int blend;       /* the color blend enables, equations and write masks (vk_pipe_blend_dynamic) */
     int clamp_range; /* the depth clamp's range as dynamic state (has_depth_clamp_range) */
     int rate_palette; /* the viewports' shading rate palettes (g_vk.vrs VK_VRS_NV, shading_rate.c) */
 } PipeDynIn;
@@ -81,6 +82,12 @@ typedef struct {
    whatever view the pass has, so one pipeline serves every format the draws' passes hold at those targets. Target 0
    stays under alpha to coverage, which reads its output, and so does the target coverage to color writes */
 void vk_pipe_unwritten_targets(PipeKey* k);
+/* the key of k's pipeline with its blending as dynamic state (g_vk.dyn_blend) into out: every target's blend state
+   zero and its write mask PIPE_BLEND_DYNAMIC, so one pipeline serves every blend. 0 for a key whose blending is no
+   dynamic state (an advanced equation, no color target), out untouched */
+int vk_pipe_blend_key(const PipeKey* k, PipeKey* out);
+/* whether k's blending is dynamic state (made by vk_pipe_blend_key) */
+int vk_pipe_blend_dynamic(const PipeKey* k);
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
 /* ---- the four parts of a pipeline (docs/layers/gpu/pipeline-libraries.md, "The four parts") */

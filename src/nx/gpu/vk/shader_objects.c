@@ -425,8 +425,9 @@ void vk_so_bind(VkCommandBuffer cb, const PipeKey* k, const VkShaderEXT sh[5]) {
     }
     if (g_so.dev & SO_TO_COLOR) vkCmdSetCoverageToColorEnableNV(cb, VK_FALSE);
 
-    /* the color targets' blending and write masks, as pipe_info gives them (vk_pipe_blend), or a logic operation */
-    if (k->ncolor) {
+    /* the color targets' blending and write masks, as pipe_info gives them (vk_pipe_blend), or a logic operation. A
+       key whose blending is dynamic state has the draw's set by the draw after the bind (render.c) */
+    if (k->ncolor && !vk_pipe_blend_dynamic(k)) {
         VkPipelineColorBlendAttachmentState cba[8];
         vk_pipe_blend(k, cba);
         VkBool32 enable[8];

@@ -8901,6 +8901,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_heap_pipeline_flags());
     CHECK(!check_heap_shader_objects());
     CHECK(!check_link_optimized_after_presents());
+    CHECK(!check_blend_one_pipeline());
     CHECK(!check_cb_address());
     CHECK(!check_descriptor_memo());
     CHECK(!check_fragment_barrier_backend());

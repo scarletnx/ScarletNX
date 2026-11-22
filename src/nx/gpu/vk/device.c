@@ -1591,6 +1591,24 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         vk_gpl_bans(&gd, ban_say);
         g_vk.has_gpl = vk_gpl_choose(&gd, &g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
+        /* the blending as dynamic state: a draw's pipeline serves every blend of its programs and state, and the draw
+           sets its own (render.c). Each of the three members a ban can turn off */
+        const int blend_members = has_eds3 && qeds3.extendedDynamicState3ColorBlendEnable &&
+                                  qeds3.extendedDynamicState3ColorBlendEquation &&
+                                  qeds3.extendedDynamicState3ColorWriteMask;
+        g_vk.dyn_blend =
+            blend_members &&
+            !vk_ban("VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEnable", 1, ban_say) &&
+            !vk_ban("VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation", 1, ban_say) &&
+            !vk_ban("VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorWriteMask", 1, ban_say);
+        if (g_vk.dyn_blend)
+            LOG("vulkan: a draw's blending is dynamic state (VK_EXT_extended_dynamic_state3): one pipeline serves every "
+                "blend of its programs\n");
+        else
+            LOG("vulkan: a draw's blending is in its pipeline, one for each blend: %s\n",
+                !blend_members ? "the device has not VK_EXT_extended_dynamic_state3's blend enable, equation and write "
+                                 "mask, or a setting or a ban took the extension out"
+                               : "a ban turned one of them off");
         /* a ban that holds took the extension out of the list (vk_bans_filter): its line says why */
         uint32_t ban_line = vk_ban_find(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
         if (ban_line) {
@@ -2285,6 +2303,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             chain = &fclip_control;
             snx_vk_choice_enable(c, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
         }
+    }
+    feds3.extendedDynamicState3ColorBlendEnable = feds3.extendedDynamicState3ColorBlendEquation =
+        feds3.extendedDynamicState3ColorWriteMask = (VkBool32)g_vk.dyn_blend;
+    if (g_vk.dyn_blend && !(g_vk.has_gpl && (g_vk.dyn_pr & ~VK_DYN_PR_PATCH))) { /* not in the chain above */
+        feds3.pNext = chain;
+        chain = &feds3;
+        snx_vk_choice_enable(c, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
     }
     VkPhysicalDeviceDepthClipEnableFeaturesEXT fclip_enable = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT,
