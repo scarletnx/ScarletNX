@@ -4310,12 +4310,13 @@ if(UNIX)
     add_test(NAME memory_alias_copies COMMAND snx-test-memory-alias --copies)
     set_tests_properties(memory_alias_copies PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     # views over pages the write tracking protects (write_tracking=1: the tracking of hosts without Linux 6.7's)
-    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias --write_tracking=1)
+    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias --write_tracking=1 --write_tracking_hot_pages=0)
     set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # the write tracking in NCE's layout (g_mem 0, moved up from 64 GiB), each kind: Android's is the protection
     add_test(NAME memory_alias_nce COMMAND snx-test-memory-alias --nce)
     set_tests_properties(memory_alias_nce PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-    add_test(NAME memory_alias_nce_signal_ww COMMAND snx-test-memory-alias --nce --write_tracking=1)
+    add_test(NAME memory_alias_nce_signal_ww COMMAND snx-test-memory-alias --nce --write_tracking=1
+             --write_tracking_hot_pages=0)
     set_tests_properties(memory_alias_nce_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # a source given back while the pool can't give its bytes: the fatal says which step failed, and the error
     add_test(NAME memory_alias_unpool_fails COMMAND snx-test-memory-alias --unpool-read-fails)
@@ -4338,11 +4339,12 @@ if(UNIX)
     add_test(NAME memory_own COMMAND snx-test-memory-own)
     set_tests_properties(memory_own PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # traps over pages the write tracking protects (write_tracking=1)
-    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own --write_tracking=1)
+    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own --write_tracking=1 --write_tracking_hot_pages=0)
     # traps by protection and the fault handler (memory_traps=1: those of Linux before 5.13 and Android), beside
     # userfaultfd's write tracking and beside the tracking by protection
     add_test(NAME memory_own_signal_traps COMMAND snx-test-memory-own --memory_traps=1)
-    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own --memory_traps=1 --write_tracking=1)
+    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own --memory_traps=1 --write_tracking=1
+             --write_tracking_hot_pages=0)
     # no traps, asked for (memory_traps=2) and where the protection has no pool to trap: the log says which
     add_test(NAME memory_own_no_traps COMMAND snx-test-memory-own --memory_traps=2)
     add_test(NAME memory_own_signal_traps_no_pool COMMAND snx-test-memory-own --memory_traps=1 --alias_pool=0)
@@ -4465,19 +4467,25 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     endif()
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
     # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler, also
-    # with its hot pages from the setting (write_tracking_hot, which says it does nothing where userfaultfd tracks);
+    # without and with its hot pages (write_tracking_hot_pages 0 and 1, which says it does nothing where userfaultfd
+    # tracks), and with Auto, the default, which turns them on there;
     # and none: the scan says so, and the caches compare contents. Each in a folder of its own, as ctest may run them
     # at once and each writes and replaces the same files
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww"
          "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_hot" "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot"
-         "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking")
+         "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_auto" "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking")
     add_test(NAME platform_posix_signal_ww
-             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww" --write_tracking=1)
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww" --write_tracking=1
+                     --write_tracking_hot_pages=0)
     add_test(NAME platform_posix_signal_ww_hot
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_hot"
-                     --write_tracking=1 --write_tracking_hot=1)
+                     --write_tracking=1 --write_tracking_hot_pages=1)
+    add_test(NAME platform_posix_signal_ww_auto
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_auto"
+                     --write_tracking=1)
     add_test(NAME platform_posix_hot
-             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot" --write_tracking_hot=1)
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot"
+                     --write_tracking_hot_pages=1)
     add_test(NAME platform_posix_no_tracking
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking" --write_tracking=2)
     # what the tracking costs on this host, with no game (bench_ww): page protection without and with hot pages, and

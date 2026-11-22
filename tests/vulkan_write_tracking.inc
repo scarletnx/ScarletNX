@@ -637,7 +637,7 @@ static int check_wt_hot_page(void) {
     return 0;
 }
 
-/* Hot pages (write_tracking_hot=1, vulkan_write_tracking_hot): a page the scans found written in a row stays writable
+/* Hot pages (write_tracking_hot_pages=1, vulkan_write_tracking_hot): a page the scans found written in a row stays writable
    and reads as written at each scan, and a render target protects its hot pages again before each baseline
    (vk_ww_cool). The cases below fail without that step, each for one way a target meets a hot page: under two
    targets, at the target's own baseline, through another address, with the CPU writing beside the GPU in one frame,

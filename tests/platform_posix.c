@@ -427,7 +427,7 @@ static int written_scans(u64 n, int k) {
     }
     return all;
 }
-/* ---- hot pages (write_tracking_hot=1): a page written in WP_HOT_AFTER scans in a row stays writable and is reported
+/* ---- hot pages (write_tracking_hot_pages=1): a page written in WP_HOT_AFTER scans in a row stays writable and is reported
    at each scan, until its WP_HOT_AFTER + WP_HOT_FOR-th report; plat_ww_cool makes its reports exact again. Run on a
    table of counts of its own when the setting left none */
 static void test_hot_pages(void) {
@@ -565,16 +565,18 @@ static void test_guest_memory(const char* dir) {
     g_log_on = 1;
     plat_vm_track(g_base, (u64)1 << 30);
     g_log_on = 0;
-    /* write_tracking_hot=1 reaches the tracking by protection, and is said to do nothing elsewhere */
-    if (g_settings.write_tracking_hot_pages == 1 && g_wp_track)
-        CHECK(g_wp_hot != NULL, "write_tracking_hot=1 left the tracking by protection without hot pages");
+    /* write_tracking_hot_pages=1 and 2 (Auto, the default) reach the tracking by protection; 1 is said to do nothing
+       elsewhere, and Auto says nothing there */
+    if (g_settings.write_tracking_hot_pages && g_wp_track)
+        CHECK(g_wp_hot != NULL, "write_tracking_hot_pages 1 or 2 left the tracking by protection without hot pages");
     else if (g_settings.write_tracking_hot_pages == 1)
-        CHECK(strstr(g_log, "memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the "
-                            "writes, and ") &&
+        CHECK(strstr(g_log, "memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks "
+                            "the writes, and ") &&
                   strstr(g_log, ": no page is hot this run\n"),
-              "write_tracking_hot=1 where nothing protects pages for the tracking was not said");
+              "write_tracking_hot_pages=1 where nothing protects pages for the tracking was not said");
     else
-        CHECK(g_wp_hot == NULL, "hot pages without write_tracking_hot=1");
+        CHECK(g_wp_hot == NULL && !strstr(g_log, "write_tracking_hot_pages"),
+              "hot pages, or a line about them, with write_tracking_hot_pages 0, or 2 where nothing protects pages");
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
     if (g_settings.write_tracking == 2 || plat_ww_scan(g_base, 4096, on_written) < 0) {
         printf("written-page tracking unavailable here: only checking that it says so\n");
@@ -890,7 +892,7 @@ static void test_memory_watch(void) {
 }
 
 /* ---- --bench-ww: what the written-page tracking costs on this host, with no game: page protection without and with
-   hot pages (write_tracking_hot, #1237), through the real scan and fault handler, or the host's own way where it has
+   hot pages (write_tracking_hot_pages, #1237), through the real scan and fault handler, or the host's own way where it has
    one. A region of BENCH_PAGES pages; each epoch writes a byte on each of hot pages (the same ones every epoch, every
    other page, so each is a run of its own to protect) and on cold ones picked anew, then one scan of the region takes
    in what was written, as a cache's check does. Per pattern and arm: the faults the handler took and its time (a
@@ -1004,7 +1006,7 @@ static void bench_ww(void) {
         if (own == MAP_FAILED) own = NULL;
         hot_table = own;
     }
-    printf("  %s\n", g_wp_track ? "page protection: arm protect is write_tracking_hot=0, arm hot is 1"
+    printf("  %s\n", g_wp_track ? "page protection: arm protect is write_tracking_hot_pages=0, arm hot is 1"
                                 : "the host's own tracking (userfaultfd): hot pages are protection's alone");
     for (size_t k = 0; k < sizeof patterns / sizeof *patterns; k++) {
         u32 hot = patterns[k][0], cold = patterns[k][1];

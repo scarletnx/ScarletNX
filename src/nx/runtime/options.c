@@ -1066,6 +1066,61 @@ static void vk_descriptors_old(void) {
     }
 }
 
+int options_write_tracking_hot_old(const char* old, int given) {
+    if (!strcmp(old, "1")) return 1;
+    if (!strcmp(old, "0")) return given ? 0 : -1;
+    return -2;
+}
+/* write_tracking_hot, deprecated for write_tracking_hot_pages: the file's read while the file and the command line give
+   write_tracking_hot_pages no value, into the store, which the file is written with, so the next run reads
+   write_tracking_hot_pages; the command line's this run's write_tracking_hot_pages while the command line gives that
+   one none */
+static void write_tracking_hot_old(void) {
+    static const char* const words[] = {"Off", "On", "Auto"};
+    const char *old = ini_deprecated_value("write_tracking_hot"), *given = override_of("write_tracking_hot"),
+               *first = override_of("write_tracking_hot_pages");
+    if (!given) given = override_of("write-tracking-hot"); /* the name, which the old key no longer has */
+    int now;
+    if (old && !first && !store_find("write_tracking_hot_pages")) {
+        now = options_write_tracking_hot_old(old, 0);
+        if (now == -2)
+            WARN("settings: write_tracking_hot=%s, deprecated, is neither 0 nor 1: write_tracking_hot_pages takes its "
+                 "default, 2 (Auto) (docs/user/deprecations.md)\n",
+                 old);
+        else if (now == -1)
+            WARN(
+                "settings: write_tracking_hot=%s, deprecated, was its default: write_tracking_hot_pages takes its own, "
+                "2 (Auto), hot pages where page protection tracks the writes (docs/user/deprecations.md)\n",
+                old);
+        else {
+            store_put("write_tracking_hot_pages", "1");
+            WARN("settings: write_tracking_hot=%s, deprecated, is write_tracking_hot_pages=1 (On) now "
+                 "(docs/user/deprecations.md)\n",
+                 old);
+        }
+    }
+    if (!given) return;
+    if (first) {
+        WARN(
+            "settings: --write_tracking_hot=%s is deprecated, and the command line gives --write-tracking-hot-pages=%s "
+            "too: write_tracking_hot_pages=%s this run (docs/user/deprecations.md)\n",
+            given, first, first);
+        return;
+    }
+    now = options_write_tracking_hot_old(given, 1);
+    if (now >= 0) {
+        ini_override("write_tracking_hot_pages", now ? "1" : "0");
+        WARN("settings: --write_tracking_hot=%s is deprecated: this run reads it as --write-tracking-hot-pages=%d (%s) "
+             "(docs/user/deprecations.md)\n",
+             given, now, words[now]);
+    } else {
+        const Entry* file = store_find("write_tracking_hot_pages");
+        WARN("settings: --write_tracking_hot=%s, deprecated, is neither 0 nor 1: write_tracking_hot_pages=%s this run, "
+             "%s (docs/user/deprecations.md)\n",
+             given, file ? file->value : "2", file ? "the .ini's" : "its default (Auto)");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -1194,8 +1249,10 @@ void ini_open(const char* path) {
     snprintf(g_path, sizeof g_path, "%s", path);
     picks_path();
     ini_set_say(say_setting);
-    for (i = 0; i < g_nover; i++) /* --vk_descriptors is read as vk_descriptors_mode, said there */
-        if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors"))
+    /* --vk_descriptors and --write_tracking_hot are read as their new keys, said there */
+    for (i = 0; i < g_nover; i++)
+        if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors") &&
+            strcmp(g_over[i].key, "write_tracking_hot") && strcmp(g_over[i].key, "write-tracking-hot"))
             WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     launcher_picks();
     options_old_environment();
@@ -1206,6 +1263,7 @@ void ini_open(const char* path) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         vk_descriptors_old(); /* the command line's */
+        write_tracking_hot_old();
         apply_all();
         picks_said();
         options_old_environment_say();
@@ -1225,6 +1283,7 @@ void ini_open(const char* path) {
     bc7_cache_gb_old();
     compress_shader_cache_old();
     vk_descriptors_old();
+    write_tracking_hot_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

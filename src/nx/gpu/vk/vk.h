@@ -2775,7 +2775,7 @@ int vk_ww_page_after(u64 cpu, u32 since);
 int vk_ww_dirty_init(void);
 int vk_ww_dirty_any(u64 cpu, u64 len);
 void vk_ww_dirty_clear(u64 cpu, u64 len);
-/* [host, host + len)'s hot pages (write_tracking_hot, plat_ww_cool), and those at its pages' other addresses, protected
+/* [host, host + len)'s hot pages (write_tracking_hot_pages, plat_ww_cool), and those at its pages' other addresses, protected
    again and taken in as written, so the next vk_ww_now is a baseline after which "written" stands for a write: for a
    render target, whose write-back keeps memory's bytes on the pages written since its baseline. A hot page reads as
    written at every scan. Called after the range's writes were taken in (vk_written_since), whose scan may leave a page

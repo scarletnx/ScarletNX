@@ -426,8 +426,9 @@ void plat_vm_track(u8* p, u64 size) {
             if (pm >= 0) {
                 atomic_store_explicit(&g_pagemap, pm, memory_order_relaxed);
                 if (g_settings.write_tracking_hot_pages == 1)
-                    WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, "
-                         "and userfaultfd tracks them here (write_tracking=0): no page is hot this run\n");
+                    WARN(
+                        "memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks the writes, "
+                        "and userfaultfd tracks them here (write_tracking=0): no page is hot this run\n");
                 if (traps_by_signal()) wp_init(p, size, 0); /* the states for the traps alone */
                 return;
             }
@@ -440,7 +441,7 @@ void plat_vm_track(u8* p, u64 size) {
 #endif
     (void)by_signal;
     if (no_ww && g_settings.write_tracking_hot_pages == 1)
-        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, and "
+        WARN("memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks the writes, and "
              "write_tracking=2 tracks none: no page is hot this run\n");
     /* the states also serve traps by protection, where userfaultfd's minor faults don't (plat_trap_init) */
     if (!no_ww || !g_uffd_minor_on() || traps_by_signal()) wp_init(p, size, !no_ww);
@@ -485,7 +486,7 @@ static unsigned g_wp_shift; /* the host's page, log2 */
 static _Atomic u64 g_wp_budget; /* atomic: pages the tracking and the traps may hold at once */
 static _Atomic u64 g_wp_held;   /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static _Atomic u32 g_wp_opened; /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
-/* Hot pages (write_tracking_hot=1): a page the scans of its leaf report written WP_HOT_AFTER times in a row is left
+/* Hot pages (write_tracking_hot_pages 1 or 2): a page the scans of its leaf report written WP_HOT_AFTER times in a row is left
    writable, and reported written by every scan after without its fault, as a page written in every epoch would be;
    at its WP_HOT_AFTER + WP_HOT_FOR-th report in a row it is protected again and counted from zero, so a page no longer
    written goes quiet. A scan that finds it unwritten, a trap or a mapping change starts its count over. Reporting a
@@ -494,7 +495,7 @@ static _Atomic u32 g_wp_opened; /* atomic: moves whenever pages become writable 
    per host page, changes under the page's lock */
 #define WP_HOT_AFTER 2
 #define WP_HOT_FOR   32
-static _Atomic u8* g_wp_hot;   /* the counts; NULL with write_tracking_hot=0 */
+static _Atomic u8* g_wp_hot;   /* the counts; NULL with write_tracking_hot_pages=0 */
 static _Atomic u64 g_wp_hot_n; /* atomic: pages hot now (counted WP_HOT_AFTER or more) */
 /* A mark per group of pages that a scan has something to do in: a page of it became written, or has a hot count. The
    scans read a state for each page of the leaves checks need, thousands in a scan and hundreds of thousands of scans
@@ -949,17 +950,19 @@ static void wp_init(u8* p, u64 size, int track) {
     g_wp_shift = shift;
     atomic_store_explicit(&g_wp_budget, budget, memory_order_relaxed);
     g_wp_track = track;
-    if (track && g_settings.write_tracking_hot_pages == 1) {
+    if (track && g_settings.write_tracking_hot_pages) { /* 1, or 2 (Auto): on wherever protection tracks */
         void* h = mmap(NULL, (size_t)(size >> shift), PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (h == MAP_FAILED)
-            WARN("memory: write_tracking_hot=1 needs %llu bytes for its counts, which mmap refused (error %d): no page "
-                 "is hot this run\n",
-                 (unsigned long long)(size >> shift), errno);
+            WARN(
+                "memory: write_tracking_hot_pages=%d needs %llu bytes for its counts, which mmap refused (error %d): no "
+                "page is hot this run\n",
+                g_settings.write_tracking_hot_pages, (unsigned long long)(size >> shift), errno);
         else {
             g_wp_hot = (_Atomic u8*)h;
-            LOG("memory: hot pages (write_tracking_hot=1): a page written in %d scans in a row stays writable for %d\n",
-                WP_HOT_AFTER, WP_HOT_FOR);
+            LOG("memory: hot pages (write_tracking_hot_pages=%d): a page written in %d scans in a row stays writable "
+                "for %d\n",
+                g_settings.write_tracking_hot_pages, WP_HOT_AFTER, WP_HOT_FOR);
         }
     }
     if (track) {
