@@ -201,6 +201,9 @@ static void publish(void) {
    VK_REC_FOREVER: none): 0 when until came first. What is pending goes to the consumer first, or it would never make
    the room */
 static int room_wait(u64 more, u64 until) {
+    /* room already: the clock is read only for a wait. Read at the top for the spin's end, it was read for each
+       command, about 19,500 times a present in one game, most of the reads of the thread that records the draws */
+    if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
     const u64 spin = plat_ns() + REC_ROOM_SPIN_NS;
     for (;;) {
         if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
