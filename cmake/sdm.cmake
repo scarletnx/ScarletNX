@@ -4,8 +4,8 @@
 # selection is derived from as the build runs (tools/sailgen/README.md, "The x86-64 back end"): pdftotext's text of
 # the PDF, cut into its instruction pages by sailgen --sdm with the errata's overrides (tools/sailgen/sdm/), then
 # sailgen --isel matches the back end's primitives (tools/sailgen/x64.ops) with the pages' pseudocode. The manual is not
-# kept in the tree: pass its PDF with -DSNX_SDM_PDF=, or it is downloaded once into the build tree; either way its
-# SHA-256 must be 093US's, so every build derives from the same text. Off unless SNX_SAIL_X64 is set
+# kept in the tree: pass its PDF with -DSNX_SDM_PDF=, or it is downloaded once into the CPM cache (cpmfile.json's
+# intel-sdm-vol2); either way its SHA-256 must be 093US's, so every build derives from the same text. Off unless SNX_SAIL_X64 is set
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
@@ -19,7 +19,6 @@ endif()
 option(SNX_SAIL_X64 "Derive the x86-64 back end's instruction selection from the Intel SDM (needs pdftotext)"
        ${snx_sail_x64_default})
 set(SNX_SDM_PDF "" CACHE FILEPATH "Intel SDM Vol. 2 PDF, order no. 325383-093US (downloaded if empty)")
-set(snx_sdm_url "https://cdrdv2.intel.com/v1/dl/getContent/671110")
 set(snx_sdm_sha256 d137a7887787bbb06c1a8b8bafd51958d8d2e16b4dff987a03226c845cca1516)
 
 # the manual and pdftotext, found once: where either is missing (no PDF given and no download, a revision other than
@@ -29,16 +28,10 @@ if(SNX_SAIL_X64)
     set(snx_sdm_why "")
     set(pdf "${SNX_SDM_PDF}")
     if(NOT pdf)
-        set(pdf "${PROJECT_BINARY_DIR}/sdm/325383-093US.pdf")
-        if(NOT EXISTS "${pdf}")
-            message(STATUS "Downloading the Intel SDM Vol. 2 (325383-093US)")
-            file(DOWNLOAD "${snx_sdm_url}" "${pdf}" STATUS st TLS_VERIFY ON)
-            list(GET st 0 rc)
-            if(rc)
-                file(REMOVE "${pdf}")
-                set(snx_sdm_why "its download failed (${st}): pass -DSNX_SDM_PDF=<325383-093US.pdf>")
-            endif()
-        endif()
+        # pinned in cpmfile.json (intel-sdm-vol2) by its SHA-512, kept in the CPM cache: Intel's link serves the latest
+        # revision, so a newer one there stops the configure until the entry moves to it, or -DSNX_SDM_PDF= names 093US
+        snx_package_file(intel-sdm-vol2)
+        set(pdf "${IntelSDM_SOURCE_DIR}/671110")
     endif()
     if(NOT snx_sdm_why)
         file(SHA256 "${pdf}" got)
