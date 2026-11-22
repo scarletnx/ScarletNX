@@ -43,10 +43,7 @@
 
 /* a word the emitters can't make (bits.h's sg_fail) takes the function back to LLVM */
 static _Thread_local jmp_buf* g_fail;
-static _Thread_local const char* g_fail_what; /* why, for SNX_X64_STATS */
-static _Thread_local long long g_fail_a, g_fail_b;
 #define SG_FAIL_JUMP g_fail
-#define SG_FAIL_NOTE(what, a, b) (g_fail_what = (what), g_fail_a = (a), g_fail_b = (b))
 #define SGX_FN 1
 
 typedef struct SgXAsm SgXAsm;
@@ -102,7 +99,6 @@ typedef struct {
     signed char vpin[32]; /* each V register's XMM register (8-15), -1 for none */
     signed char mempin;   /* the guest memory's base's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
-    SnxU32 word; /* the instruction being made: SNX_X64_STATS names it where the function goes to LLVM */
     int dispatch, d_label, mismatch_label;
     int nstubs, cap_stubs;
     struct Stub {
@@ -1434,10 +1430,6 @@ static void liveness(Unit* u, const SnxFunction* f) {
     int* succ;
     size_t i, n = f->count;
     int changed, passes = 0;
-    if (getenv("SNX_X64_NO_LIVENESS")) {
-        u->live = NULL;
-        return;
-    }
     u->live = NULL;
     u->vlive = NULL;
     u->live_buf = (SnxU64*)grow(u->live_buf, &u->cap_live, n, sizeof *u->live_buf);
@@ -1494,12 +1486,6 @@ static void liveness(Unit* u, const SnxFunction* f) {
             if (in != u->live[i] || vin != u->vlive[i]) u->live[i] = in, u->vlive[i] = vin, changed = 1;
         }
     } while (changed && ++passes < 64);
-    if (getenv("SNX_X64_LIVE_DEBUG")) fprintf(stderr, "live F_%llX: %d passes, changed %d\n", (unsigned long long)f->start, passes, changed);
-    if (getenv("SNX_X64_LIVE_DEBUG"))
-        for (i = 0; i < n; ++i)
-            fprintf(stderr, "live %llX: in %09llX use %09llX def %09llX v in %08X use %08X def %08X\n",
-                    (unsigned long long)snx_function_address(f, i), (unsigned long long)u->live[i],
-                    (unsigned long long)use[i], (unsigned long long)def[i], u->vlive[i], vuse[i], vdef[i]);
     free(use), free(succ), free(vuse);
     if (changed) u->live = NULL, u->vlive = NULL; /* no fixed point: none known */
 }
@@ -1534,9 +1520,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     u->exits = NULL;
     u->a.reserved = u->a.xreserved = 0;
     memset(vweight, 0, sizeof vweight);
-    static int every = -1; /* SNX_X64_PIN_ALL=1: pins in every function, of every register read once (for tests) */
-    if (every < 0) every = getenv("SNX_X64_PIN_ALL") != NULL;
-    if ((f->count < 8 && !every) || getenv("SNX_X64_NO_PINS")) return;
+    if (f->count < 8) return;
     loop = (unsigned char*)calloc(f->count + 1, 1);
     succ = (int*)malloc(2 * f->count * sizeof *succ);
     if (!loop || !succ) {
@@ -1675,25 +1659,15 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             }
         }
     }
-    if (getenv("SNX_X64_PIN_DEBUG")) {
-        unsigned r;
-        fprintf(stderr, "pins F_%llX:", (unsigned long long)f->start);
-        for (r = 0; r < 32; ++r)
-            if (weight[r]) fprintf(stderr, " x%u=%llu", r, (unsigned long long)weight[r]);
-        fprintf(stderr, "\n  fixed %d", fixed);
-        fprintf(stderr, "\n  depth:");
-        for (i = 0; i < f->count; ++i) fprintf(stderr, "%u", loop[i]);
-        fprintf(stderr, "\n");
-    }
     free(loop);
-    nhosts = fixed || getenv("SNX_X64_NO_CS_PINS") ? 5 : 7;
+    nhosts = fixed ? 5 : 7;
     for (k = 0; k < nhosts; ++k) {
         unsigned r;
         SnxU64 top = 0;
         best = 33;
         for (r = 0; r < 33; ++r)
             if ((r == 32 ? u->mempin < 0 : u->pin[r] < 0) && weight[r] > top) top = weight[r], best = r;
-        if (best == 33 || top < (every ? 1u : 8u)) break;
+        if (best == 33 || top < 8u) break;
         if (best == 32) u->mempin = hosts[k];
         else
             u->pin[best] = hosts[k];
@@ -1701,15 +1675,13 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         u->pinned = 1;
     }
     /* the V registers most used, in XMM15 down to XMM8 (the values' XMM0-7 left) */
-    static int xpins = -1;
-    if (xpins < 0) xpins = getenv("SNX_X64_XPINS") ? atoi(getenv("SNX_X64_XPINS")) : 8;
-    for (k = 0; k < (unsigned)xpins && !getenv("SNX_X64_NO_CS_PINS"); ++k) {
+    for (k = 0; k < 8; ++k) {
         unsigned r;
         SnxU64 top = 0;
         best = 32;
         for (r = 0; r < 32; ++r)
             if (u->vpin[r] < 0 && vweight[r] > top) top = vweight[r], best = r;
-        if (best == 32 || top < (every ? 1u : 8u)) break;
+        if (best == 32 || top < 8u) break;
         u->vpin[best] = (signed char)(15 - k);
         u->a.xreserved |= 1u << (15 - k);
         u->pinned = 1;
@@ -1772,32 +1744,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     jcc(u, 0x5, u->mismatch_label);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
-        /* SNX_X64_STATS=2: every instruction the function goes to LLVM for, by op ("x64op <function> <op>"), its
-           region dropped and the next one made: what would make the most functions this back end's */
-        static int every = -1;
         volatile size_t vi = 0;
-        volatile int missed = 0;
-        if (every < 0) every = getenv("SNX_X64_STATS") && atoi(getenv("SNX_X64_STATS")) >= 2;
         if (setjmp(jb)) {
-            if (!every) {
-                ok = 0;
-                goto out;
-            }
-        missed:
-            {
-                SnxA64Insn insn;
-                snx_a64_decode_word(u->word, u->codegen->features, &insn);
-                fprintf(stderr, "x64op %llX %s %08X %s (%lld, %lld)\n", (unsigned long long)f->start,
-                        snx_a64_op_text(insn.op), (unsigned)u->word, g_fail_what ? g_fail_what : "not made", g_fail_a,
-                        g_fail_b);
-                g_fail_what = NULL;
-            }
-            missed = 1;
-            u->g->x.n = 0;
-            u->g->x.nv = 1;
-            u->g->x.nb = 1;
-            flush(u);
-            ++vi;
+            ok = 0;
+            goto out;
         }
         for (; vi < f->count; ++vi) {
             SnxU64 address = snx_function_address(f, vi);
@@ -1807,17 +1757,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
                 bind(u, lab0 + (int)vi);
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
-            u->word = word;
-            g_fail_what = NULL;
             if (!instruction(u, vi, address, word)) {
-                if (every) goto missed;
                 ok = 0;
                 goto out;
             }
-        }
-        if (missed) {
-            ok = 0;
-            goto out;
         }
     }
     flush(u);
@@ -1886,8 +1829,6 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->syms[sym0].size = u->b.n - u->syms[sym0].at;
 out:
     g_fail = saved;
-    if (!ok && getenv("SNX_X64_STATS"))
-        fprintf(stderr, "x64: F_%llX to LLVM at %08X\n", (unsigned long long)f->start, (unsigned)u->word);
     if (!ok) {
         /* as it was: LLVM makes this one */
         u->b.n = at0;
@@ -2120,8 +2061,6 @@ static unsigned host_features(void);
 /* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT */
 #define X64_BASELINE (SGX_F_SSE3 | SGX_F_SSSE3 | SGX_F_SSE41 | SGX_F_SSE42 | SGX_F_PCLMUL | SGX_F_POPCNT)
 int snx_x64_available(void) {
-    const char* b = getenv("SNX_RECOMPILER_BACKEND");
-    if (b && !strcmp(b, "llvm")) return 0;
     return (host_features() & X64_BASELINE) == X64_BASELINE;
 }
 
@@ -2202,23 +2141,9 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
         count += made[i - first];
         if (options->jit && !made[i - first]) break;
     }
-    if (getenv("SNX_X64_STATS"))
-        fprintf(stderr, "x64: %lu of %lu functions\n", (unsigned long)count, (unsigned long)(last - first));
     if (options->jit && count != last - first) count = 0;
     if (count) {
         write_object(&u, object, size);
-        if (getenv("SNX_X64_DUMP")) {
-            /* SNX_X64_DUMP=folder: each object as written, x64_<first function>.o, for objdump */
-            char path[512];
-            FILE* fo;
-            snprintf(path, sizeof path, "%s/x64_%llX.o", getenv("SNX_X64_DUMP"),
-                     (unsigned long long)codegen->functions[first].start);
-            fo = fopen(path, "wb");
-            if (fo) {
-                fwrite(*object, 1, *size, fo);
-                fclose(fo);
-            }
-        }
     }
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
