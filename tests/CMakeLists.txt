@@ -5351,6 +5351,9 @@ if(UNIX)
     add_test(NAME memory_alias_signal_ww_auto COMMAND snx-test-memory-alias --write_tracking=1)
     set_tests_properties(memory_alias_signal_ww memory_alias_signal_ww_auto
                          PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # the write marks below guest memory (write_marks=1): the runtime's writers' marks and their scan
+    add_test(NAME memory_alias_write_marks COMMAND snx-test-memory-alias --write_marks=1)
+    set_tests_properties(memory_alias_write_marks PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # the write tracking in NCE's layout (g_mem 0, moved up from 64 GiB), each kind: Android's is the protection
     add_test(NAME memory_alias_nce COMMAND snx-test-memory-alias --nce)
     set_tests_properties(memory_alias_nce PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)

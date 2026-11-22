@@ -157,6 +157,7 @@ void plat_exit_now(int code) {
 static u8* g_ww_base;
 static u64 g_ww_size;
 static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
+static u64 g_ww_watched_size;
 /* plat_vm_track's reservation, whose pages the traps arm (below) */
 static u8* g_vm_base;
 static u64 g_vm_size;
@@ -208,22 +209,24 @@ static u8* vm_reserved(void* p) {
 }
 u8* plat_vm_reserve(u64 size) {
     u8* p = vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
-    if (p) g_ww_watched = p;
+    if (p) g_ww_watched = p, g_ww_watched_size = size;
     return p;
 }
 /* at the 64 KiB allocation granularity, which commits any 4 KiB page */
 u8* plat_vm_reserve_unwatched(u64 size) { return (u8*)plat_mem_reserve(size, 0); }
 void plat_vm_track(u8* p, u64 size) {
+    /* the guest's memory may start past the reservation's start (mem.c reserves the write marks below it) */
+    int watched = g_ww_watched && p >= g_ww_watched && p + size <= g_ww_watched + g_ww_watched_size;
     g_vm_base = p; /* mem_init runs before any thread that traps */
     g_vm_size = size;
     if (g_settings.write_tracking == 1)
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
-             p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
-                               : "the reservation has no write watch, so the caches compare contents");
+             watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
+                     : "the reservation has no write watch, so the caches compare contents");
     if (g_settings.write_tracking_hot_pages == 1)
         WARN("memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks the writes, "
              "which has no Windows version: no page is hot this run\n");
-    if (p != g_ww_watched || g_settings.write_tracking == 2) return;
+    if (!watched || g_settings.write_tracking == 2) return;
     g_ww_base = p; /* mem_init runs before any thread that scans */
     g_ww_size = size;
 }

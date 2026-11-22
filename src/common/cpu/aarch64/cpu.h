@@ -144,6 +144,12 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
                                     ? 1
                                     : -1];
 
+/* The write marks of a module made with the setting write_marks (recompiler/llvm/ir_marks.c): a byte per 4 KiB page
+   of the guest's address space, in the SNX_WMARK_BELOW bytes just below CPU.mem, which a guest store sets to 1 after
+   it wrote. The runtime reserves and commits them with guest memory (memory/mem.c) and reads them in place of the
+   host's written-page tracking (gpu/vk/buffer.c). A module without them writes no byte there */
+#define SNX_WMARK_BELOW ((u64)1 << 27)
+
 /* ---- guest memory: a flat mapping at M, no translation, holding the guest's little-endian bytes: a big-endian
    host (ppc64) swaps what it reads and writes as numbers, as the IR emitters' ir_rd and ir_wr do ---- */
 #define MP(a) (M + (u64)(a))

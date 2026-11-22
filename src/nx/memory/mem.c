@@ -16,6 +16,7 @@
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
+#include "common/cpu/aarch64/cpu.h"
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1065,7 +1066,9 @@ static u8* reserve_tiers(void) {
                         (unsigned long long)(tiers[i] >> 30));
                 continue;
             }
-            p = watched ? plat_vm_reserve(tiers[i]) : plat_vm_reserve_unwatched(tiers[i]);
+            /* the write marks' bytes below (cpu.h), reserved with it always, as the settings may not be read yet */
+            p = watched ? plat_vm_reserve(tiers[i] + SNX_WMARK_BELOW)
+                        : plat_vm_reserve_unwatched(tiers[i] + SNX_WMARK_BELOW);
             if (!p) {
                 if (!watched && errno == ENOSYS) return NULL;
                 LOG("memory: %llu GiB of address space%s refused: %s\n", (unsigned long long)(tiers[i] >> 30),
@@ -1074,6 +1077,7 @@ static u8* reserve_tiers(void) {
             }
             g_as_size = tiers[i];
             layout_for(tiers[i]);
+            p += SNX_WMARK_BELOW;
             if (!watched)
                 WARN("memory: %llu GiB of address space reserved without the write watch, as no tier from %llu GiB "
                      "down was given with it: the caches compare guest memory's contents to find what changed\n",
@@ -1170,6 +1174,65 @@ int mem_foreign(char* out, size_t size) {
     errno = ENOSYS;
     return -1;
 }
+/* ---- write marks (cpu.h's SNX_WMARK_BELOW, recompiler/llvm/ir_marks.c): a byte per page below g_mem, which the
+   game's code (a module made with write_marks) and the runtime's writers (mem_wrote) set, and mem_marks_scan reads
+   and clears. NULL without them: under NCE, which has no g_mem, or without the setting */
+static u8* g_wmarks;
+static void marks_init(void) {
+    if (!g_settings.write_marks || g_mem_identity || !g_mem) return;
+    if (plat_vm_commit(g_mem - SNX_WMARK_BELOW, g_as_size >> 12)) {
+        WARN("memory: the write marks' %llu MiB could not be committed: the game's first store will fault\n",
+             (unsigned long long)((g_as_size >> 12) >> 20));
+        return;
+    }
+    g_wmarks = g_mem - SNX_WMARK_BELOW;
+    LOG("memory: write marks on, %llu MiB below guest memory\n", (unsigned long long)((g_as_size >> 12) >> 20));
+}
+int mem_marks_on(void) { return g_wmarks != NULL; }
+void mem_wrote(u64 a, u64 size) {
+    if (!g_wmarks || !size || a >= g_as_size) return;
+    u64 e = size > g_as_size - a ? g_as_size : a + size;
+    atomic_thread_fence(memory_order_release); /* the bytes before their marks, as a guest store's */
+    for (u64 pg = a >> 12; pg <= (e - 1) >> 12; pg++)
+        atomic_store_explicit((_Atomic u8*)&g_wmarks[pg], 1, memory_order_relaxed);
+}
+u8 mem_mark_peek(u64 a) {
+    return g_wmarks && a < g_as_size ? atomic_load_explicit((_Atomic u8*)&g_wmarks[a >> 12], memory_order_relaxed) : 0;
+}
+int mem_marks_scan(u64 a, u64 size, void (*cb)(u8* p, u64 size)) {
+    if (!g_wmarks) return -1;
+    if (!size || a >= g_as_size) return 0;
+    u64 pg = a >> 12, pe = ((size > g_as_size - a ? g_as_size : a + size) + 4095) >> 12, run = 0;
+    int in = 0;
+    while (pg < pe) {
+        u64 bits;
+        /* eight marks a word where the run is aligned, each word read before the exchange that takes it */
+        if (!(pg & 7) && pg + 8 <= pe) {
+            _Atomic u64* w = (_Atomic u64*)(void*)&g_wmarks[pg];
+            if (!atomic_load_explicit(w, memory_order_relaxed)) {
+                if (in) cb(GP(run << 12), (pg - run) << 12), in = 0;
+                pg += 8;
+                continue;
+            }
+            bits = atomic_exchange_explicit(w, 0, memory_order_acquire);
+            for (int i = 0; i < 8; i++, pg++)
+                if ((bits >> (8 * i)) & 0xff) {
+                    if (!in) run = pg, in = 1;
+                } else if (in)
+                    cb(GP(run << 12), (pg - run) << 12), in = 0;
+            continue;
+        }
+        _Atomic u8* m = (_Atomic u8*)&g_wmarks[pg];
+        if (atomic_load_explicit(m, memory_order_relaxed) && atomic_exchange_explicit(m, 0, memory_order_acquire)) {
+            if (!in) run = pg, in = 1;
+        } else if (in)
+            cb(GP(run << 12), (pg - run) << 12), in = 0;
+        pg++;
+    }
+    if (in) cb(GP(run << 12), (pe - run) << 12);
+    return 0;
+}
+
 /* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
 static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
 int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }
@@ -1198,6 +1261,7 @@ void mem_init(void) {
     /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
        addresses, from the code region's base, which mem_layout_move moved up by g_mem_moved */
     plat_vm_track(tracked_base(), g_mem_identity ? g_as_size - IDENTITY_LO - g_mem_moved : g_as_size);
+    marks_init();
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);

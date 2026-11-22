@@ -4,6 +4,7 @@
    injectable commit failures. Thread/handle/GPU services are stubs, not the code under test. */
 #include "nx/memory/own.h"
 #include "common/utilities/common.h"
+#include "common/cpu/aarch64/cpu.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
@@ -62,6 +63,7 @@ static unsigned asked_n;
 static int asked_fd = -1;
 static int watch_refused;   /* a Windows that gives no reservation with the write watch */
 static int unwatched_given; /* 0: ENOSYS, as POSIX, whose tracking comes after the reservation */
+/* size: the guest's tier, the write marks' bytes below it (cpu.h's SNX_WMARK_BELOW) taken off what mem.c asks */
 static void ask(u64 size, int watched) {
     u64 w[2] = {size, (u64)watched};
     if (asked_n < sizeof asked / sizeof *asked) asked[asked_n].size = size, asked[asked_n].watched = watched;
@@ -70,7 +72,7 @@ static void ask(u64 size, int watched) {
 }
 static u8* reserve(u64 size) {
     void* p;
-    if (refuse_above && size > refuse_above) {
+    if (refuse_above && size - SNX_WMARK_BELOW > refuse_above) {
         errno = ENOMEM;
         return NULL;
     }
@@ -81,7 +83,7 @@ static u8* reserve(u64 size) {
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
 }
 u8* plat_vm_reserve(u64 size) {
-    ask(size, 1);
+    ask(size - SNX_WMARK_BELOW, 1);
     if (watch_refused) {
         errno = ENOMEM;
         return NULL;
@@ -89,7 +91,7 @@ u8* plat_vm_reserve(u64 size) {
     return reserve(size);
 }
 u8* plat_vm_reserve_unwatched(u64 size) {
-    ask(size, 0);
+    ask(size - SNX_WMARK_BELOW, 0);
     if (!unwatched_given) {
         errno = ENOSYS;
         return NULL;

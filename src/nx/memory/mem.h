@@ -131,6 +131,15 @@ int mem_foreign(char* out, size_t size);
    first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
    0 there, below the tracked range */
 int mem_ww_probe(void (*cb)(u8* p, u64 size));
+/* The write marks (setting write_marks; cpu.h's SNX_WMARK_BELOW): whether they are on; [a, a + size) of guest memory
+   written by the runtime (a service's copy, a system call's fill), marked as the game's code marks its stores, after
+   the bytes went in; the mark of a's page as it is now (tests); and a scan of [a, a + size) that reports each run of
+   marked pages to cb, as plat_ww_scan reports written ones, and clears their marks: 0, or -1 without marks. A page a
+   trap holds is reported too: the caller sets its mark again (mem_wrote), as plat_ww_scan leaves it for later */
+int mem_marks_on(void);
+void mem_wrote(u64 a, u64 size);
+u8 mem_mark_peek(u64 a);
+int mem_marks_scan(u64 a, u64 size, void (*cb)(u8* p, u64 size));
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);
