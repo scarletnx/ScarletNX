@@ -64,7 +64,13 @@ char* sg_read(const char* path, size_t* size) {
         exit(1);
     }
     fclose(f);
-    *size = (size_t)n;
+    /* a Windows checkout's text has CRLF line ends (git's autocrlf), and every reader takes its lines by '\n' alone:
+       "@operation\r" was an unknown section of an override */
+    size_t w = 0;
+    for (size_t r = 0; r < (size_t)n; ++r)
+        if (text[r] != '\r' || r + 1 >= (size_t)n || text[r + 1] != '\n') text[w++] = text[r];
+    text[w] = 0;
+    *size = w;
     return text;
 }
 
