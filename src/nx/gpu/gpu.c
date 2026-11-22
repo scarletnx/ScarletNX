@@ -809,7 +809,8 @@ static GpuItem *g_qhead, *g_qtail;
 static u64 g_qgen;                /* bumped by each new item and kick: a pass that saw an older one looks again */
 static u64 g_qkicks;              /* the kicks among them */
 /* A poll's wait, which nothing but WAIT_POLL_NS ended where the write it waits for came with no kick: in one game
-   about 7 of these sleeps a frame, 5 ms, at the start of each frame. g_qpolls (atomic) is 1 while a poll waits: the
+   about 7 of these sleeps a frame, 5 ms, at the start of each frame. A stream's wait for memory (a semaphore's or a
+   report's acquire) counts as a poll's. g_qpolls (atomic) is 1 while a poll waits: the
    GPU thread sets it before the pass that polls again, so a write that gpu_kick_polls finds it 0 for came before that
    pass's look (both seq_cst), and one that finds it 1 kicks */
 static _Atomic int g_qpolls;
@@ -991,7 +992,7 @@ static u32 runnable(void) {
             n -= atomic_load_explicit(&g_qjobs[c], memory_order_relaxed);
     return n;
 }
-static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0 */
+static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0, or a stream waits for memory */
 /* one pass over the queue, its lock held (dropped while an item runs): 1 when something ran. *wake is the time to
    look again at the waits */
 static int run_pass(i64* wake) {
@@ -1060,6 +1061,11 @@ static int run_pass(i64* wake) {
             pm_lock(&g_qlk);
             if (!over) {
                 if (again >= 0 && (*wake < 0 || again < *wake)) *wake = again;
+                /* a wait for memory: a release's write kicks it (gpu_kick_polls) as it does a poll's, rather than the
+                   next look WAIT_POLL_NS on, which stays for what the CPU writes */
+                if (atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_SEMAPHORE ||
+                    atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_REPORT)
+                    g_qmissed = 1;
                 continue;
             }
             atomic_store_explicit(&g_qparked[it->chan], 0, memory_order_relaxed);

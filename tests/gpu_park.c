@@ -100,10 +100,18 @@ static void see(u32 v) {
     pthread_cond_broadcast(&seen_cv);
     pthread_mutex_unlock(&seen_lk);
 }
+/* set: the next clear notes what ended the GPU thread's last sleep (GpuPollStats.last) in sleep_end */
+static _Atomic int note_sleep_end;
+static _Atomic u32 sleep_end;
 static void record_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     /* CLEAR_SURFACE's word again, from the clear the 3D engine made of it */
     u32 v = c->aspects | c->color_mask << 2 | c->slot << 6 | c->layer << 10;
     (void)ds, (void)o;
+    if (atomic_exchange_explicit(&note_sleep_end, 0, memory_order_acq_rel)) {
+        GpuPollStats s;
+        gpu_poll_stats(&s);
+        atomic_store_explicit(&sleep_end, s.last, memory_order_release);
+    }
     if (rewrite_on_clear) {
         *rewrite_on_clear = snx_le32(rewrite_value);
         rewrite_on_clear = NULL;
@@ -549,6 +557,26 @@ int main(void) {
     expect(took < FAST, "the CPU's release was seen soon after");
     expect(atomic_load_explicit(&epochs, memory_order_seq_cst) > epochs_before,
            "the end of a wait tells the renderer memory may have changed");
+
+    /* an acquire a release's write ends (vk/release.c writes the payload, then gpu_kick_polls): the GPU thread's sleep
+       while the stream waits is ended by that kick, not by its next look WAIT_POLL_NS on. Nine trials, as a look can
+       come between the write and the kick; before, every one ended at the look */
+    {
+        int kicked = 0;
+        for (u32 t = 0; t < 9; t++) {
+            forget_marks();
+            cpu_store(SEM + 112, 0);
+            submit1(sem_then(SEM + 112, 100 + t, 1, 0xF1), 21);
+            nanosleep(&ms20, NULL); /* parked, asleep between its looks */
+            atomic_store_explicit(&note_sleep_end, 1, memory_order_release);
+            cpu_store(SEM + 112, 100 + t);
+            gpu_kick_polls();
+            wait_marks(1);
+            kicked += marks_are((u32[]){0xF1}, 1) && atomic_load_explicit(&sleep_end, memory_order_acquire) == 0;
+        }
+        if (kicked < 7) fprintf(stderr, "a release's kick ended %d of 9 parked acquires' sleeps\n", kicked);
+        expect(kicked >= 7, "a release's kick ends the sleep of a stream that waits for memory");
+    }
 
     /* an acquire already met: the stream goes on, and the renderer is told memory may have changed (what the CPU
        wrote before releasing it is for the stream to see), on top of the submission's own */
