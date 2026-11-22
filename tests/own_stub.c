@@ -54,3 +54,5 @@ void plat_ww_close(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
+/* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }

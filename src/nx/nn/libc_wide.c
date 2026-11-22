@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
+#include "nx/memory/mem.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,15 +103,15 @@ u64 libc_wcstok(CPU* c, u64 s, u64 delim, u64 save) {
 u64 libc_wmemchr(CPU* c, u64 s, u32 ch, u64 n) { return n ? GN(wmemchr(W(s), (wchar_t)ch, (size_t)n)) : 0; }
 i32 libc_wmemcmp(CPU* c, u64 a, u64 b, u64 n) { return n ? wmemcmp(W(a), W(b), (size_t)n) : 0; }
 u64 libc_wmemcpy(CPU* c, u64 d, u64 s, u64 n) {
-    if (n) wmemcpy(W(d), W(s), (size_t)n);
+    if (n) wmemcpy(W(d), W(s), (size_t)n), mem_wrote(d, 4 * n);
     return d;
 }
 u64 libc_wmemmove(CPU* c, u64 d, u64 s, u64 n) {
-    if (n) wmemmove(W(d), W(s), (size_t)n);
+    if (n) wmemmove(W(d), W(s), (size_t)n), mem_wrote(d, 4 * n);
     return d;
 }
 u64 libc_wmemset(CPU* c, u64 d, u32 ch, u64 n) {
-    if (n) wmemset(W(d), (wchar_t)ch, (size_t)n);
+    if (n) wmemset(W(d), (wchar_t)ch, (size_t)n), mem_wrote(d, 4 * n);
     return d;
 }
 

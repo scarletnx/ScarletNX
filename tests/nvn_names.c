@@ -308,6 +308,8 @@ void nvn_replay_finish_all(void) {
 /* the writes recorded for the renderer: how many, and the last one's range */
 static u32 g_written;
 static u64 g_written_at, g_written_size;
+/* memory/mem.c: no write marks here */
+void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     g_written++;
     g_written_at = cpu;

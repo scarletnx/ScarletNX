@@ -80,6 +80,8 @@ u32 nvn_replay_shown_syncpt(void) { return 9; }
 
 /* ---- what the file needs of the runtime besides: stubs, none reached by the cases below */
 void nvn_replay_finish_all(void) {}
+/* memory/mem.c: no write marks here */
+void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     (void)cpu;
     (void)size;

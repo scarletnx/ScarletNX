@@ -529,6 +529,7 @@ static void decommit_host_nl(u64 a, u64 size) {
         else {
             own_acquire(edge[i], g_host_page); /* a neighbour's bytes the GPU holds land before the page is written */
             memset(GP(lo), 0, (size_t)(hi - lo));
+            mem_wrote(lo, hi - lo);
         }
     }
     if (last > first + g_host_page) give_back_nl(first + g_host_page, last - first - g_host_page);
@@ -951,6 +952,7 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
     else if (!p) {
         if (commit_nl(dst, size)) return MEM_NOMEM;
         memcpy(GP(dst), GP(src), size);
+        mem_wrote(dst, size);
     }
     c.set_state = c.set_perm = c.set_pool = 1;
     c.state = state;
@@ -1505,7 +1507,10 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back) {
     if (back) own_acquire(back, size);
     if (back && !g_pool_on) own_acquire(dst, size); /* a copy's bytes, read below: the view may be owned too */
     mem_lock();
-    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) memcpy(GP(back), GP(dst), size); /* a copy's */
+    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) { /* a copy's */
+        memcpy(GP(back), GP(dst), size);
+        mem_wrote(back, size);
+    }
     unmap_nl(dst, size);
     mem_unlock();
     mapping_end();
@@ -2138,6 +2143,7 @@ int mem_map_code(MemCodeMap* m) {
     else {
         memcpy(GP(base), GP(m->source), m->size);
         if (m->bss_size) memcpy(GP(base + m->size), GP(m->bss), m->bss_size);
+        mem_wrote(base, total);
         blk_set_nl(base, total, MS_ALIASCODEDATA, PERM_RW, 0);
     }
     if (!r) {
@@ -2171,6 +2177,8 @@ int mem_unmap_code(const MemCodeMap* m) {
         if (!any_pool_nl(m->base, total)) {
             memcpy(GP(m->source), GP(m->base), m->size);
             if (m->bss_size) memcpy(GP(m->bss), GP(m->base + m->size), m->bss_size);
+            mem_wrote(m->source, m->size);
+            if (m->bss_size) mem_wrote(m->bss, m->bss_size);
         }
         unmap_nl(m->base, total);
         demote_nl(m->source, m->size);

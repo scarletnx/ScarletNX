@@ -14,6 +14,7 @@
    (hook_guest_call). The family is off on Windows, whose C library lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
 #include "nx/nn/hook.h"
+#include "nx/memory/mem.h"
 #include "common/utilities/bits.h"
 #include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -182,6 +183,7 @@ u64 libc_strtok_r(CPU* c, u64 s, u64 delim, u64 save) {
 i32 libc_memset_s(CPU* c, u64 d, u64 size, i32 ch, u64 n) {
     if (!d) return 22;
     memset(S(d), ch, (size_t)(n < size ? n : size));
+    mem_wrote(d, n < size ? n : size);
     return n > size ? 22 : 0;
 }
 

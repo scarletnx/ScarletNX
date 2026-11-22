@@ -1323,6 +1323,7 @@ int romfs_read_guest(u64 off, u64 addr, u64 size) {
     plat_ww_open(GP(addr), size);
     rc = romfs_read(off, GP(addr), size, 0);
     plat_ww_close(GP(addr), size);
+    mem_wrote(addr, size);
     return rc;
 }
 /* the file table (the header's eighth and ninth u64s) read whole, its entries in their order */
@@ -1556,6 +1557,7 @@ u32 fs_file_read(FileData* f, u64 off, u64 a, u64 sz, u64* bytes_read) {
         if (ferror(f->f)) rc = SNX_RC_FS_OUT_OF_RANGE;
     }
     plat_ww_close(GP(a), sz);
+    mem_wrote(a, sz);
     if (rc) return (u32)rc;
     atomic_fetch_add_explicit(&g_fs_bytes_read, n, memory_order_relaxed);
     *bytes_read = n;
@@ -2611,6 +2613,7 @@ int fs_storage_read_guest(FsStorage* st, u64 off, u64 addr, u64 size) {
     plat_ww_open(GP(addr), size);
     int rc = fs_storage_read(st, off, GP(addr), size);
     plat_ww_close(GP(addr), size);
+    mem_wrote(addr, size);
     return rc;
 }
 void svc_fs_init(void) {

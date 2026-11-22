@@ -805,6 +805,7 @@ static void reserved_samplers(u64 sp) {
         par.anisotropy = (f32)(i + 1);
         nvn_tsc_encode(&par, tsc);
         memcpy(GP(memory + p->offset + i * NVN_DESCRIPTOR_SIZE), tsc, sizeof tsc);
+        mem_wrote(memory + p->offset + i * NVN_DESCRIPTOR_SIZE, sizeof tsc); /* the GPU reads it: write marks */
     }
 }
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
@@ -851,6 +852,7 @@ static void texture_write(u64 slot, const u32 tic[8]) {
     nvn_replay_finish_all();
     nvn_wait_end();
     memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
+    mem_wrote(slot, NVN_DESCRIPTOR_SIZE); /* the texture cache reads the descriptor: a write the write marks must see */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
@@ -891,6 +893,7 @@ static void sampler_write(u64 slot, const u32 tsc[8]) {
     nvn_replay_finish_all();
     nvn_wait_end();
     memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
+    mem_wrote(slot, NVN_DESCRIPTOR_SIZE);
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {

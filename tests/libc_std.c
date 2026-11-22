@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 
 #define ERRNO_AT 0x100u /* where the test's __errno_location says errno is */
 #define CMP_FN   0x40u  /* the guest's comparison function's address, as the test answers it */
