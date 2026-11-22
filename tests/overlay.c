@@ -2320,15 +2320,18 @@ int main(void) {
         assert(!overlay_toasting(0));
     }
     /* the settings off their default that change how fast the game runs (options_perf_notice): nothing before the
-       game's first frame, then the game's keys after a gamepad and the launcher's after a globe, a line each, for
-       SNX_OVERLAY_SETTINGS_MS from that frame; given once, and none for no key */
+       game's first frame, then the game's keys after a gamepad, the launcher's after a globe and this kind of game's
+       values after an info mark, a line each, for SNX_OVERLAY_SETTINGS_MS from that frame; given once, and none for no
+       key. The kind's alone is a notice too */
     {
         const u64 ms = 1000000ull, t0 = 9000 * ms;
         SnxUiFade fades[SNX_UI_FADES];
         float x, y;
-        overlay_settings_notice("", "");
+        overlay_settings_notice("", "", "");
         assert(!overlay_settings_waiting());
-        overlay_settings_notice("fps_limit, jit_opt", "opt, llvm_batch");
+        overlay_settings_notice("", "", "emulated_cores Off");
+        assert(overlay_settings_waiting());
+        overlay_settings_notice("fps_limit, jit_opt", "opt, llvm_batch", "emulated_cores Off");
         assert(overlay_settings_waiting());
         draw_fades(t0, fades);
         assert(!list.n && !overlay_toasting(t0)); /* no frame of the game's yet */
@@ -2339,6 +2342,8 @@ int main(void) {
                toast_icon("fps_limit, jit_opt") == GUI_ICON_GAMEPAD_2);
         assert(text_xy("opt, llvm_batch", &x, &y) && y == 32.0f * (float)stats_scale(s) &&
                toast_icon("opt, llvm_batch") == GUI_ICON_GLOBE);
+        assert(text_xy("emulated_cores Off, for this kind of game", &x, &y) && y == 48.0f * (float)stats_scale(s) &&
+               toast_icon("emulated_cores Off, for this kind of game") == GUI_ICON_INFO);
         assert(overlay_toasting(t0 + (u64)SNX_OVERLAY_SETTINGS_MS * ms - 1) &&
                !overlay_toasting(t0 + (u64)SNX_OVERLAY_SETTINGS_MS * ms) && SNX_OVERLAY_SETTINGS_MS == 30000);
         overlay_settings_start(t0 + 2000 * ms); /* taken already: nothing again */
@@ -2346,32 +2351,50 @@ int main(void) {
         assert(!list.n);
         toasts_gone();
     }
-    /* its lines: as many keys a line as fit it, the game's first and one kept for the launcher's while it has keys,
-       OVERLAY_SETTINGS_LINES in all; keys past a list's last line end it with how many more there are, as many of its
-       own keys left out as that takes; a key longer than a line cut there */
+    /* its lines: as many keys a line as fit it, the game's first, then the launcher's, then this kind of game's, one
+       kept for each list after while it has keys, OVERLAY_SETTINGS_LINES in all; keys past a list's last line end it
+       with how many more there are, as many of its own keys left out as that takes; a key longer than a line cut there.
+       The kind's last line ends with what its keys are, its keys narrowed to leave room for those words */
     {
         unsigned icon[OVERLAY_SETTINGS_LINES];
         char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1];
         assert(OVERLAY_SETTINGS_LINES == 3);
-        assert(overlay_settings_lines("", "", 72, icon, text) == 0);
-        assert(overlay_settings_lines("a, b", "", 72, icon, text) == 1 && !strcmp(text[0], "a, b") &&
+        assert(overlay_settings_lines("", "", "", 72, icon, text) == 0);
+        assert(overlay_settings_lines("a, b", "", "", 72, icon, text) == 1 && !strcmp(text[0], "a, b") &&
                icon[0] == GUI_ICON_GAMEPAD_2);
-        assert(overlay_settings_lines("", "opt", 72, icon, text) == 1 && !strcmp(text[0], "opt") &&
+        assert(overlay_settings_lines("", "opt", "", 72, icon, text) == 1 && !strcmp(text[0], "opt") &&
                icon[0] == GUI_ICON_GLOBE);
-        assert(overlay_settings_lines("alpha, beta, gamma", "", 12, icon, text) == 2 &&
+        assert(overlay_settings_lines("alpha, beta, gamma", "", "", 12, icon, text) == 2 &&
                !strcmp(text[0], "alpha, beta") && !strcmp(text[1], "gamma") && icon[1] == GUI_ICON_GAMEPAD_2);
-        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "opt", 12, icon, text) == 3);
+        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "opt", "", 12, icon, text) == 3);
         assert(!strcmp(text[0], "alpha, beta") && !strcmp(text[1], "+3 more") && icon[1] == GUI_ICON_GAMEPAD_2);
         assert(!strcmp(text[2], "opt") && icon[2] == GUI_ICON_GLOBE);
-        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "", 16, icon, text) == 3);
+        assert(overlay_settings_lines("alpha, beta, gamma, delta, epsilon", "", "", 16, icon, text) == 3);
         assert(!strcmp(text[0], "alpha, beta") && !strcmp(text[1], "gamma, delta") &&
                !strcmp(text[2], "epsilon")); /* three lines of its own: all of them */
-        assert(overlay_settings_lines("a, b, c, d, e, f, g, h, i, j", "", 7, icon, text) == 3);
+        assert(overlay_settings_lines("a, b, c, d, e, f, g, h, i, j", "", "", 7, icon, text) == 3);
         assert(!strcmp(text[0], "a, b, c") && !strcmp(text[1], "d, e, f") && !strcmp(text[2], "+4 more"));
-        assert(overlay_settings_lines("vk_ext_vertex_input_dynamic_state", "", 12, icon, text) == 1 &&
+        assert(overlay_settings_lines("vk_ext_vertex_input_dynamic_state", "", "", 12, icon, text) == 1 &&
                !strcmp(text[0], "vk_ext_verte"));
-        assert(overlay_settings_lines("x", "a, b, c, d, e, f, g", 7, icon, text) == 3 && !strcmp(text[0], "x") &&
+        assert(overlay_settings_lines("x", "a, b, c, d, e, f, g", "", 7, icon, text) == 3 && !strcmp(text[0], "x") &&
                !strcmp(text[1], "a, b, c") && !strcmp(text[2], "+4 more") && icon[2] == GUI_ICON_GLOBE);
+        /* the kind's alone: its line, after an info mark */
+        assert(overlay_settings_lines("", "", "emulated_cores Off", 72, icon, text) == 1 &&
+               !strcmp(text[0], "emulated_cores Off, for this kind of game") && icon[0] == GUI_ICON_INFO);
+        /* all three: a line each, the game's narrowed to one, the kind's last */
+        assert(overlay_settings_lines("alpha, beta, gamma, delta", "opt", "emulated_cores Off", 12, icon, text) == 3);
+        assert(!strcmp(text[0], "+4 more") && icon[0] == GUI_ICON_GAMEPAD_2);
+        assert(!strcmp(text[1], "opt") && icon[1] == GUI_ICON_GLOBE);
+        assert(!strcmp(text[2], "emulated_cor") && icon[2] == GUI_ICON_INFO); /* narrower than its words: cut */
+        assert(overlay_settings_lines("alpha, beta, gamma, delta", "opt", "a Off, b On", 72, icon, text) == 3);
+        assert(!strcmp(text[0], "alpha, beta, gamma, delta") && !strcmp(text[2], "a Off, b On, for this kind of game"));
+        /* the kind's keys narrowed for its words: on the lines it has, the words after the last; past its one line,
+           how many more, then the words */
+        assert(overlay_settings_lines("", "", "alpha On, beta Off, gamma On", 40, icon, text) == 3 &&
+               !strcmp(text[0], "alpha On") && !strcmp(text[1], "beta Off") &&
+               !strcmp(text[2], "gamma On, for this kind of game") && icon[2] == GUI_ICON_INFO);
+        assert(overlay_settings_lines("a", "b", "alpha On, beta Off, gamma On", 40, icon, text) == 3 &&
+               !strcmp(text[2], "alpha On, +2 more, for this kind of game"));
     }
 
     /* the caches of earlier runs found empty as the game starts: the shaders' words, else the textures'; none for

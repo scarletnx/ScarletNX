@@ -1212,7 +1212,7 @@ int options_perf_notice(const char* base) {
         k += len + (k[len] == ',');
     }
     free(off);
-    overlay_settings_notice(game, global);
+    overlay_settings_notice(game, global, "");
     return count;
 }
 
