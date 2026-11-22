@@ -35,6 +35,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <stdlib.h>
@@ -151,9 +152,10 @@ static void later_apply(void* arg) {
         pm_unlock(&h->later_lock);
         if (c.kind == GMMU_LATER_MAP)
             gmmu_space_map(c.gva, c.cpu, c.size);
-        else if (c.kind == GMMU_LATER_UNMAP)
+        else if (c.kind == GMMU_LATER_UNMAP) { /* the handle goes once its pages show nothing, as with a free */
             gmmu_space_unmap(c.gva, c.size);
-        else { /* the handle goes once its pages show nothing */
+            nvmap_handle_drop(c.nvmap);
+        } else {
             gmmu_space_free(c.gva, c.size);
             nvmap_handle_drop(c.nvmap);
         }
@@ -696,10 +698,20 @@ static void gmap_cut(u64 gva, u64 size) {
    DEFAULT_VA_SPLIT, 0x04_0000_0000, MemoryManager's split_address) to the end of the 40-bit space the gmmu covers, in
    units of the smaller big page (64 KiB). Not bounded to the big page region GET_VA_REGIONS reports: a game maps more
    than its 0x1BFFF big pages (its NVN init maps 0x20000000 bytes past it) and checks nothing against the regions.
-   Free ranges are kept sorted and merged */
+   Free ranges are kept sorted and merged.
+
+   An Ounce program's GPU addresses below the end of its guest address space are kept for the ones that equal a guest
+   address (gmmu_space_alloc_at, nvn's memory pools): the free ranges start at the first unit, and the allocator's own
+   addresses start past the guest's, so that none of them is a guest address a pool's storage may later have */
 #define VA_BASE    AS_DEFAULT_VA_SPLIT
 #define VA_END     (1ull << GMMU_ADDRESS_SPACE_BITS)
 #define VA_UNIT    (1ull << AS_BIG_PAGE_BITS_64K) /* the allocator's unit and least alignment */
+/* where the free ranges start, and where the allocator's own addresses do */
+static u64 va_lo(void) { return g_ounce ? VA_UNIT : VA_BASE; }
+static u64 va_alloc_lo(void) {
+    u64 past = (AS_SIZE + VA_UNIT - 1) & ~(VA_UNIT - 1);
+    return g_ounce && past > VA_BASE && past < VA_END ? past : VA_BASE;
+}
 static void va_insert(u32 k, u64 a, u64 e) {
     if (g_hle.nvdrv.nvafree == g_hle.nvdrv.capvafree) {
         u32 nc = g_hle.nvdrv.capvafree ? g_hle.nvdrv.capvafree * 2 : 64;
@@ -721,7 +733,7 @@ static void va_remove(u32 k) {
 static void va_init(void) {
     if (g_hle.nvdrv.va_ready) return;
     g_hle.nvdrv.va_ready = 1;
-    va_insert(0, VA_BASE, VA_END);
+    va_insert(0, va_lo(), VA_END);
 }
 static u64 va_round(u64 size) { return (size + VA_UNIT - 1) & ~(VA_UNIT - 1); }
 /* a GPU range the game names: inside the 40 bit space the page table covers. One past it would wrap the table's
@@ -744,10 +756,10 @@ static void va_take(u64 a, u64 e) {
     }
 }
 static void va_reserve(u64 a, u64 size) { va_take(a, a + va_round(size)); }
-/* gives [a, a+size) back; only the part inside the region counts */
-static void va_free(u64 a, u64 size) {
+/* gives [a, e) back (va_free: a and size in the allocator's units); only the part inside the region counts */
+static void va_give(u64 a, u64 e) {
+    u64 lo = va_lo(), hi = VA_END;
     va_init();
-    u64 e = a + va_round(size), lo = VA_BASE, hi = VA_END;
     if (a < lo) a = lo;
     if (e > hi) e = hi;
     if (a >= e) return;
@@ -764,15 +776,18 @@ static void va_free(u64 a, u64 size) {
     }
     va_insert(k, a, e);
 }
+static void va_free(u64 a, u64 size) { va_give(a, a + va_round(size)); }
+/* a range at its own address, in whole pages: pools packed a page apart each keep theirs */
+static u64 page_round(u64 size) { return (size + GMMU_PAGE_MASK) & ~(u64)GMMU_PAGE_MASK; }
 /* 0 when the region has no room */
 static u64 va_alloc(u64 size, u64 align) {
+    u64 lo = va_alloc_lo();
     va_init();
     align = align > VA_UNIT ? align : VA_UNIT;
     for (u32 k = 0; k < g_hle.nvdrv.nvafree; k++) {
-        u64 a = (g_hle.nvdrv.vafree[k].a + align - 1) & ~(align - 1);
-        if (a < g_hle.nvdrv.vafree[k].a || a >= g_hle.nvdrv.vafree[k].e ||
-            va_round(size) > g_hle.nvdrv.vafree[k].e - a)
-            continue;
+        u64 from = g_hle.nvdrv.vafree[k].a > lo ? g_hle.nvdrv.vafree[k].a : lo;
+        u64 a = (from + align - 1) & ~(align - 1);
+        if (a < from || a >= g_hle.nvdrv.vafree[k].e || va_round(size) > g_hle.nvdrv.vafree[k].e - a) continue;
         va_reserve(a, size);
         return a;
     }
@@ -1277,6 +1292,25 @@ u64 gmmu_space_alloc(u64 size, u64 align) {
     gva = va_alloc(size, align && pow2(align) ? align : VA_UNIT);
     pm_unlock(&g_host.nvdrv.aslock);
     return gva;
+}
+u64 gmmu_space_alloc_at(u64 gva, u64 size) {
+    u64 e;
+    int free = 0;
+    if (!size || (gva & GMMU_PAGE_MASK) || !gva_ok(gva, page_round(size))) return 0;
+    e = gva + page_round(size);
+    pm_lock(&g_host.nvdrv.aslock);
+    va_init();
+    for (u32 k = 0; k < g_hle.nvdrv.nvafree && !free; k++)
+        free = g_hle.nvdrv.vafree[k].a <= gva && e <= g_hle.nvdrv.vafree[k].e;
+    if (free) va_take(gva, e);
+    pm_unlock(&g_host.nvdrv.aslock);
+    return free ? gva : 0;
+}
+void gmmu_space_give_back(u64 gva, u64 size) {
+    if (!size || !gva_ok(gva, page_round(size))) return;
+    pm_lock(&g_host.nvdrv.aslock);
+    va_give(gva, gva + page_round(size));
+    pm_unlock(&g_host.nvdrv.aslock);
 }
 void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
     if (!size || !gva_ok(gva, size) || !cpu_ok(cpu, size) || !page_aligned(gva) || !page_aligned(cpu)) {

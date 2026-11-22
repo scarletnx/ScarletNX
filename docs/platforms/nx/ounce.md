@@ -33,6 +33,17 @@ The game draws through NVN2, API version 231.16 (GPU code 201.5 to 201.11). The 
 buffers, device messages, variable rate shading and HDR window metadata. ScarletNX always takes these calls; the
 `nvn_direct` setting older versions read for that is deprecated ([Deprecations](../../user/deprecations.md)).
 
+A memory pool with storage has the storage's own address as its GPU address (`nvn_MemoryPoolInitialize`,
+`gmmu_space_alloc_at`), as the console's driver maps such a pool where the device has its second address space (read
+from one driver's code; which device flag asks for it is not known, and one game's device that relies on it has flags
+0x500 where others have 0), so `nvnMemoryPoolGetBufferAddress` answers the storage's CPU address. The runtime does it
+for every Ounce device: a game that doesn't rely on it gets one GPU address as good as another. An engine frees the storage of a pool the CPU can't access by that address, as it can't map
+it: with a GPU address of the allocator's it freed that address, and its allocator stopped on it about 16 s into the
+boot. The GPU address allocator of an Ounce program keeps the addresses below the end of the guest's address space
+for these, and gives out its own past it. A virtual pool, and a pool whose range another pool's holds (a warning),
+take the allocator's. An ended pool's range goes back at once, before its unmap: only a pool over the same storage
+takes it again, and that pool's map is queued after the unmap.
+
 The game must be compiled ahead of time (`build/scarletnx -r ...`). With the JIT alone, the dispatch slot of
 `nvnBootstrapLoader` is still empty when `nvn_loader_init` runs, because that runs before `jit_init`.
 

@@ -172,10 +172,25 @@ void gpu_pool_remove(u64 gva) { (void)gva; }
 /* the registry of the live textures (gpu/guest_textures.c), which no test here reads */
 void gpu_texture_add(u64 gva, u64 size) { (void)gva, (void)size; }
 void gpu_texture_remove(u64 gva) { (void)gva; }
+/* the allocator's answers counted: an address of its own, and the ranges a pool asks for at its storage's address,
+   which g_at_refuse turns down; given back counts what went back at once */
+static int g_alloc_calls, g_at_calls, g_at_refuse, g_given_back;
+static u64 g_given_back_at;
 u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size;
     (void)align;
+    g_alloc_calls++;
     return POOL_MEM;
+}
+u64 gmmu_space_alloc_at(u64 gva, u64 size) {
+    (void)size;
+    g_at_calls++;
+    return g_at_refuse ? 0 : gva;
+}
+void gmmu_space_give_back(u64 gva, u64 size) {
+    (void)size;
+    g_given_back++;
+    g_given_back_at = gva;
 }
 void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
     (void)gva;
@@ -191,10 +206,12 @@ void gmmu_space_free(u64 gva, u64 size) {
     (void)size;
 }
 /* the page table's changes the GPU thread makes later (hle/services/nvdrv.c), made at once: no page table here, and
-   a freed pool's nvmap handle goes */
+   the nvmap handle of a pool unmapped or freed goes; the last change's kind is kept */
+static GmmuLaterKind g_later_kind;
 u32 gmmu_later(GmmuLaterKind kind, u64 gva, u64 cpu, u64 size, u32 nvmap) {
     (void)gva, (void)cpu, (void)size;
-    if (kind == GMMU_LATER_FREE) nvmap_handle_drop(nvmap);
+    g_later_kind = kind;
+    if (kind != GMMU_LATER_MAP) nvmap_handle_drop(nvmap);
     return 1;
 }
 void gmmu_later_post(u32 seq) { (void)seq; }
@@ -376,6 +393,57 @@ static void pool_init(void) {
     nvn_MemoryPoolBuilderSetDefaults(NULL, POOL_B);
     nvn_MemoryPoolBuilderSetStorage(NULL, POOL_B, POOL_MEM, 0x100000);
     check(nvn_MemoryPoolInitialize(NULL, POOL, POOL_B), "the pool initializes");
+}
+
+/* An Ounce device's pool with storage is at the storage's own GPU address, which goes back to the allocator as the
+   pool ends, its unmap queued; a virtual pool, a Switch device's pool and a pool whose range is taken take the
+   allocator's address */
+#define POOL2      0x1200u
+#define POOL2_B    0x1300u
+#define POOL2_MEM  0x40000u
+#define POOL_FLAGS 0xa1 /* the CPU can't access it: GPU cached, compressible */
+static void test_pool_own_address(void) {
+    g_ounce = 1;
+    g_alloc_calls = g_at_calls = g_given_back = 0;
+    nvn_MemoryPoolBuilderSetDefaults(NULL, POOL2_B);
+    nvn_MemoryPoolBuilderSetFlags(NULL, POOL2_B, POOL_FLAGS);
+    nvn_MemoryPoolBuilderSetStorage(NULL, POOL2_B, POOL2_MEM, 0x30000);
+    check(nvn_MemoryPoolInitialize(NULL, POOL2, POOL2_B), "an Ounce pool initializes");
+    check(nvn_MemoryPoolGetBufferAddress(NULL, POOL2) == POOL2_MEM && nvn_MemoryPoolMap(NULL, POOL2) == POOL2_MEM,
+          "an Ounce pool's buffer address is its storage's");
+    check(g_at_calls == 1 && g_alloc_calls == 0, "its address is asked for at the storage, not of the allocator");
+    nvn_MemoryPoolFinalize(NULL, POOL2);
+    check(g_given_back == 1 && g_given_back_at == POOL2_MEM && g_later_kind == GMMU_LATER_UNMAP,
+          "the ended pool's range goes back at once, its unmap queued");
+    /* the same storage again: the same address */
+    check(nvn_MemoryPoolInitialize(NULL, POOL2, POOL2_B) && nvn_MemoryPoolGetBufferAddress(NULL, POOL2) == POOL2_MEM,
+          "a pool over the same storage takes the same address");
+    nvn_MemoryPoolFinalize(NULL, POOL2);
+    /* a range another pool holds: the allocator's, and freed as one of its own */
+    g_at_refuse = 1;
+    g_alloc_calls = g_given_back = 0;
+    nvn_MemoryPoolBuilderSetStorage(NULL, POOL2_B, POOL2_MEM + 0x1000, 0x30000);
+    check(nvn_MemoryPoolInitialize(NULL, POOL2, POOL2_B) && g_alloc_calls == 1 &&
+              nvn_MemoryPoolGetBufferAddress(NULL, POOL2) == POOL_MEM,
+          "a pool whose range is taken gets the allocator's address");
+    nvn_MemoryPoolFinalize(NULL, POOL2);
+    check(g_given_back == 0 && g_later_kind == GMMU_LATER_FREE, "which goes back after its unmap, as before");
+    g_at_refuse = 0;
+    /* a virtual pool has no storage: the allocator's */
+    g_at_calls = g_alloc_calls = 0;
+    nvn_MemoryPoolBuilderSetFlags(NULL, POOL2_B, 0x200);
+    nvn_MemoryPoolBuilderSetStorage(NULL, POOL2_B, 0, 0x30000);
+    check(nvn_MemoryPoolInitialize(NULL, POOL2, POOL2_B) && g_at_calls == 0 && g_alloc_calls == 1,
+          "a virtual pool takes the allocator's address");
+    nvn_MemoryPoolFinalize(NULL, POOL2);
+    /* a Switch device's pool: the allocator's, as before */
+    g_ounce = 0;
+    g_at_calls = g_alloc_calls = 0;
+    nvn_MemoryPoolBuilderSetFlags(NULL, POOL2_B, POOL_FLAGS);
+    nvn_MemoryPoolBuilderSetStorage(NULL, POOL2_B, POOL2_MEM, 0x30000);
+    check(nvn_MemoryPoolInitialize(NULL, POOL2, POOL2_B) && g_at_calls == 0 && g_alloc_calls == 1,
+          "a Switch pool takes the allocator's address");
+    nvn_MemoryPoolFinalize(NULL, POOL2);
 }
 
 /* ---- command buffers */
@@ -1447,6 +1515,7 @@ int main(void) {
     nvn_init();
     test_device();
     pool_init();
+    test_pool_own_address();
     test_command_buffer();
     test_tessellation_metadata();
     test_ounce_program_records();

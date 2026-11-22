@@ -399,9 +399,18 @@ void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
    load, and its loading threads waited up to 1.7 s in 5 s for that lock. The game's thread also reads and writes
    through a new pool's GPU addresses at once (a program's header, its linkage table): until the map is made, the
    table answers it for those pages. The VA allocator still answers at once, and ended addresses go back to it only
-   after their unmap, so no pool gets them while they still show the old pages */
+   after their unmap, so no pool gets them while they still show the old pages.
+
+   An Ounce device shows a pool with storage at the storage's own address: its GPU address is the CPU address, as the
+   console's driver maps such a pool, so nvnMemoryPoolGetBufferAddress answers the storage. An engine frees the storage
+   of a pool the CPU can't access by that address, where it can't map it; with an address of the allocator's it freed
+   a GPU address, which its allocator stopped on. The range goes back to the allocator when the pool ends, before its
+   unmap: only a pool over the same storage takes it again, which shows the same pages, its map queued after the
+   unmap. A virtual pool, and a pool whose range another pool's holds, take the allocator's addresses */
 #define NVN_POOL_VIRTUAL 0x200u
 #define NVN_POOL_ALIGN   0x20000u /* the GPU address alignment: a big page, as compressible kinds want */
+/* a pool shown at its storage's own address: gpu == memory, which no address of the allocator's is on an Ounce */
+static int pool_own_address(const NvnPool* o) { return o->memory && o->gpu == o->memory; }
 int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     const NvnPoolBuilder* s = NVN_OBJ(NvnPoolBuilder, b);
     NvnPool o = {0};
@@ -428,7 +437,13 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
-    va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
+    va = g_ounce && o.memory && !(o.flags & NVN_POOL_VIRTUAL) ? gmmu_space_alloc_at(o.memory - lead, lead + o.size) : 0;
+    if (g_ounce && o.memory && !(o.flags & NVN_POOL_VIRTUAL) && !va)
+        WARN_LIMIT(8,
+                   "nvn: memory pool %llx: its storage %llx (%llx bytes) is in another pool's GPU range, so its GPU "
+                   "address isn't the storage's: a game that takes one for the other goes wrong there\n",
+                   (unsigned long long)p, (unsigned long long)o.memory, (unsigned long long)o.size);
+    if (!va) va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
     if (va && o.memory) gmmu_later_post(gmmu_later(GMMU_LATER_MAP, va, o.memory - lead, lead + o.size, 0));
     if (!va)
         fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
@@ -447,7 +462,11 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
         o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? atomic_exchange_explicit(&o->nvmap, 0, memory_order_acq_rel) : 0;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) { /* the handle goes after the unmap, as it went before */
         gpu_pool_remove(o->gpu);
-        gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
+        if (pool_own_address(o)) {
+            gmmu_space_give_back(o->gpu - lead, lead + o->size);
+            gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, o->gpu - lead, 0, lead + o->size, nvmap));
+        } else
+            gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
         nvmap = 0;
     }
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
