@@ -1809,6 +1809,17 @@ setting Constant buffer windows
     help ranges of 64 KiB and its descriptors are not in heaps, but not on lavapipe, whose linear rasterizer smashes its
     help stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test runs it so);
     help a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound one by one
+setting Dynamic constant buffers
+    key vk_dynamic_cbufs
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = with descriptor sets (not descriptor buffers or heaps), the vertex and fragment programs' constant buffers
+    help that move most are dynamic uniform buffers: their offsets go with the bind of the set, not in it, so a draw
+    help whose constant buffers moved can keep its set. The device's limit on dynamic uniform buffers caps how many.
+    help The game's moves of each constant buffer are kept in its shader cache when it closes (<game>.vkcbmoves), and
+    help the next start chooses from them. 0 = every constant buffer is a plain uniform buffer
 setting Indirect copies
     key vk_copy_indirect
     int 0 1

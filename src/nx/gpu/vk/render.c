@@ -28,6 +28,7 @@
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/cb_dynamic.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/capture.h"
 #include "nx/gpu/vk/depth_shadow.h"
@@ -3734,6 +3735,36 @@ typedef struct {
 #define CB_WINDOW_WORDS 18
 static CbWindow g_cb_windows[2][19];
 static u16 g_cb_offsets[2][19]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
+/* the draw's dynamic offsets of the constant buffers that the vertex and fragment sets bind as dynamic uniform buffers
+   (cb_dynamic.h), by the stage's set and slot: 0 for a slot the program has not, whose descriptor no draw reads */
+static u32 g_cb_dyn[2][VK_CB_DYNAMIC_SLOTS];
+static u64 g_cb_dyn_misaligned; /* those not a multiple of minUniformBufferOffsetAlignment, which none should be */
+/* the write of constant buffer slot i of the stage's set vs_fs, range bytes at off of b. A dynamic slot's descriptor
+   takes off's 4 GiB, and the bind the rest (g_cb_dyn): the GPU reads the same bytes, and a set whose buffers only moved
+   is the same set (desc_set_cached's key holds the descriptor's offset) */
+static void dw_cbuf(DescWrites* d, VkDescriptorSet set, int vs_fs, int i, VkBuffer b, u64 off, u64 range) {
+    vk_cb_dynamic_move(vs_fs, (u32)i, off);
+    const VkDescriptorType type = vk_cb_dynamic_type(vs_fs, (u32)i);
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
+        /* the same rule as a descriptor's own offset (VUID-VkWriteDescriptorSet-descriptorType-00327 and
+           VUID-vkCmdBindDescriptorSets-pDynamicOffsets-01971): cb_get, cb_pad and cb_window_place align them */
+        const u64 align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+        if (align && off % align && !g_cb_dyn_misaligned++)
+            WARN("vulkan: constant buffer %d of set %d at offset %llu, not a multiple of the device's %llu\n", i, vs_fs,
+                 (unsigned long long)off, (unsigned long long)align);
+        g_cb_dyn[vs_fs][i] = (u32)off;
+        off &= ~(u64)UINT32_MAX;
+    }
+    dw_buffer(d, set, SNX_VKB_CB + (u32)i, type, b, off, range);
+}
+/* the dynamic offsets of set 0 (vertex) and, with fs, set 1 (fragment) into dyn, in the order of set and binding: the
+   count */
+static u32 cb_dyn_offsets(u32* dyn, int fs) {
+    u32 n = 0;
+    for (int s = 0; s < 1 + !!fs; s++)
+        for (u32 m = g_cb_dynamic.mask[s]; m; m &= m - 1) dyn[n++] = g_cb_dyn[s][snx_ctz32(m)];
+    return n;
+}
 static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
     CbWindow* w = &g_cb_windows[vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
@@ -3950,6 +3981,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     d.cb_addr = vk_cb_addr_mask(&s->si);
     /* the profiler's zones of a stage's set: its constant buffers, storage buffers, textures and the set itself */
     SNX_ZONE(zcb, "stage set constants");
+    if ((u32)shader_vk_set(s->stage) < 2) memset(g_cb_dyn[shader_vk_set(s->stage)], 0, sizeof g_cb_dyn[0]);
     for (u32 banks = s->si.cbuf_mask & 0x3FFFFu; banks; banks &= banks - 1) { /* the banks the program has */
         const int i = (int)snx_ctz32(banks);
         u32 sz = cb_range(ds, stage, s, i);
@@ -3976,7 +4008,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             return VK_NULL_HANDLE;
         if (placed) {
             g_cb_offsets[vs_fs][i] = (u16)((o - base) >> 4);
-            dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, base, (u32)range);
+            dw_cbuf(&d, set, vs_fs, i, b, base, (u32)range);
         } else {
             if (vs_fs < 2) g_cb_offsets[vs_fs][i] = 0;
             /* by address (with heaps, which take no windows), every byte the shader reads is in the binding: past a
@@ -3984,7 +4016,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if ((d.cb_addr >> i & 1) && sz < vk_cb_range(s->si.cbuf_max[i]) &&
                 !cb_pad(&b, &o, sz, vk_cb_range(s->si.cbuf_max[i])))
                 return VK_NULL_HANDLE;
-            dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, o, sz);
+            dw_cbuf(&d, set, vs_fs, i, b, o, sz);
         }
     }
     if (s->si.root_max) {
@@ -4518,6 +4550,7 @@ static struct {
     VkPipeline pipe;
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
     VkDescriptorSet sets[11]; /* 5 to 9: the stages' texture sets with split sets; the texture table at table_set */
+    u32 ndyn, dyn[2 * VK_CB_DYNAMIC_SLOTS]; /* the dynamic offsets sets 0 and 1 were bound with (cb_dyn_offsets) */
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
@@ -7667,22 +7700,28 @@ retry:
         memset(g_dyn.sets, 0, sizeof g_dyn.sets);
         g_dyn.layout = layout;
     }
-    if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset)) {
+    /* the dynamic constant buffers' offsets: a set the same as the last draw's is bound again where they moved */
+    u32 dyn[2 * VK_CB_DYNAMIC_SLOTS];
+    const u32 ndyn = cb_dyn_offsets(dyn, fs != NULL);
+    if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset) || g_dyn.ndyn != ndyn ||
+        memcmp(g_dyn.dyn, dyn, ndyn * sizeof *dyn)) {
         g_dyn.sets[0] = vset;
         g_dyn.sets[1] = fs ? fset : VK_NULL_HANDLE;
-        vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets);
+        g_dyn.ndyn = ndyn;
+        memcpy(g_dyn.dyn, dyn, ndyn * sizeof *dyn);
+        vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets, ndyn, dyn);
     }
     for (b = 0; b < 3; b++)
         if (bset[b] && (fresh || g_dyn.sets[2 + b] != bset[b])) {
             g_dyn.sets[2 + b] = bset[b];
-            vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b]);
+            vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b], 0, NULL);
         }
     /* split sets: each present stage's texture set, five after its buffers' (shader_vk_tex_set) */
     for (u32 t = 0; t < 5 && g_spirv_translate.split_sets; t++) {
         const int present = t == 0 || (t == 1 ? fs != NULL : bset[t - 2] != VK_NULL_HANDLE);
         if (present && g_stage_tex_set[t] && (fresh || g_dyn.sets[5 + t] != g_stage_tex_set[t])) {
             g_dyn.sets[5 + t] = g_stage_tex_set[t];
-            vk_descriptors_bind(cb, layout, 5 + t, 1, &g_stage_tex_set[t]);
+            vk_descriptors_bind(cb, layout, 5 + t, 1, &g_stage_tex_set[t], 0, NULL);
         }
     }
     /* the texture table, after the stages' sets (table.c) */
@@ -7691,7 +7730,7 @@ retry:
         const u32 at = g_spirv_translate.table_set;
         if (fresh || g_dyn.sets[at] != table) {
             g_dyn.sets[at] = table;
-            vk_descriptors_bind(cb, layout, at, 1, &table);
+            vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);
         }
     }
     /* a program that fetches its own attributes takes an empty layout: its pipeline has the layout static and ignores

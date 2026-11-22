@@ -27,6 +27,7 @@
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
+#include "nx/gpu/vk/cb_dynamic.h"
 #include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shader_objects.h"
@@ -1639,6 +1640,7 @@ static void vkr_reset(void) {
    (pipeline_file.h), then the driver's pipeline cache as at its quiet times */
 static void vk_save(int at_exit) {
     if (at_exit) vk_pipeline_file_save();
+    if (at_exit) vk_cb_dynamic_save(); /* the constant buffers' moves, which the next start chooses from */
     vk_pipeline_save(at_exit);
 }
 const Renderer vk_renderer = {

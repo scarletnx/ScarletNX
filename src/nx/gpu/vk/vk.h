@@ -900,9 +900,10 @@ u64 vk_memory_blocks(void);              /* the bytes of devmem.c's blocks in al
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 u32 vk_frame_cbs(void);                  /* the command buffers the slot being recorded has */
 /* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets, array_sets of them with the
-   texture arrays (gpu/vk/pipeline.c). */
-#define VK_POOL_TYPES 6 /* uniform/storage buffers, combined textures, storage images/texels, sampled images */
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
+   texture arrays (gpu/vk/pipeline.c). The count of them the pool takes: the last, the dynamic uniform buffers
+   (cb_dynamic.h), only where the layouts have some */
+#define VK_POOL_TYPES 7 /* uniform/storage buffers, combined textures, storage images/texels, sampled images, dynamic */
+u32 vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 VkDescriptorType
 vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_spirv_translate.uniform_cbufs) */
