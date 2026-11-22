@@ -5,6 +5,7 @@
 #include "nx/runtime/ini.h"
 #include "snx_settings.h" /* the game's Debug table, g_debug_ini */
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -215,6 +216,45 @@ int main(void) {
         folder[0] = 0;
         assert(ini_changed(changed, INI_CHANGED_DEFAULT, list, sizeof list) == 0 && !strcmp(list, ""));
     }
+    /* the perf rows off their default (settings.txt's perf), keys alone with a comma between, one skipped: a row with no
+       default is at it as an LLVM option's INT_MIN (LLVM's own, until set) and as a once text's empty value. The length
+       the whole list takes, whatever the room, the list cut as snprintf cuts */
+    {
+        static int level = 1, quiet = 0, threshold = INT_MIN;
+        static char driver[16] = "";
+        static const IniOpt rows[] = {
+            {"level", "1", NULL, INI_INT, INI_PERF, &level, 0, 2, NULL, NULL, NULL, 0, 0, 0},
+            {"quiet", "0", NULL, INI_INT, 0, &quiet, 0, 1, NULL, NULL, NULL, 0, 0, 0},
+            {"threshold", NULL, NULL, INI_INT, INI_PERF, &threshold, INT_MIN + 1, INT_MAX, NULL, NULL, NULL, 0, 0, 0},
+            {"driver", NULL, NULL, INI_TEXT, INI_PERF, driver, 0, 0, NULL, NULL, NULL, 0, 0, sizeof driver},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+        char list[64];
+        assert(ini_at_default(&rows[0]) && ini_at_default(&rows[2]) && ini_at_default(&rows[3]));
+        assert(ini_perf_keys(rows, NULL, list, sizeof list) == 0 && !strcmp(list, ""));
+        quiet = 1; /* off its default, no perf row */
+        assert(ini_perf_keys(rows, NULL, list, sizeof list) == 0 && !strcmp(list, ""));
+        level = 2;
+        threshold = 225;
+        snprintf(driver, sizeof driver, "turnip");
+        assert(!ini_at_default(&rows[0]) && !ini_at_default(&rows[2]) && !ini_at_default(&rows[3]));
+        assert(ini_perf_keys(rows, NULL, list, sizeof list) == 22 && !strcmp(list, "level,threshold,driver"));
+        assert(ini_perf_keys(rows, "level", list, sizeof list) == 16 && !strcmp(list, "threshold,driver"));
+        assert(ini_perf_keys(rows, NULL, list, 8) == 22 && !strcmp(list, "level,t"));
+        assert(ini_perf_keys(rows, NULL, NULL, 0) == 22);
+        level = 1;
+        quiet = 0;
+        threshold = INT_MIN;
+        driver[0] = 0;
+        assert(ini_perf_keys(rows, NULL, list, sizeof list) == 0);
+    }
+    /* settings.txt's perf rows as settingsgen makes them: a game's, the recompile's, every Vulkan extension's and every
+       LLVM row; not one the screen shows (stats), nor the AOT threads, which change only how long a recompile takes */
+    assert(ini_find(g_performance_ini, "fps_limit")->flags & INI_PERF);
+    assert(ini_find(g_recompile_ini, "llvm_batch")->flags & INI_PERF);
+    assert(ini_find(g_vk_extensions_ini, "vk_ext_shader_object")->flags & INI_PERF);
+    assert(ini_find(g_llvm_ini, "llvm_pass_gvn")->flags & INI_PERF);
+    assert(!(ini_find(g_display_ini, "stats")->flags & INI_PERF));
+    assert(!(ini_find(g_recompile_ini, "aot_threads")->flags & INI_PERF));
     /* a setting of some systems alone (settings.txt's only): where it does something as a greyed row says it, said on
        every system but those and listed last on its line for the launcher; one of every system says nothing */
     {

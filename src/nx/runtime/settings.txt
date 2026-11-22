@@ -43,6 +43,10 @@
 #     step N, shift N     the menus' step and shift (ini.h)
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
 #                         INI_SLIDER): every step a word the launcher lists, its default one of them
+#     perf                off its default it changes how fast the game runs, and nothing on the screen shows it (ini.h's
+#                         INI_PERF): the game names it over its picture for 30 s as it starts, by where it came from. A
+#                         game's setting or the recompile's (which the game reads from how it was made); every row of a
+#                         vulkan or an llvm table is one
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
@@ -107,6 +111,7 @@ setting GPU driver
     once
     startup
     in-game
+    perf
     help The Vulkan driver the game runs with: empty = the system's, else a driver package the launcher's GPU Drivers
     help added, by its folder's name in gpu_drivers/ of the user's data folder. Packages load on Android 9 or newer,
     help arm64, with an Adreno GPU (/dev/kgsl-3d0) or a Mali GPU (/dev/mali0). One that does not load stops the game,
@@ -117,6 +122,7 @@ setting Freedreno variables
     once
     startup
     in-game
+    perf
     help Mesa's Freedreno and Turnip variables, set as the game starts: NAME=value, a ; between two (TU_DEBUG=sysmem).
     help Names start TU_, FD_ or IR3_ (docs.mesa3d.org/drivers/freedreno.html). The launcher's Freedreno Settings
     help write it; left out, the launcher passes its own for every game
@@ -145,6 +151,7 @@ setting Microphone
     key microphone
     text 256
     default off
+    perf
     help The microphone a game hears as the console's own: empty = the system's default recording device; off = none,
     help and the game hears silence; else the first recording device whose name holds this text (any case). It is
     help recording only while the game records, and a change takes effect at the game's next recording
@@ -153,6 +160,7 @@ setting Microphone noise reduction
     int 0 2
     default 1
     words Off|Neural|Spectral
+    perf
     help How the noise the microphone picks up is lowered before the game hears it (the console's audio system has a
     help noise reduction for its microphone, of a strength not known). 1 = neural: RNNoise, a small network trained on
     help speech, built in, at 48 kHz, else as 2. On test signals it lowered a steady noise by 27 dB and background
@@ -168,6 +176,7 @@ setting TV mode
     startup
     set options_tv_mode_set
     words Off|On|Auto
+    perf
     help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
     help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting TV refresh rate
@@ -176,6 +185,7 @@ setting TV refresh rate
     default 1
     startup
     words 60 Hz|Display's|120 Hz
+    perf
     help The refresh rates an Ounce game is told its display takes: 0 = 60 Hz; 1 = 120 Hz too where the window's
     help display refreshes at 119 Hz or more; 2 = 120 Hz too on any display. A game that turns 120 Hz on is then
     help paced at 120 frames a second with fps_limit=game
@@ -185,6 +195,7 @@ setting TV resolution
     default 0
     startup
     words 1920x1080|Display's|3840x2160
+    perf
     help The picture an Ounce game is told the TV shows in TV mode: 0 = 1920x1080; 1 = 3840x2160 where the window's
     help display's mode is that large, else 1920x1080; 2 = 3840x2160 on any display. A Switch game is told 1920x1080
 setting Fullscreen
@@ -251,12 +262,14 @@ setting Resolution scale
     float 0.25 16
     default 1
     startup
+    perf
     help The scale of the game's 3D rendering, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half
 setting DLSS upscaler
     key dlss_upscaler
     int 0 1
     default 1
     words Filtered copy|FSR 2
+    perf
     help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = AMD FidelityFX Super Resolution
     help 2.2 (a temporal upscaler, on any GPU), 0 = a filtered copy of the frame (cheaper, soft, and the picture shakes
     help with the game's camera jitter). FSR 2 falls back to the copy where it can't run
@@ -266,12 +279,14 @@ setting DLSS render size
     default 0
     words Game's|Native|Quality|Balanced|Performance|Ultra performance
     startup
+    perf
     help The size a Switch 2 game is told to render at before its DLSS evaluation: 0 = what the game's own DLSS mode
     help asks, 1 = the output's size (sharpest, slowest), 2 = 1/1.5, 3 = 1/1.7, 4 = 1/2, 5 = 1/3 of it (fastest)
 setting FSR sharpness
     key fsr_sharpness
     float 0 1
     default 0
+    perf
     help The sharpening FSR 2 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
 setting Shadows
     key shadows
@@ -285,6 +300,7 @@ setting Vsync
     int 0 1
     default 1
     words Off|On
+    perf
     help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
     help the display allows, else at once
 setting Frame pacing
@@ -292,6 +308,7 @@ setting Frame pacing
     int 0 2
     default 1
     words Timer|Display|Display and hold
+    perf
     help With VSync and fps_limit=game: 0 = the game's frames are paced by a timer; 1 = the game's next frame also
     help waits until the frame before is on the display (VK_KHR_present_wait or VK_GOOGLE_display_timing), so frames
     help don't queue for it; 2 = and a game that asks for two refreshes or more a frame has each frame held until its
@@ -303,6 +320,7 @@ setting Anisotropic filtering
     default 0
     startup
     words Game's|#x
+    perf
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
 setting Upscaler
     key upscaler
@@ -363,6 +381,7 @@ setting Vulkan Video decode
     default 0
     startup
     words Off|On
+    perf
     help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
     help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
@@ -374,6 +393,7 @@ setting Apple video decode
     default 1
     startup
     words Off|On
+    perf
     help 1 = AV1 movies decode on the Apple GPU's media engine with VideoToolbox, and the CPU only copies the picture
     help into the game's image. 0 = FFmpeg decodes them on the CPU with dav1d. A stream the media engine doesn't take
     help decodes on the CPU either way, and the log says which one has it
@@ -385,6 +405,7 @@ setting Vulkan driver
     default auto
     startup
     words auto=Auto|moltenvk=MoltenVK|kosmickrisp=KosmicKrisp (experimental)
+    perf
     help The Vulkan driver a game runs on, on macOS: auto = KosmicKrisp where the Mac has it and runs it (Apple
     help silicon, macOS 26 or later), else the MoltenVK the app carries, else the system's loader; moltenvk = a
     help MoltenVK library; kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental). The log says
@@ -397,6 +418,7 @@ setting Vertex input dynamic state
     default auto
     startup
     words auto=Auto|on=On|off=Off
+    perf
     help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
     help the GPU's driver has it, but on the drivers known to draw it wrong (the extension bans: NVIDIA's before
     help 580.119.02, Intel's Windows driver before 27.20.100.0, Arm's Mali before r48, Qualcomm's on Android) and on
@@ -409,6 +431,7 @@ setting Vulkan ban ignore
     text 512
     default ""
     startup
+    perf
     help Keys of the extension bans (the drivers known to break a Vulkan extension or feature), separated by commas,
     help whose bans this run goes over, to test again whether the driver still breaks them: VK_KHR_present_id2 or
     help VK_KHR_present_id2,shaderFloat16. The log says each with the ban it goes over. Empty: every ban holds. A key
@@ -420,6 +443,7 @@ setting ASTC mode
     default 0
     startup
     words Auto|Exact|BC7|BC7 at load
+    perf
     help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = BC7 at load for an Ounce
     help game, as feat/ounce holds them; for any other, it follows the GPU's memory as the game runs: the textures that
     help load are Exact while there is room, BC7 from the moment the caches fill to where they start freeing memory
@@ -440,6 +464,7 @@ setting Texture shed
     int 0 1
     default 0
     words Off|On
+    perf
     help On = a texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads is made with sparse
     help residency (where the GPU has it, and VK_EXT_image_view_min_lod): when the GPU's memory runs short its finest
     help level gives way, the texture sampled at half its resolution for a while, in place of the whole texture
@@ -452,6 +477,7 @@ setting Texture half res
     int 0 2
     default 0
     words Auto|Never|Always
+    perf
     help A texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads, made while the GPU's memory is
     help under pressure (its use at 90% of the budget, or short in the last 300 presents), is made with sparse
     help residency (where the GPU has it, and VK_EXT_image_view_min_lod) and its finest level never bound: sampled at
@@ -463,6 +489,7 @@ setting ASTC lines BC1
     int 0 2
     default 1
     words Auto|Never|Always
+    perf
     help Under astc_mode's Auto, an opaque colour ASTC texture whose 4x4 blocks hold more colours than BC1's line (the
     help ones held as BC7) is held as BC1 instead, half BC7's memory and coarser. Auto = once the GPU's memory has run
     help short (an image found no memory, the caches stayed past their budget, or a trim took what the last frames used),
@@ -475,6 +502,7 @@ setting Texture system memory
     int 0 1
     default 1
     words Off|On
+    perf
     help On = where the GPU's memory runs short, a texture the cache would evict is moved into system memory instead,
     help where the GPU still samples it (more slowly, over the bus), and moved back when it is used and there is room.
     help Off = it is evicted, and loaded again at its next use
@@ -484,6 +512,7 @@ setting BC7 queue
     default 0
     startup
     words Auto|#
+    perf
     help The thousands of blocks the BC7 encoder may have queued on the GPU. An upload submits at each half of them
     help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
     help 256 on a GPU that shares the computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to
@@ -494,6 +523,7 @@ setting ASTC compute queue
     default 1
     startup
     words Off|On
+    perf
     help On = a new ASTC texture is decoded and encoded on the GPU's compute queue, where it has one of its own,
     help beside the drawing, and a load waits only for those encodes. Off = on the graphics queue, after the drawing
     help before it. The textures are the same either way
@@ -503,6 +533,7 @@ setting ASTC quick Mtexels
     int 0 4096
     default 8
     words Never|#
+    perf
     help With ASTC textures encoded as BC7 as they load (Auto for an Ounce game, or BC7 at load), a texture level of
     help this many megatexels or more, all its layers counted (8 = 4096x2048, or two layers of 2048x2048), is encoded
     help quickly where the game first needs it, with softer edges, and its better version is made in the background
@@ -517,6 +548,7 @@ setting ASTC background
     int 0 1
     default 1
     words Nobody|GPU
+    perf
     help Who makes the better version of the very large ASTC textures encoded quickly (ASTC quick Mtexels): 1 = the
     help GPU, a piece after each frame; 0 = nobody: they stay as they were encoded quickly
 
@@ -537,6 +569,7 @@ setting FPS limit
     text 16
     default game
     set options_fps_set
+    perf
     help game = the pace the game asks for, as on the console (60 FPS, or 30 for a game made for 30); 0 = no limit;
     help 10 to 1000 = that many frames a second. The display's vsync follows a limit other than game, so a game that
     help counts vsyncs as its time runs faster or slower with it. F4 turns the limit off and on
@@ -545,6 +578,7 @@ setting Memory (GB)
     int 0 12
     default 0
     startup
+    perf
     help The memory the game sees: below 6 the console's 3.2 GB, 6 = 4.8 GB, 8 = 6.8 GB. A game that runs out on
     help the console's amount needs 6. 12 is experimental: it gives a 10 GiB application budget and a larger heap
     help region for newer games. It requires a host with enough available memory and address space
@@ -555,6 +589,7 @@ setting Memory fit mode
     default 0
     startup
     words Auto|Off
+    perf
     help Auto = the game sees at least the console's memory, and of what Memory (GB) adds above it no more than the
     help device can still give, measured as it starts, less what the rest of ScarletNX takes: a device with less than
     help the console's runs as with Off, and one that can give it all shows the game all of it. Off = all of it,
@@ -565,6 +600,7 @@ setting Heap limit (MB)
     default 0
     startup
     set options_heap_max_set
+    perf
     help The most heap the game can allocate, in MB; 0 = as much as its memory allows
 setting Map limit (MB)
     key map_limit_mb
@@ -573,6 +609,7 @@ setting Map limit (MB)
     default-if SNX_IOS 256
     startup
     words No limit|#
+    perf
     help The most of the game's files mapped into memory, in MB, as the game first reads them; 0 = no limit. A file past
     help it is read from disk when the game asks, slower, which leaves address space for threads and graphics where a
     help device has little
@@ -583,6 +620,7 @@ setting Map limit (files)
     default-if SNX_IOS 2048
     startup
     words No limit|#
+    perf
     help The most of the game's files mapped, as the game first reads them; 0 = no limit. A file past it is read from
     help disk when the game asks: each mapped file holds a descriptor, of which a device may give the whole app a few
     help thousand
@@ -592,6 +630,7 @@ setting Thread stack (MB)
     default 32
     default-if SNX_IOS 8
     startup
+    perf
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
     help for more threads where a device has little, and a game that calls very deep may then stop
 setting GPU pstate
@@ -601,6 +640,7 @@ setting GPU pstate
     default auto
     startup
     words auto=Auto|on=On|off=Off
+    perf
     help Holds the GPU's clocks up while the game runs. A frame keeps the GPU half idle (it waits for the frame's
     help commands, then the game waits for it), and a driver that sets the clocks by how busy the GPU is lowers them,
     help which makes every frame slower. auto = held on a discrete GPU where its driver lets a program do it: AMD's on
@@ -614,6 +654,7 @@ setting Pipeline threads
     default 0
     startup
     words Auto|#
+    perf
     help The threads that make the GPU's new pipelines while the game goes on: 0 = all the computer's threads but
     help two, two to twelve; 1 to 32 = that many. Past the first two they run at the system's low priority, so more
     help make a first run's new pipelines sooner and the game's own threads still go first
@@ -622,6 +663,7 @@ setting Async pipelines
     int 0 1
     default 0
     words Off|On
+    perf
     help 1 = what a new shader draws is skipped while its pipeline is made, instead of the game waiting for it: no
     help pause where a new shader first appears, and the things it draws show up a few frames late. An Ounce game runs
     help On unless you pick Off in its settings, the launcher or the command line
@@ -631,6 +673,7 @@ setting Pipeline libraries
     default 1
     startup
     words Off|On
+    perf
     help 1 = where the GPU has graphics pipeline libraries, a new pipeline links parts of its shaders that compile
     help once, and an optimized one is made in the background: a new state of a known shader no longer stalls the
     help game for a compile. 0 = each pipeline compiles its shaders whole
@@ -640,6 +683,7 @@ setting Prepare shaders
     default 2
     startup
     words Off|While playing|Before starting
+    perf
     help Prepares the game's shaders ahead of time so it stutters less, and again after ScarletNX, the GPU or its driver
     help is updated. Off = shaders are made only when the game first draws with them. While playing = prepared in the
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
@@ -651,6 +695,7 @@ setting Compress prepared shaders
     default 1
     startup
     words Off|On
+    perf
     help 1 = each shader Prepare shaders makes is packed with zstd on its own: about a quarter of the space, about
     help 50 microseconds more for each as it is prepared and 15 the first time a draw uses it. 0 = saved as they are
     help made. What is packed is read either way
@@ -662,6 +707,7 @@ setting NCE
     startup
     recompile
     words Off|On
+    perf
     help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
     help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
     help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
@@ -673,6 +719,7 @@ setting JIT threads
     default 0
     startup
     words Auto|#
+    perf
     help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4); 1 to
     help 16 = that many. They yield to the game
 setting JIT region size
@@ -681,6 +728,7 @@ setting JIT region size
     default 0
     startup
     words Auto|# instructions
+    perf
     help The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function
     help cannot stall the game for seconds. Branches out of it resume through the dispatch table. 0 = up to 4096, and
     help a graph larger than that is cut into regions of 64
@@ -690,6 +738,7 @@ setting JIT live budget
     default 0
     startup
     words Auto|# instructions
+    perf
     help The instructions beyond the missed code itself that a miss the game is waiting on discovers (callees).
     help The background queue keeps its larger budget. 0 = 64
 # The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2), as an AOT pack built from
@@ -702,6 +751,7 @@ setting JIT optimization
     default 2
     startup
     words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    perf
     help LLVM's optimization of the code the runtime JIT compiles when the game reaches code the recompiler missed:
     help 0 none, 3 the most, s or z the smallest. It is the recompile's Optimization level by default (2), which an AOT
     help pack built from the cache needs to match. It applies to the next run, which compiles its JIT code again
@@ -2292,6 +2342,7 @@ setting Optimization level
     text 2
     default 2
     words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    perf
     help LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game
     help made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it
     help to match JIT optimization
@@ -2300,6 +2351,7 @@ setting LLVM batch
     text 8
     default full
     words full=Full|ipo=IPO only
+    perf
     help What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the
     help passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two
     help thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code
@@ -2328,6 +2380,7 @@ setting Unit size
     default-if __ANDROID__ 20000
     default-if SNX_IOS 20000
     words # instructions
+    perf
     help The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled
     help on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at
     help 90000 on several threads, and iOS ends an app at its limit). A game made already keeps its units until it is

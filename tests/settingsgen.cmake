@@ -95,6 +95,17 @@ setting Loudness
     words Mute|#%
     step 5
     slider
+setting Speed
+    key speed
+    int 0 9
+    default 1
+    startup
+    perf
+setting Driver
+    key driver
+    text 16
+    once
+    perf
 setting ${long_name}
     key long
     text 4
@@ -167,7 +178,10 @@ foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS
             "{\"its_kernel\", \"0\", NULL, INI_INT, INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
             "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,"
             # a slider's (ini.h's INI_SLIDER): an int with words, the menus' steps
-            "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,")
+            "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,"
+            # a perf row's (ini.h's INI_PERF), after startup's; a once text's with no default in its row
+            "{\"speed\", \"1\", NULL, INI_INT, INI_STARTUP | INI_PERF, &g_settings.speed,"
+            "{\"driver\", NULL, NULL, INI_TEXT, INI_PERF, g_settings.driver,")
     string(FIND "${text}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
@@ -228,10 +242,11 @@ foreach(member "int instruction_combining; /* llvm_pass_instcombine */" "int llv
 endforeach()
 file(READ "${WORK}/out/settings_launch.c" launch)
 file(READ "${WORK}/out/settings_test.c" runtime)
-foreach(row "{\"llvm_inliner_threshold\", NULL, \"How large a function the inliner inlines\", INI_INT, 0, &g_settings.inliner_threshold, INT_MIN + 1, INT_MAX, NULL, \"Inliner threshold\", NULL, 0, 0, 0}"
-            "{\"llvm_slp_vectorization\", NULL, \"LLVMPassBuilderOptionsSetSLPVectorization, LLVM's own value until it is set\", INI_INT, 0, &g_settings.llvm_slp_vectorization, 0, 1, NULL, \"LLVM SLP vectorization\", \"Off|On\", 0, 0, 0}"
+# every LLVM row is a perf one, as every Vulkan extension's
+foreach(row "{\"llvm_inliner_threshold\", NULL, \"How large a function the inliner inlines\", INI_INT, INI_PERF, &g_settings.inliner_threshold, INT_MIN + 1, INT_MAX, NULL, \"Inliner threshold\", NULL, 0, 0, 0}"
+            "{\"llvm_slp_vectorization\", NULL, \"LLVMPassBuilderOptionsSetSLPVectorization, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_slp_vectorization, 0, 1, NULL, \"LLVM SLP vectorization\", \"Off|On\", 0, 0, 0}"
             # the key an @ID gives, where snake_case of the ID would not do (fast_i_sel); its name LLVM's still
-            "{\"llvm_fast_isel\", NULL, \"LLVMSetTargetMachineFastISel, LLVM's own value until it is set\", INI_INT, 0, &g_settings.llvm_fast_i_sel, 0, 1, NULL, \"LLVM fast i sel\", \"Off|On\", 0, 0, 0}")
+            "{\"llvm_fast_isel\", NULL, \"LLVMSetTargetMachineFastISel, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_fast_i_sel, 0, 1, NULL, \"LLVM fast i sel\", \"Off|On\", 0, 0, 0}")
     string(FIND "${launch}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_launch.c lacks the row ${row}:\n${launch}")
@@ -268,7 +283,7 @@ foreach(line "LLVMPassBuilderOptionsSet${long_id}(options, (unsigned)s->llvm_${l
         message(FATAL_ERROR "settings_llvm.c lacks the long \"${line}\":\n${llvm}")
     endif()
 endforeach()
-foreach(line "{\"llvm_${long_key}\", NULL, \"LLVMPassBuilderOptionsSet${long_id}, LLVM's own value until it is set\", INI_INT, 0, &g_settings.llvm_${long_key}, 0, INT_MAX, NULL, \"LLVM ${long_words}\", NULL, 0, 0, 0}"
+foreach(line "{\"llvm_${long_key}\", NULL, \"LLVMPassBuilderOptionsSet${long_id}, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_${long_key}, 0, INT_MAX, NULL, \"LLVM ${long_words}\", NULL, 0, 0, 0}"
              "{\"long\", \"\", \"${long_name}\", INI_TEXT, 0, g_settings.${long_member}, 0, 0, NULL, \"${long_name}\", NULL, 0, 0, sizeof g_settings.${long_member}}")
     string(FIND "${launch};${runtime}" "${line}" at)
     if(at LESS 0)
@@ -284,7 +299,7 @@ endif()
 file(READ "${WORK}/out/settings_test_vk.c" vk)
 foreach(line "{\"vk_ext_core_one\", \"auto\", \"The Vulkan extension VK_EXT_core_one, the Khronos registry's number 7, promoted to Vulkan 1.3.\\nauto = "
              "{\"vk_khr_own_help\", \"auto\", \"Its own help first\\nThe Vulkan extension VK_KHR_own_help, the Khronos registry's number 8, deprecated by VK_KHR_newer.\\n"
-             "INI_TEXT, INI_STARTUP, g_settings.vk_ext_core_one, 0, 0, NULL, \"VK_EXT_core_one\", \"auto=Auto|on=On|off=Off\""
+             "INI_TEXT, INI_STARTUP | INI_PERF, g_settings.vk_ext_core_one, 0, 0, NULL, \"VK_EXT_core_one\", \"auto=Auto|on=On|off=Off\""
              "{\"VK_EXT_core_one\", g_settings.vk_ext_core_one, 13},"
              "{\"VK_KHR_own_help\", g_settings.vk_khr_own_help, 0},"
              "const int g_vk_extension_settings_count = 2;")
@@ -332,7 +347,10 @@ endif()
 # before anything is written: a - or a stray <N> in a key, a - in an each's id
 foreach(bad "table g_t_ini\nsetting Dashed\n    key a-b\n    int 0 1\n    default 0\n|refused.txt:2: Dashed's key a-b has a -: a key is letters, digits and _ (a command line gives it with - for each _ too)"
             "table g_t_ini\nsetting Stray\n    key a<N>\n    int 0 1\n    default 0\n|refused.txt:2: Stray's key a<N> has a <: a key is letters, digits and _ (a command line gives it with - for each _ too)"
-            "list sides a-b=A\ntable g_t_ini\nsetting Side\n    key side_<ID>\n    int 0 1\n    default 0\n    each sides\n|settingsgen: list sides: its id a-b has a -, which its settings' keys would have: an id is letters, digits and _")
+            "list sides a-b=A\ntable g_t_ini\nsetting Side\n    key side_<ID>\n    int 0 1\n    default 0\n    each sides\n|settingsgen: list sides: its id a-b has a -, which its settings' keys would have: an id is letters, digits and _"
+            # perf on a row the game never reads, or on a once row whose off-default nothing can tell
+            "table g_l_ini launcher\nsetting Shown\n    key shown\n    int 0 1\n    default 0\n    perf\n|refused.txt:2: Shown: perf takes a game's or the recompile's setting: a launcher table's never reaches the game"
+            "table g_t_ini\nsetting Every\n    key every\n    int 0 9\n    default 0\n    once\n    perf\n|refused.txt:2: Every: perf takes a once setting only as a text whose default is empty")
     string(REPLACE "|" ";" bad "${bad}")
     list(GET bad 0 spec)
     list(GET bad 1 why)
