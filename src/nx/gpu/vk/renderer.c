@@ -951,15 +951,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
+                u64 fast, early_fast, so;
+                vk_pipeline_fast_stats(&fast, &early_fast, &so);
                 vk_tex_stats(&uploads, &upload_bytes);
                 vk_tex_partial_stats(&partial, &partial_bytes);
-                LOG("vulkan: %llu shaders translated (%llu ms), %llu pipelines made (%llu from the cache, %llu ms "
-                    "making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB), %llu of "
+                LOG("vulkan: %llu shaders translated (%llu ms), %llu pipelines made (%llu of them shader "
+                    "objects, which no pipeline cache serves; %llu from the cache by the driver's word, %llu in under "
+                    "5 ms; %llu ms making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB), %llu of "
                     "them some blocks alone (%llu MB); %llu frames over 50 ms in the last 600, the slowest %llu ms\n",
                     (unsigned long long)shaders, (unsigned long long)shader_ms, (unsigned long long)pipes,
-                    (unsigned long long)hits, (unsigned long long)make_ms, (unsigned long long)pipe_ms,
-                    (unsigned long long)vk_rt_made(), (unsigned long long)uploads,
-                    (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
+                    (unsigned long long)so, (unsigned long long)hits, (unsigned long long)fast,
+                    (unsigned long long)make_ms, (unsigned long long)pipe_ms, (unsigned long long)vk_rt_made(),
+                    (unsigned long long)uploads, (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 vk_tex_check_log();
@@ -1065,9 +1068,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 u64 early_made, early_hits, early_left;
                 vk_pipeline_prewarm_stats(&early_made, &early_hits, &early_left);
                 if (early_made || early_left)
-                    LOG("vulkan: %llu pipelines of earlier runs made in the background (%llu from the cache), %llu "
-                        "still to make\n",
-                        (unsigned long long)early_made, (unsigned long long)early_hits,
+                    LOG("vulkan: %llu pipelines of earlier runs made in the background (%llu from the cache by the "
+                        "driver's word, %llu in under 5 ms), %llu still to make\n",
+                        (unsigned long long)early_made, (unsigned long long)early_hits, (unsigned long long)early_fast,
                         (unsigned long long)early_left);
             }
             {
