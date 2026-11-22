@@ -4639,13 +4639,23 @@ static void recompile_queue(App* app) {
         games_place(app, &p);
         tab = tab_rect(app, p.tabs, GUI_TAB_RECOMPILE);
         app->clock = 2 * app->theme.blink_ms * 50;
-        render(app);
-        assert(
-            same_colour(pixel(app, (float)(tab.x + app->scale), (float)(tab.y + tab.h / 2)), rgb(app->theme.failure)));
-        app->clock += app->theme.blink_ms;
-        render(app);
-        assert(
-            !same_colour(pixel(app, (float)(tab.x + app->scale), (float)(tab.y + tab.h / 2)), rgb(app->theme.failure)));
+        for (int lit = 1; lit >= 0; --lit) {
+            render(app);
+            SDL_Color got = pixel(app, (float)(tab.x + app->scale), (float)(tab.y + tab.h / 2));
+            SDL_Color want = rgb(app->theme.failure);
+            char label[64];
+            tab_label(app, GUI_TAB_RECOMPILE, label, sizeof label);
+            if (same_colour(got, want) != (lit == 1))
+                fprintf(stderr,
+                        "gui_sdl: the Compile tab at clock %llu (blink %u ms) reads \"%s\" and is %d,%d,%d at its "
+                        "left edge, %d,%d of %d,%d %dx%d, shown tab %d, Games loading %d: the failure colour %d,%d,%d "
+                        "%s\n",
+                        (unsigned long long)app->clock, (unsigned)app->theme.blink_ms, label, got.r, got.g, got.b,
+                        (int)(tab.x + app->scale), tab.y + tab.h / 2, tab.x, tab.y, tab.w, tab.h, tab_shown(app),
+                        (int)app->games_loading, want.r, want.g, want.b, lit ? "wanted" : "not wanted");
+            assert(same_colour(got, want) == (lit == 1));
+            app->clock += app->theme.blink_ms;
+        }
         app->clock = 0;
     }
     /* the log holds the queue's recompiles since one started with no line of an ended one left, the failure's among
