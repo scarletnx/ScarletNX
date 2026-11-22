@@ -3,9 +3,12 @@
 /* x64_elf.h: the object built in memory, then written: the null section, the five of bytes, a .rela of each but
    .bss, .symtab (locals first, as ELF wants), .strtab, .shstrtab and .note.GNU-stack */
 #include "common/cpu/recompiler/x64/x64_elf.h"
-#include <elf.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* only module_x64.c, on the x86-64 hosts whose objects are ELF, makes one: Windows and Darwin have no <elf.h> */
+#if defined(__x86_64__) && !defined(_WIN32)
+#include <elf.h>
 
 typedef struct {
     unsigned char* p;
@@ -332,3 +335,5 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
     *size = file.n;
     return 0;
 }
+
+#endif
