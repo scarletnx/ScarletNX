@@ -4747,6 +4747,7 @@ static void draw_drop(u32 i) {
     if (i >= DRAW_TABLE) g_draw.tag[(i - DRAW_TABLE) / DRAW_WAYS][(i - DRAW_TABLE) % DRAW_WAYS] = 0;
     if (g_draw.last == i) g_draw.last = 0;
 }
+const VkSh* vk_render_last_fs(void) { return g_draw.fs; }
 void vk_render_draws_forget(void) {
     memset(g_draw.tag, 0, sizeof g_draw.tag);
     draw_forget();
@@ -7351,6 +7352,10 @@ retry:
         pipe = pe->pipe;
     else
         pipe = vk_pipeline_get_deferred(k);
+    /* the fragment program's words a translation that folds more would hold, counted, and that translation's pipeline
+       for this key made beside the draws once it is made. Before the check below: it can read guest memory */
+    if (fs && !texture && !vk_host_programs(&ds->prog) && g_predraw.phase != 1)
+        vk_shader_fold_draw(ds, fs, ds->prog.code[5], pipe ? k : NULL);
     if (!pipe) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();

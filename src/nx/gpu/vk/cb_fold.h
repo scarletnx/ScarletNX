@@ -15,8 +15,9 @@ enum {
     VK_CB_FOLD = 3     /* a load at a constant place, made the constant v: holds while the word is v */
 };
 /* how a translation folds: its draw's words by their value alone, or of those only the words every translation the
-   program has agrees on (the same constant in each) */
-enum { VK_CB_FOLD_NONE = 0, VK_CB_FOLD_VALUES, VK_CB_FOLD_AGREE };
+   program has agrees on (the same constant in each). VK_CB_FOLD_LOADS folds none and records each load: a program's
+   first translation, whose draws then tell the words a fold would take (vk_cb_fold_words) */
+enum { VK_CB_FOLD_NONE = 0, VK_CB_FOLD_VALUES, VK_CB_FOLD_AGREE, VK_CB_FOLD_LOADS };
 /* the bytes of bank idx from byte off on, size of them, where a read of them lands nothing of what the GPU holds;
    NULL where it would, or the buffer has no such bytes */
 typedef const u8* (*VkCbBytes)(u32 idx, u32 off, u32 size);
@@ -46,10 +47,17 @@ int vk_cb_folds_hold(const VkCbReads* reads, VkCbReader read, VkCbBytes bytes);
 void vk_cb_reads_sort(VkCbReads* reads);
 /* the words reads holds as constants */
 u32 vk_cb_fold_count(const VkCbReads* reads);
-/* 1 when a translation made now for the same program would fold a word that reads left a load: fold's bytes hold a
-   word shader_cb_fold_value takes there (and, for VK_CB_FOLD_AGREE, fold's others agree on it) */
-int vk_cb_fold_more(const VkCbReads* reads, const VkCbFold* fold);
+/* the words a translation made now for the same program would fold where reads left loads (fold's bytes hold a word
+   shader_cb_fold_value takes there and, for VK_CB_FOLD_AGREE, fold's others agree on it), hashed with their places:
+   0 when there is none */
+u64 vk_cb_fold_words(const VkCbReads* reads, const VkCbFold* fold);
 /* how the next translation of a program folds, after made of them made from a draw's words hold a constant: by
    value up to SH_CB_FOLD_VARIANTS of them, then one of the words they agree on, then none */
 int vk_cb_fold_mode(u32 made);
+/* vk_cb_stable_note's answers */
+enum { VK_CB_STABLE_WAIT = 0, VK_CB_STABLE_NONE, VK_CB_STABLE_NOW };
+/* a draw of a translation at submit, the words a fold would take hashed to words (vk_cb_fold_words), counted in st:
+   VK_CB_STABLE_NONE when there are none, VK_CB_STABLE_NOW when SH_CB_FOLD_STABLE submits in a row found the same,
+   else VK_CB_STABLE_WAIT. Of a submit's draws the first alone counts */
+int vk_cb_stable_note(VkCbStable* st, u64 submit, u64 words);
 #endif

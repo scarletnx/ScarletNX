@@ -3,6 +3,7 @@
 /* Constant buffer words folded into a translation (cb_fold.h) */
 #include "nx/gpu/vk/cb_fold.h"
 #include <stdlib.h>
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/shader/shader.h"
 
@@ -79,7 +80,9 @@ int vk_cb_fold_note(VkCbReads* reads, const VkCbFold* fold, u32 idx, u32 off, u3
         *out = seen->v;
         return seen->ok == VK_CB_FOLD;
     }
-    int folds = cb_fold_word(fold->bytes, idx, off, &v) && cb_fold_takes(fold, idx, off, v);
+    /* VK_CB_FOLD_LOADS reads no word: it holds whatever they are */
+    int folds =
+        fold->mode != VK_CB_FOLD_LOADS && cb_fold_word(fold->bytes, idx, off, &v) && cb_fold_takes(fold, idx, off, v);
     if (reads->n % 16 == 0) {
         VkCbRead* grown = realloc(reads->r, sizeof *grown * (reads->n + 16));
         if (!grown) {
@@ -123,19 +126,37 @@ u32 vk_cb_fold_count(const VkCbReads* reads) {
     return n;
 }
 
-int vk_cb_fold_more(const VkCbReads* reads, const VkCbFold* fold) {
+u64 vk_cb_fold_words(const VkCbReads* reads, const VkCbFold* fold) {
+    u64 h = SNX_FNV_BASIS;
+    int any = 0;
+    if (fold->mode != VK_CB_FOLD_VALUES && fold->mode != VK_CB_FOLD_AGREE) return 0;
     for (u32 i = 0; i < reads->n; i++) {
         const VkCbRead* c = &reads->r[i];
         u32 v = 0;
         if (c->ok == VK_CB_LOAD && cb_fold_word(fold->bytes, c->idx, c->off, &v) &&
-            cb_fold_takes(fold, c->idx, c->off, v))
-            return 1;
+            cb_fold_takes(fold, c->idx, c->off, v)) {
+            const u32 word[3] = {c->idx, c->off, v};
+            h = snx_fnv1a(h, word, sizeof word);
+            any = 1;
+        }
     }
-    return 0;
+    return any ? h | 1 : 0; /* 0 is none */
 }
 
 int vk_cb_fold_mode(u32 made) {
     return made < SH_CB_FOLD_VARIANTS    ? VK_CB_FOLD_VALUES
            : made == SH_CB_FOLD_VARIANTS ? VK_CB_FOLD_AGREE
                                          : VK_CB_FOLD_NONE;
+}
+
+int vk_cb_stable_note(VkCbStable* st, u64 submit, u64 words) {
+    if (st->same && st->submit == submit) return VK_CB_STABLE_WAIT;
+    if (!words) {
+        *st = (VkCbStable){0};
+        return VK_CB_STABLE_NONE;
+    }
+    st->same = st->same && st->words == words ? st->same + 1 : 1;
+    st->words = words;
+    st->submit = submit;
+    return st->same >= SH_CB_FOLD_STABLE ? VK_CB_STABLE_NOW : VK_CB_STABLE_WAIT;
 }

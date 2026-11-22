@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Constant buffer words folded into a translation (gpu/vk/cb_fold.c), with no GPU: which words fold, what a
-   translation records of each load at a constant place, when it still holds for a draw's buffers, when one that
-   folds more is worth making, and how many of a program's translations fold by value before one folds only what
-   they agree on */
+   translation records of each load at a constant place, when it still holds for a draw's buffers, which words one
+   that folds more would take, when its draws found them often enough for it to be made, and how many of a program's
+   translations fold by value before one folds only what they agree on */
 #include "nx/gpu/vk/cb_fold.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +114,17 @@ static void notes(void) {
     }
     CHECK(reads.n == 40 && vk_cb_fold_count(&reads) == WORDS, "forty loads are forty records");
     free(reads.r);
+    /* a program's first translation: every load recorded, none folded, no word read */
+    const VkCbFold loads = {.mode = VK_CB_FOLD_LOADS};
+    reads = (VkCbReads){0};
+    out = 77;
+    CHECK(note(&reads, &loads, 0, &out) == 0 && note(&reads, &loads, 8, &out) == 0 &&
+              note(&reads, &loads, 0, &out) == 0,
+          "a translation that folds none leaves each load a load");
+    CHECK(reads.n == 2 && reads.r[0].ok == VK_CB_LOAD && reads.r[0].off == 0 && reads.r[1].ok == VK_CB_LOAD &&
+              reads.r[1].off == 8 && !reads.r[0].v && !reads.r[1].v && vk_cb_fold_count(&reads) == 0,
+          "and records each place once, for its draws to tell which words a fold would take");
+    free(reads.r);
 }
 
 static void holds(void) {
@@ -221,19 +232,31 @@ static void more(void) {
     set(0, ONE); /* the fold no longer holds: not what "more" asks */
     set(1, PI);
     set(2, PI);
-    CHECK(!vk_cb_fold_more(&reads, &by_value), "loads of words that do not fold: nothing more to fold");
+    CHECK(!vk_cb_fold_words(&reads, &by_value), "loads of words that do not fold: nothing more to fold");
     set(1, ONE);
-    CHECK(vk_cb_fold_more(&reads, &by_value), "a load whose word now folds: one more translation folds it");
-    CHECK(vk_cb_fold_more(&reads, &agree), "and so where the program's other translation folds it the same");
-    CHECK(!vk_cb_fold_more(&reads, &agree_both), "but not where another folds it to something else");
-    CHECK(vk_cb_fold_more(&reads, &values_both), "which a translation by value does not look at");
+    const u64 first = vk_cb_fold_words(&reads, &by_value);
+    CHECK(first, "a load whose word now folds: one more translation folds it");
+    CHECK(vk_cb_fold_words(&reads, &agree) == first, "and so where the program's other translation folds it the same");
+    CHECK(!vk_cb_fold_words(&reads, &agree_both), "but not where another folds it to something else");
+    CHECK(vk_cb_fold_words(&reads, &values_both) == first, "which a translation by value does not look at");
     g_test.held = 6;
-    CHECK(!vk_cb_fold_more(&reads, &by_value), "nor is a word the GPU holds a reason for one more");
+    CHECK(!vk_cb_fold_words(&reads, &by_value), "nor is a word the GPU holds a reason for one more");
     g_test.held = ~0u;
+    set(1, 0);
+    const u64 zero = vk_cb_fold_words(&reads, &by_value);
+    CHECK(zero && zero != first, "another word that folds at the same place is other words to fold");
     set(1, PI);
+    set(2, ONE);
+    CHECK(vk_cb_fold_words(&reads, &by_value) != first, "and so is the same word at another place");
     set(2, 0);
-    CHECK(vk_cb_fold_more(&reads, &by_value) && !vk_cb_fold_more(&reads, &agree),
+    CHECK(vk_cb_fold_words(&reads, &by_value) && !vk_cb_fold_words(&reads, &agree),
           "nor a word another translation left a load");
+    set(1, ONE);
+    set(2, 0);
+    CHECK(vk_cb_fold_words(&reads, &by_value) != first, "two words that fold are other words than one of them");
+    const VkCbFold none = {.mode = VK_CB_FOLD_NONE, .bytes = bytes}, loads = {.mode = VK_CB_FOLD_LOADS, .bytes = bytes};
+    CHECK(!vk_cb_fold_words(&reads, &none) && !vk_cb_fold_words(&reads, &loads),
+          "a translation that would fold nothing (past the program's last, or its first) takes no word");
     /* the translation that folds what the others agree on */
     set(0, 0);
     set(1, ONE);
@@ -259,6 +282,35 @@ static void modes(void) {
           "and none after it folds");
 }
 
+/* the submits whose first draw found the same words a fold would take, counted until a translation that folds them
+   is made */
+static void stable(void) {
+    const u64 a = 0x1234567890abcdefull, b = 0x0fedcba987654321ull;
+    VkCbStable st = {0};
+    CHECK(SH_CB_FOLD_STABLE == 4, "four submits of the same words, as docs/layers/gpu/constant-buffer-folds.md says");
+    u64 submit = 10;
+    for (u32 i = 1; i < SH_CB_FOLD_STABLE; i++) {
+        CHECK(vk_cb_stable_note(&st, submit, a) == VK_CB_STABLE_WAIT && st.same == i,
+              "the submits before the last of the same words wait");
+        CHECK(vk_cb_stable_note(&st, submit, b) == VK_CB_STABLE_WAIT && st.same == i && st.words == a,
+              "and a later draw of a submit counts nothing, whatever its words");
+        submit++;
+    }
+    CHECK(vk_cb_stable_note(&st, submit, a) == VK_CB_STABLE_NOW, "the last submit of the same words: the fold now");
+    st = (VkCbStable){0};
+    submit = 20;
+    for (u32 i = 0; i < 3 * SH_CB_FOLD_STABLE; i++)
+        CHECK(vk_cb_stable_note(&st, submit++, i & 1 ? a : b) == VK_CB_STABLE_WAIT && st.same == 1,
+              "words that change from submit to submit never make one");
+    for (u32 i = 1; i < SH_CB_FOLD_STABLE; i++)
+        CHECK(vk_cb_stable_note(&st, submit++, a) == VK_CB_STABLE_WAIT, "the same words again, short of the count");
+    CHECK(vk_cb_stable_note(&st, submit++, b) == VK_CB_STABLE_WAIT && st.same == 1 && st.words == b,
+          "a change on the last submit starts the count over");
+    CHECK(vk_cb_stable_note(&st, submit++, 0) == VK_CB_STABLE_NONE && !st.same && !st.words,
+          "a draw with no word to fold says so, and the count starts over");
+    CHECK(vk_cb_stable_note(&st, submit, b) == VK_CB_STABLE_WAIT && st.same == 1, "and counts again from one");
+}
+
 int main(void) {
     values();
     notes();
@@ -266,6 +318,7 @@ int main(void) {
     batched_reads();
     more();
     modes();
+    stable();
     printf("vk_cb_fold: %u checks, %u failed\n", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }

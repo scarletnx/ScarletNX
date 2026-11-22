@@ -963,10 +963,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(slowest_ns / 1000000));
                 vk_tex_check_log();
                 vk_tex_take_log();
-                if (vk_shader_folds())
-                    LOG("vulkan: %llu of those shaders translated again, to hold more of their draws' constant buffer "
-                        "words as constants\n",
-                        (unsigned long long)vk_shader_folds());
+                u64 folds, fold_pipes, fold_dropped;
+                vk_shader_fold_stats(&folds, &fold_pipes, &fold_dropped);
+                if (folds)
+                    LOG("vulkan: %llu of those shaders translated again on the pipeline workers, to hold as constants "
+                        "the constant buffer words their draws found %u submits in a row, %llu of them dropped; %llu "
+                        "pipelines made for them before a draw took one\n",
+                        (unsigned long long)folds, SH_CB_FOLD_STABLE, (unsigned long long)fold_dropped,
+                        (unsigned long long)fold_pipes);
                 slow_frames = slowest_ns = 0;
                 if (g_vk.has_gpl) {
                     u64 made[4], hits[4], make_ms[4], links, link_ms, opts, opt_ms;
