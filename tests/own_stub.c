@@ -9,6 +9,8 @@ OwnState g_own;
 /* the calls of own_acquire, for a test that counts them (with g_own.nown set, own_any says the GPU owns memory) */
 extern u64 g_own_stub_acquires;
 u64 g_own_stub_acquires;
+u64 own_landings(void) { return 0; }
+u64 own_land_bytes(void) { return 0; }
 void own_acquire(u64 addr, u64 size) {
     (void)addr;
     (void)size;
