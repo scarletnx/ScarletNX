@@ -47,6 +47,12 @@ if(CPM_SOURCE_CACHE)
     list(APPEND snx_cppcheck_theirs "--suppress=*:${CPM_SOURCE_CACHE}/*")
 endif()
 
+# the two files that include the SM86 code generated from Sail (sm86_sail.inc, sm86_sail_eval.inc): cppcheck 2.20
+# spent over 20 minutes on each, at --check-level=reduced too, and held the whole target behind them
+set(snx_cppcheck_generated
+    "-i${CMAKE_SOURCE_DIR}/src/nx/gpu/shader/sm86_translate.c"
+    "-i${CMAKE_SOURCE_DIR}/tests/shader_sail_sm86.c")
+
 cmake_host_system_information(RESULT snx_cppcheck_jobs QUERY NUMBER_OF_LOGICAL_CORES)
 add_custom_target(cppcheck
     COMMAND "${snx_cppcheck}"
@@ -54,6 +60,7 @@ add_custom_target(cppcheck
         "--file-filter=${CMAKE_SOURCE_DIR}/src/*"
         "--file-filter=${CMAKE_SOURCE_DIR}/tests/*"
         ${snx_cppcheck_theirs}
+        ${snx_cppcheck_generated}
         "--include=${snx_cppcheck_dir}/predefined.h"
         --std=c23 --std=c++20
         "--library=${CMAKE_SOURCE_DIR}/cmake/cppcheck.cfg"
