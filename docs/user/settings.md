@@ -181,6 +181,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_descriptor_buffer` | `auto` | `VK_EXT_descriptor_buffer` |
 | `vk_ext_descriptor_heap` | `auto` | `VK_EXT_descriptor_heap` |
 | `vk_ext_device_fault` | `auto` | `VK_EXT_device_fault` |
+| `vk_ext_dynamic_rendering_unused_attachments` | `auto` | `VK_EXT_dynamic_rendering_unused_attachments`: a pipeline leaves out the color targets its draws write nothing to, so passes with other formats there share it |
 | `vk_ext_extended_dynamic_state` | `auto` | `VK_EXT_extended_dynamic_state`, promoted to Vulkan 1.3 |
 | `vk_ext_extended_dynamic_state2` | `auto` | `VK_EXT_extended_dynamic_state2`, promoted to Vulkan 1.3 |
 | `vk_ext_extended_dynamic_state3` | `auto` | `VK_EXT_extended_dynamic_state3` |

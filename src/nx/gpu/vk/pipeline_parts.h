@@ -76,6 +76,11 @@ typedef struct {
     int clamp_range; /* the depth clamp's range as dynamic state (has_depth_clamp_range) */
     int rate_palette; /* the viewports' shading rate palettes (g_vk.vrs VK_VRS_NV, shading_rate.c) */
 } PipeDynIn;
+/* k's color targets a draw writes nothing to (write mask 0) made VK_FORMAT_UNDEFINED with no blend state, as targets
+   the pass has not: with VK_EXT_dynamic_rendering_unused_attachments a pipeline's format there may be UNDEFINED
+   whatever view the pass has, so one pipeline serves every format the draws' passes hold at those targets. Target 0
+   stays under alpha to coverage, which reads its output, and so does the target coverage to color writes */
+void vk_pipe_unwritten_targets(PipeKey* k);
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
 /* ---- the four parts of a pipeline (docs/layers/gpu/pipeline-libraries.md, "The four parts") */

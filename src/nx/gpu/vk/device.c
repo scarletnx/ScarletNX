@@ -931,7 +931,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
     int has_maintenance8 = 0, has_copy_indirect = 0;
-    int has_vertex_input = 0, has_legacy_vertex = 0;
+    int has_vertex_input = 0, has_legacy_vertex = 0, has_unused_attachments = 0;
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
@@ -980,6 +980,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_divisor = snx_vk_choice_has(c, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_choice_has(c, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         has_legacy_vertex = snx_vk_choice_has(c, VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
+        has_unused_attachments = snx_vk_choice_has(c, VK_EXT_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_EXTENSION_NAME);
         has_gpl = snx_vk_choice_has(c, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                   snx_vk_choice_has(c, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         has_eds2 = snx_vk_choice_has(c, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
@@ -1253,6 +1254,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceLegacyVertexAttributesFeaturesEXT qlegacy_vertex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LEGACY_VERTEX_ATTRIBUTES_FEATURES_EXT};
+    VkPhysicalDeviceDynamicRenderingUnusedAttachmentsFeaturesEXT qunused = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT};
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT qgpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
     /* qeds2 above: a 1.2 device's, and the pipeline libraries' patch control points (has_eds2) */
@@ -1318,6 +1321,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
                            has_legacy_vertex ? &qlegacy_vertex : NULL,
+                           has_unused_attachments ? &qunused : NULL,
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
@@ -1507,6 +1511,12 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         !has_legacy_vertex ? "no VK_EXT_legacy_vertex_attributes, or a setting or a ban took it out"
         : !qlegacy_vertex.legacyVertexAttributes ? "VK_EXT_legacy_vertex_attributes without legacyVertexAttributes"
                                                  : "the vertex layout is no dynamic state";
+    /* VK_EXT_dynamic_rendering_unused_attachments: a pipeline leaves the format of a target its draws write nothing
+       to UNDEFINED, so draws into passes that hold other formats there share it (render.c's draw_key) */
+    g_vk.has_unused_attachments = has_unused_attachments && qunused.dynamicRenderingUnusedAttachments;
+    if (g_vk.has_unused_attachments)
+        LOG("vulkan: a pipeline leaves out the color targets its draws write nothing to "
+            "(VK_EXT_dynamic_rendering_unused_attachments)\n");
     if (g_vk.has_legacy_vertex)
         LOG("vulkan: a vertex stream of any stride is bound as the guest has it (VK_EXT_legacy_vertex_attributes)\n");
     else
@@ -2219,6 +2229,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     VkPhysicalDeviceLegacyVertexAttributesFeaturesEXT flegacy_vertex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LEGACY_VERTEX_ATTRIBUTES_FEATURES_EXT,
         .legacyVertexAttributes = VK_TRUE};
+    VkPhysicalDeviceDynamicRenderingUnusedAttachmentsFeaturesEXT funused = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT,
+        .dynamicRenderingUnusedAttachments = VK_TRUE};
     if (g_vk.vertex_input_dynamic) {
         chain = &fvertex_input;
         snx_vk_choice_enable(c, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
@@ -2227,6 +2240,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         flegacy_vertex.pNext = chain;
         chain = &flegacy_vertex;
         snx_vk_choice_enable(c, VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
+    }
+    if (g_vk.has_unused_attachments) {
+        funused.pNext = chain;
+        chain = &funused;
+        snx_vk_choice_enable(c, VK_EXT_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_EXTENSION_NAME);
     }
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,

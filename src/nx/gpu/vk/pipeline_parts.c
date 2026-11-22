@@ -214,6 +214,14 @@ static const struct {
 };
 typedef char dyn_states_fit[sizeof g_dyn_states / sizeof *g_dyn_states <= VK_PIPE_DYN_MAX ? 1 : -1];
 
+void vk_pipe_unwritten_targets(PipeKey* k) {
+    for (u32 i = 0; i < k->ncolor && i < 8; i++) {
+        if (k->blend[i].mask || (!i && k->alpha_to_coverage) || k->coverage_to_color == i + 1) continue;
+        k->color[i] = 0;
+        k->blend[i].en = k->blend[i].sc = k->blend[i].dc = k->blend[i].cop = 0;
+        k->blend[i].sa = k->blend[i].da = k->blend[i].aop = 0;
+    }
+}
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out) {
     u32 n = 0;
     for (u32 i = 0; i < sizeof g_dyn_states / sizeof *g_dyn_states; i++) {

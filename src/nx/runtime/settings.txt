@@ -2242,6 +2242,7 @@ setting @VK_EXT_depth_range_unrestricted
 setting @VK_EXT_descriptor_buffer
 setting @VK_EXT_descriptor_heap
 setting @VK_EXT_device_fault
+setting @VK_EXT_dynamic_rendering_unused_attachments
 setting @VK_EXT_extended_dynamic_state
 setting @VK_EXT_extended_dynamic_state2
 setting @VK_EXT_extended_dynamic_state3
