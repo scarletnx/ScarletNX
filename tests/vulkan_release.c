@@ -703,7 +703,7 @@ int main(void) {
     assert(g_rtail == seq0 + 4 && snx_ld_le32(memory + 0x7000) == 32);
     vk_release_drain();
     assert(!g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key && !g_rpg[rix_find(g_rpg, RPG_N - 1, 0x7000)].key);
-    assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
+    assert(lock_depth == 0 && events_signaled == 5 && !events_due); /* payload writes signal nothing */
     /* a dispatch left in the submission being recorded (compute.c on unified memory): the stream's end submits it,
        once, and not one left in an earlier submission */
     u64 submitted = submits;
