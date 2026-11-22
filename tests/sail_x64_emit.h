@@ -29,5 +29,7 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
 void snx_x64_set_pool(int registers);
 /* the SSA instructions the last step appended, dropped ones counted */
 unsigned snx_x64_instructions(void);
+/* the calls of the floating-point helpers the code made so far */
+unsigned long snx_x64_fp_calls(void);
 
 #endif
