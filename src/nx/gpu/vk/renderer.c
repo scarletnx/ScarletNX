@@ -1210,7 +1210,16 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
        of the frame after its present, which they never hold back */
     vk_tex_kind_frame();
     vk_tex_later_frame();
-    vk_tex_defrag_frame();
+    {
+        static u64 last_game_ns; /* the game's last frame shown, for the defrag's share of this one */
+        u64 frame_ns = 0;
+        if (game) {
+            const u64 now = plat_ns();
+            frame_ns = last_game_ns ? now - last_game_ns : 0;
+            last_game_ns = now;
+        }
+        vk_tex_defrag_frame(frame_ns, game ? period_ns : 0);
+    }
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(kind);
