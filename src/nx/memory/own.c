@@ -682,14 +682,16 @@ static void land_pages(u64 lo, u64 hi, int by) {
     atomic_fetch_add_explicit(&g_own.by_bytes[by], total, memory_order_relaxed);
     u64 t_copy = plat_ns();
     if (two) {
+        /* With no handle, land_start landed the bytes itself (an early copy had them, or a landing too big for one
+           copy): they are in dst, as they are after land_end. The rest goes on without the lock as well, the pages
+           kept from owners and watches by the inflight entry. Held to the end, the lock kept the trap fill from every
+           draw: on Windows it opens and writes a page at a time, and one game's draws waited 0.8 ms a present */
         void* handle = g_own.hooks.land_start(r, dst, n, by);
-        if (handle) {
-            t_own_window = 1;
-            producer_unlock();
-            t_own_window = 0;
-            let = 1;
-            g_own.hooks.land_end(handle);
-        }
+        t_own_window = 1;
+        producer_unlock();
+        t_own_window = 0;
+        let = 1;
+        if (handle) g_own.hooks.land_end(handle);
     } else
         g_own.hooks.land(r, dst, n, by);
     u64 t_fill = plat_ns();
