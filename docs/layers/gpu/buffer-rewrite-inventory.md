@@ -1090,6 +1090,14 @@ submission.**
 - Comment: `mirror.c`, above `run_end`.
 - Check: no test covers the cost.
 
+**W24. A dispatch that is not kept on the GPU runs on the graphics queue where it reads GPU-owned or watched pages.**
+
+- Without the rule: on the compute queue its read into the arena copied the bytes on the thread that records the draws,
+  and landed first what the GPU owned. One game's dispatches put about 21 MB a present there. The rule is not for a
+  dispatch that stays resident: the output of the second of a chain of two came back through a staged result.
+- Comment: `compute.c`, `vk_dispatch`, above `vk_buf_owned`.
+- Check: `check_compute_owned_input` and `check_compute_owned_chain` in `tests/vulkan_compute_owned_input.inc`.
+
 ## Staging and rings
 
 **S1. The rings, the descriptor pools and the dead list of a frame are not used again before its last submission

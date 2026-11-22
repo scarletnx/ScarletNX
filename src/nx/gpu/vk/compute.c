@@ -1729,11 +1729,6 @@ void vk_dispatch(const DispatchState* d) {
     /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
        reads the result on the GPU instead of the compute queue waiting for it to land (one game: three a frame) */
     for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
-    /* A graphics-queue dispatch binds like a draw: staged inputs, results pending in staging (buffer.c's GfxOut),
-       landed when the guest needs them or once their submit is done. Landing each one at once took a vk_finish per
-       dispatch, about 9 a frame in one game. Its storage images are published over their guest bytes, GPU-owned
-       (vk_surf_publish), and land at once only where they can't be */
-    int deferred = gfx;
     /* one of storage buffers alone, where the host traps guest memory, keeps them on the GPU (res_bind). On the compute
        queue each landed at the next dispatch that read it: one game's passes update the same buffers dispatch after
        dispatch, and waited for the GPU at nearly every one, about 14 frames a second on any machine */
@@ -1752,8 +1747,22 @@ void vk_dispatch(const DispatchState* d) {
 #endif
         }
     }
+    /* One that isn't kept so runs on the graphics queue too where it reads a buffer on pages where the GPU owns bytes or
+       watches them (memory/own.c, vk_buf_owned). On the compute queue, its read into the arena (gmem_read) copies the
+       CPU's bytes on this thread, through the pool's mirror where a page is trapped, and first lands what the GPU owns.
+       On the graphics queue the buffer cache reads it as it does for a draw, and copies owned bytes from their owner on
+       the GPU. In one game, the CPU reads the compute results every frame, so they aren't resident, and every dispatch
+       reads such a buffer: about 21 MB a present went into the arena that way. A buffer counts as read when a read
+       below would copy it in: the program reads it, or writes it without a log */
+    for (i = 0; i < ng && !gfx && !resident; i++)
+        gfx = sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(p->si.nmarks && p->si.gbuf_mark[i])) &&
+              vk_buf_owned(sa[i], ss[i]);
+    /* A graphics-queue dispatch binds like a draw: staged inputs, results pending in staging (buffer.c's GfxOut),
+       landed when the guest needs them or once their submit is done. Landing each one at once took a vk_finish per
+       dispatch, about 9 a frame in one game. Its storage images are published over their guest bytes, GPU-owned
+       (vk_surf_publish), and land at once only where they can't be */
+    int deferred = gfx || resident;
     VkOwnRes* made[16] = {0};
-    deferred = deferred || resident;
     /* shared memory in a storage buffer: the one of the queue it records on, before the batch's chains are worked out
        (a bigger buffer for the compute queue lands the batch first) */
     VkDescriptorBufferInfo spill = {0};

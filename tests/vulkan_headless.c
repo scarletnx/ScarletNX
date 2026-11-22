@@ -7771,6 +7771,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_compute_arena.inc"
+#include "vulkan_compute_owned_input.inc"
 #include "vulkan_rt_aside.inc"
 #include "vulkan_so_note.inc"
 #include "vulkan_index_draws.inc"
@@ -8844,6 +8845,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
             result = check_indirect_dispatch_once();
+        else if (!strcmp(name, "compute_owned"))
+            result = check_compute_owned_input() || check_compute_owned_chain();
         else if (!strcmp(name, "integer_half"))
             result = check_shader_integer_half_rounding();
         else if (!strcmp(name, "integer_float"))
@@ -9349,6 +9352,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_compute_arena_count());
     CHECK(!check_compute_lone_lane());
     CHECK(!check_sm86_lanes());
+    CHECK(!check_compute_owned_input());
+    CHECK(!check_compute_owned_chain());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
