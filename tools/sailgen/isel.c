@@ -1326,7 +1326,7 @@ static int summarize(Ctx* c, Env* e, const XCode* code, unsigned cond, unsigned 
         char vn[64];
         if (!name_value(c, e, names[i], &before[i], &cells[i])) return 0;
         snprintf(vn, sizeof vn, "loop.%s", names[i]);
-        fresh[i] = t_var(dups(vn), t_width(before[i]));
+        fresh[i] = t_var(vn, t_width(before[i]));
     }
     t = env_copy(e);
     for (i = 0; i < n; ++i) {
@@ -1691,16 +1691,17 @@ static void evaluate_form(unsigned fi) {
     for (k = 0; k < (unsigned)f->nops; ++k) {
         const FOp* o = &f->op[k];
         snprintf(name, sizeof name, "op%u", k);
-        if (o->kind == OK_REG) e.cell[C_OP0 + k] = t_var(dups(name), 64);
+        if (o->kind == OK_REG)
+            e.cell[C_OP0 + k] = t_var(name, 64);
         else if (o->kind == OK_IMM)
-            e.cell[C_OP0 + k] = t_var(dups(name), (unsigned)o->size);
+            e.cell[C_OP0 + k] = t_var(name, (unsigned)o->size);
         else if (o->kind == OK_ONE)
             e.cell[C_OP0 + k] = t_const(8, i128(1));
     }
     for (k = 0; k < 16; ++k) e.cell[C_GPR0 + k] = t_var(k_gpr64[k], 64);
     for (k = 0; k < NFLAG; ++k) {
         snprintf(name, sizeof name, "%s.in", k_flag_names[k]);
-        e.cell[C_CF + k] = t_var(dups(name), 1);
+        e.cell[C_CF + k] = t_var(name, 1);
     }
     if (f->cc >= 0) e.cell[C_COND] = t_var("COND", 1);
     memcpy(r->in, e.cell, sizeof r->in);
@@ -2162,7 +2163,7 @@ static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* s
                             if (wi < 64) {
                                 char g[16];
                                 snprintf(g, sizeof g, "G.%d", i);
-                                v = clean ? t_zext(v, 64) : t_concat(t_var(dups(g), 64 - wi), v);
+                                v = clean ? t_zext(v, 64) : t_concat(t_var(g, 64 - wi), v);
                                 m.clean[i] = (unsigned char)clean;
                             }
                             break;
@@ -2173,7 +2174,7 @@ static void try_binding(const PEval* pe, unsigned pi, unsigned fi, const Slot* s
                                 char kn[16];
                                 unsigned kv;
                                 snprintf(kn, sizeof kn, "%s.%u", p->in[i].name, s->size);
-                                kv = t_var(dups(kn), s->size);
+                                kv = t_var(kn, s->size);
                                 wfrom[wn] = pe->in[i];
                                 wto[wn++] = fitv ? t_zext(kv, wi) : t_sext(kv, wi);
                                 m.fit[i] = fitv ? 'U' : 'S';
@@ -2814,6 +2815,7 @@ int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, 
         rep = fopen(report_path, "w");
         if (!rep) {
             fprintf(stderr, "sailgen --isel: cannot write %s\n", report_path);
+            free(pes);
             return 1;
         }
         report(rep, pes, npes);
@@ -2822,5 +2824,6 @@ int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, 
     }
     emit_output(pes, npes);
     emit_encs();
+    free(pes);
     return sg_flush(out_path);
 }

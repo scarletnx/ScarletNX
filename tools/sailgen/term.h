@@ -101,7 +101,7 @@ typedef struct {
 
 extern Term* g_terms;
 
-/* every constructor returns a canonical term's index (0 is none) */
+/* every constructor returns a canonical term's index (0 is none); a name given is copied */
 unsigned t_const(unsigned w, I128 k);
 unsigned t_var(const char* name, unsigned w);
 unsigned t_unknown(unsigned w);

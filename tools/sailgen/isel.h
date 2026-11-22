@@ -50,6 +50,8 @@ typedef struct {
 typedef struct {
     XNode* nodes;
     unsigned count, cap;
+    char** names; /* the copies of the source's names the nodes' text points at, freed with the code */
+    unsigned nnames, names_cap;
     const char* error; /* the first place the text could not be read, or NULL */
     unsigned error_line;
 } XCode;

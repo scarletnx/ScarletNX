@@ -237,7 +237,7 @@ static void rehash(void) {
 static void range_of(Term* t);
 static int range_known(const Term* t);
 
-/* the canonical node of t (its arrays are copied) */
+/* the canonical node of t (its arrays and its name are copied) */
 static unsigned make(Term t) {
     unsigned at, id;
     if (t.kind != TK_UNKNOWN) {
@@ -276,6 +276,12 @@ static unsigned make(Term t) {
             n->arg = NULL;
             n->coef = NULL;
         }
+        if (t.name) {
+            size_t size = strlen(t.name) + 1;
+            char* name = (char*)sg_alloc(size);
+            memcpy(name, t.name, size);
+            n->name = name;
+        }
         if (n->w == 0) range_of(n);
     }
     if (t.kind != TK_UNKNOWN) {
@@ -294,6 +300,7 @@ void t_reset(void) {
     for (i = 1; i < g_count; ++i) {
         free(g_terms[i].arg);
         free(g_terms[i].coef);
+        free((char*)g_terms[i].name);
     }
     free(g_terms);
     free(g_hash);

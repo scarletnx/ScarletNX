@@ -305,7 +305,18 @@ static unsigned node(P* p, int kind, const char* text, unsigned a, unsigned b, u
 }
 
 /* a name kept for the code's life (sailgen's string table moves as it grows, so not there) */
-static const char* intern(const char* s) { return xdup(s, strlen(s)); }
+static const char* intern(P* p, const char* s) {
+    XCode* code = p->code;
+    if (code->nnames == code->names_cap) {
+        code->names_cap = code->names_cap ? code->names_cap * 2 : 256;
+        code->names = (char**)realloc(code->names, code->names_cap * sizeof *code->names);
+        if (!code->names) {
+            fprintf(stderr, "sailgen --isel: out of memory for %u names of the pseudocode\n", code->names_cap);
+            exit(1);
+        }
+    }
+    return code->names[code->nnames++] = xdup(s, strlen(s));
+}
 
 /* ---- expressions: precedence climbing over tokens [from, to) ---- */
 
@@ -353,12 +364,12 @@ static const char* const k_prec[][6] = {
     {"*", "/", "MOD", "SignedModulus", NULL}};
 #define LEVELS 10
 
-static const char* canon_op(const char* s) {
+static const char* canon_op(P* p, const char* s) {
     if (!strcmp(s, "or") || !strcmp(s, "||") || !strcmp(s, "|")) return "OR";
     if (!strcmp(s, "and") || !strcmp(s, "&&") || !strcmp(s, "&") || !strcmp(s, "bitwiseAND")) return "AND";
     if (!strcmp(s, "^")) return "XOR";
     if (!strcmp(s, "==")) return "=";
-    return intern(s);
+    return intern(p, s);
 }
 
 static unsigned primary(E* e);
@@ -396,7 +407,7 @@ static unsigned postfix(E* e, unsigned x) {
             etake(e);
             y = postfix(e, primary(e));
             e->p->code->nodes[x].next = y;
-            x = node(e->p, X_CALL, intern("Concat"), x, 0, 0, 0);
+            x = node(e->p, X_CALL, "Concat", x, 0, 0, 0);
         } else
             return x;
     }
@@ -458,9 +469,9 @@ static unsigned primary(E* e) {
                 }
             }
             eexpect(e, ")");
-            return node(e->p, X_CALL, intern(name), first, 0, 0, t->line);
+            return node(e->p, X_CALL, intern(e->p, name), first, 0, 0, t->line);
         }
-        return node(e->p, X_NAME, intern(name), 0, 0, 0, t->line);
+        return node(e->p, X_NAME, intern(e->p, name), 0, 0, 0, t->line);
     }
     e->bad = 1;
     return 0;
@@ -491,7 +502,7 @@ static unsigned binary(E* e, int level) {
         if (!hit) return x;
         {
             unsigned line = t->line, y, z;
-            const char* op = canon_op(t->text);
+            const char* op = canon_op(e->p, t->text);
             size_t at = e->i;
             etake(e);
             y = binary(e, level + 1);
@@ -531,7 +542,7 @@ static unsigned expr_or_prose(P* p, size_t from, size_t to) {
             memcpy(s + len, p->t[k].text, strlen(p->t[k].text));
             len += strlen(p->t[k].text);
         }
-        x = node(p, X_PROSE, intern(s), 0, 0, 0, p->t[from].line);
+        x = node(p, X_PROSE, intern(p, s), 0, 0, 0, p->t[from].line);
         free(s);
         return x;
     }
@@ -715,7 +726,7 @@ static unsigned for_stmt(P* p) {
         take(p);
         end_stmt(p);
     }
-    x = node(p, X_FOR, intern(p->t[from].text), lo, hi, body, line);
+    x = node(p, X_FOR, intern(p, p->t[from].text), lo, hi, body, line);
     p->code->nodes[x].down = !strcmp(p->t[kto].text, "DOWNTO");
     return x;
 }
@@ -793,7 +804,7 @@ static unsigned statement(P* p, const char* const* stops) {
             unsigned line = t->line;
             take(p);
             end_stmt(p);
-            return node(p, X_DO, NULL, node(p, X_CALL, intern(t->text), 0, 0, 0, line), 0, 0, line);
+            return node(p, X_DO, NULL, node(p, X_CALL, intern(p, t->text), 0, 0, 0, line), 0, 0, line);
         }
         fail(p, "a keyword where its construct doesn't want it");
         take(p);
@@ -801,7 +812,7 @@ static unsigned statement(P* p, const char* const* stops) {
     }
     if (t->kind == T_EXC) {
         unsigned line = t->line, code = 0;
-        const char* exc = intern(t->text + 1);
+        const char* exc = intern(p, t->text + 1);
         take(p);
         if (peek(p, 0)->kind == T_OP && !strcmp(peek(p, 0)->text, "(")) {
             size_t j = p->i + 1;
@@ -897,6 +908,8 @@ unsigned x_parse(XCode* code, const char* text) {
 }
 
 void x_code_free(XCode* code) {
+    for (unsigned i = 0; i < code->nnames; ++i) free(code->names[i]);
+    free(code->names);
     free(code->nodes);
     memset(code, 0, sizeof *code);
 }
