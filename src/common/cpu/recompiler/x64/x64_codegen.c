@@ -90,9 +90,13 @@ typedef struct {
     int pinned;          /* the function keeps guest registers in host ones (pin): RBP, R12-R15 pushed */
     SnxU64* live;        /* each instruction's live-in guest registers (bits 0-31) and flags (32-35), or NULL */
     SnxU64* live_buf;    /* live's room */
+    unsigned char* exits; /* each instruction's: a loop's back edge whose fall-through leaves that loop, or NULL */
+    unsigned char* exits_buf;
+    size_t cap_exits;
     size_t cap_live;
     signed char pin[32]; /* each X register's host register, -1 for none */
     signed char vpin[32]; /* each V register's XMM register (8-15), -1 for none */
+    signed char mempin;   /* the guest memory's base's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
     SnxU32 word; /* the instruction being made: SNX_X64_STATS names it where the function goes to LLVM */
     int dispatch, d_label, mismatch_label;
@@ -236,6 +240,13 @@ static void jmp(Unit* u, int label) {
 static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
     if (!u->pinned) return;
+    if (u->mempin >= 0 && !store && (!caller || u->mempin == 10 || u->mempin == 11)) {
+        int p = u->mempin; /* mov p, [rbx + mem]: read-only, never stored */
+        sgx_byte(b, (unsigned char)(0x48 | (p >> 3) << 2));
+        sgx_byte(b, 0x8B);
+        sgx_byte(b, (unsigned char)(0x83 | (p & 7) << 3));
+        sgx_imm(b, (long long)offsetof(CPU, mem), 4);
+    }
     for (n = 0; n < 32; ++n) {
         if (u->pin[n] >= 0 && (!caller || u->pin[n] == 10 || u->pin[n] == 11)) {
             int p = u->pin[n];
@@ -1076,7 +1087,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
                every write stored (or PSET) where it was made, and the store pass keeps the stores before a machine
                instruction */
             jump_if(u, g->taken, branch_label(u, address, target), target);
-            if (target <= address) {
+            if (target <= address && u->exits && u->exits[index]) {
                 /* a loop's latch: past it the loop has ended, so what the block knows is let go (read again from the
                    state or the pins once) rather than kept live, and spilled, through the loop's body */
                 int k;
@@ -1365,6 +1376,12 @@ static void liveness(Unit* u, const SnxFunction* f) {
             if (in != u->live[i]) u->live[i] = in, changed = 1;
         }
     } while (changed && ++passes < 64);
+    if (getenv("SNX_X64_LIVE_DEBUG")) fprintf(stderr, "live F_%llX: %d passes, changed %d\n", (unsigned long long)f->start, passes, changed);
+    if (getenv("SNX_X64_LIVE_DEBUG"))
+        for (i = 0; i < n; ++i)
+            fprintf(stderr, "live %llX: in %09llX use %09llX def %09llX\n",
+                    (unsigned long long)snx_function_address(f, i), (unsigned long long)u->live[i],
+                    (unsigned long long)use[i], (unsigned long long)def[i]);
     free(use), free(succ);
     if (changed) u->live = NULL; /* no fixed point: none known */
 }
@@ -1382,7 +1399,7 @@ static SnxU64 dead_at(Unit* u, SnxU64 target) {
    read the state (a system register's helper, WFE, SEV) */
 static void choose_pins(Unit* u, const SnxFunction* f) {
     static const signed char hosts[7] = {5, 12, 13, 14, 15, 11, 10};
-    SnxU64 weight[32], vweight[32];
+    SnxU64 weight[33], vweight[32]; /* weight[32]: the guest memory's base */
     unsigned k, best, nhosts;
     int fixed = 0; /* an exclusive, an atomic or CRC32: R10 and R11 are their machine instructions' */
     unsigned char* loop;
@@ -1391,6 +1408,8 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     memset(u->pin, -1, sizeof u->pin);
     memset(u->vpin, -1, sizeof u->vpin);
     u->pinned = 0;
+    u->mempin = -1;
+    u->exits = NULL;
     u->a.reserved = u->a.xreserved = 0;
     memset(vweight, 0, sizeof vweight);
     static int every = -1; /* SNX_X64_PIN_ALL=1: pins in every function, of every register read once (for tests) */
@@ -1433,13 +1452,17 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         /* the natural loops: for each header (a back edge's target), what reaches one of its back edges without
            passing it, by the predecessors from those back edges. Each instruction's depth is the loops it is in */
         int *first = (int*)malloc((f->count + 1) * sizeof *first), *pred = (int*)malloc(2 * f->count * sizeof *pred);
-        int* stack = (int*)malloc(f->count * sizeof *stack);
+        int* stack = (int*)malloc(2 * f->count * sizeof *stack), *latch_of = stack + f->count, nlatch = 0;
         unsigned* seen = (unsigned*)calloc(f->count, sizeof *seen);
         size_t e;
-        if (!first || !pred || !stack || !seen) {
+        u->exits = (unsigned char*)grow(u->exits_buf, &u->cap_exits, f->count, 1);
+        u->exits_buf = u->exits;
+        if (!first || !pred || !stack || !seen || !u->exits) {
             free(first), free(pred), free(stack), free(seen), free(loop), free(succ);
+            u->exits = NULL;
             return;
         }
+        memset(u->exits, 0, f->count);
         memset(first, 0, (f->count + 1) * sizeof *first);
         for (e = 0; e < 2 * f->count; ++e)
             if (succ[e] >= 0) ++first[succ[e] + 1];
@@ -1459,6 +1482,12 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                     stack[top++] = pred[j];
                 }
             if (!top) continue;
+            {
+                /* the latches, noted before the walk takes the stack */
+                int t;
+                for (t = 0; t < top; ++t) latch_of[t] = stack[t];
+                nlatch = top;
+            }
             seen[i] = (unsigned)mark;
             if (loop[i] < 5) ++loop[i];
             while (top) {
@@ -1473,6 +1502,11 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                         stack[top++] = pred[q];
                     }
             }
+            /* a latch whose next instruction isn't the loop's: past it the loop has ended */
+            for (j = 0; j < nlatch; ++j) {
+                int l = latch_of[j];
+                if (succ[2 * l] >= 0 && seen[succ[2 * l]] != (unsigned)mark) u->exits[l] = 1;
+            }
         }
         free(first), free(pred), free(stack), free(seen);
     }
@@ -1481,13 +1515,15 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
        and the store where it writes it: each counted once a block, 8 times a loop's level */
     {
         SnxU32 rd = 0, wr = 0, vrd = 0, vwr = 0;
+        int memseen = 0;
         for (i = 0; i < f->count; ++i) {
             SnxU32 w = 0, vuse = 0, vdef = 0, m;
             SnxU64 wt, use, def;
             unsigned r;
-            if (f->leaders[i]) rd = wr = vrd = vwr = 0;
+            if (f->leaders[i]) rd = wr = vrd = vwr = 0, memseen = 0;
             (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
             wt = 1ull << (3 * loop[i]);
+            if ((w >> 25 & 5) == 4 && !memseen) weight[32] += wt, memseen = 1; /* the block's first access */
             if ((w >> 24 & 0x3F) == 0x08 || ((w >> 24 & 0x3F) == 0x38 && (w >> 21 & 1) && !(w >> 10 & 3)) ||
                 (w & 0x7FE0E000) == 0x1AC04000)
                 fixed = 1;
@@ -1522,6 +1558,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         fprintf(stderr, "pins F_%llX:", (unsigned long long)f->start);
         for (r = 0; r < 32; ++r)
             if (weight[r]) fprintf(stderr, " x%u=%llu", r, (unsigned long long)weight[r]);
+        fprintf(stderr, "\n  fixed %d", fixed);
         fprintf(stderr, "\n  depth:");
         for (i = 0; i < f->count; ++i) fprintf(stderr, "%u", loop[i]);
         fprintf(stderr, "\n");
@@ -1531,11 +1568,13 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     for (k = 0; k < nhosts; ++k) {
         unsigned r;
         SnxU64 top = 0;
-        best = 32;
-        for (r = 0; r < 32; ++r)
-            if (u->pin[r] < 0 && weight[r] > top) top = weight[r], best = r;
-        if (best == 32 || top < (every ? 1u : 8u)) break;
-        u->pin[best] = hosts[k];
+        best = 33;
+        for (r = 0; r < 33; ++r)
+            if ((r == 32 ? u->mempin < 0 : u->pin[r] < 0) && weight[r] > top) top = weight[r], best = r;
+        if (best == 33 || top < (every ? 1u : 8u)) break;
+        if (best == 32) u->mempin = hosts[k];
+        else
+            u->pin[best] = hosts[k];
         if (hosts[k] < 12 && hosts[k] != 5) u->a.reserved |= 1u << hosts[k];
         u->pinned = 1;
     }
@@ -1591,6 +1630,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->g->pinned = u->pinned;
     memcpy(u->g->pin, u->pin, sizeof u->pin);
     memcpy(u->g->vpin, u->vpin, sizeof u->vpin);
+    u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
     u->a.pin_flush = pins_flush;
     prologue(u);
@@ -2061,7 +2101,7 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
-    free(u.live_buf);
+    free(u.live_buf), free(u.exits_buf);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);

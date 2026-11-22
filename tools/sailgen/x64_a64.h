@@ -30,6 +30,7 @@ struct SgCtx {
                             x64_codegen.c's choice (a step's or a block's: none, pinned 0) */
     int pinned;      /* pin[] is in use */
     signed char vpin[32]; /* the XMM register each V register lives in for the whole function, -1 none (pinned) */
+    signed char mempin;   /* the host register the guest memory's base (CPU.mem) is in, -1 none (pinned) */
     int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int vx[32];      /* each SIMD&FP register as an XMM value, where the block has it so (one cache or the other) */
     SgB fp_state[2]; /* the hot paths' check of FPCR and FPSR (sgx_fp_bad), made once a region: without, with IXC */
@@ -776,6 +777,14 @@ static inline SgD sgx_mach(SgCtx* g, int op, SgD* in, const signed char* fix, in
 /* ---- guest memory: CPU.mem plus the address ---- */
 
 static inline int sgx_mem(SgCtx* g) {
+    if (!g->mem && g->pinned && g->mempin >= 0) {
+        /* the pinned register's own: read-only, never a PSET */
+        SgX* x = sgx(g);
+        SgXIns* i = sgx_append(x, SGX_K_PGET);
+        i->imm = g->mempin;
+        i->def = sgx_vreg(x, x->n - 1, 64);
+        g->mem = i->def;
+    }
     if (!g->mem) {
         SgX* x = sgx(g);
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
