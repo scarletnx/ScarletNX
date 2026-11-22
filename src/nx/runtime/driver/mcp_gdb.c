@@ -826,7 +826,8 @@ char* mcp_gdb_attach(long port, Text* err) {
         close(in[1]);
         close(out[0]);
         close(out[1]);
-        execl(gdb, gdb, "--nx", "--quiet", "--interpreter=mi3", (char*)NULL);
+        char* const argv[] = {gdb, "--nx", "--quiet", "--interpreter=mi3", NULL};
+        execv(gdb, argv); /* not execl: the PS5's libc has none */
         _exit(127);
     }
     free(gdb);

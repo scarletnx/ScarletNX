@@ -89,7 +89,8 @@ static void monitor(int listener, int life, int gate, pid_t target, const char* 
         close(peer);
         if (dup2(transport[1], STDIN_FILENO) < 0 || dup2(transport[1], STDOUT_FILENO) < 0) _exit(126);
         if (transport[1] > STDOUT_FILENO) close(transport[1]);
-        execl(server, server, "--once", "--attach", "stdio", pid, (char*)NULL);
+        char* const argv[] = {(char*)server, "--once", "--attach", "stdio", pid, NULL};
+        execv(server, argv); /* not execl: the PS5's libc has none */
         perror("scarletnx: starting gdbserver");
         _exit(127);
     }
