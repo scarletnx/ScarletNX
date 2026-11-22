@@ -1224,14 +1224,16 @@ int plat_vm_commit(u8* p, u64 size) {
 /* what a SIGBUS on a committed page of the file slots says: past the write tracking and the freeze, a page in or out
    failed */
 #define FILES_IO  "guest memory: a page of the game's memory files could not be read or written (the disk may be full)"
-static u8* g_files_base;
-static u64 g_files_size, g_files_slot;
-static int* g_files_fd;
+static struct {
+    u8* base;
+    u64 size, slot;
+    int* fd; /* a descriptor for each slot; NULL without the slots */
+} g_files;
 int plat_vm_files_slot(const u8* p, int* fd, u64* off) {
-    u64 at = (u64)((uintptr_t)p - (uintptr_t)g_files_base);
-    if (!g_files_fd || at >= g_files_size) return 0;
-    if (fd) *fd = g_files_fd[at / g_files_slot];
-    if (off) *off = at % g_files_slot;
+    u64 at = (u64)((uintptr_t)p - (uintptr_t)g_files.base);
+    if (!g_files.fd || at >= g_files.size) return 0;
+    if (fd) *fd = g_files.fd[at / g_files.slot];
+    if (off) *off = at % g_files.slot;
     return 1;
 }
 /* a SIGBUS at a that FILES_IO explains: in the file slots, on a page committed (WP_MAPPED) where the states say. Darwin
@@ -1304,10 +1306,10 @@ int plat_vm_files(u8* base, u64 size, const char* dir) {
         LOG("memory: the guest files have no data protection class: %s\n", strerror(errno));
     else
         LOG("memory: the guest files have data protection class %d\n", cls);
-    g_files_base = base; /* before the game's threads */
-    g_files_size = size;
-    g_files_slot = slot;
-    g_files_fd = fd;
+    g_files.base = base; /* before the game's threads */
+    g_files.size = size;
+    g_files.slot = slot;
+    g_files.fd = fd;
     return 0;
 #else
     (void)base;
@@ -1329,7 +1331,7 @@ void plat_vm_decommit(u8* p, u64 size) {
             int fd;
             u64 off;
             plat_vm_files_slot(p + done, &fd, &off);
-            len = g_files_slot - off < size - done ? g_files_slot - off : size - done;
+            len = g_files.slot - off < size - done ? g_files.slot - off : size - done;
             if (!files_punch(fd, off, len)) continue;
             /* the range must still read zero at its next commit: zeroed in place, its blocks kept */
             WARN_LIMIT(4, "memory: could not free %llu KiB of the game's memory files (error %d): zeroed in place\n",
