@@ -1220,7 +1220,9 @@ static inline SgD sgx_cold(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, 
    constant k loaded on the cold path alone, at fpcr_at and k_at of the arguments (-1: none); the call reads and writes
    no state but the fields at fpcr and fpsr (what the store pass knows). zacc bit 7: a zero result is the hot path's
    still where the state's FPCR has none of zmask's bits and (bits 0-2 not all clear) one of those arguments is a
-   zero, tested on the cold path before the call (the guards' exact zeros, out of the hot code) */
+   zero, and (bit 6) where FPCR.FZ is set none of the floating-point arguments before fpcr_at (of the width k's low
+   byte names) is a denormal FZ flushes, tested on the cold path before the call (the guards' exact zeros, out of the
+   hot code) */
 static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, int nargs, int fpcr_at, int k_at,
                               long long k, int fpcr, int fpsr, unsigned zacc, SnxU32 zmask) {
     int regs[5], j, from, cc, t, cls, n = 0, w32 = 0;
@@ -2620,6 +2622,24 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             sgx_byte(c, 0x75), sgx_byte(c, 0), to_call[ncall++] = c->n; /* jnz call */
             sgx_byte(c, 0xF7), sgx_byte(c, 0x83), sgx_imm(c, i->disp, 4), sgx_imm(c, (long long)i->kv[0], 4); /* test */
             sgx_byte(c, 0x75), sgx_byte(c, 0), to_call[ncall++] = c->n;
+            if (i->zacc & 0x40) {
+                /* under FZ a denormal argument is flushed, raising IDC: the call's. Its doubled magnitude is not zero
+                   and its exponent is (SHR of it) */
+                const int w32 = (i->imm & 0xFF) == 32;
+                size_t no_fz;
+                sgx_byte(c, 0xF7), sgx_byte(c, 0x83), sgx_imm(c, i->disp, 4), sgx_imm(c, 1ll << 24, 4); /* test FZ */
+                sgx_byte(c, 0x74), sgx_byte(c, 0), no_fz = c->n;                                        /* jz */
+                for (j = 0; j + 1 < i->cfpcr; ++j) {
+                    size_t zero;
+                    sgx_cold_zf(a, i->in[1 + j], 0, 0, w32);
+                    sgx_byte(c, 0x74), sgx_byte(c, 0), zero = c->n; /* jz: a zero */
+                    if (!w32) sgx_byte(c, 0x48);
+                    sgx_byte(c, 0xC1), sgx_byte(c, 0xE8), sgx_byte(c, w32 ? 24 : 53); /* shr eax or rax: the exponent */
+                    sgx_byte(c, 0x74), sgx_byte(c, 0), to_call[ncall++] = c->n;       /* jz call: a denormal */
+                    c->p[zero - 1] = (unsigned char)(c->n - zero);
+                }
+                c->p[no_fz - 1] = (unsigned char)(c->n - no_fz);
+            }
             if (i->zacc & 7) {
                 for (j = 0; j < 3; ++j)
                     if (i->zacc >> j & 1) {

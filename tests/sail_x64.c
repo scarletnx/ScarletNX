@@ -178,9 +178,9 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
 
 typedef u64 (*Step)(CPU* c);
 
-/* FPCR.FZ set, as many games run: operands and results the host's arithmetic gives exactly take the inline code, with
-   no helper call (snx_x64_fp_calls); a denormal operand, which FZ flushes, takes the helper and its IDC. FPSR's IXC is
-   set first, as the inline code needs where an operation may be inexact */
+/* FPCR.FZ set, as many games run: operands and results the host's arithmetic gives exactly, an exact zero among them,
+   take the inline code with no helper call (snx_x64_fp_calls); a denormal operand, which FZ flushes, takes the helper
+   and its IDC. FPSR's IXC is set first, as the inline code needs where an operation may be inexact */
 static size_t check_fz_hot(void) {
     static const struct {
         u32 word;
@@ -192,6 +192,9 @@ static size_t check_fz_hot(void) {
     } cases[] = {
         {0x1E222820u, "FADD s0, s1, s2", 0x3FC00000u, 0x40100000u, 0, 0, 0x40700000u, 0x10},
         {0x1E222820u, "FADD s0, s1, s2 of a denormal", 0x3FC00000u, 0x00000001u, 0, 1, 0x3FC00000u, 0x90},
+        {0x1E220820u, "FMUL s0, s1, s2 of a zero", 0x3FC00000u, 0, 0, 0, 0, 0x10},
+        {0x1E223820u, "FSUB s0, s1, s2 to a zero", 0x3FC00000u, 0x3FC00000u, 0, 0, 0, 0x10},
+        {0x1E220820u, "FMUL s0, s1, s2 of a denormal and a zero", 0x00000001u, 0, 0, 1, 0, 0x90},
         {0x1E620820u, "FMUL d0, d1, d2", 0x3FF8000000000000ull, 0x4002000000000000ull, 0, 0, 0x400B000000000000ull,
          0x10},
         {0x1F020C20u, "FMADD s0, s1, s2, s3", 0x3FC00000u, 0x40100000u, 0x3F800000u, 0, 0x408C0000u, 0x10},
