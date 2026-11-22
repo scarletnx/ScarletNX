@@ -174,8 +174,11 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
 }
 
 /* x64.h's: the state's words of the registers (bits 0-30: X0-X30, 31 SP) and flags (32-35: N Z C V) dead names */
-static inline int sgx_dead_words(SnxU64 dead, unsigned short* words) {
-    int n = 0, r;
+static inline int sgx_dead_words(SnxU64 dead, SnxU32 vdead, unsigned short* words) {
+    int n = 0, r, k;
+    for (r = 0; r < 32; ++r)
+        if (vdead >> r & 1)
+            for (k = 0; k < 4; ++k) words[n++] = (unsigned short)(((offsetof(CPU, v) + 16 * (size_t)r) >> 2) + (unsigned)k);
     for (r = 0; r < 32; ++r)
         if (dead >> r & 1) {
             unsigned w = (unsigned)(offsetof(CPU, x) + 8 * (size_t)r) >> 2;
