@@ -88,6 +88,11 @@ setting Its kernel
     int 0 1
     default 0
     only arm64-linux
+setting Both Apples
+    key apples
+    int 0 1
+    default 0
+    only apple
 setting Loudness
     key loudness
     int 0 100
@@ -176,6 +181,7 @@ endforeach()
 file(READ "${WORK}/out/settings_test.c" text)
 foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
             "{\"its_kernel\", \"0\", NULL, INI_INT, INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
+            "{\"apples\", \"0\", NULL, INI_INT, INI_ONLY_APPLE, &g_settings.both_apples,"
             "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,"
             # a slider's (ini.h's INI_SLIDER): an int with words, the menus' steps
             "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,"
@@ -191,7 +197,7 @@ endforeach()
 file(WRITE "${WORK}/unknown.txt" "table g_test_ini\nsetting Elsewhere\n    key elsewhere\n    int 0 1\n    default 0\n    only amiga\n")
 execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.txt"
                 RESULT_VARIABLE unknown_result OUTPUT_VARIABLE unknown_output ERROR_VARIABLE unknown_errors)
-if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux, arm64-linux and none\n$")
+if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, apple, windows, android, linux, arm64-linux and none\n$")
     message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
 endif()
 # a slider of a text, or of an int without words, is refused with its line: its steps are an int's words
