@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* text and page point into the manual's text, which read_lines cuts into lines in place */
 typedef struct {
     char* text; /* the line, right-trimmed, without form feeds; NULL for a page marker */
     const char* page; /* a page marker's page ("Vol. 2A 3-14") */
@@ -117,11 +118,10 @@ static Line* read_lines(char* text, size_t size, size_t* count, char* revision) 
     }
     while (i < size) {
         size_t start = i, end;
-        char* line;
+        char* line = text + start;
         size_t len = 0, j;
         while (i < size && text[i] != '\n') ++i;
         end = i++;
-        line = (char*)sg_alloc(end - start + 1);
         for (j = start; j < end; ++j)
             if (text[j] != '\f' && text[j] != '\r') line[len++] = text[j];
         while (len && is_space(line[len - 1])) --len;
@@ -138,8 +138,7 @@ static Line* read_lines(char* text, size_t size, size_t* count, char* revision) 
             const char* vol = footer_page(line);
             if (vol) {
                 lines[n].text = NULL;
-                lines[n++].page = dup_s(vol);
-                free(line);
+                lines[n++].page = vol;
                 continue;
             }
         }
@@ -304,6 +303,10 @@ typedef struct {
     size_t n, cap;
 } Rows;
 
+static void free_row(Row* row) {
+    for (int j = 0; j < 7; ++j) free(row->c[j]);
+}
+
 static void rows_add(Rows* r, Row row) {
     if (r->n == r->cap) {
         r->cap = r->cap ? r->cap * 2 : 16;
@@ -386,7 +389,7 @@ static void opcode_rows(const Line* body, size_t n, Rows* out) {
             free_cols(cols, k);
             if (row.c[0][0] && row.c[1][0]) rows_add(out, row);
             else
-                for (j = 0; j < 7; ++j) free(row.c[j]);
+                free_row(&row);
             continue;
         }
         free(pending);
@@ -651,6 +654,11 @@ static Override read_override(const char* path) {
     return ov;
 }
 
+static void free_override(Override* ov) {
+    free(ov->name);
+    for (int k = 0; k < 4; ++k) free(ov->section[k]);
+}
+
 /* ---- the whole ---- */
 
 int sg_sdm_extract(const char* text_path, const char* out_path, const char* const* override_paths,
@@ -667,7 +675,6 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
     Buf o = {0};
     int status = 0;
     for (k = 0; k < (size_t)override_count; ++k) ovs[k] = read_override(override_paths[k]);
-    free(text);
     if (revision[0] == '?') fprintf(stderr, "sailgen --sdm: %s has no 'Order Number: 325383-'\n", text_path);
     /* a page starts at a 'NAME—Title' line with an opcode table's header a few lines below */
     for (i = 0; i < count; ++i) {
@@ -743,6 +750,8 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
                     if (rows.rows[j].c[1][0] && (!strcmp(m, "Valid") || !strcmp(m, "Invalid") || !strcmp(m, "N.E.") ||
                                                  !strcmp(m, "N.S.") || !strcmp(m, "Inv.")))
                         rows_add(&keep, rows.rows[j]);
+                    else
+                        free_row(&rows.rows[j]);
                 }
                 free(rows.rows);
                 rows = keep;
@@ -794,10 +803,7 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
                     buf_str(&o, "\n");
                 }
         }
-        for (j = 0; j < rows.n; ++j) {
-            int q;
-            for (q = 0; q < 7; ++q) free(rows.rows[j].c[q]);
-        }
+        for (j = 0; j < rows.n; ++j) free_row(&rows.rows[j]);
         free(rows.rows);
         free(name);
         ++pages;
@@ -817,5 +823,13 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
         status = sg_flush(out_path);
         if (!status) fprintf(stderr, "sailgen --sdm: %zu instruction pages from 325383-%s\n", pages, revision);
     }
+    free(o.s);
+    for (k = 0; k < (size_t)override_count; ++k) free_override(&ovs[k]);
+    free(ovs);
+    for (k = 0; k < nseen; ++k) free(seen[k]);
+    free(seen);
+    free(starts_at);
+    free(lines);
+    free(text);
     return status;
 }
