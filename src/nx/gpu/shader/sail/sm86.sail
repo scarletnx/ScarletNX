@@ -1061,6 +1061,8 @@ val IpaInput : (int, int, int, int) -> bits(32)
 val FrontFacing : unit -> bool
 val PointCoord : int -> bits(32)
 val PrimitiveId : unit -> bits(32)
+/* the layer a fragment program reads (BuiltIn Layer, with the Geometry capability or ShaderLayer), 0 with neither */
+val LayerIn : unit -> bits(32)
 /* the map of the SPH's legacy varyings, the device takes a fragment's PrimitiveId (the Geometry capability), and the
    SPH's imap reads generic i's component k */
 val LegacyAddress : int -> int
@@ -1386,12 +1388,13 @@ function execute_IPA() -> unit = {
     if UInt(Field(32, 8)) != RZ | UInt(Field(24, 8)) != 0 | freq > 1 | loc > 1 then
         throw(Unsupported("IPA indexed, at an offset or of frequency %u", freq));
     /* the addresses: FragCoord 0x70-0x7f, the generics 0x80-0x27f, the front face 0x3fc, PointCoord 0x2e0 and 0x2e4,
-       the primitive's number 0x60 */
+       the primitive's number 0x60, the layer 0x64 */
     let v : bits(32) = if addr >= 112 & addr < 128 then FragCoord(MOD(DIV(addr, 4), 4))
         else if addr >= 128 & addr < 640 then IpaInput(DIV(addr - 128, 16), MOD(DIV(addr, 4), 4), loc, freq)
         else if addr == 1020 then Float32(if FrontFacing() then 0xffffffff else 0x00000000)
         else if addr == 736 | addr == 740 then PointCoord(MOD(DIV(addr, 4), 2))
         else if addr == 96 & Stage() == 4 & GeometryOk() then Float32(PrimitiveId())
+        else if addr == 100 & Stage() == 4 then Float32(LayerIn())
         else throw(Unsupported("IPA of attribute 0x%x", addr));
     R_write(Dst(), Bits32(v))
 }
