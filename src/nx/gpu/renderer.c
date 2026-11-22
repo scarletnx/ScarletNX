@@ -7,6 +7,7 @@
 #include <string.h>
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/bits.h"
 
 int g_renderer_up;
 u64 g_draws;
@@ -77,6 +78,19 @@ static const char* const g_ds_group_name[DS_GENS] = {"programs", "vertex format"
                                                       "transform feedback", "targets", "dynamic", "viewports",
                                                       "vertex buffers", "index", "bindings", "inline",
                                                       "target formats"};
+/* A group of DS_CHUNKED_MIN bytes or more whose generation moved goes as the DS_CHUNK-byte chunks that differ from
+   what the slot last sent, with a mask of them, when they are under half of it. One game's bindings (1,736 bytes)
+   went whole in 86% of its draw records, 3.4 MB a present of its 6.3 MB, for a few slots each draw changed. The front
+   end's side keeps the groups as it sent them (g_ds_shadow), and the renderer's side puts the chunks in its copy,
+   which ends with the bytes the whole group would have given it */
+#define DS_CHUNK       64
+#define DS_CHUNKED_MIN 256
+static DsState g_ds_shadow[DS_COPIES];
+static int ds_chunked(u32 g) {
+    size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
+    return g != DS_INLINE && n >= DS_CHUNKED_MIN && n <= 64 * DS_CHUNK; /* a u64 mask holds its chunks */
+}
+static_assert(DS_CHUNK % 4 == 0, "chunks keep the words after the groups 4-aligned");
 enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD, DR_XFB };
 /* the renderer's side's: the id its last shading_rate call gave (gpu_shading_rate), for the draws after it */
 static u32 g_rate_last;
@@ -91,7 +105,7 @@ typedef struct {
     u32 owner;   /* DsState.owner */
     u32 indices; /* the inline index words after the groups */
     u32 npatch;  /* the inline group's ranges after the groups, each a DsPatch and its bytes, in place of the group */
-    u32 pad;
+    u32 chunked; /* the groups after those, each as a u64 mask of its chunks and the chunks (ds_chunked) */
     u64 gen[DS_GENS];
     union {
         DrawCall dc;
@@ -117,6 +131,19 @@ static void ds_run(const void* arg, u64 bytes) {
             size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
             memcpy((u8*)c + g_ds_group_at[g], p, n);
             p += n;
+        }
+    for (u32 g = 0; g < DS_GENS; g++)
+        if (r.chunked >> g & 1) {
+            size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
+            u64 mask;
+            memcpy(&mask, p, sizeof mask);
+            p += sizeof mask;
+            for (; mask; mask &= mask - 1) {
+                size_t k = (size_t)snx_ctz64(mask) * DS_CHUNK, len = n - k < DS_CHUNK ? n - k : DS_CHUNK;
+                if (k >= n) fatal("gpu: a draw record's chunk is out of range\n");
+                memcpy((u8*)c + g_ds_group_at[g] + k, p, len);
+                p += len;
+            }
         }
     for (u32 i = 0; i < r.npatch; i++) {
         DsPatch pt;
@@ -188,6 +215,26 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
             groups |= 1u << g;
             bytes += g_ds_group_at[g + 1] - g_ds_group_at[g];
         }
+    /* the chunked groups' chunks that differ from what was sent, in their place */
+    u32 chunked = 0;
+    u64 masks[DS_GENS];
+    const u8* shadow = (const u8*)&g_ds_shadow[at];
+    if (!fresh)
+        for (u32 g = 0; g < DS_GENS; g++) {
+            if (!(groups >> g & 1) || !ds_chunked(g)) continue;
+            size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g], changed = 0;
+            const u8 *now = (const u8*)ds + g_ds_group_at[g], *was = shadow + g_ds_group_at[g];
+            u64 m = 0;
+            for (size_t k = 0, i = 0; k < n; k += DS_CHUNK, i++) {
+                size_t len = n - k < DS_CHUNK ? n - k : DS_CHUNK;
+                if (memcmp(now + k, was + k, len)) m |= 1ull << i, changed += len;
+            }
+            if (2 * changed >= n) continue; /* half or more: whole */
+            groups &= ~(1u << g);
+            chunked |= 1u << g;
+            masks[g] = m;
+            bytes += sizeof m + changed - n;
+        }
     /* the inline group's changed ranges in its place, where they hold all its change since the last record */
     u32 npatch = 0;
     if ((groups >> DS_INLINE & 1) && !fresh && !g_ds_sent[at].over && g_ds_sent[at].npatch &&
@@ -201,7 +248,8 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
         }
     }
     u8* p = (u8*)gq_call_begin(ds_run, bytes);
-    DsRecord r = {kind, at, groups, fresh, o ? o->pred : 0, o ? o->xfb_reload : 0, ds->owner, nindices, npatch, 0};
+    DsRecord r = {kind,      at,       groups, fresh,  o ? o->pred : 0, o ? o->xfb_reload : 0,
+                  ds->owner, nindices, npatch, chunked};
     memcpy(r.gen, ds->gen, sizeof r.gen);
     memcpy(&r.call, call, call_bytes);
     memcpy(p, &r, sizeof r);
@@ -210,7 +258,22 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
         if (groups >> g & 1) {
             size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
             memcpy(p, (const u8*)ds + g_ds_group_at[g], n);
+            if (ds_chunked(g)) memcpy((u8*)&g_ds_shadow[at] + g_ds_group_at[g], p, n);
             p += n;
+        }
+    for (u32 g = 0; g < DS_GENS; g++)
+        if (chunked >> g & 1) {
+            size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
+            const u8* now = (const u8*)ds + g_ds_group_at[g];
+            u8* was = (u8*)&g_ds_shadow[at] + g_ds_group_at[g];
+            memcpy(p, &masks[g], sizeof masks[g]);
+            p += sizeof masks[g];
+            for (u64 m = masks[g]; m; m &= m - 1) {
+                size_t k = (size_t)snx_ctz64(m) * DS_CHUNK, len = n - k < DS_CHUNK ? n - k : DS_CHUNK;
+                memcpy(p, now + k, len);
+                memcpy(was + k, now + k, len);
+                p += len;
+            }
         }
     for (u32 i = 0; i < npatch; i++) {
         const DsPatch* pt = &g_ds_sent[at].patch[i];
