@@ -38,6 +38,7 @@
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/tex_report.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -873,6 +874,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         }
         if (g_vk_present == 1 || g_vk_present % 600 == 0) {
             guest_stats_log(now_ns, g_vk_present);
+            gq_stats_log(g_vk_present == 1 ? 0 : 600);
             ipc_stats_log(now_ns);
         }
         vk_mem_present();
