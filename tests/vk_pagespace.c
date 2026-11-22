@@ -146,6 +146,11 @@ VkCommandBuffer vk_cmd_upload(int gpu) {
 }
 void vk_render_end_at(const char* file, int line) { (void)file, (void)line; }
 void vk_all_barrier(VkCommandBuffer cb) { (void)cb; }
+/* owned.c's: the barrier counted by where it is from, which these checks count as one */
+void vk_all_barrier_by(int site, VkCommandBuffer cb) {
+    (void)site;
+    vk_all_barrier(cb);
+}
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) { (void)cb, (void)d; }
 /* a copy from the ring into the region lands at once: a granule without memory takes nothing */
 void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
