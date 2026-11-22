@@ -2789,6 +2789,12 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
     }
     return pipe_handle(p, pipe_make_here(p, 1));
 }
+/* the key a draw's pipeline is looked up by: with the blend as dynamic state, one pipeline for every blend of a draw's
+   state, the draw setting its blend (render.c), into *dyn; else k. vk_pipeline_get's callers bind theirs with the blend
+   in it */
+static const PipeKey* pipe_drawn_key(const PipeKey* k, PipeKey* dyn) {
+    return g_vk.dyn_blend && vk_pipe_blend_key(k, dyn) ? dyn : k;
+}
 /* A draw's pipeline when its commands go through the recording thread: the pipeline if it is ready, otherwise a
    stand-in, with the pipeline made on a worker in the order draws asked for them. The GPU thread goes on with the
    frame and the recording thread waits for each pipeline when it reaches its bind (vk_pipeline_resolve). A burst of
@@ -2798,10 +2804,8 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
    one is still being made is a stand-in too, so that a draw that keeps the handle binds the optimized one once it is
    there */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
-    /* with the blend as dynamic state, one pipeline for every blend of a draw's state: the draw sets its blend
-       (render.c). vk_pipeline_get's callers bind theirs with the blend in it */
     PipeKey dyn;
-    if (g_vk.dyn_blend && vk_pipe_blend_key(k, &dyn)) k = &dyn;
+    k = pipe_drawn_key(k, &dyn);
     if (!vk_rec_threaded()) return vk_pipeline_get(k);
     int found;
     Pipe* p = pipe_entry(k, &found);
@@ -3132,8 +3136,11 @@ static void sh_fold_warm(VkSh* from, const PipeKey* k) {
     VkSh* s = f->made;
     u64 submit = vk_submit_number();
     if (k && f->ntwins < SH_FOLD_TWINS && vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes)) {
-        PipeKey twin = *k;
-        twin.fs = s->mod;
+        /* the key the draw that takes the fold looks its pipeline up by (pipe_drawn_key), or the twin is one no draw
+           finds and that draw makes its pipeline after all */
+        PipeKey with_fold = *k, dyn;
+        with_fold.fs = s->mod;
+        PipeKey twin = *pipe_drawn_key(&with_fold, &dyn);
         u32 i = 0;
         while (i < f->ntwins && memcmp(&f->twins[i]->k, &twin, sizeof twin)) i++;
         if (i == f->ntwins) {
