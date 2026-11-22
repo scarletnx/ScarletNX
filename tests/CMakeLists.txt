@@ -1846,6 +1846,19 @@ if(NOT WIN32)
     snx_hookgen(snx-test-alloc-new-shape SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     add_test(NAME alloc_new_shape COMMAND snx-test-alloc-new-shape)
 endif()
+# a game's own allocator (src/nx/hle/hook/alloc.c's alloc_object_call and alloc_kept): a malloc, operator new or delete
+# that calls an allocator object through its table with the object in x0 is one; a PLT stub, a function pointer in a
+# global, a table no object is passed, the object elsewhere or overwritten, a direct call and a virtual call past the
+# function's end are not. A program whose malloc is one has the family off; one whose malloc is the SDK allocator's
+# keeps it, though its operator new and free call objects
+if(NOT WIN32)
+    add_executable(snx-test-alloc-kept alloc_kept.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    snx_test_target(snx-test-alloc-kept gnu23)
+    target_include_directories(snx-test-alloc-kept PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-alloc-kept SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME alloc_kept_off COMMAND snx-test-alloc-kept off)
+    add_test(NAME alloc_kept_on COMMAND snx-test-alloc-kept on)
+endif()
 # the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
 # argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
 if(NOT WIN32)
