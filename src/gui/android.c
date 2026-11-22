@@ -200,6 +200,7 @@ int gui_android_play(const char* const* argv, char* message, size_t size) {
     (*env)->DeleteLocalRef(env, string);
     return ok;
 }
+char* gui_android_take_play(char* message, size_t size) { return ask("takePlay", "()[B", NULL, message, size); }
 
 int gui_android_background(char* message, size_t size) { return call("toBack", "()V", NULL, message, size); }
 int gui_android_open_folder(const char* path, char* message, size_t size) {

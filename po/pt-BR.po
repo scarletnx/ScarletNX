@@ -5556,6 +5556,41 @@ msgstr "Jogos não acompanha jogos novos (%s): F5 os lista"
 msgid "Not saved: Ctrl+S saves it, ESC again leaves without it"
 msgstr "Não salvo: Ctrl+S salva, ESC de novo sai sem salvar"
 
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a title ID: 16 hex digits in capitals"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s plays once the setup ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s did not start: a run is on the screen"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s did not start: a box is open on the screen"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s did not start: the theme edited is not saved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No recompiled game has the title ID %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s did not start: a game plays"
+msgstr ""
+
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key

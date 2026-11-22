@@ -23,6 +23,9 @@ int gui_android_pick_folder(SDL_DialogFileCallback done, void* data, char* messa
 const char* gui_android_libraries(void);
 /* Runs the runtime with argv in the app's game activity, a process of its own; 0 with message when it cannot */
 int gui_android_play(const char* const* argv, char* message, size_t size);
+/* The title ID a PLAY intent asked MainActivity to play since the last call (dist/android's PlayActivity): owned, ""
+   for none; NULL with why in message when the activity did not answer */
+char* gui_android_take_play(char* message, size_t size);
 /* The app behind the others, as it is, for Back on the menu's first screen; 0 with message when it cannot */
 int gui_android_background(char* message, size_t size);
 /* Opens a folder of the data folder or of the shared storage in the system's Files app; 0 with why in message when it

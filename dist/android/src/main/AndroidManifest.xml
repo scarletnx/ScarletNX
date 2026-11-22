@@ -54,6 +54,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- a game by its title ID (org.scarletnx.action.PLAY, extra title_id), from adb and the shortcuts: it hands the
+             ID to the menu and ends, showing nothing, in a task of its own, so the menu's is never cleared for it -->
+        <activity
+            android:name=".PlayActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="org.scarletnx.action.PLAY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".GameActivity"
             android:process=":game"

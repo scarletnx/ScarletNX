@@ -5782,6 +5782,81 @@ static void check_play_args(App* app, const char* root) {
     app->menu.selected = was;
     puts("the game activity's arguments name each console's driver, its folder and its settings alone");
 }
+/* A PLAY's title ID (play_asked, Android's org.scarletnx.action.PLAY): the game whose folder it names (title_game), the
+   row of Games that Play plays (title_row); each one it does not start said with that ID: one that is no title ID, one
+   no game has, one waiting for the setup's end and then taken, a run on the screen and a box over it */
+static void play_asked_said(App* app, const char* temporary) {
+    char *was_games = app->games_dir, *was_recent_file = app->recent_file;
+    int was_folders = app->folder_count;
+    GuiRecent was_recent = app->recent;
+    char *root = snx_path_join(temporary, "play asked"), id[17], *game, *other, *folder, *beside, *named;
+    int row;
+    app->games_dir = snx_path_join(root, "recompiled");
+    app->recent_file = NULL;
+    app->folder_count = 0;
+    app->recent = (GuiRecent){0};
+    game = folder_game_in(app->games_dir, "0100ABCD00010000");
+    other = folder_game_in(app->games_dir, "alpha game");
+    folder = snx_dirname(game);
+    beside = snx_path_join(folder, "another program");
+    assert(!snx_write_file(beside, "game", 4));
+    /* its program, its folder or another file of it: the game its folder's name says */
+    {
+        const char* paths[] = {game, folder, beside};
+        for (size_t i = 0; i < sizeof paths / sizeof *paths; ++i) {
+            named = title_game(paths[i], id);
+            assert(named && snx_same_file(named, game) && !strcmp(id, "0100ABCD00010000"));
+            free(named);
+        }
+    }
+    named = title_game(other, id); /* a folder no title ID names */
+    assert(!named && !id[0]);
+    assert(!title_game(NULL, id) && !id[0]);
+    app->menu.view = GUI_LOAD_NONE;
+    play_asked(app, "0100abcd00010000"); /* as snx_title_text writes one: capitals */
+    assert(!strcmp(app->message, "0100abcd00010000 is not a title ID: 16 hex digits in capitals"));
+    assert(app->menu.view == GUI_LOAD_NONE);
+    play_asked(app, "0100ABCD00020000"); /* Games shows, saying no game has it */
+    assert(app->menu.view == GUI_LOAD_GAMES &&
+           !strcmp(app->message, "No recompiled game has the title ID 0100ABCD00020000"));
+    row = title_row(app, "0100ABCD00010000");
+    assert(row >= 0 && snx_same_file(app->games.paths[row], game) && title_row(app, "0100ABCD00020000") < 0);
+    /* the setup's pages first: the ID waits, said, and is taken once they end */
+    app->setup_on = true;
+    play_asked(app, "0100ABCD00020000");
+    assert(!strcmp(app->play_held, "0100ABCD00020000") &&
+           !strcmp(app->message, "0100ABCD00020000 plays once the setup ends"));
+    app->message[0] = 0;
+    play_held_take(app);
+    assert(!strcmp(app->play_held, "0100ABCD00020000") && !app->message[0]);
+    app->setup_on = false;
+    play_held_take(app);
+    assert(!app->play_held[0] && !strcmp(app->message, "No recompiled game has the title ID 0100ABCD00020000"));
+    /* what keeps Play from starting a game keeps it too */
+    app->menu.running = true;
+    play_asked(app, "0100ABCD00010000");
+    assert(!strcmp(app->message, "0100ABCD00010000 did not start: a run is on the screen"));
+    app->menu.running = false;
+    app->help_shown = true;
+    play_asked(app, "0100ABCD00010000");
+    assert(!strcmp(app->message, "0100ABCD00010000 did not start: a box is open on the screen"));
+    app->help_shown = false;
+    app->recent = was_recent;
+    app->recent_file = was_recent_file;
+    app->folder_count = was_folders;
+    free(app->games_dir);
+    app->games_dir = was_games;
+    go_tab(app, GUI_TAB_MENU);
+    app->games_stamp = stamp_now(app);
+    app->message[0] = 0;
+    assert(!snx_remove_tree(root));
+    free(beside);
+    free(folder);
+    free(other);
+    free(game);
+    free(root);
+    puts("a PLAY's title ID finds the game its folder names, and what it does not start is said with the ID");
+}
 
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -17069,6 +17144,7 @@ int main(int argc, char** argv) {
     missing_consoles(&app, temporary);
     locate_titles(&app, temporary);
     recompile_queue(&app);
+    play_asked_said(&app, temporary);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);
 #endif

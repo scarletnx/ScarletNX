@@ -200,6 +200,31 @@ public class MainActivityTest {
         assertArrayEquals(new String[0], Robolectric.buildActivity(GameActivity.class).get().getArguments());
     }
 
+    /** a PLAY's title ID (PlayActivity) is the menu's to take once, as it comes in front (main.c's play_take) */
+    @Test
+    public void aPlayIsKeptUntilTheMenuTakesIt() {
+        assertArrayEquals(new byte[0], menu.takePlay());
+        menu.onNewIntent(MainActivity.fromIcon(menu).putExtra(PlayActivity.TITLE_ID, "0100ABCD00010000"));
+        assertArrayEquals("0100ABCD00010000".getBytes(StandardCharsets.UTF_8), menu.takePlay());
+        assertArrayEquals("taken once", new byte[0], menu.takePlay());
+        // a second PLAY before the menu took the first: the newer one
+        menu.onNewIntent(MainActivity.fromIcon(menu).putExtra(PlayActivity.TITLE_ID, "0100ABCD00010000"));
+        menu.onNewIntent(MainActivity.fromIcon(menu).putExtra(PlayActivity.TITLE_ID, "0100ABCD00020000"));
+        assertArrayEquals("0100ABCD00020000".getBytes(StandardCharsets.UTF_8), menu.takePlay());
+        // the icon's own tap asks nothing
+        menu.onNewIntent(MainActivity.fromIcon(menu));
+        assertArrayEquals(new byte[0], menu.takePlay());
+    }
+
+    /** the recent apps' list starts a task that has gone with the intent it began with: its PLAY was played then */
+    @Test
+    public void aStartFromTheRecentAppsPlaysNothingAgain() {
+        menu.onNewIntent(MainActivity.fromIcon(menu)
+                             .putExtra(PlayActivity.TITLE_ID, "0100ABCD00010000")
+                             .addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY));
+        assertArrayEquals(new byte[0], menu.takePlay());
+    }
+
     /** what the menu started for a result since the last call, but the screen requestPermissions starts */
     private List<ShadowActivity.IntentForResult> asked() {
         List<ShadowActivity.IntentForResult> asked = new ArrayList<>();
