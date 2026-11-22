@@ -1485,6 +1485,10 @@ static int hold_no(int why) {
     g_hold_fail[why]++;
     return 0;
 }
+static u64 g_dset_offset_only; /* desc_set_cached's count for the GPU plan's M3b, below */
+#define DSET_BIND_MAX 64u
+static u64 g_dset_moved[2 * DS_GFX_STAGES][DSET_BIND_MAX];
+static u32 g_dset_moved_type[2 * DS_GFX_STAGES][DSET_BIND_MAX];
 static void memo_miss_log(u64 presents) {
     static u64 was[MEMO_CAUSES];
     u64 d[MEMO_CAUSES];
@@ -1549,6 +1553,24 @@ void vk_render_stats_log(void) {
         (unsigned long long)g_hold_fail[HOLD_CHOSEN], (unsigned long long)g_hold_fail[HOLD_CB],
         (unsigned long long)g_hold_fail[HOLD_NONE]);
     memset(g_hold_fail, 0, sizeof g_hold_fail);
+    static u64 dset_new_was;
+    LOG("vulkan: new descriptor sets in the last %llu presents: %llu, %llu of them the same as a set of the frame but "
+        "for their buffers' offsets\n",
+        (unsigned long long)presents, (unsigned long long)(g_vk_dset_new - dset_new_was),
+        (unsigned long long)g_dset_offset_only);
+    dset_new_was = g_vk_dset_new;
+    g_dset_offset_only = 0;
+    char line[1024];
+    size_t at = 0;
+    for (u32 st = 0; st < 2 * DS_GFX_STAGES; st++)
+        for (u32 b = 0; b < DSET_BIND_MAX; b++) {
+            if (g_dset_moved[st][b] < presents / 2 || at >= sizeof line) continue; /* a binding that moves seldom */
+            int w = snprintf(line + at, sizeof line - at, " %u/%u (type %u) %llu", st, b, g_dset_moved_type[st][b],
+                             (unsigned long long)g_dset_moved[st][b]);
+            if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+        }
+    if (at) LOG("vulkan: new sets' buffer offsets that moved, by stage set/binding:%s\n", line);
+    memset(g_dset_moved, 0, sizeof g_dset_moved);
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
@@ -3523,6 +3545,50 @@ static struct {
         u64 key[512];
     } last[2 * DS_GFX_STAGES]; /* with split sets, each stage's texture set past them (stage_set_) */
 } g_dset;
+/* For the statistics (the GPU plan's M3b): of the new sets, those whose writes equal a set's made in the same frame but
+   for the offsets of their buffers, which dynamic offsets would take from the set (VK_DESCRIPTOR_TYPE_*_DYNAMIC): a
+   table of the frame's keys with the buffers' offsets zeroed, written over as the cache is */
+/* and by stage set and binding (g_dset_moved), the buffer writes of new sets whose offset differs from that binding's
+   last one, with its type: which bindings dynamic offsets would have to cover */
+static void dset_moved_note(int stage, const VkWriteDescriptorSet* w, u32 count) {
+    static u64 last[2 * DS_GFX_STAGES][DSET_BIND_MAX];
+    if ((u32)stage >= 2 * DS_GFX_STAGES) return;
+    for (u32 i = 0; i < count; i++) {
+        if (!w[i].pBufferInfo || w[i].descriptorCount != 1 || w[i].dstBinding >= DSET_BIND_MAX) continue;
+        u64 off = w[i].pBufferInfo[0].offset;
+        if (last[stage][w[i].dstBinding] != off) {
+            g_dset_moved[stage][w[i].dstBinding]++;
+            g_dset_moved_type[stage][w[i].dstBinding] = (u32)w[i].descriptorType;
+        }
+        last[stage][w[i].dstBinding] = off;
+    }
+}
+static void dset_offset_note(u64* key, size_t words, const VkWriteDescriptorSet* w, u32 count, u64 frame) {
+    static struct {
+        u64 h, frame;
+    } seen[1u << 14];
+    size_t n = 1; /* the layout's word, then each write as vk_descriptor_key puts it */
+    for (u32 i = 0; i < count; i++) {
+        const VkBufferViewCreateInfo* view = w[i].pNext;
+        int address = w[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER && w[i].descriptorCount == 1 &&
+                      !w[i].pBufferInfo && !w[i].pImageInfo && view &&
+                      view->sType == VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO && !view->pNext;
+        n += 2;
+        if (address) {
+            n += 4;
+            continue;
+        }
+        for (u32 j = 0; j < w[i].descriptorCount; j++, n += 3)
+            if (w[i].pBufferInfo && n + 1 < words) key[n + 1] = 0;
+    }
+    u64 hash[2];
+    vk_hash128(key, words * sizeof *key, hash);
+    u32 slot = (u32)(hash[0] >> 50);
+    if (seen[slot].frame == frame && seen[slot].h == hash[1])
+        g_dset_offset_only++;
+    else
+        seen[slot].h = hash[1], seen[slot].frame = frame;
+}
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d, int stage) {
     /* Two ways share one cache line on 64-bit hosts. A collision need not discard a live descriptor set.
        Both ways remain scoped to the frame whose pools and resources keep the sets alive, and to the forgets of
@@ -3563,6 +3629,8 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
         if (!set) return VK_NULL_HANDLE;
         g_vk_dset_new++;
         *e = (DescSetEntry){hash[0], hash[1], frame, set};
+        dset_moved_note(stage, d->w, d->n);
+        dset_offset_note(key, words, d->w, d->n, frame); /* last: it zeroes the key's offsets */
     }
     if (keep) {
         g_dset.last[stage].frame = frame;
