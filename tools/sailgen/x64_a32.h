@@ -75,7 +75,8 @@ struct SgCtx {
     int nexits, cap_exits;
     SgA32Monitor* monitors;
     int nmonitors, cap_monitors;
-    int ret; /* the block's return: the epilogue and RET, bound at its end */
+    int ret;       /* the block's return: the epilogue and RET, bound at its end */
+    int e_written; /* an MSR of the block may have set CPSR.E, which the next block's checked entry looks at */
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
@@ -674,14 +675,17 @@ static inline void sgx_a32_patch8(SgXBuf* b, size_t at) {
 static inline void sgx_a32_state(SgXBuf* b, int w64, unsigned op8, int reg, size_t disp) {
     if (w64 || reg >= 8) sgx_byte(b, (unsigned char)(0x40 | (w64 ? 8 : 0) | (reg >> 3) << 2));
     sgx_byte(b, (unsigned char)op8);
+    if (disp < 128) { /* [rbx + disp8] */
+        sgx_byte(b, (unsigned char)(0x43 | (reg & 7) << 3));
+        sgx_byte(b, (unsigned char)disp);
+        return;
+    }
     sgx_byte(b, (unsigned char)(0x83 | (reg & 7) << 3)); /* [rbx + disp32] */
     sgx_imm(b, (long long)disp, 4);
 }
 /* mov dword [rbx + disp], imm32 */
 static inline void sgx_a32_state_imm(SgXBuf* b, size_t disp, SnxU32 v) {
-    sgx_byte(b, 0xC7);
-    sgx_byte(b, 0x83);
-    sgx_imm(b, (long long)disp, 4);
+    sgx_a32_state(b, 0, 0xC7, 0, disp);
     sgx_imm(b, (long long)v, 4);
 }
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);

@@ -53,17 +53,32 @@ typedef struct {
     long long addend;
 } Rel;
 
+/* a block made, kept until the object: its name and address, its code in text, its relocations in rels */
+typedef struct {
+    SnxU32 pc;
+    char name[24];
+    size_t at, size, rel0, nrel;
+    size_t own; /* its entry past the checks (X and its name), from its start; (size_t)-1 for none (entry's) */
+} Made;
+
 struct SnxX64Arm {
     SgCtx g;
     SgXAsm a;
     SgXBuf b;
-    Rel* rel;
+    Rel* rel; /* the block being made's */
     int nrel, cap_rel;
-    SnxXElf* elf;
-    size_t blocks;
+    /* the blocks made since the last object, which it writes in their addresses' order */
+    unsigned char* text;
+    size_t ntext, cap_text;
+    Rel* rels;
+    size_t nrels, cap_rels;
+    Made* made;
+    size_t nmade, cap_made;
     unsigned features;
     int pool;
     const char* why;
+    int big;    /* the block being made has 32-bit frame sizes (frame) */
+    size_t own; /* its entry past the checks, from its start (prologue) */
 };
 
 int snx_x64_arm_available(void) { return snx_x64_available(); }
@@ -75,8 +90,7 @@ SnxX64Arm* snx_x64_arm_new(void) {
     if (!c) return NULL;
     c->b.cap = 1u << 16;
     c->b.p = (unsigned char*)malloc(c->b.cap);
-    c->elf = snx_xelf_new();
-    if (!c->b.p || !c->elf) {
+    if (!c->b.p) {
         snx_x64_arm_free(c);
         return NULL;
     }
@@ -87,7 +101,7 @@ void snx_x64_arm_free(SnxX64Arm* c) {
     if (!c) return;
     free(c->b.p);
     free(c->rel);
-    snx_xelf_free(c->elf);
+    free(c->text), free(c->rels), free(c->made);
     free(c->g.label_at), free(c->g.fix), free(c->g.exits), free(c->g.monitors);
     free(c->a.cold.p), free(c->a.pool), free(c->a.rips), free(c->a.cjumps), free(c->a.ccalls);
     free(c);
@@ -842,75 +856,100 @@ static void name_of(char* out, size_t size, SnxU32 key) {
     snprintf(out, size, "%c_%08lx", key & 1 ? 'T' : 'A', (unsigned long)(key & ~1u));
 }
 
-/* the prologue: RBX the state, the frame (patched), and block_begin's checks (they set the exit and return, R15 left
-   as it is) */
-static void prologue(SnxX64Arm* c, SnxU32 pc, SnxU32 first, int* bad_pc, int* bad_state) {
+/* the frame's room, patched once the block is done (sgx_patch_frame's sizes): SUB or ADD RSP of an 8-bit immediate,
+   a four-byte NOP where the block has no slot. A block whose frame passes 127 bytes is made again with 32-bit ones */
+static void frame(SnxX64Arm* c, int add) {
     SgXBuf* b = &c->b;
-    SgCtx* g = &c->g;
-    sgx_bytes(b, "53 48 89 FB 48 81 EC"); /* push rbx; mov rbx, rdi; sub rsp, imm32 */
+    if (c->a.nframe >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
+    sgx_bytes(b, c->big ? (add ? "48 81 C4" : "48 81 EC") : add ? "48 83 C4" : "48 83 EC");
     c->a.frame_at[c->a.nframe++] = b->n;
-    sgx_imm(b, 0, 4);
-    sgx_bytes(b, "48 C7 83"), sgx_imm(b, (long long)offsetof(SnxArmCPU, exit), 4),
-        sgx_imm(b, 0, 4); /* exit, syndrome */
-    sgx_bytes(b, "81 BB"), sgx_imm(b, (long long)offsetof(SnxArmCPU, r) + 60, 4), sgx_imm(b, pc, 4); /* cmp r15, pc */
-    *bad_pc = sgx_a32_label(g);
-    sgx_a32_jcc(g, b, 5, *bad_pc);
-    sgx_bytes(b, "F7 83"), sgx_imm(b, (long long)offsetof(SnxArmCPU, cpsr), 4), sgx_imm(b, SNX_ARM_T | SNX_ARM_E, 4);
-    *bad_state = sgx_a32_label(g);
-    sgx_a32_jcc(g, b, 5, *bad_state);
-    (void)first;
+    sgx_imm(b, 0, c->big ? 4 : 1);
 }
-/* the prologue's exits: BAD_ENTRY, its syndrome the block's address, where R15 isn't it; where CPSR.T is set
-   BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, their syndrome the first word */
-static void prologue_exits(SnxX64Arm* c, SnxU32 pc, SnxU32 first, int bad_pc, int bad_state) {
+/* the frame's size in each SUB and ADD (sgx_patch_frame's rule: the slots, 16-aligned): 0, or -1 where an 8-bit
+   immediate doesn't hold it */
+static int patch_frame(SnxX64Arm* c) {
+    int k, size = (c->a.slots_max * 8 + 15) & ~15;
+    if (c->big) {
+        sgx_patch_frame(&c->a);
+        return 0;
+    }
+    if (size > 127) return -1;
+    for (k = 0; k < c->a.nframe; ++k) {
+        size_t at = c->a.frame_at[k];
+        if (at + 1 > c->b.cap) continue;
+        if (size)
+            c->b.p[at] = (unsigned char)size;
+        else /* nop dword [rax + 0]: the same four bytes */
+            memcpy(c->b.p + at - 3, "\x0F\x1F\x40\x00", 4);
+    }
+    return 0;
+}
+/* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear; then exit and syndrome cleared), on
+   RDI, before the frame; where a check fails, a jump to bad (entry_exit). Then the entry the block's own jumps from
+   another of the x86-64 back end's take (X and the block's name), past them: RBX the state, the frame */
+static void prologue(SnxX64Arm* c, SnxU32 pc, int* bad) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
-    size_t skip;
-    sgx_a32_bind(g, b, bad_pc);
-    sgx_a32_state_imm(b, offsetof(SnxArmCPU, exit), SNX_ARM_BAD_ENTRY);
-    sgx_a32_state_imm(b, offsetof(SnxArmCPU, syndrome), pc);
-    sgx_a32_jmp(g, b, g->ret);
-    sgx_a32_bind(g, b, bad_state);
-    sgx_a32_state_imm(b, offsetof(SnxArmCPU, exit), SNX_ARM_BAD_ENTRY);
-    sgx_bytes(b, "F7 83"), sgx_imm(b, (long long)offsetof(SnxArmCPU, cpsr), 4), sgx_imm(b, SNX_ARM_T, 4);
-    sgx_bytes(b, "75"), skip = b->n, sgx_byte(b, 0); /* jnz: T, BAD_ENTRY */
-    sgx_a32_state_imm(b, offsetof(SnxArmCPU, exit), SNX_ARM_ENDIAN_UNSUPPORTED);
-    sgx_a32_patch8(b, skip);
-    sgx_a32_state_imm(b, offsetof(SnxArmCPU, syndrome), first);
-    sgx_a32_jmp(g, b, g->ret);
+    *bad = sgx_a32_label(g);
+    sgx_bytes(b, "81 7F"), sgx_byte(b, (unsigned char)(offsetof(SnxArmCPU, r) + 60)), sgx_imm(b, pc, 4); /* cmp */
+    sgx_a32_jcc(g, b, 5, *bad);
+    sgx_bytes(b, "F7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr)), sgx_imm(b, SNX_ARM_T | SNX_ARM_E, 4);
+    sgx_a32_jcc(g, b, 5, *bad);
+    sgx_bytes(b, "48 C7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, exit)),
+        sgx_imm(b, 0, 4); /* and syndrome */
+    c->own = b->n;
+    sgx_bytes(b, "53 48 89 FB"); /* push rbx; mov rbx, rdi */
+    frame(c, 0);
+}
+/* where a check of the entry failed: ESI the block's address, EDX its first word, and snx_x64_arm_entry_exit (the
+   object's own, which sets the exit) */
+static void entry_exit(SnxX64Arm* c, SnxU32 pc, SnxU32 first, int bad) {
+    SgXBuf* b = &c->b;
+    sgx_a32_bind(&c->g, b, bad);
+    sgx_byte(b, 0xBE), sgx_imm(b, pc, 4);    /* mov esi, pc */
+    sgx_byte(b, 0xBA), sgx_imm(b, first, 4); /* mov edx, first */
+    sgx_byte(b, 0xE9);
+    add_rel(c, b->n, "snx_x64_arm_entry_exit", R_X86_64_PLT32, -4);
+    sgx_imm(b, 0, 4);
 }
 /* the frame given back and RBX the caller's */
 static void epilogue(SnxX64Arm* c) {
-    SgXBuf* b = &c->b;
-    if (c->a.nframe >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
-    sgx_bytes(b, "48 81 C4"); /* add rsp, imm32 */
-    c->a.frame_at[c->a.nframe++] = b->n;
-    sgx_imm(b, 0, 4);
-    sgx_bytes(b, "5B"); /* pop rbx */
+    frame(c, 1);
+    sgx_bytes(&c->b, "5B"); /* pop rbx */
 }
-/* where the block ends with R15 key's address (stored) in key's state: a jump to key's block where it is one of the
-   successors (after the poll, for one at or before the block's start), else the return */
-static void go_on(SnxX64Arm* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext) {
+/* where the block ends with R15 key's address in key's state: a jump to the block's own entry past its checks (X and
+   its name: the code there reads no R15, and its every exit stores it) where key is one of the successors, after the
+   poll for one at or before the block's start; else R15 stored and the return. public: the block's checked entry
+   instead, R15 stored (after an MSR that may have set E, which that entry checks) */
+static void go_on(SnxX64Arm* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext, int public) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
     size_t k;
     char sym[24];
     for (k = 0; k < nnext && next[k] != key; ++k) {}
+    if (k == nnext || public) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, key & ~1u);
     if (k == nnext) {
         sgx_a32_jmp(g, b, g->ret);
         return;
     }
     if ((key & ~1u) <= block) {
-        /* mov rax, [rip + snx_arm_poll_offset]; cmp dword [rbx + rax], 0; jne ret: a thread of higher priority waits */
+        /* mov rax, [rip + snx_arm_poll_offset]; cmp dword [rbx + rax], 0; jne: a thread of higher priority waits, the
+           return with R15 stored */
+        int wait = sgx_a32_label(g), go = sgx_a32_label(g);
         sgx_bytes(b, "48 8B 05");
         add_rel(c, b->n, "snx_arm_poll_offset", R_X86_64_PC32, -4);
         sgx_imm(b, 0, 4);
         sgx_bytes(b, "83 3C 03 00");
-        sgx_a32_jcc(g, b, 5, g->ret);
+        sgx_a32_jcc(g, b, 4, go);
+        sgx_a32_bind(g, b, wait);
+        if (!public) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, key & ~1u);
+        sgx_a32_jmp(g, b, g->ret);
+        sgx_a32_bind(g, b, go);
     }
     sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
     epilogue(c);
-    name_of(sym, sizeof sym, key);
+    name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
+    if (!public) sym[0] = 'X';
     sgx_byte(b, 0xE9);
     add_rel(c, b->n, sym, R_X86_64_PLT32, -4);
     sgx_imm(b, 0, 4);
@@ -932,7 +971,7 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
     jmp_buf* saved = g_fail;
     volatile size_t i = 0;
     size_t size = 0;
-    int bad_pc, bad_state, last_stop = 0;
+    int bad, last_stop = 0;
     SnxU32 nexts[2];
     size_t nnext = 0;
     t_why = NULL;
@@ -970,7 +1009,8 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
     g->deferred = 0;
     g->ret = sgx_a32_label(g);
     flush(c);
-    prologue(c, pc, word_at(code, 0), &bad_pc, &bad_state);
+    g->e_written = 0;
+    prologue(c, pc, &bad);
     for (i = 0; i < count; ++i) {
         SnxU32 w = word_at(code, i);
         int stop;
@@ -1011,43 +1051,84 @@ static size_t block(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU3
             else
                 tconst = 0;
         }
-        sgx_a32_pc(g, t);
+        if (!tconst) sgx_a32_pc(g, t); /* a known target's R15 go_on's */
         flush(c);
         if (tconst)
-            go_on(c, (SnxU32)t.k | (SnxU32)thumb, pc, nexts, nnext);
+            go_on(c, (SnxU32)t.k | (SnxU32)thumb, pc, nexts, nnext, 0);
         else
             sgx_a32_jmp(g, b, g->ret);
     } else if (!g->undefined) {
-        /* on, both ways: R15 the next instruction's past the skip */
+        /* on, both ways past the skip */
         flush(c);
         if (g->skip >= 0) sgx_a32_bind(g, b, g->skip), g->skip = -1;
-        sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, g->next);
-        go_on(c, g->next, pc, nexts, nnext);
+        go_on(c, g->next, pc, nexts, nnext, g->e_written);
     } else
         flush(c); /* its own code left */
     if (g->skip >= 0) {
         sgx_a32_bind(g, b, g->skip);
-        sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, g->next);
-        go_on(c, g->next, pc, nexts, nnext);
+        go_on(c, g->next, pc, nexts, nnext, 0);
     }
     (void)last_stop;
     sgx_a32_stubs(g, b);
-    prologue_exits(c, pc, word_at(code, 0), bad_pc, bad_state);
+    entry_exit(c, pc, word_at(code, 0), bad);
     sgx_a32_bind(g, b, g->ret);
     epilogue(c);
     sgx_byte(b, 0xC3); /* ret */
     sgx_cold_emit(&c->a);
     sgx_pool_emit(&c->a);
-    sgx_patch_frame(&c->a);
+    if (patch_frame(c)) {
+        g_fail = saved;
+        c->big = 1; /* made again with 32-bit frame sizes */
+        return (size_t)-1;
+    }
     if (sgx_a32_patch(g, b)) sg_fail("a jump to a label never bound", 0, 0);
     size = b->n;
     g_fail = saved;
     return size;
 }
 
+/* a block's code (size bytes), relocations and record kept for the object: 1, or 0 out of memory */
+static int keep(SnxX64Arm* c, const unsigned char* code, size_t size, const Rel* rel, size_t nrel, SnxU32 pc,
+                const char* name, size_t own) {
+    Made* m;
+    if (c->ntext + size > c->cap_text) {
+        size_t cap = c->cap_text ? c->cap_text * 2 : (size_t)1 << 20;
+        unsigned char* p;
+        while (cap < c->ntext + size) cap *= 2;
+        if (!(p = (unsigned char*)realloc(c->text, cap))) return 0;
+        c->text = p, c->cap_text = cap;
+    }
+    if (c->nrels + nrel > c->cap_rels) {
+        size_t cap = c->cap_rels ? c->cap_rels * 2 : 4096;
+        Rel* p;
+        while (cap < c->nrels + nrel) cap *= 2;
+        if (!(p = (Rel*)realloc(c->rels, cap * sizeof *p))) return 0;
+        c->rels = p, c->cap_rels = cap;
+    }
+    if (c->nmade == c->cap_made) {
+        size_t cap = c->cap_made ? c->cap_made * 2 : 1024;
+        Made* p = (Made*)realloc(c->made, cap * sizeof *p);
+        if (!p) return 0;
+        c->made = p, c->cap_made = cap;
+    }
+    m = &c->made[c->nmade++];
+    m->pc = pc;
+    snprintf(m->name, sizeof m->name, "%s", name);
+    m->at = c->ntext;
+    m->size = size;
+    m->rel0 = c->nrels;
+    m->nrel = nrel;
+    m->own = own;
+    memcpy(c->text + c->ntext, code, size);
+    c->ntext += size;
+    if (nrel) memcpy(c->rels + c->nrels, rel, nrel * sizeof *rel);
+    c->nrels += nrel;
+    return 1;
+}
+
 int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, SnxU32 pc,
                       size_t* consumed, SnxX64ArmNext next, void* user) {
-    size_t size, at;
+    size_t size, at = 0;
     int k;
     char own[24];
     *consumed = 0;
@@ -1056,8 +1137,10 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
         c->why = "a block of no words, too many, or at a misaligned address";
         return 0;
     }
+    c->big = 0;
     for (;;) {
         size = block(c, code, count, pc, consumed, next, user);
+        if (size == (size_t)-1) continue; /* its frame passes an 8-bit immediate: made again with 32-bit ones */
         if (!size) {
             c->why = t_why ? t_why : "unknown";
             *consumed = 0;
@@ -1074,21 +1157,134 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
         }
     }
     if (!name) name_of(own, sizeof own, pc), name = own;
-    at = snx_xelf_put(c->elf, SNX_ELF_TEXT, c->b.p, size, 16);
-    snx_xelf_symbol(c->elf, name, SNX_ELF_TEXT, at, size, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
-    for (k = 0; k < c->nrel; ++k)
-        snx_xelf_reloc(c->elf, SNX_ELF_TEXT, at + c->rel[k].at, c->rel[k].sym, c->rel[k].type, c->rel[k].addend);
-    ++c->blocks;
+    if (strlen(name) >= sizeof c->made[0].name) {
+        c->why = "a block's name too long";
+        return 0;
+    }
+    /* kept: its code, its relocations, its record */
+    if (!keep(c, c->b.p, size, c->rel, (size_t)c->nrel, pc, name, c->own)) {
+        c->why = "out of memory";
+        return 0;
+    }
+    (void)at, (void)k;
     return 1;
 }
 
+/* snx_x64_arm_entry_exit(state RDI, the block's address ESI, its first word EDX), each object's own, where a
+   block's entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address;
+   else CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
+static void entry_exit_fn(SnxXElf* o) {
+    static const unsigned char code[] = {
+        0x39,
+        0x77,
+        (unsigned char)(offsetof(SnxArmCPU, r) + 60), /* cmp [rdi + r15], esi */
+        0x75,
+        0x1D, /* jne pc */
+        0xF7,
+        0x47,
+        (unsigned char)offsetof(SnxArmCPU, cpsr),
+        0x20,
+        0,
+        0,
+        0, /* test dword [rdi + cpsr], T */
+        0x75,
+        0x09, /* jnz thumb */
+        0xC7,
+        0x47,
+        (unsigned char)offsetof(SnxArmCPU, exit),
+        SNX_ARM_ENDIAN_UNSUPPORTED,
+        0,
+        0,
+        0,
+        0xEB,
+        0x07, /* jmp word */
+        0xC7,
+        0x47,
+        (unsigned char)offsetof(SnxArmCPU, exit),
+        SNX_ARM_BAD_ENTRY,
+        0,
+        0,
+        0, /* thumb: */
+        0x89,
+        0x57,
+        (unsigned char)offsetof(SnxArmCPU, syndrome), /* word: mov [rdi + syndrome], edx */
+        0xC3,
+        0xC7,
+        0x47,
+        (unsigned char)offsetof(SnxArmCPU, exit),
+        SNX_ARM_BAD_ENTRY,
+        0,
+        0,
+        0, /* pc: */
+        0x89,
+        0x77,
+        (unsigned char)offsetof(SnxArmCPU, syndrome), /* mov [rdi + syndrome], esi */
+        0xC3};
+    size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, sizeof code, 16);
+    snx_xelf_symbol(o, "snx_x64_arm_entry_exit", SNX_ELF_TEXT, at, sizeof code, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+}
+static int by_address(const void* a, const void* b) {
+    const Made *x = (const Made*)a, *y = (const Made*)b;
+    if (x->pc != y->pc) return x->pc < y->pc ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
 int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_t* blocks) {
-    int rc = snx_xelf_write(c->elf, object, size);
-    if (blocks) *blocks = c->blocks;
-    snx_xelf_free(c->elf);
-    c->elf = snx_xelf_new();
-    c->blocks = 0;
-    return rc || !c->elf ? -1 : 0;
+    SnxXElf* o = snx_xelf_new();
+    size_t i, k;
+    int rc;
+    *object = NULL;
+    *size = 0;
+    if (!o) return -1;
+    entry_exit_fn(o);
+    qsort(c->made, c->nmade, sizeof *c->made, by_address);
+    for (i = 0; i < c->nmade; ++i) {
+        const Made* m = &c->made[i];
+        size_t at = snx_xelf_put(o, SNX_ELF_TEXT, c->text + m->at, m->size, 16);
+        /* a block's name the descriptor and LLVM's blocks call (global); an entry the object's own (X_, local) */
+        snx_xelf_symbol(o, m->name, SNX_ELF_TEXT, at, m->size,
+                        m->own == (size_t)-1 && m->name[0] == 'X' ? SNX_ELF_LOCAL | SNX_ELF_FUNC
+                                                                  : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
+        if (m->own != (size_t)-1) {
+            char own[sizeof m->name + 1];
+            snprintf(own, sizeof own, "X%s", m->name);
+            /* the object's own: only its blocks jump there */
+            snx_xelf_symbol(o, own, SNX_ELF_TEXT, at + m->own, m->size - m->own, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+        }
+        for (k = m->rel0; k < m->rel0 + m->nrel; ++k)
+            snx_xelf_reloc(o, SNX_ELF_TEXT, at + c->rels[k].at, c->rels[k].sym, c->rels[k].type, c->rels[k].addend);
+    }
+    if (blocks) *blocks = c->nmade;
+    /* the blocks' code given back before the object is written: it has them */
+    free(c->text), free(c->rels), free(c->made);
+    c->text = NULL, c->rels = NULL, c->made = NULL;
+    c->ntext = c->cap_text = c->nrels = c->cap_rels = c->nmade = c->cap_made = 0;
+    rc = snx_xelf_write(o, object, size);
+    snx_xelf_free(o);
+    return rc ? -1 : 0;
+}
+int snx_x64_arm_entry(SnxX64Arm* c, uint32_t key) {
+    unsigned char code[12] = {0xC7, 0x47, (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9, 0, 0, 0, 0};
+    SnxU32 address = key & ~1u;
+    Rel rel;
+    char name[24];
+    memcpy(code + 3, &address, 4); /* mov dword [rdi + r15], address; jmp the block */
+    rel.at = 8;
+    name_of(rel.sym, sizeof rel.sym, key);
+    rel.type = R_X86_64_PLT32;
+    rel.addend = -4;
+    snprintf(name, sizeof name, "X%s", rel.sym);
+    return keep(c, code, sizeof code, &rel, 1, address, name, (size_t)-1) ? 0 : -1;
+}
+int snx_x64_arm_absorb(SnxX64Arm* c, SnxX64Arm* from) {
+    size_t i;
+    for (i = 0; i < from->nmade; ++i) {
+        const Made* m = &from->made[i];
+        if (!keep(c, from->text + m->at, m->size, from->rels + m->rel0, m->nrel, m->pc, m->name, m->own)) return -1;
+    }
+    free(from->text), free(from->rels), free(from->made);
+    from->text = NULL, from->rels = NULL, from->made = NULL;
+    from->ntext = from->cap_text = from->nrels = from->cap_rels = from->nmade = from->cap_made = 0;
+    return 0;
 }
 
 #else
@@ -1113,4 +1309,12 @@ int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_
     return -1;
 }
 void snx_x64_arm_limit(SnxX64Arm* c, int pool, unsigned features) { (void)c, (void)pool, (void)features; }
+int snx_x64_arm_absorb(SnxX64Arm* c, SnxX64Arm* from) {
+    (void)c, (void)from;
+    return -1;
+}
+int snx_x64_arm_entry(SnxX64Arm* c, uint32_t key) {
+    (void)c, (void)key;
+    return -1;
+}
 #endif

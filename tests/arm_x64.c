@@ -548,7 +548,28 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             ++failures;
         }
     }
-    printf("%zu witnesses of the VFP's hot paths: %zu failures\n", count, failures);
+    /* the entry's checks (block_begin's): R15 not the block's address, CPSR.T, CPSR.E, both; R15 and the rest as LLVM's
+       leave them */
+    for (unsigned e = 0; e < 4; ++e) {
+        static const char* const what[4] = {"R15 elsewhere", "CPSR.T set", "CPSR.E set", "CPSR.T and E set"};
+        u64 seed = g_test.seed;
+        const char* why;
+        for (int side = 0; side < 2; ++side) {
+            g_test.seed = seed;
+            start(&s[side], 1);
+            if (e == 0) s[side].cpu.r[15] = PC + 4;
+            if (e & 1 && e) s[side].cpu.cpsr |= SNX_ARM_T;
+            if (e >= 2) s[side].cpu.cpsr |= SNX_ARM_E;
+            ((SnxArmBlock)(uintptr_t)(side ? xaddr[0] : laddr[0]))(&s[side].cpu);
+        }
+        why = differs(&s[0], &s[1]);
+        if (*why || s[0].cpu.exit == SNX_ARM_OK) {
+            fprintf(stderr, "FAIL: the entry with %s: %s (LLVM's exit %u)\n", what[e], *why ? why : "no exit",
+                    s[0].cpu.exit);
+            ++failures;
+        }
+    }
+    printf("%zu witnesses of the VFP's hot paths and 4 of the entry's checks: %zu failures\n", count, failures);
     g_test.failures += failures;
     for (unsigned k = 0; k < 256; ++k) g_test.fp_calls[k] = 0;
     free(s), free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
