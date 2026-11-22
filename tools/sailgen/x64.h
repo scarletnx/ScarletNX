@@ -2077,6 +2077,7 @@ static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
         /* a free register of the pool, else its slot (spilled from r, where the instruction may still read it) */
         unsigned k, n = a->x->pool && (unsigned)a->x->pool < sizeof sgx_pool ? (unsigned)a->x->pool : sizeof sgx_pool;
         int to = -1;
+        avoid |= a->reserved; /* R10 and R11 when they hold pins, which the value would overwrite */
         for (k = 0; k < n && to < 0; ++k) {
             int c = sgx_pool[k];
             if (((avoid | (1u << r)) >> c) & 1) continue;
