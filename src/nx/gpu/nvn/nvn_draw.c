@@ -1275,7 +1275,7 @@ static void draw_texture(NvnDraw* d, u64 payload) {
 /* The bound shading rate image given to the renderer again, with the palettes: an id for the draws after it */
 static void rate_update(NvnDraw* d, int new_image) {
     d->rate_in.new_image = new_image;
-    d->rate = d->rate_in.addr && g_renderer->shading_rate ? gpu_renderer_now()->shading_rate(&d->rate_in) : 0;
+    d->rate = d->rate_in.addr ? gpu_shading_rate(&d->rate_in) : 0;
 }
 /* OP_RATE_IMAGE: the texture's header (TIC), as a texture pool would hold it, which the renderer looks up as a draw's
    texture: the texels the GPU wrote last, wherever the renderer keeps them. 0 with none bound */
