@@ -1463,6 +1463,28 @@ enum {
     MEMO_CAUSES
 };
 static u64 g_memo_miss[MEMO_CAUSES];
+/* For the statistics (the GPU plan's C-b): why draw_holds said no, by its first failed check, and the draws that
+   found no entry of their key in the table (HOLD_NONE) */
+enum {
+    HOLD_PATH,
+    HOLD_SHADER_GEN,
+    HOLD_FOLD,
+    HOLD_HEAPS,
+    HOLD_KEY,
+    HOLD_VFORMAT,
+    HOLD_XFB,
+    HOLD_WINDOW,
+    HOLD_SWIZZLE,
+    HOLD_CHOSEN,
+    HOLD_CB,
+    HOLD_NONE,
+    HOLD_N
+};
+static u64 g_hold_fail[HOLD_N];
+static int hold_no(int why) {
+    g_hold_fail[why]++;
+    return 0;
+}
 static void memo_miss_log(u64 presents) {
     static u64 was[MEMO_CAUSES];
     u64 d[MEMO_CAUSES];
@@ -1516,6 +1538,17 @@ void vk_render_stats_log(void) {
         (unsigned long long)(n->hashed - w->hashed), (double)(submits - was_submits) / (double)presents,
         (double)(periodic - g_stats.submits[VK_SUB_PERIODIC]) / (double)presents,
         (double)(u32)(epoch - g_stats.ww_epoch) / (double)presents, (double)(n->epochs - w->epochs) / (double)presents);
+    LOG("vulkan: kept draws' checks that failed in the last %llu presents: path %llu, shader generation %llu, "
+        "folds %llu, heaps %llu, owner, topology or epoch %llu, vertex format %llu, capture %llu, window %llu, "
+        "swizzle %llu, translation chosen %llu, constant buffer words %llu; no entry of the key %llu\n",
+        (unsigned long long)presents, (unsigned long long)g_hold_fail[HOLD_PATH],
+        (unsigned long long)g_hold_fail[HOLD_SHADER_GEN], (unsigned long long)g_hold_fail[HOLD_FOLD],
+        (unsigned long long)g_hold_fail[HOLD_HEAPS], (unsigned long long)g_hold_fail[HOLD_KEY],
+        (unsigned long long)g_hold_fail[HOLD_VFORMAT], (unsigned long long)g_hold_fail[HOLD_XFB],
+        (unsigned long long)g_hold_fail[HOLD_WINDOW], (unsigned long long)g_hold_fail[HOLD_SWIZZLE],
+        (unsigned long long)g_hold_fail[HOLD_CHOSEN], (unsigned long long)g_hold_fail[HOLD_CB],
+        (unsigned long long)g_hold_fail[HOLD_NONE]);
+    memset(g_hold_fail, 0, sizeof g_hold_fail);
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
@@ -4851,26 +4884,26 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawKept* e) {
 static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u32 epoch) {
     const DrawShaders* s = &e->sh;
     /* a draw's path, as draw_shaders' mesh argument: 1 mesh, 2 the compute-task path (sm86.h) */
-    if (!s->vs || (int)(s->mesh | (s->task_compute ? 2 : 0)) != mesh) return 0;
-    if (e->shader_generation != g_vk.shader_generation) return 0;
-    if (e->fold_gen != vk_shader_fold_gen()) return 0; /* a translation came that a lookup may take instead */
-    if (e->k.heaps != (u32)g_vk.has_descriptor_heaps) return 0;
-    if (e->key.owner != ds->owner || e->key.topology != topology || e->epoch != epoch) return 0;
+    if (!s->vs || (int)(s->mesh | (s->task_compute ? 2 : 0)) != mesh) return hold_no(HOLD_PATH);
+    if (e->shader_generation != g_vk.shader_generation) return hold_no(HOLD_SHADER_GEN);
+    if (e->fold_gen != vk_shader_fold_gen()) return hold_no(HOLD_FOLD); /* a translation came that a lookup may take */
+    if (e->k.heaps != (u32)g_vk.has_descriptor_heaps) return hold_no(HOLD_HEAPS);
+    if (e->key.owner != ds->owner || e->key.topology != topology || e->epoch != epoch) return hold_no(HOLD_KEY);
     if (e->gen[DS_VFORMAT] != ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
-        if (!vertex_format_holds(&ds->vfmt, e)) return 0;
+        if (!vertex_format_holds(&ds->vfmt, e)) return hold_no(HOLD_VFORMAT);
         e->gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
     }
-    if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return 0; /* capture began or ended, or its counters were made */
-    if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
-    if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return 0;
+    if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return hold_no(HOLD_XFB); /* capture began or ended */
+    if (s->window_xy != !ds->vp.transform_on) return hold_no(HOLD_WINDOW);  /* the viewports' group keys no shader */
+    if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return hold_no(HOLD_SWIZZLE);
     const VkSh* used[6];
     used_shaders(e, used);
     for (int i = 0; i < 6; i++) {
         if (!used[i]) continue;
         if (e->not_top >> i & 1) {
-            if (!vk_shader_chosen(ds, used[i])) return 0;
+            if (!vk_shader_chosen(ds, used[i])) return hold_no(HOLD_CHOSEN);
         } else if (used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i]))
-            return 0;
+            return hold_no(HOLD_CB);
     }
     return 1;
 }
@@ -4900,14 +4933,16 @@ static u32 draw_find(const DsState* ds, u32 topology, int mesh, u32 epoch, int c
     draw_memo_key(ds, topology, mesh, check, key);
     *have = 1;
     u64 mix = draw_key_mix(key);
-    u32 set = draw_key_set(mix), found = 0;
+    u32 set = draw_key_set(mix), found = 0, met = 0;
     for (u32 w = 0; w < DRAW_WAYS; w++) {
         u32 i = DRAW_TABLE + set * DRAW_WAYS + w;
         DrawKept* e = &g_draw.e[i];
         if (g_draw.tag[set][w] != mix || memcmp(&e->key, key, sizeof *key)) continue;
+        met = 1;
         if (found && (i32)(e->used - g_draw.e[found].used) < 0) continue; /* the latest of those that hold */
         if (draw_holds(e, ds, topology, mesh, epoch)) found = i;
     }
+    if (!met) g_hold_fail[HOLD_NONE]++;
     if (!found) return 0;
     DrawKept* e = &g_draw.e[found];
     for (u32 i = 0; i < DRAW_KEY_GROUPS; i++) e->gen[g_draw_groups[i]] = ds->gen[g_draw_groups[i]];
