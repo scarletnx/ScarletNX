@@ -250,6 +250,10 @@ u64 guest_gpu_ticks(void) { return 0; }
 u64 gmmu_translate(u64 gva) { return gva; }
 u32 gmem_r32(u64 gva) { return gr32(gva); }
 void gpu_release_write(u64 gva, const void* data, u32 n) { memcpy(GP(gva), data, n); }
+void gpu_release_stamp(u64 gva, const void* data, int top) {
+    (void)top;
+    gpu_release_write(gva, data, 16);
+}
 
 static void submit(u32 queue) {
     u64 ready = 0;

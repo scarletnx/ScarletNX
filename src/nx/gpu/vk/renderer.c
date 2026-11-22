@@ -1584,6 +1584,8 @@ static void vkr_reset(void) {
     vk_surf_forget_all();
     vk_buf_forget_all();
     vk_query_forget_all();
+    vk_stamp_reset();
+    vk_release_stamp_reset();
     vk_upscale_forget();
     if (g_cpu_img) {
         vk_defer_image(g_cpu_img->img, g_cpu_img->mem, VK_NULL_HANDLE, g_cpu_img->att);
@@ -1636,6 +1638,8 @@ const Renderer vk_renderer = {
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
     .release_write = vk_release_write,
+    .release_stamp = vk_release_stamp,
+    .release_stamp_sync = vk_release_stamp_sync,
     .release_need = vk_release_need,
     .release_read = vk_release_read,
     .release_value = vk_release_value,

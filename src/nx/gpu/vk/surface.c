@@ -1141,7 +1141,11 @@ static void rt_reload(u64 gva) {
 }
 void vk_rt_reload(u64 gva) {
     VkResourceScope scope = vk_resource_begin();
+    /* the console's GPU reads the target's memory as it is: the load is the runtime's work, which a game that times
+       its frames must not count (stamp.c) */
+    vk_stamp_runtime_begin();
     rt_reload(gva);
+    vk_stamp_runtime_end();
     vk_resource_end(VK_RESOURCE_RT_RELOAD, scope);
 }
 
