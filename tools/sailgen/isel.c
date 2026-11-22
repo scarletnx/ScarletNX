@@ -2762,7 +2762,9 @@ int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, 
     g_page_parsed = (char*)sg_alloc(g_sdm.npages + 1);
     for (i = 0; i < g_nforms; ++i) evaluate_form(i);
     read_conditions();
-    pes = (PEval*)sg_alloc(64 * 4 * sizeof *pes);
+    unsigned widths = 0;
+    for (i = 0; i < g_nprims; ++i) widths += (unsigned)g_prims[i].nwidths;
+    pes = (PEval*)sg_alloc((widths + 1) * sizeof *pes);
     for (i = 0; i < g_nprims; ++i)
         for (k = 0; k < (unsigned)g_prims[i].nwidths; ++k) pes[npes++] = evaluate_prim(&g_prims[i], g_prims[i].widths[k]);
     if (getenv("SG_ISEL_DEBUG")) {
