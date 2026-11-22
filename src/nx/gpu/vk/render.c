@@ -1487,6 +1487,9 @@ static int hold_no(int why) {
     return 0;
 }
 static u64 g_dset_offset_only; /* desc_set_cached's count for the GPU plan's M3b, below */
+/* desc_set_cached's counts for the GPU plan's M3c, [0] the stages' sets, [1] their texture sets (split sets): the new
+   sets, and those of them whose writes an earlier frame's set had */
+static u64 g_dset_new_kind[2], g_dset_earlier[2];
 #define DSET_BIND_MAX 64u
 static u64 g_dset_moved[2 * DS_GFX_STAGES][DSET_BIND_MAX];
 static u32 g_dset_moved_type[2 * DS_GFX_STAGES][DSET_BIND_MAX];
@@ -1561,6 +1564,12 @@ void vk_render_stats_log(void) {
         (unsigned long long)g_dset_offset_only);
     dset_new_was = g_vk_dset_new;
     g_dset_offset_only = 0;
+    LOG("vulkan: new descriptor sets in the last %llu presents by kind: %llu of the stages' (%llu an earlier frame made), "
+        "%llu texture sets (%llu an earlier frame made)\n",
+        (unsigned long long)presents, (unsigned long long)g_dset_new_kind[0], (unsigned long long)g_dset_earlier[0],
+        (unsigned long long)g_dset_new_kind[1], (unsigned long long)g_dset_earlier[1]);
+    memset(g_dset_new_kind, 0, sizeof g_dset_new_kind);
+    memset(g_dset_earlier, 0, sizeof g_dset_earlier);
     char line[1024];
     size_t at = 0;
     for (u32 st = 0; st < 2 * DS_GFX_STAGES; st++)
@@ -3622,6 +3631,13 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
             set = bucket[i].set;
         }
     if (!set) {
+        /* for the statistics (the GPU plan's M3c): a set an earlier frame made with these writes */
+        for (u32 i = 0; i < 2; i++)
+            if (bucket[i].frame != frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+                g_dset_earlier[(u32)stage >= DS_GFX_STAGES]++;
+                break;
+            }
+        g_dset_new_kind[(u32)stage >= DS_GFX_STAGES]++;
         DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
                           : bucket[1].frame != frame ? &bucket[1]
                                                      : &bucket[hash[1] >> 63];
