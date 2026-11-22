@@ -28,6 +28,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
+#include "common/platform/time.h"
 #include <math.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -1123,6 +1124,7 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
     }
     if (r->mode >= 2) {
         d->render_off = r->mode == 3;
+        atomic_fetch_add_explicit(&g_gpu_rcond[GPU_RCOND_FIXED], 1, memory_order_relaxed);
         return;
     }
     d->render_off = 0;
@@ -1133,14 +1135,17 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
             d->render_off = 0;
             d->own.pred = pred;
         }
+        atomic_fetch_add_explicit(&g_gpu_rcond[known == 2 ? GPU_RCOND_GPU : GPU_RCOND_KNOWN], 1, memory_order_relaxed);
         return;
     }
     { /* counts the GPU can't compare for the renderer: read as the stream sees them, past the releases queued before
          (gmem_read), as the 3D engine's render enable reads them */
-        u64 x = 0, y = 0;
+        u64 x = 0, y = 0, t0 = plat_ns();
         gmem_read(r->address, &x, 8);
         gmem_read(r->address + 16, &y, 8);
         d->render_off = (x == y) != (r->mode == 0);
+        atomic_fetch_add_explicit(&g_gpu_rcond[GPU_RCOND_CPU], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_gpu_rcond_cpu_ns, plat_ns() - t0, memory_order_relaxed);
     }
 }
 int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
@@ -1536,7 +1541,11 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_UPDATE_UB: { /* the bytes land in the buffer in order with the draws around them: the command's own
                                 bytes, written into guest memory as the 3D engine's LOAD_CONSTANT_BUFFER writes them */
             const NvnPUpdateUB* r = NVN_OBJ(const NvnPUpdateUB, payload);
-            if (r->size && r->size <= (u64)size - sizeof *r) gmem_write(r->dst, GP(payload + sizeof *r), r->size);
+            if (r->size && r->size <= (u64)size - sizeof *r) {
+                GpuInlineMark m = gpu_inline_begin();
+                gmem_write(r->dst, GP(payload + sizeof *r), r->size);
+                gpu_inline_end(GPU_INLINE_UB, r->size, m);
+            }
             return 1;
         }
         case OP_PUSH_CONSTANTS: { /* into the root table, cut at its end */

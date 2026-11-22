@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include "common/utilities/bits.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
@@ -44,6 +45,19 @@ static struct {
        waited for */
     u64 room_splits, room_dropped, room_dropped_bytes, room_waits;
     u64 spilled, spilled_bytes; /* the results made in system memory for want of the device's, since then */
+    /* For the statistics of landings (land_note), under vk_lock: by what made the result (VK_OWN_BY_*) and what
+       asked (OWN_BY_*), the landings and their bytes. A game's landing is predictable when a game's landing of the
+       same producer, start and size came in the 1200 presents before it: a copy back as the result is made would
+       have had its bytes ready. The keys are a table that a newer key overwrites */
+    u64 land_n[VK_OWN_BY_N][OWN_BY_N], land_bytes[VK_OWN_BY_N][OWN_BY_N];
+    u64 pred_n[VK_OWN_BY_N], pred_bytes[VK_OWN_BY_N];
+    struct {
+        u64 key;
+        u32 present;
+    } land_key[1024];
+    /* atomic: the results let go with no landing, and their bytes, by what made them: what a copy back of each
+       result as it is made would have copied for nothing */
+    _Atomic u64 unread[VK_OWN_BY_N], unread_bytes[VK_OWN_BY_N];
 } g_owned;
 
 /* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
@@ -207,6 +221,51 @@ void vk_own_room(void) {
     if (vk_submit_number() != now) g_owned.room_splits++;
 }
 
+/* statistics of the landings since the last report (land_note, own_land_times): by producer and by what asked, the
+   predictable ones, the results let go unread, and where a landing's time went */
+static void land_log(const char* const* by) {
+    static const char* const ask[OWN_BY_N] = {"runtime", "read", "write"};
+    static u64 bytes_was[OWN_BY_N], wait_was[OWN_BY_N], copy_was[OWN_BY_N], fill_was[OWN_BY_N];
+    u64 bytes[OWN_BY_N], wait[OWN_BY_N], copy[OWN_BY_N], fill[OWN_BY_N];
+    own_land_times(bytes, wait, copy, fill);
+    static u64 begins_was, refused_was, refused_bytes_was, refused_runs_was;
+    u64 begins, refused, refused_bytes, refused_runs;
+    own_begin_stats(&begins, &refused, &refused_bytes, &refused_runs);
+    if (refused != refused_was)
+        LOG("vulkan: ownership refused for %llu of %llu publishes (%.2f MB), %llu of them only for the count of runs\n",
+            (unsigned long long)(refused - refused_was), (unsigned long long)(begins - begins_was),
+            (double)(refused_bytes - refused_bytes_was) / 1048576.0,
+            (unsigned long long)(refused_runs - refused_runs_was));
+    begins_was = begins, refused_was = refused, refused_bytes_was = refused_bytes, refused_runs_was = refused_runs;
+    vk_lock();
+    for (u32 k = 0; k < VK_OWN_BY_N; k++) {
+        u64 un = atomic_exchange_explicit(&g_owned.unread[k], 0, memory_order_relaxed),
+            unb = atomic_exchange_explicit(&g_owned.unread_bytes[k], 0, memory_order_relaxed);
+        u64 any = un;
+        for (u32 a = 0; a < OWN_BY_N; a++) any |= g_owned.land_n[k][a];
+        if (!any) continue;
+        LOG("vulkan: landings of %s: runtime %llu (%.2f MB), read %llu (%.2f MB), write %llu (%.2f MB); predictable "
+            "%llu (%.2f MB); let go unread %llu (%.2f MB)\n",
+            by[k], (unsigned long long)g_owned.land_n[k][0], (double)g_owned.land_bytes[k][0] / 1048576.0,
+            (unsigned long long)g_owned.land_n[k][1], (double)g_owned.land_bytes[k][1] / 1048576.0,
+            (unsigned long long)g_owned.land_n[k][2], (double)g_owned.land_bytes[k][2] / 1048576.0,
+            (unsigned long long)g_owned.pred_n[k], (double)g_owned.pred_bytes[k] / 1048576.0, (unsigned long long)un,
+            (double)unb / 1048576.0);
+    }
+    memset(g_owned.land_n, 0, sizeof g_owned.land_n);
+    memset(g_owned.land_bytes, 0, sizeof g_owned.land_bytes);
+    memset(g_owned.pred_n, 0, sizeof g_owned.pred_n);
+    memset(g_owned.pred_bytes, 0, sizeof g_owned.pred_bytes);
+    vk_unlock();
+    for (u32 a = 0; a < OWN_BY_N; a++) {
+        if (bytes[a] != bytes_was[a] || wait[a] != wait_was[a])
+            LOG("vulkan: landings for a %s: %.2f MB, %.2f ms waiting for the GPU's work, %.2f ms in the copy, %.2f ms "
+                "into the trapped pages\n",
+                ask[a], (double)(bytes[a] - bytes_was[a]) / 1048576.0, (double)(wait[a] - wait_was[a]) / 1e6,
+                (double)(copy[a] - copy_was[a]) / 1e6, (double)(fill[a] - fill_was[a]) / 1e6);
+        bytes_was[a] = bytes[a], wait_was[a] = wait[a], copy_was[a] = copy[a], fill_was[a] = fill[a];
+    }
+}
 /* statistics: what the ledger's kept results are, the ones in use and the freed buffers that wait in the pool */
 static void gread_log(void);
 void vk_own_log(void) {
@@ -257,6 +316,7 @@ void vk_own_log(void) {
             (unsigned long long)g_owned.spilled, (double)g_owned.spilled_bytes / 1048576.0);
     g_owned.room_splits = g_owned.room_dropped = g_owned.room_dropped_bytes = g_owned.room_waits = 0;
     g_owned.spilled = g_owned.spilled_bytes = 0;
+    land_log(by);
 }
 
 /* The kept results within the budget. A result is the only copy of the guest bytes it holds, so it stays until the
@@ -502,6 +562,10 @@ static void res_release(void* res) {
         return;
     }
     u32 kept = g_vk_present - r->born;
+    if (!r->landed) {
+        atomic_fetch_add_explicit(&g_owned.unread[r->by], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_owned.unread_bytes[r->by], r->size, memory_order_relaxed);
+    }
     atomic_fetch_sub_explicit(&g_owned.live[r->by], 1, memory_order_relaxed);
     atomic_fetch_sub_explicit(&g_owned.live_bytes[r->by], r->size, memory_order_relaxed);
     if (!r->host) atomic_fetch_sub_explicit(&g_owned.live_dev_bytes, r->size, memory_order_relaxed);
@@ -704,8 +768,34 @@ typedef struct {
     int apart, finished;
     VkQueue queue;
 } LandCtx;
+/* under vk_lock: a landing's counts for the statistics (g_owned.land_n and the rest). Its producer is the one of its
+   largest range */
+static void land_note(const OwnRange* r, u32 n, int by) {
+    u64 all = 0, most = 0;
+    u32 prod = VK_OWN_BY_COMPUTE;
+    for (u32 k = 0; k < n; k++) {
+        VkOwnRes* res = (VkOwnRes*)r[k].res;
+        all += r[k].size;
+        if (!res) continue;
+        res->landed = 1;
+        if (r[k].size > most) most = r[k].size, prod = res->by;
+    }
+    if (!n || by < 0 || by >= OWN_BY_N) return;
+    g_owned.land_n[prod][by]++;
+    g_owned.land_bytes[prod][by] += all;
+    if (by == OWN_BY_RUNTIME) return;
+    u64 key = snx_fnv_step(snx_fnv_step(snx_fnv_step(SNX_FNV_BASIS, prod), r[0].addr), all);
+    u32 slot = (u32)(key >> 54) & 1023;
+    if (g_owned.land_key[slot].key == key && g_vk_present - g_owned.land_key[slot].present <= 1200) {
+        g_owned.pred_n[prod]++;
+        g_owned.pred_bytes[prod] += all;
+    }
+    g_owned.land_key[slot].key = key;
+    g_owned.land_key[slot].present = g_vk_present;
+}
 static LandCtx land_ctx(const OwnRange* r, u32 n, int by) {
     LandCtx c = {0};
+    land_note(r, n, by);
     for (u32 k = 0; k < n; k++) {
         u64 w = own_writer(r[k].res);
         if (by != OWN_BY_RUNTIME) cpu_read_note(r[k].addr, r[k].size);
@@ -1564,6 +1654,24 @@ void vk_all_barrier(VkCommandBuffer cb) {
                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
+}
+static _Atomic u64 g_all_barriers[VK_BAR_N];
+void vk_all_barrier_by(int site, VkCommandBuffer cb) {
+    atomic_fetch_add_explicit(&g_all_barriers[site], 1, memory_order_relaxed);
+    vk_all_barrier(cb);
+}
+void vk_all_barrier_log(void) {
+    static const char* const name[VK_BAR_N] = {"blit",      "buffer", "compute", "dma",     "nvdec",
+                                               "pagespace", "render", "surface", "texture", "uma"};
+    char line[400];
+    size_t at = 0;
+    for (u32 k = 0; k < VK_BAR_N; k++) {
+        u64 n = atomic_exchange_explicit(&g_all_barriers[k], 0, memory_order_relaxed);
+        if (!n || at >= sizeof line) continue;
+        int w = snprintf(line + at, sizeof line - at, " %s %llu", name[k], (unsigned long long)n);
+        if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+    }
+    if (at) LOG("vulkan: full barriers of the last 600 presents by file:%s\n", line);
 }
 void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, i64 src_pitch, VkBuffer dst, u64 dst_at, i64 dst_pitch,
                   u32 row_bytes, u32 rows) {

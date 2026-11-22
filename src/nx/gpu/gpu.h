@@ -377,6 +377,25 @@ u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log
    I2M_UPLOAD_REGS, so regs[base + UPLOAD_EXEC] is the launch), and its data words (ProcessData) */
 void i2m_launch(GpuChannel* ch, u32* regs, int base);
 void i2m_data(GpuChannel* ch, u32 v);
+/* For the statistics: the writes that the command stream makes into guest memory, by kind (an inline-to-memory
+   launch to a pitch linear or a block linear destination, NVN's uniform buffer update). Each counts its bytes, and the
+   landings of GPU-owned memory that came while it wrote (any thread's: a write over an owned or pending range lands
+   it first) with their bytes and nanoseconds */
+enum { GPU_INLINE_LINEAR, GPU_INLINE_BLOCK, GPU_INLINE_UB, GPU_INLINE_N };
+typedef struct {
+    _Atomic u64 n, bytes, forced, forced_bytes, forced_ns;
+} GpuInlineStat;
+extern GpuInlineStat g_gpu_inline[GPU_INLINE_N];
+typedef struct {
+    u64 lands, land_bytes, t0;
+} GpuInlineMark;
+GpuInlineMark gpu_inline_begin(void);
+/* For the statistics: NVN's render enable records by how they were decided (nvn_draw.c render_enable): a fixed mode,
+   a predicate the renderer knew, a predicate left to the GPU, the CPU's reads of the counts. Then the nanoseconds of
+   those reads */
+enum { GPU_RCOND_FIXED, GPU_RCOND_KNOWN, GPU_RCOND_GPU, GPU_RCOND_CPU, GPU_RCOND_N };
+extern _Atomic u64 g_gpu_rcond[GPU_RCOND_N], g_gpu_rcond_cpu_ns;
+void gpu_inline_end(int kind, u64 bytes, GpuInlineMark m);
 u32 gpu_color_bpp(u32 format); /* bytes per pixel of a color format (render targets and 2D surfaces share them) */
 void gpu_signal_point(void);   /* the GPU is about to do something the game can observe */
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is

@@ -387,6 +387,7 @@ void vk_lock(void);
 void vk_unlock(void);
 int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
+void vk_lock_log(void);  /* the contended waits since the last report, by where the holder took it */
 int vk_lock_held(void);  /* this thread holds vk_lock */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
@@ -1784,6 +1785,7 @@ typedef struct VkOwnRes {
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
     u8 no_pool;  /* landed by vk_own_trim for the budget: deferred back to the heap instead of pooled */
+    u8 landed;   /* a landing copied from it (owned.c land_note), for the statistics of results let go unread */
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
     /* buf's device address, 0 until an indirect copy or an in-place read asks for it (owned.c res_addr) */
     VkDeviceAddress addr;
@@ -1910,6 +1912,22 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 int vk_guest_owned_by(u64 gva, u64 size, u64 serial);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
+/* the same, counted for the statistics by the file that asks (vk_all_barrier_log) */
+enum {
+    VK_BAR_BLIT,
+    VK_BAR_BUFFER,
+    VK_BAR_COMPUTE,
+    VK_BAR_DMA,
+    VK_BAR_NVDEC,
+    VK_BAR_PAGESPACE,
+    VK_BAR_RENDER,
+    VK_BAR_SURFACE,
+    VK_BAR_TEXTURE,
+    VK_BAR_UMA,
+    VK_BAR_N
+};
+void vk_all_barrier_by(int site, VkCommandBuffer cb);
+void vk_all_barrier_log(void);
 /* The stages that read or write buffers: indirect arguments, vertex and index input, every shader, the transfers, and
    transform feedback, conditional rendering and indirect copies where the device has them. A barrier between buffers'
    writers and readers names these, not ALL_COMMANDS, which also waits for the color and depth targets' output (images
@@ -2221,6 +2239,7 @@ void* vk_nvdec_hw_device(u32 codec);
    tiles (the blocks of its lines' GOB columns) */
 int vk_dma_copy(const GpuDmaOp* o);
 void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
+void vk_dma_log(void); /* the statistics of the launches since the last report, with those apart from the one before */
 /* A transfer that may be more than one buffer can hold (cap: g_vk.alloc_cap, or less), taken in bands of lines: the
    DMA's copies, the 2D engine's blits (blit.c), VIC's jobs (vic.c). need(user, y, n): the most bytes one of the
    buffers of lines [y, y + n) takes. A band ends where its end, counted from base, is a multiple of unit (a block
@@ -2769,6 +2788,7 @@ void vk_buf_land(void);
 void vk_buf_land_syncwait(void);
 void vk_buf_land_map(void);
 void vk_buf_frame_done(u64 frame);
+void vk_buf_frame_done_log(void); /* the time of its parts since the last report */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */

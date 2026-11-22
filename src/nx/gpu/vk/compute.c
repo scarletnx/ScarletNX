@@ -2386,7 +2386,8 @@ rebind:
         cb = g_ccb;
     }
     vkUpdateDescriptorSets(g_vk.dev, nw, w, 0, NULL);
-    if (resident) vk_all_barrier(cb); /* the copies into its buffers, and earlier work on them, before it */
+    if (resident)
+        vk_all_barrier_by(VK_BAR_COMPUTE, cb); /* the copies into its buffers, and earlier work on them, before it */
     /* its queue's shared memory buffer, after the dispatch before that used it */
     if (spill.buffer) {
         VkMemoryBarrier2 smb = {
@@ -2412,9 +2413,9 @@ rebind:
     if (d->indirect && cb0_buf && cb0_range >= 0x20c) {
         /* the grid into bank 0's dispatch size too, on the GPU, after whatever wrote it */
         VkBufferCopy gc = {grid_off, cb0_off + 0x200, 12};
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_COMPUTE, cb);
         rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_COMPUTE, cb);
     }
     if (mir) { /* after the earlier programs' writes of the mirror, which it may read or write again */
         VkMemoryBarrier2 mmb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -2460,7 +2461,7 @@ rebind:
         }
     }
     if (resident) {
-        vk_all_barrier(cb); /* its writes before what reads them next */
+        vk_all_barrier_by(VK_BAR_COMPUTE, cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {
             if (!(((p->si.gbuf_wmask >> i) & 1) && sa[i])) continue;
             if (made[i])

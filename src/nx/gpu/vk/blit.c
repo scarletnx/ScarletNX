@@ -127,22 +127,22 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
         rec_CmdCopyBuffer(cb, tb, scr, 1, &c[0]);
         if (!b->src.bl) rec_CmdCopyBuffer(cb, sb, scr, 1, &c[1]); /* pitch linear rows as they are */
     }
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     VkBlMove ms = {b->src.wb, b->src.h, b->src.bh, b->src.bd, sr0, srows, b->src.z, 1, pa};
     VkBlMove md = {b->dst.wb, b->dst.h, b->dst.bh, b->dst.bd, b->y0 + y, n, b->dst.z, 1, pc};
     if (b->src.bl) ok = vk_bl_move(cb, &ms, 0, sb, sat, scr, 0); /* sb holds its rows of blocks from sat */
     if (ok && b->dst.bl) ok = vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_c);
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     ok = ok && vk_tc_blit(cb, b->bpp, b->fmt, nb, n, scr, used, 0, pa, at_t, at_t + 4ull * w, scr, at_b, pb);
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     if (ok) { /* the rectangle's bytes into the destination's rows, which go back into its layout */
         if (b->dst.bl)
             vk_copy_rows(cb, scr, at_b, pb, scr, at_c + (u64)b->x0 * bd, pc, nb, n);
         else
             vk_copy_rows(cb, scr, at_b, pb, d->buf, 0, b->dst.pitch, nb, n);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_BLIT, cb);
         if (b->dst.bl) ok = vk_bl_move(cb, &md, 1, d->buf, 0, scr, at_c);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_BLIT, cb);
     }
     if (ok) { /* those bytes are the buffer's from now on, run by run of guest memory */
         u64 off = 0, at = b->dst.addr + need->dlo;

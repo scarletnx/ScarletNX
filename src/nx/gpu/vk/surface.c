@@ -1875,14 +1875,14 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
         rt_overlay(s->gva + at, hi - at, r->buf, 0, s, 0);
         s->mem_wgen = mem_wgen;
         VkCommandBuffer cb = vk_cmd();
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
         if (!flush_record(cb, s, r->buf, 0, &part)) {
             vk_own_res_unref(r);
             return 0;
         }
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
         s->mem_wgen = s->wgen; /* the newer ones wholly in the band, over them */
-        if (rt_overlay(s->gva + at, hi - at, r->buf, 0, s, 1)) vk_all_barrier(vk_cmd());
+        if (rt_overlay(s->gva + at, hi - at, r->buf, 0, s, 1)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
         const Surf* publishing = g_rt_publishing;
         g_rt_publishing = s;
         rt_retire_over(s->gva + at, hi - at, s, r, at); /* r holds the band: its byte 0 is the span's byte at */
@@ -2039,7 +2039,7 @@ int vk_surf_publish(Surf* s) {
             rec_CmdCopyBuffer(cb, r->buf, kbuf, 1, &kc);
             k += kc.size;
         }
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
     }
     /* the older targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
        itself out (its tight rows would be a pitch-linear one's padding) */
@@ -2047,15 +2047,15 @@ int vk_surf_publish(Surf* s) {
     rt_overlay(s->gva, size, r->buf, 0, s, 0);
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_SURFACE, cb);
     FlushPart whole = flush_whole(s);
     if (!(s->bl ? flush_record(cb, s, r->buf, 0, &whole) : flush_copy(cb, s, r->buf, 0, s->pitch, &whole))) {
         vk_own_res_unref(r);
         return 0;
     }
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_SURFACE, cb);
     s->mem_wgen = s->wgen; /* the newer targets wholly in the span, over s's pixels */
-    if (rt_overlay(s->gva, size, r->buf, 0, s, 1)) vk_all_barrier(vk_cmd());
+    if (rt_overlay(s->gva, size, r->buf, 0, s, 1)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
     for (u64 i = 0, k = 0; i < kept; i++) { /* the CPU's runs over the image (cpu_newer) */
@@ -2063,7 +2063,7 @@ int vk_surf_publish(Surf* s) {
         rec_CmdCopyBuffer(cb, kbuf, r->buf, 1, &kc);
         k += kc.size;
     }
-    if (kept) vk_all_barrier(cb);
+    if (kept) vk_all_barrier_by(VK_BAR_SURFACE, cb);
     /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
     const Surf* publishing = g_rt_publishing;
@@ -2129,7 +2129,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
             return 0;
         }
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
-        if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier(vk_cmd());
+        if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
         s->mem_wgen = mem_wgen;
         rt_retire_over(s->gva, size, NULL, NULL, 0);
         vk_own_publish(cpu, size, r, 0);
@@ -2159,7 +2159,7 @@ static u8* keep_original(VkOwnRes* held, u64 off, u64 size) {
     }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_SURFACE, cb);
     VkBufferCopy c = {off, 0, size};
     rec_CmdCopyBuffer(cb, held->buf, buf, 1, &c);
     flush_wait(cb);
@@ -3757,18 +3757,18 @@ static int blit_depth_gather(Surf* source, Surf* destination, i32 x0, i32 y0, i3
         rec_CmdCopyImageToBuffer(cb, source->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), scratch, 1, &read);
         VkBufferCopy copy = {table_offset, table_at, table_size};
         rec_CmdCopyBuffer(cb, table_buffer, scratch, 1, &copy);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
         if (!vk_tc_blit(cb, bytes, 0, width * bytes, height, scratch, used, 0, input_pitch, table_at,
                         table_at + 4ull * width, scratch, output_at, output_pitch))
             return 0;
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
         VkBufferImageCopy write = {.bufferOffset = output_at,
                                    .bufferRowLength = output_pitch / bytes,
                                    .imageSubresource = {bit, 0, 0, 1},
                                    .imageOffset = {dx, dy, 0},
                                    .imageExtent = {width, height, 1}};
         rec_CmdCopyBufferToImage(cb, scratch, destination->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &write);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_SURFACE, cb);
     }
     return 1;
 }

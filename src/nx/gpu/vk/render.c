@@ -2916,10 +2916,10 @@ static int cb_pad(VkBuffer* b, u64* o, u32 sz, u32 need) {
     memset(p, 0, need);
     vk_render_end(); /* the copy happens outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
-    vk_all_barrier(cb); /* what wrote the bytes, before the copy reads them */
+    vk_all_barrier_by(VK_BAR_RENDER, cb); /* what wrote the bytes, before the copy reads them */
     VkBufferCopy c = {*o, po, sz};
     rec_CmdCopyBuffer(cb, *b, pb, 1, &c);
-    vk_all_barrier(cb); /* the copy, before the draw reads the block */
+    vk_all_barrier_by(VK_BAR_RENDER, cb); /* the copy, before the draw reads the block */
     *b = pb;
     *o = po;
     g_cb_padded++;

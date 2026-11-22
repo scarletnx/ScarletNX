@@ -28,6 +28,7 @@
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
+#include "common/platform/time.h"
 
 int g_vk_preserve_infnan;
 int g_vk_preserve_infnan64;
@@ -50,6 +51,46 @@ static _Atomic u32
    waits for the baton, not the lock, and only those already waiting compete */
 static _Atomic u32 g_vk_waiting; /* threads blocked in pm_lock on g_vklock */
 static _Atomic u32 g_vk_baton;   /* 1: let go to a waiter, which hasn't taken it yet */
+/* For the statistics: where the holder took the lock (the return address of its outermost vk_lock or vk_trylock),
+   and for each such place, the contended waits behind a hold from it, the GPU thread's and the others', and their
+   nanoseconds. A table that keeps the first places it sees */
+static _Atomic uintptr_t g_vk_site;
+typedef struct {
+    _Atomic uintptr_t at;
+    _Atomic u64 n[2], ns[2]; /* [1]: the GPU thread's waits */
+} LockSite;
+#define LOCK_SITES 48
+static LockSite g_lock_site[LOCK_SITES];
+static void lock_site_note(uintptr_t at, int gpu, u64 ns) {
+    for (u32 i = 0; i < LOCK_SITES; i++) {
+        uintptr_t was = atomic_load_explicit(&g_lock_site[i].at, memory_order_relaxed);
+        if (!was &&
+            !atomic_compare_exchange_strong_explicit(&g_lock_site[i].at, &was, at, memory_order_relaxed,
+                                                     memory_order_relaxed) &&
+            was != at)
+            continue;
+        if (was && was != at) continue;
+        atomic_fetch_add_explicit(&g_lock_site[i].n[gpu], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_lock_site[i].ns[gpu], ns, memory_order_relaxed);
+        return;
+    }
+}
+void vk_lock_log(void) {
+    for (u32 i = 0; i < LOCK_SITES; i++) {
+        uintptr_t at = atomic_load_explicit(&g_lock_site[i].at, memory_order_relaxed);
+        if (!at) break;
+        u64 n0 = atomic_exchange_explicit(&g_lock_site[i].n[0], 0, memory_order_relaxed),
+            n1 = atomic_exchange_explicit(&g_lock_site[i].n[1], 0, memory_order_relaxed),
+            ns0 = atomic_exchange_explicit(&g_lock_site[i].ns[0], 0, memory_order_relaxed),
+            ns1 = atomic_exchange_explicit(&g_lock_site[i].ns[1], 0, memory_order_relaxed);
+        if (!n0 && !n1) continue;
+        /* the place as an offset from vk_lock itself, which the symbols of the runtime turn into a line */
+        LOG("vulkan: vk_lock held from vk_lock%+lld: the GPU thread waited %llu times (%.3f ms), others %llu times "
+            "(%.3f ms) in the last 600 presents\n",
+            (long long)((intptr_t)at - (intptr_t)(uintptr_t)&vk_lock), (unsigned long long)n1, (double)ns1 / 1e6,
+            (unsigned long long)n0, (double)ns0 / 1e6);
+    }
+}
 static void vk_took(void) {
     atomic_store_explicit(&g_vk_owner, plat_tid(), memory_order_relaxed);
     if (atomic_load_explicit(&g_vk_baton, memory_order_relaxed)) {
@@ -59,8 +100,11 @@ static void vk_took(void) {
 }
 void vk_lock(void) {
     if (!t_vkdepth++) {
+        uintptr_t site = (uintptr_t)__builtin_return_address(0);
         int got = !atomic_load_explicit(&g_vk_baton, memory_order_acquire) && pm_trylock(&g_vklock);
         if (!got) { /* held: the GPU thread says so for the stall report */
+            uintptr_t holder = atomic_load_explicit(&g_vk_site, memory_order_relaxed);
+            u64 t_wait = plat_ns();
             /* Only a contended acquisition gets a zone. */
             SNX_ZONE(z_wait, "vk lock wait");
             gpu_wait_note("vk_lock, which another thread holds", 0);
@@ -72,8 +116,10 @@ void vk_lock(void) {
                 atomic_fetch_sub_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
             }
             gpu_wait_note(NULL, 0);
+            lock_site_note(holder, gpu_on_thread(), plat_ns() - t_wait);
         }
         vk_took();
+        atomic_store_explicit(&g_vk_site, site, memory_order_relaxed);
     }
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
@@ -96,7 +142,10 @@ void vk_unlock(void) {
 }
 int vk_trylock(void) {
     if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
-    if (!t_vkdepth++) vk_took();
+    if (!t_vkdepth++) {
+        vk_took();
+        atomic_store_explicit(&g_vk_site, (uintptr_t)__builtin_return_address(0), memory_order_relaxed);
+    }
     return 1;
 }
 u32 vk_lock_owner(void) { return atomic_load_explicit(&g_vk_owner, memory_order_relaxed); }

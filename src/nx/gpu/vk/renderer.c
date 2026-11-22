@@ -1090,6 +1090,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             }
             vk_ledger_log();
             vk_own_log();
+            vk_all_barrier_log();
+            vk_dma_log();
+            vk_buf_frame_done_log();
+            vk_lock_log();
             {
                 /* what the caches hold, which vk_mem_trim keeps within the budget */
                 u32 nrt, ntex, nbuf, parked, none;
@@ -1188,6 +1192,40 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_rt_readbacks,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
+            /* the command stream's own writes to guest memory, and the landings that they forced (gpu.c) */
+            static const char* const inline_kind[GPU_INLINE_N] = {
+                "inline-to-memory pitch linear", "inline-to-memory block linear", "NVN uniform buffer updates"};
+            static u64 inline_was[GPU_INLINE_N][5];
+            for (u32 k = 0; k < GPU_INLINE_N; k++) {
+                const GpuInlineStat* st = &g_gpu_inline[k];
+                u64 now[5] = {atomic_load_explicit(&st->n, memory_order_relaxed),
+                              atomic_load_explicit(&st->bytes, memory_order_relaxed),
+                              atomic_load_explicit(&st->forced, memory_order_relaxed),
+                              atomic_load_explicit(&st->forced_bytes, memory_order_relaxed),
+                              atomic_load_explicit(&st->forced_ns, memory_order_relaxed)};
+                if (now[0] != inline_was[k][0])
+                    LOG("vulkan: %s: %llu writes (%.2f MB), %llu landings while they wrote (%.2f MB, %.2f ms)\n",
+                        inline_kind[k], (unsigned long long)(now[0] - inline_was[k][0]),
+                        (double)(now[1] - inline_was[k][1]) / 1048576.0,
+                        (unsigned long long)(now[2] - inline_was[k][2]),
+                        (double)(now[3] - inline_was[k][3]) / 1048576.0, (double)(now[4] - inline_was[k][4]) / 1e6);
+                for (u32 j = 0; j < 5; j++) inline_was[k][j] = now[j];
+            }
+            static u64 rcond_was[GPU_RCOND_N + 1];
+            u64 rcond[GPU_RCOND_N + 1], rcond_any = 0;
+            for (u32 k = 0; k < GPU_RCOND_N; k++)
+                rcond[k] = atomic_load_explicit(&g_gpu_rcond[k], memory_order_relaxed);
+            rcond[GPU_RCOND_N] = atomic_load_explicit(&g_gpu_rcond_cpu_ns, memory_order_relaxed);
+            for (u32 k = 0; k < GPU_RCOND_N; k++) rcond_any |= rcond[k] - rcond_was[k];
+            if (rcond_any)
+                LOG("vulkan: NVN render enables: %llu of a fixed mode, %llu the renderer knew, %llu left to the GPU, "
+                    "%llu read on the CPU (%.3f ms)\n",
+                    (unsigned long long)(rcond[GPU_RCOND_FIXED] - rcond_was[GPU_RCOND_FIXED]),
+                    (unsigned long long)(rcond[GPU_RCOND_KNOWN] - rcond_was[GPU_RCOND_KNOWN]),
+                    (unsigned long long)(rcond[GPU_RCOND_GPU] - rcond_was[GPU_RCOND_GPU]),
+                    (unsigned long long)(rcond[GPU_RCOND_CPU] - rcond_was[GPU_RCOND_CPU]),
+                    (double)(rcond[GPU_RCOND_N] - rcond_was[GPU_RCOND_N]) / 1e6);
+            for (u32 k = 0; k <= GPU_RCOND_N; k++) rcond_was[k] = rcond[k];
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
