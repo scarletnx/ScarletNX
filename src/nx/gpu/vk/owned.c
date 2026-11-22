@@ -228,11 +228,15 @@ void vk_own_room(void) {
 
 /* statistics of the landings since the last report (land_note, own_land_times): by producer and by what asked, the
    predictable ones, the results let go unread, and where a landing's time went */
+static void lander_stats(u64* landed, u64* missed);
 static void land_log(const char* const* by) {
     static const char* const ask[OWN_BY_N] = {"runtime", "read", "write"};
-    static u64 bytes_was[OWN_BY_N], wait_was[OWN_BY_N], copy_was[OWN_BY_N], fill_was[OWN_BY_N];
-    u64 bytes[OWN_BY_N], wait[OWN_BY_N], copy[OWN_BY_N], fill[OWN_BY_N];
+    static u64 bytes_was[OWN_BY_N], wait_was[OWN_BY_N], copy_was[OWN_BY_N], fill_was[OWN_BY_N], ready_was[OWN_BY_N],
+        lands_was[OWN_BY_N];
+    u64 bytes[OWN_BY_N], wait[OWN_BY_N], copy[OWN_BY_N], fill[OWN_BY_N], ready[OWN_BY_N], lands[OWN_BY_N];
     own_land_times(bytes, wait, copy, fill);
+    own_land_ready(ready);
+    own_landings_by(lands);
     static u64 begins_was, refused_was, refused_bytes_was, many_runs_was;
     u64 begins, refused, refused_bytes, many_runs;
     own_begin_stats(&begins, &refused, &refused_bytes, &many_runs);
@@ -256,10 +260,14 @@ static void land_log(const char* const* by) {
             (unsigned long long)g_owned.pred_n[k], (double)g_owned.pred_bytes[k] / 1048576.0, (unsigned long long)un,
             (double)unb / 1048576.0);
     }
+    u64 early_landed, early_missed;
+    lander_stats(&early_landed, &early_missed);
     if (g_owned.early_n || g_owned.early_hits)
-        LOG("vulkan: early copies back: %llu made (%.2f MB), %llu landings took one, %llu let go unread\n",
+        LOG("vulkan: early copies back: %llu made (%.2f MB), %llu landings took one, %llu let go unread; the lander "
+            "landed %llu, %llu were no longer their result's\n",
             (unsigned long long)g_owned.early_n, (double)g_owned.early_bytes / 1048576.0,
-            (unsigned long long)g_owned.early_hits, (unsigned long long)g_owned.early_unread);
+            (unsigned long long)g_owned.early_hits, (unsigned long long)g_owned.early_unread,
+            (unsigned long long)early_landed, (unsigned long long)early_missed);
     g_owned.early_n = g_owned.early_bytes = g_owned.early_hits = g_owned.early_unread = 0;
     memset(g_owned.land_n, 0, sizeof g_owned.land_n);
     memset(g_owned.land_bytes, 0, sizeof g_owned.land_bytes);
@@ -268,11 +276,13 @@ static void land_log(const char* const* by) {
     vk_unlock();
     for (u32 a = 0; a < OWN_BY_N; a++) {
         if (bytes[a] != bytes_was[a] || wait[a] != wait_was[a])
-            LOG("vulkan: landings for a %s: %.2f MB, %.2f ms waiting for the GPU's work, %.2f ms in the copy, %.2f ms "
-                "into the trapped pages\n",
-                ask[a], (double)(bytes[a] - bytes_was[a]) / 1048576.0, (double)(wait[a] - wait_was[a]) / 1e6,
+            LOG("vulkan: landings for a %s: %llu (%llu of them with the GPU's work done), %.2f MB, %.2f ms waiting "
+                "for the GPU's work, %.2f ms in the copy, %.2f ms into the trapped pages\n",
+                ask[a], (unsigned long long)(lands[a] - lands_was[a]), (unsigned long long)(ready[a] - ready_was[a]),
+                (double)(bytes[a] - bytes_was[a]) / 1048576.0, (double)(wait[a] - wait_was[a]) / 1e6,
                 (double)(copy[a] - copy_was[a]) / 1e6, (double)(fill[a] - fill_was[a]) / 1e6);
         bytes_was[a] = bytes[a], wait_was[a] = wait[a], copy_was[a] = copy[a], fill_was[a] = fill[a];
+        ready_was[a] = ready[a], lands_was[a] = lands[a];
     }
 }
 /* statistics: what the ledger's kept results are, the ones in use and the freed buffers that wait in the pool */
@@ -802,6 +812,7 @@ static u64 land_key_of(u32 prod, u64 addr, u64 size) {
     return snx_fnv_step(snx_fnv_step(snx_fnv_step(SNX_FNV_BASIS, prod), addr), size);
 }
 static u32 land_slot_of(u64 key) { return (u32)(key >> 54) & 1023; }
+static void lander_queue(u64 addr, u64 size, VkOwnRes* r, u64 value);
 /* under vk_lock: r's bytes [off, off + size), published at guest cpu, copied early when its key is hot */
 static void early_copy(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     if (!g_settings.early_copy_back || r->by != VK_OWN_BY_TARGET || r->borrowed || r->early || vk_uma() ||
@@ -845,6 +856,82 @@ static void early_copy(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     g_owned.early_now += size;
     g_owned.early_n++;
     g_owned.early_bytes += size;
+    lander_queue(cpu, size, r, r->early_value);
+}
+/* The early lander (vk_early_landing, the GPU plan's M10b). Of the game's reads of results copied early, 85 to 90% found
+   the GPU's work done when they faulted: they still stopped for the fault and copied the bytes into the trapped pages,
+   about 0.5 MB and 0.5 ms a present on the game's thread. A thread of the renderer's lands each early copy instead, as
+   soon as its submission is done, through own.c's landing for the runtime (own_acquire), as any runtime access lands:
+   the game's read then finds the bytes and no trap. It lands a range only while the result it copied still owns it
+   whole (own_lookup), else the game's access or a newer result decides. It waits on the graphics timeline for the
+   value, which submits nothing (a submission that isn't made yet is waited for a while at a time). It holds no lock when
+   it lands, never touches guest memory itself, and holds a reference to each result until it is done with it */
+#define LANDER_N 64u
+static struct {
+    PMutex lk;
+    PCond cv;
+    struct {
+        u64 addr, size, value;
+        VkOwnRes* res;
+    } q[LANDER_N];
+    u32 head, n;
+    int started;
+    _Atomic u64 landed, missed; /* for the statistics: ranges landed, and those whose result was not the owner */
+} g_lander = {.lk = PMUTEX_INIT};
+static void lander_run(void* arg) {
+    (void)arg;
+    VkSemaphore sem = vk_gfx_timeline();
+    for (;;) {
+        pm_lock(&g_lander.lk);
+        while (!g_lander.n) pc_wait(&g_lander.cv, &g_lander.lk, -1);
+        u64 addr = g_lander.q[g_lander.head].addr, size = g_lander.q[g_lander.head].size,
+            value = g_lander.q[g_lander.head].value;
+        VkOwnRes* res = g_lander.q[g_lander.head].res;
+        pm_unlock(&g_lander.lk);
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                  .semaphoreCount = 1,
+                                  .pSemaphores = &sem,
+                                  .pValues = &value};
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 50000000ull);
+        if (r == VK_TIMEOUT) continue; /* not done yet: the same one again */
+        pm_lock(&g_lander.lk);
+        g_lander.head = (g_lander.head + 1) % LANDER_N;
+        g_lander.n--;
+        pm_unlock(&g_lander.lk);
+        OwnRange o;
+        if (r == VK_SUCCESS && own_lookup(addr, size, &o, 1) == 1 && o.res == res && o.addr == addr && o.size == size) {
+            own_acquire(addr, size);
+            atomic_fetch_add_explicit(&g_lander.landed, 1, memory_order_relaxed);
+        } else
+            atomic_fetch_add_explicit(&g_lander.missed, 1, memory_order_relaxed);
+        vk_own_res_unref(res);
+    }
+}
+/* the lander's counts since the last report, which it zeroes */
+static void lander_stats(u64* landed, u64* missed) {
+    *landed = atomic_exchange_explicit(&g_lander.landed, 0, memory_order_relaxed);
+    *missed = atomic_exchange_explicit(&g_lander.missed, 0, memory_order_relaxed);
+}
+/* under vk_lock: r's early copy of guest [addr, addr + size), in submission value, for the lander. Left to the game's
+   access when the queue is full */
+static void lander_queue(u64 addr, u64 size, VkOwnRes* r, u64 value) {
+    if (!g_settings.early_landing) return;
+    pm_lock(&g_lander.lk);
+    if (!g_lander.started) {
+        pc_init(&g_lander.cv);
+        g_lander.started = plat_thread(lander_run, NULL, 0) == 0 ? 1 : -1;
+    }
+    if (g_lander.started > 0 && g_lander.n < LANDER_N) {
+        u32 at = (g_lander.head + g_lander.n) % LANDER_N;
+        res_retain(r);
+        g_lander.q[at].addr = addr;
+        g_lander.q[at].size = size;
+        g_lander.q[at].value = value;
+        g_lander.q[at].res = r;
+        g_lander.n++;
+        pc_signal(&g_lander.cv);
+    }
+    pm_unlock(&g_lander.lk);
 }
 /* under vk_lock: the ranges landed from their results' early copies, when each has a valid one whose submission is
    done. 0, with nothing copied, when one hasn't */

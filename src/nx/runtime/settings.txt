@@ -1894,6 +1894,13 @@ setting Early copy back
     words Off|On
     help 1 = a render target result that the game read back in the last 1200 presents is also copied to system memory
     help as it is made, so the game's next read of it copies those bytes with no readback of its own (discrete GPUs)
+setting Early landing
+    key vk_early_landing
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = a result copied back early lands in guest memory on a thread of its own as soon as the GPU has made it,
+    help so the game's read of it finds the bytes there and does not stop to land them
 setting Submit every
     key vk_submit_every
     int 0 65536
