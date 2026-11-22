@@ -2674,46 +2674,78 @@ static void squeeze(const char* in, char* out, size_t size) {
 }
 /* the 'enc' lines' forms: each one's encoder and its operands (SgXVForm): where ModRM.reg, ModRM.rm and VEX.vvvv
    are, the XMM ones, the immediate's bytes and the CPUID flag it needs. A form the manual lacks stops the build */
+/* SgXVForm sgx_v_<name> of the manual's form f (its encoder emitted once, done[]) */
+static void emit_vform(const char* vname, unsigned f, char* done, const char* vex) {
+    char name[64];
+    int k, reg = -1, rm = -1, vvvv = -1;
+    unsigned xmask = 0;
+    const char* feat = xmm_feature_c(g_forms[f].feature);
+    if (!feat) {
+        fprintf(stderr, "sailgen --isel: enc %s: the CPUID flag %s isn't one x64.h knows\n", vname, g_forms[f].feature);
+        exit(1);
+    }
+    if (!done[f]) {
+        emit_encoder(f);
+        done[f] = 1;
+    }
+    for (k = 0; k < g_forms[f].nops; ++k) {
+        if (g_forms[f].op[k].xmm) xmask |= 1u << k;
+        if (g_forms[f].op[k].kind != OK_REG) continue;
+        if (g_forms[f].op[k].role == ROLE_MODRM_REG) reg = k;
+        if (g_forms[f].op[k].role == ROLE_MODRM_RM) rm = k;
+        if (g_forms[f].op[k].role == ROLE_VVVV) vvvv = k;
+    }
+    c_name(&g_forms[f], name, sizeof name);
+    sg_out("static const SgXVForm sgx_v_%s = {sgx_e_%s, %s, %d, %d, %d, %d, %u, %d, %s%s}; /* %s */\n", vname, name,
+           feat, g_forms[f].nops, reg, rm, vvvv, xmask, g_forms[f].imm_bytes, vex ? "&sgx_v_" : "NULL", vex ? vex : "",
+           g_forms[f].row->c[0]);
+}
+static int find_form(const char* text) {
+    char want[96], have[96];
+    unsigned f;
+    squeeze(text, want, sizeof want);
+    for (f = 0; f < g_nforms; ++f) {
+        squeeze(g_forms[f].text, have, sizeof have);
+        if (!strcmp(have, want) && g_forms[f].modrm >= 0) return (int)f;
+    }
+    return -1;
+}
+/* the 'enc' lines' forms: each one's encoder and its operands (SgXVForm): where ModRM.reg, ModRM.rm and VEX.vvvv
+   are, the XMM ones, the immediate's bytes and the CPUID flag it needs. A form the manual lacks stops the build. And
+   each two-operand SSE form's AVX twin where the manual's page has it ('PADDD xmm1, xmm2/m128' and 'VPADDD xmm1, xmm2,
+   xmm3/m128': the same operation, not tied, the first source in VEX.vvvv), for sgx_vex_of */
 static void emit_encs(void) {
-    unsigned i, f;
+    unsigned i;
     char* done = (char*)sg_alloc(g_nforms + 1);
+    char* twin = (char*)sg_alloc(g_nencs + 1);
     for (i = 0; i < g_nencs; ++i) {
-        char want[96], have[96], name[64];
-        int k, reg = -1, rm = -1, vvvv = -1;
-        unsigned xmask = 0;
-        const char* feat;
-        squeeze(g_encs[i].text, want, sizeof want);
-        for (f = 0; f < g_nforms; ++f) {
-            squeeze(g_forms[f].text, have, sizeof have);
-            if (!strcmp(have, want) && g_forms[f].modrm >= 0) break;
-        }
-        if (f == g_nforms) {
+        char want[96], vtext[128], vname[80];
+        int f = find_form(g_encs[i].text), t;
+        const char *sp, *comma;
+        if (f < 0) {
+            squeeze(g_encs[i].text, want, sizeof want);
             fprintf(stderr, "sailgen --isel: enc %s (line %u): no form '%s' in the manual's pages\n", g_encs[i].name,
                     g_encs[i].line, want);
             exit(1);
         }
-        feat = xmm_feature_c(g_forms[f].feature);
-        if (!feat) {
-            fprintf(stderr, "sailgen --isel: enc %s: the CPUID flag %s isn't one x64.h knows\n", g_encs[i].name,
-                    g_forms[f].feature);
-            exit(1);
+        /* MNEM xmm1, xmm2/mN (no immediate) -> VMNEM xmm1, xmm2, xmm3/mN, emitted first */
+        squeeze(g_encs[i].text, want, sizeof want);
+        sp = strchr(want, ' ');
+        comma = sp ? strchr(sp, ',') : NULL;
+        t = -1;
+        if (sp && comma && !strchr(comma + 1, ',') && !strncmp(sp + 1, "xmm1,", 5) && !strncmp(comma + 1, "xmm2/m", 6) &&
+            want[0] != 'V' && !g_forms[f].imm_bytes) {
+            snprintf(vtext, sizeof vtext, "V%.*s xmm1, xmm2, xmm3/%s", (int)(sp - want), want, comma + 1 + 5);
+            t = find_form(vtext);
+            if (t >= 0 && strcmp(g_forms[t].feature, "AVX")) t = -1;
         }
-        if (!done[f]) {
-            emit_encoder(f);
-            done[f] = 1;
-        }
-        for (k = 0; k < g_forms[f].nops; ++k) {
-            if (g_forms[f].op[k].xmm) xmask |= 1u << k;
-            if (g_forms[f].op[k].kind != OK_REG) continue;
-            if (g_forms[f].op[k].role == ROLE_MODRM_REG) reg = k;
-            if (g_forms[f].op[k].role == ROLE_MODRM_RM) rm = k;
-            if (g_forms[f].op[k].role == ROLE_VVVV) vvvv = k;
-        }
-        c_name(&g_forms[f], name, sizeof name);
-        sg_out("static const SgXVForm sgx_v_%s = {sgx_e_%s, %s, %d, %d, %d, %d, %u, %d}; /* %s */\n", g_encs[i].name,
-               name, feat, g_forms[f].nops, reg, rm, vvvv, xmask, g_forms[f].imm_bytes, g_forms[f].row->c[0]);
+        snprintf(vname, sizeof vname, "%s_vex", g_encs[i].name);
+        if (t >= 0) emit_vform(vname, (unsigned)t, done, NULL);
+        emit_vform(g_encs[i].name, (unsigned)f, done, t >= 0 ? vname : NULL);
+        twin[i] = t >= 0;
     }
     free(done);
+    free(twin);
 }
 
 int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, const char* report_path) {
