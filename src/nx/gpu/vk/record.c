@@ -90,6 +90,19 @@ static void rec_kind(RecFn fn) {
     }
 }
 
+static void submit_run(const void* p);
+/* the recording thread's position told to the producer: g_tail moved, and a producer waiting for room or for a
+   submission (room_wait, vk_rec_queue) woken. seq_cst with the load after it, as the producer's store of
+   g_room_waits and its look at g_tail: one of the two sees the other, so a producer about to sleep is woken */
+static void tail_tell(u64 tail) {
+    atomic_store_explicit(&g_tail, tail, memory_order_seq_cst);
+    if (atomic_load_explicit(&g_room_waits, memory_order_seq_cst)) {
+        pm_lock(&g_m);
+        pc_broadcast(&g_room);
+        pm_unlock(&g_m);
+    }
+}
+
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
@@ -113,23 +126,20 @@ static void rec_thread(void* arg) {
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
             const RecHdr* h = (const RecHdr*)(g_ring + (tail & (REC_CAP - 1)));
-            if (h->fn) {
-                if (g_rec_kind_count) rec_kind(h->fn);
-                h->fn(h + 1);
+            const RecFn fn = h->fn;
+            if (fn) {
+                if (g_rec_kind_count) rec_kind(fn);
+                fn(h + 1);
             }
             tail += h->size;
             records++;
+            /* a submission is told at once: vk_rec_queue waits for it, not for the packets after it in this batch,
+               which may wait for that caller */
+            if (fn == submit_run) tail_tell(tail);
         }
         SNX_ZONE_VALUE(z_rec, records);
         SNX_ZONE_END(z_rec);
-        /* seq_cst with the load after it, as the producer's store of g_room_waits and its look at g_tail: one of the
-           two sees the other, so a producer about to sleep is woken */
-        atomic_store_explicit(&g_tail, tail, memory_order_seq_cst);
-        if (atomic_load_explicit(&g_room_waits, memory_order_seq_cst)) {
-            pm_lock(&g_m);
-            pc_broadcast(&g_room);
-            pm_unlock(&g_m);
-        }
+        tail_tell(tail);
     }
 }
 
