@@ -96,6 +96,28 @@ static uint32_t fp_ldst(void) {
     }
 }
 
+/* LDR, STR (unsigned offset, unscaled, post- and pre-index, register offset by x28) of bytes to doublewords, the
+   sign-extending loads, LDP and STP of W and X: Rt from x0-x15, never the base (no writeback onto its own register) */
+static uint32_t int_ldst(void) {
+    unsigned rt = lo(), rn = base(), size = pick(4), opc = pick(2) ? pick(2) : (size < 2 ? 2 + pick(2) : (size == 2 ? 2 : pick(2)));
+    switch (pick(4)) {
+    case 0: return size << 30 | 0x39000000u | opc << 22 | pick(64) << 10 | rn << 5 | rt;
+    case 1: {
+        static const unsigned idx[] = {0, 1, 3};
+        return size << 30 | 0x38000000u | opc << 22 | (pick(512) & 0x1FF) << 12 | idx[pick(3)] << 10 | rn << 5 | rt;
+    }
+    case 2: {
+        static const unsigned option[] = {2, 3, 6, 7};
+        return size << 30 | 0x38200800u | opc << 22 | 28u << 16 | option[pick(4)] << 13 | pick(2) << 12 | rn << 5 | rt;
+    }
+    default: { /* pairs of W (opc 00) or X (10), no-allocate, post, offset, pre */
+        unsigned x = pick(2), rt2 = lo();
+        if (rt2 == rt) rt2 = (rt + 1) & 15;
+        return (x ? 2u : 0u) << 30 | 0x28000000u | pick(4) << 23 | pick(2) << 22 | pick(128) << 15 | rt2 << 10 | rn << 5 | rt;
+    }
+    }
+}
+
 static uint32_t simd_imm(void) {
     unsigned q = pick(2), op = pick(2), cmode = pick(16);
     if (op && cmode == 15 && !q) q = 1;
@@ -160,6 +182,7 @@ static uint32_t bitfield(void) {
 }
 static uint32_t integer(void) {
     if (!pick(3)) return bitfield();
+    if (!pick(3)) return int_ldst();
     switch (pick(4)) {
     case 0: return 0xAB000000u | lo() << 16 | lo() << 5 | lo();                 /* ADDS */
     case 1: return 0x9A800000u | lo() << 16 | pick(16) << 12 | lo() << 5 | lo(); /* CSEL */
