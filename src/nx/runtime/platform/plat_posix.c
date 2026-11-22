@@ -1213,10 +1213,65 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     return NULL;
 #endif
 }
+#if defined(__APPLE__)
+/* the host pages of the file slots a decommit left in memory: a punched hole drops a range's pages but a wired one
+   (a GPU's import of it, uma.c), whose bytes stay, as the GPU's reads need until the import goes, and which the
+   page's next commit would read; noted here, and zeroed at that commit (files_stale_zero). Few: the pages of an
+   import a decommit falls on */
+static struct {
+    pthread_mutex_t lock;
+    u8** page;
+    size_t n, cap;
+} g_stale = {.lock = PTHREAD_MUTEX_INITIALIZER};
+static void files_stale_note(u8* p, u64 len) {
+    const u64 page = (u64)sysconf(_SC_PAGESIZE);
+    char in[256];
+    for (u64 at = 0; at < len; at += sizeof in * page) {
+        u64 pages = (len - at) / page < sizeof in ? (len - at) / page : sizeof in;
+        if (mincore(p + at, (size_t)(pages * page), in)) {
+            WARN_LIMIT(4,
+                       "memory: which of %llu KiB of the game's memory files stayed in memory past their decommit "
+                       "is not known (error %d): their next commit may read their old bytes\n",
+                       (unsigned long long)((pages * page) >> 10), errno);
+            continue;
+        }
+        pthread_mutex_lock(&g_stale.lock);
+        for (u64 k = 0; k < pages; ++k) {
+            if (!(in[k] & MINCORE_INCORE)) continue;
+            if (g_stale.n == g_stale.cap) {
+                size_t cap = g_stale.cap ? 2 * g_stale.cap : 16;
+                u8** more = (u8**)realloc(g_stale.page, cap * sizeof *more);
+                if (!more) fatal("No memory to note %zu pages of the game's memory files a decommit left", cap);
+                g_stale.page = more;
+                g_stale.cap = cap;
+            }
+            g_stale.page[g_stale.n++] = p + at + k * page;
+        }
+        pthread_mutex_unlock(&g_stale.lock);
+    }
+}
+/* the pages of [p, p + size) a decommit left in memory, zeroed: the range is committed, writable */
+static void files_stale_zero(u8* p, u64 size) {
+    const u64 page = (u64)sysconf(_SC_PAGESIZE);
+    pthread_mutex_lock(&g_stale.lock);
+    for (size_t i = 0; i < g_stale.n;) {
+        u8* at = g_stale.page[i];
+        if (at >= p && at < p + size) {
+            memset(at, 0, (size_t)page);
+            g_stale.page[i] = g_stale.page[--g_stale.n];
+        } else
+            ++i;
+    }
+    pthread_mutex_unlock(&g_stale.lock);
+}
+#endif
 int plat_vm_commit(u8* p, u64 size) {
     int r;
     wp_hold(p, size, WP_MAPPED);
     r = plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE | (g_vm_exec ? PLAT_MEM_EXEC : 0u));
+#if defined(__APPLE__)
+    if (!r && plat_vm_files_slot(p, NULL, NULL)) files_stale_zero(p, size);
+#endif
     wp_let(p, size, WP_MAPPED, !r);
     return r;
 }
@@ -1335,23 +1390,8 @@ void plat_vm_decommit(u8* p, u64 size) {
             u64 off;
             plat_vm_files_slot(p + done, &fd, &off);
             len = g_files.slot - off < size - done ? g_files.slot - off : size - done;
-            /* the hole leaves a wired page (a GPU's import of it, uma.c) in the file's cache with its bytes, which its
-               next commit reads: MS_INVALIDATE drops the cached pages, and refuses (EBUSY) where one is wired; then
-               page by page, a wired one zeroed in place */
             if (!files_punch(fd, off, len)) {
-                if (!msync(p + done, (size_t)len, MS_INVALIDATE)) continue;
-                const u64 page = (u64)sysconf(_SC_PAGESIZE);
-                for (u64 at = done; at < done + len; at += page) {
-                    if (!msync(p + at, (size_t)page, MS_INVALIDATE)) continue;
-                    if (errno != EBUSY)
-                        WARN_LIMIT(4,
-                                   "memory: a page of the game's memory files was freed but its cache not dropped "
-                                   "(error %d): zeroed in place\n",
-                                   errno);
-                    if (mprotect(p + at, (size_t)page, PROT_READ | PROT_WRITE))
-                        fatal("Could not zero a page of the game's memory files (error %d)", errno);
-                    memset(p + at, 0, (size_t)page);
-                }
+                files_stale_note(p + done, len);
                 continue;
             }
             /* the range must still read zero at its next commit: zeroed in place, its blocks kept */
