@@ -620,11 +620,11 @@ VkResult vk_rec_present_result(void) {
    here, at its bind. One that couldn't be made binds nothing, and the draws after it until the next graphics bind are
    dropped, as the GPU thread drops a draw without its pipeline (the recording thread's own flag: 1). With
    async_pipelines one still being made isn't waited for: its draws are dropped the same way (2) until a later frame
-   binds it made, and only in a pass render_begin found drawn the frame before (rec_async_pass): elsewhere the
-   bind waits. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
+   binds it made, and only into targets the game regenerates every frame (rec_async_pass): elsewhere the bind
+   waits. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
 static int g_rec_unbound;
 static u64 g_rec_dropped, g_rec_skipped;
-static int g_rec_async = 1; /* the pass's rec_async_pass */
+static int g_rec_async; /* render.c's rec_async_pass: async_pipelines may skip the next draws */
 typedef struct {
     VkCommandBuffer cb;
     VkPipelineBindPoint bp;

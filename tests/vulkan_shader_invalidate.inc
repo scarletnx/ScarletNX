@@ -110,10 +110,11 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 /* async_pipelines: a kept draw whose pipeline a worker still makes is dropped
  * on the GPU thread before its setup, where the recording thread dropped it
  * after all of that, and it is drawn once the pipeline is made: into a target
- * the frame before drew too, which the next frame draws again. Into a target
- * the frame before didn't draw (a menu's layer drawn once and kept) nothing is
- * dropped: the draws wait for the pipeline. The workers are held so that the
- * new fragment program's pipeline stays pending.
+ * the game regenerates every frame (vk_async_every here), which the next frame
+ * draws over again. Into one it doesn't (never cleared here, as a menu's layer
+ * drawn once and kept) nothing is dropped: the draws wait for the pipeline.
+ * The workers are held so that the new fragment program's pipeline stays
+ * pending.
  */
 static int check_async_kept_drop(GpuChannel *channel, u64 address,
 				 u64 *fragment)
@@ -127,8 +128,7 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 		     "no dynamic feedback loop");
 		return 0;
 	}
-	invalidate_draw(channel); /* the target drawn in this frame */
-	g_vk_present++;		  /* and the next frame's draws go into it */
+	vk_async_every(1); /* the target as one regenerated every frame */
 	fragment[11] = invalidate_mov(0, 0x3f400000);
 	written = invalidate_write_code(address, fragment, 64);
 	maxwell3d_method(channel, 0x369, 1, 1);
@@ -146,6 +146,7 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	vk_pipeline_quiesce();
 	drawn = g_vk_drawn;
 	invalidate_draw(channel); /* made now: drawn */
+	vk_async_every(0);
 	g_settings.async_pipelines = async;
 	CHECK(written);
 	/* draw_state_check makes each kept draw again: no early drop, and the
@@ -154,9 +155,8 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	      held_drawn == 1u + check);
 	CHECK(g_vk_drawn == drawn + 1 && g_vk_async_early == early + !check);
 
-	/* two frames later: the frame before didn't draw the target, so neither
-	 * draw of a new pipeline is dropped before its setup */
-	g_vk_present += 2;
+	/* a target the game doesn't regenerate every frame (never cleared here):
+	 * neither draw of a new pipeline is dropped before its setup */
 	fragment[11] = invalidate_mov(0, 0x3e800000);
 	written = invalidate_write_code(address, fragment, 64);
 	maxwell3d_method(channel, 0x369, 1, 1);
