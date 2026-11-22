@@ -16,6 +16,7 @@
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/x64/x64_arm.h"
+#include "nx/loader/module_x64.h"
 #include "snx_settings.h"
 #include "common/utilities/endian.h"
 #include "common/platform/file.h"
@@ -846,6 +847,14 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     for (i = 0; i < d.count; ++i)
         if (!d.blocks[i].x64) llvm[nllvm++] = d.blocks[i];
     limit = options->chunk_instrs ? options->chunk_instrs : (size_t)g_settings.unit_size;
+    if (d.x64) {
+        /* the few blocks the x86-64 back end left, spread over the whole code: units of a sixteenth of their code at
+           most (of 1024 instructions at least; never more than the units asked), so the threads share them rather than
+           one thread take most */
+        size_t total = 0;
+        for (i = 0; i < nllvm; ++i) total += llvm[i].units;
+        if (total / 16 < limit) limit = total / 16 > 1024 ? total / 16 : 1024;
+    }
     q.units = (Unit*)snx_alloc((nllvm + 1) * sizeof(*q.units));
     memset(q.units, 0, (nllvm + 1) * sizeof(*q.units));
     for (first = 0; first < nllvm; first = last) {
@@ -884,10 +893,22 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         goto done;
     }
     start = snx_seconds();
-    ir = snx_ir_new("module", build->opt, error, sizeof(error));
-    if (!ir || emit_descriptor(ir, d.blocks, d.count, options, loaded, error, sizeof(error)) ||
-        (build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
-        snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
+    if (d.x64) {
+        /* the descriptor without LLVM, as the x86-64 back end's blocks are (module_x64.c) */
+        SnxU32* keys = (SnxU32*)snx_alloc((d.count + 1) * sizeof(*keys));
+        for (i = 0; i < d.count; ++i) keys[i] = d.blocks[i].key;
+        rc = snx_x64_arm_descriptor(loaded, options, keys, d.count, &module_object, &module_size, error, sizeof(error));
+        free(keys);
+        if (rc) {
+            snx_error("x86-64 back end: %s", error);
+            rc = -1;
+            goto done;
+        }
+        rc = -1;
+    } else if (!(ir = snx_ir_new("module", build->opt, error, sizeof(error))) ||
+               emit_descriptor(ir, d.blocks, d.count, options, loaded, error, sizeof(error)) ||
+               (build->keep_ir && save_ir(ir, build->keep_ir, "module", error, sizeof(error))) ||
+               snx_ir_object(ir, build->opt, &module_object, &module_size, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;
     }

@@ -13,4 +13,9 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
                        const SnxU64* imports, size_t import_count, unsigned char** object, size_t* size,
                        size_t* entry_count, char* error, size_t error_size);
 
+/* a 32-bit program's (module_arm.c): its SnxArmModule and snx_module_arm, the count blocks' keys sorted (the address,
+   bit 0 set for Thumb); nonzero with error set on failure */
+int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
+                           unsigned char** object, size_t* size, char* error, size_t error_size);
+
 #endif
