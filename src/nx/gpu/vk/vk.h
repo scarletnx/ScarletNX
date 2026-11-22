@@ -775,6 +775,11 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
    finishes it made, which the stats every 600 presents name (vk_finishes_log), by their number and their wait */
 void vk_finish_at(const char* file, int line);
 #define vk_finish() vk_finish_at(__FILE__, __LINE__)
+/* vk_finish, letting go of vk_lock while it waits for the GPU when this thread holds it once, outside a landing or a
+   recycling (vk_submit_upload_wait's rule): for a caller whose state other threads may change meanwhile, which lands
+   what was submitted up to its own submission */
+void vk_finish_letting_go_at(const char* file, int line);
+#define vk_finish_letting_go() vk_finish_letting_go_at(__FILE__, __LINE__)
 void vk_finishes_log(void);
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);

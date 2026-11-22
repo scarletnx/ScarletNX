@@ -7620,6 +7620,49 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_compute_depth.inc"
 #include "vulkan_depth_state.inc"
 #include "vulkan_owned_readback.inc"
+/* A finish that lets go (vk_finish_letting_go, the GPU mirror's for a CPU read of pages it holds) lets go of vk_lock
+   while it waits for the GPU: another thread takes the lock meanwhile. The submission waits for a semaphore that thread
+   signals once it held the lock, or after 5 s without it, so the finish cannot end first. Before, the finish held the
+   lock through its wait, and the other thread got it only after */
+static _Atomic int g_fl_got, g_fl_done;
+static VkSemaphore g_fl_gate;
+static void fl_thread(void* p) {
+    (void)p;
+    const u64 end = plat_ns() + 5000000000ull;
+    while (plat_ns() < end) {
+        if (vk_trylock()) {
+            vk_unlock();
+            atomic_store_explicit(&g_fl_got, 1, memory_order_release);
+            break;
+        }
+        plat_sleep_ns(100000);
+    }
+    VkSemaphoreSignalInfo signal = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = g_fl_gate, .value = 1};
+    VK_OK(vkSignalSemaphore(g_vk.dev, &signal));
+    atomic_store_explicit(&g_fl_done, 1, memory_order_release);
+}
+static int check_finish_lets_go(void) {
+    VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
+    CHECK(VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, &g_fl_gate)));
+    vk_lock();
+    vk_finish();
+    (void)vk_cmd(); /* a submission for the finish to make, waiting for the gate */
+    vk_submit_after(g_fl_gate, 1, 2);
+    CHECK(!plat_thread(fl_thread, NULL, 1u << 16));
+    vk_finish_letting_go();
+    vk_unlock();
+    while (!atomic_load_explicit(&g_fl_done, memory_order_acquire)) plat_sleep_ns(1000000);
+    if (!atomic_load_explicit(&g_fl_got, memory_order_acquire))
+        fprintf(stderr, "finish letting go: the other thread did not get vk_lock in 5 s of the finish's wait\n");
+    CHECK(atomic_load_explicit(&g_fl_got, memory_order_acquire));
+    vkDestroySemaphore(g_vk.dev, g_fl_gate, NULL);
+    puts("finish letting go: another thread took vk_lock while the finish waited for the GPU");
+    return 0;
+}
+
 #include "vulkan_own_trim.inc"
 #include "vulkan_wlog_again.inc"
 #include "vulkan_wlog_clear.inc"
@@ -8896,6 +8939,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_landing_stages());
+    CHECK(!check_finish_lets_go());
     CHECK(!check_mapping_lock());
     CHECK(!check_landing_wait());
     CHECK(!check_frame_ready());

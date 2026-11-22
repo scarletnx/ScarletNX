@@ -116,6 +116,7 @@ void vk_devmem_buffer_destroy(VkBuffer buf, DevMem mem) { (void)buf, (void)mem; 
 void vk_devmem_free(DevMem mem) { (void)mem; }
 VkResult vk_devmem_invalidate(DevMem mem, u64 off, u64 size) { return (void)mem, (void)off, (void)size, VK_SUCCESS; }
 void vk_finish_at(const char* file, int line) { (void)file, (void)line; }
+void vk_finish_letting_go_at(const char* file, int line) { (void)file, (void)line; }
 void vk_gpuprof_tag(u64 key) { (void)key; }
 int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi) { return (void)t, (void)bi, 0; }
 u64 vk_host_next(VkHostTimeline* t) { return (void)t, 0; }
