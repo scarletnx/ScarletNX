@@ -1887,6 +1887,13 @@ setting Vulkan allocation cap
     startup
     help The largest Vulkan allocation in MiB, below the device's own (larger images in pieces with sparse binding),
     help to test the pieces on a driver that takes anything (lavapipe). 0 = the default
+setting Early copy back
+    key vk_early_copy_back
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = a render target result that the game read back in the last 1200 presents is also copied to system memory
+    help as it is made, so the game's next read of it copies those bytes with no readback of its own (discrete GPUs)
 setting Submit every
     key vk_submit_every
     int 0 65536
