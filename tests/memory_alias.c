@@ -511,6 +511,7 @@ static void scanner_ask(UnpoolScans* u, int scan) {
 static void test_unpool_under_scans(void) {
     UnpoolScans u = {HEAP_BASE + 0x140000, 0x40000, 0, 0, 0};
     pthread_t t;
+    int hot;
     if (!g_ww) return;
     CHECK(pthread_create(&t, NULL, scanner, &u) == 0);
     for (u32 i = 0; i < 300; i++) {
@@ -524,6 +525,22 @@ static void test_unpool_under_scans(void) {
     atomic_store_explicit(&u.stop, 1, memory_order_seq_cst);
     pthread_join(t, NULL);
     CHECK(mem_pool_used() == 0);
+    /* A scan between the commit of the source's own pages and the pool's read into them reports them, and the next
+       one reports them again, written by the read: two reports in a row, which leave a page hot where protection
+       tracks the writes (write_tracking_hot_pages 1, or its Auto), and every scan then reports it with nothing
+       written (plat.h). The scanner lands there in some runs only, so the pages are made hot here in every run, then
+       cooled, as a consumer whose "written" must be exact cools them, before check_tracking holds the scans to
+       exact answers */
+    plat_ww_cool(GP(u.a), u.size, on_scanned); /* one the scanner left hot may stop being hot at a report below */
+    for (u32 i = 0; i < 2; i++) {
+        for (u64 at = 0; at < u.size; at += 0x1000) gw32(u.a + at, i);
+        CHECK(scan_reports(u.a, u.size, u.a) == 1);
+    }
+    hot = plat_ww_hot_in(GP(u.a), u.size);
+    if (g_settings.write_tracking == 1) CHECK(hot == (g_settings.write_tracking_hot_pages != 0));
+    CHECK(scan_reports(u.a, u.size, u.a) == hot); /* nothing wrote it since the last scan */
+    plat_ww_cool(GP(u.a), u.size, on_scanned);
+    CHECK(!plat_ww_hot_in(GP(u.a), u.size));
     check_tracking(u.a, u.size);
 }
 
