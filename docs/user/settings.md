@@ -57,8 +57,10 @@ game's code was made: `opt`, `llvm_batch`, `unit_instructions` and LLVM Internal
 `upscaler`, `anti_aliasing`, `hdr_game`), and the `[Debug]` settings are named at the top of the picture the whole
 run. The notification gives their keys alone, a line each: after a gamepad the game's own (its picks, its `.ini`),
 after a globe the launcher's for every game, this run's command line's and how the code was made. A line names as
-many as fit it, three lines at most, and the last says how many more there are. A value nobody gave, one the runtime
-picks for a game (an Ounce program's `emulated_cores`), is not named.
+many as fit it, three lines at most, and the last says how many more there are. A value the runtime gives a kind of
+game, where no file nor command line gave one, has a line of its own after an info mark, with its word: an Ounce
+program's `emulated_cores Off, for this kind of game`. The log's `settings:` line says it too, with what the game's
+`.ini` holds and how to run it at its default.
 
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
 **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
@@ -382,7 +384,7 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `fsr_input_conventions` | `0` | Reverses what the runtime takes a game's DLSS inputs to mean when it gives them to FSR 2, a bit each: `1` the jitter's sign in x, `2` in y, `4` the motion vectors' sign, `8` inverted depth, `16` motion vectors that include the jitter, `32` FSR's own exposure, `64` HDR color input. For a game whose picture smears |
 | `log` | `1` | Log detail, `0` to `3`. `2` logs everything, which adds runtime overhead. `3` also logs the profiler's counters every window: the CPU work each kind of resource takes a frame, and the GPU's time in each pass, which needs the device's timestamps and is `vk_gpu_profile`'s work |
 | `log_max` | `16` | The game log's size in MiB, `1` to `1024`. Past it the log keeps the run's start and its last lines, saying so in the log and once over the game. The 5 last runs' logs are kept, the ones before this run's in `logs/` beside it |
-| `emulated_cores` | `1` | `1` runs a guest thread only while it holds one of the console's cores, one thread per core at a time, in priority order. `0` runs every guest thread as soon as the host schedules it (`svcGetCurrentProcessorNumber` still answers the thread's core). An Ounce game runs with `0` unless you pick `1` in its settings, the launcher or the command line |
+| `emulated_cores` | `1` | `1` runs a guest thread only while it holds one of the console's cores, one thread per core at a time, in priority order. `0` runs every guest thread as soon as the host schedules it (`svcGetCurrentProcessorNumber` still answers the thread's core). An Ounce game runs with `0` unless its own settings or the command line give `1` (its `.ini`'s `1` and the launcher's are the default, which picks nothing), and says so as it starts |
 | `auto_stub_ipc` | `1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
 | `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
 | `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns. `2` also turns on GPU-assisted validation, which finds out-of-bounds and unwritten descriptor accesses in shaders, and is slower again |

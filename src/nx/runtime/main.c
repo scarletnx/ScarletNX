@@ -616,15 +616,12 @@ static void npdm_layout(void) {
         g_ounce = g_shader_sm86 = g_gob_native = 1;
         g_shader_sm86_dump = g_settings.sm86_dump[0] ? g_settings.sm86_dump : NULL;
         clock_ounce();
+        LOG("npdm: an Ounce program\n");
         /* An Ounce program's eight cores run best with no emulated core ordering: the ordering makes each guest thread
            yield at SVC and poll points for the priority of the core it holds, which costs the CPU its threads contend
            with the GPU thread for. One game's race went from 8 to 24 frames a second to 16 to 35 with this off. A
-           value the player gave (ini_given) still wins */
-        if (!ini_given("emulated_cores")) {
-            g_settings.emulated_cores = 0;
-            LOG("npdm: an Ounce program: emulated_cores off, the host's threads are the cores\n");
-        }
-        LOG("npdm: an Ounce program\n");
+           value the player gave still wins */
+        options_kind_value("emulated_cores", "0", "an Ounce program");
     }
     if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
     if (!g_arm_mod && g_ounce) {
@@ -1573,11 +1570,6 @@ int snx_main(int argc, char** argv) {
         if (options_debug(INI_CHANGED_DEFAULT, list, sizeof list))
             LOG("debug: %s; shown at the top of the picture while the game runs\n", list);
     }
-    {
-        char base[sizeof g_exedir + sizeof g_exename];
-        snprintf(base, sizeof base, "%s%s", g_exedir, g_exename); /* the program's .abi says how its code was made */
-        options_perf_notice(base);
-    }
     /* after the header, so the client's own lines do not come before it and a capture that cannot start still leaves
        a log: it is asked for by a setting, and a run without it is better than no run */
     if (snx_tracy_init(title)) WARN("tracy: no capture this run; it goes on without one\n");
@@ -1605,6 +1597,12 @@ int snx_main(int argc, char** argv) {
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout and the larger heap, before mem_init sizes its blocks in it */
+    /* after npdm_layout, whose kind of program gives values of its own */
+    {
+        char named[sizeof g_exedir + sizeof g_exename];
+        snprintf(named, sizeof named, "%s%s", g_exedir, g_exename); /* the program's .abi says how its code was made */
+        options_perf_notice(named);
+    }
     free(keys);
     free(title_keys);
     keys = title_keys = NULL;
