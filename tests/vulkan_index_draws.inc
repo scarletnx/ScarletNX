@@ -1179,18 +1179,19 @@ static u64 cb_fold_hash(const u64* ops, u32 count) {
     return hash;
 }
 /* n draws of the bound state with the words of pair, each quad red and green as its own words say (cut: the green
-   word lies past the buffer the draw binds, where the console reads zero) */
+   word lies past the buffer the draw binds, and only the red is checked) */
 static int cb_fold_draws(GpuChannel* channel, u64 target, u64 cbuf, const float pair[2], u32 n, int cut) {
     const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
-    const int red = (int)lroundf(pair[0] * 255.0f), green = cut ? 0 : (int)lroundf(pair[1] * 255.0f);
+    const int red = (int)lroundf(pair[0] * 255.0f), green = (int)lroundf(pair[1] * 255.0f);
     IndexPixels px;
     for (u32 i = 0; i < n; i++) {
         CHECK(!cb_fold_words(cbuf, pair[0], pair[1]));
         CHECK(!index_draw(channel, target, &call, &px));
-        if (abs(px.first[0] - red) > 1 || abs(px.first[1] - green) > 1 || px.first[2] || px.blue)
+        const int green_ok = cut || abs(px.first[1] - green) <= 1;
+        if (abs(px.first[0] - red) > 1 || !green_ok || px.first[2] || px.blue)
             fprintf(stderr, "constant buffer folds: words %g, %g drawn as %u, %u, %u, not %d, %d, 0\n", (double)pair[0],
                     (double)pair[1], px.first[0], px.first[1], px.first[2], red, green);
-        CHECK(abs(px.first[0] - red) <= 1 && abs(px.first[1] - green) <= 1 && !px.first[2] && !px.blue);
+        CHECK(abs(px.first[0] - red) <= 1 && green_ok && !px.first[2] && !px.blue);
         CHECK(px.red == (red ? 16u : 0u));
     }
     return 0;

@@ -302,6 +302,7 @@ static void stable(void) {
     for (u32 i = 0; i < 3 * SH_CB_FOLD_STABLE; i++)
         CHECK(vk_cb_stable_note(&st, submit++, i & 1 ? a : b) == VK_CB_STABLE_WAIT && st.same == 1,
               "words that change from submit to submit never make one");
+    CHECK(vk_cb_stable_note(&st, submit++, b) == VK_CB_STABLE_WAIT && st.same == 1, "other words: a count of one");
     for (u32 i = 1; i < SH_CB_FOLD_STABLE; i++)
         CHECK(vk_cb_stable_note(&st, submit++, a) == VK_CB_STABLE_WAIT, "the same words again, short of the count");
     CHECK(vk_cb_stable_note(&st, submit++, b) == VK_CB_STABLE_WAIT && st.same == 1 && st.words == b,
