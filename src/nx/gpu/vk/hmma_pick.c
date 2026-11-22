@@ -168,7 +168,8 @@ static int run(Bench* b, Way* x, u32 groups, u32 n, double* ns, int back, char* 
     return 1;
 }
 
-/* way w's module and pipeline, translated as a game's program is with w's flags, and its descriptors; 0 with x->why */
+/* way w's module and pipeline, translated as a game's program is with w's flags, and its descriptors; 0 with x->why
+   for a way that has nothing to run, and -1 where the driver did not make the way's pipeline */
 static int way_make(Bench* b, Way* x, int w, const u8* code, u32 bytes) {
     memset(&x->si, 0, sizeof x->si);
     x->si.cs_local[0] = (int)SH_HMMA_BENCH_LOCAL, x->si.cs_local[1] = x->si.cs_local[2] = 1;
@@ -206,7 +207,7 @@ static int way_make(Bench* b, Way* x, int w, const u8* code, u32 bytes) {
     free(spv);
     if (!VK_OK(r)) {
         snprintf(x->why, sizeof x->why, "its pipeline was not made (%s)", snx_vk_result_str(r));
-        return 0;
+        return -1;
     }
     if (x->si.gbuf_marks &&
         !buf_make(&x->marks, (u64)x->si.nmarks * SH_WLOG_PART * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, DM_DEVICE)) {
@@ -386,7 +387,16 @@ static int bench_run(int rule, int half, double* us, u64* took, char* why, size_
             snprintf(x->why, sizeof x->why, "hmma_f16's half sums take the place of A-stationary's");
             continue;
         }
-        if (!way_make(b, x, w, b->code, bytes)) continue;
+        int made = way_make(b, x, w, b->code, bytes);
+        if (made < 0) {
+            /* The driver refused a whole module that the ways all take. Every other way asks for a pipeline of a
+               program the driver has already failed to compile, and a driver that loses its shader compiler spends
+               its retry time on each of them: one attempt says what the bench needs to know */
+            snprintf(why, n, "the %s way: %s", g_shader_hmma_names[w], x->why);
+            ok = -1;
+            break;
+        }
+        if (!made) continue;
         double ns[2];
         int r = run(b, x, PICK_FIRST_GROUPS, 2, ns, 1, x->why, sizeof x->why);
         if (r < 0) {
