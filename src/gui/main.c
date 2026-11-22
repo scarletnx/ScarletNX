@@ -402,6 +402,9 @@ typedef struct App {
     /* each of games' rows and of the recent ones: a made game whose file to play from is not there
        (gui_game_source_missing), read as list_games lists them */
     bool *games_missing, recent_missing[GUI_RECENT_MAX];
+    /* Games' list being read on a thread of its own for longer than GUI_LISTING_SHOWN_MS (list_games): its loading
+       line shows where the list goes, and the keys, buttons and fingers do nothing until it is there */
+    bool games_loading;
     GuiConsole console;
     GuiUsage usage;
     GuiTheme theme;
@@ -2329,13 +2332,19 @@ static void job_suffix(const App* app, const char* path, char* out, size_t size)
     memcpy(out, "  ", 3);
     job_where(app, i, true, out + 2, size - 2);
 }
-/* the ring that turns while a run goes: a thin outer ring, a thicker inner one and a bar going round it */
-static void ring(App* app, float cx, float cy, bool still) {
+/* the ring that turns while something loads: a thin outer ring in dim, a thicker inner one in soft and a bar going
+   round it in ink */
+static void ring_of(App* app, float cx, float cy, bool still, GuiRgb dim, GuiRgb soft, GuiRgb ink) {
     float s = letters(app), r = 7.0f * s, inner = r * 0.62f, thick = SDL_max(1.0f, 1.5f * s);
     float angle = still ? 0 : (float)((now_ms(app) / 4) % 360);
-    arc(app, cx, cy, r, 0, 360, SDL_max(1.0f, 0.5f * s), app->theme.run_colors.dim);
-    arc(app, cx, cy, inner, 0, 360, thick, app->theme.run_colors.soft);
-    arc(app, cx, cy, inner, angle, 70, thick, app->theme.run_colors.ink);
+    arc(app, cx, cy, r, 0, 360, SDL_max(1.0f, 0.5f * s), dim);
+    arc(app, cx, cy, inner, 0, 360, thick, soft);
+    arc(app, cx, cy, inner, angle, 70, thick, ink);
+}
+/* a run's, in the run screen's colours */
+static void ring(App* app, float cx, float cy, bool still) {
+    const GuiPalette* c = &app->theme.run_colors;
+    ring_of(app, cx, cy, still, c->dim, c->soft, c->ink);
 }
 /* "", ".", "..", "..." round and round; "..." once the run is over */
 static const char* dots(const App* app, bool finished) {
@@ -8011,6 +8020,21 @@ static void draw_games(App* app) {
     size_t i;
     SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink), failure = rgb(app->theme.failure);
     int y;
+    if (app->games_loading) { /* its list being read: where it goes, the loading screen's words, dots and ring */
+        games_boxes(app, &g);
+        chrome(app, &g.place);
+        int x = g.place.list.x + cell_w(app), cy = g.place.list.y + cell_h(app);
+        snprintf(line, sizeof line, "%s", snx_tr("Loading games"));
+        text_in(app, g.place.list, x, cy, line, ink);
+        x += gui_text_cols(line) * cell_w(app);
+        text_in(app, g.place.list, x, cy, dots(app, false), ink);
+        /* past the dots' whole width, as the loading screen's ring after the name, so it stays put */
+        ring_of(app, (float)(x + 4 * cell_w(app)) + 7.0f * letters(app), (float)cy + (float)cell_h(app) / 2.0f, false,
+                app->theme.dim, app->theme.soft, app->theme.ink);
+        status_box(app, g.place.status);
+        screen_foot(app, &g.place, "", "");
+        return;
+    }
     aot_status_update(app);
     app->debug_picks = gui_settings_debug(settings_of(app), NULL, 1, NULL, 0) > 0;
     side_focus_update(app);
@@ -21085,23 +21109,36 @@ static bool dump_titled(const char* path, const void* user, GuiDumpTitle* title)
     return known;
 }
 /* each Switch dump of games the driver has not said what it is of yet (title_ini), one made or put in a game left out:
-   asked for once, with its icon, one it gave none for in this session left as it is. How many are not known */
-static size_t titles_ask(App* app, const GuiGames* games, const GamesMade* made) {
+   its path and the folder of its title.ini, two strings a dump into *found (owned, the caller frees them, NULL for
+   none). Reads files alone, so the thread that lists Games may (list_games). How many */
+static size_t titles_find(const App* app, const GuiGames* games, const GamesMade* made, char*** found) {
     size_t i, unknown = 0;
+    *found = NULL;
     for (i = 0; i < games->count; ++i) {
-        char *ini = games->paths[i] && !made_dump(games->paths[i], made) ? title_ini(app, games->paths[i]) : NULL,
-             *dir = ini ? snx_dirname(ini) : NULL, why[8];
+        char* ini = games->paths[i] && !made_dump(games->paths[i], made) ? title_ini(app, games->paths[i]) : NULL;
         GuiDumpTitle title;
         if (ini && !gui_dump_title(ini, &title)) {
+            *found = (char**)snx_realloc(*found, (unknown + 1) * 2 * sizeof **found);
+            (*found)[2 * unknown] = snx_strdup(games->paths[i]);
+            (*found)[2 * unknown + 1] = snx_dirname(ini);
             unknown++;
-            if (!icon_failed(&app->dump_icons, dir, why, sizeof why) && dump_icon_ask(app, games->paths[i], dir) &&
-                app->dump_icons.live)
-                dump_icons_start(app);
         }
-        free(dir);
         free(ini);
     }
     return unknown;
+}
+/* those dumps asked for once, with their icons, one the driver gave none for in this session left as it is; found
+   freed */
+static void titles_ask(App* app, char** found, size_t unknown) {
+    for (size_t i = 0; i < unknown; ++i) {
+        char why[8];
+        if (!icon_failed(&app->dump_icons, found[2 * i + 1], why, sizeof why) &&
+            dump_icon_ask(app, found[2 * i], found[2 * i + 1]) && app->dump_icons.live)
+            dump_icons_start(app);
+        free(found[2 * i]);
+        free(found[2 * i + 1]);
+    }
+    free(found);
 }
 /* the dumps Games lists whose title.ini is not there yet, an Updates and DLCs item's known */
 static size_t titles_unknown(const App* app) {
@@ -21123,12 +21160,19 @@ static bool removed_listed(const char* path, const void* user) {
    games ready to run, then the dumps not made already, which Dumps off leaves out; each by what it is shown as in each
    folder, or with Sort's Last opened the game that last ran first; a game taken off Games (removed.txt) left out. The
    first folder that cannot be read is named, the others still listed */
-static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
+/* games_scan's reading of the folders, which reads files and writes nothing of the app's, so the thread that lists
+   Games may (list_games): the list into games, its first error into message, the games made into made (the caller
+   frees them) and the dumps the driver has not said what they are of into *found, their count into *unknown
+   (titles_find's) */
+static void games_read(const App* app, GuiGames* games, GamesMade* made, char*** found, size_t* unknown, char* message,
+                       size_t size) {
     int kinds = GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, i; /* the old games/'s: it held both */
     char error[sizeof app->message];
-    GamesMade made = {app, {0}, {0}};
     GuiGroups groups = {0};
     char *dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL, *old;
+    *made = (GamesMade){app, {0}, {0}};
+    *found = NULL;
+    *unknown = 0;
     gui_games_free(games);
     message[0] = 0;
     if (!app->recompiled_off &&
@@ -21152,26 +21196,31 @@ static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
                                 app->folders_deep[i] ? GUI_FOLDER_DEPTH : 0, error, sizeof error) &&
             !message[0])
             snprintf(message, size, snx_tr("%s It is in Settings > App > Folders."), error);
-    made_read(app, &made.made);
-    made_list(app, &made.addons, true);
-    if (dumps_on(app)) {
-        size_t unknown = titles_ask(app, games, &made);
-        if (games == &app->games) app->titles_unknown = unknown;
-    }
+    made_read(app, &made->made);
+    made_list(app, &made->addons, true);
+    if (dumps_on(app)) *unknown = titles_find(app, games, made, found);
     groups.ready = snx_tr("Recompiled");
     groups.dumps = dumps_on(app) ? snx_tr("Dumps") : NULL;
     groups.addons = snx_tr("Updates and DLCs");
     groups.made = made_dump;
     groups.titled = dump_titled;
     groups.removed = removed_listed;
-    groups.user = &made;
+    groups.user = made;
     if (!gui_games_group(games, &groups) && !message[0])
         snprintf(message, size, "%s", snx_tr("Not enough memory to list the games in their groups."));
     if (by_last_opened(app) && !gui_games_by_last_opened(games) && !message[0])
         snprintf(message, size, "%s", snx_tr("Not enough memory to sort the games by the last opened: by title."));
+    free(dumps);
+}
+static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
+    GamesMade made;
+    char** found;
+    size_t unknown;
+    games_read(app, games, &made, &found, &unknown, message, size);
+    titles_ask(app, found, unknown);
+    if (dumps_on(app) && games == &app->games) app->titles_unknown = unknown;
     made_free(&made.made);
     made_free(&made.addons);
-    free(dumps);
 }
 /* gui_browser_key_skip's skip on Games: a group's heading */
 static bool games_heading_at(size_t item, const void* games) { return gui_games_heading((const GuiGames*)games, item); }
@@ -21305,27 +21354,165 @@ static void watch_stop(App* app) {
     if (w->lock) SDL_DestroyMutex(w->lock);
     *w = (GuiWatch){0};
 }
-static void list_games(App* app) {
+/* What reading Games' list makes off the menu's thread (listing_run): the list and its first error, the games made and
+   the dumps whose titles the driver is asked for (games_read's), and each row's driver, Debug settings, settings of
+   its own and file to play from not there, read from its folder once here rather than at each frame that shows them.
+   done once it is all there */
+typedef struct {
+    App* app;
+    GuiGames games;
+    GamesMade made;
+    char** found;
+    size_t unknown;
+    char message[sizeof((App*)NULL)->message];
+    int* drivers;
+    bool *debug, *own, *missing;
+    SDL_AtomicInt done;
+} GamesListing;
+static int SDLCALL listing_run(void* arg) {
+    GamesListing* l = (GamesListing*)arg;
+    App* app = l->app;
+    games_read(app, &l->games, &l->made, &l->found, &l->unknown, l->message, sizeof l->message);
+    l->drivers = (int*)snx_alloc((l->games.count + 1) * sizeof *l->drivers);
+    l->debug = (bool*)snx_alloc((l->games.count + 1) * sizeof *l->debug);
+    l->own = (bool*)snx_alloc((l->games.count + 1) * sizeof *l->own);
+    l->missing = (bool*)snx_alloc((l->games.count + 1) * sizeof *l->missing);
+    for (size_t i = 0; i < l->games.count; ++i) {
+        const char* path = l->games.paths[i];
+        l->drivers[i] = row_driver(&l->games, i);
+        l->debug[i] = path && game_debug(app, path, 0, NULL, 0) > 0;
+        l->own[i] = path && game_own(path, NULL, 0) > 0;
+        l->missing[i] = path && gui_game_source_missing(path, app->work_dir, NULL, 0);
+    }
+    SDL_SetAtomicInt(&l->done, 1);
+    return 0;
+}
+/* An event while the list is read (listing_wait): a press, a move, the wheel or typing dropped, as each would act on a
+   list that is not there yet; a stick's or a trigger's move kept as its last place, so the pads' held directions
+   follow where the sticks are once the list is there; a release kept, which ends what its press began before (a
+   finger's tap only follows its own press, list_finger's); any other (the window's, a close, a pad come or gone, a
+   file dropped) kept */
+enum { LISTING_DROP, LISTING_LAST, LISTING_KEEP };
+static int listing_take(Uint32 type) {
+    switch (type) {
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_TEXT_INPUT:
+        case SDL_EVENT_TEXT_EDITING:
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_WHEEL:
+        case SDL_EVENT_FINGER_DOWN:
+        case SDL_EVENT_FINGER_MOTION:
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_JOYSTICK_AXIS_MOTION:
+        case SDL_EVENT_JOYSTICK_BALL_MOTION:
+        case SDL_EVENT_JOYSTICK_HAT_MOTION:
+        case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
+        case SDL_EVENT_JOYSTICK_BUTTON_UP:
+        case SDL_EVENT_PEN_DOWN:
+        case SDL_EVENT_PEN_MOTION: return LISTING_DROP;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION: return LISTING_LAST;
+        default: return LISTING_KEEP;
+    }
+}
+/* The events taken while the list is read (listing_poll), to hand back to the loop's queue once it is there
+   (listing_give_back), in their order: GUI_LISTING_KEPT at most, past them the last one's place going to a close, so
+   the window still closes, and the rest dropped, counted in lost. since_ns: when the reading began (SDL_GetTicksNS,
+   the events' clock) */
+#define GUI_LISTING_KEPT 128
+typedef struct {
+    SDL_Event kept[GUI_LISTING_KEPT];
+    int n, lost;
+    Uint64 since_ns;
+} ListingEvents;
+/* the events SDL holds, polled and taken as listing_take says, those from before the reading began kept as they are
+   (the loop had not come to them yet); the window drawn anew at its next frame after one of its own, as event()
+   does */
+static void listing_poll(ListingEvents* q) {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        int take = e.common.timestamp < q->since_ns ? LISTING_KEEP : listing_take(e.type), i = q->n;
+        if (e.type < SDL_EVENT_KEY_DOWN || (e.type >= SDL_EVENT_RENDER_TARGETS_RESET && e.type < SDL_EVENT_PRIVATE0))
+            gui_drawn_stale();
+        if (take == LISTING_DROP) continue;
+        if (take == LISTING_LAST) /* in place of the same axis' of the same pad, since the reading began */
+            for (i = 0; i < q->n && !(q->kept[i].type == e.type && q->kept[i].common.timestamp >= q->since_ns &&
+                                      q->kept[i].gaxis.which == e.gaxis.which && q->kept[i].gaxis.axis == e.gaxis.axis);
+                 ++i)
+                continue;
+        if (i < q->n)
+            q->kept[i] = e;
+        else if (q->n < GUI_LISTING_KEPT)
+            q->kept[q->n++] = e;
+        else {
+            q->lost++;
+            if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) q->kept[q->n - 1] = e;
+        }
+    }
+}
+static void listing_give_back(ListingEvents* q) {
+    for (int i = 0; i < q->n; ++i)
+        if (!SDL_PushEvent(&q->kept[i])) q->lost++;
+    q->n = 0;
+}
+/* until the listing is done: the events taken (listing_poll), and past shown_ms the screen drawn with Games' loading
+   line each frame, so the window goes on while it is read; then the events handed back, and those dropped for want of
+   room said in the log. Games opened shows it past GUI_LISTING_OPEN_MS, two frames, so the tab comes at once; a list
+   read again under the player's eyes (a game made, the folders changed) past GUI_LISTING_SHOWN_MS, so a quick one goes
+   on showing the list it had */
+#define GUI_LISTING_OPEN_MS  30
+#define GUI_LISTING_SHOWN_MS 150
+static void listing_wait(App* app, GamesListing* l, Uint64 shown_ms) {
+    ListingEvents q = {.since_ns = SDL_GetTicksNS()};
+    Uint64 start = SDL_GetTicks();
+    while (!SDL_GetAtomicInt(&l->done)) {
+        listing_poll(&q);
+        if (!app->games_loading && SDL_GetTicks() - start >= shown_ms) app->games_loading = true;
+#ifdef SDL_PLATFORM_ANDROID
+        if (app->games_loading && !app->hidden) render(app); /* nothing drawn behind other apps, as the loop does */
+#else
+        if (app->games_loading) render(app);
+#endif
+        SDL_Delay(16);
+    }
+    listing_poll(&q); /* those since the last pass */
+    listing_give_back(&q);
+    if (q.lost)
+        gui_log("Games took %llu ms to read: %d event(s) of the window's, the app's or the pads' of then dropped past "
+                "the %d kept",
+                (unsigned long long)(SDL_GetTicks() - start), q.lost, GUI_LISTING_KEPT);
+    app->games_loading = false;
+}
+/* Games' list read (on a thread of its own, its loading line past shown_ms: listing_wait), and the rows' facts with it */
+static void games_list(App* app, Uint64 shown_ms) {
+    GamesListing l = {.app = app};
+    SDL_Thread* thread;
     icons_free(app);    /* a game made since has one now */
     removed_prune(app); /* a game taken off whose file is back is listed again */
-    games_scan(app, &app->games, app->message, sizeof app->message);
-    /* each row's driver, read from its folder once here rather than at each frame that shows its kind */
+    /* read on a thread of its own, which a slow disk or a folder of many takes a while over: the window goes on */
+    if ((thread = SDL_CreateThread(listing_run, "games list", &l)) != NULL) {
+        listing_wait(app, &l, shown_ms);
+        SDL_WaitThread(thread, NULL);
+    } else {
+        gui_log("Games is read on the menu's thread, the window still until it is: no thread for it (%s)",
+                SDL_GetError());
+        listing_run(&l);
+    }
+    gui_games_free(&app->games);
+    app->games = l.games;
+    snprintf(app->message, sizeof app->message, "%s", l.message);
+    titles_ask(app, l.found, l.unknown);
+    if (dumps_on(app)) app->titles_unknown = l.unknown;
+    made_free(&l.made.made);
+    made_free(&l.made.addons);
     free(app->games_drivers);
-    app->games_drivers = (int*)snx_alloc((app->games.count + 1) * sizeof *app->games_drivers);
-    for (size_t i = 0; i < app->games.count; ++i) app->games_drivers[i] = row_driver(&app->games, i);
     free(app->games_debug);
-    app->games_debug = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_debug);
-    for (size_t i = 0; i < app->games.count; ++i)
-        app->games_debug[i] = app->games.paths[i] && game_debug(app, app->games.paths[i], 0, NULL, 0) > 0;
     free(app->games_own);
-    app->games_own = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_own);
-    for (size_t i = 0; i < app->games.count; ++i)
-        app->games_own[i] = app->games.paths[i] && game_own(app->games.paths[i], NULL, 0) > 0;
     free(app->games_missing);
-    app->games_missing = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_missing);
-    for (size_t i = 0; i < app->games.count; ++i)
-        app->games_missing[i] =
-            app->games.paths[i] && gui_game_source_missing(app->games.paths[i], app->work_dir, NULL, 0);
+    app->games_drivers = l.drivers;
+    app->games_debug = l.debug;
+    app->games_own = l.own;
+    app->games_missing = l.missing;
     recent_as_games(app); /* a recent dump made since, by any run, shows as its game */
     recent_rows_read(app);
     app->debug_checked = 0; /* and the focused row's, at the next draw */
@@ -21340,6 +21527,7 @@ static void list_games(App* app) {
            gui_games_heading(&app->games, app->browser.selected))
         ++app->browser.selected;
 }
+static void list_games(App* app) { games_list(app, GUI_LISTING_SHOWN_MS); }
 /* the screen a tab opens: the menu, Games or the Settings. A theme edited and not saved keeps its screen, the note
    saying why */
 static void go_tab(App* app, int tab) {
@@ -21369,7 +21557,7 @@ static void go_tab(App* app, int tab) {
     }
     app->menu.view = tab == GUI_TAB_GAMES ? GUI_LOAD_GAMES : GUI_LOAD_NONE;
     if (tab == GUI_TAB_GAMES)
-        list_games(app);
+        games_list(app, GUI_LISTING_OPEN_MS);
     else if (tab == GUI_TAB_SETTINGS)
         open_settings(app);
 }

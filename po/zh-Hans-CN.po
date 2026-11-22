@@ -2597,6 +2597,10 @@ msgid "Made with: O%c, AOT %s"
 msgstr "生成方式：O%c，AOT %s"
 
 #: src/gui/main.c
+msgid "Loading games"
+msgstr "正在加载游戏"
+
+#: src/gui/main.c
 #, c-format
 msgid "Not found: %s"
 msgstr ""
