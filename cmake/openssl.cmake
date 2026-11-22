@@ -70,18 +70,18 @@ elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         message(FATAL_ERROR "OpenSSL's Linux cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
                             "(cmake/openssl.cmake)")
     endif()
-elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
-    # Configure's BSD targets, which NetBSD's are
+elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(NetBSD|FreeBSD)$")
+    # Configure's BSD targets, which NetBSD's and FreeBSD's (the PS5 payload SDK's too) are
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
         set(snx_openssl_target BSD-x86_64)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
         set(snx_openssl_target BSD-aarch64)
     else()
-        message(FATAL_ERROR "OpenSSL's NetBSD cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
+        message(FATAL_ERROR "OpenSSL's ${CMAKE_SYSTEM_NAME} cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
                             "(cmake/openssl.cmake)")
     endif()
 elseif(CMAKE_CROSSCOMPILING)
-    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows, Linux, NetBSD, Android and iOS "
+    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows, Linux, NetBSD, FreeBSD, Android and iOS "
                         "(cmake/openssl.cmake)")
 endif()
 set(snx_openssl_args
