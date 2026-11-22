@@ -124,17 +124,29 @@ static int check_recorder_self_sync(void) {
 
 /* A submission to the graphics queue from outside the ring (a compute batch's where the queue is shared, a landing's)
    waits for the ring's submissions before it (vk_rec_queue), not for the commands queued after the last of them: a
-   packet after the submission blocks until a thread lets it go, 30 s on, and vk_rec_queue returns before that. Before,
-   it drained the whole ring, and waited for the blocked packet. The time bounds only a run that waits for that packet:
-   a passing one returns once the submission lands, so it is long enough that a slow runner is not taken for a failure */
-static _Atomic int g_rq_go;
+   packet after the submission blocks until a thread lets it go, 10 s on, and vk_rec_queue returns before that. The
+   recording thread is held in a packet of its own until the submission and the packet after it are both published,
+   so it finds them in one batch, as a slow runner did: its position went to the producer only at a batch's end, and
+   vk_rec_queue waited for the blocked packet too */
+static _Atomic int g_rq_go, g_rq_held, g_rq_hold;
+static _Atomic u64 g_rq_behind;
 static void rq_block(const void* arg) {
     (void)arg;
     while (!atomic_load_explicit(&g_rq_go, memory_order_acquire)) plat_sleep_ns(100000);
 }
+static void rq_hold(const void* arg) {
+    (void)arg;
+    atomic_store_explicit(&g_rq_held, 1, memory_order_release);
+    while (atomic_load_explicit(&g_rq_hold, memory_order_acquire)) plat_sleep_ns(100000);
+}
+/* lets the recording thread go once the packet after the submission is published (vk_rec_queue publishes first), and
+   the blocked packet 10 s on */
 static void rq_go_later(void* arg) {
     (void)arg;
-    const u64 end = plat_ns() + 30000000000ull;
+    const u64 end = plat_ns() + 10000000000ull;
+    while (plat_ns() < end && vk_rec_behind() <= atomic_load_explicit(&g_rq_behind, memory_order_acquire))
+        plat_sleep_ns(100000);
+    atomic_store_explicit(&g_rq_hold, 0, memory_order_release);
     while (plat_ns() < end && !atomic_load_explicit(&g_rq_go, memory_order_acquire)) plat_sleep_ns(1000000);
     atomic_store_explicit(&g_rq_go, 1, memory_order_release);
 }
@@ -147,8 +159,21 @@ static int check_rec_queue_submissions(void) {
     vk_lock();
     vk_finish();
     (void)vk_cmd();
+    atomic_store_explicit(&g_rq_hold, 1, memory_order_release);
+    vk_rec_call(rq_hold, &nothing, sizeof nothing);
+    vk_rec_queue(g_vk.gfx); /* publishes the hold alone: every submission before it is done */
+    for (const u64 end = plat_ns() + 10000000000ull; !atomic_load_explicit(&g_rq_held, memory_order_acquire);) {
+        if (plat_ns() >= end) {
+            atomic_store_explicit(&g_rq_hold, 0, memory_order_release);
+            vk_unlock();
+            fprintf(stderr, "ring before a queue: the recording thread never ran the hold packet in 10 s\n");
+            CHECK(0);
+        }
+        plat_sleep_ns(100000);
+    }
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     const u64 submitted = vk_last_submit();
+    atomic_store_explicit(&g_rq_behind, vk_rec_behind(), memory_order_release);
     vk_rec_call(rq_block, &nothing, sizeof nothing);
     CHECK(!plat_thread(rq_go_later, NULL, 1u << 16));
     const u64 t0 = plat_ns();
