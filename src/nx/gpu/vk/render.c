@@ -5481,7 +5481,6 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         k->depth = zt->f.vk;
         k->stencil = zt->f.stencil ? zt->f.vk : VK_FORMAT_UNDEFINED;
     }
-    if (g_vk.has_unused_attachments) vk_pipe_unwritten_targets(k);
     /* Color attachments share a count. The coverage key already validated a separate depth/raster count. */
     TargetFormats tf;
     target_formats(rt, zt, n, &tf);
@@ -6835,6 +6834,9 @@ retry:
         }
         if (fk.advanced_mask & SH_ALPHA_TO_ONE) made_k.alpha_to_one = 0;
         if (ratio_one_flags && (dc->coverage_mode & 2)) made_k.alpha_to_one = 0;
+        /* only now: a capture's or a save draw's targets, and alpha to coverage, are written where the guest's masks
+           leave nothing, and a target left UNDEFINED that a draw writes is invalid (VUID-vkCmdDraw-pColorAttachments-08963) */
+        if (g_vk.has_unused_attachments) vk_pipe_unwritten_targets(&made_k);
         if (kept && memcmp(&made_pl, pl, sizeof made_pl)) {
             draw_differs("vertex bindings");
             kept = 0;
