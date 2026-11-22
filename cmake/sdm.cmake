@@ -54,16 +54,27 @@ endif()
 
 # snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
 # and x64_isel.report (what was selected, and the forms the selection couldn't read, with why) into the build folder's
-# sdm/, and gives <target> its include root
+# sdm/, and gives <target> its include root. A folder's rules are made once: another target of the folder (or the
+# same one, for A64's and AArch32's emitters) takes the same files
 function(snx_sdm_isel target)
     set(pdf "${SNX_SDM_PDF_FOUND}")
     set(dir "${PROJECT_SOURCE_DIR}/tools/sailgen")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sdm")
+    get_property(made DIRECTORY PROPERTY SNX_SDM_ISEL_MADE)
+    if(made)
+        get_target_property(sources ${target} SOURCES)
+        if(NOT "${out}/x64_isel.inc" IN_LIST sources)
+            target_sources(${target} PRIVATE "${out}/x64_isel.inc")
+            target_include_directories(${target} PRIVATE "${out}")
+        endif()
+        return()
+    endif()
+    set_property(DIRECTORY PROPERTY SNX_SDM_ISEL_MADE ON)
     file(GLOB overrides CONFIGURE_DEPENDS "${dir}/sdm/*.sdm")
     set(overlay_args)
     foreach(f ${overrides})
         list(APPEND overlay_args --overlay "${f}")
     endforeach()
-    set(out "${CMAKE_CURRENT_BINARY_DIR}/sdm")
     add_custom_command(OUTPUT "${out}/sdm.txt"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND "${SNX_PDFTOTEXT}" -layout "${pdf}" "${out}/sdm.txt"
@@ -98,5 +109,25 @@ function(snx_sailgen_a64_x64 target)
                 "${back}/x64_a64.h" "${profile}"
         COMMENT "Generating the A64 emitters' x86-64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_x64.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a32_x64(<target>): generates a32_x64.inc (the AArch32 emitters of a32.roots, LLVM's own, with sailgen's
+# x86-64 back end at its top: bits.h, x64.h and x64_a32.h) into the build folder, with the instruction selection it
+# includes (snx_sdm_isel), and gives <target> its include root
+function(snx_sailgen_a32_x64 target)
+    snx_sdm_isel(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    add_custom_command(OUTPUT "${out}/a32_x64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
+                --backend "${back}/x64_a32.h" --profile "${dir}/a32.profile" -o "${out}/a32_x64.inc" "${dir}/a32.sail"
+                --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${back}/bits.h"
+                "${back}/x64.h" "${back}/x64_a32.h"
+        COMMENT "Generating the AArch32 emitters' x86-64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a32_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()

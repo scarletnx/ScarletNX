@@ -1565,7 +1565,11 @@ static inline int sgx_arm_flag_cc(const SgXSel* fsel, int f) {
     return (fsel->flag_neg >> f) & 1 ? sgx_flag_ncc[j] : sgx_flag_cc[j];
 }
 
+/* the machine's part, before an instruction makes flags it keeps for later (AddWithCarry's): what it would emit
+   between them and their reader that changes the flags, made first (AArch32's condition's skip) */
+static inline void sgx_flags_begin(SgCtx* g);
 static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* result, SgD* nzcv) {
+    sgx_flags_begin(g);
     sgx_flat(sgx(g), &a);
     sgx_flat(sgx(g), &b);
     sgx_flat(sgx(g), &cin);
@@ -3146,4 +3150,132 @@ static inline SgI sg_i_select(SgCtx* g, SgB c, SgI a, SgI b) {
     int s = a.is_signed || b.is_signed;
     SgD av = sgx_i_val(g, &a), bv = sgx_i_val(g, &b);
     return sgx_int(sg_d_select(g, c, av, bv), s);
+}
+
+/* ---- AArch32's builtins (core.h's, for LLVM) ---- */
+
+/* IsZeroBit: '1' where x is zero */
+static inline SgD sg_d_is_zero_bit(SgCtx* g, SgD x) { return sgx_bool_bits(sgx(g), sg_d_is_zero(g, x)); }
+
+/* a == b, !=, <, <=, > and >= (op 0 to 5) of integers known only at run time: their values modulo 2^64 compared as
+   signed, which is exact for what AArch32's decode compares (UInt and SInt of 32 bits at most, and their sums); a
+   product, which may not be, is left to another back end */
+static inline SgB sg_i_cmp(SgCtx* g, int op, SgI a, SgI b) {
+    static const int cond[6] = {SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_LT, SGX_ARM_LE, SGX_ARM_GT, SGX_ARM_GE};
+    static const int mirror[6] = {0, 1, 4, 5, 2, 3}; /* a op b is b mirror[op] a */
+    SgX* x = sgx(g);
+    SgD av, bv, in[2];
+    const SgXSel* s;
+    if (op < 0 || op > 5) sg_fail("a comparison of integers it does not know", op, 5);
+    if (a.kind == SGX_I_MUL || b.kind == SGX_I_MUL) sg_fail("a comparison of a product", op, 0);
+    av = sgx_i_val(g, &a);
+    bv = sgx_i_val(g, &b);
+    sgx_flat(x, &av);
+    sgx_flat(x, &bv);
+    if (sgx_is_const(&av) && sgx_is_const(&bv)) {
+        long long p = (long long)av.k, q = (long long)bv.k;
+        int r = op == 0 ? p == q : op == 1 ? p != q : op == 2 ? p < q : op == 3 ? p <= q : op == 4 ? p > q : p >= q;
+        return sgx_bool(x, SGX_B_CONST, r, 0);
+    }
+    if (sgx_is_const(&av)) {
+        SgD t = av;
+        av = bv;
+        bv = t;
+        op = mirror[op];
+    }
+    av = sgx_zext(x, av, 64);
+    in[0] = av;
+    if (sgx_is_const(&bv) && sgx_fits(&(SgXSel){.fit_bits = 32, .fit_kind = 'S'}, bv.k, 64)) {
+        in[1] = sgx_const(32, bv.k);
+        s = sgx_pick(x, sgx_sel_cmp_i_64, sgx_sel_cmp_i_64_n, bv.k, 64, 0);
+    } else {
+        in[1] = sgx_zext(x, bv, 64);
+        sgx_reg(x, &in[1]);
+        s = sgx_pick(x, sgx_sel_cmp_64, sgx_sel_cmp_64_n, 0, 64, 0);
+    }
+    if (!s) sg_fail("no CMP form", op, 0);
+    sgx_emit(x, s, in, 2, 64, 0, -1);
+    return sgx_bool(x, SGX_B_CC, x->flags_ins, s->cc_of[cond[op]]);
+}
+
+/* LSL_C, LSR_C, ASR_C and ROR_C (kind 0 to 3) by an amount known when it recompiles: the shifted value and the last bit
+   shifted out (AArch32's shifter carry) */
+static inline void sg_d_shift_c(SgCtx* g, SgD x, long long n, int kind, SgD* result, SgD* carry) {
+    long long w = (long long)x.w;
+    if (n <= 0 || !w || w > 64) sg_fail("a shift with carry by an amount out of its range", n, kind);
+    switch (kind) {
+    case 0:
+        *result = n >= w ? sgx_const((unsigned)w, 0) : sg_d_lsl(g, x, n);
+        *carry = n <= w ? sg_d_slice(g, x, w - n, w - n) : sgx_const(1, 0);
+        return;
+    case 1:
+        *result = n >= w ? sgx_const((unsigned)w, 0) : sg_d_lsr(g, x, n);
+        *carry = n <= w ? sg_d_slice(g, x, n - 1, n - 1) : sgx_const(1, 0);
+        return;
+    case 2:
+        *result = sg_d_asr(g, x, n >= w ? w - 1 : n);
+        *carry = sg_d_slice(g, x, n >= w ? w - 1 : n - 1, n >= w ? w - 1 : n - 1);
+        return;
+    default:
+        *result = sg_d_ror(g, x, n % w);
+        *carry = sg_d_slice(g, *result, w - 1, w - 1);
+        return;
+    }
+}
+/* the same by an amount known only at run time (AArch32's register shifts, 0 to 255), on 32 bits, by x86 shifts of 64
+   bits by CL (the count masked to 6 bits) where the amount is below 64, and the zeros or the sign the Arm ARM gives past
+   it: LSL as the 64-bit shift of the value, its bit 32 the carry; LSR of the value shifted left by one, its bit 0 the
+   carry; ASR the same of the sign extended value by at most 63; ROR the 32-bit rotation, whose count mask is MOD 32,
+   its top bit the carry. An amount of 0, where the Sail's Shift_C takes the value and the carry in, gives what it gives:
+   the Sail's select drops it */
+static inline void sg_d_shift_c_dyn(SgCtx* g, SgD x, SgI n, int kind, SgD* result, SgD* carry) {
+    SgX* xs = sgx(g);
+    SgD k = sgx_i_val(g, &n), u;
+    SgB ok;
+    if (x.w != 32) sg_fail("a shift with carry by a register of a value not of 32 bits", x.w, kind);
+    sgx_flat(xs, &k);
+    if (sgx_is_const(&k)) {
+        if (!k.k) {
+            *result = x;
+            *carry = sgx_const(1, 0);
+        } else
+            sg_d_shift_c(g, x, k.k > 255 ? 255 : (long long)k.k, kind, result, carry);
+        return;
+    }
+    k = sgx_zext(xs, k, 64);
+    /* the compare after the shifts, whose flags would end its condition code before the CMOVs read it */
+    switch (kind) {
+    case 0:
+    case 1: {
+        SgD r, c;
+        if (kind == 0) {
+            u = SGX_OP(xs, lslv, 64, sg_d_zext(g, x, 64), k);
+            r = sg_d_slice(g, u, 31, 0);
+            c = sg_d_slice(g, u, 32, 32);
+        } else {
+            u = SGX_OP(xs, lsrv, 64, sg_d_lsl(g, sg_d_zext(g, x, 64), 1), k);
+            r = sg_d_slice(g, u, 32, 1);
+            c = sg_d_slice(g, u, 0, 0);
+        }
+        ok = sgx_d_ult(g, k, sgx_const(64, 64));
+        *result = sg_d_select(g, ok, r, sgx_const(32, 0));
+        *carry = sg_d_select(g, ok, c, sgx_const(1, 0));
+        return;
+    }
+    case 2: {
+        SgD kc, wide;
+        ok = sgx_d_ult(g, k, sgx_const(64, 64));
+        kc = sg_d_select(g, ok, k, sgx_const(64, 63));
+        wide = sg_d_lsl(g, sg_d_sext(g, x, 64), 1);
+        u = SGX_OP(xs, asrv, 64, wide, kc);
+        *result = sg_d_slice(g, u, 32, 1);
+        *carry = sg_d_slice(g, u, 0, 0);
+        return;
+    }
+    default:
+        u = SGX_OP(xs, rorv, 32, x, sg_d_slice(g, k, 31, 0));
+        *result = u;
+        *carry = sg_d_slice(g, u, 31, 31);
+        return;
+    }
 }
