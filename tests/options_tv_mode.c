@@ -938,8 +938,88 @@ static int picks_perf_run(void) {
     free(dir);
     return 0;
 }
+/* a value the runtime gives a kind of program (options_kind_value, an Ounce program's emulated_cores Off): taken where
+   no file nor command line gave one, the .ini's row at its default too (the file holds every row), said with what the
+   .ini has and how to run it at its default, and named on the notice's third line; the .ini keeps its own. A value the
+   game's .ini, its picks, this run's command line or the launcher gave stays, said with whose it is, and nothing is
+   named. Each run's list starts empty. Another key is refused with the value in effect. A process: emulated_cores is
+   read when the game starts, which only its first .ini sets */
+static int kind_open(const char* text, const char* picks_text, const char** said) {
+    char *ini, *picks, *base, *dir = picks_game(text, picks_text, &ini, &picks);
+    int took;
+    g_test.said[0] = 0;
+    ini_open(ini);
+    took = options_kind_value("emulated_cores", "0", "an Ounce program");
+    *said = g_test.said + strlen(g_test.said);
+    CHECK((base = snx_path_join(dir, "game")));
+    options_perf_notice(base);
+    CHECK(!snx_remove_tree(dir));
+    free(base);
+    free(ini);
+    free(picks);
+    free(dir);
+    return took;
+}
+static int picks_kind(void) {
+    const char* said;
+    char *ini, *picks, *text, *dir;
+    g_test.write = 1;
+    /* the .ini every run writes, emulated_cores at its default: the kind's Off, and the file keeps its 1 */
+    dir = picks_game("[Debug]\nemulated_cores=1\n", NULL, &ini, &picks);
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(g_settings.emulated_cores == 1);
+    CHECK(options_kind_value("emulated_cores", "0", "an Ounce program") == 1 && g_settings.emulated_cores == 0);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off) this run, the value an Ounce program runs with: the "
+                              "game's .ini has emulated_cores=1 (On), its default, which picks nothing; the game's own "
+                              "settings or --emulated-cores=1 run it On\n"));
+    CHECK((text = snx_path_join(dir, "game")));
+    CHECK(options_perf_notice(text) == 1 && !strcmp(g_test.kind, "emulated_cores Off") && !g_test.game[0] &&
+          !g_test.global[0]);
+    free(text);
+    CHECK((text = file_text(ini)) && strstr(text, "\nemulated_cores=1\n"));
+    free(text);
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    /* a file with no row of it: nothing gave one */
+    CHECK(kind_open("[Audio]\nvolume=40\n", NULL, &said) == 1 && !strcmp(g_test.kind, "emulated_cores Off"));
+    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off) this run, the value an Ounce program runs with: no "
+                              "file nor command line gives it one; the game's own settings or --emulated-cores=1 run "
+                              "it On\n"));
+    /* given: whose, and the notice names nothing */
+    CHECK(kind_open("[Debug]\nemulated_cores=0\n", NULL, &said) == 0 && !g_test.kind[0]);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off), the game's .ini's, the value an Ounce program runs "
+                              "with too\n"));
+    CHECK(kind_open("[Debug]\nemulated_cores=1\n", "[Debug]\nemulated_cores=1\n", &said) == 0 && !g_test.kind[0]);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), the game's own pick, over the 0 (Off) an Ounce program "
+                              "runs with\n"));
+    ini_override("emulated_cores", "1");
+    CHECK(kind_open("[Debug]\nemulated_cores=1\n", NULL, &said) == 0 && !g_test.kind[0]);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), this run's command line's, over the 0 (Off) an Ounce "
+                              "program runs with\n"));
+    ini_override(SNX_LAUNCHER_PICKS, "1"); /* the launcher's On for every game, which it passes once picked */
+    CHECK(kind_open("[Debug]\nemulated_cores=1\n", NULL, &said) == 0 && !g_test.kind[0]);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), the launcher's, over the 0 (Off) an Ounce program runs "
+                              "with\n"));
+    ini_override("emulated_cores", NULL);
+    ini_override(SNX_LAUNCHER_PICKS, NULL);
+    /* another key: refused, with the value in effect */
+    g_test.said[0] = 0;
+    CHECK(options_kind_value("volume", "40", "an Ounce program") == -1);
+    CHECK(strstr(g_test.said, "settings: volume is no setting with a default read when the game starts, so an Ounce "
+                              "program's volume=40 is not taken: volume=100 this run\n"));
+    CHECK(options_kind_value("no_such_key", "1", "an Ounce program") == -1);
+    CHECK(
+        strstr(g_test.said, "settings: no_such_key is no setting, so an Ounce program's no_such_key=1 does nothing\n"));
+    g_test.write = 0;
+    (void)said;
+    return 0;
+}
 static int options_picks(const char* which) {
     int failed = !strcmp(which, "--picks-perf")       ? picks_perf()
+                 : !strcmp(which, "--picks-kind")     ? picks_kind()
                  : !strcmp(which, "--picks-perf-run") ? picks_perf_run()
                  : !strcmp(which, "--picks-clean")    ? picks_clean()
                  : !strcmp(which, "--picks-next")     ? picks_next()
@@ -949,10 +1029,10 @@ static int options_picks(const char* which) {
                  : !strcmp(which, "--picks-reload")   ? picks_reload()
                                                       : 2;
     if (failed == 2)
-        fprintf(
-            stderr,
-            "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean, -next, -perf, -perf-run\n",
-            which);
+        fprintf(stderr,
+                "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean, -next, -perf, -perf-run, "
+                "-kind\n",
+                which);
     if (!failed) printf("options_tv_mode %s: ok\n", which);
     return failed;
 }

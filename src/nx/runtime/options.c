@@ -468,16 +468,93 @@ void ini_override(const char* k, const char* v) {
 }
 
 const char* ini_overridden(const char* k) { return override_of(k); }
-int ini_given(const char* k) {
-    if (override_of(k)) return 1;
-    pm_lock(&g_picks_lock);
-    int picked = picks_find(k) != NULL;
-    pm_unlock(&g_picks_lock);
-    if (picked) return 1;
-    /* the file is written with every row, a row nobody set at its default (put_rows): only another value is a choice */
-    const Entry* e = store_find(k);
+/* who gave k its value, in words, the first of value_of's layers that holds one; NULL for nobody */
+static const char* given_by(const char* k) {
     const IniOpt* o = find_row(k, NULL);
-    return e && (!o || !o->def || strcmp(e->value, o->def));
+    const Entry* e;
+    int picked;
+    if (run_value(k)) return "this run's command line's";
+    pm_lock(&g_picks_lock);
+    picked = picks_find(k) != NULL;
+    pm_unlock(&g_picks_lock);
+    if (picked) return "the game's own pick";
+    if (launcher_value(k)) return "the launcher's";
+    if (override_of(k)) return "the game's menu's"; /* over this run's command line's: in the picks or the .ini now */
+    /* the file is written with every row, a row nobody set at its default (put_rows): only another value is a choice */
+    e = store_find(k);
+    return e && (!o || !o->def || strcmp(e->value, o->def)) ? "the game's .ini's" : NULL;
+}
+int ini_given(const char* k) { return given_by(k) != NULL; }
+
+/* this run's values for its kind of program that took (options_kind_value), "key Word" between ", ", for the notice,
+   and how many */
+static struct {
+    char list[256];
+    int n;
+} g_kind;
+/* v, a value of o's, as its word ("Off"): v itself where o's words do not name it */
+static void word_of(const IniOpt* o, const char* v, char* out, size_t n) {
+    if (o->type == INI_INT && o->words)
+        ini_word(o, (int)strtod(v, NULL), out, n);
+    else
+        snprintf(out, n, "%s", v);
+}
+/* v, a value of o's, as the log says it: "0 (Off)" where o's words name it */
+static void value_said(const IniOpt* o, const char* v, char* out, size_t n) {
+    char word[64];
+    word_of(o, v, word, sizeof word);
+    if (strcmp(word, v))
+        snprintf(out, n, "%s (%s)", v, word);
+    else
+        snprintf(out, n, "%s", v);
+}
+int options_kind_value(const char* key, const char* value, const char* kind) {
+    const IniOpt* o = find_row(key, NULL);
+    const char *by, *now;
+    char now_said[96], kind_said[96], def_said[96], option[128], word[64];
+    size_t at;
+    if (!o) {
+        WARN("settings: %s is no setting, so %s's %s=%s does nothing\n", key, kind, key, value);
+        return -1;
+    }
+    if (!(o->flags & INI_STARTUP) || !o->def) {
+        /* a reload would put the files' value back over one read at any other time */
+        WARN("settings: %s is no setting with a default read when the game starts, so %s's %s=%s is not taken: "
+             "%s=%s this run\n",
+             key, kind, key, value, key, value_of(o) ? value_of(o) : "");
+        return -1;
+    }
+    value_said(o, value, kind_said, sizeof kind_said);
+    if ((by = given_by(key)) != NULL) {
+        now = value_of(o);
+        value_said(o, now, now_said, sizeof now_said);
+        if (o->type == INI_TEXT ? strcmp(now, value) != 0 : strtod(now, NULL) != strtod(value, NULL))
+            LOG("settings: %s=%s, %s, over the %s %s runs with\n", key, now_said, by, kind_said, kind);
+        else
+            LOG("settings: %s=%s, %s, the value %s runs with too\n", key, now_said, by, kind);
+        return 0;
+    }
+    ini_read(o, value);
+    value_said(o, o->def, def_said, sizeof def_said);
+    ini_option(option, sizeof option, key, o->def);
+    word_of(o, o->def, word, sizeof word);
+    if (store_find(key))
+        LOG("settings: %s=%s this run, the value %s runs with: the game's .ini has %s=%s, its default, which picks "
+            "nothing; the game's own settings or %s run it %s\n",
+            key, kind_said, kind, key, def_said, option, word);
+    else
+        LOG("settings: %s=%s this run, the value %s runs with: no file nor command line gives it one; the game's own "
+            "settings or %s run it %s\n",
+            key, kind_said, kind, option, word);
+    word_of(o, value, word, sizeof word);
+    at = strlen(g_kind.list);
+    if (at + (at ? 2 : 0) + strlen(key) + 1 + strlen(word) >= sizeof g_kind.list) { /* left out, never cut */
+        WARN("settings: the start's notice has no room for %s %s, which it does not name\n", key, word);
+        return 1;
+    }
+    snprintf(g_kind.list + at, sizeof g_kind.list - at, "%s%s %s", at ? ", " : "", key, word);
+    ++g_kind.n;
+    return 1;
 }
 
 /* the menu's change, or its taking out of the game's pick (unpick), waiting for the next poll; apply: the poll applies
@@ -1149,8 +1226,8 @@ int options_settings(char* out, size_t n) {
     }
     return count;
 }
-/* the value v a layer of value_of gave o is another than o's default: a value of o's that the runtime then changed (an
-   Ounce program's emulated_cores) is not the player's. A row with no default is a once text's, empty by default */
+/* the value v a layer of value_of gave o is another than o's default: a value of o's that the runtime then changed (this
+   kind of program's, options_kind_value) is not the player's. A row with no default is a once text's, empty by default */
 static int layer_differs(const IniOpt* o, const char* v) {
     if (!o->def) return v[0] != 0;
     if (o->type == INI_TEXT) return strcmp(v, o->def) != 0;
@@ -1196,6 +1273,7 @@ int options_perf_notice(const char* base) {
     const IniOpt* opt = ini_find(g_recompile_ini, "opt");
     size_t at;
     int count = perf_changed(game, sizeof game, global, sizeof global);
+    count += g_kind.n;
     if (snx_game_made_read(base, &made)) off = snx_game_made_off(base);
     at = strlen(global);
     /* the code made ahead of time at another level than opt's default: what runs, whatever opt is now */
@@ -1212,7 +1290,7 @@ int options_perf_notice(const char* base) {
         k += len + (k[len] == ',');
     }
     free(off);
-    overlay_settings_notice(game, global, "");
+    overlay_settings_notice(game, global, g_kind.list);
     return count;
 }
 
@@ -1247,6 +1325,8 @@ void ini_open(const char* path) {
     int i, n;
     char why[256];
     snprintf(g_path, sizeof g_path, "%s", path);
+    g_kind.list[0] = 0;
+    g_kind.n = 0;
     picks_path();
     ini_set_say(say_setting);
     /* --vk_descriptors and --write_tracking_hot are read as their new keys, said there */
