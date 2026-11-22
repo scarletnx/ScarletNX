@@ -61,4 +61,4 @@ static SnxU64 resolve(const char* sym) {
         if (!strcmp(sym, table[i].name)) return (SnxU64)(uintptr_t)table[i].f;
     return 0;
 }
-__attribute__((constructor)) static void set_resolver(void) { g_ctx.resolve = resolve; }
+[[gnu::constructor]] static void set_resolver(void) { g_ctx.resolve = resolve; }
