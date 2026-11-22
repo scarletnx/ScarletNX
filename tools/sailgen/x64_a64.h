@@ -29,6 +29,7 @@ struct SgCtx {
     signed char pin[32]; /* the host register each X register (31: SP) lives in for the whole function, -1 none:
                             x64_codegen.c's choice (a step's or a block's: none, pinned 0) */
     int pinned;      /* pin[] is in use */
+    signed char vpin[32]; /* the XMM register each V register lives in for the whole function, -1 none (pinned) */
     int vd[32][2];   /* the same of each SIMD&FP register's doublewords (low, high) */
     int vx[32];      /* each SIMD&FP register as an XMM value, where the block has it so (one cache or the other) */
     SgB fp_state[2]; /* the hot paths' check of FPCR and FPSR (sgx_fp_bad), made once a region: without, with IXC */
@@ -253,8 +254,31 @@ static inline void sgx_simple(SgCtx* g, int op) {
    doing nothing */
 
 static inline int sgx_vd_offset(long long n, int k) { return (int)(offsetof(CPU, v) + 16 * (size_t)n + 8 * (size_t)k); }
+/* V[n] pinned to an XMM register: the block's value of it, the register's own (SGX_K_PGET) the first time */
+static inline int sgx_vpinned(SgCtx* g, long long n) { return g->pinned && g->vpin[n] >= 0; }
+static inline void sgx_vpget(SgCtx* g, long long n) {
+    SgX* x = sgx(g);
+    SgXIns* i;
+    if (g->vx[n]) return;
+    i = sgx_append(x, SGX_K_PGET);
+    i->imm = 16 + g->vpin[n];
+    i->def = sgx_xvreg(x, x->n - 1);
+    g->vx[n] = i->def;
+    g->vd[n][0] = g->vd[n][1] = 0;
+}
+/* V[n] (pinned) = the XMM value r */
+static inline void sgx_vpset(SgCtx* g, long long n, int r) {
+    SgX* x = sgx(g);
+    SgXIns* i = sgx_append(x, SGX_K_PSET);
+    i->imm = 16 + g->vpin[n];
+    i->in[0] = r;
+    i->side = 1;
+    g->vx[n] = r;
+    g->vd[n][0] = g->vd[n][1] = 0;
+}
 static inline SgD sgx_vd_read(SgCtx* g, long long n, int k) {
     SgX* x = sgx(g);
+    if (sgx_vpinned(g, n)) sgx_vpget(g, n);
     if (g->vx[n]) {
         SgD d = sg_d_slice(g, sgx_xval(128, g->vx[n]), 64 * k + 63, 64 * k);
         sgx_reg(x, &d);
@@ -272,6 +296,14 @@ static inline SgD sgx_vd_read(SgCtx* g, long long n, int k) {
 static inline void sgx_vd_write(SgCtx* g, long long n, int k, SgD v) {
     SgX* x = sgx(g);
     int r = sgx_reg(x, &v);
+    if (sgx_vpinned(g, n)) {
+        /* the doubleword into the register's value: PINSRQ */
+        int in[4];
+        sgx_vpget(g, n);
+        in[0] = g->vx[n], in[1] = r, in[2] = in[3] = 0;
+        sgx_vpset(g, n, sgx_vins(x, &sgx_v_pinsrq, 0, 1, in, k, 0, SGX_VM_NONE, 0, 0, 0, 0, 0));
+        return;
+    }
     SgXIns* i = sgx_append(x, SGX_K_STORE);
     i->w = 64;
     i->in[0] = r;
@@ -288,6 +320,7 @@ static inline void sgx_vd_write(SgCtx* g, long long n, int k, SgD v) {
 static inline SgD sg__V_read_bits(SgCtx* g, long long n, long long hi, long long lo) {
     SgX* x = sgx(g);
     if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
+    if (sgx_vpinned(g, n)) sgx_vpget(g, n);
     if (!g->vx[n] && (g->vd[n][0] || g->vd[n][1])) {
         if (lo == 0 && hi < 64) return sg_d_slice(g, sgx_vd_read(g, n, 0), hi, 0);
         if (lo == 64 && hi <= 127) return sg_d_slice(g, sgx_vd_read(g, n, 1), hi - 64, 0);
@@ -303,6 +336,10 @@ static inline void sg__V_write(SgCtx* g, long long n, SgD v) {
     SgD lo, hi;
     if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
     if (v.w != 128 || v.wide || v.inv || v.nzcv) sg_fail("a SIMD&FP register written from other than 128 bits", v.w, 128);
+    if (sgx_vpinned(g, n)) {
+        sgx_vpset(g, n, v.x ? v.x : sgx_xreg(x, &v));
+        return;
+    }
     if (v.x) {
         int in[4] = {0, v.x, 0, 0};
         sgx_vins(x, &sgx_v_movdqu_st, 0, 0, in, 0, 0, SGX_VM_STATE, 0, 0, sgx_vd_offset(n, 0), 0, 0);
@@ -1248,6 +1285,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CRC: sgx_machine_inline(a, i); return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
+            if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins around the call */
             if (i->w) {
                 sgx_byte(b, 0x48); /* mov rdi, rbx: the state */
                 sgx_byte(b, 0x89);
@@ -1274,6 +1312,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
                 sgx_byte(b, 0xFF);
                 sgx_byte(b, 0xD0);
             }
+            if (a->pin_cs) a->pin_cs(a->machine, 0);
             return;
         default: sgx_machine_op(a, at, r); return;
         }

@@ -92,6 +92,7 @@ typedef struct {
     SnxU64* live_buf;    /* live's room */
     size_t cap_live;
     signed char pin[32]; /* each X register's host register, -1 for none */
+    signed char vpin[32]; /* each V register's XMM register (8-15), -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
     SnxU32 word; /* the instruction being made: SNX_X64_STATS names it where the function goes to LLVM */
     int dispatch, d_label, mismatch_label;
@@ -230,19 +231,34 @@ static void jmp(Unit* u, int label) {
 }
 
 /* the guest registers the function keeps in host ones: to the state (store), or from it */
-static void pins(Unit* u, int store) {
+/* the pins to the state (store) or from it: every one, or (caller) those in caller-saved registers, which a call
+   changes (R10, R11, the XMM registers) */
+static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
     if (!u->pinned) return;
-    for (n = 0; n < 32; ++n)
-        if (u->pin[n] >= 0) {
+    for (n = 0; n < 32; ++n) {
+        if (u->pin[n] >= 0 && (!caller || u->pin[n] == 10 || u->pin[n] == 11)) {
             int p = u->pin[n];
-            byte(u, (unsigned char)(0x48 | (p >> 3) << 2));
-            byte(u, store ? 0x89 : 0x8B);
-            byte(u, (unsigned char)(0x83 | (p & 7) << 3)); /* [rbx + disp32] */
-            imm(u, (long long)(offsetof(CPU, x) + 8 * (size_t)n), 4);
+            sgx_byte(b, (unsigned char)(0x48 | (p >> 3) << 2));
+            sgx_byte(b, store ? 0x89 : 0x8B);
+            sgx_byte(b, (unsigned char)(0x83 | (p & 7) << 3)); /* [rbx + disp32] */
+            sgx_imm(b, (long long)(offsetof(CPU, x) + 8 * (size_t)n), 4);
         }
+        if (u->vpin[n] >= 0) {
+            int p = u->vpin[n];
+            sgx_byte(b, 0xF3); /* movdqu [rbx + disp32], xmm / xmm, [rbx + disp32] */
+            if (p >= 8) sgx_byte(b, 0x44);
+            sgx_byte(b, 0x0F);
+            sgx_byte(b, store ? 0x7F : 0x6F);
+            sgx_byte(b, (unsigned char)(0x83 | (p & 7) << 3));
+            sgx_imm(b, (long long)offsetof(CPU, v) + 16 * n, 4);
+        }
+    }
 }
-static void pins_flush(void* machine) { pins((Unit*)machine, 1); }
+static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
+static void pins_flush(void* machine) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
+/* the region assembler's: into the buffer it writes (the cold one on a cold path) */
+static void pins_cs(void* machine, int store) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
 static void prologue(Unit* u) {
     byte(u, 0x53); /* push rbx */
@@ -516,14 +532,12 @@ static int fp_ldst(Unit* u, SnxU32 word, SnxU64 pc) {
         base = base_of(g, rn);
         a = idx == 1 ? base : sg_d_add(g, base, sgx_const(64, (SnxU64)off));
         if (l) {
-            SgD a2 = sg_d_add(g, a, sgx_const(64, (SnxU64)bytes));
-            SgD v1 = sg_GuestMemRead(g, a, bytes, 0), v2 = sg_GuestMemRead(g, a2, bytes, 0);
-            sg__V_write(g, rt, sg_d_zext(g, v1, 128));
-            sg__V_write(g, rt2, sg_d_zext(g, v2, 128));
+            /* both loads first: the second's V register may be the first's (rejected above), never the address */
+            v_load(g, rt, a, bytes);
+            v_load(g, rt2, sg_d_add(g, a, sgx_const(64, (SnxU64)bytes)), bytes);
         } else {
-            SgD v1 = sg__V_read_bits(g, rt, 8 * bytes - 1, 0), v2 = sg__V_read_bits(g, rt2, 8 * bytes - 1, 0);
-            sg_GuestMemWrite(g, a, bytes, 0, v1);
-            sg_GuestMemWrite(g, sg_d_add(g, a, sgx_const(64, (SnxU64)bytes)), bytes, 0, v2);
+            v_store(g, rt, a, bytes);
+            v_store(g, rt2, sg_d_add(g, a, sgx_const(64, (SnxU64)bytes)), bytes);
         }
         if (idx == 1 || idx == 3) sg_GPR_write(g, rn, idx == 1 ? sg_d_add(g, base, sgx_const(64, (SnxU64)off)) : a);
         return 1;
@@ -1062,6 +1076,13 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
                every write stored (or PSET) where it was made, and the store pass keeps the stores before a machine
                instruction */
             jump_if(u, g->taken, branch_label(u, address, target), target);
+            if (target <= address) {
+                /* a loop's latch: past it the loop has ended, so what the block knows is let go (read again from the
+                   state or the pins once) rather than kept live, and spilled, through the loop's body */
+                int k;
+                for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
+                g->mem = 0;
+            }
             break;
         }
         flush_to(u, target);
@@ -1360,14 +1381,18 @@ static SnxU64 dead_at(Unit* u, SnxU64 target) {
    (a backward branch's span). None in a small function, or one with a call of the runtime inside a block that may
    read the state (a system register's helper, WFE, SEV) */
 static void choose_pins(Unit* u, const SnxFunction* f) {
-    static const signed char hosts[5] = {5, 12, 13, 14, 15};
-    SnxU64 weight[32];
-    unsigned k, best;
+    static const signed char hosts[7] = {5, 12, 13, 14, 15, 11, 10};
+    SnxU64 weight[32], vweight[32];
+    unsigned k, best, nhosts;
+    int fixed = 0; /* an exclusive, an atomic or CRC32: R10 and R11 are their machine instructions' */
     unsigned char* loop;
     int* succ;
     size_t i, backs = 0;
     memset(u->pin, -1, sizeof u->pin);
+    memset(u->vpin, -1, sizeof u->vpin);
     u->pinned = 0;
+    u->a.reserved = u->a.xreserved = 0;
+    memset(vweight, 0, sizeof vweight);
     static int every = -1; /* SNX_X64_PIN_ALL=1: pins in every function, of every register read once (for tests) */
     if (every < 0) every = getenv("SNX_X64_PIN_ALL") != NULL;
     if ((f->count < 8 && !every) || getenv("SNX_X64_NO_PINS")) return;
@@ -1440,8 +1465,10 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                 int m = stack[--top], q;
                 if (m != (int)i && loop[m] < 5) ++loop[m];
                 if (m == (int)i) continue;
+                /* nothing before the header: a header that doesn't dominate its latch (a loop entered in its middle
+                   too) would otherwise take in all that reaches that entry */
                 for (q = first[m]; q < first[m + 1]; ++q)
-                    if (seen[pred[q]] != (unsigned)mark) {
+                    if ((size_t)pred[q] > i && seen[pred[q]] != (unsigned)mark) {
                         seen[pred[q]] = (unsigned)mark;
                         stack[top++] = pred[q];
                     }
@@ -1450,47 +1477,80 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         free(first), free(pred), free(stack), free(seen);
     }
     free(succ);
-    for (i = 0; i < f->count; ++i) {
-        SnxU32 w = 0;
-        SnxU64 wt;
-        (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
-        wt = 1ull << (3 * loop[i]); /* 8 times a loop's level */
-        /* the general-purpose register fields by the encoding's group: none in SIMD and FP data processing (bits
-           27-25 111); a load's or store's base, and its registers where V (bit 26) is clear (a pair's second, bits
-           14-10, where bits 29-27 are 101; the register offset, bits 20-16, where bits 29-27 are 111, 24 clear and
-           21 set); the others' Rd, Rn, Rm (and Ra, bits 14-10, of the three-source group, bits 28-24 11011) */
-        if ((w >> 25 & 7) == 7) continue;
-        if ((w >> 25 & 5) == 4) {
-            weight[w >> 5 & 31] += wt;
-            if (!(w >> 26 & 1)) {
-                weight[w & 31] += wt;
-                if ((w >> 27 & 7) == 5) weight[w >> 10 & 31] += wt;
+    /* what a pin saves is the load where a block (from one label to the next) reads a register before it writes it,
+       and the store where it writes it: each counted once a block, 8 times a loop's level */
+    {
+        SnxU32 rd = 0, wr = 0, vrd = 0, vwr = 0;
+        for (i = 0; i < f->count; ++i) {
+            SnxU32 w = 0, vuse = 0, vdef = 0, m;
+            SnxU64 wt, use, def;
+            unsigned r;
+            if (f->leaders[i]) rd = wr = vrd = vwr = 0;
+            (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i), &w);
+            wt = 1ull << (3 * loop[i]);
+            if ((w >> 24 & 0x3F) == 0x08 || ((w >> 24 & 0x3F) == 0x38 && (w >> 21 & 1) && !(w >> 10 & 3)) ||
+                (w & 0x7FE0E000) == 0x1AC04000)
+                fixed = 1;
+            /* the V registers: SIMD and FP data processing reads Rn, Rm (Ra of the 3-source group) and Rd (an
+               accumulation's), and writes Rd; a SIMD&FP load writes Rt (and a pair's Rt2), a store reads them */
+            if ((w >> 25 & 7) == 7) {
+                vuse = 1u << (w >> 5 & 31) | 1u << (w >> 16 & 31) | 1u << (w & 31);
+                if ((w >> 24 & 0x1F) == 0x1F) vuse |= 1u << (w >> 10 & 31);
+                vdef = 1u << (w & 31);
+            } else if ((w >> 25 & 5) == 4 && (w >> 26 & 1)) {
+                m = 1u << (w & 31);
+                if ((w >> 27 & 7) == 5) m |= 1u << (w >> 10 & 31);
+                if (w >> 22 & 1) vdef = m;
+                else
+                    vuse = m;
             }
-            if ((w >> 27 & 7) == 7 && !(w >> 24 & 1) && (w >> 21 & 1) && (w >> 10 & 3) == 2) weight[w >> 16 & 31] += wt;
-            continue;
-        }
-        if ((w >> 26 & 7) == 5) { /* branches: CBZ's and TBZ's Rt, BR's and RET's Rn */
-            if ((w >> 25 & 0x3F) == 0x1A || (w >> 25 & 0x3F) == 0x1B) weight[w & 31] += wt;
-            else if ((w >> 25) == 0x6B)
-                weight[w >> 5 & 31] += wt;
-            continue;
-        }
-        weight[w & 31] += wt;
-        weight[w >> 5 & 31] += wt;
-        if ((w >> 25 & 7) == 5) { /* data processing (register) */
-            weight[w >> 16 & 31] += wt;
-            if ((w >> 24 & 31) == 0x1B) weight[w >> 10 & 31] += wt;
+            for (m = vuse & ~vwr & ~vrd; m; m &= m - 1) vweight[__builtin_ctz(m)] += wt;
+            vrd |= vuse & ~vwr;
+            for (m = vdef & ~vwr; m; m &= m - 1) vweight[__builtin_ctz(m)] += wt;
+            vwr |= vdef;
+            regs_of(w, &use, &def);
+            if (use == LIVE_ALL) continue; /* a call, a return, what isn't classified: a flush anyway */
+            for (r = 0; r < 32; ++r) {
+                SnxU32 bit = 1u << r;
+                if ((use >> r & 1) && !(wr & bit) && !(rd & bit)) weight[r] += wt, rd |= bit;
+                if ((def >> r & 1) && !(wr & bit)) weight[r] += wt, wr |= bit;
+            }
         }
     }
+    if (getenv("SNX_X64_PIN_DEBUG")) {
+        unsigned r;
+        fprintf(stderr, "pins F_%llX:", (unsigned long long)f->start);
+        for (r = 0; r < 32; ++r)
+            if (weight[r]) fprintf(stderr, " x%u=%llu", r, (unsigned long long)weight[r]);
+        fprintf(stderr, "\n  depth:");
+        for (i = 0; i < f->count; ++i) fprintf(stderr, "%u", loop[i]);
+        fprintf(stderr, "\n");
+    }
     free(loop);
-    for (k = 0; k < 5; ++k) {
+    nhosts = fixed || getenv("SNX_X64_NO_CS_PINS") ? 5 : 7;
+    for (k = 0; k < nhosts; ++k) {
         unsigned r;
         SnxU64 top = 0;
         best = 32;
         for (r = 0; r < 32; ++r)
             if (u->pin[r] < 0 && weight[r] > top) top = weight[r], best = r;
-        if (best == 32 || top < (every ? 1u : 16u)) break;
+        if (best == 32 || top < (every ? 1u : 8u)) break;
         u->pin[best] = hosts[k];
+        if (hosts[k] < 12 && hosts[k] != 5) u->a.reserved |= 1u << hosts[k];
+        u->pinned = 1;
+    }
+    /* the V registers most used, in XMM15 down to XMM8 (the values' XMM0-7 left) */
+    static int xpins = -1;
+    if (xpins < 0) xpins = getenv("SNX_X64_XPINS") ? atoi(getenv("SNX_X64_XPINS")) : 8;
+    for (k = 0; k < (unsigned)xpins && !getenv("SNX_X64_NO_CS_PINS"); ++k) {
+        unsigned r;
+        SnxU64 top = 0;
+        best = 32;
+        for (r = 0; r < 32; ++r)
+            if (u->vpin[r] < 0 && vweight[r] > top) top = vweight[r], best = r;
+        if (best == 32 || top < (every ? 1u : 8u)) break;
+        u->vpin[best] = (signed char)(15 - k);
+        u->a.xreserved |= 1u << (15 - k);
         u->pinned = 1;
     }
 }
@@ -1530,6 +1590,8 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     liveness(u, f);
     u->g->pinned = u->pinned;
     memcpy(u->g->pin, u->pin, sizeof u->pin);
+    memcpy(u->g->vpin, u->vpin, sizeof u->vpin);
+    u->a.pin_cs = pins_cs;
     u->a.pin_flush = pins_flush;
     prologue(u);
     if (u->options->stale) {
