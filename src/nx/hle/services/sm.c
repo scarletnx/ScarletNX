@@ -4,6 +4,7 @@
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
 /* sm:, the service manager: the session to a service by its name */
+#include <string.h>
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"
 
@@ -154,7 +155,9 @@ static int sm_tipc_register(SvcObj* self, IpcCtx* c) {
     space = snx_le32(space), max_sessions = snx_le32(max_sessions);
     if (off && sm_name(&name, s))
         WARN("sm: the game registers %s in service space %u, which the runtime does not have: NotAllowed\n", s, space);
-    return nn_sm_detail_IUserInterface_RegisterService(self, &name, light != 0, (i32)max_sessions, &port);
+    i32 sessions; /* as the CMIF reader takes it: a cast of a u32 past INT32_MAX is implementation-defined */
+    memcpy(&sessions, &max_sessions, sizeof sessions);
+    return nn_sm_detail_IUserInterface_RegisterService(self, &name, light != 0, sessions, &port);
 }
 static int sm_tipc_unregister(SvcObj* self, IpcCtx* c) {
     nn_sm_ServiceName name;

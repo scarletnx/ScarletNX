@@ -102,8 +102,7 @@ static nn_sm_ServiceName name_of(const char* s, size_t n) {
 /* a TIPC request to sm's own dispatcher: cmd, and the raw data after the HIPC headers. kind adds the descriptor or
    handle of that number, which sm takes none of: 1 an A buffer, 2 an empty X descriptor, 3 a C list, 4 a copy handle */
 static u32 ask_tipc(u32 cmd, const void* raw, u32 size, int kind) {
-    IpcCtx c;
-    memset(&c, 0, sizeof c);
+    IpcCtx c = {0};
     c.tipc = 1;
     c.cmd = cmd;
     c.raw = (const u8*)raw;
@@ -199,9 +198,8 @@ int main(void) {
        the other way (max_sessions before is_light) are read where TIPC puts them, and a size that is neither form,
        or a request with a buffer, is one sm can not decode */
     {
-        u8 raw[24];
+        u8 raw[24] = {0};
         u32 space = 3, max_sessions = 4, light = 1;
-        memset(raw, 0, sizeof raw);
         memcpy(raw, "mysrv", 5);
         memcpy(raw + 8, &max_sessions, 4);
         raw[12] = light;
