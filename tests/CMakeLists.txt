@@ -1382,6 +1382,11 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report"
 add_custom_target(snx_sailgen_isel_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report")
 add_test(NAME sailgen_isel COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_expected.report" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/isel.report")
+# and over more primitives than its evaluations once had room for: every one evaluated
+add_test(NAME sailgen_isel_widths
+         COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
+                 "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/widths" -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_widths_check.cmake")
+set_tests_properties(sailgen_isel_widths PROPERTIES PASS_REGULAR_EXPRESSION "sailgen_isel_widths: 260 evaluations")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
