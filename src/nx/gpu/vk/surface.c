@@ -2579,10 +2579,11 @@ static u64 mem_hash(u64 gva, u64 size) {
 static u64 rt_mem_hash(const Surf* s) { return mem_hash(s->gva, rt_bytes(s)); }
 /* Pitch-linear color targets drawn since the last release. A target's pixels reach guest memory only when something
    asks for them, and the CPU can't ask. Reading back on the CPU what the GPU drew is what pitch-linear targets are
-   mostly for, and they are few: one game draws its ambient light's spherical harmonics into seven 8x8 RGBA32F targets
-   and reads them after a fence, and lit its scenes with the old bytes there, values up to 1e31. A release publishes
-   them, GPU-owned (vk_surf_publish): the GPU copies them over their guest bytes, and they land only if the CPU
-   touches those.
+   mostly for: one game draws its ambient light's spherical harmonics into seven 8x8 RGBA32F targets and reads them
+   after a fence, and lit its scenes with the old bytes there, values up to 1e31. A release watches them as it watches
+   block linear ones (below): the CPU's first read publishes them, and one the CPU read lately is published at the
+   release, GPU-owned (vk_surf_publish), so that its reads after find the pixels with no fault; one it never reads is
+   copied back never. Without traps a release publishes them, as no watch can be had.
 
    Block linear color targets drawn since the last release are the second list. Most are never read on the CPU, and
    to publish each one at each release would copy tens of megabytes a frame. But a game also reads one now and then:
@@ -2679,7 +2680,12 @@ void vk_rt_publish_drawn(void) {
     while (g_linear.n) {
         Surf* s = g_linear.s[--g_linear.n];
         s->in_linear = 0;
-        if (!(s->gva >> 63) && flush_bytes(s)) rt_publish_now(s);
+        if (!(s->gva >> 63) && flush_bytes(s)) {
+            if (own_traps())
+                rt_watch(s);
+            else
+                rt_publish_now(s);
+        }
     }
     while (g_bl.n) {
         Surf* s = g_bl.s[--g_bl.n];

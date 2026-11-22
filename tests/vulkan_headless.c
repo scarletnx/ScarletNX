@@ -6932,6 +6932,88 @@ static int check_rt_watch_holder(void) {
     free(ch);
     return 0;
 }
+/* A pitch-linear color target is watched at a release as a block linear one is: drawn over three releases and never
+   read, it is armed once, copied back never and lands nothing. The CPU's read publishes it and gets the last clear's
+   pixels, and once read, the next release publishes it at once. Before, every release copied it back */
+#define LWATCH_A  (HEAP_BASE + 0x7400000)
+#define LWATCH_GA 0x3A0800000ull
+static void lin_clear(GpuChannel* ch, u64 gva, const float color[4]) {
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = 256; /* 64 RGBA pixels a row, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5;
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 0;
+    r[0x43E] &= ~0x100u;
+    r[0x380] = 0;
+    memcpy(&r[0x360], color, 16);
+    engine_clear(ch, 15 << 2);
+    vk_lock();
+    vk_render_end();
+    vk_unlock();
+}
+static int check_rt_watch_linear(void) {
+    const u64 size = 256 * 16;
+    const float blue[4] = {0, 0, 1, 1}, red[4] = {1, 0, 0, 1};
+    static const u8 px_blue[4] = {0, 0, 255, 255};
+    if (!own_traps() || vk_uma()) {
+        puts("pitch-linear target watch: needs traps and no unified memory, skipped");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(LWATCH_A, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(LWATCH_GA, LWATCH_A, 0x10000);
+    memset(GP(LWATCH_A), 0x11, 0x10000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn(); /* the targets the tests before drew */
+    vk_unlock();
+    VkRtWatchStats w0 = g_vk_rt_watch;
+    u64 lands = own_landings();
+    for (int i = 0; i < 3; i++) {
+        lin_clear(ch, LWATCH_GA, i & 1 ? red : blue);
+        vk_lock();
+        vk_rt_publish_drawn();
+        vk_unlock();
+    }
+    if (g_vk_rt_watch.arms != w0.arms + 1 || g_vk_rt_watch.publishes != w0.publishes)
+        fprintf(stderr,
+                "pitch-linear target watch: %llu arms and %llu publishes over three releases (1 and 0 expected)\n",
+                (unsigned long long)(g_vk_rt_watch.arms - w0.arms),
+                (unsigned long long)(g_vk_rt_watch.publishes - w0.publishes));
+    CHECK(g_vk_rt_watch.arms == w0.arms + 1 && g_vk_rt_watch.publishes == w0.publishes);
+    CHECK(own_watched(LWATCH_A, size) && own_lookup(LWATCH_A, size, NULL, 0) == 0 && own_landings() == lands);
+    /* this thread holds no lock: its read faults, publishes the target and lands the GPU's pixels. The trap thread does
+       that work while the copy waits, so the compiler must not read the counters before the copy */
+    u8* got = malloc(size);
+    CHECK(got);
+    memcpy(got, GP(LWATCH_A), size);
+    atomic_signal_fence(memory_order_seq_cst);
+    CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands);
+    int same = 1;
+    for (u64 i = 0; i < size; i += 4) same &= !memcmp(got + i, px_blue, 4);
+    free(got);
+    CHECK(same);
+    /* read lately: the next release publishes it at once */
+    lin_clear(ch, LWATCH_GA, red);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    CHECK(g_vk_rt_watch.publishes == w0.publishes + 1 && !own_watched(LWATCH_A, 1));
+    CHECK(GP(LWATCH_A)[0] == 255 && GP(LWATCH_A)[2] == 0);
+    puts("pitch-linear target watch: armed once over three releases, published at the CPU's read and after it");
+    vk_lock();
+    vk_rt_before_write(LWATCH_GA, 0x10000);
+    vk_unlock();
+    CHECK(mem_unmap(LWATCH_A, 0x10000) == 0);
+    free(ch);
+    return 0;
+}
 /* Depth targets the 3D engine clears and the CPU then reads from memory, as edenprobe's zeta and msaa suites do after a
    barrier and a wait for idle: a release watches them as it does color ones, and the CPU's first read publishes them
    and lands them in their format's layout (S8's a byte a texel, its stencil). Each format a 80x40 block linear target
@@ -8525,6 +8607,7 @@ static int run_headless(int argc, char** argv) {
     if (getenv("SNX_TEST_RT_WATCH_ONLY")) { /* the watched targets' checks alone, for their mutants */
         CHECK(!check_rt_watch());
         CHECK(!check_zt_watch());
+        CHECK(!check_rt_watch_linear());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
@@ -9039,6 +9122,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_rt_overlap());
     CHECK(!check_rt_watch());
     CHECK(!check_zt_watch());
+    CHECK(!check_rt_watch_linear());
     CHECK(!check_uma());
     CHECK(!check_uma_copies());
     CHECK(!check_uma_way());
