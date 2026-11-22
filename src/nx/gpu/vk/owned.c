@@ -33,7 +33,7 @@ static struct {
     _Atomic u64 serial;      /* the last VkOwnRes.serial given */
     VkOwnRes* _Atomic later; /* released while another thread held vk_lock: freed at a later vk_unlock (atomic stack) */
     /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
-    _Atomic u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
+    _Atomic u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N], live_dev_bytes;
     /* those let go since the last statistics, by how many presents they were kept: under 8, under 120, under 1200,
        longer */
     _Atomic u64 let_go[4];
@@ -281,19 +281,34 @@ void vk_own_log(void) {
 typedef struct {
     u64 addr, size;
     u32 used;
+    VkOwnRes* res;
 } OwnPick;
-static int pick_older(const void* a, const void* b) {
-    i32 d = (i32)(((const OwnPick*)a)->used - ((const OwnPick*)b)->used);
+static void res_release(void* res);
+/* a reference, unless another thread let go of the last one already: that one is freed at this thread's vk_unlock
+   (vk_own_release_later), so it is still readable, but must not be held again */
+static int res_hold_live(VkOwnRes* r) {
+    u32 n = atomic_load_explicit(&r->refs, memory_order_relaxed);
+    do
+        if (!n) return 0;
+    while (!atomic_compare_exchange_weak_explicit(&r->refs, &n, n + 1, memory_order_relaxed, memory_order_relaxed));
+    return 1;
+}
+static int pick_trim(const void* a, const void* b) {
+    const OwnPick *pa = (const OwnPick*)a, *pb = (const OwnPick*)b;
+    if (pa->size != pb->size) return pa->size > pb->size ? -1 : 1;
+    i32 d = (i32)(pa->used - pb->used);
     return (d > 0) - (d < 0);
 }
 void vk_own_trim(void) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
-    const int past = usage >= budget;
+    const u64 heap0 = vk_mem_heap_use(), pressure0 = heap0 > usage ? heap0 : usage;
+    const int past = pressure0 >= vk_mem_trim_start(budget);
     if (g_vk_present % 4 && !past) return;
     /* with device memory short a free buffer waits OWN_IDLE_SHORT presents for a result, not OWN_IDLE: at ten presents
-       a second the pool held 120 to 230 MB for twelve seconds that the heap had no room without */
-    const u32 idle = usage < budget / 5 * 4 ? OWN_IDLE : OWN_IDLE_SHORT;
+       a second the pool held 120 to 230 MB for twelve seconds that the heap had no room without; at the caches' trim
+       mark every free buffer goes at once */
+    const u32 idle = past ? 0 : pressure0 < budget / 5 * 4 ? OWN_IDLE : OWN_IDLE_SHORT;
     OwnDone done = own_done();
     pm_lock(&g_pool_lk);
     for (u32 i = 0; i < atomic_load_explicit(&g_pool_n, memory_order_relaxed);) {
@@ -307,8 +322,15 @@ void vk_own_trim(void) {
         g_owned.trim_pooled++;
     }
     pm_unlock(&g_pool_lk);
+    vk_mem_use(&usage, &budget);
+    const u64 heap = vk_mem_heap_use(), pressure = heap > usage ? heap : usage;
+    const u64 mark = budget / 5 * 4, own_cap = budget / 8;
+    const u64 dev_bytes = atomic_load_explicit(&g_owned.live_dev_bytes, memory_order_relaxed);
+    const u64 over_p = pressure > mark ? pressure - mark : 0;
+    const u64 over_o = dev_bytes > own_cap ? dev_bytes - own_cap : 0;
+    const u64 excess = over_p > over_o ? over_p : over_o;
     u32 n = atomic_load_explicit(&g_own.nown, memory_order_acquire);
-    if (!g_owned.traps || !n || usage < budget / 5 * 4) return; /* four fifths: before the caches' trim starts */
+    if (!g_owned.traps || !n || !excess) return;
     u32 max = n + 64; /* more than there are: a publish may add some before the lookup */
     OwnRange* r = malloc((size_t)max * sizeof *r);
     OwnPick* pick = malloc((size_t)max * sizeof *pick);
@@ -321,25 +343,34 @@ void vk_own_trim(void) {
     u32 np = 0, k = own_lookup(0, 1ull << 48, r, max);
     u64 now = vk_submit_number();
     for (u32 i = 0; i < k && i < max; i++) {
-        const VkOwnRes* o = (const VkOwnRes*)r[i].res;
+        VkOwnRes* o = (VkOwnRes*)r[i].res;
         /* not one of another's buffer (the mirror's), nor one whose writes are still being recorded, nor one in system
            memory */
         if (!o || o->borrowed || o->host || (u32)(g_vk_present - o->used) < alone ||
             atomic_load_explicit(&o->written, memory_order_relaxed) >= now)
             continue;
-        pick[np++] = (OwnPick){r[i].addr, r[i].size, o->used};
+        /* held while the loop below runs: a landing takes its whole pages, so it can let go of a pick beside the one
+           it lands, and this thread holds vk_lock, so res_release frees that pick at once */
+        if (!res_hold_live(o)) continue;
+        pick[np++] = (OwnPick){r[i].addr, r[i].size, o->used, o};
     }
     free(r);
-    qsort(pick, np, sizeof *pick, pick_older);
-    /* past the budget: as many bytes as the heap is over four fifths of it */
-    u64 want = past ? usage - budget / 5 * 4 : ~0ull, got = 0;
-    for (u32 i = 0; i < np && i < most && got < want; i++) {
-        /* a landing takes its whole pages: one picked beside another may be gone by now */
+    qsort(pick, np, sizeof *pick, pick_trim);
+    /* at or past the caches' trim mark: as many bytes as the heap is over four fifths of its budget. Below it, landings
+       stop at 64 MiB a call, so that draining gigabytes of idle copies doesn't stall a frame, but the first pick, the
+       largest, lands whole. The bytes counted are the ranges landed: a buffer with another range still owned stays,
+       and a later call lands that range */
+    const u64 want = past ? excess : (excess < (64ull << 20) ? excess : (64ull << 20));
+    u64 got = 0;
+    for (u32 i = 0; i < np && i < most && (!i || got < want); i++) {
+        /* res_free_buffer gives the buffer back to the heap, not to the pool */
+        pick[i].res->no_pool = 1;
         own_acquire(pick[i].addr, pick[i].size);
         got += pick[i].size;
         g_owned.trim_landed++;
         g_owned.trim_bytes += pick[i].size;
     }
+    for (u32 i = 0; i < np; i++) res_release(pick[i].res);
     free(pick);
 }
 
@@ -390,12 +421,13 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
         int made = 0;
         u64 usage, budget;
         vk_mem_use(&usage, &budget);
-        if (usage + want > budget / 5 * 4 && own_pool_await(want)) e = own_pool_take(want);
+        const u64 heap = vk_mem_heap_use(), pressure = heap > usage ? heap : usage;
+        if (pressure + want > budget / 5 * 4 && own_pool_await(want)) e = own_pool_take(want);
         /* A copy engine's result with the heap past four fifths of its budget: in system memory from the start. They
            are a game's streamed bytes, which a texture's load reads once, over the bus: in a racing game on a GPU
            of 2 GB, 2,000 tile results took 370 MB of the GPU's memory as its race loaded, and its render targets and
            storage images found none */
-        if (!e.buf && by == VK_OWN_BY_COPY && usage + want > budget / 5 * 4 && g_vk.mem_model != VK_MEM_UMA) {
+        if (!e.buf && by == VK_OWN_BY_COPY && pressure + want > budget / 5 * 4 && g_vk.mem_model != VK_MEM_UMA) {
             ai.at = DM_HOST;
             made = vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS;
             ai.at = DM_DEVICE;
@@ -442,6 +474,7 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
     r->born = r->used = g_vk_present;
     atomic_fetch_add_explicit(&g_owned.live[by], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_owned.live_bytes[by], r->size, memory_order_relaxed);
+    if (!r->host) atomic_fetch_add_explicit(&g_owned.live_dev_bytes, r->size, memory_order_relaxed);
     return r;
 }
 static void res_retain(void* res) { atomic_fetch_add_explicit(&((VkOwnRes*)res)->refs, 1, memory_order_relaxed); }
@@ -467,6 +500,7 @@ static void res_release(void* res) {
     u32 kept = g_vk_present - r->born;
     atomic_fetch_sub_explicit(&g_owned.live[r->by], 1, memory_order_relaxed);
     atomic_fetch_sub_explicit(&g_owned.live_bytes[r->by], r->size, memory_order_relaxed);
+    if (!r->host) atomic_fetch_sub_explicit(&g_owned.live_dev_bytes, r->size, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_owned.let_go[kept < 8      ? 0
                                               : kept < 120  ? 1
                                               : kept < 1200 ? 2
@@ -490,7 +524,13 @@ static void res_free_buffer(VkOwnRes* r) {
     /* the frame recording may still copy from it: the pool keeps it from the next result until the GPU has done what
        is recorded now. A full pool has it destroyed with the frame, as before the pool */
     /* one in system memory goes with the frame too: the next result is made in the device's, when it has room */
-    if (r->host || !own_pool_put(r->buf, r->mem, r->size)) vk_defer_buffer(r->buf, r->mem);
+    if (r->host || r->no_pool || !own_pool_put(r->buf, r->mem, r->size)) {
+        vk_defer_buffer(r->buf, r->mem);
+        if (!r->host) {
+            vk_defer_bytes(r->size);
+            if (vk_devmem_emptying()) vk_defer_moved(r->size);
+        }
+    }
     free(r);
 }
 int vk_own_later_any(void) { return atomic_load_explicit(&g_owned.later, memory_order_acquire) != NULL; }

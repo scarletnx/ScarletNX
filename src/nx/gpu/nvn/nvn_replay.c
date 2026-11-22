@@ -285,14 +285,18 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                queue's draws, else a made-up count where it can't count; the timestamp types put 0 in the counter, as
                the game's driver writes them (a report of payload 0). One game makes each conditional clear of a target
                run once a frame that way: it sets the counter to 1, clears when it differs from the word 16 bytes on,
-               and then reports a timestamp over it */
+               and then reports a timestamp over it. A timestamp type's time is the host GPU's (vk/stamp.c): a game
+               times its frame with two of them and sizes its rendering by the span */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
             u64 ticks = guest_gpu_ticks();
             if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
             snx_st_le64(v + 8, ticks);
-            gpu_release_write(r->address, v, sizeof v);
+            if (r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP)
+                gpu_release_stamp(r->address, v, r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
+            else
+                gpu_release_write(r->address, v, sizeof v);
             break;
         }
         case OP_SIGNAL_EVENT: {

@@ -183,6 +183,13 @@ void vk_gpuprof_waited(u64 value, int kind) {
     (void)value;
     (void)kind;
 }
+/* and stamp.c's report timestamps, which no report here asks for */
+void vk_stamp_cb_begin(VkCommandBuffer cb) { (void)cb; }
+void vk_stamp_cb_end(VkCommandBuffer cb, u64 value) {
+    (void)cb;
+    (void)value;
+}
+void vk_stamp_fold(u64 done) { (void)done; }
 /* and record.c's dispatches and transfers, which it would time, and the block linear moves' callers */
 void vk_gpuprof_tag(u64 key) { (void)key; }
 void vk_gpuprof_tag_at(u64 key, const void* site) { (void)key, (void)site; }

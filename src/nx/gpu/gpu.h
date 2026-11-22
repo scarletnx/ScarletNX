@@ -382,6 +382,13 @@ void gpu_signal_point(void);   /* the GPU is about to do something the game can 
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is
    the bytes as guest memory gets them, so its numbers are little-endian already */
 void gpu_release_write(u64 gva, const void* data, u32 len);
+/* a 16-byte timestamp report (NVN's timestamp counter): as gpu_release_write, with the time the host GPU reached it
+   in place of the ticks at offset 8 where the renderer can time it (renderer.h release_stamp). top: TIMESTAMP_TOP */
+void gpu_release_stamp(u64 gva, const void* data, int top);
+/* a timestamp report at guest address cpu gets the GPU's time before the game reads it. may_wait 0: it does what needs
+   no wait, and returns 1 when the report still waits for its submission. may_wait 1: it waits for that submission, so
+   the caller leaves the guest core first. Returns 0 when nothing is left to do */
+int gpu_release_stamp_sync(u64 cpu, int may_wait);
 
 /* the engines' methods (engines.c, compute.c, fermi2d.c, dma.c): m is the method, last marks a batch's last word */
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last);
@@ -517,6 +524,10 @@ void gpu_poll_stats(GpuPollStats* s);
 /* the GPU thread's wall time outside its wait for work so far, in ns: replay, setup and recording, the waits inside
    them (locks, fences) included */
 u64 gpu_thread_busy_ns(void);
+/* the guest time at which the work the GPU thread runs became ready: its queueing, or the end of a wait it was held
+   for, 0 before any. A console's GPU starts work then or when the work before it ends, whichever is later, and report
+   timestamps place the host GPU's work so (vk/stamp.c). Any thread */
+u64 gpu_ready_ns(void);
 /* the CPU signals what a GPU stream may wait for (an NVN event, a syncpoint increment through nvhost-ctrl): what it
    wrote before is for the work after the wait to see (renderer.h mem_may_have_changed). Before the signal, any thread */
 void gpu_cpu_signal(void);

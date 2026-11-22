@@ -33,6 +33,7 @@ int vk_buf_pending(u64, u64);
 int vk_compute_pending(u64, u64);
 int vk_gfx_image_pending(u64, u64);
 int vk_uma_pending(u64, u64);
+void vk_uma_before_write(u64, u64);
 int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
@@ -43,6 +44,10 @@ u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 u64 vk_query_peek(u32, u64, u64);
+u64 vk_stamp_report(int top);
+int vk_stamp_ticks(u64 n, u64* ticks);
+u64 vk_stamp_submit_of(u64 n);
+void vk_stamp_fold(u64 done);
 #define VK_PRED_EQUAL 0x80000000u
 #define VK_QUERY_COUNTERS 8
 enum { VK_PRED_PREV_NONE, VK_PRED_PREV_ZERO, VK_PRED_PREV_NONZERO, VK_PRED_PREV_SLOT };
@@ -266,6 +271,10 @@ int vk_uma_pending(u64 a, u64 n) { /* no unified memory here */
     return 0;
 }
 void gmem_read_raw(u64 address, void* data, u64 size) { memcpy(data, memory + gmmu_translate(address), size); }
+void vk_uma_before_write(u64 a, u64 n) {
+    (void)a;
+    (void)n;
+}
 int vk_buf_pending_unsubmitted(void) { return unsubmitted; }
 /* a submit: what was recorded becomes the last submission */
 void vk_submit(u64 a, u64 b, u64 c) {
@@ -285,6 +294,32 @@ u64 vk_query_value(u32 counter, u64 first, u64 end) {
 u64 vk_query_peek(u32 counter, u64 first, u64 end) {
     assert(lock_depth && counter == 3);
     return (end - first) * 100 + first;
+}
+/* stamp.c's report timestamps: timestamp n of submission stamp_sub[n], its ticks n * 1000 once the GPU has done
+   submissions through stamp_done */
+static u64 stamp_next, stamp_sub[16], stamp_done;
+u64 vk_stamp_report(int top) {
+    (void)top;
+    assert(lock_depth && stamp_next + 1 < 16);
+    stamp_sub[++stamp_next] = next_graphics + 1; /* the submission being recorded */
+    return stamp_next;
+}
+int vk_stamp_ticks(u64 n, u64* ticks) {
+    assert(lock_depth);
+    if (!n) return 0;
+    if (stamp_sub[n] > stamp_done) return -1;
+    *ticks = n * 1000;
+    return 1;
+}
+u64 vk_stamp_submit_of(u64 n) {
+    assert(lock_depth);
+    if (!n || stamp_sub[n] <= stamp_done) return 0;
+    if (stamp_sub[n] > next_graphics) next_graphics = stamp_sub[n];
+    return stamp_sub[n];
+}
+void vk_stamp_fold(u64 done) {
+    assert(lock_depth);
+    if (done > stamp_done) stamp_done = done;
 }
 /* render enable predicates (query.c): a report of segments [first, end) gets slot first when its count isn't known,
    else the count's zeroness comes from job_known */
@@ -500,6 +535,44 @@ int main(void) {
     vk_release_drain();
     u32 word = snx_ld_le32(memory + 1 + 0x30);
     assert(query_reads == 2 && word == 207 && memory[1 + 0x34] == 0);
+    /* a timestamp report goes at the stream's stop with the GPU thread's ticks, without waiting for its submission
+       (the game's fences after it would wait too), and gets the GPU's time once that is done: where a later write
+       changed its bytes, they stay */
+    pending = other_pending = 0;
+    before = submits;
+    u8 stamp[16] = {0};
+    snx_st_le64(stamp + 8, 0x55);
+    vk_release_stamp(0x10050, stamp, 0);
+    const u64 stamped = stamp_next;
+    snx_st_le64(stamp + 8, 0x66);
+    vk_release_stamp(0x10060, stamp, 1);
+    vk_release_submit();
+    assert(g_rhead == g_rtail && submits == before && snx_ld_le64(memory + 1 + 0x58) == 0x55 &&
+           snx_ld_le64(memory + 1 + 0x68) == 0x66);
+    memory[1 + 0x68] = 0xAA; /* the game writes over the second */
+    vk_release_submit(); /* its submission isn't done */
+    assert(snx_ld_le64(memory + 1 + 0x58) == 0x55);
+    stamp_done = stamp_sub[stamp_next];
+    vk_release_submit();
+    assert(snx_ld_le64(memory + 1 + 0x58) == stamped * 1000 && memory[1 + 0x68] == 0xAA &&
+           snx_ld_le64(memory + 1 + 0x50) == 0);
+    /* vk_release_stamp_sync: no-op for an address with no pending fixup, and waits+folds+fixes for a pending one */
+    vk_submit(0, 0, 0);
+    snx_st_le64(stamp + 8, 0x77);
+    vk_release_stamp(0x10070, stamp, 0);
+    const u64 stamped2 = stamp_next;
+    vk_release_submit();
+    assert(snx_ld_le64(memory + 1 + 0x78) == 0x77);
+    const u64 waited_before = waited_graphics;
+    /* unrelated address: lock-free fast path, no wait */
+    assert(!vk_release_stamp_sync(gmmu_translate(0x10080), 1));
+    assert(waited_graphics == waited_before && snx_ld_le64(memory + 1 + 0x78) == 0x77);
+    /* matching address without a wait: it says that a wait is left, and doesn't wait */
+    assert(vk_release_stamp_sync(gmmu_translate(0x10070), 0) == 1);
+    assert(waited_graphics == waited_before && snx_ld_le64(memory + 1 + 0x78) == 0x77);
+    /* with a wait: submits, waits, folds, and applies the fix */
+    assert(!vk_release_stamp_sync(gmmu_translate(0x10070), 1));
+    assert(waited_graphics >= stamp_sub[stamped2] && snx_ld_le64(memory + 1 + 0x78) == stamped2 * 1000);
     /* a release after storage results in the submit being recorded waits for that submit the same way, without
        submitting it: the end of the GPFIFO submission does */
     pending = unsubmitted = 1;

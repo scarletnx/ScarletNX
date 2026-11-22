@@ -222,6 +222,8 @@ u32 gpu_textures_ended(u64* out, u32 cap) { return 0; }
 /* the buffer cache and the ASTC and BC7 forms of textures: nothing held there */
 u64 vk_buf_reclaim(u32 before, u64 want) { return 0; }
 void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {}
+void vk_stamp_runtime_begin(void) {}
+void vk_stamp_runtime_end(void) {}
 int vk_astc_bc7(void) { return 0; }
 void vk_astc_forget(const Surf* t, u32 level) {}
 u64 vk_astc_rgba8_bytes(void) { return 0; }

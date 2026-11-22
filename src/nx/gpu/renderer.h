@@ -146,6 +146,11 @@ typedef struct Renderer {
        happen later, in order with the other releases). data is guest bytes, its numbers little-endian already: the
        front end converted them. NULL: written now, after landing everything */
     void (*release_write)(u64 gva, const void* data, u32 len);
+    /* a 16-byte timestamp report, as release_write, with the time the host GPU reached it at offset 8 in place of the
+       ticks there (top: the time the work reached the top of the pipe). NULL: release_write */
+    void (*release_stamp)(u64 gva, const void* data, int top);
+    /* a timestamp report at guest address cpu gets the GPU's time before a counter read (gpu_release_stamp_sync) */
+    int (*release_stamp_sync)(u64 cpu, int may_wait);
     /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
     void (*release_need)(u64 a, u64 n);
     /* the stream reads [a, a + n) as it stands after every release before it: 1 when it read guest memory with the

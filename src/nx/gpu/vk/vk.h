@@ -318,6 +318,7 @@ typedef struct {
     _Atomic int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     u32 compute_timestamp_bits; /* the compute queue family's (astc.c's stream times its encodes there) */
+    int has_host_query_reset; /* Vulkan 1.2's hostQueryReset, on: stamp.c resets its timestamps from the host */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
     /* VK_EXT_pageable_device_local_memory with VK_EXT_memory_priority: where the GPU's own memory is short, the driver
@@ -1782,6 +1783,7 @@ typedef struct VkOwnRes {
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
+    u8 no_pool;  /* landed by vk_own_trim for the budget: deferred back to the heap instead of pooled */
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
     /* buf's device address, 0 until an indirect copy or an in-place read asks for it (owned.c res_addr) */
     VkDeviceAddress addr;
@@ -2682,6 +2684,13 @@ void vk_release_incr(u32 id);
 /* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's counter's
    segments [first, end), once the GPU has done the submit being recorded */
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks);
+/* renderer.h release_stamp: a 16-byte timestamp report, its ticks at offset 8 from stamp.c once its submission is done
+   (top: NVN's TIMESTAMP_TOP, the time the work reached the top of the pipe) */
+void vk_release_stamp(u64 gva, const void* data, int top);
+/* renderer.h release_stamp_sync (gpu_release_stamp_sync): with no fix pending for cpu's tag, it returns at once without
+   vk_lock */
+int vk_release_stamp_sync(u64 cpu, int may_wait);
+void vk_release_stamp_reset(void); /* drop pending fixups on save-state load (vkr_reset) */
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 /* Counts the points after which a draw must see in its textures what earlier draws wrote: the guest's texture barriers
@@ -3594,6 +3603,22 @@ void vk_gpuprof_fill_totals(u64* subs, u64* fill_ns);
 extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
+/* stamp.c: the timestamps of NVN's timestamp reports from the host GPU's busy time. A command buffer's start (vk_cmd)
+   and its end (submitted as the graphics timeline's value). A report's timestamp in the command buffer being recorded:
+   0 for none, and the report keeps the GPU thread's time. Its value in GPU ticks: 1 with it, -1 while its submission
+   isn't done, 0 when it has none. The submissions done through done fold their timestamps into values */
+void vk_stamp_cb_begin(VkCommandBuffer cb);
+void vk_stamp_cb_end(VkCommandBuffer cb, u64 value);
+u64 vk_stamp_report(int top);
+int vk_stamp_ticks(u64 n, u64* ticks);
+/* submission number on the graphics timeline that holds timestamp n (submitting the open command buffer if n is in it),
+   0 if already folded or unknown */
+u64 vk_stamp_submit_of(u64 n);
+void vk_stamp_fold(u64 done);
+/* the runtime's own GPU work recorded between these, which the reports' times leave out (stamp.c); they nest */
+void vk_stamp_runtime_begin(void);
+void vk_stamp_runtime_end(void);
+void vk_stamp_reset(void); /* clear timeline epoch on save-state load (vkr_reset) */
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
 int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */

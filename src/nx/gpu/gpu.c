@@ -44,6 +44,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
 
 GpuState g_gpu;
@@ -328,6 +329,16 @@ void gpu_release_write(u64 gva, const void* data, u32 len) {
     }
     gpu_signal_point();
     gmem_write(gva, data, len);
+}
+void gpu_release_stamp(u64 gva, const void* data, int top) {
+    if (g_renderer->release_stamp) {
+        g_renderer->release_stamp(gva, data, top);
+        return;
+    }
+    gpu_release_write(gva, data, 16);
+}
+int gpu_release_stamp_sync(u64 cpu, int may_wait) {
+    return g_renderer->release_stamp_sync ? g_renderer->release_stamp_sync(cpu, may_wait) : 0;
 }
 void gpu_mem_changed(u64 cpu_addr, u64 len) {
     if (g_gpu_mem_changed) g_gpu_mem_changed(cpu_addr, len);
@@ -798,6 +809,9 @@ struct GpuItem {
     int started;
     u32* late; /* the entries the GPU thread fetched: [late_first, late_end) */
     u32 late_cap, late_first, late_end;
+    /* the guest time it could run from: its queueing, or 0 after a wait it missed, and then the time it next runs
+       (gpu_ready_ns) */
+    u64 ready_ns;
 };
 #define QUEUE_ROOM       256                /* runnable jobs at most: jobs of a waiting channel don't count */
 #define GPU_THREAD_STACK ((size_t)16 << 20) /* the GPU thread's stack: 16 MiB */
@@ -993,6 +1007,13 @@ static u32 runnable(void) {
     return n;
 }
 static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0, or a stream waits for memory */
+static _Atomic u64 g_ready_ns; /* gpu_ready_ns */
+u64 gpu_ready_ns(void) { return atomic_load_explicit(&g_ready_ns, memory_order_relaxed); }
+/* it runs now: the time its work became ready, for report timestamps (vk/stamp.c) */
+static void run_ready(GpuItem* it) {
+    if (!it->ready_ns) it->ready_ns = guest_ns();
+    atomic_store_explicit(&g_ready_ns, it->ready_ns, memory_order_relaxed);
+}
 /* one pass over the queue, its lock held (dropped while an item runs): 1 when something ran. *wake is the time to
    look again at the waits */
 static int run_pass(i64* wake) {
@@ -1006,13 +1027,18 @@ static int run_pass(i64* wake) {
         int done;
         if (it->poll) {
             u64 lane = 1ull << it->lane;
-            if (calls_blocked || (lanes_blocked & lane)) continue;
+            if (calls_blocked || (lanes_blocked & lane)) {
+                it->ready_ns = 0; /* behind a wait: ready when it next runs */
+                continue;
+            }
+            run_ready(it);
             pm_unlock(&g_qlk);
             g_qwhy = GPU_POLL_OTHER;
             done = it->poll(it->arg);
             pm_lock(&g_qlk);
             if (!done) {
                 lanes_blocked |= lane;
+                it->ready_ns = 0; /* it waits: ready again when the wait ends */
                 g_qpstat.misses[g_qwhy < GPU_POLL_N ? g_qwhy : GPU_POLL_OTHER]++;
                 if (*wake < 0 || *wake > (i64)WAIT_POLL_NS) *wake = WAIT_POLL_NS;
                 g_qmissed = 1;
@@ -1034,6 +1060,7 @@ static int run_pass(i64* wake) {
                 if (it->chans[k] < GPU_CHANNELS && blocked[it->chans[k]]) ok = 0;
             if (!ok) { /* calls keep their order */
                 calls_blocked = 1;
+                it->ready_ns = 0;
                 continue;
             }
             if (prev)
@@ -1041,6 +1068,7 @@ static int run_pass(i64* wake) {
             else
                 g_qhead = it->next;
             if (g_qtail == it) g_qtail = prev;
+            run_ready(it);
             pm_unlock(&g_qlk);
             if (g_renderer->ready) g_renderer->ready();
             SNX_ZONE(z_call, "gpu call");
@@ -1050,7 +1078,10 @@ static int run_pass(i64* wake) {
             pm_lock(&g_qlk);
             return 1;
         }
-        if (blocked[it->chan]) continue;
+        if (blocked[it->chan]) { /* an older job of its channel waits: the pass returns after one that runs */
+            it->ready_ns = 0;
+            continue;
+        }
         blocked[it->chan] = 1;
         ch = g_gpu.chan[it->chan];
         if (atomic_load_explicit(&g_qparked[it->chan], memory_order_relaxed)) {
@@ -1066,10 +1097,12 @@ static int run_pass(i64* wake) {
                 if (atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_SEMAPHORE ||
                     atomic_load_explicit(&ch->park, memory_order_relaxed) == GPU_PARK_REPORT)
                     g_qmissed = 1;
+                it->ready_ns = 0;
                 continue;
             }
             atomic_store_explicit(&g_qparked[it->chan], 0, memory_order_relaxed);
         }
+        run_ready(it);
         pm_unlock(&g_qlk);
         if (g_renderer->ready) g_renderer->ready();
         atomic_store_explicit(&g_run_since, plat_ns(), memory_order_relaxed);
@@ -1086,9 +1119,10 @@ static int run_pass(i64* wake) {
 
         atomic_store_explicit(&g_run_chan, 0, memory_order_release);
         pm_lock(&g_qlk);
-        if (!done)
+        if (!done) {
             atomic_store_explicit(&g_qparked[it->chan], 1, memory_order_relaxed); /* its jobs make room for others */
-        else {
+            it->ready_ns = 0;
+        } else {
             if (prev)
                 prev->next = it->next;
             else
@@ -1220,6 +1254,7 @@ static void queue_append(GpuItem* it) {
     else
         g_qhead = it;
     g_qtail = it;
+    it->ready_ns = guest_ns();
     g_qgen++;
     if (!atomic_load_explicit(&g_qthread, memory_order_relaxed)) {
         atomic_store_explicit(&g_qthread, 1, memory_order_relaxed);

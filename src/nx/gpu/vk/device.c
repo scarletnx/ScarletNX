@@ -1798,6 +1798,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
+    g_vk.has_host_query_reset = q12.hostQueryReset != 0; /* stamp.c's report timestamps */
     /* the texture table of SM86 programs (table.c): one set that the renderer writes while draws that bind it are
        pending, with slots that hold nothing yet. vk_pipeline_init decides with the limits and the other caps */
     /* SM86 programs' global memory by device address (ShCaps.gbuf_address, with the texture table): the buffers its
@@ -1812,6 +1813,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
         .samplerFilterMinmax = q12.samplerFilterMinmax,
         .timelineSemaphore = VK_TRUE,
+        .hostQueryReset = q12.hostQueryReset,
         .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support ||
                                g_vk.has_copy_indirect || g_vk.has_inplace_loads || g_vk.has_gbuf_address,
         .shaderFloat16 = q12.shaderFloat16,

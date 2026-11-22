@@ -605,6 +605,7 @@ VkCommandBuffer vk_cmd(void) {
         }
         vk_rec_begin(f->cbs[f->icb]);
         vk_gpuprof_cb_begin(f->cbs[f->icb]);
+        vk_stamp_cb_begin(f->cbs[f->icb]);
         f->recording = 1;
         g_cb_begun++;
     }
@@ -1194,6 +1195,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     if (xs) s[1] = *xs;
     vk_ck(cb, VK_CK_SUBMIT, (u32)why, 0, 0, 0);
     vk_gpuprof_cb_end(cb, why, atomic_load_explicit(&g_gval, memory_order_relaxed) + 1);
+    vk_stamp_cb_end(cb, atomic_load_explicit(&g_gval, memory_order_relaxed) + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
     vk_rec_submit(up, cb, w, nw, s, xs ? 2u : 1u);
@@ -1210,10 +1212,12 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     g_rec_unsafe--;
     /* results of submissions the GPU has finished land now, so a later release doesn't find them pending */
     u64 done = 0;
-    if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)))
+    if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done))) {
         land_through(done < atomic_load_explicit(&g_gval, memory_order_relaxed)
                          ? done
                          : atomic_load_explicit(&g_gval, memory_order_relaxed));
+        vk_stamp_fold(done); /* their report timestamps' values, and their queries free again */
+    }
     SNX_ZONE_END(z_submit);
 }
 
