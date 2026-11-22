@@ -65,9 +65,12 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
         VkDescriptorBufferInfo info[34];
         for (u32 i = 0; i < count; i++) {
             info[i] = (VkDescriptorBufferInfo){buffer, offset + i * align, 16};
-            writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstBinding = i, .descriptorCount = 1,
-                .descriptorType = i < 18 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            writes[i] = (VkWriteDescriptorSet){
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstBinding = i,
+                .descriptorCount = 1,
+                /* the vertex set's types: its dynamic constant buffers too (cb_dynamic.h) */
+                .descriptorType = i < 18 ? vk_cb_dynamic_type(0, i) : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .pBufferInfo = &info[i]};
         }
         for (u32 i = 0; i < images; i++)
@@ -96,7 +99,9 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
                 : vk_rec_new_set(g_vk_dslayout[indexed != 0][0], count + images + (indexed ? 2 : 0), writes);
             CHECK(set);
             cb = vk_cmd();
-            vk_descriptors_bind(cb, vk_playout(indexed ? 1 : 0), 0, 1, &set);
+            static const u32 no_moves[VK_CB_DYNAMIC_SLOTS]; /* each dynamic slot at its descriptor's offset */
+            vk_descriptors_bind(cb, vk_playout(indexed ? 1 : 0), 0, 1, &set, snx_popcount64(g_cb_dynamic.mask[0]),
+                                no_moves);
         }
         vk_finish(); /* include the recording thread's allocation, descriptor updates and command recording */
         u64 took = plat_ns() - start;

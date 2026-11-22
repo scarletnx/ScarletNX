@@ -1538,7 +1538,7 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
         said[3]; /* the line of each kind of pool once: compute's, a frame's, a frame's for more arrays */
     VkDescriptorPoolSize sz[VK_POOL_TYPES];
     VkDescriptorPoolCreateInfo ci = {0};
-    vk_pool_sizes(sz, 1024, array_sets);
+    const u32 types = vk_pool_sizes(sz, 1024, array_sets);
     if (!atomic_exchange_explicit(&said[!array_sets                        ? 0
                                         : array_sets == VK_POOL_ARRAY_SETS ? 1
                                                                            : 2],
@@ -1546,13 +1546,13 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
         char arrays[96]; /* the arrays the sets hold, which a device without them leaves out (vk_pool_sizes) */
         snx_vk_pool_arrays_text(arrays, sizeof arrays, array_sets, vk_texture_array_elements());
         LOG("vulkan: descriptor pools of 1024 sets, %s: %u uniform and %u storage buffers, %u combined image samplers, "
-            "%u storage images, %u texel buffers, %u sampled images\n",
+            "%u storage images, %u texel buffers, %u sampled images, %u dynamic uniform buffers\n",
             arrays, sz[0].descriptorCount, sz[1].descriptorCount, sz[2].descriptorCount, sz[3].descriptorCount,
-            sz[4].descriptorCount, sz[5].descriptorCount);
+            sz[4].descriptorCount, sz[5].descriptorCount, sz[6].descriptorCount);
     }
     ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ci.maxSets = 1024;
-    ci.poolSizeCount = VK_POOL_TYPES;
+    ci.poolSizeCount = types;
     ci.pPoolSizes = sz;
     VkDescriptorPool p = VK_NULL_HANDLE;
     if (VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &p)))

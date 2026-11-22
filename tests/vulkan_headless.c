@@ -22,6 +22,7 @@
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/cb_dynamic.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
@@ -389,10 +390,10 @@ static int check_desc_pool_arrays(void) {
     /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
     u32 held[2][2];
     for (int kind = 0; kind < 2; kind++) {
-        vk_pool_sizes(sz, 1024, kinds[kind]);
+        const u32 types = vk_pool_sizes(sz, 1024, kinds[kind]);
         VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                          .maxSets = 1024,
-                                         .poolSizeCount = VK_POOL_TYPES,
+                                         .poolSizeCount = types,
                                          .pPoolSizes = sz};
         for (int arrays = 0; arrays < 2; arrays++) {
             VkDescriptorPool pool;
