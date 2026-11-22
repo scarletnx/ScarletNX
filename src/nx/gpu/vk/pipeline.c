@@ -240,6 +240,7 @@ static struct {
     PMutex pj_lock;
     PCond pj_work, pj_done;
     int pj_started, pj_threads, pj_busy; /* pj_busy: the workers making a pipeline now */
+    int held; /* a test's hold (vk_pipeline_hold): the workers take no job */
     struct {
         /* the table: the GPU thread adds the parts of a draw's pipelines, the file's reading thread those of the file's
            */
@@ -2429,9 +2430,9 @@ static void pipe_worker(void* low) {
         Pipe* e;
         VkPipeline p;
         pm_lock(&g_pipeline.pj_lock);
-        while (!g_pipeline.pj_head && !g_pipeline.pw_head &&
+        while (g_pipeline.held || (!g_pipeline.pj_head && !g_pipeline.pw_head &&
                !(g_pipeline.po_head && g_pipeline.po_busy < PIPE_OPT_WORKERS) &&
-               !(g_pipeline.warm_head && g_pipeline.warm_busy < WARM_WORKERS))
+               !(g_pipeline.warm_head && g_pipeline.warm_busy < WARM_WORKERS)))
             pc_wait(&g_pipeline.pj_work, &g_pipeline.pj_lock, -1);
         if (!g_pipeline.pj_head && !g_pipeline.pw_head &&
             !(g_pipeline.po_head && g_pipeline.po_busy < PIPE_OPT_WORKERS)) {
@@ -2491,6 +2492,12 @@ static void pipe_worker(void* low) {
         pc_broadcast(&g_pipeline.pj_done);
         pm_unlock(&g_pipeline.pj_lock);
     }
+}
+void vk_pipeline_hold(int on) {
+    pm_lock(&g_pipeline.pj_lock);
+    g_pipeline.held = on;
+    if (!on) pc_broadcast(&g_pipeline.pj_work);
+    pm_unlock(&g_pipeline.pj_lock);
 }
 void vk_pipeline_quiesce(void) {
     if (g_pipeline.pf
