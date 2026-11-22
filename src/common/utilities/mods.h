@@ -62,10 +62,14 @@ typedef struct {
     int aot;
     unsigned long long found, code;
 } SnxGameMade;
-/* made as the line the stamp ends with, its "\n" first, owned */
-char* snx_game_made_line(const SnxGameMade* made);
+/* made as the line the stamp ends with, its "\n" first, owned; off, the recompile's settings off their default that change
+   the code it makes (settings.txt's perf, ini_perf_keys' list), after " off=" where it names any: none for NULL or "" */
+char* snx_game_made_line(const SnxGameMade* made, const char* off);
 /* the size of the stamp proper in a <name>.abi's text: what comes before its made line (the last "\nmade "), else all */
 size_t snx_game_stamp_size(const char* text, size_t size);
 /* the made line of the game at base's <base>.abi in made: 1, else 0 with made unknown (no stamp, or one without it) */
 int snx_game_made_read(const char* base, SnxGameMade* made);
+/* the off list of the game at base's made line (snx_game_made_line's), owned: NULL for no stamp, no made line or one
+   without it (an older version's, or nothing off its default) */
+char* snx_game_made_off(const char* base);
 #endif

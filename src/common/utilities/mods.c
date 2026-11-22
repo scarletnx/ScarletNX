@@ -201,14 +201,37 @@ int snx_game_stamp_is(const char* base, const char* expected) {
     free(stamp);
     return same;
 }
-char* snx_game_made_line(const SnxGameMade* made) {
-    return snx_format("\nmade opt=%c aot=%d found=%llu code=%llu\n", made->opt ? made->opt : '?', made->aot,
-                      made->found, made->code);
+char* snx_game_made_line(const SnxGameMade* made, const char* off) {
+    return snx_format("\nmade opt=%c aot=%d found=%llu code=%llu%s%s\n", made->opt ? made->opt : '?', made->aot,
+                      made->found, made->code, off && off[0] ? " off=" : "", off && off[0] ? off : "");
 }
 size_t snx_game_stamp_size(const char* text, size_t size) {
     for (size_t i = size; i-- > 0;)
         if (text[i] == '\n' && size - i > 6 && !memcmp(text + i + 1, "made ", 5)) return i;
     return size;
+}
+char* snx_game_made_off(const char* base) {
+    char* stamp = snx_format("%s.abi", base);
+    size_t size = 0;
+    char* text = (char*)snx_read_file(stamp, &size);
+    char *off = NULL, *line, *end;
+    free(stamp);
+    if (!text) return NULL;
+    line = text + snx_game_stamp_size(text, size);
+    /* the made line, to its end: " off=" there, its list to the next blank or the line's end */
+    if (line < text + size) {
+        end = memchr(line + 1, '\n', size - (size_t)(line + 1 - text));
+        if (!end) end = text + size;
+        *end = 0;
+        off = strstr(line, " off=");
+    }
+    if (off) {
+        off += 5;
+        off[strcspn(off, " \r")] = 0;
+        off = snx_strdup(off);
+    }
+    free(text);
+    return off;
 }
 int snx_game_made_read(const char* base, SnxGameMade* made) {
     char* stamp = snx_format("%s.abi", base);
