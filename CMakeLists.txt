@@ -16,11 +16,12 @@ cmake_minimum_required(VERSION 3.28)
 cmake_policy(VERSION 3.25)
 
 # Clang only: the runtime, the generated game code and the third-party libraries are built and tested with one
-# compiler. It is the default here, so a plain `cmake -B build` picks it over the system's cc
-if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+# compiler. It is the default here, so a plain `cmake -B build` picks it over the system's cc; a toolchain file names
+# its own, which project() reads only after this
+if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC} AND NOT CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_C_COMPILER clang)
 endif()
-if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX} AND NOT CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_CXX_COMPILER clang++)
 endif()
 project(ScarletNX LANGUAGES C CXX)
