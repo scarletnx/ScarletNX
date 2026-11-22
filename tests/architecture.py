@@ -741,6 +741,9 @@ DRIVER_CHOICES = {
             "gpu_pstate's boost on NVIDIA needs VK_NV_low_latency2 enabled: the vendor's own interface"
         ),
     },
+    'src/nx/gpu/vk/upscaler/dlss.cpp': {
+        'if (props.vendorID != 0x10DE) {': "DLSS is NVIDIA's own interface (Streamline): it runs on its GPUs alone",
+    },
     'src/nx/gpu/vk/ui.c': {
         'switch (g_vk.props.vendorID) {': "a GPU that renders in tiles, which no Vulkan property tells: the hardware's "
         'architecture by its maker, whatever driver runs it',
