@@ -3427,6 +3427,13 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-write-scan gnu23)
     target_link_libraries(snx-test-vk-write-scan PRIVATE snx_nx_flags)
     add_test(NAME vk_write_scan COMMAND snx-test-vk-write-scan)
+    # the pages a game wrote, from its write marks (gpu/vk/buffer.c, write_marks_scan=1) over a model of the marks:
+    # written in the next epoch after a mark, its neighbours not, the marks taken, a trapped page's mark kept
+    add_executable(snx-test-vk-write-marks-scan vk_write_marks_scan.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
+    snx_test_target(snx-test-vk-write-marks-scan gnu23)
+    target_link_libraries(snx-test-vk-write-marks-scan PRIVATE snx_nx_flags)
+    add_test(NAME vk_write_marks_scan COMMAND snx-test-vk-write-marks-scan)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
