@@ -124,8 +124,9 @@ static int check_recorder_self_sync(void) {
 
 /* A submission to the graphics queue from outside the ring (a compute batch's where the queue is shared, a landing's)
    waits for the ring's submissions before it (vk_rec_queue), not for the commands queued after the last of them: a
-   packet after the submission blocks until a thread lets it go, 3 s on, and vk_rec_queue returns before that. Before,
-   it drained the whole ring, and waited for the blocked packet */
+   packet after the submission blocks until a thread lets it go, 30 s on, and vk_rec_queue returns before that. Before,
+   it drained the whole ring, and waited for the blocked packet. The time bounds only a run that waits for that packet:
+   a passing one returns once the submission lands, so it is long enough that a slow runner is not taken for a failure */
 static _Atomic int g_rq_go;
 static void rq_block(const void* arg) {
     (void)arg;
@@ -133,7 +134,7 @@ static void rq_block(const void* arg) {
 }
 static void rq_go_later(void* arg) {
     (void)arg;
-    const u64 end = plat_ns() + 3000000000ull;
+    const u64 end = plat_ns() + 30000000000ull;
     while (plat_ns() < end && !atomic_load_explicit(&g_rq_go, memory_order_acquire)) plat_sleep_ns(1000000);
     atomic_store_explicit(&g_rq_go, 1, memory_order_release);
 }
@@ -150,17 +151,20 @@ static int check_rec_queue_submissions(void) {
     const u64 submitted = vk_last_submit();
     vk_rec_call(rq_block, &nothing, sizeof nothing);
     CHECK(!plat_thread(rq_go_later, NULL, 1u << 16));
+    const u64 t0 = plat_ns();
     vk_rec_queue(g_vk.gfx);
     const int early = !atomic_load_explicit(&g_rq_go, memory_order_acquire);
+    const u64 took = plat_ns() - t0;
     const u64 queued = vk_rec_gfx_queued();
     atomic_store_explicit(&g_rq_go, 1, memory_order_release);
     vk_rec_sync();
     vk_unlock();
     if (!early || queued < submitted)
         fprintf(stderr,
-                "ring before a queue: vk_rec_queue returned %s the packet after the submission ran, with "
+                "ring before a queue: vk_rec_queue returned %s the packet after the submission ran, in %llu ms, with "
                 "submission %llu on the queue (%llu made)\n",
-                early ? "before" : "after", (unsigned long long)queued, (unsigned long long)submitted);
+                early ? "before" : "after", (unsigned long long)(took / 1000000), (unsigned long long)queued,
+                (unsigned long long)submitted);
     CHECK(early && queued >= submitted);
     puts("ring before a queue: its submissions on the queue, not the commands after them");
     return 0;
