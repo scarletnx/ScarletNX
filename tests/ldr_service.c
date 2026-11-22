@@ -3,6 +3,7 @@
 /* Real ldr:ro and memory block list; only platform and IPC transport are fakes.
    No game assets, RSA keys or precompiled NRO host libraries are required. */
 #include "nx/memory/own.h"
+#include "common/utilities/common.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/gpu/gpu.h"
 #include "nx/hle/hle.c"
@@ -121,6 +122,11 @@ void jit_nro_removed(u64 base) {
 /* no guest files here (platform_posix tests them) */
 int plat_vm_files(u8* base, u64 size, const char* dir) {
     (void)base, (void)size, (void)dir;
+    return -1;
+}
+int snx_disk_room(const char* path, SnxU64* free_bytes, SnxU64* total) {
+    (void)path, (void)free_bytes, (void)total;
+    errno = ENOSYS;
     return -1;
 }
 /* no alias pool here: views are copies (memory_alias tests the pool) */
