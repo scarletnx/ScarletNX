@@ -1094,6 +1094,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_dma_log();
             vk_buf_frame_done_log();
             vk_lock_log();
+            vk_mirror_diff_log();
             {
                 /* what the caches hold, which vk_mem_trim keeps within the budget */
                 u32 nrt, ntex, nbuf, parked, none;

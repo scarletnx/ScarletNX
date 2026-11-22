@@ -23,6 +23,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "common/platform/time.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pipeline_parts.h"
@@ -1431,6 +1432,10 @@ static struct {
 } g_stats;
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
+/* for the statistics (the GPU plan's M12m): the nanoseconds of those copies, timed one in CB_TIME_EVERY and taken as
+   that many, so that the clock reads cost the copies little */
+#define CB_TIME_EVERY 16u
+static u64 g_cb_copied_ns;
 static u64 g_cb_padded; /* constant buffers by address padded with zeros past a short binding (cb_pad) */
 void vk_draw_counts(VkDrawCounts* c) {
     *c = g_stats.n;
@@ -1564,9 +1569,11 @@ void vk_render_stats_log(void) {
         (double)(n->top[VK_TOP_SCANNED] - w->top[VK_TOP_SCANNED]) / (double)presents,
         (double)(n->top_indices - w->top_indices) / (double)presents,
         (double)(n->top[VK_TOP_UNKNOWN] - w->top[VK_TOP_UNKNOWN]) / (double)presents);
-    LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present\n",
-        (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents);
-    g_cb_copied_bytes = 0;
+    LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present, %.3f ms a "
+        "present\n",
+        (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents,
+        (double)g_cb_copied_ns / 1e6 / (double)presents);
+    g_cb_copied_bytes = g_cb_copied_ns = 0;
     if (g_stats.restrided != g_stats.restrides)
         LOG("vulkan: %llu vertex streams restrided on the GPU in the last %llu presents, a dispatch that ended the "
             "rendering pass each: their strides are no multiple of their attributes' components, which the device "
@@ -2876,6 +2883,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
     u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
     if (a && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
         gmmu_run(a, sz, &cpu) == sz) {
+        u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
         u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
         if (!p) return 0;
         life = CB_FRAME;
@@ -2885,6 +2893,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuff
             if (!vk_buf_get_uniform_at(a, sz, align, buf, off)) return 0;
             life = CB_OWN;
         }
+        if (t_copy) g_cb_copied_ns += (plat_ns() - t_copy) * CB_TIME_EVERY;
         g_stats.n.cb[VK_CB_COPIED]++;
         g_cb_copied_bytes += sz;
     } else if (!(a ? vk_buf_get_uniform_at(a, sz, align, buf, off) : vk_buf_copy(a, sz, buf, off)))
