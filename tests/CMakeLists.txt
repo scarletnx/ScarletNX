@@ -1772,7 +1772,7 @@ if(NOT WIN32)
     add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
 endif()
 # the sync family's clocks (src/nx/hle/hook/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
-# by a pause and set by a state's load, system_clock the host's
+# by a pause and set by a state's load, system_clock the host's; and the cond_var family's C library waits
 add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/sync.c"
                "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
 snx_test_target(snx-test-sync-clock gnu23)
