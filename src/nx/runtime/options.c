@@ -510,42 +510,59 @@ static void value_said(const IniOpt* o, const char* v, char* out, size_t n) {
 }
 int options_kind_value(const char* key, const char* value, const char* kind) {
     const IniOpt* o = find_row(key, NULL);
-    const char *by, *now;
-    char now_said[96], kind_said[96], def_said[96], option[128], word[64];
+    const char* by;
+    char now[64], now_said[96], kind_said[96], def_said[96], def_word[64], other[16], other_said[96], option[128],
+        word[64];
+    int lo, hi, v, def, other_v = -1;
     size_t at;
     if (!o) {
         WARN("settings: %s is no setting, so %s's %s=%s does nothing\n", key, kind, key, value);
         return -1;
     }
-    if (!(o->flags & INI_STARTUP) || !o->def) {
-        /* a reload would put the files' value back over one read at any other time */
-        WARN("settings: %s is no setting with a default read when the game starts, so %s's %s=%s is not taken: "
-             "%s=%s this run\n",
-             key, kind, key, value, key, value_of(o) ? value_of(o) : "");
+    if (o->type == INI_TEXT)
+        snprintf(now, sizeof now, "%s", (const char*)o->var);
+    else
+        ini_format(o, now, sizeof now);
+    lo = (int)o->lo;
+    hi = (int)o->hi;
+    /* a reload would put the files' value back over one read at any other time */
+    if (!(o->flags & INI_STARTUP) || o->type != INI_INT || !o->words || !o->def || hi - lo != 2) {
+        WARN("settings: %s is no setting of three words read at the start whose default chooses between the other "
+             "two, so %s's %s=%s is not taken: %s=%s this run\n",
+             key, kind, key, value, key, now);
         return -1;
     }
+    v = (int)strtod(value, NULL);
+    def = (int)strtod(o->def, NULL);
     value_said(o, value, kind_said, sizeof kind_said);
-    if ((by = given_by(key)) != NULL) {
-        now = value_of(o);
+    value_said(o, o->def, def_said, sizeof def_said);
+    if (v < lo || v > hi || v == def) {
+        WARN("settings: %s's %s=%s is not one of the two values %s chooses between: %s=%s this run\n", kind, key, value,
+             def_said, key, now);
+        return -1;
+    }
+    for (int i = lo; i <= hi; i++)
+        if (i != def && i != v) other_v = i;
+    word_of(o, o->def, def_word, sizeof def_word);
+    if (!ini_at_default(o)) {
+        by = given_by(key);
         value_said(o, now, now_said, sizeof now_said);
-        if (o->type == INI_TEXT ? strcmp(now, value) != 0 : strtod(now, NULL) != strtod(value, NULL))
-            LOG("settings: %s=%s, %s, over the %s %s runs with\n", key, now_said, by, kind_said, kind);
+        if (strtod(now, NULL) != (double)v)
+            LOG("settings: %s=%s, %s, over the %s its %s gives %s\n", key, now_said, by ? by : "", kind_said, def_word,
+                kind);
         else
-            LOG("settings: %s=%s, %s, the value %s runs with too\n", key, now_said, by, kind);
+            LOG("settings: %s=%s, %s, the value its %s gives %s too\n", key, now_said, by ? by : "", def_word, kind);
         return 0;
     }
-    ini_read(o, value);
-    value_said(o, o->def, def_said, sizeof def_said);
-    ini_option(option, sizeof option, key, o->def);
-    word_of(o, o->def, word, sizeof word);
-    if (store_find(key))
-        LOG("settings: %s=%s this run, the value %s runs with: the game's .ini has %s=%s, its default, which picks "
-            "nothing; the game's own settings or %s run it %s\n",
-            key, kind_said, kind, key, def_said, option, word);
-    else
-        LOG("settings: %s=%s this run, the value %s runs with: no file nor command line gives it one; the game's own "
-            "settings or %s run it %s\n",
-            key, kind_said, kind, option, word);
+    /* the default given by a layer as itself, not a value it could not read (ini_read said that one) */
+    by = given_by(key);
+    if (!by || strtod(value_of(o), NULL) != (double)def) by = "its default";
+    snprintf(other, sizeof other, "%d", other_v);
+    value_said(o, other, other_said, sizeof other_said);
+    ini_option(option, sizeof option, key, other);
+    word_of(o, other, word, sizeof word);
+    LOG("settings: %s=%s, %s, gives %s %s this run; %s in the game's own settings, the launcher's or %s runs it %s\n",
+        key, def_said, by, kind, kind_said, other_said, option, word);
     word_of(o, value, word, sizeof word);
     at = strlen(g_kind.list);
     if (at + (at ? 2 : 0) + strlen(key) + 1 + strlen(word) >= sizeof g_kind.list) { /* left out, never cut */
@@ -1198,6 +1215,64 @@ static void write_tracking_hot_old(void) {
     }
 }
 
+int options_emulated_cores_old(const char* old, int given) {
+    if (!strcmp(old, "0")) return 0;
+    if (!strcmp(old, "1")) return given ? 1 : -1;
+    return -2;
+}
+/* emulated_cores, deprecated for emulated_cores_mode: the file's read while the file gives emulated_cores_mode no value,
+   into the store, which the file is written with, so the next run reads emulated_cores_mode; the command line's (the
+   launcher's for every game too, kept its) this run's emulated_cores_mode while the command line gives that one none */
+static void emulated_cores_old(void) {
+    static const char* const values[] = {"0", "1"};
+    static const char* const words[] = {"Off", "On"};
+    const Entry* file = store_find("emulated_cores");
+    const char *old = "emulated_cores", *given = override_of(old), *first = override_of("emulated_cores_mode");
+    const IniOpt* o = find_row("emulated_cores_mode", NULL);
+    int now, launcher;
+    if (!given) given = override_of(old = "emulated-cores"); /* the name, which the old key no longer has */
+    if (file && !store_find("emulated_cores_mode")) {
+        now = options_emulated_cores_old(file->value, 0);
+        if (now == -2)
+            WARN(
+                "settings: emulated_cores=%s, deprecated, is neither 0 nor 1: emulated_cores_mode takes its default, 2 "
+                "(Auto) (docs/user/deprecations.md)\n",
+                file->value);
+        else if (now == -1)
+            WARN(
+                "settings: emulated_cores=%s, deprecated, was its default: emulated_cores_mode takes its own, 2 (Auto), "
+                "Off for an Ounce program and On for the others (docs/user/deprecations.md)\n",
+                file->value);
+        else {
+            store_put("emulated_cores_mode", values[now]);
+            WARN("settings: emulated_cores=%s, deprecated, is emulated_cores_mode=%d (%s) now "
+                 "(docs/user/deprecations.md)\n",
+                 file->value, now, words[now]);
+        }
+    }
+    if (!given) return;
+    if (first) {
+        WARN("settings: --emulated_cores=%s is deprecated, and the command line gives --emulated-cores-mode=%s too: "
+             "emulated_cores_mode=%s this run (docs/user/deprecations.md)\n",
+             given, first, first);
+        return;
+    }
+    now = options_emulated_cores_old(given, 1);
+    if (now < 0) {
+        const char* by = given_by("emulated_cores_mode");
+        WARN("settings: --emulated_cores=%s, deprecated, is neither 0 nor 1: emulated_cores_mode=%s this run, %s "
+             "(docs/user/deprecations.md)\n",
+             given, value_of(o), by ? by : "its default (Auto)");
+        return;
+    }
+    launcher = g_over[override_at(old)].launcher;
+    ini_override("emulated_cores_mode", values[now]);
+    if (override_at("emulated_cores_mode") >= 0) g_over[override_at("emulated_cores_mode")].launcher = launcher;
+    WARN("settings: %s--emulated_cores=%s is deprecated: this run reads it as --emulated-cores-mode=%d (%s) "
+         "(docs/user/deprecations.md)\n",
+         launcher ? "the launcher's " : "", given, now, words[now]);
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -1329,10 +1404,11 @@ void ini_open(const char* path) {
     g_kind.n = 0;
     picks_path();
     ini_set_say(say_setting);
-    /* --vk_descriptors and --write_tracking_hot are read as their new keys, said there */
+    /* --vk_descriptors, --write_tracking_hot and --emulated_cores are read as their new keys, said there */
     for (i = 0; i < g_nover; i++)
         if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors") &&
-            strcmp(g_over[i].key, "write_tracking_hot") && strcmp(g_over[i].key, "write-tracking-hot"))
+            strcmp(g_over[i].key, "write_tracking_hot") && strcmp(g_over[i].key, "write-tracking-hot") &&
+            strcmp(g_over[i].key, "emulated_cores") && strcmp(g_over[i].key, "emulated-cores"))
             WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     launcher_picks();
     options_old_environment();
@@ -1344,6 +1420,7 @@ void ini_open(const char* path) {
              g_path, why);
         vk_descriptors_old(); /* the command line's */
         write_tracking_hot_old();
+        emulated_cores_old();
         apply_all();
         picks_said();
         options_old_environment_say();
@@ -1364,6 +1441,7 @@ void ini_open(const char* path) {
     compress_shader_cache_old();
     vk_descriptors_old();
     write_tracking_hot_old();
+    emulated_cores_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

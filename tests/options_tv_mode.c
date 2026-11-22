@@ -597,6 +597,71 @@ static void test_vk_descriptors_old(void) {
    is On, carried to the new key, and its 0, the default every .ini had written, leaves the new key at its own Auto; any
    other value is said with the default it leaves; the new key given, the old one is not read. On the command line 0
    is that run's Off, said, with no "not a setting", and the file keeps its own */
+/* emulated_cores (0 Off, 1 On; 1 by default) in an old .ini: 1, the default every game's .ini had written, leaves
+   emulated_cores_mode at its own Auto; 0 is Off. Said once: the file is written with emulated_cores_mode, and
+   emulated_cores under [Deprecated], which the next run does not read. --emulated_cores=N (either name) is this run's
+   --emulated-cores-mode=N, unless the command line gives that one too; another value is said with the one in effect */
+static void test_emulated_cores_old(void) {
+    char *text, *again;
+    CHECK(options_emulated_cores_old("0", 0) == 0 && options_emulated_cores_old("0", 1) == 0);
+    CHECK(options_emulated_cores_old("1", 0) == -1 && options_emulated_cores_old("1", 1) == 1);
+    CHECK(options_emulated_cores_old("2", 0) == -2 && options_emulated_cores_old("", 1) == -2);
+    g_test.write = 1;
+    text = open_ini("[Debug]\nemulated_cores=1\n");
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1, deprecated, was its default: emulated_cores_mode takes its "
+                              "own, 2 (Auto), Off for an Ounce program and On for the others "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nemulated_cores_mode=2\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nemulated_cores=1\n"));
+    again = open_ini(text); /* the next run: emulated_cores_mode given, emulated_cores not read again */
+    CHECK(!strstr(g_test.said, "settings: emulated_cores=") && again && strstr(again, "\nemulated_cores_mode=2\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Debug]\nemulated_cores=0\n");
+    CHECK(strstr(g_test.said, "settings: emulated_cores=0, deprecated, is emulated_cores_mode=0 (Off) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nemulated_cores_mode=0\n"));
+    free(text);
+    text = open_ini("[Debug]\nemulated_cores=yes\n");
+    CHECK(strstr(g_test.said, "settings: emulated_cores=yes, deprecated, is neither 0 nor 1: emulated_cores_mode takes "
+                              "its default, 2 (Auto) (docs/user/deprecations.md)\n"));
+    free(text);
+    text = open_ini("[Debug]\nemulated_cores=0\nemulated_cores_mode=1\n");
+    CHECK(!strstr(g_test.said, "settings: emulated_cores=") && text && strstr(text, "\nemulated_cores_mode=1\n"));
+    free(text);
+    ini_override("emulated_cores", "1");
+    text = open_ini("[Debug]\nemulated_cores_mode=2\n");
+    CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("emulated_cores_mode") &&
+          !strcmp(ini_overridden("emulated_cores_mode"), "1"));
+    CHECK(strstr(g_test.said, "settings: --emulated_cores=1 is deprecated: this run reads it as "
+                              "--emulated-cores-mode=1 (On) (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nemulated_cores_mode=2\n"));
+    free(text);
+    ini_override("emulated_cores", NULL);
+    ini_override("emulated_cores_mode", NULL);
+    ini_override("emulated-cores", "0"); /* the name, as a driver passes --emulated-cores=0 on */
+    text = open_ini("[Debug]\nemulated_cores_mode=2\n");
+    CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("emulated_cores_mode") &&
+          !strcmp(ini_overridden("emulated_cores_mode"), "0"));
+    free(text);
+    ini_override("emulated-cores", NULL);
+    ini_override("emulated_cores_mode", "1");
+    ini_override("emulated_cores", "0");
+    text = open_ini("[Debug]\nemulated_cores_mode=2\n");
+    CHECK(strstr(g_test.said,
+                 "settings: --emulated_cores=0 is deprecated, and the command line gives "
+                 "--emulated-cores-mode=1 too: emulated_cores_mode=1 this run (docs/user/deprecations.md)\n"));
+    free(text);
+    ini_override("emulated_cores_mode", NULL);
+    ini_override("emulated_cores", "5");
+    text = open_ini("[Debug]\nemulated_cores_mode=2\n");
+    CHECK(strstr(g_test.said,
+                 "settings: --emulated_cores=5, deprecated, is neither 0 nor 1: emulated_cores_mode=2 this "
+                 "run, its default (Auto) (docs/user/deprecations.md)\n"));
+    free(text);
+    ini_override("emulated_cores", NULL);
+    g_test.write = 0;
+}
 static void test_write_tracking_hot_old(void) {
     char *text, *again;
     CHECK(options_write_tracking_hot_old("1", 0) == 1 && options_write_tracking_hot_old("1", 1) == 1);
@@ -938,100 +1003,127 @@ static int picks_perf_run(void) {
     free(dir);
     return 0;
 }
-/* a value the runtime gives a kind of program (options_kind_value, an Ounce program's emulated_cores Off): taken where
-   no file nor command line gave one, the .ini's row at its default too (the file holds every row), said with what the
-   .ini has and how to run it at its default, and named on the notice's third line; the .ini keeps its own. A value the
-   game's .ini, its picks, this run's command line or the launcher gave stays, said with whose it is, and nothing is
-   named. Each run's list starts empty. Another key is refused with the value in effect. A process: emulated_cores is
-   read when the game starts, which only its first .ini sets */
-static int kind_open(const char* text, const char* picks_text, const char** said) {
+/* the value emulated_cores_mode's default, Auto, gives a kind of program (options_kind_value, an Ounce program's Off):
+   said with how to run it On, and named on the notice's third line, while the setting keeps its Auto, so the Debug list
+   at the top of the picture does not name it; the .ini keeps its own. Off or On from the game's .ini, its picks, this
+   run's command line or the launcher stays, said with whose it is, and nothing is named; an Auto picked is Auto. Each
+   run's list starts empty. Another key, or a value the default does not choose, is refused with the value in effect.
+   A process each: emulated_cores_mode is read when the game starts, which only a process's first .ini sets */
+static void kind_open(const char* text, const char* picks_text, int took, const char* line) {
     char *ini, *picks, *base, *dir = picks_game(text, picks_text, &ini, &picks);
-    int took;
+    g_test.write = 1;
     g_test.said[0] = 0;
     ini_open(ini);
-    took = options_kind_value("emulated_cores", "0", "an Ounce program");
-    *said = g_test.said + strlen(g_test.said);
+    CHECK(options_kind_value("emulated_cores_mode", "0", "an Ounce program") == took);
+    if (!strstr(g_test.said, line)) fprintf(stderr, "said:\n%s", g_test.said);
+    CHECK(strstr(g_test.said, line));
     CHECK((base = snx_path_join(dir, "game")));
-    options_perf_notice(base);
+    CHECK(options_perf_notice(base) == took && !strcmp(g_test.kind, took ? "emulated_cores_mode Off" : ""));
     CHECK(!snx_remove_tree(dir));
     free(base);
     free(ini);
     free(picks);
     free(dir);
-    return took;
 }
 static int picks_kind(void) {
-    const char* said;
-    char *ini, *picks, *text, *dir;
+    char *ini, *picks, *text, *dir, list[HUD_DEBUG_MAX];
+    /* the .ini every run writes, emulated_cores_mode at its default: the kind's Off, Auto kept */
+    dir = picks_game("[Debug]\nemulated_cores_mode=2\n", NULL, &ini, &picks);
     g_test.write = 1;
-    /* the .ini every run writes, emulated_cores at its default: the kind's Off, and the file keeps its 1 */
-    dir = picks_game("[Debug]\nemulated_cores=1\n", NULL, &ini, &picks);
     g_test.said[0] = 0;
     ini_open(ini);
-    CHECK(g_settings.emulated_cores == 1);
-    CHECK(options_kind_value("emulated_cores", "0", "an Ounce program") == 1 && g_settings.emulated_cores == 0);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off) this run, the value an Ounce program runs with: the "
-                              "game's .ini has emulated_cores=1 (On), its default, which picks nothing; the game's own "
-                              "settings or --emulated-cores=1 run it On\n"));
+    CHECK(options_kind_value("emulated_cores_mode", "0", "an Ounce program") == 1 &&
+          g_settings.emulated_cores_mode == 2);
+    CHECK(strstr(g_test.said,
+                 "settings: emulated_cores_mode=2 (Auto), its default, gives an Ounce program 0 (Off) this "
+                 "run; 1 (On) in the game's own settings, the launcher's or --emulated-cores-mode=1 runs it "
+                 "On\n"));
     CHECK((text = snx_path_join(dir, "game")));
-    CHECK(options_perf_notice(text) == 1 && !strcmp(g_test.kind, "emulated_cores Off") && !g_test.game[0] &&
+    CHECK(options_perf_notice(text) == 1 && !strcmp(g_test.kind, "emulated_cores_mode Off") && !g_test.game[0] &&
           !g_test.global[0]);
     free(text);
-    CHECK((text = file_text(ini)) && strstr(text, "\nemulated_cores=1\n"));
+    CHECK(!options_debug(0, list, sizeof list) || !strstr(list, "emulated_cores"));
+    CHECK((text = file_text(ini)) && strstr(text, "\nemulated_cores_mode=2\n"));
     free(text);
     CHECK(!snx_remove_tree(dir));
     free(ini);
     free(picks);
     free(dir);
-    /* a file with no row of it: nothing gave one */
-    CHECK(kind_open("[Audio]\nvolume=40\n", NULL, &said) == 1 && !strcmp(g_test.kind, "emulated_cores Off"));
-    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off) this run, the value an Ounce program runs with: no "
-                              "file nor command line gives it one; the game's own settings or --emulated-cores=1 run "
-                              "it On\n"));
-    /* given: whose, and the notice names nothing */
-    CHECK(kind_open("[Debug]\nemulated_cores=0\n", NULL, &said) == 0 && !g_test.kind[0]);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=0 (Off), the game's .ini's, the value an Ounce program runs "
-                              "with too\n"));
-    CHECK(kind_open("[Debug]\nemulated_cores=1\n", "[Debug]\nemulated_cores=1\n", &said) == 0 && !g_test.kind[0]);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), the game's own pick, over the 0 (Off) an Ounce program "
-                              "runs with\n"));
-    ini_override("emulated_cores", "1");
-    CHECK(kind_open("[Debug]\nemulated_cores=1\n", NULL, &said) == 0 && !g_test.kind[0]);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), this run's command line's, over the 0 (Off) an Ounce "
-                              "program runs with\n"));
-    ini_override(SNX_LAUNCHER_PICKS, "1"); /* the launcher's On for every game, which it passes once picked */
-    CHECK(kind_open("[Debug]\nemulated_cores=1\n", NULL, &said) == 0 && !g_test.kind[0]);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=1 (On), the launcher's, over the 0 (Off) an Ounce program runs "
-                              "with\n"));
-    ini_override("emulated_cores", NULL);
-    ini_override(SNX_LAUNCHER_PICKS, NULL);
-    /* another key: refused, with the value in effect */
+    /* another key, or a value the default does not choose: refused, with the value in effect */
     g_test.said[0] = 0;
     CHECK(options_kind_value("volume", "40", "an Ounce program") == -1);
-    CHECK(strstr(g_test.said, "settings: volume is no setting with a default read when the game starts, so an Ounce "
-                              "program's volume=40 is not taken: volume=100 this run\n"));
+    CHECK(strstr(g_test.said, "settings: volume is no setting of three words read at the start whose default chooses "
+                              "between the other two, so an Ounce program's volume=40 is not taken: volume=100 this "
+                              "run\n"));
+    CHECK(options_kind_value("emulated_cores_mode", "2", "an Ounce program") == -1);
+    CHECK(strstr(g_test.said,
+                 "settings: an Ounce program's emulated_cores_mode=2 is not one of the two values 2 (Auto) "
+                 "chooses between: emulated_cores_mode=2 this run\n"));
     CHECK(options_kind_value("no_such_key", "1", "an Ounce program") == -1);
     CHECK(
         strstr(g_test.said, "settings: no_such_key is no setting, so an Ounce program's no_such_key=1 does nothing\n"));
     g_test.write = 0;
-    (void)said;
+    return 0;
+}
+static int picks_kind_pick(void) {
+    kind_open("[Debug]\nemulated_cores_mode=2\n", "[Debug]\nemulated_cores_mode=1\n", 0,
+              "settings: emulated_cores_mode=1 (On), the game's own pick, over the 0 (Off) its Auto gives an Ounce "
+              "program\n");
+    CHECK(g_settings.emulated_cores_mode == 1);
+    return 0;
+}
+static int picks_kind_auto(void) { /* an Auto picked: the kind's, said as the pick's */
+    kind_open("[Debug]\nemulated_cores_mode=1\n", "[Debug]\nemulated_cores_mode=2\n", 1,
+              "settings: emulated_cores_mode=2 (Auto), the game's own pick, gives an Ounce program 0 (Off) this run");
+    return 0;
+}
+static int picks_kind_cli(void) {
+    ini_override("emulated_cores_mode", "0");
+    kind_open("[Debug]\nemulated_cores_mode=1\n", NULL, 0,
+              "settings: emulated_cores_mode=0 (Off), this run's command line's, the value its Auto gives an Ounce "
+              "program too\n");
+    return 0;
+}
+/* an older version's .ini: its 0 is Off, the .ini's */
+static int picks_kind_old0(void) {
+    kind_open("[Debug]\nemulated_cores=0\n", NULL, 0,
+              "settings: emulated_cores_mode=0 (Off), the game's .ini's, the value its Auto gives an Ounce program "
+              "too\n");
+    CHECK(g_settings.emulated_cores_mode == 0);
+    return 0;
+}
+/* the launcher's --emulated_cores=1 for every game stays the launcher's: the game's own pick of Off goes over it */
+static int picks_kind_launcher(void) {
+    ini_override(SNX_LAUNCHER_PICKS, "1");
+    ini_override("emulated_cores", "1");
+    kind_open("[Debug]\nemulated_cores_mode=2\n", "[Debug]\nemulated_cores_mode=0\n", 0,
+              "settings: emulated_cores_mode=0 (Off), the game's own pick, the value its Auto gives an Ounce program "
+              "too\n");
+    CHECK(strstr(g_test.said, "settings: the launcher's --emulated_cores=1 is deprecated: this run reads it as "
+                              "--emulated-cores-mode=1 (On) (docs/user/deprecations.md)\n"));
+    CHECK(g_settings.emulated_cores_mode == 0);
     return 0;
 }
 static int options_picks(const char* which) {
-    int failed = !strcmp(which, "--picks-perf")       ? picks_perf()
-                 : !strcmp(which, "--picks-kind")     ? picks_kind()
-                 : !strcmp(which, "--picks-perf-run") ? picks_perf_run()
-                 : !strcmp(which, "--picks-clean")    ? picks_clean()
-                 : !strcmp(which, "--picks-next")     ? picks_next()
-                 : !strcmp(which, "--picks-order")    ? picks_order()
-                 : !strcmp(which, "--picks-menu")     ? picks_menu()
-                 : !strcmp(which, "--picks-hand")     ? picks_hand()
-                 : !strcmp(which, "--picks-reload")   ? picks_reload()
-                                                      : 2;
+    int failed = !strcmp(which, "--picks-perf")            ? picks_perf()
+                 : !strcmp(which, "--picks-kind")          ? picks_kind()
+                 : !strcmp(which, "--picks-kind-pick")     ? picks_kind_pick()
+                 : !strcmp(which, "--picks-kind-auto")     ? picks_kind_auto()
+                 : !strcmp(which, "--picks-kind-cli")      ? picks_kind_cli()
+                 : !strcmp(which, "--picks-kind-old0")     ? picks_kind_old0()
+                 : !strcmp(which, "--picks-kind-launcher") ? picks_kind_launcher()
+                 : !strcmp(which, "--picks-perf-run")      ? picks_perf_run()
+                 : !strcmp(which, "--picks-clean")         ? picks_clean()
+                 : !strcmp(which, "--picks-next")          ? picks_next()
+                 : !strcmp(which, "--picks-order")         ? picks_order()
+                 : !strcmp(which, "--picks-menu")          ? picks_menu()
+                 : !strcmp(which, "--picks-hand")          ? picks_hand()
+                 : !strcmp(which, "--picks-reload")        ? picks_reload()
+                                                           : 2;
     if (failed == 2)
         fprintf(stderr,
                 "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean, -next, -perf, -perf-run, "
-                "-kind\n",
+                "-kind, -kind-pick, -kind-auto, -kind-cli, -kind-old0, -kind-launcher\n",
                 which);
     if (!failed) printf("options_tv_mode %s: ok\n", which);
     return failed;
@@ -1132,6 +1224,7 @@ int main(int argc, char** argv) {
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
     test_write_tracking_hot_old();
+    test_emulated_cores_old();
     test_key_steps();
     printf("options_tv_mode: ok\n");
     return 0;

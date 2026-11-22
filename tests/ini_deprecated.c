@@ -30,6 +30,11 @@ int main(void) {
     assert(ini_deprecated("write_tracking_hot") &&
            strstr(ini_deprecated("write_tracking_hot"), "now write_tracking_hot_pages, whose 2 is Auto") &&
            !ini_deprecated("write_tracking_hot_pages") && !ini_renamed("write_tracking_hot"));
+    /* emulated_cores: its 1, the default every .ini wrote, is emulated_cores_mode's Auto */
+    assert(ini_deprecated("emulated_cores") &&
+           strstr(ini_deprecated("emulated_cores"),
+                  "now emulated_cores_mode, of the same 0 (Off) and 1 (On) and 2, Auto") &&
+           !ini_deprecated("emulated_cores_mode"));
     /* renamed, of the same values: the launcher carries a pick of it over */
     assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
            !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));

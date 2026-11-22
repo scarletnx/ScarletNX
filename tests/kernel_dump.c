@@ -52,6 +52,7 @@ const SnxArmModule* g_arm_mod;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return 0; }
+int kernel_emulated_cores(void) { return 1; } /* thread.c's: emulated_cores_mode's Auto on a Switch program, cores on */
 u64 g_t0_ns(void) { return 0; }
 u32 ipc_ring_count(void) { return 0; }
 void ipc_ring_text(u32 seq, char* out, size_t n) {

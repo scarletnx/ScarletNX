@@ -493,7 +493,7 @@ u64 kernel_thread_name(u32 ix, char* out, int n) {
 /* each emulated core: its holder, with the holder's poll flag and how long it held the core, and its waiters. Read
    without core_lk, as the threads are */
 static void dump_cores(void) {
-    if (!g_settings.emulated_cores) return;
+    if (!kernel_emulated_cores()) return;
     u64 now = plat_ns();
     for (int k = 0; k < NCORES; k++) {
         u32 h = atomic_load_explicit(&g_hle.thread.core_owner[k], memory_order_relaxed);

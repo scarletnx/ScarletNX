@@ -397,6 +397,8 @@ static const struct {
                       {"write_tracking_hot",
                        "now write_tracking_hot_pages, whose 2 is Auto (write_tracking_hot's 0, its "
                        "default) and 1 On"},
+                      {"emulated_cores", "now emulated_cores_mode, of the same 0 (Off) and 1 (On) and 2, Auto, which "
+                                         "the 1 a .ini wrote, its default, is"},
                       {"controls_opacity", "the on-screen controls are opaque"},
                       {"controls_alpha", "the on-screen controls are opaque"},
                       {"controls_skin", "the on-screen controls are white shapes, with no skin"},

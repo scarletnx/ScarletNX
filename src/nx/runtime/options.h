@@ -72,12 +72,13 @@ int options_debug(int flags, char* out, size_t n);
 /* the Display, Graphics, Audio and Performance settings not at their default, each "key=value (default D)" between
    ", ": how many. The log's header says them, and a reload that changes them says them again */
 int options_settings(char* out, size_t n);
-/* key's value for this kind of program (kind: its words, "an Ounce program") where no file nor command line gave it one
-   (ini_given): read into its setting as the .ini's would be, said in the log with what the files hold and how to run
-   it at its default, and named over the game's first frame as this kind of game's (options_perf_notice). A value given
-   stays, and the log says whose it is beside the one this kind runs with. Only a setting with a default read when the
-   game starts (settings.txt's startup), which no reload puts back. After ini_open: 1 when value took, 0 when a given
-   one stayed, -1 for another key (said, with the value in effect) */
+/* key's default (Auto) gives this kind of program (kind: its words, "an Ounce program") value, one of the two others of
+   its three words: where key is at its default, said in the log with how to run it with the third and named over the
+   game's first frame as this kind of game's (options_perf_notice). The setting keeps its default, and the caller runs
+   with value (the kernel's kernel_emulated_cores). Another value in effect stays, and the log says whose it is beside
+   the one the default gives this kind. Only a setting read when the game starts (settings.txt's startup), which no
+   reload changes. After ini_open: 1 when the default gives value, 0 when another value is in effect, -1 for another key
+   or a value that is not one of the two (said, with the value in effect) */
 int options_kind_value(const char* key, const char* value, const char* kind);
 /* The settings off their default that change how fast the game runs where nothing on the screen shows it (settings.txt's
    perf, ini.h's INI_PERF), as ini_open took them, handed to the notice over the game's first frame
@@ -104,6 +105,10 @@ int options_vk_descriptors_old(const char* old, int given);
    (given 0), write_tracking_hot_pages's default, as 0 was write_tracking_hot's own, which every .ini had written, and 0
    from the command line (given 1), a choice of that run; -2 for any other value */
 int options_write_tracking_hot_old(const char* old, int given);
+/* emulated_cores's value old as emulated_cores_mode's (0 Off, 1 On, 2 Auto): 0 is 0; 1 is -1 from the .ini (given 0),
+   emulated_cores_mode's default, as 1 was emulated_cores's own, which every .ini had written, and 1 from the command
+   line or the launcher (given 1), a choice; -2 for any other value */
+int options_emulated_cores_old(const char* old, int given);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start
