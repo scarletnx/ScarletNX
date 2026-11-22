@@ -61,7 +61,8 @@ typedef struct {
     void (*claim)(u64 lo, u64 hi);
     /* A landing in two steps, so that the producer's lock is let go while the GPU copies. Optional, both or neither.
        land_start does what land does up to the wait for the copy, with the producer's lock held and none of own.c's,
-       and gives a handle. NULL: it landed the ranges itself, as land does (a copy too big for one step). land_end(handle)
+       and gives a handle. NULL: it landed the ranges itself, as land does (an early copy had them, or a copy too big
+       for one step), and the landing goes on with the producer's lock let go, as after land_end. land_end(handle)
        waits for the copy and puts the bytes in dst[], with no lock held. It never takes the producer's lock, because
        a thread that holds that lock can wait for this landing's marks */
     void* (*land_start)(const OwnRange* r, u8* const* dst, u32 n, int by);
