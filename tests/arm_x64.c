@@ -460,39 +460,57 @@ typedef struct {
     uint32_t word, fpscr;
     uint64_t d0, d1, d2; /* S0 S1 = D0's low and high words, S2 = D1's low one; or D0 to D2 */
     int cold;
+    uint32_t r1; /* R1, an access's base, where not 0 */
 } Witness;
 #define F32(a, b) ((uint64_t)(b) << 32 | (a))
 static const Witness witnesses[] = {
     /* VADD.F32 S0, S1, S2 */
-    {"an add of normals, IXC set", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
-    {"an add of normals under FZ", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
-    {"an add under FZ whose exact zero stays hot", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0xbf800000u, 0, 0},
-    {"an add with IXC clear", 0xee300a81u, 0, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
-    {"an add rounding toward zero", 0xee300a81u, 0x00c00010u, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
-    {"an add of a denormal", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x00000001u, 0, 1},
-    {"an add of a NaN", 0xee300a81u, 0x10u, F32(0, 0x7fc00000u), 0x40000000u, 0, 1},
-    {"an add with a trap enabled", 0xee300a81u, 0x110u, F32(0, 0x3f800000u), 0x40000000u, 0, 1},
+    {"an add of normals, IXC set", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0, 0},
+    {"an add of normals under FZ", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0x40000000u, 0, 0, 0},
+    {"an add under FZ whose exact zero stays hot", 0xee300a81u, 0x01000010u, F32(0, 0x3f800000u), 0xbf800000u, 0, 0, 0},
+    {"an add with IXC clear", 0xee300a81u, 0, F32(0, 0x3f800000u), 0x40000000u, 0, 1, 0},
+    {"an add rounding toward zero", 0xee300a81u, 0x00c00010u, F32(0, 0x3f800000u), 0x40000000u, 0, 1, 0},
+    {"an add of a denormal", 0xee300a81u, 0x10u, F32(0, 0x3f800000u), 0x00000001u, 0, 1, 0},
+    {"an add of a NaN", 0xee300a81u, 0x10u, F32(0, 0x7fc00000u), 0x40000000u, 0, 1, 0},
+    {"an add with a trap enabled", 0xee300a81u, 0x110u, F32(0, 0x3f800000u), 0x40000000u, 0, 1, 0},
     /* VSUB, VMUL, VDIV, VMLA, VNMLS, VNMUL .F32 S0, S1, S2 */
-    {"a subtraction", 0xee300ac1u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0},
-    {"a product", 0xee200a81u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
-    {"a product under FZ", 0xee200a81u, 0x01000010u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
-    {"a product that underflows", 0xee200a81u, 0x10u, F32(0, 0x00800000u), 0x3f000000u, 0, 1},
-    {"a product of a zero", 0xee200a81u, 0x10u, F32(0, 0x00000000u), 0x40000000u, 0, 0},
-    {"a quotient", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x40000000u, 0, 0},
-    {"a quotient by zero", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x00000000u, 0, 1},
-    {"a multiply-accumulate", 0xee000a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0},
-    {"a multiply-accumulate of a denormal addend", 0xee000a81u, 0x10u, F32(0x00000001u, 0x3fc00000u), 0x40000000u, 0,
-     1},
-    {"a negated multiply-subtract", 0xee100a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0},
-    {"a negated product", 0xee200ac1u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0},
+    {"a subtraction", 0xee300ac1u, 0x10u, F32(0, 0x3f800000u), 0x40000000u, 0, 0, 0},
+    {"a product", 0xee200a81u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0, 0},
+    {"a product under FZ", 0xee200a81u, 0x01000010u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0, 0},
+    {"a product that underflows", 0xee200a81u, 0x10u, F32(0, 0x00800000u), 0x3f000000u, 0, 1, 0},
+    {"a product of a zero", 0xee200a81u, 0x10u, F32(0, 0x00000000u), 0x40000000u, 0, 0, 0},
+    {"a quotient", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x40000000u, 0, 0, 0},
+    {"a quotient by zero", 0xee800a81u, 0x10u, F32(0, 0x40400000u), 0x00000000u, 0, 1, 0},
+    {"a multiply-accumulate", 0xee000a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0, 0},
+    {"a multiply-accumulate of a denormal addend", 0xee000a81u, 0x10u, F32(0x00000001u, 0x3fc00000u), 0x40000000u, 0, 1,
+     0},
+    {"a negated multiply-subtract", 0xee100a81u, 0x10u, F32(0x3f800000u, 0x3fc00000u), 0x40000000u, 0, 0, 0},
+    {"a negated product", 0xee200ac1u, 0x10u, F32(0, 0x3fc00000u), 0x40000000u, 0, 0, 0},
     /* VCMP.F32 S0, S2 and VCMPE.F32 S0, #0 */
-    {"a compare, IXC clear", 0xeeb40a41u, 0, F32(0x3f800000u, 0), 0x40000000u, 0, 0},
-    {"a compare of a NaN", 0xeeb40a41u, 0, F32(0x7fc00000u, 0), 0x40000000u, 0, 1},
-    {"a compare with zero", 0xeeb50ac0u, 0x01000000u, F32(0xbf800000u, 0), 0, 0, 0},
+    {"a compare, IXC clear", 0xeeb40a41u, 0, F32(0x3f800000u, 0), 0x40000000u, 0, 0, 0},
+    {"a compare of a NaN", 0xeeb40a41u, 0, F32(0x7fc00000u, 0), 0x40000000u, 0, 1, 0},
+    {"a compare with zero", 0xeeb50ac0u, 0x01000000u, F32(0xbf800000u, 0), 0, 0, 0, 0},
+    {"a compare, greater", 0xeeb40a41u, 0x10u, F32(0x40000000u, 0), 0x3f800000u, 0, 0, 0},
+    {"a compare, equal", 0xeeb40a41u, 0x10u, F32(0x3f800000u, 0), 0x3f800000u, 0, 0, 0},
     /* VADD, VMUL, VDIV .F64 D0, D1, D2 */
-    {"a double add", 0xee310b02u, 0x10u, 0, 0x3ff0000000000000ull, 0x4000000000000000ull, 0},
-    {"a double product", 0xee210b02u, 0x10u, 0, 0x3ff8000000000000ull, 0x4000000000000000ull, 0},
-    {"a double quotient of a denormal", 0xee810b02u, 0x10u, 0, 0x0000000000000001ull, 0x4000000000000000ull, 1},
+    {"a double add", 0xee310b02u, 0x10u, 0, 0x3ff0000000000000ull, 0x4000000000000000ull, 0, 0},
+    {"a double product", 0xee210b02u, 0x10u, 0, 0x3ff8000000000000ull, 0x4000000000000000ull, 0, 0},
+    {"a double quotient of a denormal", 0xee810b02u, 0x10u, 0, 0x0000000000000001ull, 0x4000000000000000ull, 1, 0},
+    /* memory's last bytes: each access ending at the memory's last byte, and one past it (DATA_ABORT) */
+    {"LDR R0, [R1] of the last word", 0xe5910000u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 4},
+    {"LDR R0, [R1] one byte past", 0xe5910000u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 3},
+    {"STR R0, [R1] of the last word", 0xe5810000u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 4},
+    {"STR R0, [R1] one byte past", 0xe5810000u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 3},
+    {"LDRH R0, [R1] of the last halfword", 0xe1d100b0u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 2},
+    {"LDRH R0, [R1] one byte past", 0xe1d100b0u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 1},
+    {"LDRB R0, [R1] of the last byte", 0xe5d10000u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 1},
+    {"LDRB R0, [R1] one byte past", 0xe5d10000u, 0x10u, 0, 0, 0, 0, MEM_SIZE},
+    {"LDRD R2, R3, [R1] of the last two words", 0xe1c120d0u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 8},
+    {"LDRD R2, R3, [R1] a word past", 0xe1c120d0u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 4},
+    {"LDM R1, {R2-R5} of the last four words", 0xe891003cu, 0x10u, 0, 0, 0, 0, MEM_SIZE - 16},
+    {"LDM R1, {R2-R5} a word past", 0xe891003cu, 0x10u, 0, 0, 0, 0, MEM_SIZE - 12},
+    {"VLDR D0, [R1] of the last two words", 0xed910b00u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 8},
+    {"VLDR D0, [R1] a word past", 0xed910b00u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 4},
 };
 
 static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
@@ -547,6 +565,7 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             s[side].cpu.d[0] = w->d0;
             s[side].cpu.d[1] = w->d1;
             s[side].cpu.d[2] = w->d2;
+            if (w->r1) s[side].cpu.r[1] = w->r1;
             for (unsigned k = 0; k < 256; ++k) before += side ? g_test.fp_calls[k] : 0;
             ((SnxArmBlock)(uintptr_t)(side ? xaddr[i] : laddr[i]))(&s[side].cpu);
             for (unsigned k = 0; k < 256; ++k) after += side ? g_test.fp_calls[k] : 0;
@@ -583,7 +602,8 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             ++failures;
         }
     }
-    printf("%zu witnesses of the VFP's hot paths and 4 of the entry's checks: %zu failures\n", count, failures);
+    printf("%zu witnesses (the VFP's hot paths, memory's last bytes) and 4 of the entry's checks: %zu failures\n",
+           count, failures);
     g_test.failures += failures;
     for (unsigned k = 0; k < 256; ++k) g_test.fp_calls[k] = 0;
     free(s), free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
