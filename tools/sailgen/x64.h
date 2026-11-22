@@ -180,7 +180,7 @@ typedef struct {
     SnxU64 k;
     int g0, g1; /* cls 1: its low and high doublewords as general-purpose values, once taken out (sgx_flat) */
 } SgXV;
-enum { SGX_C_NONE, SGX_C_AND, SGX_C_OR, SGX_C_XOR, SGX_C_ADD };
+enum { SGX_C_NONE, SGX_C_AND, SGX_C_OR, SGX_C_XOR, SGX_C_ADD, SGX_C_SUM }; /* SUM: src + the value k, registers */
 
 enum { SGX_B_CONST, SGX_B_REG, SGX_B_CC };
 typedef struct {
@@ -315,10 +315,36 @@ enum { SGX_VM_NONE, SGX_VM_GUEST, SGX_VM_STATE, SGX_VM_POOL };
    the result's operand (-1: none, the form writes the flags), tied when it is read first (in[out] then its old
    value), zero when it is made 0 first instead. A memory operand memk (mode not NONE) is read, or written where it
    is out: a store, kept though nothing reads it. The result's virtual register (0 for none) */
+/* an SSE form of registers alone already made in the region with the same inputs and immediate: its value (a few
+   recent ones, each checked against the instruction that made it, which a new region has replaced) */
+static _Thread_local int sgx_vcse_seen[16];
+static _Thread_local unsigned sgx_vcse_next;
+static inline int sgx_vcse_find(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm) {
+    int k, j;
+    for (k = 0; k < 16; ++k) {
+        int v = sgx_vcse_seen[k], d;
+        SgXIns* s;
+        if (v <= 0 || v >= x->nv) continue;
+        d = x->v[v].def;
+        if (d < 0 || d >= x->n) continue;
+        s = &x->ins[d];
+        if (s->kind != SGX_K_VEC || s->def != v || s->vf != f || s->vout != out || s->vtied != (tied > 0) ||
+            s->vzero || s->mplace >= 0 || s->imm != imm || s->dead)
+            continue;
+        for (j = 0; j < f->nops && j < 4; ++j)
+            if ((j == out && !(tied > 0) ? 0 : (in ? in[j] : 0)) != s->in[j]) break;
+        if (j == f->nops || j == 4) return v;
+    }
+    return 0;
+}
 static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm, int memk,
                            int mode, int base, int index, int disp, SnxU64 lo, SnxU64 hi) {
     SgXIns* i;
     int k;
+    if (mode == SGX_VM_NONE && out >= 0 && tied >= 0 && in) {
+        int v = sgx_vcse_find(x, f, out, tied, in, imm);
+        if (v) return v;
+    }
     if (f->feature & ~x->features & ~(unsigned)(SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT))
         sg_fail("an SSE form this host's processor lacks", (long long)f->feature, (long long)x->features);
     if (out < 0) sgx_flags_clobbered(x); /* a compare's flags end the ones before: their conditions kept first */
@@ -357,6 +383,7 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
         return 0;
     }
     i->def = (f->xmask >> out & 1) ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
+    if (mode == SGX_VM_NONE && tied >= 0 && in) sgx_vcse_seen[sgx_vcse_next++ & 15] = i->def;
     return i->def;
 }
 /* f of registers only: result operand 0 (tied: the two-operand SSE forms), the operands' registers a, b, c */
@@ -957,6 +984,37 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
     }
     if (sub && sgx_is_const(&a) && !a.k) r = SGX_OP(x, neg, pw, b);
     else
+    {
+        /* a sum of two registers the region made already (an address a load and a store both take): that value */
+        if (!sub && a.v && b.v && !a.inv && !b.inv && !(sgx_is_const(&a) || sgx_is_const(&b))) {
+            static _Thread_local int seen[8];
+            static _Thread_local unsigned next;
+            int k;
+            for (k = 0; k < 8; ++k) {
+                int v = seen[k], d;
+                if (v <= 0 || v >= x->nv) continue;
+                d = x->v[v].def;
+                if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_SEL && x->ins[d].def == v &&
+                    x->ins[d].sel == (pw == 64 ? &sgx_sel_lea_64[0] : &sgx_sel_lea_32[0]) &&
+                    ((x->ins[d].in[0] == a.v && x->ins[d].in[1] == b.v) ||
+                     (x->ins[d].in[0] == b.v && x->ins[d].in[1] == a.v))) {
+                    r = sgx_val(pw, v);
+                    r.w = w;
+                    return r;
+                }
+            }
+            r = SGX_OP(x, lea, pw, a, b);
+            if (r.v) {
+                seen[next++ & 7] = r.v;
+                x->v[r.v].op = SGX_C_SUM;
+                x->v[r.v].cw = (unsigned char)pw;
+                x->v[r.v].src = a.v;
+                x->v[r.v].k = (SnxU64)b.v;
+            }
+            r.w = w;
+            return r;
+        }
+    }
         r = sub ? SGX_OP(x, sub, pw, a, b) : SGX_OP(x, lea, pw, a, b);
     r.w = w;
     return r;
@@ -2077,6 +2135,44 @@ static inline int sgx_pin_inplace(SgXAsm* a, int at, int tv, int def) {
     }
     return 0;
 }
+/* the pinned register a result (def, of class cls) goes to by a PSET soon after, through a cold check or tied forms
+   that take it in turn, where nothing reads that register's old value after at: the result may be made there and
+   the PSET moves nothing. -1 for none */
+static inline int sgx_pin_target(SgXAsm* a, int at, int def, int cls) {
+    SgX* x = a->x;
+    int j, cur = def;
+    if (!def) return -1;
+    for (j = at + 1; j < x->n && j <= at + 8; ++j) {
+        SgXIns* s = &x->ins[j];
+        int k, reads = 0;
+        if (s->dead) continue;
+        if (s->kind == SGX_K_PSET) {
+            int p = (int)(s->imm & 15), o;
+            if (s->in[0] != cur || (s->imm >= 16) != (cls != 0)) return -1;
+            o = cls ? a->xowner[p] : a->owner[p];
+            if (o > 0 && x->v[o].reg == p && x->v[o].last > at) return -1;
+            return p;
+        }
+        if (s->kind == SGX_K_PGET || s->kind == SGX_K_MACHINE || s->kind == SGX_K_UNDEF) return -1;
+        for (k = 0; k < 7; ++k) reads += s->in[k] == cur;
+        if (!reads) continue;
+        if (x->v[cur].last != j || reads != 1) return -1;
+        if (s->kind == SGX_K_COLD && s->in[0] == cur) cur = s->def;
+        else if (s->kind == SGX_K_VEC && s->vtied && s->vout >= 0 && s->in[(int)s->vout] == cur)
+            cur = s->def;
+        else
+            return -1;
+    }
+    return -1;
+}
+/* the register an input k of instruction at is in, or -1 */
+static inline int sgx_any_input_in(SgXAsm* a, int at, int reg, int cls, int except) {
+    SgXIns* i = &a->x->ins[at];
+    int k;
+    for (k = 0; k < 7; ++k)
+        if (k != except && i->in[k] && a->x->v[i->in[k]].reg == reg && a->x->v[i->in[k]].cls == cls) return 1;
+    return 0;
+}
 static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     SgX* x = a->x;
     SgXIns* i = &x->ins[at];
@@ -2138,12 +2234,16 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
                 a->owner[from] = 0;
                 x->v[tv].reg = -1;
             } else {
-                out_reg = sgx_free_reg(a, at, fixed | held);
+                int pt = sgx_pin_target(a, at, i->def, 0);
+                out_reg = pt >= 0 && !(fixed >> pt & 1) && !sgx_any_input_in(a, at, pt, 0, tied_in)
+                              ? pt
+                              : sgx_free_reg(a, at, fixed | held);
                 sgx_mov_rr(a, out_reg, from);
             }
             r[(int)s->out] = (unsigned char)out_reg;
         } else {
-            out_reg = sgx_free_reg(a, at, fixed | held);
+            int pt = sgx_pin_target(a, at, i->def, 0);
+            out_reg = pt >= 0 && !(fixed >> pt & 1) ? pt : sgx_free_reg(a, at, fixed | held);
             r[(int)s->out] = (unsigned char)out_reg;
         }
     }
@@ -2356,14 +2456,20 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
                     x->v[tv].reg = -1;
                 }
             } else if (isx) {
-                outreg = sgx_xfree(a, at, heldx | (1u << from));
+                int pt = sgx_pin_target(a, at, i->def, 1);
+                outreg = pt >= 0 && !sgx_any_input_in(a, at, pt, 1, out) ? pt : sgx_xfree(a, at, heldx | (1u << from));
                 sgx_vrr(a, &sgx_v_movaps, outreg, from);
             } else {
-                outreg = sgx_free_reg(a, at, heldg | (1u << from));
+                int pt = sgx_pin_target(a, at, i->def, 0);
+                outreg = pt >= 0 && !sgx_any_input_in(a, at, pt, 0, out) ? pt : sgx_free_reg(a, at, heldg | (1u << from));
                 sgx_mov_rr(a, outreg, from);
             }
-        } else
-            outreg = isx ? sgx_xfree(a, at, heldx) : sgx_free_reg(a, at, heldg);
+        } else {
+            int pt = sgx_pin_target(a, at, i->def, isx);
+            outreg = pt >= 0 && !(i->vzero && sgx_any_input_in(a, at, pt, isx, -1)) ? pt
+                     : isx                                                   ? sgx_xfree(a, at, heldx)
+                                                                             : sgx_free_reg(a, at, heldg);
+        }
         r[out] = (unsigned char)outreg;
         if (i->vzero) r[(int)f->rm] = (unsigned char)outreg; /* PXOR of itself */
     }

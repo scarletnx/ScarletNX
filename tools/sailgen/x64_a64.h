@@ -819,14 +819,51 @@ static inline void sgx_addr(SgX* x, SgD* address, int* disp) {
     *address = sgx_val(64, v->src);
     *disp = (int)d;
 }
+/* the base register of a guest access at address (+ disp): the memory's base, or, where the address is a sum of two
+   registers (a register offset), the memory's base plus the one that is a pinned register's (or the first), made once
+   a region, and the other the index: [mem + x0 + x25] and [mem + x0 + x24] share mem + x0 */
+static inline int sgx_base(SgCtx* g, SgD* address, int* disp) {
+    SgX* x = sgx(g);
+    int m = sgx_mem(g), a, b, k, d;
+    static _Thread_local int seen[4];
+    static _Thread_local unsigned next;
+    SgXV* v;
+    SgD r;
+    sgx_addr(x, address, disp);
+    if (!address->v || address->inv || sgx_is_const(address)) return m;
+    v = &x->v[address->v];
+    if (v->op != SGX_C_SUM || v->cw != 64) return m;
+    a = v->src, b = (int)v->k;
+    if (x->v[b].def >= 0 && x->ins[x->v[b].def].kind == SGX_K_PGET &&
+        (x->v[a].def < 0 || x->ins[x->v[a].def].kind != SGX_K_PGET)) {
+        int t = a;
+        a = b;
+        b = t;
+    }
+    for (k = 0; k < 4; ++k) {
+        int s = seen[k];
+        if (s <= 0 || s >= x->nv) continue;
+        d = x->v[s].def;
+        if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_SEL && x->ins[d].def == s &&
+            x->ins[d].sel == &sgx_sel_lea_64[0] && x->ins[d].in[0] == m && x->ins[d].in[1] == a) {
+            *address = sgx_val(64, b);
+            return s;
+        }
+    }
+    r = SGX_OP(x, lea, 64, sgx_val(64, m), sgx_val(64, a));
+    if (!r.v) return m;
+    seen[next++ & 3] = r.v;
+    *address = sgx_val(64, b);
+    return r.v;
+}
 static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
     SgX* x = sgx(g);
-    sgx_addr(x, &address, &disp);
+    int base = sgx_base(g, &address, &disp);
     const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_zext8_32, sgx_sel_zext8_32_n, 0)
                       : bytes == 2 ? sgx_mem_form(sgx_sel_zext16_32, sgx_sel_zext16_32_n, 0)
                       : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 0)
                                    : sgx_mem_form(sgx_sel_mov_64, sgx_sel_mov_64_n, 0);
-    int a = sgx_reg(x, &address), m = sgx_mem(g);
+    int a = sgx_reg(x, &address), m = base;
     SgXIns* i = sgx_append(x, SGX_K_SEL);
     i->sel = s;
     i->fsel = s;
@@ -840,12 +877,12 @@ static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
 }
 static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD value) {
     SgX* x = sgx(g);
-    sgx_addr(x, &address, &disp);
+    int base = sgx_base(g, &address, &disp);
     const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_mov_8, sgx_sel_mov_8_n, 1)
                       : bytes == 2 ? sgx_mem_form(sgx_sel_mov_16, sgx_sel_mov_16_n, 1)
                       : bytes == 4 ? sgx_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 1)
                                    : sgx_mem_form(sgx_sel_mov_64, sgx_sel_mov_64_n, 1);
-    int v = sgx_reg(x, &value), a = sgx_reg(x, &address), m = sgx_mem(g);
+    int v = sgx_reg(x, &value), a = sgx_reg(x, &address), m = base;
     SgXIns* i = sgx_append(x, SGX_K_SEL);
     i->sel = s;
     i->fsel = s;
