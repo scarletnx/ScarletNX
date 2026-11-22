@@ -8,6 +8,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_said.h"
+#include "common/utilities/mods.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/hid.h"
@@ -20,6 +21,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/vpad.h"
@@ -1092,6 +1094,73 @@ int options_settings(char* out, size_t n) {
     }
     return count;
 }
+/* the value v a layer of value_of gave o is another than o's default: a value of o's that the runtime then changed (an
+   Ounce program's async_pipelines) is not the player's. A row with no default is a once text's, empty by default */
+static int layer_differs(const IniOpt* o, const char* v) {
+    if (!o->def) return v[0] != 0;
+    if (o->type == INI_TEXT) return strcmp(v, o->def) != 0;
+    return strtod(v, NULL) != strtod(o->def, NULL);
+}
+/* key appended to out at *at, after ", " but for the first */
+static void key_put(char* out, size_t n, size_t* at, const char* key) {
+    if (*at < n) *at += (size_t)snprintf(out + *at, n - *at, "%s%s", *at ? ", " : "", key);
+}
+/* options_perf_notice's lists: the perf rows of the .ini's sections off their default, by the layer of value_of that
+   gave each, the game's (its picks, its .ini) into game, the launcher's and this run's command line's into global */
+static int perf_changed(char* game, size_t game_n, char* global, size_t global_n) {
+    size_t at[2] = {0, 0};
+    int s, t, count = 0;
+    pm_lock(&g_picks_lock);
+    for (s = 0; s < g_ini_sections_count; s++)
+        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++)
+            for (const IniOpt* o = g_ini_sections[s].table[t]; o->key; o++) {
+                const Entry* e = !(o->flags & INI_IN_GAME) ? picks_find(o->key) : NULL;
+                const char* v = run_value(o->key);
+                int ours = 0;
+                if (!(o->flags & INI_PERF) || ini_at_default(o)) continue;
+                if (!v && e) {
+                    v = e->value;
+                    ours = 1;
+                } else if (!v && !(v = launcher_value(o->key)) && (e = store_find(o->key)) != NULL) {
+                    v = e->value;
+                    ours = 1;
+                }
+                if (!v || !layer_differs(o, v)) continue;
+                if (ours)
+                    key_put(game, game_n, &at[0], o->key);
+                else
+                    key_put(global, global_n, &at[1], o->key);
+                ++count;
+            }
+    pm_unlock(&g_picks_lock);
+    return count;
+}
+int options_perf_notice(const char* base) {
+    char game[1024] = "", global[1024] = "", *off = NULL;
+    SnxGameMade made;
+    const IniOpt* opt = ini_find(g_recompile_ini, "opt");
+    size_t at;
+    int count = perf_changed(game, sizeof game, global, sizeof global);
+    if (snx_game_made_read(base, &made)) off = snx_game_made_off(base);
+    at = strlen(global);
+    /* the code made ahead of time at another level than opt's default: what runs, whatever opt is now */
+    if (made.aot == 1 && opt && opt->def && made.opt != opt->def[0]) {
+        key_put(global, sizeof global, &at, "opt");
+        ++count;
+    }
+    for (char* k = off; k && *k;) {
+        size_t len = strcspn(k, ",");
+        char key[KEY_MAX];
+        snprintf(key, sizeof key, "%.*s", (int)(len < sizeof key ? len : sizeof key - 1), k);
+        key_put(global, sizeof global, &at, key);
+        ++count;
+        k += len + (k[len] == ',');
+    }
+    free(off);
+    overlay_settings_notice(game, global);
+    return count;
+}
+
 /* the Display, Graphics, Audio and Performance settings as the log last said them */
 static char g_said[2048];
 /* after a reload, the Display, Graphics, Audio and Performance settings again when they changed */
