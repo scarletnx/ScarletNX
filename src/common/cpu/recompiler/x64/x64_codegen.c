@@ -882,16 +882,14 @@ static int vload(SgCtx* g, SgD address, int bytes) {
     SgX* x = sgx(g);
     const SgXVForm* f = v_form(bytes, 0);
     int disp = 0, base, index;
-    sgx_addr(x, &address, &disp);
-    base = sgx_mem(g), index = sgx_reg(x, &address);
+    base = sgx_base(g, &address, &disp), index = sgx_reg(x, &address);
     return sgx_vins(x, f, f->reg, 0, NULL, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
 }
 static void vstore(SgCtx* g, SgD address, int r, int bytes) {
     SgX* x = sgx(g);
     const SgXVForm* f = v_form(bytes, 1);
     int disp = 0, base, index, in[4] = {0, 0, 0, 0};
-    sgx_addr(x, &address, &disp);
-    base = sgx_mem(g), index = sgx_reg(x, &address);
+    base = sgx_base(g, &address, &disp), index = sgx_reg(x, &address);
     in[(int)f->reg] = r;
     sgx_vins(x, f, f->rm, 0, in, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
 }
@@ -1303,7 +1301,9 @@ static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
             return;
         case 2: *use = live_r(rn) | live_r(rm) | LIVE_NZCV, *def = LIVE_NZCV; return; /* CCMN, CCMP */
         case 4: *use = live_r(rn) | live_r(rm) | LIVE_NZCV, *def = live_d(rd); return; /* CSEL... */
-        case 6: *use = live_r(rn) | live_r(rm), *def = live_d(rd); return;              /* 1 and 2 sources */
+        case 6: /* 1 and 2 sources: a 1-source PAC (PACIA Xd, Xn) reads Xd too */
+            *use = live_r(rn) | live_r(rm) | (w >> 30 & 1 ? live_r(rd) : 0), *def = live_d(rd);
+            return;
         default:
             if (w >> 24 & 1) { /* 3 sources */
                 *use = live_r(rn) | live_r(rm) | live_r(ra), *def = live_d(rd);
@@ -1314,13 +1314,14 @@ static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
     }
     if ((w >> 25 & 7) == 7) { /* SIMD and FP: the general-purpose registers of transfers and conversions */
         *use = 0;
-        if ((w & 0x5F20FC00) == 0x1E200000) *use = live_r(rn); /* FP <-> integer: Rn may be a GPR */
-        else if ((w & 0x9FE08400) == 0x0E000400)
-            *use = live_r(rn); /* DUP, INS (general), UMOV, SMOV */
+        /* each test alone: a form may be in more than one of these groups */
+        if ((w & 0x5F000000) == 0x1E000000) *use |= live_r(rn); /* scalar FP: Rn may be a GPR (conversions from
+                                                                 integers and fixed point, FMOV) */
+        if ((w & 0x9FE08400) == 0x0E000400) *use |= live_r(rn); /* DUP, INS (general), UMOV, SMOV */
+        if ((w & 0xFF200C00) == 0x1E200400 || (w & 0xFF200C00) == 0x1E200C00)
+            *use |= LIVE_NZCV; /* FCCMP, FCSEL */
         else if ((w & 0xFF203C00) == 0x1E202000)
             *def = LIVE_NZCV; /* FCMP, FCMPE */
-        else if ((w & 0xFF200C00) == 0x1E200400 || (w & 0xFF200C00) == 0x1E200C00)
-            *use = LIVE_NZCV; /* FCCMP, FCSEL */
         return;
     }
 }
@@ -1336,7 +1337,8 @@ static SnxU32 vreg_run(unsigned first, unsigned n) {
 }
 static void vregs_of(SnxU32 w, SnxU32* use, SnxU32* def) {
     unsigned rd = w & 31, rn = w >> 5 & 31, rm = w >> 16 & 31, ra = w >> 10 & 31;
-    SnxU32 fields = 1u << rd | 1u << rn | 1u << rm | 1u << ra;
+    /* Rm & 15 too: a by-element form of halfwords takes Rm from bits 19-16 alone (bit 20 is the index's) */
+    SnxU32 fields = 1u << rd | 1u << rn | 1u << rm | 1u << (rm & 15) | 1u << ra;
     *def = 0;
     if ((w >> 25 & 7) == 7) { /* SIMD and FP data processing */
         *use = fields;
