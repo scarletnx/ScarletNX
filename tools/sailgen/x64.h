@@ -2203,7 +2203,18 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
         int v = i->in[k], p = k < 4 ? s->in[k] : zero_place;
         if (!v || p < 16) continue;
         if (x->v[v].reg != p - 16) {
-            sgx_evict(a, p - 16, at - 1, fixed | held);
+            int o = a->owner[p - 16], j, reads = 0;
+            for (j = 0; j < 7 && o > 0; ++j) reads |= i->in[j] == o;
+            if (reads) {
+                /* another input of it (DIV's divisor in RDX): to a register, which its operand names. Spilled to a
+                   slot or an XMM register it would have none, and the operand would read a stray address */
+                int to = sgx_free_reg(a, at, fixed | held);
+                sgx_mov_rr(a, to, p - 16);
+                x->v[o].reg = (signed char)to;
+                a->owner[to] = o;
+                held |= 1u << to;
+            } else
+                sgx_evict(a, p - 16, at - 1, fixed | held);
             sgx_mov_rr(a, p - 16, x->v[v].reg);
             a->owner[p - 16] = -1;
         }
