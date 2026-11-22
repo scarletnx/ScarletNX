@@ -248,12 +248,13 @@ int main(void) {
         assert(ini_perf_keys(rows, NULL, list, sizeof list) == 0);
     }
     /* settings.txt's perf rows as settingsgen makes them: a game's, the recompile's, every Vulkan extension's and every
-       LLVM row; not one the screen shows (stats), nor the AOT threads, which change only how long a recompile takes */
-    assert(ini_find(g_performance_ini, "fps_limit")->flags & INI_PERF);
+       LLVM row; not one the screen shows (shadows), nor the AOT threads, which change only how long a recompile takes.
+       Tables whose rows call no runtime function: the test links none */
+    assert(ini_find(g_graphics_ini, "resolution")->flags & INI_PERF);
     assert(ini_find(g_recompile_ini, "llvm_batch")->flags & INI_PERF);
     assert(ini_find(g_vk_extensions_ini, "vk_ext_shader_object")->flags & INI_PERF);
     assert(ini_find(g_llvm_ini, "llvm_pass_gvn")->flags & INI_PERF);
-    assert(!(ini_find(g_display_ini, "stats")->flags & INI_PERF));
+    assert(!(ini_find(g_graphics_ini, "shadows")->flags & INI_PERF));
     assert(!(ini_find(g_recompile_ini, "aot_threads")->flags & INI_PERF));
     /* a setting of some systems alone (settings.txt's only): where it does something as a greyed row says it, said on
        every system but those and listed last on its line for the launcher; one of every system says nothing */
