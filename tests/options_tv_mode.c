@@ -1104,6 +1104,46 @@ static int picks_kind_launcher(void) {
     CHECK(g_settings.emulated_cores_mode == 0);
     return 0;
 }
+/* an older version's pick of emulated_cores, its On: the pick of emulated_cores_mode, said once, the picks file written
+   with that one alone; then the game's own pick of On is over the Off Auto gives an Ounce program. Where the picks give
+   emulated_cores_mode too, the old one is kept and does nothing, said so */
+static int picks_kind_oldpick(void) {
+    char *ini, *picks, *text,
+        *dir = picks_game("[Debug]\nemulated_cores_mode=2\n", "[Debug]\nemulated_cores=1\n", &ini, &picks);
+    g_test.write = 1;
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1 in ") &&
+          strstr(g_test.said, "game.picks, deprecated, is emulated_cores_mode=1 (On) there now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(!strstr(g_test.said, "is no setting a game's picks take"));
+    CHECK(g_settings.emulated_cores_mode == 1 &&
+          options_kind_value("emulated_cores_mode", "0", "an Ounce program") == 0);
+    CHECK(strstr(g_test.said, "settings: emulated_cores_mode=1 (On), the game's own pick, over the 0 (Off) its Auto "
+                              "gives an Ounce program\n"));
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Debug]\nemulated_cores_mode=1\n") &&
+          !strstr(text, "emulated_cores="));
+    free(text);
+    g_test.said[0] = 0; /* the next run: nothing to say */
+    ini_open(ini);
+    CHECK(!strstr(g_test.said, "emulated_cores="));
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    dir = picks_game("[Debug]\nemulated_cores_mode=2\n", "[Debug]\nemulated_cores=1\nemulated_cores_mode=0\n", &ini,
+                     &picks);
+    g_test.said[0] = 0;
+    ini_open(ini);
+    CHECK(strstr(g_test.said, "settings: emulated_cores=1 in ") &&
+          strstr(g_test.said, "game.picks is no setting a game's picks take: it is kept there and does nothing\n"));
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    g_test.write = 0;
+    return 0;
+}
 static int options_picks(const char* which) {
     int failed = !strcmp(which, "--picks-perf")            ? picks_perf()
                  : !strcmp(which, "--picks-kind")          ? picks_kind()
@@ -1112,6 +1152,7 @@ static int options_picks(const char* which) {
                  : !strcmp(which, "--picks-kind-cli")      ? picks_kind_cli()
                  : !strcmp(which, "--picks-kind-old0")     ? picks_kind_old0()
                  : !strcmp(which, "--picks-kind-launcher") ? picks_kind_launcher()
+                 : !strcmp(which, "--picks-kind-oldpick")  ? picks_kind_oldpick()
                  : !strcmp(which, "--picks-perf-run")      ? picks_perf_run()
                  : !strcmp(which, "--picks-clean")         ? picks_clean()
                  : !strcmp(which, "--picks-next")          ? picks_next()
@@ -1123,7 +1164,7 @@ static int options_picks(const char* which) {
     if (failed == 2)
         fprintf(stderr,
                 "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean, -next, -perf, -perf-run, "
-                "-kind, -kind-pick, -kind-auto, -kind-cli, -kind-old0, -kind-launcher\n",
+                "-kind, -kind-pick, -kind-auto, -kind-cli, -kind-old0, -kind-launcher, -kind-oldpick\n",
                 which);
     if (!failed) printf("options_tv_mode %s: ok\n", which);
     return failed;

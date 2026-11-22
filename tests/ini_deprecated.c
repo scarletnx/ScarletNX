@@ -35,6 +35,8 @@ int main(void) {
            strstr(ini_deprecated("emulated_cores"),
                   "now emulated_cores_mode, of the same 0 (Off) and 1 (On) and 2, Auto") &&
            !ini_deprecated("emulated_cores_mode"));
+    /* of the same 0 and 1: a pick of it (the launcher's, the game's) is carried over */
+    assert(ini_renamed("emulated_cores") && !strcmp(ini_renamed("emulated_cores"), "emulated_cores_mode"));
     /* renamed, of the same values: the launcher carries a pick of it over */
     assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
            !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));

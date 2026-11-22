@@ -675,6 +675,33 @@ int main(int argc, char** argv) {
             assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "2"));
             gui_settings_free(&s);
         }
+        /* emulated_cores's pick, renamed to emulated_cores_mode of the same 0 and 1: On and Off carried over, and the
+           row offers Auto, its default, beside them */
+        {
+            const char* cores = "Debug\temulated_cores_mode\t2\tint\t0\t2\tCores held by guest threads\t"
+                                "Emulated cores\t0=Off|1=On|2=Auto\n";
+            const char* picks = "[Debug]\nemulated_cores=1\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, cores));
+            gui_settings_mark(&s);
+            assert(!gui_settings_value(&s, "emulated_cores_mode")); /* Auto, its default: no pick */
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(old, "emulated_cores=1 is deprecated: Emulated cores is emulated_cores_mode=1 now"));
+            assert(!strcmp(gui_settings_value(&s, "emulated_cores_mode"), "1") &&
+                   gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--emulated-cores-mode=1"));
+            assert(!gui_settings_save(&s, path));
+            text = (char*)snx_read_file(path, &size);
+            assert(text && strstr(text, "\n[Debug]\nemulated_cores_mode=1\n") && !strstr(text, "emulated_cores="));
+            free(text);
+            gui_settings_free(&s);
+            picks = "[Debug]\nemulated_cores=0\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, cores));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(gui_settings_value(&s, "emulated_cores_mode"), "0"));
+            gui_settings_free(&s);
+        }
         assert(!snx_remove_tree(dir));
         free(path);
         free(dir);
