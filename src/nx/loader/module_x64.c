@@ -12,12 +12,12 @@
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/runtime/interface.h"
 #include "common/utilities/bits.h"
-#include <elf.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #if defined(__x86_64__) && !defined(_WIN32)
+#include <elf.h>
 
 /* ---- code bytes into .text ---- */
 static void b8(SnxXElf* o, unsigned v) {
