@@ -7949,6 +7949,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_storage_logged.inc"
 #include "vulkan_mirror.inc"
 #include "vulkan_mirror_batch.inc"
+#include "vulkan_mirror_draw.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_unmapped_tail.inc"
 #include "vulkan_draw_storage_stages.inc"
@@ -8917,6 +8918,8 @@ static int run_headless(int argc, char** argv) {
             result = check_mirror_batch();
         else if (!strcmp(name, "finish_lets_go"))
             result = check_finish_lets_go();
+        else if (!strcmp(name, "mirror_draw"))
+            result = check_mirror_draw_results();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "heap_pipeline_flags"))
@@ -9306,6 +9309,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_need_unlocked());
     CHECK(!check_mirror());
     CHECK(!check_mirror_batch());
+    CHECK(!check_mirror_draw_results());
     CHECK(!check_pending_index());
     CHECK(!check_unmapped_tail());
     CHECK(!check_draw_storage_stages());
