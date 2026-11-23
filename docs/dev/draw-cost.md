@@ -80,6 +80,13 @@ equal to the last under the same layout. Reuse a set whose descriptors pack to t
 templates. The other project skips about a quarter of its draws this way. `stage_set` builds the writes of each
 stage and then hashes them (`desc_set_cached`).
 
+In an Ounce game's race on the desktop of 2026-11-23, a counter in `stage_set` found 4,107 stages set a present.
+Only 5.0% of them had the bindings, programs and inline constants of the last draw's same stage (`DsState`'s
+`DS_BIND` and `DS_PROGRAMS` generations, the stage's inline generations and the root's), all of those with no
+GPU-side write to memory since. `stage_set_` was 17.8% of the GPU thread, so a skip of the unchanged stages could
+save under 1% of it there. Most of `stage_set_` is the constant buffer lookups of item 1 (`cb_get` 5.7%,
+`cb_window_place` 1.9%). The item waits for a game whose stages repeat.
+
 **7. Bindless textures.** A Maxwell or SM86 shader reads a texture handle from a constant buffer and indexes the
 texture and sampler pools. Let the translated shader index a descriptor heap that mirrors those pools and lasts
 across draws, so that the renderer writes no descriptor set for each stage of each draw. This removes most of
