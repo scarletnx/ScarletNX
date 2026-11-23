@@ -188,7 +188,8 @@ int vk_pages_on(void) {
     g_pages.on = 0;
     if (!g_settings.buffer_pages) return 0;
     u64 space = g_vk.props.limits.sparseAddressSpaceSize;
-    const char* why = vk_uma()                                      ? "memory shared with the CPU: read in place"
+    /* the hybrid (vk_uma_storage_copied) copies what the GPU only reads, as the copies' path does: by page here */
+    const char* why = vk_uma() && !vk_uma_storage_copied()          ? "memory shared with the CPU: read in place"
                       : vk_written_since(g_mem + AS_BASE, 1, 0) < 0 ? "no write tracking"
                                                                     : NULL;
     if (why) {
