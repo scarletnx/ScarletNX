@@ -2886,7 +2886,9 @@ void vk_rt_publish_drawn(void) {
         if (!(s->gva >> 63) && flush_bytes(s)) rt_watch(s); /* pending: drawn since memory last had it */
     }
 }
-void vk_rt_watch_hit(u64 cpu, u64 size) {
+/* the targets pending over guest memory [cpu, cpu + size) published: for a CPU access (vk_rt_watch_hit) when asked,
+   else for a move of the pages under them (vk_rt_publish_over) */
+static void rt_publish_pending(u64 cpu, u64 size, int asked) {
     Surf* local[16];
     RtPendingList pending = {local, 0, 16};
     vk_lock();
@@ -2895,6 +2897,10 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
        written back, and its watch goes as the write-back's own_acquire finds it */
     for (u32 i = 0; i < pending.count; i++) {
         Surf* s = pending.surfaces[i];
+        if (!asked) {
+            rt_publish_now(s, VK_PUB_OTHER);
+            continue;
+        }
         if (g_vk_rt_watch.hits++ < 4)
             LOG("vulkan: the CPU touched guest memory %llx, a page of the %ux%u render target at %llx (%llu bytes), "
                 "watched: published\n",
@@ -2905,6 +2911,8 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
     if (pending.surfaces != local) free(pending.surfaces);
     vk_unlock();
 }
+void vk_rt_watch_hit(u64 cpu, u64 size) { rt_publish_pending(cpu, size, 1); }
+void vk_rt_publish_over(u64 cpu, u64 size) { rt_publish_pending(cpu, size, 0); }
 void vk_rt_watch_owed(void) {
     u64 cpu, size;
     /* watched again, as a release watches them: no copy and no GPU work, and the CPU's next access publishes them.

@@ -1596,6 +1596,18 @@ out:
     mem_unlock();
     return r;
 }
+int mem_ext_is(u64 a, u64 size, const u8* view) {
+    int r = 1;
+    if (!size || !view || a + size < a) return 0;
+    mem_lock();
+    for (u64 at = a, end = a + size; at < end && r;) {
+        const u32 i = ext_at_nl(at);
+        r = i < g_ext.n && g_ext.run[i].view && g_ext.run[i].view + (at - g_ext.run[i].a) == view + (at - a);
+        if (r) at = g_ext.run[i].b;
+    }
+    mem_unlock();
+    return r;
+}
 int mem_ext_read(u64 a, void* dst, u64 size) {
     u8* d = (u8*)dst;
     int r = 0;
@@ -1696,6 +1708,11 @@ int mem_unmigrate(u64 a, u64 size) {
         while (i < g_ext.n && g_ext.run[i].b <= at) i++;
         if (i == g_ext.n || g_ext.run[i].a >= end) break;
         u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        /* the copy reads the pages, which a watch over them traps where they are (own_watch_in_place): a fault there
+           waits for the trap thread, which can wait for the renderer's lock that the caller holds. What the GPU holds
+           there lands first, as promote_nl's does (the caller publishes the targets pending there before:
+           uma.c's imp_let_go) */
+        own_acquire(lo, hi - lo);
         plat_freeze(GP(lo), hi - lo);
         int u = plat_vm_unshare(GP(lo), hi - lo);
         plat_thaw();
