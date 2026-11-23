@@ -68,7 +68,8 @@ void mem_query(u64 addr, MemBlock* out) {
     out->size = sizeof guest;
     (void)addr;
 }
-u64 guest_ns(void) { return 0; }
+static _Atomic u64 clock_ns; /* the guest's clock, as a test sets it */
+u64 guest_ns(void) { return atomic_load_explicit(&clock_ns, memory_order_relaxed); }
 /* save states' function names, which nothing here takes */
 const char* state_fn_name(StateFnPtr fn) {
     (void)fn;
@@ -424,6 +425,28 @@ static void two_event_adds(void* arg) {
     }
     open_gate();
 }
+/* on the GPU thread, the front end: a release with the GPU's timestamp (the puller's 16-byte semaphore release, DMA's
+   four-word one, NVN's timestamp report), queued at 1 ms of the clock with the renderer thread behind it, which gets
+   to it at 5 ms: the timestamp says when the draws before it were done, so it is the renderer thread's */
+#define STAMP (SEM + 0x400)
+static void stamped_release(void* arg) {
+    (void)arg;
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 0;
+    pthread_mutex_unlock(&gate_lock);
+    gq_call(renderer_held, NULL, 0);
+    atomic_store_explicit(&clock_ns, 1000000, memory_order_relaxed);
+    u8 v[16];
+    snx_st_le32(v, 0x51);
+    snx_st_le32(v + 4, 0);
+    gpu_release_write_stamped(STAMP, v);
+    /* and NVN's timestamp report, which comes with the front end's ticks */
+    snx_st_le32(v, 0x52);
+    snx_st_le64(v + 8, gpu_ticks());
+    gpu_release_stamp(STAMP + 16, v, 0);
+    atomic_store_explicit(&clock_ns, 5000000, memory_order_relaxed);
+    open_gate();
+}
 static int split_main(void) {
     g_settings.gpu_split = 1;
     cpu_store(CBUF, 3);
@@ -441,6 +464,30 @@ static int split_main(void) {
     if (word != 7) fprintf(stderr, "the event's word is %u after two adds of 1 to 5 (7 expected)\n", word);
     expect(marks_are((u32[]){0x991, 0x990}, 2) && word == 7,
            "two adds on the front end, the renderer thread behind: the second reads the first's queued write");
+    cpu_store(STAMP, 0);
+    gpu_call(stamped_release, NULL, NULL, 0);
+    gpu_call(called, (void*)(uintptr_t)0x992, NULL, 0);
+    wait_marks(3);
+    u64 stamp;
+    memcpy(&stamp, (const u8*)guest + STAMP + 8, sizeof stamp);
+    stamp = snx_le64(stamp);
+    const u64 queued = snx_gpu_ticks_of_ns(1000000), run = snx_gpu_ticks_of_ns(5000000);
+    if (stamp < run || stamp >= run + queued / 10)
+        fprintf(stderr,
+                "a release's timestamp is %llu ticks: %llu when the front end queued it, %llu when the "
+                "renderer thread ran it\n",
+                (unsigned long long)stamp, (unsigned long long)queued, (unsigned long long)run);
+    expect(snx_le32(*((u32*)guest + STAMP / 4)) == 0x51 && stamp >= run && stamp < run + queued / 10,
+           "a release's timestamp is the clock's when the renderer thread performs it");
+    memcpy(&stamp, (const u8*)guest + STAMP + 24, sizeof stamp);
+    stamp = snx_le64(stamp);
+    if (stamp < run || stamp >= run + queued / 10)
+        fprintf(stderr,
+                "a timestamp report's ticks are %llu: %llu when the front end queued it, %llu when the renderer "
+                "thread ran it\n",
+                (unsigned long long)stamp, (unsigned long long)queued, (unsigned long long)run);
+    expect(snx_le32(*((u32*)guest + STAMP / 4 + 4)) == 0x52 && stamp >= run && stamp < run + queued / 10,
+           "a timestamp report's ticks are the clock's when the renderer thread performs it");
     if (!failures) printf("gpu_park split: ok\n");
     return failures != 0;
 }

@@ -254,6 +254,11 @@ void gpu_release_stamp(u64 gva, const void* data, int top) {
     (void)top;
     gpu_release_write(gva, data, 16);
 }
+/* gpu.c's, with the clock this test has (guest_gpu_ticks: 0) */
+void gpu_release_write_stamped(u64 gva, const void* data) {
+    memcpy(GP(gva), data, 8);
+    memset(GP(gva + 8), 0, 8);
+}
 
 static void submit(u32 queue) {
     u64 ready = 0;

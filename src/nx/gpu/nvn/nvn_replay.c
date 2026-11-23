@@ -290,14 +290,14 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                times its frame with two of them and sizes its rendering by the span */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
-            u64 ticks = guest_gpu_ticks();
-            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, guest_gpu_ticks()))
+                break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
-            snx_st_le64(v + 8, ticks);
-            if (r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP)
+            if (r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
+                snx_st_le64(v + 8, guest_gpu_ticks()); /* one thread's: a queued report's are read as its record runs */
                 gpu_release_stamp(r->address, v, r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
-            else
-                gpu_release_write(r->address, v, sizeof v);
+            } else
+                gpu_release_write_stamped(r->address, v);
             break;
         }
         case OP_SIGNAL_EVENT: {

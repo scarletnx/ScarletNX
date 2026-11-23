@@ -38,8 +38,8 @@ int gpu_on_thread(void) { return on_thread; }
 static u64 fake_busy;
 u64 gpu_thread_busy_ns(void) { return fake_busy; }
 
-/* what ran, in its order: the kind (W write, C constant buffer upload, R release, I block linear upload), the address
-   and a hash of the bytes */
+/* what ran, in its order: the kind (W write, C constant buffer upload, R release, T a release of the timestamp, I
+   block linear upload), the address and a hash of the bytes */
 typedef struct {
     char kind;
     u64 gva, size, hash;
@@ -74,8 +74,26 @@ int gmem_write_now(u64 gva, const void* src, u64 size) {
     return 0;
 }
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { note('R', gva, data, len); }
-/* a timestamp report: 'T' for the top of the pipe's, 'S' for the other */
-void gpu_release_stamp_now(u64 gva, const void* data, int top) { note(top ? 'T' : 'S', gva, data, 16); }
+/* the GPU's clock, as the test sets it: a timestamp's release takes it when its record runs */
+static u64 clock_ticks;
+static void ticks_bytes(u8 t[8], u64 ticks) {
+    for (u32 i = 0; i < 8; i++) t[i] = (u8)(ticks >> (8 * i));
+}
+void gpu_release_ticks_now(u64 gva) {
+    u8 t[8];
+    ticks_bytes(t, clock_ticks);
+    note('T', gva, t, sizeof t);
+    if (gva + sizeof t <= sizeof mem) memcpy(mem + gva, t, sizeof t);
+}
+/* a timestamp report as its record runs: its first 8 bytes, then the clock's ticks then. 'P' for the top of the
+   pipe's, 'S' for the other */
+void gpu_release_stamp_ticked(u64 gva, const void* data, int top) {
+    u8 b[16];
+    memcpy(b, data, 8);
+    ticks_bytes(b + 8, clock_ticks);
+    note(top ? 'P' : 'S', gva, b, sizeof b);
+    if (gva + sizeof b <= sizeof mem) memcpy(mem + gva, b, sizeof b);
+}
 void gpu_i2m_block_now(const GpuI2m* t) {
     note('I', t->regs.dest.address, t->inner_buffer, t->copy_size);
     if (t->regs.line_count != 7 || t->regs.dest.block_height != 3) queued_in_run += 1000; /* the registers came along */
@@ -117,10 +135,20 @@ static void put_release(u64 gva, u32 v) {
     want[nwant++] = (Ran){'R', gva, 4, fnv(b, 4)};
     gq_release(gva, b, 4);
 }
-static void put_stamp(u64 gva, u32 seed, int top) {
-    u8 b[16];
+/* a timestamp's release, which must hold the clock's ticks when it runs */
+static void put_ticks(u64 gva, u64 ticks_at_run) {
+    u8 t[8];
+    ticks_bytes(t, ticks_at_run);
+    want[nwant++] = (Ran){'T', gva, 8, fnv(t, 8)};
+    gq_release_ticks(gva);
+}
+/* a timestamp report, which must hold its first 8 bytes and the clock's ticks when it runs */
+static void put_stamp(u64 gva, u32 seed, int top, u64 ticks_at_run) {
+    u8 b[16], ran_as[16];
     fill(b, sizeof b, seed);
-    want[nwant++] = (Ran){top ? 'T' : 'S', gva, sizeof b, fnv(b, sizeof b)};
+    memcpy(ran_as, b, 8);
+    ticks_bytes(ran_as + 8, ticks_at_run); /* not the ticks it is given */
+    want[nwant++] = (Ran){top ? 'P' : 'S', gva, sizeof ran_as, fnv(ran_as, sizeof ran_as)};
     gq_release_stamp(gva, b, top);
 }
 static void put_i2m(u64 gva, u32 n, u32 seed, u64 at, u64 size) {
@@ -261,16 +289,55 @@ static int split_main(void) {
     open_gate();
     check_log("split pages first");
 
-    /* a queued timestamp report answers the front end's read of its bytes as it goes, as a release does */
+    /* a timestamp's release holds the clock's ticks when the renderer thread runs it, after the records queued before
+       it, not the ticks when the front end queued it; and a read of its bytes is not served from the queue, which has
+       none for it, while the release queued after it is */
+    hold();
+    u8 p8[8];
+    memset(p8, 0x5A, sizeof p8);
+    clock_ticks = 100;
+    put_ticks(0x9008, 250);
+    want[nwant++] = (Ran){'R', 0x9000, 8, fnv(p8, 8)};
+    gq_release(0x9000, p8, 8);
+    memset(got, 0, sizeof got);
+    CHECK(gq_forward(0x9000, got, 8) == 1 && got[0] == 0x5A, "the release queued after a timestamp was not forwarded");
+    CHECK(nran == 0, "the renderer thread ran the timestamp's release while it was held");
+    clock_ticks = 250; /* before the thread that opens the gate starts: the renderer thread reads it after that */
+    pthread_create(&opener, NULL, open_later, NULL);
+    t0 = now_ns();
+    int served = gq_forward(0x9008, got, 8);
+    waited = now_ns() - t0;
+    CHECK(!served && waited >= 200000000ull,
+          "a read of a queued timestamp was served from the queue (%d) or did not wait for its record (%llu ns)",
+          served, (unsigned long long)waited);
+    CHECK(mem[0x9008] == 250 && mem[0x9009] == 0, "the timestamp in memory is %u, not the 250 of its run", mem[0x9008]);
+    pthread_join(opener, NULL);
+    check_log("split timestamp");
+    clock_ticks = 0;
+
+    /* a queued timestamp report: its first 8 bytes answer the front end's read as they go, as a release's do, and
+       its ticks are the clock's when the renderer thread runs it, which a read of them waits for */
     hold();
     u8 sent[16];
     fill(sent, sizeof sent, 6);
-    put_stamp(0x9000, 6, 0);
+    clock_ticks = 100;
+    put_stamp(0x9100, 6, 0, 250);
     memset(got, 0, sizeof got);
-    CHECK(nran == 0 && gq_forward(0x9000, got, sizeof got) == 1 && !memcmp(got, sent, sizeof got),
-          "the front end's read of a queued timestamp report did not get its bytes");
-    open_gate();
+    CHECK(nran == 0 && gq_forward(0x9100, got, 8) == 1 && !memcmp(got, sent, 8),
+          "the front end's read of a queued timestamp report's first bytes did not get them");
+    clock_ticks = 250;
+    pthread_create(&opener, NULL, open_later, NULL);
+    t0 = now_ns();
+    served = gq_forward(0x9108, got, 8);
+    waited = now_ns() - t0;
+    CHECK(!served && waited >= 200000000ull,
+          "a read of a queued timestamp report's ticks was served from the queue (%d) or did not wait (%llu ns)",
+          served, (unsigned long long)waited);
+    CHECK(mem[0x9108] == 250 && mem[0x9109] == 0 && !memcmp(mem + 0x9100, sent, 8),
+          "the timestamp report in memory has ticks %u, not the 250 of its run", mem[0x9108]);
+    pthread_join(opener, NULL);
     check_log("split timestamp report");
+    clock_ticks = 0;
 
     /* many records of many sizes, with the renderer thread held at times: the ring wraps several times */
     off_front = 0;
@@ -367,15 +434,19 @@ int main(int argc, char** argv) {
     u64 f;
     put_write(0x10000, 64, 1);
     put_release(0x20000, 0x12345678);
-    put_stamp(0x21000, 6, 0);
+    put_stamp(0x21000, 6, 0, clock_ticks);
     f = g_gq.queued;
-    put_stamp(0x21010, 7, 1);
+    put_stamp(0x21010, 7, 1, clock_ticks);
     CHECK(g_gq.written[gq_slot(0x21)] == f + 1, "a timestamp report did not mark its page");
     put_i2m(0x30000, 300, 2, 0x30000, 0x4000);
     put_write(0x10010, 8, 3);
     put_cb(0x10020, 8, 9);
     f = g_gq.queued;
     CHECK(g_gq.written[gq_slot(0x10)] == f, "a constant buffer upload did not mark its page");
+    clock_ticks = 41;
+    put_ticks(0x20008, 41);
+    CHECK(g_gq.written[gq_slot(0x20)] == g_gq.queued, "a timestamp's release did not mark its page");
+    clock_ticks = 0;
     check_log("kinds");
 
     /* each page a write covers has its fence, and only those */

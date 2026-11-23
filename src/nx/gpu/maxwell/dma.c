@@ -300,12 +300,14 @@ void dma_snap_finish(u32 channel, u64 job_id) {
    the payload, 0 and the 64-bit timestamp, written through the release path */
 static void dma_release_semaphore(const u32* r, u32 type) {
     u64 a = gpu_packed_va(r[MAXWELL_DMA_SEMAPHORE_ADDRESS_UPPER], r[MAXWELL_DMA_SEMAPHORE_ADDRESS_LOWER]);
-    u8 w[16]; /* guest memory's bytes, little-endian */
+    u8 w[8]; /* guest memory's bytes, little-endian */
     if (type != LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE && type != LAUNCH_DMA_RELEASE_FOUR_WORD_SEMAPHORE) return;
     snx_st_le32(w, r[MAXWELL_DMA_SEMAPHORE_PAYLOAD]);
     snx_st_le32(w + 4, 0);
-    if (type == LAUNCH_DMA_RELEASE_FOUR_WORD_SEMAPHORE) snx_st_le64(w + 8, gpu_ticks());
-    gpu_release_write(a, w, type == LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE ? 4 : 16);
+    if (type == LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE)
+        gpu_release_write(a, w, 4);
+    else
+        gpu_release_write_stamped(a, w);
 }
 /* LAUNCH_DMA (Eden's MaxwellDMA::Launch): the copy, when it has elements, then the completion semaphore */
 static void dma_launch(GpuChannel* ch, u32 v) {
