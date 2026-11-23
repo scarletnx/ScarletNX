@@ -1,5 +1,6 @@
-# scripts/make-icons.py drew these from wimsy.svg with rsvg-convert version 2.62.3 and OptiPNG version 0.7.8 (-o7 -strip all -nc -nb); run it again after changing the SVG
+# scripts/make-icons.py drew these from wimsy.svg and splash/wimsy-xmas.svg with rsvg-convert version 2.62.3 and OptiPNG version 0.7.8 (-o7 -strip all -nc -nb); run it again after changing an SVG
 b004fe42c99e10ee167ba1d4e3c53623a9dcc73b4e056ddd78b3e11b09353579  wimsy.svg
+9d972c2ab14633db9cc4a4e45843b8f0094f0b8327fb5cdd899630b7d1061489  splash/wimsy-xmas.svg
 c12f0f06a6a21d1720766a5c10f1f20b5d6876a6d1472810377765e0f6e81e13  icons/hicolor/16x16/apps/wimsy.png
 ed9c8767993c77c20ccf4ce4196657d1b6621171054e96b723a654cb75c9fcdb  icons/hicolor/22x22/apps/wimsy.png
 e3e777b66f28ccb4eb859bb3a7e314cc390b3112d1d7813cec0c5ddd46b50024  icons/hicolor/24x24/apps/wimsy.png
@@ -8,4 +9,12 @@ dfc491fcf421bc12cb3dde623bf8807ee93dbeae7ef43e6b3f2d3895964b9088  icons/hicolor/
 1a4fd7bcd3c9ce4c83035a036f24eac8a99be0ddce4f0731e5478b3564dcee2e  icons/hicolor/64x64/apps/wimsy.png
 cd0da60aeef2903b4265ee4ea9b541fccd95f89b088a357aafa7a7c5f6e39a6f  icons/hicolor/128x128/apps/wimsy.png
 0ace4d6faf0ed9de1e2d43d774ba1e4ca43b3e356bab4ea1f6c89c9594a46900  icons/hicolor/256x256/apps/wimsy.png
+c00640a57097fc219f39cf9defdb4a5b37671e0e446c2f9943801419bda27edf  icons/hicolor/16x16/apps/wimsy-xmas.png
+9c9a800ea39caafdf36bf2cc85e835d5903f1eaf6932c4158d2ec2e6abf1365e  icons/hicolor/22x22/apps/wimsy-xmas.png
+c4c68854817a5df213bab886fe21d633febd9a26705fbb03035cb2af2bfbacbd  icons/hicolor/24x24/apps/wimsy-xmas.png
+c16675b92fc4d7ab61c656f8276f78273a4ac5a04a3d45d1dcfe8561c9220eab  icons/hicolor/32x32/apps/wimsy-xmas.png
+13c8b1621e3f82a27ccead467663609c6a30005ee2d5b8b213af8f96f35564f9  icons/hicolor/48x48/apps/wimsy-xmas.png
+db9d996addf6b19280a6b9d8fc4a0e6e0ecec1012b92031cc5b85a83dca4f3d5  icons/hicolor/64x64/apps/wimsy-xmas.png
+8253b812ffb883dd69412aa52b14dc99ab99264b1e9b02afe235c0f41f625c90  icons/hicolor/128x128/apps/wimsy-xmas.png
+9483fc7f4aaab940fa6b1dffb24b527706ecb400230ca4d7580e37cc8df4194f  icons/hicolor/256x256/apps/wimsy-xmas.png
 93555ec31859872ef73adfb6aa93efb5712136721e0b07b1e40d01d3c31deedd  icons/wimsy.ico
