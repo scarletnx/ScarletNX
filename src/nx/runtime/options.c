@@ -1252,6 +1252,68 @@ static void write_tracking_hot_old(void) {
              given, file ? file->value : "2", file ? "the .ini's" : "its default (Auto)");
     }
 }
+int options_dlss_render_size_old(const char* old, int given) {
+    char* end;
+    long v = strtol(old, &end, 10);
+    if (end == old || *end || v < 0 || v > 5) return -2;
+    return v || given ? (int)v : -1;
+}
+int options_dlss_upscaler_old(const char* old, int given) {
+    (void)given;
+    if (!strcmp(old, "0")) return 3;
+    if (!strcmp(old, "1")) return -1;
+    return -2;
+}
+/* A setting of an older version that a newer one took over (docs/user/deprecations.md), map giving its value as the
+   new one's (options.h, given 0 for the .ini's, 1 for the command line's). The .ini's is carried into the store while
+   the .ini gives the new one no value, so the file is written with it and the next run reads the new one. The command
+   line's is that run's value of the new one while the command line gives that one none. words: the new one's, for the
+   log */
+static void old_setting(const char* old, const char* now, int (*map)(const char*, int), const char* const* words) {
+    static const char* const values[] = {"0", "1", "2", "3", "4", "5"};
+    const Entry* file = store_find(old);
+    const Entry* kept = store_find(now);
+    const char *given = override_of(old), *first = override_of(now);
+    int v = file ? map(file->value, 0) : -1;
+    if (file && kept) {
+        if (v >= 0 && strcmp(kept->value, values[v]))
+            WARN("settings: %s=%s, deprecated, is not read: the .ini's %s=%s stays (docs/user/deprecations.md)\n", old,
+                 file->value, now, kept->value);
+    } else if (file) {
+        if (v == -2)
+            WARN("settings: %s=%s, deprecated, is no value it took: %s takes its default (docs/user/deprecations.md)\n",
+                 old, file->value, now);
+        else if (v == -1)
+            WARN("settings: %s=%s, deprecated, was its default: %s takes its own (docs/user/deprecations.md)\n", old,
+                 file->value, now);
+        else {
+            store_put(now, values[v]);
+            WARN("settings: %s=%s, deprecated, is %s=%d (%s) now (docs/user/deprecations.md)\n", old, file->value, now,
+                 v, words[v]);
+        }
+    }
+    if (!given) return;
+    if (first) {
+        WARN("settings: --%s=%s is deprecated, and the command line gives --%s=%s too: %s=%s this run "
+             "(docs/user/deprecations.md)\n",
+             old, given, now, first, now, first);
+        return;
+    }
+    v = map(given, 1);
+    if (v >= 0) {
+        ini_override(now, values[v]);
+        WARN("settings: --%s=%s is deprecated: this run reads it as --%s=%d (%s) (docs/user/deprecations.md)\n", old,
+             given, now, v, words[v]);
+    } else
+        WARN("settings: --%s=%s is deprecated, and %s: %s keeps its value this run (docs/user/deprecations.md)\n", old,
+             given, v == -1 ? "was its default" : "is no value it took", now);
+}
+static void dlss_old(void) {
+    static const char* const sizes[] = {"Game's", "Native", "Quality", "Balanced", "Performance", "Ultra performance"};
+    static const char* const upscalers[] = {"Best", "FSR 2", "FSR 1", "None"};
+    old_setting("dlss_render_size", "internal_resolution", options_dlss_render_size_old, sizes);
+    old_setting("dlss_upscaler", "render_upscaler", options_dlss_upscaler_old, upscalers);
+}
 
 int options_emulated_cores_old(const char* old, int given) {
     if (!strcmp(old, "0")) return 0;
@@ -1481,6 +1543,7 @@ void ini_open(const char* path) {
     vk_descriptors_old();
     write_tracking_hot_old();
     emulated_cores_old();
+    dlss_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

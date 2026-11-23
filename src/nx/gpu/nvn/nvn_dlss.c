@@ -259,14 +259,14 @@ void nvn_DlssNetworkBuilderGetTextureIDs(CPU* c, u64 b, u64 ids) {
 }
 
 /* ============================================================ network: a stand-in for the upscaler */
-/* No network runs: an evaluation goes to the renderer's upscaler (FSR 2, the DLSS upscaler setting), or is a filtered
+/* No network runs: an evaluation goes to the renderer's upscaler (the render_upscaler setting), or is a filtered
    copy of the input color's subrectangle onto the output's (nvn_cmd.c's nvn_CommandBufferEvaluateDlss, nvn_copy.c's
    OP_DLSS). The render sizes the driver answers come from a backend this runtime doesn't have, so they follow the
-   driver's rule for an output size and a method (nvn_dlss_sizes.h), with the DLSS render size setting in place of
+   driver's rule for an output size and a method (nvn_dlss_sizes.h), with the internal resolution setting in place of
    the optimal size where it is set. The driver answers the optimal size, then the smallest, then the largest (a game
    evaluates only a render size between the two, so their order matters) */
 static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
-    nvn_dlss_sizes(width, height, method, g_settings.dlss_render_size, out);
+    nvn_dlss_sizes(width, height, method, g_settings.internal_resolution, out);
 }
 int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 min_width, u64 min_height,
                                              u64 max_width, u64 max_height) {

@@ -34,7 +34,10 @@ frame the game finished, after everything here.
   kinds it takes besides a temporal one (`GPU_UPSCALE_SPATIAL_OK`, `GPU_UPSCALE_COPY_OK`). Its fallback is the front
   end's filtered copy of the color onto the output, and the log names what ran.
 
-`dlss_upscaler=0` turns the DLSS evaluations to the copy and leaves the modules alone.
+`render_upscaler=3` (None) turns the DLSS evaluations to that copy, 1:1 when the game renders at the output's size.
+A module that takes a copy gets the interface's filtered copy, and one that takes none gets the best upscaler that can
+run. The size the game renders at before the upscale is `internal_resolution`'s, a setting apart from the resolution
+scale ([Settings, Graphics](../../user/settings.md#graphics)).
 
 ## The interface
 

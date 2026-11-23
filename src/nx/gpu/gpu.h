@@ -214,7 +214,8 @@ enum {
     GPU_UPSCALE_AUTO_EXPOSURE = 0x40,
     /* the runtime's own: GPU_UPSCALE_HDR says the color's range (else its format does: a float format is HDR) */
     GPU_UPSCALE_RANGE_GIVEN = 1u << 16,
-    /* a hook module's upscale (docs/platforms/nx/hooks.md), not a DLSS evaluation: dlss_upscaler doesn't apply */
+    /* a hook module's upscale (docs/platforms/nx/hooks.md), not a DLSS evaluation, which runs no upscaler with the
+       render_upscaler setting at None */
     GPU_UPSCALE_MODULE = 1u << 17,
     /* the kinds of upscaler the caller takes besides a temporal one, which every caller takes */
     GPU_UPSCALE_SPATIAL_OK = 1u << 18,
