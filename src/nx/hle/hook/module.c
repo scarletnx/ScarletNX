@@ -144,8 +144,7 @@ void hook_modules_select(const SnxModule* mod, const u8* mem, int (*off)(const c
             continue;
         }
         g_applies[i] = 1;
-        LOG("hooks: module %s applies (%s): %u GPU chain%s\n", m->name, m->what ? m->what : "", m->nchains,
-            m->nchains == 1 ? "" : "s");
+        LOG("hooks: module %s applies (%s)\n", m->name, m->what ? m->what : "");
     }
 }
 

@@ -87,8 +87,7 @@ static int times(const char* text) {
 }
 
 /* a compiled-in module of another title, first in the list */
-static const HookModule g_compiled = {"compiled", "a compiled-in module", 0x0100000000def000ull, NULL, NULL, NULL, 0,
-                                      NULL,       0};
+static const HookModule g_compiled = {"compiled", "a compiled-in module", 0x0100000000def000ull, NULL, NULL, NULL, 0};
 const HookModule* const g_hook_modules[] = {&g_compiled, NULL};
 
 static int off(const char* name) { return !strcmp(name, "hx_off"); }

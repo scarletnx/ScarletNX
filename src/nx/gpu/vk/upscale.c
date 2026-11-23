@@ -1,15 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The renderer's upscale (renderer.h's upscale), which a Switch 2 game's DLSS evaluations (gpu/nvn/nvn_copy.c's
-   OP_DLSS) and the hook modules' upscales (gpu/nvn/nvn_hook.c) go through: the guest's surfaces as images of the
+   OP_DLSS) and the upscales hook modules record (its OP_UPSCALE) go through: the guest's surfaces as images of the
    upscalers' interface (gpu/vk/upscaler/upscaler.h), which picks the upscaler from the render_upscaler setting among
    those the caller takes. FSR 2.2.1 (gpu/vk/fsr2, MIT, Copyright (c) 2022-2023 Advanced Micro Devices, Inc.) is the
    one a DLSS evaluation gets by default. The game's color, depth and motion vector targets are sampled where they are.
    The upscaler writes an image of ours, as its output is a storage image and a render target need not be one, and
    that is copied onto the game's output target. The upscalers record with plain vkCmd* calls, so the evaluation runs
    on the recording thread, in order with the frame's other commands (vk_rec_call). 0 for anything none can take: the
-   caller's own fallback stands in (the front end's filtered copy for a DLSS evaluation, the game's own passes for a
-   module) */
+   front end's filtered copy stands in */
 #include <string.h>
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/upscaler/upscaler.h"
@@ -191,12 +190,13 @@ int vk_upscale(const GpuUpscale* u) {
         LOG_LIMIT(1,
                   "vulkan: the upscalers need storage images read and written without a format, which this GPU "
                   "lacks: %s run their fallback\n",
-                  module ? "hook modules" : "DLSS evaluations are a filtered copy, and");
+                  module ? "hook modules' upscales are a filtered copy, and"
+                         : "DLSS evaluations are a filtered copy, and");
         return 0;
     }
     if (g_vk_scale != 1.0f) {
         LOG_LIMIT(1, "vulkan: no upscaler is run with a resolution scale other than 1: %s\n",
-                  module ? "hook modules run the game's own passes" : "DLSS evaluations are a filtered copy");
+                  module ? "hook modules' upscales are a filtered copy" : "DLSS evaluations are a filtered copy");
         return 0;
     }
     /* in this order, each after the one before was taken (a DLSS evaluation needs all three): each input's read check
@@ -210,7 +210,7 @@ int vk_upscale(const GpuUpscale* u) {
                   "vulkan: %s color (format %#x), depth (%#x) or motion vectors (%#x) aren't render targets the "
                   "upscaler can sample: %s this time\n",
                   module ? "a hook module's" : "a DLSS evaluation's", u->color.format, u->depth.format,
-                  u->motion.format, module ? "the game's own passes" : "a filtered copy");
+                  u->motion.format, "a filtered copy");
         return 0;
     }
     if (u->has_exposure && !input(&u->exposure, 0, one, &exposure, &r.e.exposure)) exposure = NULL;
@@ -231,7 +231,7 @@ int vk_upscale(const GpuUpscale* u) {
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &fp);
     if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
         LOG_LIMIT(1, "vulkan: the upscaler can't write the output's format (%d): %s\n", (int)format,
-                  module ? "the game's own passes stand in" : "a filtered copy stands in");
+                  "a filtered copy stands in");
         return 0;
     }
     if (u->out_base[0] < 0 || u->out_base[1] < 0 || (u32)u->out_base[0] + u->out[0] > out->sw ||
@@ -278,14 +278,13 @@ int vk_upscale(const GpuUpscale* u) {
     if (id == SNX_UPSCALERS) {
         LOG_LIMIT(4, "vulkan: no upscaler takes %s's %ux%u to %ux%u (%s): %s\n",
                   module ? "a hook module" : "a DLSS evaluation", u->render[0], u->render[1], u->out[0], u->out[1], why,
-                  module ? "the game's own passes stand in" : "a filtered copy stands in");
+                  "a filtered copy stands in");
         return 0;
     }
     if (why)
         LOG_LIMIT(2, "vulkan: %s stands in for the upscaler the settings ask for: %s\n", snx_upscaler_caps(id)->name,
                   why);
-    if (!ready(id, render_max, u->out, flags, cf, format, who, module ? "the game's own passes" : "filtered copies"))
-        return 0;
+    if (!ready(id, render_max, u->out, flags, cf, format, who, "filtered copies")) return 0;
 
     VkCommandBuffer cb = vk_cmd(); /* after the inputs' read checks (input) and the context's setup */
     Surf* reads[5] = {color, depth, motion, exposure, reactive};

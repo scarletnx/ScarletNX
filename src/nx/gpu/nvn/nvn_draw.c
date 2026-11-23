@@ -1384,6 +1384,20 @@ static void c0_packed(const NvnDraw* d, DispatchState* x) {
     }
     memcpy(x->bank0, c0, sizeof c0);
 }
+int nvn_draw_c0_layout(const NvnDraw* d, u32 at[NVN_C0_LISTS], u32 count[NVN_C0_LISTS]) {
+    const u8* rec = d->c0rec;
+    u32 a = 0x10;
+    if (!g_shader_sm86 || rec[0] != 1) return 0;
+    for (u32 k = 0; k < NVN_ROOT_TABLES; k++) a += (4 * (u32)rec[1 + k] + 15) & ~15u;
+    for (u32 l = 0; l < NVN_C0_LISTS; l++) {
+        u32 n = l < 2 ? rec[9 + l] & 0x3fu : rec[9 + l];
+        if (l < 2 && n > 16) n = 16;
+        at[l] = a;
+        count[l] = n;
+        a += n * (l < 2 ? 16 : 8);
+    }
+    return 1;
+}
 /* the record's grid into the queue's state: DR_OK, or why the record dispatches nothing (its words in g either way) */
 static u32 dispatch_grid(NvnDraw* d, u64 payload, u32 g[3]) {
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
