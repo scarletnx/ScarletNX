@@ -1185,6 +1185,34 @@ static void harvest_left(const u32* left, u32 n) {
     free(r);
 }
 
+/* whether page lies in batch m's ranges, which are sorted and apart (harvest_batch) */
+static int out_page_in(const MirBatch* m, u64 page) {
+    u32 lo = 0, hi = m->n;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (page < m->r[mid].first)
+            hi = mid;
+        else if (page >= m->r[mid].end)
+            lo = mid + 1;
+        else
+            return 1;
+    }
+    return 0;
+}
+/* Whether batch m's output is one its harvest wrote (mirror_harvest.comp): n pages taken of its pages, n - room of them
+   in the list of those left when they don't fit and none when they do, each a page of its ranges. A fault of the GPU's
+   in the submission can leave the output as the staging ring had it before, other readbacks' bytes, while the driver
+   counts the submission done and says the device is lost only later: one game landed pages terabytes past guest
+   memory, and another read its list of those left past the buffer */
+static int out_sane(const MirBatch* m) {
+    const u32 n = m->out[0], left = m->out[1], take = n < m->room ? n : m->room;
+    if (n > m->pages || left != (n > m->room ? n - m->room : 0)) return 0;
+    for (u32 i = 0; i < take; i++)
+        if (!out_page_in(m, m->out[MIR_HEAD + i * m->entry])) return 0;
+    for (u32 i = 0; i < left; i++)
+        if (!out_page_in(m, m->out[MIR_HEAD + m->room * m->entry + i])) return 0;
+    return 1;
+}
 void vk_mirror_done(u64 done) {
     /* publishing a page can write a render target back, which can finish the commands and land through here again:
        a batch leaves the list before it is taken in, and a landing inside one takes none */
@@ -1200,6 +1228,14 @@ void vk_mirror_done(u64 done) {
         g_mir_nbatch--;
         if (!VK_OK(vk_devmem_invalidate(m->mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read the GPU mirror's writes");
+        if (!out_sane(m)) { /* landed, its words go to guest addresses it never had */
+            char msg[200];
+            snprintf(msg, sizeof msg,
+                     "vulkan: the GPU mirror's results of submission %llu are not what its harvest writes: the GPU "
+                     "faulted in that submission (driver reset or crash)",
+                     (unsigned long long)m->submit);
+            vk_lost_stop(msg);
+        }
         u32 n = m->out[0], take = n < m->room ? n : m->room;
         vk_result_begin();
         if (m->entry == MIR_ENTRY_PAGE)

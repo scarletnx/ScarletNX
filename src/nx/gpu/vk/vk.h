@@ -832,6 +832,9 @@ void vk_frame_hold(u64 frame_id);
 u64 vk_last_submit(void);          /* the last submission's number, which its completion signals */
 VkSemaphore vk_gfx_timeline(void); /* the timeline those numbers are values of: another queue can wait for one */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
+void vk_submit_progress_raw(u64* submitted, u64* done); /* the same, with no stop on a lost device */
+/* a lost device's stop: the fault and checkpoint reports, then fatal(msg). One thread reports, others wait for it */
+[[noreturn]] void vk_lost_stop(const char* msg);
 void vk_wait_submit(u64 value); /* until the GPU has done that submission (any thread, without vk_lock) */
 /* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
    (cmd.c), where a wait for good froze the game */
