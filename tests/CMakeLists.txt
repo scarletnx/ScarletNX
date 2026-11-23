@@ -1406,6 +1406,11 @@ add_test(NAME sailgen_isel_widths
          COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen"
                  "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/widths" -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/isel_widths_check.cmake")
 set_tests_properties(sailgen_isel_widths PROPERTIES PASS_REGULAR_EXPRESSION "sailgen_isel_widths: 260 evaluations")
+# --encoders of the in-tree a64.sail: the Arm ARM's words for fields of every kind, and each encoder's fields apart
+add_executable(snx-test-sailgen-encoders sailgen_encoders.c)
+snx_test_target(snx-test-sailgen-encoders c23)
+snx_sailgen_a64_encoders(snx-test-sailgen-encoders)
+add_test(NAME sailgen_encoders COMMAND snx-test-sailgen-encoders)
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
