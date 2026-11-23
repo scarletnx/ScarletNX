@@ -389,13 +389,23 @@ typedef struct {
     u32 op; /* RC_ */
     u32 a, b;
 } RendererCall;
+/* the front end's syncpoint increments queued for the renderer's side, and those of them it took (gpu_release_value):
+   nvdrv's 128 syncpoints. queued is the front end's alone */
+#define RC_SYNCPTS 128
+static _Atomic u32 g_incr_queued[RC_SYNCPTS], g_incr_taken[RC_SYNCPTS];
 static void call_run(const void* arg, u64 bytes) {
     RendererCall c;
     (void)bytes;
     memcpy(&c, arg, sizeof c);
     switch (c.op) {
         case RC_BARRIER: g_renderer->method_barrier((int)c.a); break;
-        case RC_STREAM_INCR: g_renderer->stream_incr(c.a); break;
+        case RC_STREAM_INCR:
+            /* taken before the renderer counts it: in gpu_release_value a count of the renderer's that has it comes
+               with this one, so the increment is never counted twice (a wait passed too early), at most once too few
+               for a moment (a wait as before) */
+            if (c.a < RC_SYNCPTS) atomic_fetch_add_explicit(&g_incr_taken[c.a], 1, memory_order_seq_cst);
+            g_renderer->stream_incr(c.a);
+            break;
         case RC_STREAM_END: g_renderer->stream_end(); break;
         case RC_READY: g_renderer->ready(); break;
         case RC_STREAM_RUN: g_renderer->stream_run((int)c.a); break;
@@ -414,7 +424,19 @@ void gpu_method_barrier(int kind) {
     if (g_renderer->method_barrier) call_queue(RC_BARRIER, (u32)kind, 0);
 }
 void gpu_stream_incr(u32 id) {
-    if (g_renderer->stream_incr) call_queue(RC_STREAM_INCR, id, 0);
+    if (!g_renderer->stream_incr) return;
+    if (id < RC_SYNCPTS) atomic_fetch_add_explicit(&g_incr_queued[id], 1, memory_order_relaxed); /* before its record */
+    call_queue(RC_STREAM_INCR, id, 0);
+}
+/* The value the renderer will give syncpoint id once its queued work is done (renderer.h release_value), with the
+   increments still in the queue: those it took and counted, and those the front end queued that it hasn't taken yet.
+   The replay's checks of its own fence drained the queue for the count (gpu_renderer_now) and waited for every record
+   before them */
+u32 gpu_release_value(u32 id) {
+    if (!gq_queues() || id >= RC_SYNCPTS) return gpu_renderer_now()->release_value(id);
+    const u32 counted = g_renderer->release_value(id);
+    const u32 taken = atomic_load_explicit(&g_incr_taken[id], memory_order_seq_cst);
+    return counted + (atomic_load_explicit(&g_incr_queued[id], memory_order_relaxed) - taken);
 }
 void gpu_stream_end(void) {
     if (g_renderer->stream_end) call_queue(RC_STREAM_END, 0, 0);
@@ -458,7 +480,7 @@ u32 gpu_shading_rate(const GpuShadingRate* r) {
 }
 /* any other call of the renderer: after every queued record, as it may read what they change or give a result that
    depends on them */
-const Renderer* gpu_renderer_now(void) {
-    if (gq_queues()) gq_drain();
+const Renderer* gpu_renderer_now_at(const char* file, int line) {
+    if (gq_queues()) gq_drain_at(file, line);
     return g_renderer;
 }

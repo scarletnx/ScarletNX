@@ -140,6 +140,15 @@ enum {
 };
 static _Atomic u64 g_gqs[GQS_N];
 static void gqs_add(int at, u64 v) { atomic_fetch_add_explicit(&g_gqs[at], v, memory_order_relaxed); }
+/* The drains by the place that asked (gpu_renderer_now's file and line, NULL for gq_drain's own callers), and of each
+   the drains that found records not run, for the stats line: which calls to make records next. The front end adds,
+   the present's thread reads and resets the counts */
+#define GQ_SITES 32
+static struct {
+    _Atomic(const char*) file;
+    _Atomic int line;
+    _Atomic u64 n, busy;
+} g_gq_site[GQ_SITES];
 void gq_stats_log(u64 presents) {
     if (!g_gq.started || !presents) return;
     u64 v[GQS_N];
@@ -153,6 +162,21 @@ void gq_stats_log(u64 presents) {
         (double)v[GQS_DRAIN_NS] / 1e6 / n, (double)v[GQS_DRAINS] / n, (double)v[GQS_DRAINS_IDLE] / n,
         (double)v[GQS_READ_N] / n, (double)v[GQS_READ_NS] / 1e6 / n, (double)v[GQS_RUNS] / n,
         (double)v[GQS_RUN_BYTES] / 1024.0 / n, (double)v[GQS_RUN_NS] / 1e6 / n);
+    char line[640];
+    int at = 0;
+    for (u32 i = 0; i < GQ_SITES && at < (int)sizeof line - 64; i++) {
+        const char* f = atomic_load_explicit(&g_gq_site[i].file, memory_order_acquire);
+        if (!f) break;
+        u64 d = atomic_exchange_explicit(&g_gq_site[i].n, 0, memory_order_relaxed),
+            b = atomic_exchange_explicit(&g_gq_site[i].busy, 0, memory_order_relaxed);
+        if (!d) continue;
+        const char* base = f;
+        for (const char* c = f; *c; c++)
+            if (*c == '/' || *c == '\\') base = c + 1;
+        at += snprintf(line + at, sizeof line - (size_t)at, "%s %s:%d %.2f (%.2f busy)", at ? "," : "", base,
+                       atomic_load_explicit(&g_gq_site[i].line, memory_order_relaxed), (double)d / n, (double)b / n);
+    }
+    if (at) LOG("gpu: split: drains a present by where they were asked:%s\n", line);
 }
 /* the next record run, and the taker's position and the fence published: its bytes, 0 when there was none */
 static u32 gq_take_one(void) {
@@ -232,10 +256,25 @@ static u64 gq_head(void) { return atomic_load_explicit(&g_gq.head, memory_order_
 static int gq_room(u64 bytes) {
     return GQ_RING - (gq_head() - atomic_load_explicit(&g_gq.tail, memory_order_acquire)) >= bytes;
 }
-void gq_drain(void) {
+static void gq_site_count(const char* file, int line, int busy) {
+    for (u32 i = 0; i < GQ_SITES; i++) {
+        const char* f = atomic_load_explicit(&g_gq_site[i].file, memory_order_relaxed);
+        if (!f) { /* the front end alone adds sites */
+            atomic_store_explicit(&g_gq_site[i].line, line, memory_order_relaxed);
+            atomic_store_explicit(&g_gq_site[i].file, file ? file : "gq_drain", memory_order_release);
+        } else if (atomic_load_explicit(&g_gq_site[i].line, memory_order_relaxed) != line || strcmp(f, file ? file : "gq_drain"))
+            continue;
+        atomic_fetch_add_explicit(&g_gq_site[i].n, 1, memory_order_relaxed);
+        if (busy) atomic_fetch_add_explicit(&g_gq_site[i].busy, 1, memory_order_relaxed);
+        return;
+    }
+}
+void gq_drain_at(const char* file, int line) {
     if (g_gq.on) {
+        const int busy = !gq_done_by(g_gq.queued);
         gqs_add(GQS_DRAINS, 1);
-        if (gq_done_by(g_gq.queued)) gqs_add(GQS_DRAINS_IDLE, 1);
+        if (!busy) gqs_add(GQS_DRAINS_IDLE, 1);
+        gq_site_count(file, line, busy);
     }
     if (g_gq.queued) gq_wait(gq_done_by, g_gq.queued, GQW_DRAIN);
 }
