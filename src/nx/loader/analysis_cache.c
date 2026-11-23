@@ -102,12 +102,16 @@ void snx_analysis_cache_setup_failed(SnxAnalysisCache* cache) {
     if (cache) ++cache->setup_fail;
 }
 
+void snx_analysis_cache_store_failed(SnxAnalysisCache* cache) {
+    if (cache) ++cache->store_fail;
+}
+
 int snx_analysis_cache_digest(const void* data, size_t size, char out[65]) {
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     unsigned char dig[32];
     size_t i;
     if (!ctx || EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, data, size) != 1 || EVP_DigestFinal_ex(ctx, dig, NULL) != 1) {
+        (size && EVP_DigestUpdate(ctx, data, size) != 1) || EVP_DigestFinal_ex(ctx, dig, NULL) != 1) {
         if (ctx) EVP_MD_CTX_free(ctx);
         return -1;
     }
@@ -200,12 +204,17 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         snprintf(error, error_size, "no analysis for %s", key);
         return -1;
     }
-    if (fseek(f, 0, SEEK_END) || (size = (size_t)ftell(f)) == (size_t)-1 || fseek(f, 0, SEEK_SET)) {
-        fclose(f);
-        cache->misses++;
-        snprintf(error, error_size, "cannot size %s", path);
-        free(path);
-        return -1;
+    /* ftell returns a 32-bit long on Windows, so a large file would be mis-sized there. Use the 64-bit helper. */
+    {
+        SnxU64 fsize = snx_file_size(path);
+        if (fsize > SIZE_MAX) {
+            fclose(f);
+            cache->misses++;
+            snprintf(error, error_size, "cannot size %s", path);
+            free(path);
+            return -1;
+        }
+        size = (size_t)fsize;
     }
     if (size < SNX_ANALYSIS_TRAILER + 8) {
         fclose(f);
@@ -216,10 +225,11 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
     }
     file = (unsigned char*)snx_alloc(size);
     if (!file || fread(file, 1, size, f) != size) {
+        snx_os_error(reason, sizeof reason); /* capture before fclose changes errno or GetLastError */
         free(file);
         fclose(f);
         cache->misses++;
-        snprintf(error, error_size, "cannot read %s: %s", path, snx_os_error(reason, sizeof reason));
+        snprintf(error, error_size, "cannot read %s: %s", path, reason);
         free(path);
         return -1;
     }
@@ -334,7 +344,7 @@ int snx_analysis_cache_load_unit_keys(const SnxAnalysisCache* cache, const char*
     unsigned char* file;
     size_t size = 0, i;
     int rc = -1;
-    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64) return -1;
+    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64 || count > SIZE_MAX / 65) return -1;
     memset(unit_keys, 0, count * 65);
     name = snx_format("%s.units", key);
     path = snx_path_join(cache->folder, name);
@@ -384,9 +394,13 @@ static int cache_write(const SnxAnalysisCache* cache, const char* key, const cha
         goto done;
     }
     written = fwrite(data, 1, size, f) == size && (!size2 || fwrite(data2, 1, size2, f) == size2);
-    if (fclose(f)) written = 0;
+    if (!written) snx_os_error(reason, sizeof reason);
+    if (fclose(f)) {
+        if (written) snx_os_error(reason, sizeof reason);
+        written = 0;
+    }
     if (!written) {
-        snprintf(error, error_size, "cannot write %s: %s", tmp, snx_os_error(reason, sizeof reason));
+        snprintf(error, error_size, "cannot write %s: %s", tmp, reason);
         goto done;
     }
     if (plat_replace_file(tmp, path)) {
@@ -406,7 +420,7 @@ int snx_analysis_cache_store_unit_keys(const SnxAnalysisCache* cache, const char
     unsigned char* file;
     size_t size = 72 + count * 64, i;
     int rc;
-    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64) return -1;
+    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64 || count > SIZE_MAX / 65) return -1;
     file = (unsigned char*)snx_alloc(size);
     if (!file) return -1;
     memcpy(file, options, 64);

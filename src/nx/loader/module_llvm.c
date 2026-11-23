@@ -71,7 +71,8 @@ typedef struct {
 #endif
 } Queue;
 
-/* A cheap fingerprint of the start and end of a module file, to tell an edited output from the one we linked. */
+/* A cheap fingerprint of the start and end of a module file. A change in the middle of a file of at least 2 MB with the
+   same size and time is not seen; callers must bind every build input into the stamp's key instead. */
 static int output_sample(const char* path, char out[65]) {
     enum { HALF = 1 << 20 };
     unsigned char* buf = (unsigned char*)snx_alloc(2 * HALF);
@@ -961,7 +962,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             }
         }
         free(views);
-        snx_analysis_cache_report(analysis, options->quiet);
     }
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;
@@ -1036,22 +1036,31 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     /* The keys a build records name objects under the unit cache's identity. Include that identity, the analysis and
        every other input to a unit's IR, so a key from another opt, tuning, LLVM or chunk size cannot be reused. */
     if (analysis && akey[0]) {
-        char bound_id[65] = {0}, layout_id[65] = {0}, triple_id[65] = {0}, unit_id[65] = {0};
+        char bound_id[65] = {0}, layout_id[65] = {0}, triple_id[65] = {0}, unit_id[65] = {0}, profile_id[65] = {0};
         int digests_ok = 1;
         struct {
-            char identity[64], bound[64], layout[64], triple[64], units_identity[64];
-            SnxU64 chunk, hook, nro, units;
+            char identity[64], bound[64], layout[64], triple[64], units_identity[64], profile[64];
+            SnxU64 chunk, hook, nro, units, abi_contract;
         } blob;
         memset(&blob, 0, sizeof blob);
         memcpy(blob.identity, akey, 64);
-        digests_ok &= !snx_analysis_cache_digest(options->bound,
+        digests_ok &= !snx_analysis_cache_digest(options->bound ? options->bound : (const unsigned char*)"",
                                                   options->bound ? options->bound_count * sizeof(*options->bound) : 0,
                                                   bound_id);
-        digests_ok &= !snx_analysis_cache_digest(build->layout,
+        digests_ok &= !snx_analysis_cache_digest(build->layout ? build->layout : (const unsigned char*)"",
                                                  build->layout ? build->layout_count * sizeof(*build->layout) : 0,
                                                  layout_id);
         digests_ok &= !snx_analysis_cache_digest(build->triple ? build->triple : "",
                                                  build->triple ? strlen(build->triple) : 0, triple_id);
+        /* The branch profile and the ABI contract change emitted IR. Hash the profile's bytes, not its name, so an
+           edit of the file in place also misses the unit keys. */
+        {
+            size_t profile_size = 0;
+            unsigned char* profile = snx_read_file(g_settings.ir_branch_profile, &profile_size);
+            digests_ok &= !snx_analysis_cache_digest(profile ? profile : (const unsigned char*)"",
+                                                     profile ? profile_size : 0, profile_id);
+            free(profile);
+        }
         if (unit_cache) digests_ok &= !snx_unit_cache_identity_digest(unit_cache, unit_id);
         if (!digests_ok) unit_id[0] = 0;
         memcpy(q.unit_id, unit_id, sizeof q.unit_id);
@@ -1059,10 +1068,12 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         memcpy(blob.layout, layout_id, 64);
         memcpy(blob.triple, triple_id, 64);
         memcpy(blob.units_identity, unit_id, 64);
+        memcpy(blob.profile, profile_id, 64);
         blob.chunk = limit;
         blob.hook = (SnxU64)options->hook_direct_calls;
         blob.nro = options->nro_count;
         blob.units = q.count;
+        blob.abi_contract = (SnxU64)snx_ir_abi_contract_on();
         if (digests_ok && !snx_analysis_cache_digest(&blob, sizeof blob, options_id)) {
             memcpy(q.options_id, options_id, sizeof q.options_id);
             q.keys = (char (*)[65])snx_alloc(q.count * 65);
@@ -1092,8 +1103,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         if (!fits) bufsz = 0;
         buf = fits ? (unsigned char*)snx_alloc(bufsz) : NULL;
         struct {
-            char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64], nros[64];
-            SnxU64 packs, abi, nro_end;
+            char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64], nros[64], rtlib[64];
+            SnxU64 packs, abi, nro_end, snx_abi;
         } d;
         memset(&d, 0, sizeof d);
         if (buf && fits) {
@@ -1129,8 +1140,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             }
             ok |= desc_append(buf, bufsz, &n, &options->nro_end, sizeof options->nro_end);
             ok |= snx_analysis_cache_digest(buf, n, nros_id) != 0;
-            ok |= snx_analysis_cache_digest(options->title ? options->title : "",
-                                            strlen(options->title ? options->title : ""), title_key) != 0;
+            {
+                const char* title = options->title ? options->title : "Game";
+                ok |= snx_analysis_cache_digest(title, strlen(title), title_key) != 0;
+            }
             n = 0;
             for (j = 0; j < routes_n; ++j) {
                 char h[65];
@@ -1147,6 +1160,11 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 ok |= desc_append(buf, bufsz, &n, h, 64);
             }
             ok |= snx_analysis_cache_digest(buf, n, jit_id) != 0;
+            {
+                char rtlib_id[65];
+                ok |= snx_analysis_cache_digest(snx_rtlib_object, snx_rtlib_object_size, rtlib_id) != 0;
+                memcpy(d.rtlib, rtlib_id, 64);
+            }
             free(buf);
             memcpy(d.identity, akey, 64);
             memcpy(d.options, options_id, 64);
@@ -1159,6 +1177,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             d.packs = cache_count;
             d.abi = options->abi;
             d.nro_end = options->nro_end;
+            d.snx_abi = (SnxU64)snx_module_abi();
             ok |= snx_analysis_cache_digest(&d, sizeof d, desc_key) != 0;
             if (ok) desc_key[0] = 0;
         }
@@ -1180,7 +1199,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 memcpy(keys[k], q.units[k].key, 65);
             }
             if (have && snx_analysis_cache_store_unit_keys(q.analysis, q.akey, q.options_id, keys, q.count))
-                snx_analysis_cache_setup_failed(q.analysis);
+                snx_analysis_cache_store_failed(q.analysis);
             free(keys);
         }
     }
@@ -1190,11 +1209,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     /* the module descriptor */
     start = snx_seconds();
-    /* a failed load may have written untrusted values into these outputs; start clean before the emit fallback */
-    wrapped = 0;
-    entry_count = 0;
-    variant_count = 0;
-    if (analysis && desc_key[0] && !build->keep_ir) {
+    if (analysis && desc_key[0] && !build->keep_ir && !g_settings.ir_stats) {
         const unsigned char* cached = NULL;
         if (snx_analysis_cache_load_descriptor(analysis, desc_key, &cached, &module_size, &wrapped, &entry_count,
                                                &variant_count, &desc_map) == 0) {
@@ -1207,6 +1222,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
                    variant_count ? "" : " (the cache did not match the game)");
     } else {
+        /* a failed load may have written untrusted values into these outputs; start clean before emitting them */
+        wrapped = 0;
+        entry_count = 0;
+        variant_count = 0;
         ir = new_ir(build, "module", error, sizeof(error));
         if (!ir) {
             snx_error("LLVM backend: %s", error);
@@ -1246,7 +1265,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         if (analysis && desc_key[0] &&
             snx_analysis_cache_store_descriptor(analysis, desc_key, module_object, module_size, wrapped, entry_count,
                                                 variant_count))
-            snx_analysis_cache_setup_failed(analysis);
+            snx_analysis_cache_store_failed(analysis);
     }
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
@@ -1259,7 +1278,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     /* The stamp must bind the objects this build linked, not the keys the sidecar held before it ran. */
     if (q.keys)
         for (i = 0; i < q.count; ++i) memcpy(q.keys[i], q.units[i].key, 65);
-    if (analysis && desc_key[0] && q.unit_id[0] && q.keys && !build->triple) {
+    if (analysis && desc_key[0] && q.unit_id[0] && q.keys && !build->triple && !build->keep_ir && !g_settings.ir_stats) {
         SnxU64 stamp_size = 0, stamp_time = 0;
         char stamp_sample[65] = {0}, now_sample[65] = {0};
         int all = 1;
@@ -1343,7 +1362,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 goto done;
             }
         }
-        if (analysis && desc_key[0] && q.unit_id[0] && q.keys) {
+        if (analysis && desc_key[0] && q.unit_id[0] && q.keys && !build->keep_ir && !g_settings.ir_stats) {
             char sample[65] = {0};
             size_t k;
             int have = 1;
@@ -1355,7 +1374,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 snx_analysis_cache_store_link_stamp(analysis, akey, desc_key, q.unit_id, q.keys, q.count,
                                                     build->output, linked.size, (SnxU64)snx_file_time(build->output),
                                                     sample))
-                snx_analysis_cache_setup_failed(analysis);
+                snx_analysis_cache_store_failed(analysis);
         no_stamp:;
         }
     }
@@ -1379,6 +1398,8 @@ done:
     snx_ir_free(ir);
     snx_jit_cache_close(cache);
     snx_unit_cache_close(unit_cache);
+    /* report after every late store has been counted, so store failures are not lost */
+    snx_analysis_cache_report(analysis, options->quiet);
     snx_analysis_cache_close(analysis);
     snx_codegen_free(&codegen);
     return rc;

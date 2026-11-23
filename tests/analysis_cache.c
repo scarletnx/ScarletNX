@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -131,6 +132,39 @@ static void write_bad_file(const char* folder, const char* key, const unsigned c
     free(path);
 }
 
+/* Change one byte of a cache file. Returns the old byte so the caller can restore it. */
+static int poke(const char* folder, const char* key, const char* suffix, long offset, int value) {
+    char* name = snx_format("%s%s", key, suffix);
+    char* path = snx_path_join(folder, name);
+    FILE* f;
+    int old = -1;
+    free(name);
+    f = path ? snx_fopen(path, "r+b") : NULL;
+    if (f) {
+        if (!fseek(f, offset, SEEK_SET)) {
+            old = fgetc(f);
+            fseek(f, offset, SEEK_SET);
+            fputc(value, f);
+            CHECK(!fclose(f));
+        } else fclose(f);
+    } else CHECK(0);
+    free(path);
+    return old;
+}
+
+static void poke_last(const char* folder, const char* key, const char* suffix) {
+    char* name = snx_format("%s%s", key, suffix);
+    char* path = snx_path_join(folder, name);
+    SnxU64 n = path ? snx_file_size(path) : 0;
+    free(name);
+    if (n) {
+        long at = (long)(n - 1);
+        int old = poke(folder, key, suffix, at, 0);
+        if (old >= 0) poke(folder, key, suffix, at, old ^ 1);
+    } else CHECK(0);
+    free(path);
+}
+
 static void make_bad_payload(unsigned char* p, SnxU64 nfunc, SnxU64 count, SnxU64 leader_count, SnxU64 alen,
                              size_t* size) {
     size_t off = 0;
@@ -196,8 +230,10 @@ static int test_roundtrip(const char* folder) {
     CHECK(dst.function_count == 3);
     CHECK(dst.instruction_count == src.instruction_count);
     CHECK(functions_equal(src.functions, 3, dst.functions, dst.function_count));
-    CHECK(dst.functions[1].addresses == NULL);
-    CHECK(dst.functions[1].count == src.functions[1].count);
+    if (dst.functions && dst.function_count > 1) {
+        CHECK(dst.functions[1].addresses == NULL);
+        CHECK(dst.functions[1].count == src.functions[1].count);
+    } else CHECK(0);
     /* a large function list must round-trip with the same capacity math */
     {
         SnxCodegen big = {0}, back = {0};
@@ -251,6 +287,7 @@ static int test_trailer_reject(const char* folder) {
     SnxCodeImage mod;
     FILE* f;
     size_t i;
+    int saved_byte;
     for (i = 0; i < sizeof text; ++i) text[i] = (unsigned char)i;
     fill_module(&mod, text, sizeof text, 0x1000);
     cache = snx_analysis_cache_open(folder, &id, error, sizeof error);
@@ -269,18 +306,19 @@ static int test_trailer_reject(const char* folder) {
     f = snx_fopen(path, "r+b");
     CHECK(f != NULL);
     if (f) {
-        int byte = fgetc(f);
+        saved_byte = fgetc(f);
         rewind(f);
-        fputc(byte ^ 1, f);
+        fputc(saved_byte ^ 1, f);
         fclose(f);
     }
     CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) != 0);
     CHECK(dst.functions == NULL);
     free_codegen(&dst);
-    /* corrupt magic */
+    /* restore the payload, then break only the magic so this subtest isolates that check */
     f = snx_fopen(path, "r+b");
     CHECK(f != NULL);
     if (f) {
+        fputc(saved_byte, f);
         fseek(f, -(long)SNX_ANALYSIS_TRAILER, SEEK_END);
         fputc('X', f);
         fclose(f);
@@ -290,9 +328,10 @@ static int test_trailer_reject(const char* folder) {
     free_codegen(&dst);
     /* truncate */
     f = snx_fopen(path, "wb");
+    CHECK(f != NULL);
     if (f) {
-        fwrite("short", 1, 5, f);
-        fclose(f);
+        CHECK(fwrite("short", 1, 5, f) == 5);
+        CHECK(!fclose(f));
     }
     CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) != 0);
     CHECK(dst.functions == NULL);
@@ -305,7 +344,7 @@ static int test_key_sensitivity(const char* folder) {
     char error[256], k1[65], k2[65], k3[65];
     SnxAnalysisIdentity id = {.features = 0xabc, .version = SNX_ANALYSIS_VERSION};
     SnxAnalysisCache *c1, *c2;
-    unsigned char text[48], text2[48];
+    unsigned char text[48], text2[48], wide[64];
     SnxCodeImage mod, mod2;
     SnxU64 hints[1] = {0x42};
     SnxU64 routed[1] = {0x99};
@@ -377,6 +416,18 @@ static int test_key_sensitivity(const char* folder) {
     CHECK(snx_analysis_cache_key(c2, &mod, 1, hints, 1, k2) == 0);
     CHECK(strcmp(k1, k2) != 0);
     mod.image_size = sizeof text;
+    /* a byte outside the text range must change the key: the whole image is hashed */
+    {
+        SnxCodeImage w = mod;
+        memcpy(wide, text, sizeof text);
+        memset(wide + sizeof text, 0x77, sizeof wide - sizeof text);
+        w.image = wide;
+        w.image_size = sizeof wide;
+        CHECK(snx_analysis_cache_key(c2, &w, 1, hints, 1, k2) == 0);
+        memset(wide + sizeof text, 0x88, sizeof wide - sizeof text);
+        CHECK(snx_analysis_cache_key(c2, &w, 1, hints, 1, k3) == 0);
+        CHECK(strcmp(k2, k3) != 0);
+    }
     /* function seeds */
     mod.functions = seed;
     mod.function_count = 1;
@@ -419,6 +470,7 @@ static int test_key_sensitivity(const char* folder) {
         CHECK(snx_analysis_cache_key(c2, swapped, 2, hints, 1, k3) == 0);
         CHECK(strcmp(k2, k3) != 0);
         CHECK(snx_analysis_cache_key(c2, &mod, 1, hints, 1, k2) == 0);
+        CHECK(strcmp(k2, k1) == 0);
         CHECK(strcmp(k2, k3) != 0);
     }
     snx_analysis_cache_close(c2);
@@ -434,7 +486,7 @@ static int test_soft_fail_open(const char* folder) {
     file = snx_path_join(folder, "not-a-folder");
     CHECK(file && !snx_write_file(file, "x", 1));
     if (!file) return 0;
-    path = snx_format("%s/analysis", file);
+    path = snx_path_join(file, "analysis");
     cache = snx_analysis_cache_open(path, &id, error, sizeof error);
     CHECK(cache == NULL);
     CHECK(error[0] != 0);
@@ -636,14 +688,15 @@ static int test_analyze_roundtrip(const char* folder) {
     /* a loaded analysis must get its image views back, or every word decodes as undefined */
     CHECK(snx_codegen_attach_images(&loaded, &mod, 1) == 0);
     loaded.features = 0;
-    for (i = 0; i < loaded.function_count; ++i) {
+    for (i = 0; i < loaded.function_count && i < live2.function_count; ++i) {
         const SnxFunction* fn = &loaded.functions[i];
         CHECK(!!fn->addresses == !!live2.functions[i].addresses);
         for (j = 0; j < fn->count; ++j) {
             SnxU64 addr = snx_function_address(fn, j);
-            SnxU32 word;
-            CHECK(snx_codegen_word(&loaded, addr, &word));
-            CHECK(word == snx_ld_le32(image + (size_t)(addr - mod.base)));
+            SnxU32 word = 0;
+            if (addr >= mod.base && addr - mod.base + 4 <= mod.image_size && snx_codegen_word(&loaded, addr, &word))
+                CHECK(word == snx_ld_le32(image + (size_t)(addr - mod.base)));
+            else CHECK(0);
         }
     }
     snx_codegen_free(&live1);
@@ -654,7 +707,7 @@ static int test_analyze_roundtrip(const char* folder) {
 }
 
 static int test_unit_keys(const char* folder) {
-    char error[256], key[65], options[65], other[65], back[3][65];
+    char error[256], key[65], options[65], other[65], back[4][65];
     SnxAnalysisIdentity id = {.features = 21, .version = SNX_ANALYSIS_VERSION};
     SnxAnalysisCache* cache;
     unsigned char text[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
@@ -688,6 +741,14 @@ static int test_unit_keys(const char* folder) {
     CHECK(snx_analysis_cache_load_unit_keys(cache, key, other, back, 3) != 0);
     /* neither must one for a different number of units */
     CHECK(snx_analysis_cache_load_unit_keys(cache, key, options, back, 4) != 0);
+    /* a key that is not 64 hex digits must be rejected, with the outputs cleared */
+    {
+        int old = poke(folder, key, ".units", 72, 'z');
+        memset(back, 0, sizeof back);
+        CHECK(snx_analysis_cache_load_unit_keys(cache, key, options, back, 3) != 0);
+        CHECK(back[0][0] == 0);
+        if (old >= 0) poke(folder, key, ".units", 72, old);
+    }
     free(keys);
     snx_analysis_cache_close(cache);
     return 1;
@@ -732,7 +793,112 @@ static int test_link_stamp(const char* folder) {
                                              back) != 0);
     CHECK(snx_analysis_cache_load_link_stamp(cache, key, desc, identity, keys, 2, "/other/code.so", &size, &mtime,
                                              back) != 0);
+    /* a wrong identity or a changed unit key must miss too */
+    CHECK(snx_analysis_cache_load_link_stamp(cache, key, desc, other, keys, 2, "/game/code.so", &size, &mtime,
+                                             back) != 0);
+    {
+        char (*bad)[65] = (char (*)[65])snx_alloc(2 * 65);
+        CHECK(bad != NULL);
+        if (bad) {
+            memcpy(bad, keys, 2 * 65);
+            bad[0][0] = 'z';
+            CHECK(snx_analysis_cache_load_link_stamp(cache, key, desc, identity, bad, 2, "/game/code.so", &size,
+                                                     &mtime, back) != 0);
+            free(bad);
+        }
+    }
+    /* a changed hash byte must be rejected */
+    poke_last(folder, key, ".link");
+    CHECK(snx_analysis_cache_load_link_stamp(cache, key, desc, identity, keys, 2, "/game/code.so", &size, &mtime,
+                                             back) != 0);
     free(keys);
+    snx_analysis_cache_close(cache);
+    return 1;
+}
+
+/* Decode a hand-written little-endian payload. The store is not used, so a symmetric endianness bug is caught. */
+static int test_little_endian(const char* folder) {
+    char error[256], key[65];
+    SnxAnalysisIdentity id = {.features = 27, .version = SNX_ANALYSIS_VERSION};
+    SnxAnalysisCache* cache;
+    SnxCodegen dst = {0};
+    unsigned char payload[128], text[16] = {0};
+    SnxCodeImage mod;
+    size_t off = 0;
+    fill_module(&mod, text, sizeof text, 0);
+    cache = snx_analysis_cache_open(folder, &id, error, sizeof error);
+    CHECK(cache != NULL);
+    if (!cache) return 0;
+    CHECK(snx_analysis_cache_key(cache, &mod, 1, NULL, 0, key) == 0);
+    snx_st_le64(payload + off, 1); off += 8; /* one function */
+    snx_st_le64(payload + off, 0x1000); off += 8;
+    snx_st_le64(payload + off, 0x1008); off += 8;
+    snx_st_le64(payload + off, 2); off += 8; /* count */
+    snx_st_le64(payload + off, 2); off += 8; /* leader_count */
+    snx_st_le64(payload + off, 2); off += 8; /* addresses present */
+    snx_st_le64(payload + off, 0x55); off += 8;
+    snx_st_le64(payload + off, 0x66); off += 8;
+    payload[off++] = 1;
+    payload[off++] = 1;
+    write_bad_file(folder, key, payload, off);
+    CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) == 0);
+    CHECK(dst.function_count == 1 && dst.instruction_count == 2);
+    if (dst.function_count == 1) {
+        CHECK(dst.functions[0].start == 0x1000 && dst.functions[0].end == 0x1008);
+        CHECK(dst.functions[0].count == 2 && dst.functions[0].leader_count == 2);
+        if (dst.functions[0].addresses) {
+            CHECK(dst.functions[0].addresses[0] == 0x55 && dst.functions[0].addresses[1] == 0x66);
+        } else CHECK(0);
+        if (dst.functions[0].leaders) {
+            CHECK(dst.functions[0].leaders[0] == 1 && dst.functions[0].leaders[1] == 1);
+        } else CHECK(0);
+    }
+    free_codegen(&dst);
+    snx_analysis_cache_close(cache);
+    return 1;
+}
+
+/* Round trip and reject corruption of the compiled descriptor sidecar. */
+static int test_descriptor(const char* folder) {
+    char error[256], key[65];
+    SnxAnalysisIdentity id = {.features = 29, .version = SNX_ANALYSIS_VERSION};
+    SnxAnalysisCache* cache;
+    const unsigned char* object = NULL;
+    PFileMap map;
+    unsigned char blob[16], text[16] = {0};
+    SnxCodeImage mod;
+    size_t size, wrapped, entries, variants, i;
+    int old;
+    for (i = 0; i < sizeof blob; ++i) blob[i] = (unsigned char)(0x80 + i);
+    fill_module(&mod, text, sizeof text, 0);
+    cache = snx_analysis_cache_open(folder, &id, error, sizeof error);
+    CHECK(cache != NULL);
+    if (!cache) return 0;
+    CHECK(snx_analysis_cache_key(cache, &mod, 1, NULL, 0, key) == 0);
+    CHECK(snx_analysis_cache_store_descriptor(cache, key, blob, sizeof blob, 3, 4, 5) == 0);
+    memset(&map, 0, sizeof map);
+    CHECK(snx_analysis_cache_load_descriptor(cache, key, &object, &size, &wrapped, &entries, &variants, &map) == 0);
+    if (map.data) {
+        CHECK(size == sizeof blob && !memcmp(object, blob, sizeof blob));
+        CHECK(wrapped == 3 && entries == 4 && variants == 5);
+        plat_file_unmap(&map);
+    } else CHECK(0);
+    /* each of magic, key, the object's size field, and the trailing hash must be checked */
+    old = poke(folder, key, ".desc", 0, 'X');
+    CHECK(snx_analysis_cache_load_descriptor(cache, key, &object, &size, &wrapped, &entries, &variants, &map) != 0);
+    CHECK(!map.data);
+    poke(folder, key, ".desc", 0, old);
+    old = poke(folder, key, ".desc", 8, 'X');
+    CHECK(snx_analysis_cache_load_descriptor(cache, key, &object, &size, &wrapped, &entries, &variants, &map) != 0);
+    CHECK(!map.data);
+    poke(folder, key, ".desc", 8, old);
+    old = poke(folder, key, ".desc", 96, 0xff); /* the object's size field, not its first byte */
+    CHECK(snx_analysis_cache_load_descriptor(cache, key, &object, &size, &wrapped, &entries, &variants, &map) != 0);
+    CHECK(!map.data);
+    poke(folder, key, ".desc", 96, old);
+    poke_last(folder, key, ".desc");
+    CHECK(snx_analysis_cache_load_descriptor(cache, key, &object, &size, &wrapped, &entries, &variants, &map) != 0);
+    CHECK(!map.data);
     snx_analysis_cache_close(cache);
     return 1;
 }
@@ -740,11 +906,14 @@ static int test_link_stamp(const char* folder) {
 int main(void) {
     char* root = snx_temp_dir(NULL), *folder;
     failures = 0;
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN); /* a child may exit before the parent writes the barrier byte */
+#endif
     if (!root) {
         fprintf(stderr, "cannot make temp folder name\n");
         return 1;
     }
-    folder = snx_format("%s/snx-analysis-cache-test", root);
+    folder = snx_path_join(root, "snx-analysis-cache-test");
     if (!folder) {
         snx_remove_tree(root);
         free(root);
@@ -759,6 +928,8 @@ int main(void) {
     test_bad_header(folder);
     test_concurrent_store(folder);
     test_analyze_roundtrip(folder);
+    test_little_endian(folder);
+    test_descriptor(folder);
     test_unit_keys(folder);
     test_link_stamp(folder);
     test_soft_fail_open(folder);

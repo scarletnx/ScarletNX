@@ -49,6 +49,8 @@ int snx_analysis_cache_store(SnxAnalysisCache* cache, const char* key, const Snx
 void snx_analysis_cache_report(SnxAnalysisCache* cache, int quiet);
 /* Count a build that could not form the key or the module views, so the report shows a silent disable. */
 void snx_analysis_cache_setup_failed(SnxAnalysisCache* cache);
+/* Count a store that another layer found failed, so the report names it as a store failure. */
+void snx_analysis_cache_store_failed(SnxAnalysisCache* cache);
 
 /* The keys of the unit objects a build made, kept beside its analysis so the next build can read the objects without
    emitting their IR. options identifies everything outside the analysis that changes a unit's IR. Silently ignores a
