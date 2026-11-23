@@ -88,6 +88,38 @@ memory. The risk is in what `tex_resolve` picks for each handle: render targets,
 A heap entry must change when its surface changes. This gives the most and risks the most, so it comes after items
 1 to 6.
 
+**8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
+discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
+thread, its largest phase. 18.1% came from one path: each release publishes every target drawn over imported memory
+(the import branch of `rt_watch`), about 76 a frame. The copy on the GPU is cheap. The cost is the CPU's work for
+each page in `own_publish`: `gpu_mem_written_cpu` stamps each page written, and `vk_rt_before_publish_cpu` looks up
+the targets that alias it, under the page locks. The CPU asked for 47 of these publishes in the whole run. The stamps
+also count as memory written under textures, which matches 24.5 texture memo misses a present.
+
+A driver keeps a target's pixels in the image while only the GPU uses them. Memory gets them when something outside
+the GPU reads it, and a GPU reader of that address takes the image. yuzu and Ryujinx mark the range as modified by
+the GPU and download it when the CPU's access faults. The change:
+
+1. While only the GPU uses a target, GPU readers of its address take the image, as `tex_resolve` already does, and
+   guest memory under it is not written.
+2. Memory gets the pixels on a CPU access (a watch's fault, `vk_rt_watch_hit`), or for an engine that reads guest
+   memory directly. A target that the CPU read in the last few presents (`cpu_asked`) stays eager, so a game that
+   reads a small target each frame takes no fault each frame.
+3. Over a dma-buf region, the watch traps the CPU's mapping only. The driver pinned the pages when it imported them,
+   so the GPU keeps them (`uma.c`). This needs a watch that does not move the pages into the alias pool. Over a host
+   pointer import, amdgpu takes the pages again at each submission and fails on a trapped one, so the publish stays
+   eager and in place there.
+4. A publish that does run costs one step for each run of pages, not each page: one range stamp in the write record,
+   one alias lookup for each target and one hold of each lock.
+5. A counter of publishes a present by reason (a CPU access, a CPU read lately, an import, an engine), with their
+   bytes and CPU time.
+
+Add the counter first, and confirm that the import branch makes the 76 publishes a frame. Then check that a dma-buf
+region takes a trap of the CPU's mapping with the driver's submissions unaffected. The change is done when the GPU
+thread's time for each frame drops in the race, the texture memo misses for memory written fall, the race's
+screenshots match at fixed frames, and the save thumbnail of commit 12f8977cd still holds its picture. On that host
+this is the largest single item, so it comes before items 6 and 7.
+
 ## Memory on the GPU
 
 - Give physical pools their memory when the GPU first uses them, in chunks of 4 MiB.
