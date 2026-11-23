@@ -1006,7 +1006,8 @@ void vk_render_predicate_drop(u32 pred) {
 }
 u32 vk_release_value(u32 id) {
     pm_lock(&g_rlock);
-    u32 n = syncpt_read(id) + (id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_relaxed) : 0);
+    /* acquire: a count with an increment of gpu_stream_incr's in it comes with that increment taken (gpu_release_value) */
+    u32 n = syncpt_read(id) + (id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_acquire) : 0);
     pm_unlock(&g_rlock);
     return n;
 }

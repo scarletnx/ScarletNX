@@ -67,7 +67,7 @@ void gpu_samples_enable(u32 owner, int on) {
 void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(pred);
 }
-const Renderer* gpu_renderer_now(void) { return g_renderer; }
+const Renderer* gpu_renderer_now_at(const char* file, int line) { return (void)file, (void)line, g_renderer; }
 u32 gpu_shading_rate(const GpuShadingRate* r) { return g_renderer->shading_rate ? g_renderer->shading_rate(r) : 0; }
 #ifndef SNX_TEST_GPU_QUEUE /* gpu.c's statistics of inline data, for a test that doesn't link gpu.c */
 GpuInlineMark gpu_inline_begin(void) { return (GpuInlineMark){0}; }

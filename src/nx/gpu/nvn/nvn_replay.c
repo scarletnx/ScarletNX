@@ -375,7 +375,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                    a frame and about 2.7 ms each in one game */
                 if (!over && !j->waiting && op == OP_WAIT_SYNC && sync.syncpt && sync.syncpt == q->syncpt &&
                     g_renderer->release_value && g_renderer->method_barrier &&
-                    (i32)(gpu_renderer_now()->release_value(sync.syncpt) - sync.value) >= 0) {
+                    (i32)(gpu_release_value(sync.syncpt) - sync.value) >= 0) {
                     gpu_method_barrier(4);
                     over = 1;
                 }
@@ -455,7 +455,7 @@ static int settled(void) {
             gpu_kick();
             return 0;
         }
-        if (sync.syncpt && g_renderer->release_value && (i32)(gpu_renderer_now()->release_value(sync.syncpt) - sync.value) >= 0)
+        if (sync.syncpt && g_renderer->release_value && (i32)(gpu_release_value(sync.syncpt) - sync.value) >= 0)
             return 0;
     }
     return 1;
