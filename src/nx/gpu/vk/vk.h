@@ -518,7 +518,7 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
 /* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) and uma_memory how (0 auto, 1 imported only, 2
    moved only) on a device of model VK_MEM_*, where guest memory can move into dma-bufs (has_dmabuf) and the driver's
    imports cost each submission (dear): VK_UMA_WITH_* */
-int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear);
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear, int host_discrete);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
