@@ -652,6 +652,79 @@ static int dlss_upscale(const NvnPDlss* r) {
     if (r->in[0] <= 0 || r->in[1] <= 0 || r->out[0] <= 0 || r->out[1] <= 0) return 0;
     return gpu_renderer_now()->upscale(&u);
 }
+/* A hook module's upscale (OP_UPSCALE) given to the renderer's upscaler: 1 when it wrote the output, *ran then the
+   upscaler's name. The color and output as the renderer addresses them go in *color and *output (zeroed when not
+   surfaces it takes). The color, and depth and motion vectors when given, are read from their corner. A render_max of
+   0 is the color's size */
+static int module_upscale(const NvnPUpscale* r, Surf2D* color, Surf2D* output, const char** ran) {
+    GpuUpscale u = {0};
+    u32 bpp;
+    /* each on its own, so the log says which one the renderer doesn't take */
+    int has_color = surf2d_at(r->tex[NVN_UPSCALE_COLOR], &r->view[NVN_UPSCALE_COLOR], r->has_view[NVN_UPSCALE_COLOR], 0,
+                              color, &bpp);
+    int has_output = surf2d_at(r->tex[NVN_UPSCALE_OUTPUT], &r->view[NVN_UPSCALE_OUTPUT],
+                               r->has_view[NVN_UPSCALE_OUTPUT], 0, output, &bpp);
+    int surfaces = has_color && has_output;
+    if (!g_renderer_up || !g_renderer->upscale) return 0;
+    if (!surfaces) {
+        LOG_LIMIT(1,
+                  "nvn: a hook module's upscale whose textures aren't surfaces the renderer takes: the filtered copy "
+                  "stands in\n");
+        return 0;
+    }
+    static const int k_more[4] = {NVN_UPSCALE_DEPTH, NVN_UPSCALE_MOTION, NVN_UPSCALE_EXPOSURE, NVN_UPSCALE_REACTIVE};
+    Surf2D* more[4] = {&u.depth, &u.motion, &u.exposure, &u.reactive};
+    int* has[4] = {&u.has_depth, &u.has_motion, &u.has_exposure, &u.has_reactive};
+    for (u32 i = 0; i < 4; i++)
+        *has[i] = r->tex[k_more[i]] &&
+                  surf2d_at(r->tex[k_more[i]], &r->view[k_more[i]], r->has_view[k_more[i]], 0, more[i], &bpp);
+    u.color = *color, u.output = *output;
+    memcpy(u.render, r->render, sizeof u.render);
+    memcpy(u.out, r->out, sizeof u.out);
+    memcpy(u.render_max, r->render_max, sizeof u.render_max);
+    if (!u.render_max[0] || !u.render_max[1]) u.render_max[0] = u.color.width, u.render_max[1] = u.color.height;
+    memcpy(u.out_base, r->out_base, sizeof u.out_base);
+    memcpy(u.jitter, r->jitter, sizeof u.jitter);
+    memcpy(u.motion_scale, r->motion_scale, sizeof u.motion_scale);
+    u.pre_exposure = r->pre_exposure;
+    u.reset = r->reset;
+    u.flags = r->flags;
+    u.ran = ran;
+    return gpu_renderer_now()->upscale(&u);
+}
+/* a surface of a recorded upscale for the log: as the renderer addresses it, or, when it doesn't take it, the
+   texture's own address, NVN format and size from its snapshot */
+static void describe(char* out, size_t n, const Surf2D* s, u64 snapshot) {
+    if (s->addr) {
+        snprintf(out, n, "%llx (format %#x, %ux%u)", (unsigned long long)s->addr, s->format, s->width, s->height);
+        return;
+    }
+    NvnTexture t = {0};
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    snprintf(out, n, "%llx, which isn't a surface the renderer takes (NVN format %#x, %ux%u)",
+             (unsigned long long)t.gpu, (unsigned)t.d.format, (unsigned)t.d.width, (unsigned)t.d.height);
+}
+/* what a hook module's recorded upscale ran, and its color and output: said the first 4 times, then each time one of
+   them changes, 32 changes at most (a game that alternates two targets would say one each frame). An upscaler's arm
+   that is silently the copy, or a texture the renderer doesn't take, shows here */
+static void say_upscale(const char* ran, const Surf2D* c, const Surf2D* o, const NvnPUpscale* r) {
+    static struct {
+        const char* ran;
+        Surf2D c, o;
+        u32 said;
+    } last;
+    enum { FIRST = 4, CHANGES = 32 };
+    int same = last.ran == ran && !memcmp(&last.c, c, sizeof *c) && !memcmp(&last.o, o, sizeof *o);
+    if ((last.said >= FIRST && same) || last.said >= FIRST + CHANGES) return;
+    last.ran = ran, last.c = *c, last.o = *o, last.said++;
+    char color[160], output[160];
+    describe(color, sizeof color, c, r->tex[NVN_UPSCALE_COLOR]);
+    describe(output, sizeof output, o, r->tex[NVN_UPSCALE_OUTPUT]);
+    LOG("nvn: a hook module's recorded upscale ran %s: color %s, render %ux%u from its corner, output %s, %ux%u at (%d, "
+        "%d)%s\n",
+        ran, color, r->render[0], r->render[1], output, r->out[0], r->out[1], r->out_base[0], r->out_base[1],
+        last.said == FIRST + CHANGES ? " (further changes are not said)" : "");
+}
 /* n bytes at dst filled with the 32-bit value, as the DMA engine fills: its remap writes constant A into every
    component, reading nothing */
 static void fill_buffer(u64 dst, u64 n, u32 value) {
@@ -778,6 +851,32 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
             memcpy(&s, GP(r.src), NVN_TEX_SNAP);
             memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
             copy_texture_texture(&r, &s, &d);
+            return 1;
+        }
+        case OP_UPSCALE: {
+            NvnPUpscale r;
+            memcpy(&r, GP(payload), sizeof r);
+            Surf2D color = {0}, output = {0};
+            const char* ran = "an upscaler";
+            if (!r.tex[NVN_UPSCALE_COLOR] || !r.tex[NVN_UPSCALE_OUTPUT]) return 1;
+            if (module_upscale(&r, &color, &output, &ran)) {
+                say_upscale(ran, &color, &output, &r);
+                return 1;
+            }
+            /* no upscaler took it: the color's render rectangle onto the output's, filtered, as the game's own pass
+               the module left out would have written it */
+            say_upscale("no upscaler, the filtered copy stands in", &color, &output, &r);
+            NvnTexture s = {0}, d = {0};
+            memcpy(&s, GP(r.tex[NVN_UPSCALE_COLOR]), NVN_TEX_SNAP);
+            memcpy(&d, GP(r.tex[NVN_UPSCALE_OUTPUT]), NVN_TEX_SNAP);
+            NvnPCopyT2T copy = {0};
+            copy.src = r.tex[NVN_UPSCALE_COLOR], copy.dst = r.tex[NVN_UPSCALE_OUTPUT];
+            copy.sv = r.view[NVN_UPSCALE_COLOR], copy.dv = r.view[NVN_UPSCALE_OUTPUT];
+            copy.has_sv = r.has_view[NVN_UPSCALE_COLOR], copy.has_dv = r.has_view[NVN_UPSCALE_OUTPUT];
+            copy.sr = (NVNcopyRegion){0, 0, 0, (i32)r.render[0], (i32)r.render[1], 1};
+            copy.dr = (NVNcopyRegion){r.out_base[0], r.out_base[1], 0, (i32)r.out[0], (i32)r.out[1], 1};
+            copy.flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+            copy_texture_texture(&copy, &s, &d);
             return 1;
         }
         case OP_DLSS: {

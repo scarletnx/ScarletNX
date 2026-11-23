@@ -67,7 +67,14 @@ void gpu_samples_enable(u32 owner, int on) {
 void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(pred);
 }
-const Renderer* gpu_renderer_now_at(const char* file, int line) { return (void)file, (void)line, g_renderer; }
+/* the calls that waited for the queue (gpu_renderer_now): what the front end runs on the renderer's side itself */
+extern int g_front_stub_waits;
+int g_front_stub_waits;
+const Renderer* gpu_renderer_now_at(const char* file, int line) {
+    (void)file, (void)line;
+    g_front_stub_waits++;
+    return g_renderer;
+}
 /* no increments wait in a queue here: the renderer's count is the value */
 u32 gpu_release_value(u32 id) { return g_renderer->release_value ? g_renderer->release_value(id) : 0; }
 u32 gpu_shading_rate(const GpuShadingRate* r) { return g_renderer->shading_rate ? g_renderer->shading_rate(r) : 0; }

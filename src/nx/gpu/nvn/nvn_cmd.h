@@ -6,6 +6,7 @@
 #define SNX_NVN_CMD_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/platform/thread.h"
+#include "nx/gpu/nvn/nvn_obj.h"
 
 /* A segment of the runtime's own memory for the records the game's command memory has no room for (nvn_cmd.c's
    spill): pieces are cut from it one after another, each for one recording. A segment whose pieces all came back is
@@ -90,6 +91,20 @@ typedef struct {
     NvnSmallClass small[NVN_SMALL_CLASSES];
     u64 total, empty;
 } NvnCmdState;
+
+/* An upscale for the command buffer at cb (an OP_UPSCALE record, nvn_obj.h's NvnPUpscale), which a hook module's CPU
+   hook asks for (hle/hook/snx_hook_module.h): its textures and views as the game's objects' guest addresses (0 for
+   none), flags gpu.h's GPU_UPSCALE_ */
+typedef struct {
+    u64 tex[NVN_UPSCALE_TEXTURES], view[NVN_UPSCALE_TEXTURES];
+    u32 flags, render[2], out[2], render_max[2];
+    i32 out_base[2];
+    f32 jitter[2], motion_scale[2], pre_exposure;
+    int reset;
+} NvnUpscaleRequest;
+/* 1 when recorded, 0 when cb isn't a command buffer that records, the color or the output isn't a live texture, a
+   view or texture lies in no mapped memory, or a size is 0, each said in the log */
+int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r);
 
 /* the game finalizes the pool of [memory, memory + size): the runtime's pieces of recordings there come back */
 void nvn_cmd_memory_back(u64 memory, u64 size);

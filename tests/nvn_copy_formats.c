@@ -74,7 +74,20 @@ static int count_copy(const GpuDmaOp* o) {
     return 1;
 }
 static void no_reload(u64 gva) { (void)gva; }
-static Renderer g_counting = {.blit = count_blit,
+/* the upscaler: what it was asked, and whether it takes it */
+static GpuUpscale g_up;
+static int g_upscales, g_upscale_ok;
+extern int g_front_stub_waits; /* tests/support/gpu_front_stub.c */
+static int g_waits_at_upscale;
+static int count_upscale(const GpuUpscale* u) {
+    g_up = *u;
+    g_upscales++;
+    g_waits_at_upscale = g_front_stub_waits;
+    if (g_upscale_ok && u->ran) *u->ran = "the test's upscaler";
+    return g_upscale_ok;
+}
+static Renderer g_counting = {.upscale = count_upscale,
+                              .blit = count_blit,
                               .blit_filter = count_blit_filter,
                               .blit_mem = count_blit_mem,
                               .dma_copy = count_copy,
@@ -165,7 +178,15 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     (void)id, (void)thresh, (void)timeout_ns;
     return 1;
 }
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static char g_log[4096];
+void logf_(int lvl, const char* fmt, ...) {
+    va_list a;
+    size_t n = strlen(g_log);
+    (void)lvl;
+    va_start(a, fmt);
+    vsnprintf(g_log + n, sizeof g_log - n, fmt, a);
+    va_end(a);
+}
 void fatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -486,8 +507,59 @@ static void check_level_copies(void) {
           g_seen.src_width, g_seen.dst_width);
 }
 
+/* A hook module's recorded upscale (OP_UPSCALE): the renderer's upscaler gets the color and the output as surfaces,
+   the render and output sizes, a render_max of 0 as the color's size and the flags as recorded, and the log names what
+   ran with both surfaces. Refused, the filtered copy of the color's render rectangle onto the output stands in, and
+   the log says so */
+static void check_module_upscales(void) {
+    NvnPUpscale r = {0};
+    i64 stride[2] = {0, 0};
+    texture(SRC_TEX, NVN_FORMAT_R11G11B10F, 0x10000);
+    texture(DST_TEX, NVN_FORMAT_R11G11B10F, 0x20000);
+    r.tex[NVN_UPSCALE_COLOR] = SRC_TEX, r.tex[NVN_UPSCALE_OUTPUT] = DST_TEX;
+    r.render[0] = 48, r.render[1] = 27, r.out[0] = 64, r.out[1] = 32, r.pre_exposure = 1;
+    r.flags = GPU_UPSCALE_MODULE | GPU_UPSCALE_SPATIAL_OK | GPU_UPSCALE_RANGE_GIVEN;
+    memcpy(GP(RECORD), &r, sizeof r);
+    memset(&g_seen, 0, sizeof g_seen);
+    g_upscale_ok = 1, g_log[0] = 0;
+    int waits = g_front_stub_waits;
+    check(nvn_copy_record(OP_UPSCALE, RECORD, sizeof r, stride) == 1, "the upscale record wasn't taken");
+    check(g_waits_at_upscale == waits + 1,
+          "a recorded upscale: the renderer's upscale expected after the front end waited for its queue once, found %d "
+          "waits",
+          g_waits_at_upscale - waits);
+    check(g_upscales == 1 && g_seen.blits == 0 && g_up.color.addr == 0x10000 && g_up.output.addr == 0x20000 &&
+              g_up.color.format == 0xE0 && g_up.output.format == 0xE0 && g_up.render[0] == 48 && g_up.render[1] == 27 &&
+              g_up.out[0] == 64 && g_up.out[1] == 32 && g_up.render_max[0] == 64 && g_up.render_max[1] == 32 &&
+              g_up.flags == r.flags && !g_up.has_depth && !g_up.has_motion,
+          "a recorded upscale: the upscaler expected the color, output, sizes and flags as recorded (render_max the "
+          "color's 64x32), found %d upscales of %llx to %llx, render_max %ux%u",
+          g_upscales, (unsigned long long)g_up.color.addr, (unsigned long long)g_up.output.addr, g_up.render_max[0],
+          g_up.render_max[1]);
+    check(strstr(g_log,
+                 "nvn: a hook module's recorded upscale ran the test's upscaler: color 10000 (format 0xe0, "
+                 "64x32), render 48x27 from its corner, output 20000 (format 0xe0, 64x32), 64x32 at (0, 0)") != NULL,
+          "a recorded upscale: the log expected what ran, found: %s", g_log);
+    g_upscale_ok = 0, g_log[0] = 0;
+    check(nvn_copy_record(OP_UPSCALE, RECORD, sizeof r, stride) == 1 && g_upscales == 2 && g_seen.blits == 1,
+          "a refused upscale: expected the filtered copy's blit, found %d blits", g_seen.blits);
+    check(strstr(g_log, "recorded upscale ran no upscaler, the filtered copy stands in: color 10000") != NULL,
+          "a refused upscale: the log expected the stand-in, found: %s", g_log);
+    /* a color the renderer doesn't take (RGB9E5F, which no color target is): the stand-in, the line naming that
+       texture's own address, NVN format and size, and the output as it resolved */
+    texture(SRC_TEX, 0x40, 0x10000);
+    g_upscale_ok = 1, g_log[0] = 0;
+    check(nvn_copy_record(OP_UPSCALE, RECORD, sizeof r, stride) == 1 && g_upscales == 2,
+          "a color the renderer doesn't take: no upscale expected, found %d", g_upscales);
+    check(strstr(g_log, "ran no upscaler, the filtered copy stands in: color 10000, which isn't a surface the renderer "
+                        "takes (NVN format 0x40, 64x32), render 48x27 from its corner, output 20000 (format 0xe0, "
+                        "64x32)") != NULL,
+          "a color the renderer doesn't take: the log expected it named, found: %s", g_log);
+}
+
 int main(void) {
     check_level_copies();
+    check_module_upscales();
     check_array1d_copies();
     check_buffer_mirrors();
     check_texture_filters();
