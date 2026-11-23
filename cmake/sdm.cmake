@@ -92,8 +92,8 @@ function(snx_sdm_isel target)
 endfunction()
 
 # snx_sailgen_a64_x64(<target>): generates a64_x64.inc (the A64 emitters of a64_x64.roots, with sailgen's x86-64 back
-# end at its top: bits.h, x64.h and x64_a64.h) into the build folder, with the instruction selection it includes
-# (snx_sdm_isel), and gives <target> its include root
+# end at its top: bits.h, x64.h, mach.h, x64_asm.h and x64_a64.h) into the build folder, with the instruction
+# selection it includes (snx_sdm_isel), and gives <target> its include root
 function(snx_sailgen_a64_x64 target)
     snx_sdm_isel(${target})
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
@@ -103,18 +103,19 @@ function(snx_sailgen_a64_x64 target)
     add_custom_command(OUTPUT "${out}/a64_x64.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
-                --backend "${back}/x64_a64.h" --profile "${profile}" -o "${out}/a64_x64.inc" "${dir}/a64.sail"
+                --backend "${back}/mach.h" --backend "${back}/x64_asm.h" --backend "${back}/x64_a64.h"
+                --profile "${profile}" -o "${out}/a64_x64.inc" "${dir}/a64.sail"
                 --overlay "${dir}/nx.sail"
         DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${back}/bits.h" "${back}/x64.h"
-                "${back}/x64_a64.h" "${profile}"
+                "${back}/mach.h" "${back}/x64_asm.h" "${back}/x64_a64.h" "${profile}"
         COMMENT "Generating the A64 emitters' x86-64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
 # snx_sailgen_a32_x64(<target>): generates a32_x64.inc (the AArch32 emitters of a32.roots, LLVM's own, with sailgen's
-# x86-64 back end at its top: bits.h, x64.h and x64_a32.h) into the build folder, with the instruction selection it
-# includes (snx_sdm_isel), and gives <target> its include root
+# x86-64 back end at its top: bits.h, x64.h, mach.h, x64_asm.h and x64_a32.h) into the build folder, with the
+# instruction selection it includes (snx_sdm_isel), and gives <target> its include root
 function(snx_sailgen_a32_x64 target)
     snx_sdm_isel(${target})
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
@@ -123,10 +124,11 @@ function(snx_sailgen_a32_x64 target)
     add_custom_command(OUTPUT "${out}/a32_x64.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
-                --backend "${back}/x64_a32.h" --profile "${dir}/a32.profile" -o "${out}/a32_x64.inc" "${dir}/a32.sail"
+                --backend "${back}/mach.h" --backend "${back}/x64_asm.h" --backend "${back}/x64_a32.h"
+                --profile "${dir}/a32.profile" -o "${out}/a32_x64.inc" "${dir}/a32.sail"
                 --overlay "${dir}/arm.sail"
         DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${back}/bits.h"
-                "${back}/x64.h" "${back}/x64_a32.h"
+                "${back}/x64.h" "${back}/mach.h" "${back}/x64_asm.h" "${back}/x64_a32.h"
         COMMENT "Generating the AArch32 emitters' x86-64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a32_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")

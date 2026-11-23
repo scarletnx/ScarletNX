@@ -431,12 +431,20 @@ the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--ise
 PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
 few pages in the manual's notation written for the test (`sailgen_isel`).
 
-### At run time (`x64.h`, `x64_a64.h`)
+### At run time (`x64.h`, `mach.h`, `x64_asm.h`, `x64_a64.h`)
 
 ```sh
-sailgen --generate a64_x64.roots --backend bits.h --backend x64.h --backend x64_a64.h --profile a64.profile \
-        -o a64_x64.inc a64.sail --overlay nx.sail
+sailgen --generate a64_x64.roots --backend bits.h --backend x64.h --backend mach.h --backend x64_asm.h \
+        --backend x64_a64.h --profile a64.profile -o a64_x64.inc a64.sail --overlay nx.sail
 ```
+
+The back end is three files: `x64.h` holds x86-64's encodings and the selection (`x64_isel.inc`), with what `mach.h`
+asks of a machine (its registers' counts, the place of a fixed register in a form, the frame's register, a call's
+results, the vector forms its front makes values with); `mach.h` what any machine's back end does, below; and
+`x64_asm.h` x86-64's assembly of what `mach.h` leaves to the machine (the moves and spills the register allocation
+makes, the XMM registers' forms, the constant pool, the cold paths, the frame), through the hooks `mach.h` declares
+(`sgx_mov_rr`, `sgx_mov_mem`, `sgx_imm_ok`, `sgx_xdown`...). Another host's back end is its own pair of files around
+the same `mach.h`.
 
 The same generator (`gen.c`), with the x86-64 back end at the output's top in place of LLVM's: the CONST and STATIC
 times are folded when sailgen runs and when the emitter runs as for LLVM, and what is DYN is appended to a short SSA
@@ -500,8 +508,8 @@ steps one after another (`--sequences N`), which is what holds the block's folds
 ### AArch32 (`x64_a32.h`)
 
 ```sh
-sailgen --generate a32.roots --backend bits.h --backend x64.h --backend x64_a32.h --profile a32.profile \
-        -o a32_x64.inc a32.sail arm.sail
+sailgen --generate a32.roots --backend bits.h --backend x64.h --backend mach.h --backend x64_asm.h \
+        --backend x64_a32.h --profile a32.profile -o a32_x64.inc a32.sail arm.sail
 ```
 
 The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
