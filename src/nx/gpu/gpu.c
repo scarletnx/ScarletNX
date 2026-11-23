@@ -374,11 +374,18 @@ void gpu_release_write_now(u64 gva, const void* data, u32 len) {
     gmem_write(gva, data, len);
 }
 void gpu_release_stamp(u64 gva, const void* data, int top) {
+    if (gq_queues()) {
+        gq_release_stamp(gva, data, top);
+        return;
+    }
+    gpu_release_stamp_now(gva, data, top);
+}
+void gpu_release_stamp_now(u64 gva, const void* data, int top) {
     if (g_renderer->release_stamp) {
         g_renderer->release_stamp(gva, data, top);
         return;
     }
-    gpu_release_write(gva, data, 16);
+    gpu_release_write_now(gva, data, 16);
 }
 int gpu_release_stamp_sync(u64 cpu, int may_wait) {
     return g_renderer->release_stamp_sync ? g_renderer->release_stamp_sync(cpu, may_wait) : 0;
