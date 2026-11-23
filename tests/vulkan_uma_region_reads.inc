@@ -287,4 +287,90 @@ static int check_uma_region_trap(void) {
            during);
     return 0;
 }
+/* Plan item 8 of docs/dev/draw-cost.md: a block linear render target over a dma-buf region is watched at a release
+   (own_watch_in_place), not published, and its pages stay the region's, which the GPU keeps through the submissions
+   after the trap. The CPU's first read publishes it in place in the region (vk_rt_watch_hit), waits for that copy's
+   submit, and reads the target's pixels; the pages are still the region's after it */
+static int check_uma_region_watch(void) {
+    const u64 gva = URR_GVA + 0x800000, cpu = URR_CPU + 0x800000, span = 20ull * 2 * 512 * 16, t = 0x40000;
+    const float blue[4] = {0, 0, 1, 1}, red[4] = {1, 0, 0, 1};
+    VkBuffer r;
+    u64 ro, off;
+    if (!vk_uma() || !own_traps()) {
+        printf("skip: the watch over a region needs unified memory and traps\n");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x200000);
+    memset(GP(cpu), 0x11, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn();                       /* the targets the checks before drew */
+    CHECK(vk_buf_get_strict(gva, 256, &r, &ro)); /* a region over the window, also where imports are dear */
+    vk_finish();
+    const int region = vk_uma_region_held(cpu, 0x200000);
+    vk_unlock();
+    if (!region) {
+        CHECK(mem_unmap(cpu, 0x200000) == 0);
+        g_renderer->mem_may_have_changed();
+        free(ch);
+        printf("skip: no dma-buf region holds the window on this device\n");
+        return 0;
+    }
+    const VkRtWatchStats w0 = g_vk_rt_watch;
+    rt_clear_rect(ch, gva + t, blue, NULL);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    /* watched in place: no publish, the pages still the region's (no pool offset) */
+    CHECK(g_vk_rt_watch.arms == w0.arms + 1 && g_vk_rt_watch.by[VK_PUB_IMPORT] == w0.by[VK_PUB_IMPORT]);
+    CHECK(g_vk_rt_watch.publishes == w0.publishes && g_vk_rt_watch.hits == w0.hits);
+    CHECK(own_watched(cpu + t, span) && own_trapped(cpu + t, span) && mem_pool_offset(cpu + t, &off) != 0);
+    /* the GPU goes on with the region's pages: draws to another target and the region's reads, submitted and done (a
+       lost device is fatal) */
+    for (int k = 0; k < 20; k++) {
+        rt_clear_rect(ch, gva + 0x100000, k & 1 ? red : blue, NULL);
+        vk_lock();
+        CHECK(vk_buf_get_strict(gva, 256, &r, &ro));
+        vk_finish();
+        vk_unlock();
+    }
+    vk_lock();
+    CHECK(vk_uma_region_held(cpu, 0x200000));
+    vk_unlock();
+    CHECK(own_watched(cpu + t, span) && g_vk_rt_watch.hits == w0.hits);
+    /* this thread holds no lock: its read faults, publishes the target in place and reads its pixels */
+    u8 got[64];
+    memcpy(got, GP(cpu + t), sizeof got);
+    atomic_signal_fence(memory_order_seq_cst);
+    u32 differ = 0;
+    for (u32 i = 0; i < sizeof got; i += 4)
+        differ += got[i] != 0 || got[i + 1] != 0 || got[i + 2] != 255 || got[i + 3] != 255;
+    vk_lock();
+    const int kept = vk_uma_region_held(cpu, 0x200000);
+    vk_unlock();
+    const int hit =
+        g_vk_rt_watch.hits == w0.hits + 1 && g_vk_rt_watch.by[VK_PUB_CPU_ACCESS] == w0.by[VK_PUB_CPU_ACCESS] + 1;
+    if (differ || !hit || !kept || own_trapped(cpu + t, span))
+        fprintf(
+            stderr,
+            "a watch over a region: %u of 16 pixels differ (first %02x %02x %02x %02x, want 00 00 ff ff), %llu hits, "
+            "%llu publishes for a CPU access, region kept %d, still trapped %d\n",
+            differ, got[0], got[1], got[2], got[3], (unsigned long long)(g_vk_rt_watch.hits - w0.hits),
+            (unsigned long long)(g_vk_rt_watch.by[VK_PUB_CPU_ACCESS] - w0.by[VK_PUB_CPU_ACCESS]), kept,
+            own_trapped(cpu + t, span));
+    CHECK(!differ && hit && kept && !own_trapped(cpu + t, span) && mem_pool_offset(cpu + t, &off) != 0);
+    vk_lock();
+    vk_rt_before_write(gva, 0x200000, 0); /* the targets go back to memory before it does */
+    vk_unlock();
+    CHECK(mem_unmap(cpu, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    free(ch);
+    printf(
+        "in place: a render target over a dma-buf region is watched at a release and published in place at the CPU's "
+        "read\n");
+    return 0;
+}
 #endif

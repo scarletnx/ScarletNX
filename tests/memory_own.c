@@ -589,6 +589,45 @@ static void test_view(void) {
     res_free(r);
 }
 
+/* A watch over a GPU buffer's pages (a memfd's, where the renderer moved guest memory: mem_migrate) traps them where
+   they are (own_watch_in_place): no page moves into the pool, so a dma-buf of the memfd keeps the pages the CPU then
+   reads. own_stage reads the CPU's bytes through the buffer's view. A write to the buffer meanwhile (the GPU's copy
+   in place, here through the view) is what the CPU's first read finds, after one resolve. Not over memory of another
+   kind */
+static void test_watch_in_place(void) {
+    int fd = -1;
+    void* handle = NULL;
+    if (plat_gpu_buffer(0x10000, &fd, &handle)) { /* a memfd and a mapping of it: Linux's */
+        puts("memory_own: no GPU buffer of a memfd on this host: the watch over one skipped");
+        return;
+    }
+    u64 a = region(R0 + 0x1300000, 0x10000), other = region(R0 + 0x1400000, 0x4000), off = 0;
+    OwnRange o[4];
+    u8 buf[0x4000];
+    u8* view = (u8*)handle;
+    CHECK(mem_migrate(a, 0x10000, fd, view) == 0 && view[0x1234] == (u8)(0x11 + 0x1234));
+    int resolves = g_resolves, lands = g_lands;
+    CHECK(own_watch_in_place(other, 0x1000) == -1 && !own_trapped(other, 0x4000));
+    CHECK(own_watch_in_place(a + 0x1100, 0x2000) == 0);
+    CHECK(own_watched(a + 0x1100, 0x2000) && own_trapped(a + 0x1000, 0x3000) && !own_trapped(a + 0x4000, 0x1000));
+    CHECK(mem_pool_offset(a + 0x1000, &off) != 0); /* still the buffer's pages */
+    CHECK(own_stage(a, sizeof buf, buf, o, 4) == 0);
+    for (u32 i = 0; i < sizeof buf; i++) CHECK(buf[i] == (u8)(0x11 + i));
+    CHECK(g_resolves == resolves);
+    /* the GPU's copy in place, then the CPU's read: one resolve, nothing landed, the bytes written */
+    memset(view + 0x1100, 0xA5, 0x2000);
+    CHECK(GP(a)[0x1200] == 0xA5);
+    producer_lock(); /* the landing's thread done: it holds the producer's lock until then */
+    producer_unlock();
+    CHECK(g_resolves == resolves + 1 && g_lands == lands && !own_trapped(a, 0x10000));
+    CHECK(GP(a)[0x10FF] == (u8)(0x11 + 0x10FF) && GP(a)[0x30FF] == 0xA5 && mem_pool_offset(a + 0x1000, &off) != 0);
+    GP(a)[0x1300] = 0x77; /* the same pages as the buffer's */
+    CHECK(view[0x1300] == 0x77);
+    CHECK(mem_unmap(a, 0x10000) == 0 && mem_unmap(other, 0x4000) == 0);
+    plat_gpu_buffer_free(fd, handle, 0x10000);
+    puts("memory_own: a watch over a GPU buffer's pages traps them where they are, and reads their bytes through it");
+}
+
 /* a fault on the thread holding the producer's lock is the runtime's bug: it ends the process, not hangs. In a
    process of its own (this test run again: a forked one has no traps, which aren't inherited) */
 #if defined(_WIN32)
@@ -1377,6 +1416,7 @@ int main(int argc, char** argv) {
     test_stage_runs();
     test_stage_dropped();
     test_view();
+    test_watch_in_place();
 #if defined(_WIN32)
     {
         static char self[MAX_PATH];
