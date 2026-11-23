@@ -683,8 +683,14 @@ static int test_link_stamp(const char* folder) {
 }
 
 int main(void) {
-    char* folder = snx_format("%s/snx-analysis-cache-test", snx_temp_dir(NULL));
+    char* root = snx_temp_dir(NULL), *folder;
     failures = 0;
+    if (!root) {
+        fprintf(stderr, "cannot make temp folder name\n");
+        return 1;
+    }
+    folder = snx_format("%s/snx-analysis-cache-test", root);
+    free(root);
     if (!folder) {
         fprintf(stderr, "cannot make temp folder name\n");
         return 1;
