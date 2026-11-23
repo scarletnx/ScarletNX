@@ -9,6 +9,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/native_video.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -45,7 +46,9 @@ int game_pause(void) {
     }
     t0 = plat_ns();
     if (kernel_hold(PAUSE_MS)) return -1;
+    native_video_hold(); /* before the GPU's: the picture it is on may still need the renderer */
     if (host1x_drain(PAUSE_MS) || gpu_hold(PAUSE_MS)) {
+        native_video_release();
         kernel_release();
         return -1;
     }
@@ -65,6 +68,7 @@ void game_resume(void) {
     clock_resume();
     audio_release();
     gpu_release();
+    native_video_release();
     kernel_release();
     LOG("pause: the game goes on after %.2f s paused\n", (double)(plat_ns() - g_pause.since) / 1e9);
 }

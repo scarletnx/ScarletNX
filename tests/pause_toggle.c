@@ -30,7 +30,7 @@
 /* what the pause's parts answer (0, or -1: not stopped in time) and how many holds each has, and the log's last line */
 static struct {
     int kernel_fails, gpu_fails;
-    int kernel_held, gpu_held, audio_held, clock_held;
+    int kernel_held, gpu_held, audio_held, clock_held, video_held;
     char logged[256];
 } g_test;
 
@@ -54,6 +54,8 @@ int gpu_hold(int timeout_ms) {
 void gpu_release(void) { g_test.gpu_held--; }
 void audio_hold(void) { g_test.audio_held++; }
 void audio_release(void) { g_test.audio_held--; }
+void native_video_hold(void) { g_test.video_held++; }
+void native_video_release(void) { g_test.video_held--; }
 void clock_pause(void) { g_test.clock_held++; }
 void clock_resume(void) { g_test.clock_held--; }
 u64 guest_ns(void) { return 0; }
@@ -82,7 +84,8 @@ u64 unattended_ms(void) { return 0; }
 
 /* every part held once while paused, none while the game runs */
 static int held(int n) {
-    return g_test.kernel_held == n && g_test.gpu_held == n && g_test.audio_held == n && g_test.clock_held == n;
+    return g_test.kernel_held == n && g_test.gpu_held == n && g_test.audio_held == n && g_test.clock_held == n &&
+           g_test.video_held == n;
 }
 /* a press: what it returns, its log line, and its words over the game: the log's up to " (was", the pause now alone */
 static void press(int want, const char* line) {
