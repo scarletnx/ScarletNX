@@ -80,7 +80,9 @@ When the preferred one is passed over, the reason comes back with the one that s
 passes, the call gets no backend and the reason of the first one it would take that is built in, and runs its own
 fallback. So a DLSS evaluation with `render_upscaler` set to the spatial upscaler still gets FSR 2: it takes temporal
 upscalers only. A module that gives no motion vectors gets the spatial upscaler under Best, when it takes one, and the
-filtered copy when it doesn't.
+filtered copy when it doesn't, unless it gives depth and a reprojection matrix (hook ABI 1.2,
+[Hooks](../../platforms/nx/hooks.md#modules)): then `gpu/vk/upscaler/reproject.c` makes the camera's motion vectors
+from the depth before the upscaler runs, and a temporal one takes the frame.
 
 ### Contexts and evaluations
 

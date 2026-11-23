@@ -686,6 +686,7 @@ static int module_upscale(const NvnPUpscale* r, Surf2D* color, Surf2D* output, c
     memcpy(u.out_base, r->out_base, sizeof u.out_base);
     memcpy(u.jitter, r->jitter, sizeof u.jitter);
     memcpy(u.motion_scale, r->motion_scale, sizeof u.motion_scale);
+    memcpy(u.reprojection, r->reprojection, sizeof u.reprojection);
     u.pre_exposure = r->pre_exposure;
     u.reset = r->reset;
     u.flags = r->flags;

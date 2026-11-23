@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
     CHECK(times("module from the libraries") == 1 && times(": module hx_good (hook ABI") == 1);
     CHECK(!loaded(HX_LIBS "/folder/hx_off" HX_SUFFIX) && loaded(HX_LIBS "/folder/hx_good" HX_SUFFIX));
     CHECK(said("hooks: module hx_off is off (hooks=0 or hooks_off): its library "));
-    CHECK(said("hx_good" HX_SUFFIX ": module hx_good (hook ABI 1.1), 1 CPU hook\n"));
+    CHECK(said("hx_good" HX_SUFFIX ": module hx_good (hook ABI 1.2), 1 CPU hook\n"));
     CHECK(!said("notes.txt"));
 
     /* the module as the runtime's, after the compiled-in one */
@@ -174,10 +174,10 @@ int main(int argc, char** argv) {
         const char* file;
         const char* why;
     } k_refused[] = {
-        {"hx_major", "refused: it is built for hook ABI 2.0, and the runtime has 1.1 (another major)"},
-        {"hx_minor", "refused: it is built for hook ABI 1.2, and the runtime has 1.1 (a newer minor than the"},
+        {"hx_major", "refused: it is built for hook ABI 2.0, and the runtime has 1.2 (another major)"},
+        {"hx_minor", "refused: it is built for hook ABI 1.3, and the runtime has 1.2 (a newer minor than the"},
         {"hx_no_entry", "refused: it has no snx_hook_module"},
-        {"hx_null", "refused: its snx_hook_module refused this runtime (hook ABI 1.1)"},
+        {"hx_null", "refused: its snx_hook_module refused this runtime (hook ABI 1.2)"},
         {"hx_misnamed", "refused: its module is named hx_other, not as its file"},
         {"hx_empty", "refused: it has 0 CPU hooks (1 to 32)"},
         {"hx-dash", "refused: its name has a character other than a to z, 0 to 9 and _"},
@@ -190,7 +190,7 @@ int main(int argc, char** argv) {
         CHECK(!added && said(k_refused[i].why));
     }
     g_log[0] = 0;
-    CHECK(!hook_module_lib_load(lib("hx_null"), off) && said("hooks: hx_null: the runtime's hook ABI 1.1 is older"));
+    CHECK(!hook_module_lib_load(lib("hx_null"), off) && said("hooks: hx_null: the runtime's hook ABI 1.2 is older"));
     g_log[0] = 0;
     CHECK(!hook_module_lib_load(HX_LIBS "/folder/hx_good" HX_SUFFIX, off) && said("another module is named hx_good"));
     CHECK(!hook_module_at(2));
