@@ -1813,7 +1813,8 @@ void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
 void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
 /* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
-   device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
+   device memory is short or the results hold more than an eighth of its budget, the largest results left alone land
+   in guest memory, a few a present (owned.c) */
 /* memory.c: size bytes of system memory in one allocation found none with room in the heap: 1 when g_vk.alloc_cap
    came down for it, and the caller asks again within the cap */
 int vk_alloc_cap_lower(u64 size);

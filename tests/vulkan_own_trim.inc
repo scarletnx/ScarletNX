@@ -49,7 +49,7 @@ static int check_own_trim(void) {
                (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
                (unsigned long long)(usage_after >> 20), (unsigned long long)(budget_after >> 20));
     const u64 cap = vk_mem_budget_cap(1); /* a budget of one byte: short */
-    /* a call lands the 16 left alone longest, and other checks' results may be among them */
+    /* a call lands 16 at most, the largest first, and other checks' results may be among them */
     for (u32 i = 0; i < 64 && (own_lookup(cpu + 0x100, 256, NULL, 0) || own_lookup(cpu + 0x2100, 256, NULL, 0)); i++)
         vk_own_trim();
     int failed = own_trim_landed(cpu, 0x41) || own_trim_landed(cpu + 0x2000, 0x43) ||
