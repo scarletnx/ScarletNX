@@ -1245,14 +1245,11 @@ static int check_uma_way(void) {
     CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_DMABUF &&
           vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1) == VK_UMA_WITH_AHB);
     CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
-    /* a discrete GPU: auto moves into dma-bufs where host imports are dear, and copies where they are not, where it has
-       no udmabuf, or where uma_memory imports only; never a host pointer, which amdgpu takes again at each submission */
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
+    /* a discrete GPU: auto copies, with udmabuf and imports dear too (moved into dma-bufs there, a racing game's race
+       drew its HUD over a black world) */
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
     /* vk_memory's copy stays a copy */
     CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
           vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
