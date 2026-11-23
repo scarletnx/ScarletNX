@@ -131,14 +131,16 @@ void vk_ck_report(void) {
         pm_unlock(&g_ck.lock);
         return;
     }
+    /* the lock stays held to the end: a second thread that sees the loss waits here for the whole report, where it
+       stopped the game while the first still wrote it (a timeline read and a mirror batch's check at once) */
     g_ck.reported = 1;
     VkCkView view = {g_ck.ring, g_ck.newest};
-    pm_unlock(&g_ck.lock);
     u64 submitted = 0, done = 0;
-    vk_submit_progress(&submitted, &done);
+    vk_submit_progress_raw(&submitted, &done);
     WARN("vulkan: the device was lost or stopped with graphics submissions done %llu of %llu\n",
          (unsigned long long)done, (unsigned long long)submitted);
     report_unfinished(&view, done, submitted);
     report_queue(&view, "graphics", g_vk.gfx);
     if (g_vk.compute != g_vk.gfx) report_queue(&view, "compute", g_vk.compute);
+    pm_unlock(&g_ck.lock);
 }
