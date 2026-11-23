@@ -967,17 +967,29 @@ static int ext_stage(u64 a, u64 end, u8* dst) {
     }
     return 1;
 }
-/* the CPU's bytes of [a, b) into dst at a - addr: page by page, a page an owner is on through the mirror (its CPU
-   bytes are in the pool), the others as they are. A page landed meanwhile reads the same through either */
+/* the CPU's bytes of [a, b) into dst at a - addr: a page an owner is on through the mirror (its CPU bytes are in the
+   pool), one at a time, and each run of pages no owner is on as it is, at once. A page landed meanwhile reads the same
+   through either */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
-        u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off;
+        u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off, gap;
         int owned;
         if (end > b) end = b;
+        /* the pages up to the first entry's are no owner's: one lock and one copy for all of them, not one each */
         pm_lock(&g_own.lk);
-        owned = page_owned_nl(page);
+        const u32 i = first_after_nl(page);
+        owned = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < page + g_own.page;
+        gap = owned || i >= atomic_load_explicit(&g_own.nown, memory_order_relaxed)
+                  ? b
+                  : g_own.ent[i].lo & ~(g_own.page - 1);
         pm_unlock(&g_own.lk);
-        if (owned && !mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
+        if (!owned) {
+            if (gap > b) gap = b;
+            memcpy(dst + (a - addr), GP(a), (size_t)(gap - a));
+            a = gap;
+            continue;
+        }
+        if (!mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
             const u8* sh = NULL;
             /* through a buffer of this thread's: dst is written with no lock of ours held, as a write to it that
                faulted (dst in guest memory) would wait for a trap that needs g_own.trap_lk */
@@ -998,9 +1010,9 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
                     WARN("memory: the CPU's bytes of trapped page %llx have no copy: read as zero\n",
                          (unsigned long long)page);
             }
-        } else if (owned && !mem_pool_offset(a, &off))
+        } else if (!mem_pool_offset(a, &off))
             memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else if (!owned || !ext_stage(a, end, dst + (a - addr)))
+        else if (!ext_stage(a, end, dst + (a - addr)))
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
     }
