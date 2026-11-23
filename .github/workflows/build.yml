@@ -219,8 +219,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # poppler: pdftotext, which the x86-64 back end's instruction selection is derived with (cmake/sdm.cmake);
+          # without it the back end is left out and LLVM makes every function
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
