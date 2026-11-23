@@ -3433,7 +3433,11 @@ static void splash_with(App* app, const GuiTheme* t, const SnxSplashSvg* svg) {
 }
 static void splash_start(App* app) {
     const GuiTheme* t = gui_splash_theme(&app->theme, (int)SDL_rand(100));
-    if (t->splash_ms) splash_with(app, t, &snx_splash_svgs[SDL_rand(snx_splash_svg_count)]);
+    SDL_Time now = 0;
+    SDL_DateTime date = {0};
+    int month = SDL_GetCurrentTime(&now) && SDL_TimeToDateTime(now, &date, true) ? date.month : 0;
+    const SnxSplashSvg* svg = snx_splash_pick(month, (unsigned)SDL_rand(1 << 30));
+    if (t->splash_ms && svg) splash_with(app, t, svg);
 }
 static int splash_shown(App* app) {
     SDL_Rect view;
