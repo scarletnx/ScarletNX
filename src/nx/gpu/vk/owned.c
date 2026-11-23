@@ -78,7 +78,7 @@ static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
 #define OWN_IDLE     120 /* presents a result or a freed buffer is left alone before vk_own_trim takes it */
 #define OWN_IDLE_SHORT 8 /* presents a freed buffer is left alone while device memory is short */
 #define OWN_LAND_MAX 16  /* results landed at one present */
-#define OWN_LAND_SHORT 256 /* results landed at one present with device memory past its budget */
+#define OWN_LAND_SHORT 256 /* results landed at one present with device memory at the caches' trim mark */
 typedef struct {
     VkBuffer buf;
     DevMem mem;
@@ -265,18 +265,22 @@ void vk_own_log(void) {
    limit reached, the caches were left 5.2 of 5.5 GB, and the trim made room by evicting textures that the game was
    using, 6517 of which it then loaded again.
 
-   So when device memory is short, the results that nothing has written or read for OWN_IDLE presents land in guest
-   memory, as the CPU's touch would land them, the ones left alone longest first. What they were made for has read
-   them by then (a texture is built from its tile within a frame or two), and a later read finds the bytes in guest
-   memory. A landing is a round trip to the GPU, so only a few land a present, here at the frame's boundary where no
-   draw is being set up. With memory to spare nothing lands. The freed buffers of the pool are no one's bytes: one
-   that no result took for OWN_IDLE presents goes at any time.
+   So when device memory is short (four fifths of its budget in use, by the heap's count or the budget's, the larger of
+   the two) or the results hold more than an eighth of the budget, the results that nothing has written or read for
+   OWN_IDLE presents land in guest memory, as the CPU's touch would land them, the largest first and, of one size, the
+   ones left alone longest. What they were made for has read them by then (a texture is built from its tile within a
+   frame or two), and a later read finds the bytes in guest memory. A landing is a round trip to the GPU, so only a few
+   land a present (OWN_LAND_MAX, and none once a call landed what is over those marks, or 64 MiB), here at the frame's
+   boundary where no draw is being set up, and a landed result's buffer goes back to the heap, not to the pool. With
+   memory to spare and the results under that eighth nothing lands. The freed buffers of the pool are no one's bytes:
+   one that no result took for OWN_IDLE presents goes at any time.
 
-   With device memory past its budget that was too little: on a GPU of 2 GB the same game's 1,930 tile results held
-   770 MB from its boot, the caches had nothing left to free, its shadow maps' depth targets found no memory and 94% of
-   its draws were skipped, at 4 presents a second, where 16 results every fourth present land in minutes. Past the
-   budget the trim runs at each present, takes the results left alone for OWN_IDLE_SHORT presents, the oldest first,
-   and lands up to OWN_LAND_SHORT of them, as many as bring the heap back to four fifths of its budget. Results in
+   With device memory at the caches' trim mark (vk_mem_trim_start) that was too little: on a GPU of 2 GB the same
+   game's 1,930 tile results held 770 MB from its boot, the caches had nothing left to free, its shadow maps' depth
+   targets found no memory and 94% of its draws were skipped, at 4 presents a second, where 16 results every fourth
+   present land in minutes. From that mark on the trim runs at each present, lets every freed buffer of the pool go,
+   takes the results left alone for OWN_IDLE_SHORT presents, the largest first, and lands up to OWN_LAND_SHORT of
+   them, as many as bring the use back to four fifths of the budget and the results to an eighth of it. Results in
    system memory (vk_own_res_new's last resort) stay: landing them frees nothing of the GPU's */
 typedef struct {
     u64 addr, size;
