@@ -1216,47 +1216,55 @@ static int check_uma_placed_view(void) {
    imports, so it copies where 0 would move, and 2 only moves, on a driver that imports and under auto as well; neither
    puts guest memory in place where vk_memory copies */
 static int check_uma_way(void) {
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* imported only */
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* moved only */
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB &&
-          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB &&
-          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
+    /* Windows' discrete GPU where the mirror can be (host_discrete): auto imports there, as vk_memory=2 does; moved only
+       and copied are as before, and without the mirror auto copies */
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 0, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 0, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* Linux's dma-bufs of memfds (udmabuf): auto moves into them where imports are dear (amdgpu), else imports as before;
        imported only never moves, moved only takes them where there are no AHardwareBuffers */
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 0, 1) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, 1, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 1, VK_MEM_UMA, 0, 0, 1, 1) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 0, 1, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 1, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 0, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
     /* a discrete GPU: auto moves into dma-bufs where host imports are dear, and copies where they are not, where it has
        no udmabuf, or where uma_memory imports only; never a host pointer, which amdgpu takes again at each submission */
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 1, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
     /* vk_memory's copy stays a copy */
-    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
     printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there; "
            "uma_memory=1 only imports, uma_memory=2 only moves\n");
     return 0;

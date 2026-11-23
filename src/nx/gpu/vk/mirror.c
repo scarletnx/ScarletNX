@@ -88,7 +88,10 @@ int vk_mirror_on(void) {
     char big[128];
     snprintf(big, sizeof big, "buffers of %llu bytes at most, where the mirror is %llu",
              (unsigned long long)g_vk.max_buffer_size, (unsigned long long)AS_SIZE);
-    const char* why = vk_uma()                           ? "memory shared with the CPU: read in place"
+    /* with unified memory guest memory is read in place, but not on a discrete GPU with host imports: there what the
+       GPU only reads is copied (uma.c's vk_uma_storage_copied), and its programs' writes across the bus cost more
+       than the mirror's harvest of the pages they wrote */
+    const char* why = vk_uma() && !vk_uma_storage_copied() ? "memory shared with the CPU: read in place"
                       : !g_vk.sparse                     ? "no sparse binding"
                       : !g_vk.feat.sparseResidencyBuffer ? "no sparse residency of buffers"
                       : g_vk.max_buffer_size < AS_SIZE && (!g_settings.gpu_mirror_past_limit || g_settings.vulkan_validation_layer) ? big
