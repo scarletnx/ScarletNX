@@ -339,8 +339,9 @@ static void calldyn(Unit* u, int tail) {
     if (!tail) pins(u, 0);
 }
 
-/* call(): F_target directly where the target is one of the codegen's functions (not routed through its slot), the
-   AOT module's (snx_aot_<target>) in a JIT unit where it has one, CALLDYN otherwise; tail: then return */
+/* call(): F_target directly where the target is one of the codegen's functions (not routed through its slot),
+   snx_aot_<target> where options->direct names it (the AOT module's function in a JIT unit, another module's an AOT
+   module imports), CALLDYN otherwise; tail: then return */
 static void call_target(Unit* u, SnxU64 target, int tail) {
     const SnxCodegen* c = u->codegen;
     int through_slot = c->hook_direct_calls || snx_codegen_routed(c, target);
@@ -348,8 +349,7 @@ static void call_target(Unit* u, SnxU64 target, int tail) {
     mov_rsi_imm(u, target);
     if (!through_slot && snx_codegen_function(c, target))
         fname(sym, sizeof sym, "F_", target);
-    else if (!through_slot && u->options->jit && u->options->direct &&
-             u->options->direct(u->options->direct_user, target))
+    else if (!through_slot && u->options->direct && u->options->direct(u->options->direct_user, target))
         snprintf(sym, sizeof sym, "snx_aot_%llx", (unsigned long long)target);
     else {
         calldyn(u, tail);
@@ -1015,6 +1015,110 @@ static int bitfield(Unit* u, SnxU32 word) {
     return 1;
 }
 
+/* ---- PLT stubs the program's linker binds (SnxBoundBranch), as ir_codegen.c lowers them ---- */
+
+/* The function the BR at address reaches once the program's linker has bound it (options->bound), when a call there
+   needs no lookup: a function of the codegen, or one the module imports (options->direct), that the module does not
+   send through its dispatch slot, with *guard set when its slot may hold another function. 0 for any other BR */
+static SnxU64 bound_function(Unit* u, SnxU64 address, int* guard) {
+    const SnxCodegen* c = u->codegen;
+    SnxU64 bound = u->options->bound ? u->options->bound(u->options->bound_user, address, guard) : 0;
+    if (!bound || c->hook_direct_calls || snx_codegen_routed(c, bound)) return 0;
+    if (snx_codegen_function(c, bound)) return bound;
+    return u->options->direct && u->options->direct(u->options->direct_user, bound) ? bound : 0;
+}
+
+/* The function a BL or B to target calls when target is a PLT stub that can run in the call's place: a function of
+   the codegen that is ADRP x16, LDR x17, [x16, #n], ADD x16, x16, #n and a BR x17 that is bound (bound_function),
+   with *guard as that gives it and the stub's first three words in w. 0 for any other target */
+static SnxU64 stub_function(Unit* u, SnxU64 target, SnxU32* w, int* guard) {
+    SnxCodegen* c = (SnxCodegen*)u->codegen;
+    SnxU32 br = 0;
+    unsigned i;
+    if (!u->options->bound || !snx_codegen_function(c, target)) return 0;
+    for (i = 0; i < 3; ++i)
+        if (!snx_codegen_word(c, target + 4 * i, &w[i])) return 0;
+    if (!snx_codegen_word(c, target + 12, &br) || (w[0] & 0x9F00001FUL) != 0x90000010UL ||
+        (w[1] & 0xFFC003FFUL) != 0xF9400211UL || (w[2] & 0xFFC003FFUL) != 0x91000210UL || br != 0xD61F0220UL)
+        return 0;
+    return bound_function(u, target + 12, guard);
+}
+
+/* cmp x<r>, rax between regions: the guest register in its pin, else in the state */
+static void cmp_x_rax(Unit* u, unsigned r) {
+    int p = u->pinned ? u->pin[r] : -1;
+    if (p >= 0) {
+        /* cmp p, rax */
+        byte(u, (unsigned char)(0x48 | (p >> 3))), byte(u, 0x39), byte(u, (unsigned char)(0xC0 | (p & 7)));
+        return;
+    }
+    /* cmp [rbx + x<r>], rax */
+    byte(u, 0x48), byte(u, 0x39), byte(u, 0x83), imm(u, (long long)(offsetof(CPU, x) + 8 * (size_t)r), 4);
+}
+
+/* A BL or B to the PLT stub at stub, bound to the function bound, run in the stub's place, after the guest's
+   registers were flushed. Without guard the slot is bound to that function by whatever links the program, so it is
+   not read: x16 as the stub's ADRP and ADD leave it, x17 the function's address as the bound slot gives it, then
+   F_bound. With guard, the stub's ADRP, LDR and ADD as at their own addresses, then if (x17 == bound) F_bound, else
+   F_stub, whose own code takes whatever else the slot holds. A stub whose code the guest changed is stale: none of
+   its instructions run here, and its function's entry leaves for the code there now. tail: each way returns.
+   0 where the back end can't make the stub's load (the function is LLVM's then) */
+static int call_stub(Unit* u, SnxU64 stub, const SnxU32* w, SnxU64 bound, int guard, int tail) {
+    SgCtx* g = u->g;
+    const SnxCodegen* c = u->codegen;
+    long long pages = (long long)((w[0] >> 5 & 0x7FFFF) << 2 | (w[0] >> 29 & 3)); /* ADRP's immhi:immlo */
+    int other = guard || u->options->stale ? new_label(u) : -1, join = tail ? -1 : new_label(u);
+    SnxU64 page;
+    if (pages & 0x100000) pages -= 0x200000;
+    page = (stub & ~(SnxU64)0xFFF) + (SnxU64)pages * 4096;
+    if (u->options->stale) {
+        stale_test(u, (size_t)(snx_codegen_function(c, stub) - c->functions));
+        jcc(u, 0x5, other);
+    }
+    sg_GPR_write(g, 16, sgx_const(64, page));
+    if (guard) {
+        SnxU32 word = g->word;
+        SnxU64 pc = g->pc;
+        g->word = w[1]; /* the stub's LDR x17, [x16, #n] */
+        g->pc = stub + 4;
+        g->start = g->x.n;
+        g->branched = g->undefined = 0;
+        g->taken = 0;
+        g->exclusive_count = g->exclusive_next = 0;
+        g->status = 0;
+        if (!sg_decode(g) || g->x.unmade || g->undefined) return 0;
+        g->word = word;
+        g->pc = pc;
+    } else
+        sg_GPR_write(g, 17, sgx_const(64, bound));
+    sg_GPR_write(g, 16, sgx_const(64, page + (w[2] >> 10 & 0xFFF)));
+    flush(u);
+    if (guard) {
+        mov_rax_imm(u, bound);
+        cmp_x_rax(u, 17);
+        jcc(u, 0x5, other);
+    }
+    call_target(u, bound, tail);
+    if (!tail) jmp(u, join);
+    if (other >= 0) {
+        bind(u, other);
+        call_target(u, stub, tail);
+    }
+    if (!tail) bind(u, join);
+    return 1;
+}
+
+/* a call (tail: a tail call) of target once the guest's registers are flushed: a bound PLT stub's function in the
+   stub's place, else call_target. 0 where the stub's load can't be made */
+static int call_or_stub(Unit* u, SnxU64 target, int tail) {
+    SnxU32 w[3] = {0, 0, 0};
+    int guard = 0;
+    SnxU64 bound = stub_function(u, target, w, &guard);
+    if (bound) return call_stub(u, target, w, bound, guard, tail);
+    call_target(u, target, tail);
+    return 1;
+}
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -1078,8 +1182,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         if (snx_function_contains(f, target)) {
             if (target <= address) poll_then(u, target);
             jmp(u, (int)index_of(f, target));
-        } else
-            call_target(u, target, 1);
+        } else if (!call_or_stub(u, target, 1))
+            return 0;
         terminal = 1;
         break;
     case SNX_A64_FLOW_BC:
@@ -1135,7 +1239,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         target = snx_a64_branch_target(&insn, address);
         sg_GPR_write(g, 30, sgx_const(64, next));
         flush(u);
-        call_target(u, target, 0);
+        if (!call_or_stub(u, target, 0)) return 0;
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BLR:
@@ -1144,9 +1248,13 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         flush(u);
         check_return(u, next);
         break;
-    case SNX_A64_FLOW_BR:
+    case SNX_A64_FLOW_BR: {
+        /* a PLT stub whose slot is bound, entered as a function (through a pointer, or by a call that does not run
+           it in place): if (target == bound) F_bound, always compared, as the stub's own branch has the slot's word */
+        int guard = 0;
+        SnxU64 bound = bound_function(u, address, &guard);
         if (!sg_decode(g) || x->unmade || !g->branched) return 0;
-        if (u->dispatch) {
+        if (u->dispatch || bound) {
             SgD t = g->target;
             int v = sgx_reg(x, &t);
             SgXIns* st = sgx_append(x, SGX_K_STORE);
@@ -1154,13 +1262,29 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             st->in[0] = v;
             st->disp = (int)offsetof(CPU, pc);
             flush(u);
-            jmp(u, u->d_label);
+            if (bound) {
+                int other = new_label(u);
+                mov_rax_imm(u, bound);
+                /* cmp [rbx + pc], rax */
+                byte(u, 0x48), byte(u, 0x39), byte(u, 0x83), imm(u, (long long)offsetof(CPU, pc), 4);
+                jcc(u, 0x5, other);
+                call_target(u, bound, 1);
+                bind(u, other);
+            }
+            if (u->dispatch)
+                jmp(u, u->d_label);
+            else {
+                /* mov rsi, [rbx + pc] */
+                byte(u, 0x48), byte(u, 0x8B), byte(u, 0xB3), imm(u, (long long)offsetof(CPU, pc), 4);
+                calldyn(u, 1);
+            }
         } else {
             machine_target(u, SGX_FN_TAILDYN, g->target);
             flush(u);
         }
         terminal = 1;
         break;
+    }
     case SNX_A64_FLOW_RET:
         if (!sg_decode(g) || x->unmade || !g->branched) return 0;
         {
@@ -1802,8 +1926,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         if (s.kind == 1) {
             poll_then(u, s.target);
             jmp(u, (int)index_of(f, s.target));
-        } else
-            call_target(u, s.target, 1);
+        } else if (!call_or_stub(u, s.target, 1)) {
+            ok = 0;
+            goto out;
+        }
     }
     /* the cold paths (the FP helpers' calls), then the constant pool */
     sgx_cold_emit(&u->a);
@@ -2128,6 +2254,10 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     u.g->x.nb = 1;
     for (i = first; i < last; ++i) {
         size_t before = u.b.n;
+        if (options->llvm_at && codegen->functions[i].start == options->llvm_at) {
+            if (options->jit) break; /* made[] stays 0: LLVM's, for the IR it prints */
+            continue;
+        }
         if (u.b.cap - u.b.n < codegen->functions[i].count * 400 + 4096) {
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);

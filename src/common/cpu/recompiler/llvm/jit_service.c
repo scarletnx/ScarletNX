@@ -497,7 +497,8 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
     if (snx_x64_available() && !s->config.hook_direct_calls && codegen->function_count) {
         /* the x86-64 back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
            split between two objects): LLVM otherwise */
-        SnxX64Options options = {1, table_name, direct, s};
+        SnxX64Options options = {
+            .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
         unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
         if (made) {
             codegen->hook_direct_calls = 0;

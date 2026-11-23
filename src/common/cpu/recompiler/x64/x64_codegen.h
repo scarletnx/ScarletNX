@@ -16,9 +16,16 @@ typedef struct {
        one global (jit_service.c's emit_unit); else the AOT module's F_<address>, global and hidden */
     int jit;
     const char* table_name;
-    /* the AOT module's function for a target a JIT unit calls directly (snx_aot_<address>), 0 for none */
+    /* nonzero for a target called through snx_aot_<address> rather than looked up (SnxIr.direct): the AOT module's
+       function a JIT unit calls, or another module's function an AOT module imports */
     SnxU64 (*direct)(void* user, SnxU64 target);
     void* direct_user;
+    /* the function the BR at address reaches once the program's linker has bound it, 0 for none, with *guard set when
+       its slot may hold another (SnxIr.bound): a BL or B to such a PLT stub calls that function in the stub's place */
+    SnxU64 (*bound)(void* user, SnxU64 address, int* guard);
+    void* bound_user;
+    /* a function left to LLVM, 0 for none: the one whose IR the setting ir_dump_pc prints */
+    SnxU64 llvm_at;
     /* the AOT module's stale checks (ir_codegen.c's snx_ir_stale_checks): snx_stale[the function's index] read at the
        entry and after each call's return */
     int stale;

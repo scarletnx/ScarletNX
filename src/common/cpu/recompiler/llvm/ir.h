@@ -271,6 +271,8 @@ int snx_ir_fpsr_exact(void);
    there printed, its IR before and after the promotion), for the SnxIr made after */
 void snx_ir_diagnostics(int stats, const char* dump_pc);
 int snx_ir_stats_on(void); /* the setting ir_stats is on: the recompile reports each unit's IR (LLVM's alone) */
+/* the function ir_dump_pc names, 0 for none: LLVM makes it, whose IR is printed, and the x86-64 back end not */
+SnxU64 snx_ir_dump_pc(void);
 /* Whether the guest's loads and stores are volatile (the setting volatile_memory, off by default): on, LLVM keeps
    each where the guest has it (ir_state.c's ir_rd). Once per process, before any module is made; the caches' keys
    carry it */
