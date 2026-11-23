@@ -1654,7 +1654,9 @@ setting Guest memory
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus. 0 = 2 on a GPU that shares system memory, but never the moves into AHardwareBuffers (unless
     help uma_memory=2), and on a discrete GPU whose host imports cost every submission (amdgpu's) through Linux's
-    help dma-bufs (uma_memory), else 1. A 3DS game takes it too, for the
+    help dma-bufs (uma_memory), and for an Ounce game on Windows on a discrete GPU with resizable BAR and host imports
+    help where the GPU mirror can be (sparse residency of buffers): what the GPU only reads is copied there
+    help (uma_copies), and its programs write in the mirror. Else 1. A 3DS game takes it too, for the
     help board's RAM: 1 = the GPU works on a copy of it in its own memory, 2 = on the RAM in place
     help (docs/platforms/3ds/README.md)
 setting Guest memory in place

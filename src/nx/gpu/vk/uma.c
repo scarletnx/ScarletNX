@@ -98,6 +98,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/runtime/main.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/uma_pages.h"
@@ -694,10 +695,14 @@ static int mem_model(void) {
    (dear): a dma-buf's import costs a submission about a microsecond, where amdgpu faults in a host pointer's pages
    again at each. On a Steam Deck a submission took 20 us with 192 MB in three dma-bufs, 346 us with it in 48 host
    pointers, and one game's race held about 180 MB of imports, its recording thread 87% in the kernel */
-int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear) {
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear, int host_discrete) {
     /* auto reads in place on a device that shares memory, and on a discrete one through dma-bufs where host imports are
-       dear: there an import of a host pointer cost a game's race about 258 ms, and froze its boot for 45 s */
-    const int auto_in_place = model == VK_MEM_UMA || (has_dmabuf && dear && how != 1);
+       dear: there an import of a host pointer cost a game's race about 258 ms, and froze its boot for 45 s. And on a
+       discrete GPU with host imports where the mirror can be (host_discrete, vk_uma_choose): what the GPU only reads
+       is copied there (vk_uma_storage_copied) and its programs write in the mirror, and one game's race took 9.2 ms of
+       GPU time a present against 10.9 ms copied, with no landing or write tracking for what is read in place */
+    const int auto_in_place =
+        model == VK_MEM_UMA || (has_dmabuf && dear && how != 1) || (host_discrete && has_import && how != 2);
     if (want != 2 && (want != 0 || !auto_in_place)) return VK_UMA_WITH_NONE;
     if (how == 2) return has_ahb ? VK_UMA_WITH_AHB : has_dmabuf ? VK_UMA_WITH_DMABUF : VK_UMA_WITH_NONE;
     if (how == 0 && has_dmabuf && dear) return VK_UMA_WITH_DMABUF;
@@ -716,6 +721,26 @@ static int dmabuf_importable(void) {
     VkExternalMemoryFeatureFlags f = p.externalMemoryProperties.externalMemoryFeatures;
     return (f & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) && !(f & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT);
 }
+/* Windows' discrete GPU with resizable BAR (the CPU maps all of its memory), where the mirror can be (mirror.c's
+   vk_mirror_on): sparse residency of buffers and room for the mirror's buffer, as big as guest memory's address space,
+   and an eighth more for its mask. Without the mirror a discrete GPU's programs write guest memory across the bus,
+   which took 18.5 ms of GPU time a present against 10.9 copied, and auto copies there; with a small BAR window, which
+   was not measured, too. Windows alone: Linux's discrete GPUs are amdgpu's dma-bufs, or untested. An Ounce program
+   alone (g_ounce): the mirror takes the writes of the programs that log them, which are its SM86 programs. A game of
+   Maxwell programs writes guest memory across the bus all the same, and one ran its world at 10 to 20 frames a
+   second in place against 49 to 58 copied */
+static int host_discrete(void) {
+#if defined(_WIN32)
+    if (!g_ounce || g_vk.mem_model != VK_MEM_REBAR) return 0;
+    VkPhysicalDeviceFeatures f;
+    VkPhysicalDeviceProperties p;
+    vkGetPhysicalDeviceFeatures(g_vk.phys, &f);
+    vkGetPhysicalDeviceProperties(g_vk.phys, &p);
+    return f.sparseBinding && f.sparseResidencyBuffer && p.limits.sparseAddressSpaceSize >= AS_SIZE + AS_SIZE / 8;
+#else
+    return 0;
+#endif
+}
 int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf) {
     int want = g_settings.guest_memory, how = g_settings.guest_memory_in_place, with;
     g_vk.mem_model = mem_model();
@@ -723,7 +748,7 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf) {
     /* a region holds whole windows: a dma-buf that can't hold one is none */
     u64 dmabuf_max = has_dmabuf && (g_vk.mem_model == VK_MEM_UMA || dear) ? plat_dmabuf_limit() : 0;
     int can_dmabuf = dmabuf_max >= UMA_WINDOW && dmabuf_importable();
-    with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb, can_dmabuf, dear);
+    with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb, can_dmabuf, dear, host_discrete());
     int ahb_held = with == VK_UMA_WITH_NONE && how == 0 && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
     g_vk.mem_path = with == VK_UMA_WITH_NONE ? VK_MEM_PATH_COPY : VK_MEM_PATH_UMA;
     if (with == VK_UMA_WITH_NONE && !ahb_held && (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA))) {
