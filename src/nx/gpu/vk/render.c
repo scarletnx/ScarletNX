@@ -4601,6 +4601,7 @@ static struct {
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
     VkDescriptorSet sets[11]; /* 5 to 9: the stages' texture sets with split sets; the texture table at table_set */
     u32 ndyn, dyn[2 * VK_CB_DYNAMIC_SLOTS]; /* the dynamic offsets sets 0 and 1 were bound with (cb_dyn_offsets) */
+    u64 dyn_passes, dyn_clears; /* g_vk_passes and g_vk_clear_cmds when they were: the driver's own draws since */
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
@@ -7771,11 +7772,20 @@ retry:
     /* the dynamic constant buffers' offsets: a set the same as the last draw's is bound again where they moved */
     u32 dyn[2 * VK_CB_DYNAMIC_SLOTS];
     const u32 ndyn = cb_dyn_offsets(dyn, fs != NULL);
+    /* RADV (Mesa 26.2.6) draws a pass's clears and a clear command with a pipeline of its own, then binds the draw's
+       shader objects again, and marks the dynamic buffers to be sent to the shaders only where the pipeline it leaves
+       had some: its own has none. The next draw's shaders then read their constant buffers through the register its
+       draw left, a clear's 1.0f taken as an address, and the device is lost. A bind of the sets marks them: with
+       shader objects, sets 0 and 1 are bound again in each pass and after a clear command */
+    const int driver_drew =
+        g_vk.has_shader_objects && ndyn && (g_dyn.dyn_passes != g_vk_passes || g_dyn.dyn_clears != g_vk_clear_cmds);
     if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset) || g_dyn.ndyn != ndyn ||
-        memcmp(g_dyn.dyn, dyn, ndyn * sizeof *dyn)) {
+        memcmp(g_dyn.dyn, dyn, ndyn * sizeof *dyn) || driver_drew) {
         g_dyn.sets[0] = vset;
         g_dyn.sets[1] = fs ? fset : VK_NULL_HANDLE;
         g_dyn.ndyn = ndyn;
+        g_dyn.dyn_passes = g_vk_passes;
+        g_dyn.dyn_clears = g_vk_clear_cmds;
         memcpy(g_dyn.dyn, dyn, ndyn * sizeof *dyn);
         vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets, ndyn, dyn);
     }

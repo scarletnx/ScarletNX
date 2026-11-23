@@ -133,6 +133,32 @@ static int check_host_program(void) {
         fprintf(stderr, "host program: again, pixel (%g, %g, %g, %g), not (105.5, 11466.5, 141.5, 433.5)\n",
                 (double)rgba[0], (double)rgba[1], (double)rgba[2], (double)rgba[3]);
     CHECK(rgba[0] == 105.5f && rgba[1] == 11466.5f && rgba[2] == 141.5f && rgba[3] == 433.5f);
+    /* the same draw in a pass of its own, after that pass's clear: its sets and its dynamic constant buffers' offsets
+       are the last draw's, and with shader objects they are bound again all the same (render.c's bind of sets 0 and
+       1). RADV draws the clear with a pipeline of its own and then leaves the dynamic buffers out of what it sends
+       the draw's shaders: without the bind the fragment program read its block through the clear's 1.0f and the
+       device was lost */
+    vk_render_clear(state, &clear, &channel->owner);
+    vk_render_draw(state, &call, &channel->owner);
+    vk_render_end();
+    const u64 binds = vk_rec_set_binds(), passes = g_vk_passes;
+    vk_render_clear(state, &clear, &channel->owner);
+    vk_render_draw(state, &call, &channel->owner);
+    vk_render_end();
+    const u64 bound = vk_rec_set_binds() - binds;
+    const int dynamic = g_vk.has_shader_objects && (g_cb_dynamic.mask[0] | g_cb_dynamic.mask[1]);
+    CHECK(g_vk_passes == passes + 1);
+    if (dynamic && !bound)
+        fprintf(stderr,
+                "host program: a draw in a new pass with the last draw's sets and dynamic offsets bound no "
+                "set, with shader objects and dynamic constant buffers (masks %x, %x)\n",
+                g_cb_dynamic.mask[0], g_cb_dynamic.mask[1]);
+    CHECK(!dynamic || bound);
+    CHECK(!host_program_pixel(target, rgba));
+    if (rgba[0] != 105.5f || rgba[1] != 11466.5f || rgba[2] != 141.5f || rgba[3] != 433.5f)
+        fprintf(stderr, "host program: in a new pass, pixel (%g, %g, %g, %g), not (105.5, 11466.5, 141.5, 433.5)\n",
+                (double)rgba[0], (double)rgba[1], (double)rgba[2], (double)rgba[3]);
+    CHECK(rgba[0] == 105.5f && rgba[1] == 11466.5f && rgba[2] == 141.5f && rgba[3] == 433.5f);
     /* a vertex program the renderer wasn't given: the draw is skipped, the target keeps its clear */
     u64 skipped = g_vk_skipped;
     state->prog.code[1] = DS_HOST_PROGRAM | 4000;
@@ -144,7 +170,9 @@ static int check_host_program(void) {
     free(channel);
     snx_gl_program_host(NULL);
     printf("PASS host programs: a GL program linked by the layer in this device's rules (%s) draws a uniform block's "
-           "matrices, an array by an index and a scalar; a program the renderer wasn't given is skipped\n",
-           g_spirv_translate.cb_windows ? "constant buffers in windows" : "constant buffers bound one by one");
+           "matrices, an array by an index and a scalar, and again in a new pass (%s); a program the renderer wasn't "
+           "given is skipped\n",
+           g_spirv_translate.cb_windows ? "constant buffers in windows" : "constant buffers bound one by one",
+           dynamic ? "shader objects and dynamic constant buffers: its sets bound again" : "no set bound again");
     return 0;
 }
