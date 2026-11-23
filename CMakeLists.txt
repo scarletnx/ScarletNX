@@ -257,7 +257,9 @@ endif()
 if(NOT WIN32)
     include(GNUInstallDirs)
     install(FILES dist/wimsy.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps COMPONENT desktop)
-    install(DIRECTORY dist/icons/hicolor DESTINATION ${CMAKE_INSTALL_DATADIR}/icons COMPONENT desktop)
+    # the Christmas icons stay out: the window icon takes December's from the source, the desktop keeps Wimsy
+    install(DIRECTORY dist/icons/hicolor DESTINATION ${CMAKE_INSTALL_DATADIR}/icons COMPONENT desktop
+            PATTERN "wimsy-xmas.png" EXCLUDE)
 endif()
 # jemalloc's, which the program links whatever runtimes it holds (SNX_JEMALLOC)
 if(SNX_JEMALLOC)
