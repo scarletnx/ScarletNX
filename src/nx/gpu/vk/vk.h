@@ -615,6 +615,11 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 int vk_uma_held(u64 cpu, u64 len); /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+/* dma-buf regions (udmabuf) hold all of guest memory [cpu, cpu + len) now, one or more of them side by side, and no
+   placed chunk is there (vk_lock held). The driver pinned their pages when it imported them and leaves the CPU's
+   page table alone, so a trap of the CPU's mapping there leaves the GPU's pages as they are. An import of guest
+   memory where it is (a host pointer) is not one: amdgpu takes its pages again at each submission */
+int vk_uma_region_held(u64 cpu, u64 len);
 /* why no region holds guest memory [cpu, cpu + len), for the log's counts: unified memory is off, or a region holds it,
    or the windows it touches meet placed memory, have a trapped page, have pages not mapped or that can't move, are
    over the cap of a region, or are a span the driver refused; else nothing stops a region there, which no read in

@@ -1983,6 +1983,19 @@ int vk_uma_held(u64 cpu, u64 len) {
     u32 i = imp_find(cpu);
     return i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size;
 }
+int vk_uma_region_held(u64 cpu, u64 len) {
+    if (!vk_uma() || !len || cpu + len < cpu) return 0;
+    if (g_uma.nchunk && chunk_meets(cpu, cpu + len)) return 0;
+    drop_dead();
+    for (u64 at = cpu, end = cpu + len; at < end;) {
+        const u32 i = imp_find(at);
+        if (i >= g_uma.nimp) return 0;
+        const Imp* m = &g_uma.imp[i];
+        if (m->cpu > at || !m->tracked) return 0; /* a gap, or an import of guest memory where it is */
+        at = m->cpu + m->size;
+    }
+    return 1;
+}
 int vk_uma_none_why(u64 cpu, u64 len) {
     if (!vk_uma() || !len) return VK_UMA_NONE_OFF;
     if (vk_uma_held(cpu, len)) return VK_UMA_NONE_HELD;

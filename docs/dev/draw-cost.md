@@ -117,11 +117,12 @@ the GPU and download it when the CPU's access faults. The change:
 5. The counter of publishes a present by why (a CPU read lately, an import, a CPU access, no traps, other callers),
    with their bytes and CPU time. It is in place.
 
-First measure how much of the 6144x6144 surface its draws and dispatches write in each present. Then check that a
-dma-buf region takes a trap of the CPU's mapping with the driver's submissions unaffected. The change is done when
-the GPU thread's time for each frame drops in the race, the texture memo misses for memory written fall, the race's
-screenshots match at fixed frames, and the save thumbnail of commit 12f8977cd still holds its picture. On that host
-this is the largest single item, so it comes before items 6 and 7.
+The test `vulkan_uma_region_trap` shows that a dma-buf region takes a trap of the CPU's mapping with the driver's
+submissions unaffected: on RADV, its mapping stayed with no access through 100 submissions that wrote it on the GPU,
+and the CPU then read the last write. `vk_uma_region_held` tells such a region from a host pointer import. The
+change is done when the GPU thread's time for each frame drops in the race, the texture memo misses for memory
+written fall, the race's screenshots match at fixed frames, and the save thumbnail of commit 12f8977cd still holds
+its picture. On that host this is the largest single item, so it comes before items 6 and 7.
 
 ## Memory on the GPU
 
