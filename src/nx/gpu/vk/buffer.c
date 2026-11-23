@@ -4157,7 +4157,8 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
        result of any kind, a storage image, a queued release, the mirror's writes, a page the runtime wrote: its blk
        bit) is guest memory itself: bound in place with none of the checks below (uma.c's vk_uma_read). A
        blk page, or a range in no region, takes them */
-    const int dear = (inplace & IN_DEAR) && vk_uma_imports_dear() && !(inplace & IN_FAST);
+    /* read-only storage (IN_FAST) is dear too where it is copied (a discrete GPU: vk_uma_storage_copied) */
+    const int dear = (inplace & IN_DEAR) && vk_uma_imports_dear() && (!(inplace & IN_FAST) || vk_uma_storage_copied());
     if ((inplace & 3) && vk_uma() && !g_buffer.chain_only && !dear && vk_uma_read(gva, len, align, buf, off)) {
         g_buf_kind = 16;
         if (g_settings.draw_state_check) fast_check(gva, len, *buf, *off, strict, align, inplace);
@@ -4668,7 +4669,9 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         !vk_release_pending(gva, len)) {
         u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
         g_buffer.lk = LK_STRICT;
-        const int got = buf_get(gva, len, buf, off, 1, align ? align : 1, IN_TRY);
+        /* a dispatch's read-only storage: copied as vertices are where storage is (a discrete GPU), else in place */
+        const int got = buf_get(gva, len, buf, off, 1, align ? align : 1,
+                                IN_TRY | (vk_uma_storage_copied() ? IN_DEAR | IN_FAST : 0));
         g_buffer.lk = LK_OTHER;
         return got;
     }
