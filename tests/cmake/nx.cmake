@@ -483,6 +483,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         add_test(NAME vulkan_uma_region_trap COMMAND snx-test-vulkan -H --uma-copies=2)
         set_tests_properties(vulkan_uma_region_trap PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_trap"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # the watch itself: a render target there is watched at a release, not published, and the CPU's read publishes
+        # it in place
+        add_test(NAME vulkan_uma_region_watch COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_watch"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     endif()
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,

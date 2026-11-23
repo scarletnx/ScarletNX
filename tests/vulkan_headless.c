@@ -8958,6 +8958,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
 #if !defined(_WIN32)
         if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
+        if (!strcmp(name, "region_watch") && ++ran) CHECK(!check_uma_region_watch());
 #endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());

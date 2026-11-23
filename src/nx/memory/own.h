@@ -83,6 +83,10 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off);
    lock before it touched a watched page drops the watch and goes on with the CPU's bytes: it cannot wait for a publish.
    The watch's bytes are owed then (own_owed_take). 0, or -1 as own_begin. The caller holds the producer's lock */
 int own_watch(u64 addr, u64 size);
+/* own_watch over the pages of a GPU's buffer that guest memory moved into (mem_migrate), trapped where they are: a
+   dma-buf of them keeps the same pages for the GPU, and the CPU's bytes read through the buffer's view (mem_ext_read).
+   -1 when [addr, addr + size)'s pages are not all such pages */
+int own_watch_in_place(u64 addr, u64 size);
 /* Watched bytes whose watch a thread that held the producer's lock dropped with no publish: the producer watches them
    again before that thread lets go of its lock, so the next CPU access still asks it for its result. 1, with one
    owed span in [*addr, *addr + *size) taken from the list, or 0 when none is owed */

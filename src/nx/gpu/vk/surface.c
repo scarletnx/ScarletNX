@@ -2679,8 +2679,10 @@ static void rt_watch(Surf* s) {
                one own_watch arms nothing. Asked of watches alone, a run under an owner was armed again at each
                release: one game's 864x480 depth target, drawn between its occlusion reports, 1,700 times a present, about
                10 ms of each (31 fps with this, 25 without) */
-            /* memory an import holds (unified memory): the publish copies in place, with no trap */
-            if (vk_own_watch(cpu, n) && vk_uma_held(cpu, n)) {
+            /* memory an import of guest memory where it is holds (unified memory): the publish copies in place, with
+               no trap. Over dma-buf regions the watch traps the CPU's mapping alone (vk_own_watch), and the CPU's
+               access publishes it in place (own_publish); one that can't be had is published now there too */
+            if (vk_own_watch(cpu, n) && (vk_uma_held(cpu, n) || vk_uma_region_held(cpu, n))) {
                 static u32 said;
                 if (said++ < 8)
                     LOG("vulkan: the %ux%u render target at %llx (%u layers, format %d, %llu bytes) published at a "

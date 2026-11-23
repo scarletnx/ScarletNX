@@ -1406,7 +1406,14 @@ static const char* region_make(Imp* m, u64 cpu, u64 size) {
         plat_gpu_buffer_free(fd, handle, size);
         return snx_vk_result_str(g_uma.import_result);
     }
-    if ((r = mem_migrate(cpu, size, fd)) != 0) {
+    /* a mapping of the memfd's pages (plat_gpu_buffer), which own.c reads a watch's bytes through; an
+       AHardwareBuffer has none */
+#if defined(__ANDROID__)
+    u8* view = NULL;
+#else
+    u8* view = (u8*)handle;
+#endif
+    if ((r = mem_migrate(cpu, size, fd, view)) != 0) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         vkFreeMemory(g_vk.dev, m->mem, NULL);
         plat_gpu_buffer_free(fd, handle, size);
