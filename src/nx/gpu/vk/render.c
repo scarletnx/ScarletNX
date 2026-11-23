@@ -7921,6 +7921,17 @@ retry:
             viewport[i].x += e;
             viewport[i].y += (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) ? -e : e;
         }
+        /* the scene's jitter a hook module's upscale asked for (vk.h, g_vk_jitter): the draws that test depth, with a
+           viewport of the render size, into the depth image given or another one of its size */
+        float jw = viewport[i].width - (float)g_vk_jitter.size[0];
+        float jh = (viewport[i].height < 0 ? -viewport[i].height : viewport[i].height) - (float)g_vk_jitter.size[1];
+        if (g_vk_jitter.on && g_rp.zt &&
+            (g_rp.zt->img == g_vk_jitter.depth ||
+             (g_rp.zt->sw == g_vk_jitter.dsize[0] && g_rp.zt->sh == g_vk_jitter.dsize[1])) &&
+            ds->dyn.depth_test && jw > -1.0f && jw < 1.0f && jh > -1.0f && jh < 1.0f) {
+            viewport[i].x += g_vk_jitter.px[0];
+            viewport[i].y += g_vk_jitter.px[1];
+        }
         int area = viewport[i].width > 0 && viewport[i].height != 0;
         if (!area) /* An empty guest viewport clips everything. Vulkan still needs a valid transform. */
             viewport[i] = (VkViewport){0, 0, 1, 1, 0, 1};

@@ -456,6 +456,15 @@ says so once (`vulkan: motion vectors from depth for a hook module, up to WxH`).
 whatever moves by itself gets the camera's motion at its pixels, which a temporal upscaler shows as a short trail. A
 record of 1.1's size has no matrix and is taken as before.
 
+**The runtime's jitter (1.2).** A temporal upscaler needs the camera to move by a fraction of a pixel each frame,
+which a game without an upscaler of its own doesn't do. With `SNX_HOOK_UPSCALE_RUNTIME_JITTER` and depth given, while
+a temporal upscaler takes the module's upscale, the renderer moves the scene's draws itself (`gpu/vk/render.c`): those
+that test depth, with a viewport of the render size, into the depth texture given or another one of its size (a game
+may draw a depth pass into one image and test a later pass against another). The offset is a sub-pixel one of a
+Halton 2, 3 sequence of 8, set after each upscale for the next frame's draws, and the upscaler gets the one this
+frame's draws took in place of the record's `jitter`. A spatial upscaler or the copy would show it, so with those the
+draws don't move. The log says once that the runtime jitters the scene's draws.
+
 **The display and the resolution multiplier (1.1).** `display_size(out)` gives the display's largest picture as the
 game is told it, the output a game sizes its frames for. `resolution_scale(cpu, scale, target, render)`, from a CPU
 hook's handler or from the module's load (`snx_hook_module`, with a NULL `cpu`: the settings and `display_size` already

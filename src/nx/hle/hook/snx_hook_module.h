@@ -94,6 +94,10 @@ enum {
     SNX_HOOK_UPSCALE_INVERTED_DEPTH = 8,
     SNX_HOOK_UPSCALE_AUTO_EXPOSURE = 0x40,
     SNX_HOOK_UPSCALE_REPROJECTED_MOTION = 0x100, /* 1.2: motion vectors from depth and reprojection, above */
+    /* 1.2: a game without a jitter of its own: the runtime moves the scene's draws (those that test depth into the
+       depth texture given, or another of its size) by a sub-pixel offset (Halton 2, 3) each frame, and the upscaler
+       gets it (jitter is then the runtime's, not the record's) */
+    SNX_HOOK_UPSCALE_RUNTIME_JITTER = 0x200,
     SNX_HOOK_UPSCALE_RANGE_GIVEN = 0x10000, /* HDR says the color's range */
     SNX_HOOK_UPSCALE_SPATIAL_OK = 0x40000,  /* a spatial upscaler will do */
     SNX_HOOK_UPSCALE_COPY_OK = 0x80000      /* a plain copy will do */

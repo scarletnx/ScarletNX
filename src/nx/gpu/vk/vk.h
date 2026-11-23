@@ -1427,6 +1427,17 @@ typedef struct Surf {
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
 extern float g_vk_scale;
+/* The scene's jitter the runtime adds for a hook module that asks for it (upscale.c, GPU_UPSCALE_RUNTIME_JITTER): the
+   draws that test depth, with a viewport of the render size, into the depth image given or another one of its size,
+   move by px pixels of ours (the frame's sub-pixel offset), while on. A game may draw a depth pass into one image and
+   test a later pass against another: moving only one of them whitened a whole picture */
+extern struct VkJitter {
+    int on;
+    VkImage depth;
+    float px[2];
+    u32 size[2];  /* the render size in our pixels */
+    u32 dsize[2]; /* the depth image's size */
+} g_vk_jitter;
 u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */
 /* a resolution multiplier asked for after the renderer started (a hook module's): taken until the first render target

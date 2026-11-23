@@ -218,6 +218,8 @@ enum {
     /* the runtime's own: motion vectors made from depth and the reprojection matrix (a hook module's, without motion
        vectors of its own) */
     GPU_UPSCALE_REPROJECTED_MOTION = 0x100,
+    /* the runtime's own: the runtime jitters the scene's draws (those into the depth given) and the upscaler gets it */
+    GPU_UPSCALE_RUNTIME_JITTER = 0x200,
     /* the runtime's own: GPU_UPSCALE_HDR says the color's range (else its format does: a float format is HDR) */
     GPU_UPSCALE_RANGE_GIVEN = 1u << 16,
     /* a hook module's upscale (docs/platforms/nx/hooks.md), not a DLSS evaluation, which runs no upscaler with the
