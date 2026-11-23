@@ -170,6 +170,7 @@ static int scan_reports(u64 a, u64 size, u64 at) {
     if (plat_ww_scan(GP(a), size, on_written)) return -1;
     return g_written_lo <= at && at < g_written_hi;
 }
+#if defined(__linux__) /* test_migrate's, a Linux test */
 /* 1 when a scan of [a, a + size) works and reports the host page at `at` and no other, 0 when it reports none, -1 when
    it fails or reports another */
 static int scan_only(u64 a, u64 size, u64 at) {
@@ -183,6 +184,7 @@ static int scan_only(u64 a, u64 size, u64 at) {
                 (unsigned long long)g_written_hi, (unsigned long long)at);
     return g_written_lo == (at & ~(page - 1)) && g_written_hi == g_written_lo + page ? 1 : -1;
 }
+#endif
 /* every range scans, and a write through it is reported (a scan first takes what remapping marked) */
 static void check_tracking(u64 a, u64 size) {
     if (!g_ww) return;
