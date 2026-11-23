@@ -24,7 +24,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/platform/time.h"
 
-enum { GQ_WRITE, GQ_WRITE_CB, GQ_RELEASE, GQ_I2M_BLOCK, GQ_CALL, GQ_SKIP };
+enum { GQ_WRITE, GQ_WRITE_CB, GQ_RELEASE, GQ_RELEASE_STAMP, GQ_RELEASE_STAMP_TOP, GQ_I2M_BLOCK, GQ_CALL, GQ_SKIP };
 typedef struct {
     u32 kind;  /* GQ_ */
     u32 bytes; /* the record's bytes, this header and its payload */
@@ -100,6 +100,8 @@ static void gq_run(const GqRecord* r) {
         case GQ_WRITE: gmem_write_now(r->gva, payload, r->size); break;
         case GQ_WRITE_CB: gmem_write_cb_now(r->gva, payload, r->size); break;
         case GQ_RELEASE: gpu_release_write_now(r->gva, payload, (u32)r->size); break;
+        case GQ_RELEASE_STAMP:
+        case GQ_RELEASE_STAMP_TOP: gpu_release_stamp_now(r->gva, payload, r->kind == GQ_RELEASE_STAMP_TOP); break;
         case GQ_I2M_BLOCK: {
             GpuI2m t = {0};
             memcpy(&t.regs, payload, sizeof t.regs);
@@ -481,6 +483,19 @@ void gq_release(u64 gva, const void* data, u32 len) {
     memcpy(r + 1, data, len);
     gq_mark(gva, len, r->fence);
     gq_recent_add(gva, len, r->fence, gq_head(), 1); /* its payload, as release_read gives it */
+    gq_commit(r);
+}
+void gq_release_stamp(u64 gva, const void* data, int top) {
+    GqRecord* r = gq_put(top ? GQ_RELEASE_STAMP_TOP : GQ_RELEASE_STAMP, gva, 16);
+    if (!r) {
+        gq_drain();
+        gpu_release_stamp_now(gva, data, top);
+        return;
+    }
+    memcpy(r + 1, data, 16);
+    gq_mark(gva, 16, r->fence);
+    /* forwarded as it goes: the GPU's time is written over it later (vk/release.c) */
+    gq_recent_add(gva, 16, r->fence, gq_head(), 1);
     gq_commit(r);
 }
 void gq_i2m_block(const GpuI2m* t, u64 at, u64 size) {
