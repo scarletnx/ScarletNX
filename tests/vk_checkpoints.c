@@ -99,7 +99,7 @@ void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void* pointer) {
     atomic_store_explicit(&g_test.last_marker, marker, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_test.calls, 1, memory_order_relaxed);
 }
-void vk_submit_progress(u64* submitted, u64* done) {
+void vk_submit_progress_raw(u64* submitted, u64* done) {
     outside_lock();
     atomic_fetch_add_explicit(&g_test.reports, 1, memory_order_relaxed);
     if (g_test.concurrent) {
