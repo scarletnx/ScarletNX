@@ -42,7 +42,8 @@ u64 gpu_thread_busy_ns(void) { return 0; }
 int gmem_write_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
 int gmem_write_cb_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { (void)gva, (void)data, (void)len; }
-void gpu_release_stamp_now(u64 gva, const void* data, int top) { (void)gva, (void)data, (void)top; }
+void gpu_release_ticks_now(u64 gva) { (void)gva; }
+void gpu_release_stamp_ticked(u64 gva, const void* data, int top) { (void)gva, (void)data, (void)top; }
 void gpu_i2m_block_now(const GpuI2m* t) { (void)t; }
 void gmem_read_quiet(u64 gva, void* dst, u64 size) { (void)gva, memset(dst, 0, (size_t)size); }
 /* maxwell/engines.c's render enable, as the renderer's side asks it: one owner decided, the others not */

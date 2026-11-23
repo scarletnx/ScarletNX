@@ -85,16 +85,19 @@ static void madeup_set(u64 a, int made) {
 /* a report's write: one word (short_query), or the value as 64 bits and the timestamp (Eden's StampQueryResult) */
 /* A report, on the renderer's side in its place in the queue: samples passed counted by the renderer when the
    counter was reset (counted) and the renderer counts it, else value. made: value is a made-up count. The front end
-   takes the timestamp, which its clock gives (gpu_ticks), and goes on without a wait: one game asked the renderer for
-   about 70 counts a frame, and the front end waited for every queued record each time */
+   goes on without a wait: one game asked the renderer for about 70 counts a frame, and the front end waited for
+   every queued record each time. stamp: the timestamp is the clock's (gpu_ticks) as the report runs, where the draws
+   before it have been set up, not ticks: the front end's own clock, read as it queued the report, is ahead of them
+   with gpu_split (gpu.h, gpu_release_write_stamped) */
 typedef struct {
     u64 a, value, ticks;
-    u32 one, made, counted, owner;
+    u32 one, made, counted, owner, stamp;
 } ReportWrite;
 static void report_run(const void* arg, u64 bytes) {
     ReportWrite w;
     (void)bytes;
     memcpy(&w, arg, sizeof w);
+    if (w.stamp) w.ticks = gpu_ticks();
     if (w.counted && g_renderer->samples_report &&
         g_renderer->samples_report(w.owner, w.a, w.one ? 4 : MAXWELL3D_REPORT_BYTES, w.ticks)) {
         madeup_set(w.a, 0);
@@ -112,11 +115,11 @@ static void report_run(const void* arg, u64 bytes) {
     madeup_set(w.a, (int)w.made);
 }
 static void report_queue(u64 a, u64 value, int one, int made, int counted, u32 owner) {
-    ReportWrite w = {a, value, gpu_ticks(), (u32)one, (u32)made, (u32)counted, owner};
+    ReportWrite w = {a, value, 0, (u32)one, (u32)made, (u32)counted, owner, 1};
     gq_call(report_run, &w, sizeof w);
 }
 void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
-    ReportWrite w = {a, value, ticks, 0, 0, (u32)counted, owner};
+    ReportWrite w = {a, value, ticks, 0, 0, (u32)counted, owner, 0};
     gq_call(report_run, &w, sizeof w);
 }
 #define REPORT_BIT(r) (1u << (r))

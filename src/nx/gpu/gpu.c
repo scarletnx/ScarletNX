@@ -365,6 +365,22 @@ void gpu_release_write(u64 gva, const void* data, u32 len) {
     }
     gpu_release_write_now(gva, data, len);
 }
+void gpu_release_write_stamped(u64 gva, const void* data) {
+    if (gq_queues()) { /* the timestamp first: a game that polls the first bytes then finds it there */
+        gq_release_ticks(gva + 8);
+        gq_release(gva, data, 8);
+        return;
+    }
+    u8 d[16];
+    memcpy(d, data, 8);
+    snx_st_le64(d + 8, gpu_ticks());
+    gpu_release_write_now(gva, d, sizeof d);
+}
+void gpu_release_ticks_now(u64 gva) {
+    u8 t[8];
+    snx_st_le64(t, gpu_ticks());
+    gpu_release_write_now(gva, t, sizeof t);
+}
 void gpu_release_write_now(u64 gva, const void* data, u32 len) {
     if (g_renderer->release_write) {
         g_renderer->release_write(gva, data, len);
@@ -373,19 +389,27 @@ void gpu_release_write_now(u64 gva, const void* data, u32 len) {
     gpu_signal_point();
     gmem_write(gva, data, len);
 }
-void gpu_release_stamp(u64 gva, const void* data, int top) {
-    if (gq_queues()) {
-        gq_release_stamp(gva, data, top);
-        return;
-    }
-    gpu_release_stamp_now(gva, data, top);
-}
-void gpu_release_stamp_now(u64 gva, const void* data, int top) {
+static void release_stamp_now(u64 gva, const void* data, int top) {
     if (g_renderer->release_stamp) {
         g_renderer->release_stamp(gva, data, top);
         return;
     }
     gpu_release_write_now(gva, data, 16);
+}
+void gpu_release_stamp(u64 gva, const void* data, int top) {
+    if (gq_queues()) {
+        gq_release_stamp(gva, data, top);
+        return;
+    }
+    release_stamp_now(gva, data, top);
+}
+/* a queued timestamp report as its record runs: the ticks that it keeps where the renderer can't time it are that
+   moment's, as one thread's are its replay's */
+void gpu_release_stamp_ticked(u64 gva, const void* data, int top) {
+    u8 d[16];
+    memcpy(d, data, 8);
+    snx_st_le64(d + 8, gpu_ticks());
+    release_stamp_now(gva, d, top);
 }
 int gpu_release_stamp_sync(u64 cpu, int may_wait) {
     return g_renderer->release_stamp_sync ? g_renderer->release_stamp_sync(cpu, may_wait) : 0;
@@ -702,11 +726,10 @@ static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
                 snx_st_le32(rel, payload);
                 gpu_release_write(a, rel, 4);
             } else { /* 16 bytes: the payload, 0, and the timestamp */
-                u8 rel[16];
+                u8 rel[8];
                 snx_st_le32(rel, payload);
                 snx_st_le32(rel + 4, 0);
-                snx_st_le64(rel + 8, gpu_ticks());
-                gpu_release_write(a, rel, 16);
+                gpu_release_write_stamped(a, rel);
             }
             break;
         case PULLER_SEMAPHORE_OP_ACQUIRE_MASK:

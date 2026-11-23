@@ -408,6 +408,11 @@ void gpu_release_stamp(u64 gva, const void* data, int top);
    no wait, and returns 1 when the report still waits for its submission. may_wait 1: it waits for that submission, so
    the caller leaves the guest core first. Returns 0 when nothing is left to do */
 int gpu_release_stamp_sync(u64 cpu, int may_wait);
+/* a release of 16 bytes: the 8 at data, then the GPU's timestamp (gpu_ticks), read where the renderer's side performs
+   the release, in its place among the draws. With gpu_split the front end is ahead of them: read as it queued the
+   release, the two timestamps a game puts around a frame's draws were the front end's few milliseconds apart whatever
+   the draws took, and a game that sizes its picture by that time drew at its largest */
+void gpu_release_write_stamped(u64 gva, const void* data);
 
 /* the engines' methods (engines.c, compute.c, fermi2d.c, dma.c): m is the method, last marks a batch's last word */
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last);
