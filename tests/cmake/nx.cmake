@@ -492,6 +492,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         add_test(NAME vulkan_uma_region_letgo COMMAND snx-test-vulkan -H --uma-copies=2)
         set_tests_properties(vulkan_uma_region_letgo PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_letgo"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region dead under a watch: a bind meanwhile publishes nothing, reads stay current, the present lets it go
+        add_test(NAME vulkan_uma_region_dead_bind COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_dead_bind PROPERTIES TIMEOUT 60
+            ENVIRONMENT "SNX_TEST_UMA_ONLY=region_dead_bind"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     endif()
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,

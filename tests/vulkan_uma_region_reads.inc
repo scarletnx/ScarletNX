@@ -456,4 +456,104 @@ static int check_uma_region_letgo(void) {
     printf("in place: a region let go, idle and dead, under a watch: the target published first, its pixels read\n");
     return 0;
 }
+/* A region dies (a page of it moves into the pool under a GPU-owned result) while a watch over a render target is on
+   its other pages. A bind meanwhile (here of other memory, as a draw's setup binds) lets no region go and publishes
+   nothing: a publish there ended the draw's render pass and waited for the GPU in the middle of its setup. Until the
+   next present the region still holds its own pages, and a read in place of them gets the CPU's new bytes; a read of
+   the moved page gets that page's new bytes, not the region's old ones. At the present the target is published and
+   the region goes, and the CPU reads the target's pixels */
+static int check_uma_region_dead_bind(void) {
+    const float blue[4] = {0, 0, 1, 1};
+    const u64 gva = URR_GVA + 0xE00000, cpu = URR_CPU + 0xE00000, other = URR_GVA + 0x1000000;
+    const u64 other_cpu = URR_CPU + 0x1000000, span = 20ull * 2 * 512 * 16, t = 0x40000, moved = 0x180000;
+    VkBuffer r, rb;
+    u64 ro;
+    if (!vk_uma() || !own_traps()) {
+        printf("skip: the watch over a region needs unified memory and traps\n");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, 0x200000, MS_NORMAL, PERM_RW) == 0 && mem_map(other_cpu, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x200000);
+    gmmu_map(other, other_cpu, 0x200000);
+    memset(GP(cpu), 0x11, 0x200000);
+    memset(GP(other_cpu), 0x22, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn();
+    CHECK(vk_buf_get_strict(gva, 256, &r, &ro));
+    vk_finish();
+    const int region = vk_uma_region_held(cpu, 0x200000);
+    vk_unlock();
+    if (!region) {
+        CHECK(mem_unmap(cpu, 0x200000) == 0 && mem_unmap(other_cpu, 0x200000) == 0);
+        g_renderer->mem_may_have_changed();
+        free(ch);
+        printf("skip: no dma-buf region holds the window on this device\n");
+        return 0;
+    }
+    rt_clear_rect(ch, gva + t, blue, NULL);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    CHECK(own_watched(cpu + t, span));
+    /* the region dies: a GPU-owned result over a page outside the target, landed, then the CPU's new bytes there and
+       on a page the region still holds */
+    vk_lock();
+    VkOwnRes* owner = uma_owner(0x1000, 0x42);
+    CHECK(owner);
+    vk_own_publish_owned(cpu + moved, 0x1000, owner, 0);
+    vk_finish();
+    vk_unlock();
+    CHECK(!uma_landed(cpu + moved, 0x1000, 0x42));
+    vk_own_res_unref(owner);
+    memset(GP(cpu + moved), 0x99, 0x1000);
+    memset(GP(cpu + 0x100000), 0x77, 0x1000);
+    /* a bind of other memory: no publish, no submit, the watch kept */
+    vk_lock();
+    const VkRtWatchStats w0 = g_vk_rt_watch;
+    const u64 sub = vk_submit_number();
+    CHECK(vk_buf_get_strict(other, 256, &r, &ro));
+    const int quiet = vk_submit_number() == sub && g_vk_rt_watch.by[VK_PUB_OTHER] == w0.by[VK_PUB_OTHER] &&
+                      own_watched(cpu + t, span);
+    /* reads before the present: the region's own page, and the moved one */
+    u8* result = vk_readback_buffer(512, &rb);
+    CHECK(result);
+    CHECK(vk_buf_get_strict(gva + 0x100000, 256, &r, &ro));
+    uma_read(r, ro, rb, 0);
+    CHECK(vk_buf_get_strict(gva + moved, 256, &r, &ro));
+    uma_read(r, ro, rb, 256);
+    vk_finish();
+    vk_readback_ready();
+    u32 differ = 0;
+    for (u32 i = 0; i < 256; i++) differ += (result[i] != 0x77) + (result[256 + i] != 0x99);
+    const u8 got[2] = {result[0], result[256]};
+    vk_unlock();
+    if (!quiet || differ)
+        fprintf(stderr,
+                "a dead region under a watch: the bind of other memory %s; %u of 512 bytes read before the present "
+                "differ (first %02x and %02x, want 77 and 99)\n",
+                quiet ? "was quiet" : "published, submitted or dropped the watch", differ, got[0], got[1]);
+    CHECK(quiet && !differ);
+    /* the present: the target published, the region gone, the pixels read */
+    vk_lock();
+    vk_uma_frame();
+    const int gone = !vk_uma_region_held(cpu, 0x200000) && !own_watched(cpu + t, 1); /* the driver's, till its reads */
+    vk_unlock();
+    u8 first[4];
+    const u32 px = urr_blue_differ(cpu + t, first);
+    if (!gone || px)
+        fprintf(stderr, "a dead region at the present: gone %d, %u of 16 pixels differ (first %02x %02x %02x %02x)\n",
+                gone, px, first[0], first[1], first[2], first[3]);
+    CHECK(gone && !px && GP(cpu + moved)[5] == 0x99 && GP(cpu + 0x100000)[5] == 0x77);
+    vk_lock();
+    vk_rt_before_write(gva, 0x200000);
+    vk_unlock();
+    CHECK(mem_unmap(cpu, 0x200000) == 0 && mem_unmap(other_cpu, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    free(ch);
+    printf("in place: a dead region under a watch goes at the present, not in a bind, and reads stay current\n");
+    return 0;
+}
 #endif

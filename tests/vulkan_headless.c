@@ -8960,6 +8960,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
         if (!strcmp(name, "region_watch") && ++ran) CHECK(!check_uma_region_watch());
         if (!strcmp(name, "region_letgo") && ++ran) CHECK(!check_uma_region_letgo());
+        if (!strcmp(name, "region_dead_bind") && ++ran) CHECK(!check_uma_region_dead_bind());
 #endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
