@@ -444,6 +444,8 @@ static void stamped_release(void* arg) {
     snx_st_le32(v, 0x52);
     snx_st_le64(v + 8, gpu_ticks());
     gpu_release_stamp(STAMP + 16, v, 0);
+    /* and NVN's samples-passed report with no count of the renderer's: the replay's value, then its ticks */
+    gpu_report_samples(0, STAMP + 32, 0, 1000);
     atomic_store_explicit(&clock_ns, 5000000, memory_order_relaxed);
     open_gate();
 }
@@ -488,6 +490,15 @@ static int split_main(void) {
                 (unsigned long long)stamp, (unsigned long long)queued, (unsigned long long)run);
     expect(snx_le32(*((u32*)guest + STAMP / 4 + 4)) == 0x52 && stamp >= run && stamp < run + queued / 10,
            "a timestamp report's ticks are the clock's when the renderer thread performs it");
+    memcpy(&stamp, (const u8*)guest + STAMP + 40, sizeof stamp);
+    stamp = snx_le64(stamp);
+    if (stamp < run || stamp >= run + queued / 10)
+        fprintf(stderr,
+                "a samples-passed report's ticks are %llu: %llu when the front end queued it, %llu when the "
+                "renderer thread ran it\n",
+                (unsigned long long)stamp, (unsigned long long)queued, (unsigned long long)run);
+    expect(snx_le32(*((u32*)guest + STAMP / 4 + 8)) == 1000 && stamp >= run && stamp < run + queued / 10,
+           "a samples-passed report's ticks are the clock's when the renderer thread performs it");
     if (!failures) printf("gpu_park split: ok\n");
     return failures != 0;
 }

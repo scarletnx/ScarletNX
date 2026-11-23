@@ -336,9 +336,7 @@ static Renderer g_test_renderer;
 const Renderer* g_renderer = &g_test_renderer;
 /* the render enable and the reports of the engines (maxwell/engines.c) */
 void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a) { (void)owner, (void)mode, (void)a; }
-void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
-    (void)owner, (void)a, (void)counted, (void)value, (void)ticks;
-}
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value) { (void)owner, (void)a, (void)counted, (void)value; }
 
 static int failures;
 static void check(int ok, const char* what) {

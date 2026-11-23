@@ -118,8 +118,8 @@ static void report_queue(u64 a, u64 value, int one, int made, int counted, u32 o
     ReportWrite w = {a, value, 0, (u32)one, (u32)made, (u32)counted, owner, 1};
     gq_call(report_run, &w, sizeof w);
 }
-void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
-    ReportWrite w = {a, value, ticks, 0, 0, (u32)counted, owner, 0};
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value) {
+    ReportWrite w = {a, value, 0, 0, 0, (u32)counted, owner, 1};
     gq_call(report_run, &w, sizeof w);
 }
 #define REPORT_BIT(r) (1u << (r))
