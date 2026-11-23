@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define SNX_HOOK_ABI_MAJOR 1
-#define SNX_HOOK_ABI_MINOR 0
+#define SNX_HOOK_ABI_MINOR 1
 
 #if defined(_WIN32)
 #define SNX_HOOK_EXPORT __declspec(dllexport)
@@ -143,6 +143,17 @@ struct SnxHookHost {
        always written. 1 when recorded, 0 when not (no recording command buffer there, a texture that isn't live, a
        size of 0, or a call outside a CPU hook's handler): the handler then leaves the frame to run_original */
     int (*record_upscale)(SnxHookCpu* cpu, uint64_t command_buffer, const SnxHookRecordedUpscale* upscale);
+    /* 1.1: the display's largest picture as the game is told it, the output a game sizes its frames for: 1 with its
+       width and height in out */
+    int (*display_size)(uint32_t out[2]);
+    /* 1.1: a resolution multiplier, which a module asks for from the internal resolution target the user picked: in a
+       CPU hook's handler (its cpu), or at its load from snx_hook_module (cpu NULL), where the settings and display_size
+       already answer. Every render target the renderer makes from then on is the game's size times scale, so a game
+       rendering at render reaches target (both for the log). It is taken while the user's resolution setting is at its
+       default (1), until the renderer makes its first render target: a module asks before the game draws. The
+       multiplier in effect after the call, scale when taken, else the user's or the one the renderer keeps (said in
+       the log) */
+    float (*resolution_scale)(SnxHookCpu* cpu, float scale, const uint32_t target[2], const uint32_t render[2]);
 };
 
 /* The module's one export. The runtime calls it once, at start, before the game's threads, with a host that stays for

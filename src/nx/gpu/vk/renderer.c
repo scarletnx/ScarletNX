@@ -228,11 +228,13 @@ static void vkr_mapping_end(void) {
     vk_unlock();
 }
 
+/* a hook module's multiplier was asked for, before the renderer started too (it then keeps it) */
+static int g_vk_scale_asked;
 /* 0 when Vulkan can't run here */
 static int vkr_start(void) {
     SNX_SECTION_SCOPED_C(sec_start, "vk renderer startup", 7); /* one phase: the device, the caches and the shader pipeline */
     if (!vk_init()) return 0;
-    g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 16 (options.c) */
+    if (!g_vk_scale_asked) g_vk_scale = g_settings.resolution_scale; /* within 0.25 to 16 (options.c) */
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
@@ -413,6 +415,10 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     int r = vk_blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy);
     vk_unlock();
     return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
+}
+static float vkr_scale_request(float scale) {
+    g_vk_scale_asked = 1;
+    return vk_scale_request(scale);
 }
 static int vkr_upscale(const GpuUpscale* u) {
     vk_lock();
@@ -1843,6 +1849,7 @@ const Renderer vk_renderer = {
     .blit_filter = vkr_blit_filter,
     .upscale = vkr_upscale,
     .shading_rate = vkr_shading_rate,
+    .scale_request = vkr_scale_request,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,

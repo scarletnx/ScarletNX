@@ -367,6 +367,26 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 }
 
 float g_vk_scale = 1.0f;
+/* the multiplier's window: 0 open, 1 closed by the first render target, 2 a request writing g_vk_scale. A render
+   target made while a request writes waits for it, so every target has the same multiplier */
+static _Atomic int g_scale_window;
+float vk_scale_request(float scale) {
+    int open = 0;
+    if (!atomic_compare_exchange_strong_explicit(&g_scale_window, &open, 2, memory_order_acq_rel, memory_order_acquire))
+        return g_vk_scale;
+    g_vk_scale = scale;
+    atomic_store_explicit(&g_scale_window, 0, memory_order_release);
+    return scale;
+}
+static void scale_close(void) {
+    for (;;) {
+        int open = 0;
+        if (atomic_load_explicit(&g_scale_window, memory_order_acquire) == 1 ||
+            atomic_compare_exchange_strong_explicit(&g_scale_window, &open, 1, memory_order_acq_rel,
+                                                    memory_order_acquire))
+            return;
+    }
+}
 u32 vk_sc(u32 v) {
     u32 r = (u32)((float)v * g_vk_scale + 0.5f);
     return r ? r : 1;
@@ -487,6 +507,7 @@ static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 
     s->gva = gva;
     s->w = w;
     s->h = h;
+    if (is_rt) scale_close();
     s->sw = is_rt ? vk_sc(w) : w;
     s->sh = is_rt ? vk_sc(h) : h;
     s->layers = layers;

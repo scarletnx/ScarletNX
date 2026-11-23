@@ -19,6 +19,7 @@
 #include <string.h>
 #include "common/platform/dl.h"
 #include "nx/gpu/nvn/nvn_cmd.h"
+#include "nx/gpu/renderer.h"
 #include "nx/hle/hook/module.h"
 #include "nx/hle/hook/module_lib.h"
 #include "nx/runtime/options.h"
@@ -66,6 +67,10 @@ int snx_setting_text(const char* key, char* out, size_t size) {
 void hook_run_original(CPU* c, u64 addr) { (void)c, (void)addr; }
 int mem_user_mapped(u64 addr, u64 size) { return addr < sizeof memory && size <= sizeof memory - addr; }
 int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r) { return (void)c, (void)cb, (void)r, 0; }
+/* what the host's 1.1 functions reach: no renderer, a console's screen */
+const Renderer* g_renderer;
+void vi2_buffer_max_size(u32 size[2]);
+void vi2_buffer_max_size(u32 size[2]) { size[0] = 1920, size[1] = 1080; }
 
 static char g_log[16384];
 void logf_(int lvl, const char* fmt, ...) {
@@ -151,7 +156,7 @@ int main(int argc, char** argv) {
     CHECK(times("module from the libraries") == 1 && times(": module hx_good (hook ABI") == 1);
     CHECK(!loaded(HX_LIBS "/folder/hx_off" HX_SUFFIX) && loaded(HX_LIBS "/folder/hx_good" HX_SUFFIX));
     CHECK(said("hooks: module hx_off is off (hooks=0 or hooks_off): its library "));
-    CHECK(said("hx_good" HX_SUFFIX ": module hx_good (hook ABI 1.0), 1 CPU hook\n"));
+    CHECK(said("hx_good" HX_SUFFIX ": module hx_good (hook ABI 1.1), 1 CPU hook\n"));
     CHECK(!said("notes.txt"));
 
     /* the module as the runtime's, after the compiled-in one */
@@ -169,10 +174,10 @@ int main(int argc, char** argv) {
         const char* file;
         const char* why;
     } k_refused[] = {
-        {"hx_major", "refused: it is built for hook ABI 2.0, and the runtime has 1.0 (another major)"},
-        {"hx_minor", "refused: it is built for hook ABI 1.1, and the runtime has 1.0 (a newer minor than the"},
+        {"hx_major", "refused: it is built for hook ABI 2.0, and the runtime has 1.1 (another major)"},
+        {"hx_minor", "refused: it is built for hook ABI 1.2, and the runtime has 1.1 (a newer minor than the"},
         {"hx_no_entry", "refused: it has no snx_hook_module"},
-        {"hx_null", "refused: its snx_hook_module refused this runtime (hook ABI 1.0)"},
+        {"hx_null", "refused: its snx_hook_module refused this runtime (hook ABI 1.1)"},
         {"hx_misnamed", "refused: its module is named hx_other, not as its file"},
         {"hx_empty", "refused: it has 0 CPU hooks (1 to 32)"},
         {"hx-dash", "refused: its name has a character other than a to z, 0 to 9 and _"},
@@ -185,7 +190,7 @@ int main(int argc, char** argv) {
         CHECK(!added && said(k_refused[i].why));
     }
     g_log[0] = 0;
-    CHECK(!hook_module_lib_load(lib("hx_null"), off) && said("hooks: hx_null: the runtime's hook ABI 1.0 is older"));
+    CHECK(!hook_module_lib_load(lib("hx_null"), off) && said("hooks: hx_null: the runtime's hook ABI 1.1 is older"));
     g_log[0] = 0;
     CHECK(!hook_module_lib_load(HX_LIBS "/folder/hx_good" HX_SUFFIX, off) && said("another module is named hx_good"));
     CHECK(!hook_module_at(2));

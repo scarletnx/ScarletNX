@@ -376,7 +376,7 @@ calls once, before the game's threads. It returns the module (`SnxHookModule`): 
 name, what it does, its title, module and build ID, its code checks and its CPU hooks, which stay where they are for
 the run (the runtime never unloads a library it took). It returns NULL to refuse the runtime, after it logs why.
 
-**The version.** The ABI has its own, `SNX_HOOK_ABI_MAJOR` and `SNX_HOOK_ABI_MINOR`, 1.0 now. A new major changes
+**The version.** The ABI has its own, `SNX_HOOK_ABI_MAJOR` and `SNX_HOOK_ABI_MINOR`, 1.1 now. A new major changes
 what one side reads of the other. A new minor only adds: functions at the end of `SnxHookHost`, fields at the end of
 `SnxHookModule` and of `SnxHookRecordedUpscale`, which carries its size, and flags. The runtime takes a module of its
 own minor or an older one, and refuses one of another major or of a newer minor. In every major, the first fields of
@@ -392,7 +392,7 @@ of a module that is off is never loaded at start: none of its code runs in the g
 recompile is another process: it opens every library of the folder, an off one too, and calls its entry point to read
 its CPU hooks ([below](#cpu-hooks-in-libraries)), but runs no handler.
 
-**The log.** A library taken says `hooks: library PATH: module NAME (hook ABI 1.0), 1 CPU hook`. One refused says
+**The log.** A library taken says `hooks: library PATH: module NAME (hook ABI 1.1), 1 CPU hook`. One refused says
 `hooks: library PATH refused: WHY`, and is closed. It is refused when the system can't load it (with the system's
 reason), when it has no `snx_hook_module`, when that refuses the runtime, for another major or a newer minor, for a
 module named otherwise than its file or as another module, for more than 64 code checks or one without bytes, and for
@@ -444,6 +444,17 @@ names what ran and both surfaces, the first 4 times and at each change
 filtered copy stands in`). It returns 0, and records nothing, for a command buffer that isn't recording, a color or
 output that isn't a live texture, a size of 0 or a call outside a handler: the handler then calls `run_original`, and
 the game's own pass runs.
+
+**The display and the resolution multiplier (1.1).** `display_size(out)` gives the display's largest picture as the
+game is told it, the output a game sizes its frames for. `resolution_scale(cpu, scale, target, render)`, from a CPU
+hook's handler or from the module's load (`snx_hook_module`, with a NULL `cpu`: the settings and `display_size` already
+answer there), asks for a resolution multiplier: every render target the renderer makes from then on is the game's
+size times `scale`, so a game rendering at `render` reaches the internal resolution target `target` the user picked
+(`internal_resolution`). The renderer takes it until it makes its first render target, so a module asks before the
+game draws, and only while the user's `resolution` setting is at its default, 1. It returns the multiplier in
+effect, and the log says what became of the request (`hooks: module NAME sets the resolution multiplier to 2 (target
+3840x2160, the game renders 1920x1080)`, `hooks: a module at its load sets ...` for one asking at its load, or that the
+user's setting stays, or that it came too late).
 
 `hook_lib_cpu` (`tests/hook_lib_cpu.c`, libraries from `tests/hook_lib_cpu_mod.c`) checks the recompile's route
 entries and their keys (a 16-digit prefix and the whole ID alike), the refusals, a hook the route list leaves out,
