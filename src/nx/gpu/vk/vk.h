@@ -1536,6 +1536,10 @@ void vk_rt_publish_drawn(void);
 /* own.c's resolve: the CPU touched watched guest memory [cpu, cpu + size): the targets pending there are published
    over it (vk_lock held, by a thread that did not hold it before) */
 void vk_rt_watch_hit(u64 cpu, u64 size);
+/* the targets pending over guest memory [cpu, cpu + size) published, with no CPU access: the pages under their watches
+   move (uma.c's imp_let_go), and a copy of a trapped page would fault. Not a CPU read for cpu_asked: they are watched
+   again at later releases. vk_lock held */
+void vk_rt_publish_over(u64 cpu, u64 size);
 /* the outermost vk_unlock's, with the lock still held: the targets pending over the watched bytes that this hold read
    with no publish (own.c owes them, own_owed_take) are watched again (rt_watch), so the CPU's next access publishes
    them. It copies nothing, and does not count as the CPU asking for them (cpu_asked) */
