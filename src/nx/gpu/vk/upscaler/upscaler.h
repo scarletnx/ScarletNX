@@ -108,6 +108,15 @@ typedef struct {
     float near_plane, far_plane, fov_y;
     int reset;
     float sharpness; /* 0 none (no sharpening pass), up to 1 */
+    /* The copy's and the spatial upscaler's alone (a temporal one resolves edges and jitter itself): smaa runs SMAA on
+       the picture at the render size before the upscale, 1 for SMAA 1x, 2 for T2x (1x, then a resolve with the frame
+       before, reprojected by the motion vectors: without them it is 1x. Its caller gives the jitter as shift, so both
+       frames are taken back by theirs and the resolve is steady), at smaa_quality (0 to 3: SMAA's Low, Medium,
+       High, Ultra) and with edges found by smaa_edges (0 luma, 1 color, 2 depth: without a depth image of our render
+       size's largest, luma). shift takes the picture back by that many render pixels first (the camera's jitter, for a
+       steady picture). 0 for neither */
+    int smaa, smaa_quality, smaa_edges;
+    float shift[2];
 } SnxUpscaleEval;
 
 typedef struct SnxUpscaler SnxUpscaler;

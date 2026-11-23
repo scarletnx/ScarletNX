@@ -35,6 +35,18 @@ frame the game finished, after everything here.
   end's filtered copy of the color onto the output, and the log names what ran.
 
 `render_upscaler=3` (None) turns the DLSS evaluations to that copy, 1:1 when the game renders at the output's size.
+With `render_anti_aliasing=1` or `jitter=1` the interface's copy runs in its place, at any resolution scale, after its passes
+before the upscale: the picture copied into images at the render size (taken back by the caller's jitter for
+`jitter=1`), then SMAA there (`up_smaa.comp`, the reference shader with its area and search textures): 1x, or T2x (`render_anti_aliasing=2`),
+whose velocity pass turns the caller's motion vectors into SMAA's and whose resolve blends the frame with the one before
+(an image of the context's, the two results taking turns, the history dropped at the caller's reset, at a new context
+and after a frame without T2x). T2x takes each frame back by the game's own jitter first (the caller gives it as the
+shift, as for `jitter=1`), so both frames of the resolve sit still and the result doesn't shake; motion vectors that
+include the jitter are corrected by the shift's change. It uses the area texture's 1x lookups, not SMAA's two
+positions. Its presets (`smaa_quality`) are push constants, Low and Medium a build of the weights pass without the
+diagonal and corner searches, and its edges (`smaa_edges`) luma, color or the caller's depth. SMAA S2x and 4x are left
+out: they take the game's frame drawn with multisampling. A copy or a spatial upscale that a hook module records takes
+them too, as 1x without motion vectors, a temporal upscaler never.
 A module that takes a copy gets the interface's filtered copy, and one that takes none gets the best upscaler that can
 run. The size the game renders at before the upscale is `internal_resolution`'s, a setting apart from the resolution
 scale ([Settings, Graphics](../../user/settings.md#graphics)).

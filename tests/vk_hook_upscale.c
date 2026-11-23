@@ -11,6 +11,8 @@
      bilinear upscale. Sharpened, EASU then RCAS: sharper, finite, and the same twice. The copy preferred and taken: a
      bilinear upscale. FSR 2 asked for alone, without depth: no upscaler runs (the replay's filtered copy then stands in,
      nvn_copy_formats).
+   - SMAA before the copy blends the scene's stepped edges and leaves the rest. The copy of a picture taken back by a
+     whole render pixel is the copy alone moved by two output pixels.
    - FSR 2 through the interface converges on a jittered still scene, as tests/vk_fsr2.c measures it directly.
    SNX_TEST_UPSCALE_DEVICE picks the device whose name holds it. SNX_TEST_UPSCALE_OUT is a folder for the pictures
    (.ppm). Exits 77 without a Vulkan device that can run it */
@@ -269,6 +271,9 @@ static double difference(const float* a, int channels, const float* b, int n) {
 static SnxUpscaleImage g_scene, g_output;
 static SnxUpscalerId g_prefer = SNX_UPSCALER_BEST;
 static float g_sharpness; /* RCAS after EASU when above 0 */
+static int g_smaa;        /* SMAA before a copy or a spatial upscale: 1 for 1x */
+static int g_smaa_quality = 2, g_smaa_edges; /* High, by luma */
+static float g_shift[2];  /* the picture taken back by this many render pixels first */
 static SnxUpscaler* g_up[SNX_UPSCALERS];
 static SnxUpscalerId g_chosen;
 static void clear_output(float r, float g, float b) {
@@ -307,7 +312,11 @@ static int upscale(const GpuUpscale* u) {
                         .color = g_scene,
                         .output = g_output,
                         .render = {u->render[0], u->render[1]},
-                        .sharpness = g_sharpness};
+                        .sharpness = g_sharpness,
+                        .smaa = g_smaa,
+                        .smaa_quality = g_smaa_quality,
+                        .smaa_edges = g_smaa_edges,
+                        .shift = {g_shift[0], g_shift[1]}};
     if (!snx_upscaler_evaluate(g_up[id], &e, &why)) {
         fprintf(stderr, "FAIL %s's evaluation: %s\n", snx_upscaler_caps(id)->name, why);
         return 0;
@@ -569,6 +578,52 @@ int main(void) {
     ppm("copy", out);
     printf("copy: %s, %.5f from a bilinear upscale\n", g_ran, e_copy);
     CHECK(g_chosen == SNX_UPSCALER_COPY && e_copy < 0.005);
+
+    /* the copy after SMAA: the bands' stepped edges blended, and the picture otherwise as the copy alone gives it */
+    float plain[OW * OH * 4];
+    memcpy(plain, out, sizeof plain);
+    g_smaa = 1;
+    CHECK(once(GPU_UPSCALE_SPATIAL_OK | GPU_UPSCALE_COPY_OK, out));
+    g_smaa = 0;
+    int blended = 0, finite_smaa = 1;
+    double e_smaa = 0;
+    for (int i = 0; i < OW * OH; i++)
+        for (int c = 0; c < 3; c++) {
+            double d = fabs(out[i * 4 + c] - plain[i * 4 + c]);
+            finite_smaa &= out[i * 4 + c] == out[i * 4 + c];
+            blended += d > 0.02;
+            e_smaa += d;
+        }
+    e_smaa /= OW * OH * 3;
+    ppm("copy_smaa", out);
+    printf("copy after SMAA: %s, %d of %d values blended, %.4f from the copy alone\n", g_ran, blended, OW * OH * 3,
+           e_smaa);
+    CHECK(g_chosen == SNX_UPSCALER_COPY && finite_smaa && blended > 100 && e_smaa < 0.05);
+    /* the Low preset by color: fewer searches, still blended, and T2x without motion vectors: 1x as it was */
+    float high[OW * OH * 4];
+    memcpy(high, out, sizeof high);
+    g_smaa = 1, g_smaa_quality = 0, g_smaa_edges = 1;
+    CHECK(once(GPU_UPSCALE_SPATIAL_OK | GPU_UPSCALE_COPY_OK, out));
+    int blended_low = 0;
+    for (int i = 0; i < OW * OH * 4; i++) blended_low += fabs(out[i] - plain[i]) > 0.02;
+    g_smaa = 2, g_smaa_quality = 2, g_smaa_edges = 0;
+    CHECK(once(GPU_UPSCALE_SPATIAL_OK | GPU_UPSCALE_COPY_OK, out));
+    g_smaa = 0;
+    printf("copy after SMAA Low by color: %d values blended. T2x without motion vectors %s 1x\n", blended_low,
+           memcmp(out, high, sizeof high) ? "differs from" : "is");
+    CHECK(blended_low > 0 && !memcmp(out, high, sizeof high));
+    /* the copy of the picture taken back by a whole render pixel: the copy alone two output pixels over */
+    g_shift[0] = 1;
+    CHECK(once(GPU_UPSCALE_SPATIAL_OK | GPU_UPSCALE_COPY_OK, out));
+    g_shift[0] = 0;
+    double e_shift = 0;
+    int counted = 0;
+    for (int y = 0; y < OH; y++)
+        for (int x = 0; x < OW - 4; x++, counted++)
+            for (int c = 0; c < 3; c++) e_shift += fabs(out[(y * OW + x) * 4 + c] - plain[(y * OW + x + 2) * 4 + c]);
+    e_shift /= counted * 3.0;
+    printf("copy taken back by a render pixel: %.5f from the copy alone two output pixels over\n", e_shift);
+    CHECK(e_shift < 0.005);
 
     /* FSR 2 asked for, and the module takes nothing else and gives no depth: no upscaler runs, the output as it was */
     g_prefer = SNX_UPSCALER_FSR2;

@@ -36,6 +36,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | Vulkan-Headers | Apache 2.0 |
 | volk | MIT |
 | AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games), with FSR 1's EASU and RCAS from its archive (the spatial upscaler) | MIT |
+| SMAA 1x by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (iryoku/smaa at 71c806a: its reference shader and its area and search textures, the anti-aliasing before a copy or a spatial upscale) | MIT |
 | NVIDIA Streamline 2.14.16's headers (`include/`, the DLSS backend of a Windows build. NVIDIA's runtime is not included: the user downloads it) | MIT |
 | KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
 | The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
