@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_cmd.h"
+#include "nx/gpu/renderer.h"
 
 #ifndef HX_LIBS
 #error HX_LIBS names the folder the test's libraries are built in
@@ -113,6 +114,13 @@ int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r) {
     g_requests++;
     return 1;
 }
+/* the renderer's multiplier, which the host's 1.1 request reaches, and gsv.c's display: a TV's */
+static float g_scale_taken;
+static float scale_request(float scale) { return g_scale_taken = scale; }
+static const Renderer g_test_renderer = {.scale_request = scale_request};
+const Renderer* g_renderer = &g_test_renderer;
+void vi2_buffer_max_size(u32 size[2]);
+void vi2_buffer_max_size(u32 size[2]) { size[0] = 3840, size[1] = 2160; }
 
 static char g_log[16384];
 void logf_(int lvl, const char* fmt, ...) {
@@ -207,8 +215,8 @@ int main(void) {
     g_log[0] = 0;
     snprintf(g_settings.hook_modules_folder, sizeof g_settings.hook_modules_folder, "%s", HX_LIBS "/cpu");
     hook_install();
-    assert(said(": module hx_cpu (hook ABI 1.0), 4 CPU hooks\n"));
-    assert(said(": module hx_cpu_full (hook ABI 1.0), 1 CPU hook\n"));
+    assert(said(": module hx_cpu (hook ABI 1.1), 4 CPU hooks\n"));
+    assert(said(": module hx_cpu_full (hook ABI 1.1), 1 CPU hook\n"));
     assert(hook_lib_cpu_count() == 9);
     assert(said("hook: 0123456789abcdef0123456789abcdef01234567:100 at 10100 (main+100) runs module hx_cpu's skip\n"));
     assert(
@@ -278,6 +286,17 @@ int main(void) {
     SnxHookRecordedUpscale u = {0};
     u.size = sizeof u;
     assert(!h->record_upscale(&idle, 0x3000, &u) && g_requests == 1);
+    /* 1.1: the display, and a multiplier the renderer takes while the user's resolution is 1, its default. The
+       user's other one stays, and one out of 0.25 to 16 is not asked of the renderer */
+    uint32_t display[2] = {0, 0}, target[2] = {3840, 2160}, render[2] = {1920, 1080};
+    assert(h->display_size(display) && display[0] == 3840 && display[1] == 2160);
+    g_settings.resolution_scale = 1;
+    assert(h->resolution_scale(&idle, 2, target, render) == 2 && g_scale_taken == 2);
+    g_scale_taken = 0;
+    g_settings.resolution_scale = 1.5f;
+    assert(h->resolution_scale(&idle, 2, target, render) == 1.5f && g_scale_taken == 0);
+    g_settings.resolution_scale = 1;
+    assert(h->resolution_scale(&idle, 100, NULL, NULL) == 1 && g_scale_taken == 0);
     assert(h->module_base("main") == CODE && !h->module_base("other"));
 
     /* a mod changed the first instruction of skip's function: that hook is off and the game's code there runs (the

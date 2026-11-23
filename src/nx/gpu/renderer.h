@@ -103,6 +103,10 @@ typedef struct Renderer {
        0 when they shade each pixel (a renderer or device without it, an image it can't take). A later call can give
        the image other texels, and the draws of an earlier id then shade each pixel. NULL in a renderer without it */
     u32 (*shading_rate)(const GpuShadingRate* r);
+    /* A resolution multiplier asked for (a hook module's, from the internal resolution target): every render target
+       made after it is the game's size times scale. It is taken until the renderer makes its first render target.
+       The multiplier in effect after the call, scale when taken. NULL in a renderer without one */
+    float (*scale_request)(float scale);
     /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
     int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                        double sdx, double sdy, int linear);

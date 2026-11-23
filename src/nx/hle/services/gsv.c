@@ -727,6 +727,10 @@ static int nn_vi2_IVi2Session_GetHdrPaperWhite(SvcObj* self, const u8* request, 
     vi2_hdr(&peak, paper_white);
     R_SUCCEED();
 }
+void vi2_buffer_max_size(u32 size[2]) {
+    size[0] = snx_tv_mode() ? 3840 : 1920;
+    size[1] = snx_tv_mode() ? 2160 : 1080;
+}
 static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* request, u64* resolution) {
     u64 name = snx_ld_le64(request);
     (void)self;

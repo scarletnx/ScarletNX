@@ -10,7 +10,9 @@
 #include <stdarg.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_cmd.h"
+#include "nx/gpu/renderer.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
@@ -263,6 +265,54 @@ static int host_record_upscale(SnxHookCpu* cpu, uint64_t command_buffer, const S
     return nvn_cmd_record_upscale(cpu->c, command_buffer, &r);
 }
 
+/* the display's largest picture, as the game is told it (1.1) */
+static int host_display_size(uint32_t out[2]) {
+    u32 size[2];
+    if (!out) return 0;
+    vi2_buffer_max_size(size);
+    out[0] = size[0], out[1] = size[1];
+    return 1;
+}
+
+/* A module's resolution multiplier (1.1), from a CPU hook's handler or from its load (cpu NULL): the user's resolution
+   setting wins where it isn't 1, its default, and the renderer takes it until it makes its first render target. The
+   multiplier in effect after the call, said in the log */
+static float host_resolution_scale(SnxHookCpu* cpu, float scale, const uint32_t target[2], const uint32_t render[2]) {
+    static const uint32_t none[2] = {0, 0};
+    /* a CPU hook's handler names its module, and a module asking at its load (snx_hook_module, cpu NULL) is said so */
+    char who[96];
+    if (cpu && cpu->active && cpu->hook < g_cpu.count)
+        snprintf(who, sizeof who, "module %s", g_cpu.list[cpu->hook].owner);
+    else
+        snprintf(who, sizeof who, "a module at its load");
+    float user = g_settings.resolution_scale, now;
+    if (!target) target = none;
+    if (!render) render = none;
+    if (!(scale >= 0.25f && scale <= 16.0f)) {
+        WARN("hooks: %s asks for the resolution multiplier %g, out of 0.25 to 16: not taken\n", who, (double)scale);
+        return user;
+    }
+    if (user != 1.0f) {
+        LOG("hooks: %s asks for the resolution multiplier %g (target %ux%u, the game renders %ux%u), but "
+            "resolution=%g, the user's, stays\n",
+            who, (double)scale, target[0], target[1], render[0], render[1], (double)user);
+        return user;
+    }
+    if (!g_renderer || !g_renderer->scale_request) {
+        LOG("hooks: %s asks for the resolution multiplier %g, which this renderer doesn't take\n", who, (double)scale);
+        return 1.0f;
+    }
+    now = g_renderer->scale_request(scale);
+    if (now == scale)
+        LOG("hooks: %s sets the resolution multiplier to %g (target %ux%u, the game renders %ux%u)\n", who,
+            (double)scale, target[0], target[1], render[0], render[1]);
+    else
+        WARN("hooks: %s asks for the resolution multiplier %g too late: the renderer has made its render "
+             "targets at %g\n",
+             who, (double)scale, (double)now);
+    return now;
+}
+
 static const SnxHookHost k_host = {.abi_major = SNX_HOOK_ABI_MAJOR,
                                    .abi_minor = SNX_HOOK_ABI_MINOR,
                                    .size = sizeof(SnxHookHost),
@@ -277,6 +327,8 @@ static const SnxHookHost k_host = {.abi_major = SNX_HOOK_ABI_MAJOR,
                                    .write = hook_lib_cpu_write,
                                    .run_original = hook_lib_cpu_run_original,
                                    .module_base = hook_lib_cpu_module_base,
-                                   .record_upscale = host_record_upscale};
+                                   .record_upscale = host_record_upscale,
+                                   .display_size = host_display_size,
+                                   .resolution_scale = host_resolution_scale};
 
 const SnxHookHost* hook_module_lib_host(void) { return &k_host; }

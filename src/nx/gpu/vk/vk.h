@@ -1429,6 +1429,9 @@ enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 extern float g_vk_scale;
 u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */
+/* a resolution multiplier asked for after the renderer started (a hook module's): taken until the first render target
+   (surface.c), then refused. The multiplier in effect after the call */
+float vk_scale_request(float scale);
 /* w in pixels; pitch: bytes per row of a pitch-linear target (the register holds it in place of the width) */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
 /* the array and depth targets: w and h in pixels, of the sample layout msaa (DS_MSAA_) */

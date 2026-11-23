@@ -195,10 +195,20 @@ int vk_upscale(const GpuUpscale* u) {
                          : "DLSS evaluations are a filtered copy, and");
         return 0;
     }
+    /* At a resolution multiplier other than 1 the render targets are the guest's sizes times it: so are the call's
+       sizes and corner, and its jitter and motion vector scale, which count render pixels */
+    GpuUpscale scaled;
     if (g_vk_scale != 1.0f) {
-        LOG_LIMIT(1, "vulkan: no upscaler is run with a resolution scale other than 1: %s\n",
-                  module ? "hook modules' upscales are a filtered copy" : "DLSS evaluations are a filtered copy");
-        return 0;
+        scaled = *u;
+        for (u32 a = 0; a < 2; a++) {
+            scaled.render[a] = (u32)((float)u->render[a] * g_vk_scale + 0.5f);
+            scaled.out[a] = (u32)((float)u->out[a] * g_vk_scale + 0.5f);
+            scaled.render_max[a] = (u32)((float)u->render_max[a] * g_vk_scale + 0.5f);
+            scaled.out_base[a] = (i32)((float)u->out_base[a] * g_vk_scale + 0.5f);
+            scaled.jitter[a] = u->jitter[a] * g_vk_scale;
+            scaled.motion_scale[a] = u->motion_scale[a] * g_vk_scale;
+        }
+        u = &scaled;
     }
     /* in this order, each after the one before was taken (a DLSS evaluation needs all three): each input's read check
        may submit the frame's commands */

@@ -148,8 +148,10 @@ that onto the game's output target.
   keeps it. A setup that failed is not tried again until one of those changes.
 - The color's range is the caller's when it says (`GPU_UPSCALE_RANGE_GIVEN`), else its format's: a float format is
   HDR.
-- The resolution scale must be 1: the guest's surface sizes are the game's. Anything it can't take returns 0, and the
-  caller's fallback runs, the reason in the log once.
+- At a resolution multiplier other than 1 (the `resolution` setting, or a hook module's from the internal resolution
+  target) the render targets are the guest's sizes times it, and so are the call's render and output sizes, its
+  output corner, its jitter and its motion vector scale, which count render pixels. Anything it can't take returns 0,
+  and the caller's fallback runs, the reason in the log once.
 - The debug setting `fsr_input_conventions` flips the conventions of every call, to find a game's.
 
 ## Tests
