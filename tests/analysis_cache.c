@@ -491,6 +491,18 @@ static int test_bad_header(const char* folder) {
     write_bad_file(folder, key, payload, size);
     CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) != 0);
     CHECK(dst.functions == NULL);
+    /* a valid header and hash but a short address array: exercises the mid-payload bounds check */
+    size = 0;
+    snx_st_le64(payload + size, 1);         size += 8;
+    snx_st_le64(payload + size, 0x2000);    size += 8;
+    snx_st_le64(payload + size, 0x2010);    size += 8;
+    snx_st_le64(payload + size, 4);         size += 8;
+    snx_st_le64(payload + size, 0);         size += 8;
+    snx_st_le64(payload + size, 4);         size += 8;
+    snx_st_le64(payload + size, 0x2000);    size += 8;
+    write_bad_file(folder, key, payload, size);
+    CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) != 0);
+    CHECK(dst.functions == NULL);
     free_codegen(&dst);
     snx_analysis_cache_close(cache);
     return 1;

@@ -359,14 +359,54 @@ int snx_analysis_cache_load_unit_keys(const SnxAnalysisCache* cache, const char*
     return rc;
 }
 
+/* Write one cache file to a per-process temporary and rename it into place. 0 on success. */
+static int cache_write(const SnxAnalysisCache* cache, const char* key, const char* suffix,
+                       const unsigned char* data, size_t size, const unsigned char* data2, size_t size2,
+                       char* error, size_t error_size) {
+    char reason[256], local[256], *name, *path, *tmp;
+    FILE* f;
+    int written, rc = -1;
+    if (!error) {
+        error = local;
+        error_size = sizeof local;
+    }
+    name = snx_format("%s%s", key, suffix);
+    path = name ? snx_path_join(cache->folder, name) : NULL;
+    free(name);
+    tmp = path ? snx_format("%s.%lu.tmp", path, process_id()) : NULL;
+    if (!tmp) {
+        snprintf(error, error_size, "out of memory");
+        goto done;
+    }
+    f = snx_fopen(tmp, "wb");
+    if (!f) {
+        snprintf(error, error_size, "cannot write %s: %s", tmp, snx_os_error(reason, sizeof reason));
+        goto done;
+    }
+    written = fwrite(data, 1, size, f) == size && (!size2 || fwrite(data2, 1, size2, f) == size2);
+    if (fclose(f)) written = 0;
+    if (!written) {
+        snprintf(error, error_size, "cannot write %s: %s", tmp, snx_os_error(reason, sizeof reason));
+        goto done;
+    }
+    if (plat_replace_file(tmp, path)) {
+        snprintf(error, error_size, "cannot rename %s to %s: %s", tmp, path, snx_os_error(reason, sizeof reason));
+        goto done;
+    }
+    rc = 0;
+done:
+    if (rc && tmp && snx_path_exists(tmp)) snx_remove_tree(tmp);
+    free(tmp);
+    free(path);
+    return rc;
+}
+
 int snx_analysis_cache_store_unit_keys(const SnxAnalysisCache* cache, const char* key, const char* options,
                                        char (*unit_keys)[65], size_t count) {
-    char *name, *path, *tmp;
     unsigned char* file;
     size_t size = 72 + count * 64, i;
-    FILE* f;
-    int rc = -1, written;
-    if (!cache || !key || !options || !unit_keys) return -1;
+    int rc;
+    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64) return -1;
     file = (unsigned char*)snx_alloc(size);
     if (!file) return -1;
     memcpy(file, options, 64);
@@ -375,30 +415,12 @@ int snx_analysis_cache_store_unit_keys(const SnxAnalysisCache* cache, const char
         if (!unit_keys[i][0] || strlen(unit_keys[i]) != 64) goto done;
         memcpy(file + 72 + i * 64, unit_keys[i], 64);
     }
-    name = snx_format("%s.units", key);
-    path = snx_path_join(cache->folder, name);
-    free(name);
-    tmp = path ? snx_format("%s.%lu.tmp", path, process_id()) : NULL;
-    if (!tmp) {
-        free(path);
-        goto done;
-    }
-    f = snx_fopen(tmp, "wb");
-    if (!f) {
-        free(tmp);
-        free(path);
-        goto done;
-    }
-    written = fwrite(file, 1, size, f) == size;
-    if (fclose(f)) written = 0;
-    if (written && !plat_replace_file(tmp, path)) rc = 0;
-    if (rc) {
-        snx_error("analysis cache: cannot keep the unit keys of %s in %s", key, path);
-        if (snx_path_exists(tmp)) snx_remove_tree(tmp);
-    }
-    free(tmp);
-    free(path);
+    rc = cache_write(cache, key, ".units", file, size, NULL, 0, NULL, 0);
+    if (rc) snx_error("analysis cache: cannot keep the unit keys of %s", key);
+    goto out;
 done:
+    rc = -1;
+out:
     free(file);
     return rc;
 }
@@ -452,12 +474,10 @@ done:
 
 int snx_analysis_cache_store_descriptor(const SnxAnalysisCache* cache, const char* key, const unsigned char* object,
                                         size_t size, size_t wrapped, size_t entries, size_t variants) {
-    char *name, *path, *tmp;
     unsigned char *file, hash[32];
     size_t total = 8 + 64 + 32 + size + 32, off = 8 + 64;
-    FILE* f;
-    int written, rc = -1;
-    if (!cache || !key || !object) return -1;
+    int rc;
+    if (!cache || !key || !object || size > SIZE_MAX - (8 + 64 + 32 + 32)) return -1;
     file = (unsigned char*)snx_alloc(total);
     if (!file) return -1;
     memcpy(file, g_descriptor_magic, 8);
@@ -472,29 +492,12 @@ int snx_analysis_cache_store_descriptor(const SnxAnalysisCache* cache, const cha
     off += 8;
     memcpy(file + off, object, size);
     off += size;
-    if (check_hash(key, file + 8 + 64, off - (8 + 64), hash)) goto done;
+    if (check_hash(key, file + 8 + 64, off - (8 + 64), hash)) {
+        free(file);
+        return -1;
+    }
     memcpy(file + off, hash, 32);
-    name = snx_format("%s.desc", key);
-    path = snx_path_join(cache->folder, name);
-    free(name);
-    tmp = path ? snx_format("%s.%lu.tmp", path, process_id()) : NULL;
-    if (!tmp) {
-        free(path);
-        goto done;
-    }
-    f = snx_fopen(tmp, "wb");
-    if (!f) {
-        free(tmp);
-        free(path);
-        goto done;
-    }
-    written = fwrite(file, 1, total, f) == total;
-    if (fclose(f)) written = 0;
-    if (written && !plat_replace_file(tmp, path)) rc = 0;
-    if (rc && snx_path_exists(tmp)) snx_remove_tree(tmp);
-    free(tmp);
-    free(path);
-done:
+    rc = cache_write(cache, key, ".desc", file, total, NULL, 0, NULL, 0);
     free(file);
     return rc;
 }
@@ -552,12 +555,13 @@ int snx_analysis_cache_store_link_stamp(const SnxAnalysisCache* cache, const cha
                                         const char* identity, char (*unit_keys)[65], size_t count,
                                         const char* output, SnxU64 size, SnxU64 mtime, const char sample[65]) {
     unsigned char *file, hash[32];
-    char *name, *path, *tmp;
     size_t total, off = 0, length, i;
-    FILE* f;
-    int written, rc = -1;
-    if (!cache || !key || !desc_key || !identity || !output || !sample || (count && !unit_keys)) return -1;
+    int rc;
+    if (!cache || !key || !desc_key || !identity || !output || !sample || (count && !unit_keys) ||
+        count > (SIZE_MAX - 280) / 64)
+        return -1;
     length = strlen(output);
+    if (length > SIZE_MAX - 280 - count * 64) return -1;
     total = 16 + 8 + 64 + 64 + 8 + count * 64 + 8 + length + 8 + 8 + 64 + 32;
     file = (unsigned char*)snx_alloc(total);
     if (!file) return -1;
@@ -582,43 +586,22 @@ int snx_analysis_cache_store_link_stamp(const SnxAnalysisCache* cache, const cha
     off += 8;
     memcpy(file + off, sample, 64);
     off += 64;
-    if (check_hash(key, file, off, hash)) goto done;
+    if (check_hash(key, file, off, hash) || off + 32 != total) {
+        free(file);
+        return -1;
+    }
     memcpy(file + off, hash, 32);
-    off += 32;
-    name = snx_format("%s.link", key);
-    path = snx_path_join(cache->folder, name);
-    free(name);
-    tmp = path ? snx_format("%s.%lu.tmp", path, process_id()) : NULL;
-    if (!tmp) {
-        free(path);
-        goto done;
-    }
-    f = snx_fopen(tmp, "wb");
-    if (!f) {
-        free(tmp);
-        free(path);
-        goto done;
-    }
-    written = fwrite(file, 1, total, f) == total;
-    if (fclose(f)) written = 0;
-    if (written && off == total && !plat_replace_file(tmp, path)) rc = 0;
-    if (rc && snx_path_exists(tmp)) snx_remove_tree(tmp);
-    free(tmp);
-    free(path);
-done:
+    rc = cache_write(cache, key, ".link", file, total, NULL, 0, NULL, 0);
     free(file);
     return rc;
 }
 
 int snx_analysis_cache_store(SnxAnalysisCache* cache, const char* key, const SnxCodegen* codegen, char* error,
                              size_t error_size) {
-    char *name = NULL, *path = NULL, *tmp = NULL;
     unsigned char *payload = NULL, trailer[SNX_ANALYSIS_TRAILER];
     size_t capacity = 8, used = 0, i, j;
-    FILE* f = NULL;
     SnxU64 nfunc;
-    char reason[256];
-    int rc = -1, written;
+    int rc;
     if (!cache || !key || !codegen || !error) return -1;
     nfunc = codegen->function_count;
     /* the loader refuses these limits; never store an entry it would reject */
@@ -679,52 +662,9 @@ int snx_analysis_cache_store(SnxAnalysisCache* cache, const char* key, const Snx
         cache->store_fail++;
         return -1;
     }
-    name = snx_format("%s.an", key);
-    path = snx_path_join(cache->folder, name);
-    free(name);
-    if (!path) {
-        free(payload);
-        snprintf(error, error_size, "out of memory");
-        cache->store_fail++;
-        return -1;
-    }
-    tmp = snx_format("%s.%lu.tmp", path, process_id());
-    if (!tmp) {
-        free(payload);
-        free(path);
-        snprintf(error, error_size, "out of memory");
-        cache->store_fail++;
-        return -1;
-    }
-    f = snx_fopen(tmp, "wb");
-    if (!f) {
-        snprintf(error, error_size, "cannot write %s: %s", tmp, snx_os_error(reason, sizeof reason));
-        goto fail;
-    }
-    written = fwrite(payload, 1, used, f) == used && fwrite(trailer, 1, sizeof trailer, f) == sizeof trailer;
-    if (!written) snx_os_error(reason, sizeof reason);
-    if (fclose(f) && written) {
-        written = 0;
-        snx_os_error(reason, sizeof reason);
-    }
-    f = NULL;
-    if (!written) {
-        snprintf(error, error_size, "cannot write %s: %s", tmp, reason);
-        goto fail;
-    }
-    if (plat_replace_file(tmp, path)) {
-        snprintf(error, error_size, "cannot rename %s to %s: %s", tmp, path, snx_os_error(reason, sizeof reason));
-        goto fail;
-    }
-    rc = 0;
-    cache->stores++;
-fail:
-    if (rc) {
-        cache->store_fail++;
-        if (snx_path_exists(tmp)) snx_remove_tree(tmp);
-    }
+    rc = cache_write(cache, key, ".an", payload, used, trailer, sizeof trailer, error, error_size);
+    if (rc) cache->store_fail++;
+    else cache->stores++;
     free(payload);
-    free(tmp);
-    free(path);
     return rc;
 }
