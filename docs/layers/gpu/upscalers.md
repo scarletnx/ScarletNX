@@ -31,6 +31,11 @@ frame the game finished, after everything here.
 - **A hook module's chain** (`gpu/nvn/nvn_hook.c`): the handler of a chain's last dispatch builds a `GpuUpscale` from
   what the chain's steps saw and calls the same `upscale` through `nvn_hook_upscale`, with `GPU_UPSCALE_MODULE`. It says which kinds it takes
   besides a temporal one (`GPU_UPSCALE_SPATIAL_OK`, `GPU_UPSCALE_COPY_OK`). Its fallback is the game's own passes.
+- **A hook module's recorded upscale** (`record_upscale` of a CPU hook's handler, [Hooks, CPU hooks in
+  libraries](../../platforms/nx/hooks.md#cpu-hooks-in-libraries)): one `OP_UPSCALE` record in the game's command
+  buffer, which the replay gives to the same `upscale` (`gpu/nvn/nvn_copy.c`) with `GPU_UPSCALE_MODULE`. It says which
+  kinds it takes besides a temporal one (`GPU_UPSCALE_SPATIAL_OK`, `GPU_UPSCALE_COPY_OK`). Its fallback is the front
+  end's filtered copy of the color onto the output, and the log names what ran.
 
 `dlss_upscaler=0` turns the DLSS evaluations to the copy and leaves the modules alone.
 

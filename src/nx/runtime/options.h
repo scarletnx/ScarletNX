@@ -62,6 +62,9 @@ void ini_list(const IniSection* sections, int count);
 /* 1 for a key of the file or an unattended-run option (platform/unattended.h): the driver passes only those on to a
    game (driver.h) */
 int snx_setting_known(const char* key);
+/* key's value as the .ini would write it, into out (size bytes with its NUL): 1, or 0 for a key no setting has, or a
+   value that doesn't fit */
+int snx_setting_text(const char* key, char* out, size_t size);
 /* reads path and the game's picks beside it, applies them with the overrides, writes the .ini back with its help, and
    watches both: ini_poll reloads either when it changes and saves what the game's menu set */
 void ini_open(const char* path);

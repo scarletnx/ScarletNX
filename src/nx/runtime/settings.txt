@@ -1580,6 +1580,17 @@ setting Hook families off
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
     help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
     help which a problem comes from. Empty: every family and module is on
+setting Hook modules folder
+    key hook_modules_dir
+    text 1024
+    default ""
+    startup
+    recompile
+    help The folder of the hook modules built as libraries (docs/platforms/nx/hooks.md, Modules in libraries): each
+    help NAME.so (NAME.dll on Windows, NAME.dylib on macOS) there is the module NAME, loaded at start when its ABI is
+    help the runtime's and hooks_off doesn't name it. Empty: hook_modules in the user's data folder. The recompile reads
+    help it too, and routes the functions the modules' CPU hooks name, so a recompile after installing a module gives its
+    help CPU hooks their calls
 setting Hook families verified
     key hooks_verify
     text 256

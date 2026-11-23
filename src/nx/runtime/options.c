@@ -255,6 +255,17 @@ int snx_setting_known(const char* key) {
     return find_row(key, NULL) || unattended_known(key) || !strcmp(key, SNX_LAUNCHER_PICKS);
 }
 
+int snx_setting_text(const char* key, char* out, size_t size) {
+    const IniOpt* o = find_row(key, NULL);
+    char value[4096]; /* as long as the longest text a setting holds (settings.txt) */
+    if (!o) return 0;
+    ini_format(o, value, sizeof value);
+    size_t n = strlen(value);
+    if (n >= size) return 0;
+    memcpy(out, value, n + 1);
+    return 1;
+}
+
 /* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
 
 #define KEY_MAX 64

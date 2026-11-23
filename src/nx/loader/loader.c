@@ -380,6 +380,15 @@ static void route_addresses(Parse* p) {
         push(&p->functions, offset);
         push(&p->routed, offset);
     }
+    /* the hook module libraries' CPU hooks: by the build ID's first bytes, routed under this module's whole ID */
+    for (i = 0; i < snx_hook_route_build_count(); ++i) {
+        SnxU64 offset;
+        char key[96];
+        if (!snx_hook_route_build_at(i, p->m->build_id, &offset) || !code_address(p, offset)) continue;
+        push(&p->functions, offset);
+        push(&p->routed, offset);
+        if (snx_hook_build_key(p->m->build_id, offset, key, sizeof key)) snx_hook_route_add(key);
+    }
 }
 
 /* A relative relocation of the word at target: its addend, explicit or (REL, RELR) the word already there, or 0 for

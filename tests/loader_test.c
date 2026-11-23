@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/loader.h"
+#include "nx/loader/hook_routes.h"
 #include "nx/runtime/driver/game_name.h"
 #include <libdeflate.h>
 #include <stdio.h>
@@ -1228,6 +1229,27 @@ static void test_exports(void) {
     puts("PASS the functions a program defines once, and the PLT stubs bound to them");
 }
 
+/* A hook module library's CPU hooks in the route list (hook_routes.h's snx_hook_route_add_build): one by the first 9
+   bytes of the module's ID routes its function, one of another build doesn't, and the key the module carries is its
+   whole ID's (32 bytes, the last 0x1f), whatever part of it the library gave. Last: the list then keeps them */
+static void test_route_builds(void) {
+    SnxModuleImage m;
+    char error[256], *path, key[96];
+    size_t size, before = snx_hook_route_count();
+    rich_image();
+    snx_hook_route_add_build("000102030405060708", 0x40);
+    snx_hook_route_add_build("0001ff", 0x50);
+    size = build_nso(0x100, 0x100, 0x280, 0x380, 0x80, 0);
+    path = fixture("routes.nso", file_bytes, size);
+    CHECK(!snx_load_nso(path, "main", &m, error, sizeof error));
+    CHECK(m.routed_count == 1 && m.routed[0] == 0x40);
+    CHECK(snx_hook_route_count() == before + 1);
+    CHECK(snx_hook_build_key(m.build_id, 0x40, key, sizeof key));
+    CHECK(!strcmp(snx_hook_route_name(before), key) && strlen(key) == 64 + 3 && !strcmp(key + 64, ":40"));
+    snx_free_module(&m);
+    free(path);
+}
+
 int main(void) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
@@ -1243,6 +1265,7 @@ int main(void) {
     test_widths();
     test_layout();
     test_mutations();
+    test_route_builds();
     CHECK(!snx_remove_tree(scratch));
     free(scratch);
     scratch = NULL;

@@ -12,6 +12,7 @@
   * [What a module applies to](#what-a-module-applies-to)
   * [GPU chains](#gpu-chains)
   * [Writing one from a run](#writing-one-from-a-run)
+  * [Modules in libraries](#modules-in-libraries)
 * [A game that rewrites a hooked function](#a-game-that-rewrites-a-hooked-function)
 * [A mod's call of the original](#a-mods-call-of-the-original)
 * [Verify mode](#verify-mode)
@@ -294,10 +295,12 @@ handler finds its module's base and data.
 ## Modules
 
 A module is one game's patch as one unit (`hle/hook/module.h`): what it applies to, what it hooks on the CPU, what it
-hooks on the GPU, and its handlers, in one file of `src/nx/patches/`. `src/nx/patches/modules.c` lists every module,
-and nothing else names one. When the game starts, `hook_install` takes each module of the list
-(`hook_modules_select`) and logs whether it applies, and why not (`hooks: module NAME doesn't apply, and leaves the
-game as it is: check 0 at main+100 differs at byte 1 (21 there)`). A module of another title isn't logged.
+hooks on the GPU, and its handlers, in one file of `src/nx/patches/`. `src/nx/patches/modules.c` lists every module
+built into the runtime, and nothing else names one. A module can also be a library of its own, built outside
+ScarletNX ([below](#modules-in-libraries)), which the runtime adds after them. When the game starts, `hook_install`
+takes each module of the list (`hook_modules_select`) and logs whether it applies, and why not (`hooks: module NAME
+doesn't apply, and leaves the game as it is: check 0 at main+100 differs at byte 1 (21 there)`). A module of another
+title isn't logged.
 
 A module that doesn't apply leaves the game as it is: the hooks of its family aren't installed, and its GPU chains
 are never looked for. `hooks=0` turns every module off, and `hooks_off` names modules as it names families (a
@@ -326,10 +329,11 @@ typedef struct {
   `??` for any (`"fd 7b bf a9 ?? ?? 00 94"`). Each must lie within that module's code and hold. A check is the gate
   for a module that hooks code it read: a build ID can't tell a patched module (a mod's) from the original.
 
-All of them must hold. Its CPU hooks are then the address hooks of its family, as [Game patches](#game-patches-hooks-by-address)
-says: `family NAME` in `src/nx/patches/NAME.hook`, the handlers in its `.c` file. A module never writes the game's
-code, so it doesn't meet a mod's detours ([below](#a-game-that-rewrites-a-hooked-function)). A 32-bit game gets no
-module yet: `hook_install` chooses them for a 64-bit game alone.
+All of them must hold. A compiled-in module's CPU hooks are then the address hooks of its family, as
+[Game patches](#game-patches-hooks-by-address) says: `family NAME` in `src/nx/patches/NAME.hook`, the handlers in its
+`.c` file. A library's are its CPU hooks ([below](#cpu-hooks-in-libraries)). A module never writes the game's code,
+so it doesn't meet a mod's detours ([below](#a-game-that-rewrites-a-hooked-function)). A 32-bit game gets no module
+yet: `hook_install` chooses them for a 64-bit game alone.
 
 ### GPU chains
 
@@ -426,6 +430,153 @@ and its line in `modules.c`: `extern const HookModule hook_module_one_game;` and
 list's `NULL`. A game without motion vectors or jitter gets the spatial upscaler under Best until the runtime makes
 motion from depth and the camera. A game whose chain writes what a later pass reads, besides the anchor's output,
 can't skip that step.
+
+### Modules in libraries
+
+A module can be a library built outside ScarletNX, so that a game's facts (its title and build IDs, its functions'
+offsets, its layout) stay in a repository of their own. The runtime loads it at start, checks its version, and adds it
+after the compiled-in modules (`hle/hook/module_lib.c`). From then on it is a module like the others:
+`hook_modules_select` applies or refuses it. Its work is its CPU hooks, functions of the game's code by their offset in
+one build, as the [address hooks](#game-patches-hooks-by-address) of `src/nx/patches/` are, whose handlers the runtime
+calls with the guest CPU through one adapter of its own ([below](#cpu-hooks-in-libraries)). A handler can record an
+upscale into the game's command buffer. The library and its build files are found by `nx/loader/hook_libs.c`, which
+the runtime and the recompile share.
+
+**The header.** A library includes one header of ScarletNX, `src/nx/hle/hook/snx_hook_module.h`, with `src/` of a
+ScarletNX checkout on its include path (`#include "nx/hle/hook/snx_hook_module.h"`). It names no type of the runtime.
+It has its own code checks (`SnxHookCode`), CPU hooks (`SnxHookCpuHook`) and recorded upscale
+(`SnxHookRecordedUpscale`). The runtime gives the module a table of functions (`SnxHookHost`, `module_lib.c`): the
+log, a setting's value as text, and a handler's registers, guest memory, the function's own code and the upscale it
+records.
+
+**The entry point.** The library exports one function, `snx_hook_module(const SnxHookHost* host)`, which the runtime
+calls once, before the game's threads. It returns the module (`SnxHookModule`): the ABI version it was built for, its
+name, what it does, its title, module and build ID, its code checks and its CPU hooks, which stay where they are for
+the run (the runtime never unloads a library it took). It returns NULL to refuse the runtime, after it logs why.
+
+**The version.** The ABI has its own, `SNX_HOOK_ABI_MAJOR` and `SNX_HOOK_ABI_MINOR`, 1.0 now. A new major changes
+what one side reads of the other. A new minor only adds: functions at the end of `SnxHookHost`, fields at the end of
+`SnxHookModule` and of `SnxHookRecordedUpscale`, which carries its size, and flags. The runtime takes a module of its
+own minor or an older one, and refuses one of another major or of a newer minor. In every major, the first fields of
+`SnxHookHost` and `SnxHookModule` and the signature of `snx_hook_module` stay as they are, so a module of any version
+can be read and refused. A module that needs a function of a newer minor reads `host->abi_minor` and refuses an older
+runtime.
+
+**Where.** The `hook_modules_dir` setting names the folder, and when it is empty, `hook_modules/` in the user's data
+folder (`~/.local/share/scarletnx/hook_modules/` on Linux). Each `NAME.so` there (`NAME.dll` on Windows,
+`NAME.dylib` on macOS) is the module `NAME`, loaded in the names' order. The file's name is the module's (letters a to
+z, digits and `_`, at most 63), so `hooks_off` names a library's module as it names a compiled-in one, and the library
+of a module that is off is never loaded at start: none of its code runs in the game. `hooks=0` loads none. The
+recompile is another process: it opens every library of the folder, an off one too, and calls its entry point to read
+its CPU hooks ([below](#cpu-hooks-in-libraries)), but runs no handler.
+
+**The log.** A library taken says `hooks: library PATH: module NAME (hook ABI 1.0), 1 CPU hook`. One refused says
+`hooks: library PATH refused: WHY`, and is closed. It is refused when the system can't load it (with the system's
+reason), when it has no `snx_hook_module`, when that refuses the runtime, for another major or a newer minor, for a
+module named otherwise than its file or as another module, for more than 64 code checks or one without bytes, and for
+its CPU hooks' faults ([below](#cpu-hooks-in-libraries)). A library's module that doesn't apply to the game is said as
+a compiled-in one is.
+
+#### CPU hooks in libraries
+
+A library's module lists its CPU hooks (`SnxHookCpuHook`: an offset, a name for the log, a handler) in
+`SnxHookModule.cpu_hooks`, 1 to 32. They are in the game's module that `SnxHookModule.module` names (main for NULL),
+of the build its `build_id` names, which it must give. Each offset is a function's entry, 4-aligned.
+
+- **The call.** Each hook takes its function's dispatch slot (`hook.c`'s `hook_put_libs`), with one adapter for every
+  library's hook (`lib_adapter`). A call runs the handler on the game's thread, at the entry, with the registers as
+  the call left them (AAPCS64: x0 to x7, v0 to v7, the rest on the stack at sp). The handler reads and writes them
+  through the host (`reg`, `set_reg`, `vreg`, `set_vreg`), and guest memory with `read` and `write`, which refuse an
+  unmapped byte. When it returns, the function returns to its caller with the registers as the handler left them.
+- **The function's own code** runs only when the handler calls `run_original`: then, with the registers as they are
+  (an argument the handler changed included), until it returns to the caller's return address. The handler goes on
+  after it, with the function's result in x0. Once in a call, as `hook_run_original` does it for a handler of the
+  runtime's.
+- **Routes.** A hook sees a function's direct calls only when the game's module was recompiled with the function in
+  its route list ([How a call reaches a hook](#how-a-call-reaches-a-hook)). The recompile reads the libraries of the
+  hook modules folder before the game's modules, with a host that has the log alone (no handler runs), and adds each
+  CPU hook as its build ID's bytes and its offset (`snx_hook_route_add_build`). The loader routes it in every module
+  whose ID begins with those bytes, under the key of that module's whole ID, `BUILDID:OFFSET` as an address hook's is
+  written (`snx_hook_build_key`): so a library may give its whole build ID or its first bytes, and both route the
+  same function under the same key. Install a library, then recompile the game. At start, a hook whose key the
+  module's route list doesn't name isn't installed, and the log says to recompile: the recompiled code would call that
+  function directly, and the hook would see only some of its calls.
+- **When a hook isn't installed**, the log says why: its module doesn't apply to the game (title, build ID, code
+  checks, as [above](#what-a-module-applies-to)), the game has no module of that name, the offset lies outside its
+  code, the key isn't routed, or another hook has the function already. The library is refused at start for CPU hooks
+  without a build ID, more than 32, a hook without a name or handler, or an offset that isn't 4-aligned.
+- **The game changes the function's first instruction** (a mod's hook): that hook is off from there and the game's
+  code runs, as for a hook of the runtime's ([below](#a-game-that-rewrites-a-hooked-function)).
+
+**An upscale a CPU hook records.** `record_upscale(cpu, command_buffer, upscale)`, called from a CPU hook's handler
+alone, appends one record (`OP_UPSCALE`, `nvn_cmd_record_upscale`) to the game's command buffer at `command_buffer`,
+the guest address of its `NVNcommandBuffer`, which must be recording. Its textures are the game's `NVNtexture` objects
+(color and output required, depth, motion vectors, exposure and reactive optional), each with an `NVNtextureView` or
+0, snapshotted as every NVN command's are. At replay, in order with the buffer's other commands, the color (read from
+its corner at the render size) and the output (written at `out_base`, the output size) go to the renderer's upscaler
+as a module's upscale: the `render_upscaler` setting chooses, a temporal upscaler only with depth and motion vectors, a
+spatial one or the copy when the flags allow. A `render_max` of 0 is the color's size. Where no upscaler can run, a
+filtered copy of the color's render rectangle onto the output's stands in, so the output is always written. The log
+names what ran and both surfaces, the first 4 times and at each change
+(`nvn: a hook module's recorded upscale ran FSR 1 (EASU, RCAS): color ..., output ...`, or `ran no upscaler, the
+filtered copy stands in`). It returns 0, and records nothing, for a command buffer that isn't recording, a color or
+output that isn't a live texture, a size of 0 or a call outside a handler: the handler then calls `run_original`, and
+the game's own pass runs.
+
+`hook_lib_cpu` (`tests/hook_lib_cpu.c`, libraries from `tests/hook_lib_cpu_mod.c`) checks the recompile's route
+entries and their keys (a 16-digit prefix and the whole ID alike), the refusals, a hook the route list leaves out,
+and handlers that leave the function's code out, run it around their own work, and record an upscale.
+`nvn_commands` checks the record and `nvn_copy_formats` its replay, an upscaler's and the stand-in's.
+
+A module of one game, as a library (each `0` a value read off the game's code, its function found with
+[the trace](#writing-one-from-a-run)): its CPU hook on the function that records the game's upscaler pass, which
+records the runtime's upscale in its place, or runs the game's own code when it can't:
+
+```c
+/* one_game.c, in a repository of its own: one game's upscaler replaced by the runtime's */
+#include "nx/hle/hook/snx_hook_module.h"
+
+static void upscaler(const SnxHookHost* host, SnxHookCpu* cpu) {
+    SnxHookRecordedUpscale u = {0};
+    u.size = sizeof u;
+    /* the function's arguments: its command buffer, the pass's input and output textures, their sizes */
+    uint64_t commands = host->reg(cpu, 0 /* its argument */);
+    u.color.texture = host->reg(cpu, 0), u.output.texture = host->reg(cpu, 0);
+    u.render[0] = 0, u.render[1] = 0, u.out[0] = 0, u.out[1] = 0;
+    u.pre_exposure = 1;
+    u.flags = SNX_HOOK_UPSCALE_RANGE_GIVEN | SNX_HOOK_UPSCALE_SPATIAL_OK;
+    if (!host->record_upscale(cpu, commands, &u)) host->run_original(cpu);
+}
+static const SnxHookCpuHook hooks[] = {{0 /* the function's offset in main */, "the game's upscaler", upscaler}};
+static const SnxHookModule module = {.abi_major = SNX_HOOK_ABI_MAJOR,
+                                     .abi_minor = SNX_HOOK_ABI_MINOR,
+                                     .name = "one_game_upscaler",
+                                     .what = "the game's upscaler replaced",
+                                     .title = 0 /* its title */,
+                                     .build_id = "00" /* main's build ID */,
+                                     .cpu_hooks = hooks,
+                                     .ncpu_hooks = 1};
+SNX_HOOK_EXPORT const SnxHookModule* snx_hook_module(const SnxHookHost* host) {
+    return host->abi_major == SNX_HOOK_ABI_MAJOR ? &module : NULL;
+}
+```
+
+and its build, with CMake, as `one_game_upscaler.so`:
+
+```cmake
+add_library(one_game_upscaler MODULE one_game.c)
+target_include_directories(one_game_upscaler PRIVATE "${SCARLETNX_SOURCE_DIR}/src")
+set_target_properties(one_game_upscaler PROPERTIES PREFIX "" SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                      C_VISIBILITY_PRESET hidden)
+```
+
+`hook_module_lib` (`tests/hook_module_lib.c`) builds libraries of no game from `tests/hook_module_lib_mod.c`, one for
+each case: a folder's library taken, a file that isn't a library passed over, the library `hooks_off` names never
+loaded, each refusal above with its reason, the module as the runtime's (title, build ID, code check, CPU hook)
+applied to its game and not to another build, and the host's log and setting read. `snx-test-hook-module-lib --load
+PATH` loads one library and prints what
+the runtime made of it, to check a module built elsewhere without a game. Only Linux runs it yet: the loads on
+Windows, macOS and Android are not tested, and Android's shared storage is mounted noexec.
 
 ## A game that rewrites a hooked function
 

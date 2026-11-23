@@ -3,9 +3,10 @@
 /* Hook modules (docs/platforms/nx/hooks.md, "Modules"): a game's patch as one unit that says what it applies to (a
    title, a module's build, code it checks), what it hooks on the CPU (the address hooks of its family, in
    src/nx/patches/<name>.hook) and on the GPU (chains of draws and dispatches, gpu/nvn/nvn_hook.h), registered in one
-   list (src/nx/patches/modules.c). At start each is applied, or refused with the reason in the log, and a refused one
-   leaves the game as it is: its family's hooks aren't installed and its chains are never looked for. hooks=0 turns
-   every module off, and hooks_off names the modules turned off, as it names families */
+   list (src/nx/patches/modules.c), or a library's CPU hooks (module_lib.h), whose modules come after them. At start
+   each is applied, or refused with the reason in the log, and a refused one leaves the game as it is: its hooks aren't
+   installed and its chains are never looked for. hooks=0 turns every module off, and hooks_off names the modules
+   turned off, as it names families */
 #ifndef SNX_HLE_HOOK_MODULE_H
 #define SNX_HLE_HOOK_MODULE_H
 #include "nx/loader/module_abi.h"
@@ -34,12 +35,18 @@ typedef struct {
 
 /* the list: src/nx/patches/modules.c's, ending in NULL. A test links its own */
 extern const HookModule* const g_hook_modules[];
+/* module i of every module: the compiled-in list's, then those hook_module_add added (the libraries' modules,
+   module_lib.h), NULL past the last */
+const HookModule* hook_module_at(u32 i);
+/* m after the others, for the run: its index (hook_module_at), or -1 when the list holds as many modules as it can */
+int hook_module_add(const HookModule* m);
 
 /* Which of the list apply to the game whose modules mod lists, in guest memory at mem: each logged, applied or not
    and why. off(name) says whether a module is turned off (hook.c's hook_family_off). Run once at start
    (hook_install), before the game's threads */
 void hook_modules_select(const SnxModule* mod, const u8* mem, int (*off)(const char* name));
-/* whether module i of the list applies, after hook_modules_select, and whether a family is a module's that doesn't */
+/* whether module i (hook_module_at) applies, after hook_modules_select, and whether a family is a compiled-in
+   module's that doesn't (a library's module has no CPU hooks, so no family is its own) */
 int hook_module_applies(u32 i);
 int hook_module_family_refused(const char* family);
 /* why m doesn't apply to the game mod lists, or NULL: for hook_modules_select and the tests */
