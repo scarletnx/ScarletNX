@@ -537,7 +537,12 @@ void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [g
 /* Storage and transform feedback written in place: [gva, gva + len) bound where it is for a draw or dispatch to write,
    the write pending once the draw is recorded (vk_uma_writes_commit) until its submit is done. 0 when it is copied out
    as a pending result instead (buffer.c). vk_lock held */
-int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
+/* the front end's storage barriers for the writes in place (order): one asked for, which the next write over the
+   pages read or written since gets; one recorded from all commands, which orders all of them */
+void vk_uma_order_request(void);
+void vk_uma_ordered(void);
+u64 vk_uma_barrier_count(void); /* the barriers order recorded, for the tests */
 /* why a write in place was refused, for the statistics every 600 presents: a result of the renderer pending over the
    range, bytes the GPU owns, a compute result pending, a storage image not published, a queued release (buffer.c's
    checks before vk_uma_write), and vk_uma_write's own: not one run of guest memory, the draw's table full, bytes the
