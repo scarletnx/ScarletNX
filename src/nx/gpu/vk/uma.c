@@ -270,6 +270,10 @@ typedef struct {
     u64 wait_ns[4], wait_open[4]; /* wait_by's time, and those of them that finished the submission being recorded */
     /* order's barriers by what asked for them (UMA_ORDER_*), and those of them that ended a rendering pass */
     u64 order_n[3], order_pass[3];
+    /* the front end's storage barriers (vk_uma_order_request, vk_uma_ordered): the submission of the last barrier
+       that ordered the writes in place, whether the front end asked for one since, and the writes order left to them */
+    u64 order_sub, order_left;
+    int order_asked;
     u64 refused[VK_UMA_REFUSED_N]; /* the writes in place refused, by why (vk_uma_refused) */
     u64 merges, merged;            /* regions made over others (imp_get), and the others they took over */
     /* an aliasing draw's storage bound in place (vk_uma_cover, buffer.c's alias_in_place): imp_get makes no wait
@@ -1596,7 +1600,7 @@ static u32 imp_get(u64 cpu, u64 len) {
 
 /* ------------------------------------------------------------ the renderer's side */
 static void hz_mark(u64 cpu, u64 len);
-static void order(u64 cpu, u64 len, int write);
+static void order(u64 cpu, u64 len, int write, int ordered);
 static void note_read(u64 cpu, u64 len);
 static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* The GPU range [gva, gva + len) bound where it is in guest memory, at an offset that is a multiple of align: 1 with
@@ -1616,7 +1620,7 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         return 0;
     }
     if (!bind(cpu, len, align, buf, off)) return 0;
-    order(cpu, len, 0);
+    order(cpu, len, 0, 1);
     note_read(cpu, len);
     return 1;
 }
@@ -1683,7 +1687,7 @@ static void read_in(const Rgn* r, u64 cpu, u64 len, int ordered, VkBuffer* buf, 
     g_uma.hits++;
     g_uma.hit_bytes += len;
     hz_mark(cpu, len);
-    if (ordered) order(cpu, len, 0);
+    if (ordered) order(cpu, len, 0, 1);
     note_read(cpu, len);
 }
 int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
@@ -1770,10 +1774,15 @@ u64 vk_uma_check_diffs(void) { return g_uma.check_diffs; }
 /* ------------------------------------------------------------ writes in place */
 /* A barrier before what reads [cpu, cpu + len) in place, when it was written in place since the last one, or before
    what writes it, when it was read or written: the console's GPU runs its work in order. Outside a rendering pass,
-   which a barrier for these stages can't be recorded in */
+   which a barrier for these stages can't be recorded in.
+   A write (ordered 0) over what was read or written since the last barrier, all of it in this submission, gets none
+   while the front end gives its own storage barriers (nvn_storage_order 1 and 2) and asked for none since: draws may
+   overlap there, as on the copies' path (buffer.c's gfx_gpu_src). With a barrier for each, one game's world ended
+   160 rendering passes a present here, nearly all of them for draws that wrote the same range one after another. A
+   read of a write still gets its barrier */
 static const Out* newest_out(u64 cpu, u64 n);
 enum { UMA_ORDER_NOW, UMA_ORDER_BEFORE, UMA_ORDER_OVER }; /* order_n's: what the barrier is for */
-static void order(u64 cpu, u64 len, int write) {
+static void order(u64 cpu, u64 len, int write, int ordered) {
     const u64 since = g_uma.barrier_no;
     const int written = st_since(UMA_WSEQ, cpu, len, since);
     const int read = write && st_since(UMA_RSEQ, cpu, len, since);
@@ -1783,6 +1792,10 @@ static void order(u64 cpu, u64 len, int write) {
             check_differs(write ? "a write's barrier" : "a read's barrier", cpu, len, written || read, was);
     }
     if (!written && !read) return;
+    if (write && !ordered && !g_uma.order_asked && g_uma.order_sub == vk_submit_number()) {
+        g_uma.order_left++;
+        return;
+    }
     /* the statistics: a write over a read or a write, else a read of a write still pending in the submission being
        recorded, or of one from an earlier submission (pending or done), which the last barrier came before. The pages
        are what the tables stamp */
@@ -1798,6 +1811,16 @@ static void order(u64 cpu, u64 len, int write) {
     vk_all_barrier_by(VK_BAR_UMA, vk_cmd());
     g_uma.barrier_no++;
     g_uma.barriers++;
+    g_uma.order_sub = vk_submit_number();
+    g_uma.order_asked = 0;
+}
+void vk_uma_order_request(void) { g_uma.order_asked = 1; }
+u64 vk_uma_barrier_count(void) { return g_uma.barriers; }
+void vk_uma_ordered(void) {
+    if (!vk_uma()) return;
+    g_uma.barrier_no++;
+    g_uma.order_sub = vk_submit_number();
+    g_uma.order_asked = 0;
 }
 static void note_read(u64 cpu, u64 len) {
     Seen* m = &g_uma.rmemo[(u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56)];
@@ -1807,7 +1830,7 @@ static void note_read(u64 cpu, u64 len) {
     if (g_uma.chk) write_pages_stamp(&g_uma.chk->read, cpu, len, g_uma.barrier_no + 1);
 }
 void vk_uma_refused(int why) { g_uma.refused[why]++; }
-int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!vk_uma()) return 0;
     if (!len || gmmu_run(gva, len, &cpu) < len) {
@@ -1828,7 +1851,7 @@ int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.refused[why]++;
         return 0;
     }
-    order(cpu, len, 1);
+    order(cpu, len, 1, ordered);
     g_uma.prep[g_uma.nprep++] = (Out){gva, cpu, len, 0};
     return 1;
 }
@@ -2238,7 +2261,7 @@ void vk_uma_frame(void) {
        in place, each a finish when the write was not submitted yet */
     LOG("vulkan:   order of the reads and writes in place, a present: %.2f barriers before a read of this "
         "submission's write (%.2f ended a pass), %.2f of an earlier submission's (%.2f), %.2f before a write over a "
-        "read or write (%.2f); writes in place refused over 600 presents: %llu a result pending, %llu owned, %llu "
+        "read or write (%.2f), %.2f writes left to the front end's barriers; writes in place refused over 600 presents: %llu a result pending, %llu owned, %llu "
         "compute pending, %llu storage image, %llu release, %llu not one run, %llu draw full, %llu runtime-written "
         "(front), %llu no import; %llu regions merged (%llu taken over); waits for writes in place: %llu region "
         "(%.1f ms, %llu finishes), %llu mem-need (%.1f ms, %llu), %llu mem-need-cpu (%.1f ms, %llu), %llu "
@@ -2246,7 +2269,7 @@ void vk_uma_frame(void) {
         (double)g_uma.order_n[UMA_ORDER_NOW] / 600, (double)g_uma.order_pass[UMA_ORDER_NOW] / 600,
         (double)g_uma.order_n[UMA_ORDER_BEFORE] / 600, (double)g_uma.order_pass[UMA_ORDER_BEFORE] / 600,
         (double)g_uma.order_n[UMA_ORDER_OVER] / 600, (double)g_uma.order_pass[UMA_ORDER_OVER] / 600,
-        (unsigned long long)g_uma.refused[VK_UMA_REFUSED_RESULT],
+        (double)g_uma.order_left / 600, (unsigned long long)g_uma.refused[VK_UMA_REFUSED_RESULT],
         (unsigned long long)g_uma.refused[VK_UMA_REFUSED_OWNED],
         (unsigned long long)g_uma.refused[VK_UMA_REFUSED_COMPUTE],
         (unsigned long long)g_uma.refused[VK_UMA_REFUSED_IMAGE],
@@ -2289,6 +2312,7 @@ void vk_uma_frame(void) {
     memset(g_uma.fast_miss, 0, sizeof g_uma.fast_miss);
     memset(g_uma.order_n, 0, sizeof g_uma.order_n);
     memset(g_uma.order_pass, 0, sizeof g_uma.order_pass);
+    g_uma.order_left = 0;
     memset(g_uma.refused, 0, sizeof g_uma.refused);
     memset(g_uma.wait_ns, 0, sizeof g_uma.wait_ns);
     memset(g_uma.wait_open, 0, sizeof g_uma.wait_open);

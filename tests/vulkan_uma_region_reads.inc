@@ -64,7 +64,7 @@ static int check_uma_texture_region(void) {
     const int held = vk_uma_held(URR_CPU, size) && vk_uma_held(bl_cpu, 0x4000);
     vk_finish(); /* no write in place pending from here */
     vk_render_end();
-    CHECK(vk_uma_write(URR_GVA + wrote, wrote_n, 4, &wb, &wo)); /* a draw's storage binding, written in place */
+    CHECK(vk_uma_write(URR_GVA + wrote, wrote_n, 4, 1, &wb, &wo)); /* a draw's storage binding, written in place */
     rec_CmdFillBuffer(vk_cmd(), wb, wo, wrote_n, 0x22222222u);
     vk_uma_writes_commit();
     const int pending = vk_uma_pending(URR_GVA, size);
@@ -99,6 +99,31 @@ static int check_uma_texture_region(void) {
         for (u32 x = 0; x < 256; x++) bl_differ += texels[y * 256 + x] != GP(bl_cpu)[bl_offset(x, y, 0, 256, 64, 0, 0)];
     const u64 bl_cpu_bytes = c2[0][VK_GREAD_CPU] - c1[0][VK_GREAD_CPU],
               bl_bound = c2[0][VK_GREAD_BOUND] - c1[0][VK_GREAD_BOUND];
+    /* order (uma.c): a write over this submission's write gets a barrier where the front end gives none (ordered 1),
+       and where it gives its own (ordered 0) only after it asked for one; its full barrier orders all before it. The
+       first write of a submission gets one */
+    u64 nb[6];
+    vk_lock();
+    vk_finish();
+    vk_render_end();
+    const u64 b0 = vk_uma_barrier_count();
+    for (int k = 0; k < 6; k++) {
+        if (k == 2) vk_uma_order_request();
+        if (k == 4) vk_uma_ordered();
+        CHECK(vk_uma_write(URR_GVA + wrote, wrote_n, 4, k == 3, &wb, &wo));
+        vk_uma_writes_commit();
+        nb[k] = vk_uma_barrier_count() - b0;
+    }
+    vk_finish();
+    vk_unlock();
+    /* the first, the one asked for, the conservative one; none after the full barrier or with none asked */
+    const u64 want[6] = {1, 1, 2, 3, 3, 3};
+    int order_bad = 0;
+    for (int k = 0; k < 6; k++) order_bad |= nb[k] != want[k];
+    if (order_bad)
+        fprintf(stderr, "order of writes in place: barriers %llu %llu %llu %llu %llu %llu, want 1 1 2 3 3 3\n",
+                (unsigned long long)nb[0], (unsigned long long)nb[1], (unsigned long long)nb[2],
+                (unsigned long long)nb[3], (unsigned long long)nb[4], (unsigned long long)nb[5]);
     free(texels);
     CHECK(mem_unmap(URR_CPU, 0x400000) == 0);
     g_renderer->mem_may_have_changed();
@@ -113,7 +138,9 @@ static int check_uma_texture_region(void) {
             (unsigned long long)bl_cpu_bytes, (unsigned long long)bl_bound);
     CHECK(held && pending && !differ && !cpu && bound == size);
     CHECK(!bl_differ && !bl_cpu_bytes && bl_bound == 0x4000);
-    printf("in place: a texture's load reads a region where it is, after a write in place in the same submission\n");
+    CHECK(!order_bad);
+    printf("in place: a texture's load reads a region where it is, after a write in place in the same submission; "
+           "writes in place take the front end's storage barriers\n");
     return 0;
 }
 
