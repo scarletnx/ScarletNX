@@ -645,6 +645,15 @@ setting FPS limit
     help game = the pace the game asks for, as on the console (60 FPS, or 30 for a game made for 30); 0 = no limit;
     help 10 to 1000 = that many frames a second. The display's vsync follows a limit other than game, so a game that
     help counts vsyncs as its time runs faster or slower with it. F4 turns the limit off and on
+setting Frame rate
+    key frame_rate
+    int 0 2
+    default 0
+    startup
+    words Game's|30|60
+    help The frame rate a game module asks the game to run at: 0 = the game's own, 1 = 30, 2 = 60 frames a second.
+    help Only a game whose module knows how the game paces itself follows it, keeping its logic in real time. Without
+    help such a module it does nothing: fps_limit paces the frames, not the game's logic
 setting Memory (GB)
     key memory_gb
     int 0 12
