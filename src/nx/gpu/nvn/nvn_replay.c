@@ -459,7 +459,7 @@ static int settled(void) {
     }
     return 1;
 }
-/* With the renderer thread, a window present is a record: the renderer thread presents after the work queued before it, then
+/* With gpu_split, a window present is a record: the renderer thread presents after the work queued before it, then
    increments the syncpoint that frees the window's texture. The front end goes on to the next frame at once. A direct
    present drained the queue first, and the renderer thread then sat idle until the front end queued the next frame */
 typedef struct {
