@@ -34,6 +34,9 @@ void fatal(const char* fmt, ...) {
 }
 static int on_thread = 1;
 int gpu_on_thread(void) { return on_thread; }
+/* the GPU thread's busy time, as the auto test gives it (gq_auto) */
+static u64 fake_busy;
+u64 gpu_thread_busy_ns(void) { return fake_busy; }
 
 /* what ran, in its order: the kind (W write, C constant buffer upload, R release, I block linear upload), the address
    and a hash of the bytes */
@@ -266,6 +269,53 @@ static int split_main(void) {
     put_write(0x200040, 64, 8);
     check_log("split wraps");
     CHECK(off_front == 30001, "%d of 30001 records ran on the renderer thread", off_front);
+
+    /* the change to one thread waits for the renderer thread's record to end, then runs what it left here, in their
+       order; the change back gives the records to the renderer thread again */
+    hold();
+    pthread_create(&opener, NULL, open_later, NULL);
+    off_front = 0;
+    for (u32 i = 0; i < 100; i++) put_write(0x100000 + (u64)i * 64, 64, i);
+    gq_mode(0);
+    pthread_join(opener, NULL);
+    CHECK(!g_gq.on && atomic_load_explicit(&g_gq.parked, memory_order_acquire),
+          "the change to one thread came back before the renderer thread parked");
+    int behind = off_front;
+    for (u32 i = 0; i < 50; i++) put_write(0x200000 + (u64)i * 64, 64, 1000 + i);
+    CHECK(off_front == behind, "%d records queued on one thread ran on the renderer thread", off_front - behind);
+    gq_mode(1);
+    for (u32 i = 0; i < 50; i++) put_write(0x300000 + (u64)i * 64, 64, 2000 + i);
+    check_log("mode changes");
+    CHECK(off_front == behind + 50, "%d of 50 records after the change back ran on the renderer thread",
+          off_front - behind);
+
+    /* gpu_split=2: where one thread measures faster, two probes in a row change to it, and where the split measures
+       faster again, two more change back. Each present costs the GPU thread the mode's milliseconds */
+    g_settings.gpu_split = 2;
+    /* a loading screen's presents, near empty: one thread five times faster, under GQA_FLOOR_MS, changes nothing */
+    for (u32 p = 0; p < 3000; p++) {
+        fake_busy += g_gq.on ? 500000 : 100000;
+        gq_present();
+        put_write(0x400000 + (u64)(p % 512) * 64, 64, p);
+    }
+    check_log("auto on near-empty presents");
+    CHECK(g_gq.on && g_gqa.phase < 2, "auto changed or probed on presents under its floor");
+    for (int round = 0; round < 2; round++) {
+        const int want_on = round; /* the first round favors one thread, the second the split */
+        u32 p = 0;
+        /* the choice, not a probe's mode: outside a probe (phases 2 and 3) the mode that runs is the one chosen */
+        for (; p < 6000 && !(g_gq.on == want_on && (g_gqa.phase < 2 || g_gqa.phase > 3)); p++) {
+            const u64 ms = g_gq.on == want_on ? 5 : 10;
+            fake_busy += ms * 1000000;
+            gq_present();
+            put_write(0x400000 + (u64)(p % 512) * 64, 64, p);
+        }
+        check_log(round ? "auto back to two threads" : "auto to one thread");
+        CHECK(g_gq.on == want_on && (g_gqa.phase < 2 || g_gqa.phase > 3), "auto did not choose %s in %u presents",
+              want_on ? "two threads" : "one", p);
+        CHECK(p > 2 * (2 * GQA_MEASURE + 2 * GQA_WARM), "auto changed after %u presents, before two probes", p);
+    }
+    g_settings.gpu_split = 1;
     if (failed) {
         fprintf(stderr, "gpu_queue split: %d of %d checks failed\n", failed, checks);
         return 1;

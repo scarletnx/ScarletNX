@@ -845,6 +845,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         resource_was = resource_is;
         last_present_ns = now_ns;
         g_vk_present++;
+        gq_present();
         atomic_fetch_add_explicit(&g_vk_texture_epoch, 1,
                                   memory_order_relaxed); /* a frame's snapshots never outlive it */
         {

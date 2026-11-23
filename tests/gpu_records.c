@@ -38,6 +38,7 @@ void fatal(const char* fmt, ...) {
 }
 /* gpu.c's side of the queue: this test is the front end's thread, and writes nothing */
 int gpu_on_thread(void) { return 1; }
+u64 gpu_thread_busy_ns(void) { return 0; }
 int gmem_write_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
 int gmem_write_cb_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { (void)gva, (void)data, (void)len; }
@@ -477,7 +478,7 @@ static int split_main(void) {
 
 int main(int argc, char** argv) {
     /* the draws are set up on the renderer thread unless a setting turns it off */
-    CHECK(g_settings.gpu_split == 1, "gpu_split is %d by default, not 1", g_settings.gpu_split);
+    CHECK(g_settings.gpu_split == 2, "gpu_split is %d by default, not 2 (auto)", g_settings.gpu_split);
     if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
     g_settings.gpu_split = 0; /* the records run on this thread, as they are queued */
     test_copy();

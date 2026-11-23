@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The queue from the GPU front end to the renderer's side (gpu_queue.h). A ring of records, each with its fence.
    The front end puts a record in and goes on. The records run in their order: with gpu_split on a thread of their
-   own, the renderer thread, else on the front end's thread right after they are queued.
+   own, the renderer thread, else on the front end's thread right after they are queued. gpu_split=2 (auto) changes
+   between the two as the game runs, at a present, by which one measures faster (gq_auto).
 
    A guest write of the front end (LOAD_CB's constant buffer data, inline-to-memory, a release) is a record, so a draw
    queued before it reads the memory from before it. The front end's own reads of memory wait for the fence of the
@@ -44,6 +45,7 @@ static struct {
     GqFn big_fn;
     u64 big_bytes;
     int started;    /* the renderer thread runs (gpu_split) */
+    int on;         /* it takes the records, where the front end doesn't run them itself: the front end's alone */
     u64 queued;     /* the fence of the last record put in: the front end's alone */
     u64 written[1u << GQ_SLOT_BITS];
     /* the front end's side */
@@ -55,6 +57,12 @@ static struct {
     _Atomic u64 done;              /* the fence of the last record that ran */
     _Atomic u32 progress;          /* moves with each record done: the front end sleeps on it */
     _Atomic int putter_sleeps;
+    /* the change between the two (gq_mode): the front end clears split, and the renderer thread, once out of the
+       record it runs, sets parked and takes no record until split is set again. One side takes the records at a
+       time, so they run in their order */
+    _Atomic int split, parked;
+    _Atomic u64 presents; /* the renderer's presents (gq_present), for gq_auto */
+    _Atomic u64 run_ns;   /* the renderer thread's time in records, for gq_auto */
 } g_gq;
 /* the front end's last guest writes, in their order, for its reads of guest memory (gq_read): a read waits only for
    the newest write over its bytes, or takes the bytes from that write's record. written[] is the fallback once the
@@ -164,15 +172,29 @@ static void gq_thread(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("GPU renderer");
     for (;;) {
+        if (!atomic_load_explicit(&g_gq.split, memory_order_seq_cst)) {
+            /* the front end runs the records on its thread: it waits for parked, after this thread's last record */
+            u32 w = atomic_load_explicit(&g_gq.work, memory_order_seq_cst);
+            if (!atomic_load_explicit(&g_gq.parked, memory_order_relaxed)) {
+                atomic_store_explicit(&g_gq.parked, 1, memory_order_seq_cst);
+                atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);
+                plat_wake_word(&g_gq.progress);
+            }
+            if (!atomic_load_explicit(&g_gq.split, memory_order_seq_cst)) plat_wait_word(&g_gq.work, w, GQ_SLEEP_NS);
+            continue;
+        }
         /* the records there are, timed and counted as one run: timed one by one, they were half of this thread's
            reads of the clock, about 3,000 a present in one game */
         if (atomic_load_explicit(&g_gq.tail, memory_order_relaxed) !=
             atomic_load_explicit(&g_gq.head, memory_order_acquire)) {
             u64 t0 = plat_ns(), n = 0, all = 0;
-            for (u32 b; (b = gq_take_one()) != 0; n++) all += b;
-            gqs_add(GQS_RUN_NS, plat_ns() - t0);
+            for (u32 b; atomic_load_explicit(&g_gq.split, memory_order_relaxed) && (b = gq_take_one()) != 0; n++)
+                all += b;
+            u64 ns = plat_ns() - t0;
+            gqs_add(GQS_RUN_NS, ns);
             gqs_add(GQS_RUNS, n);
             gqs_add(GQS_RUN_BYTES, all);
+            atomic_fetch_add_explicit(&g_gq.run_ns, ns, memory_order_relaxed);
             continue;
         }
         u32 w = atomic_load_explicit(&g_gq.work, memory_order_seq_cst);
@@ -187,9 +209,9 @@ static void gq_thread(void* arg) {
    records run here instead */
 static void gq_wait(int (*ok)(u64), u64 arg, int why) {
     u64 t0 = 0;
-    if (g_gq.started && !ok(arg)) t0 = plat_ns();
+    if (g_gq.on && !ok(arg)) t0 = plat_ns();
     while (!ok(arg)) {
-        if (!g_gq.started) {
+        if (!g_gq.on) {
             if (!gq_take_one()) fatal("gpu: the queue waits for a record it doesn't have\n");
             continue;
         }
@@ -211,7 +233,7 @@ static int gq_room(u64 bytes) {
     return GQ_RING - (gq_head() - atomic_load_explicit(&g_gq.tail, memory_order_acquire)) >= bytes;
 }
 void gq_drain(void) {
-    if (g_gq.started) {
+    if (g_gq.on) {
         gqs_add(GQS_DRAINS, 1);
         if (gq_done_by(g_gq.queued)) gqs_add(GQS_DRAINS_IDLE, 1);
     }
@@ -220,9 +242,137 @@ void gq_drain(void) {
 /* head moved past the records written before it: the renderer thread may take them from this store on */
 static void gq_publish(u64 head) {
     atomic_store_explicit(&g_gq.head, head, memory_order_seq_cst);
-    if (!g_gq.started) return;
+    if (!g_gq.on) return;
     atomic_fetch_add_explicit(&g_gq.work, 1, memory_order_seq_cst);
     if (atomic_load_explicit(&g_gq.taker_sleeps, memory_order_seq_cst)) plat_wake_word(&g_gq.work);
+}
+/* the front end's: the renderer thread takes the records (on), or this thread runs them as they are queued. A change
+   off waits for the renderer thread's record to end, then runs the rest here */
+static void gq_mode(int on) {
+    if (!g_gq.started || on == g_gq.on) return;
+    if (!on) {
+        atomic_store_explicit(&g_gq.split, 0, memory_order_seq_cst);
+        atomic_fetch_add_explicit(&g_gq.work, 1, memory_order_seq_cst);
+        plat_wake_word(&g_gq.work);
+        while (!atomic_load_explicit(&g_gq.parked, memory_order_seq_cst)) {
+            u32 w = atomic_load_explicit(&g_gq.progress, memory_order_seq_cst);
+            atomic_store_explicit(&g_gq.putter_sleeps, 1, memory_order_seq_cst);
+            if (!atomic_load_explicit(&g_gq.parked, memory_order_seq_cst))
+                plat_wait_word(&g_gq.progress, w, GQ_SLEEP_NS);
+            atomic_store_explicit(&g_gq.putter_sleeps, 0, memory_order_relaxed);
+        }
+        g_gq.on = 0;
+        gq_drain(); /* what the renderer thread left, here */
+        return;
+    }
+    gq_drain(); /* nothing: on this thread each record ran as it was queued */
+    atomic_store_explicit(&g_gq.parked, 0, memory_order_seq_cst);
+    atomic_store_explicit(&g_gq.split, 1, memory_order_seq_cst);
+    g_gq.on = 1;
+    atomic_fetch_add_explicit(&g_gq.work, 1, memory_order_seq_cst);
+    plat_wake_word(&g_gq.work);
+}
+void gq_present(void) { atomic_fetch_add_explicit(&g_gq.presents, 1, memory_order_relaxed); }
+/* gpu_split=2: which of the two runs the game's work a present faster, measured as it runs. A mode's cost is the GPU
+   thread's busy time a present (gpu_thread_busy_ns: outside its waits for the game's work, and with its waits for the
+   renderer thread in it), or with the split the renderer thread's time in records where that is longer: the frame
+   waits for the slower of the two. The split ran a race 13% slower on one machine and other games faster: a guess from
+   the numbers of one mode for the other missed that, so the other mode is run and measured.
+
+   After hold presents in the chosen mode: its cost over GQA_MEASURE presents (before), GQA_WARM presents in the other
+   mode (left out: caches and the thread's wake) and its cost over GQA_MEASURE (the probe), then GQA_WARM back in the
+   chosen mode and its cost again (after). The probe wins when it costs under 95% of both before and after: a scene that
+   grows lighter or heavier across the probe can't make a win. A probe whose before and after differ by more than a
+   quarter counts for neither (a shader built, a scene changed), and none starts while the chosen mode costs under
+   GQA_FLOOR_MS a present: a loading screen's near-empty presents switched one run to one thread at its start, with
+   1.2 ms against 6.1 ms, and it ran the race there for most of a minute. Two wins in a row change the choice. A probe
+   that loses doubles hold, up to GQA_HOLD_MAX. The changes happen between records at the first queue after a present,
+   never inside a frame's record */
+#define GQA_HOLD     600u
+#define GQA_HOLD_MAX 4800u
+#define GQA_MEASURE  60u
+#define GQA_WARM     10u
+#define GQA_FLOOR_MS 2.0
+static struct {
+    u64 seen;  /* g_gq.presents at the last look */
+    u64 until; /* the phase ends at this present */
+    u64 p0, busy0, run0;
+    double before_ms, probe_ms;
+    u32 hold, wins;
+    /* 0 the chosen mode, 1 its measure before, 2 the other mode's warm-up, 3 its measure, 4 the chosen mode's warm-up,
+       5 its measure after */
+    int phase;
+} g_gqa;
+static void gqa_mark(u64 p) {
+    g_gqa.p0 = p;
+    g_gqa.busy0 = gpu_thread_busy_ns();
+    g_gqa.run0 = atomic_load_explicit(&g_gq.run_ns, memory_order_relaxed);
+}
+static double gqa_cost(u64 p) {
+    u64 busy = gpu_thread_busy_ns() - g_gqa.busy0, run = atomic_load_explicit(&g_gq.run_ns, memory_order_relaxed) - g_gqa.run0;
+    u64 c = g_gq.on && run > busy ? run : busy;
+    return p > g_gqa.p0 ? (double)c / 1e6 / (double)(p - g_gqa.p0) : 0;
+}
+static const char* gqa_name(int on) { return on ? "two threads" : "one thread"; }
+static void gq_auto(void) {
+    u64 p = atomic_load_explicit(&g_gq.presents, memory_order_relaxed);
+    if (p == g_gqa.seen) return;
+    g_gqa.seen = p;
+    if (!g_gqa.hold) g_gqa.hold = GQA_HOLD, g_gqa.until = GQA_HOLD;
+    if (p < g_gqa.until) return;
+    switch (g_gqa.phase) {
+        case 0:
+            gqa_mark(p);
+            g_gqa.phase = 1, g_gqa.until = p + GQA_MEASURE;
+            break;
+        case 1:
+            g_gqa.before_ms = gqa_cost(p);
+            if (g_gqa.before_ms < GQA_FLOOR_MS) { /* too light to tell: the same hold again */
+                g_gqa.phase = 0, g_gqa.until = p + g_gqa.hold;
+                break;
+            }
+            gq_mode(!g_gq.on);
+            g_gqa.phase = 2, g_gqa.until = p + GQA_WARM;
+            break;
+        case 2:
+        case 4:
+            gqa_mark(p);
+            g_gqa.phase++, g_gqa.until = p + GQA_MEASURE;
+            break;
+        case 3:
+            g_gqa.probe_ms = gqa_cost(p);
+            gq_mode(!g_gq.on);
+            g_gqa.phase = 4, g_gqa.until = p + GQA_WARM;
+            break;
+        default: {
+            const double before = g_gqa.before_ms, after = gqa_cost(p), probe = g_gqa.probe_ms;
+            const double lo = before < after ? before : after, hi = before < after ? after : before;
+            const char *chosen = gqa_name(g_gq.on), *other = gqa_name(!g_gq.on);
+            g_gqa.phase = 0;
+            if (hi > lo * 1.25) { /* the scene moved across the probe: neither a win nor a loss */
+                LOG("gpu: gpu_split=auto: %.3f ms a present on %s between %.3f and %.3f ms on %s: unsettled, again "
+                    "later\n",
+                    probe, other, before, after, chosen);
+                g_gqa.until = p + g_gqa.hold;
+                break;
+            }
+            const int win = probe < before * 0.95 && probe < after * 0.95;
+            g_gqa.wins = win ? g_gqa.wins + 1 : 0;
+            if (g_gqa.wins >= 2) {
+                gq_mode(!g_gq.on);
+                g_gqa.wins = 0;
+                g_gqa.hold = GQA_HOLD;
+                LOG("gpu: gpu_split=auto: %.3f ms a present on %s against %.3f and %.3f ms on %s: it runs on %s from "
+                    "now\n",
+                    probe, other, before, after, chosen, other);
+            } else {
+                if (!win) g_gqa.hold = g_gqa.hold * 2 < GQA_HOLD_MAX ? g_gqa.hold * 2 : GQA_HOLD_MAX;
+                LOG("gpu: gpu_split=auto: %.3f ms a present on %s against %.3f and %.3f ms on %s: %s\n", probe, other,
+                    before, after, chosen, win ? "a win, one more to change" : "it stays");
+            }
+            g_gqa.until = p + g_gqa.hold;
+        }
+    }
 }
 /* room for a record of payload bytes, its header filled: it doesn't wrap, a filler record takes the ring's end */
 static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
@@ -231,14 +381,18 @@ static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
     if (!g_gq.ring) {
         if (!(g_gq.ring = (u8*)malloc(GQ_RING))) return NULL;
         if (g_settings.gpu_split) {
+            atomic_store_explicit(&g_gq.split, 1, memory_order_relaxed);
             if (plat_thread(gq_thread, NULL, 1u << 20)) {
                 char why[256];
                 fatal("gpu: could not start the renderer thread: %s\n", snx_os_error(why, sizeof why));
             }
-            g_gq.started = 1;
-            LOG("gpu: gpu_split=1: the renderer sets up draws on a thread of its own\n");
+            g_gq.started = g_gq.on = 1;
+            LOG("gpu: gpu_split=%s: the renderer sets up draws on a thread of its own%s\n",
+                g_settings.gpu_split == 2 ? "auto" : "1",
+                g_settings.gpu_split == 2 ? ", or on this one where that measures faster" : "");
         }
     }
+    if (g_settings.gpu_split == 2 && g_gq.started) gq_auto();
     u64 at = gq_head() % GQ_RING;
     if (at + bytes > GQ_RING) { /* the ring's end: a filler record to it, and this one from the ring's start */
         u64 fill = GQ_RING - at;
@@ -246,7 +400,7 @@ static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
         GqRecord* f = (GqRecord*)(g_gq.ring + at);
         *f = (GqRecord){GQ_SKIP, (u32)fill, ++g_gq.queued, 0, 0};
         gq_publish(gq_head() + fill);
-        if (!g_gq.started) gq_drain();
+        if (!g_gq.on) gq_drain();
         at = 0;
     }
     gq_wait(gq_room, bytes, GQW_ROOM);
@@ -256,7 +410,7 @@ static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
 }
 static void gq_commit(const GqRecord* r) {
     gq_publish(gq_head() + r->bytes);
-    if (!g_gq.started) gq_drain(); /* without the renderer thread the records run here */
+    if (!g_gq.on) gq_drain(); /* without the renderer thread the records run here */
 }
 int gq_queues(void) { return gpu_on_thread() && !t_gq_run && !t_gq_direct; }
 void gq_direct(int on) { t_gq_direct = on; }
