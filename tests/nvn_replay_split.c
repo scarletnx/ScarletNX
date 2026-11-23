@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn's replay (gpu/nvn/nvn_replay.c) with gpu_queue.c's renderer thread and the queued calls of
+/* nvn's replay (gpu/nvn/nvn_replay.c) with gpu_split's renderer thread (gpu_queue.c) and the queued calls of
    gpu/renderer.c: while the renderer thread is behind the replay, a submission's fence and a window's present reach
    the renderer after the submission's draw, in the queue's order, as a GPFIFO job's increments do (gpu.c's job_end).
    The present is a record, so the front end goes on without a wait, and the increment that frees the window's
@@ -111,7 +111,7 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 n) {
 }
 void gpu_kick(void) {}
 void gpu_poll_why(u32 why) { (void)why; }
-u64 gpu_thread_busy_ns(void) { return 0; } /* gq_auto's measure: this test forces the renderer thread, gq_force(1) */
+u64 gpu_thread_busy_ns(void) { return 0; } /* gpu_split=2's measure (gpu_queue.c gq_auto): this test sets gpu_split=1 */
 /* each piece of work in its order, every one done */
 static void pump(void) {
     for (u32 i = 0; i < g_nwork; i++)
@@ -260,7 +260,7 @@ static void held(const void* arg, u64 bytes) {
 
 int main(void) {
     g_front = pthread_self();
-    gq_force(1);
+    g_settings.gpu_split = 1;
     g_renderer_up = 1;
     u32 queue = nvn_replay_queue(), id = nvn_replay_syncpt(queue), shown = 0;
     u64 ready = 0;

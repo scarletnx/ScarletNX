@@ -1949,7 +1949,7 @@ snx_test_target(snx-test-nvn-queue-lifetime gnu23)
 add_dependencies(snx-test-nvn-queue-lifetime snx_settings)
 target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
 add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
-# the replay with gpu_queue.c's renderer thread: a fence and a present reach the renderer after the draws before them (its platform
+# the replay with gpu_split's renderer thread: a fence and a present reach the renderer after the draws before them (its platform
 # stand-ins are pthreads)
 add_executable(snx-test-nvn-replay-split nvn_replay_split.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c"
@@ -4298,9 +4298,9 @@ add_executable(snx-test-gpu-records gpu_records.c "${PROJECT_SOURCE_DIR}/src/nx/
 snx_test_target(snx-test-gpu-records gnu23)
 target_compile_options(snx-test-gpu-records PRIVATE -Wno-missing-field-initializers) # renderer.c's records, as -Wextra sees them
 target_include_directories(snx-test-gpu-records PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(snx-test-gpu-records PRIVATE scarletnx-common scarletnx-platform) # gpu_queue.c's renderer thread
+target_link_libraries(snx-test-gpu-records PRIVATE scarletnx-common scarletnx-platform) # gpu_split's thread
 add_test(NAME gpu_records COMMAND snx-test-gpu-records)
-# the same records on gpu_queue.c's renderer thread
+# the same records on gpu_split's renderer thread
 add_test(NAME gpu_records_split COMMAND snx-test-gpu-records split)
 set_tests_properties(gpu_records_split PROPERTIES TIMEOUT 30) # a wait in the queue that never ends would hang ctest
 
@@ -4309,9 +4309,9 @@ set_tests_properties(gpu_records_split PROPERTIES TIMEOUT 30) # a wait in the qu
 add_executable(snx-test-gpu-queue gpu_queue_records.c)
 snx_test_target(snx-test-gpu-queue gnu23)
 target_include_directories(snx-test-gpu-queue PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(snx-test-gpu-queue PRIVATE scarletnx-common scarletnx-platform) # gpu_queue.c's renderer thread
+target_link_libraries(snx-test-gpu-queue PRIVATE scarletnx-common scarletnx-platform) # gpu_split's thread
 add_test(NAME gpu_queue COMMAND snx-test-gpu-queue)
-# the same ring with gpu_queue.c's renderer thread running its records
+# the same ring with gpu_split's renderer thread running its records
 add_test(NAME gpu_queue_split COMMAND snx-test-gpu-queue split)
 set_tests_properties(gpu_queue_split PROPERTIES TIMEOUT 30)
 
@@ -4362,7 +4362,7 @@ target_compile_definitions(snx-test-gpu-park PRIVATE SNX_TEST_GPU_QUEUE) # the r
 target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
 add_test(NAME gpu_park COMMAND snx-test-gpu-park)
 set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
-# the same queue with gpu_queue.c's renderer thread running its records
+# the same queue with gpu_split's renderer thread running its records
 add_test(NAME gpu_park_split COMMAND snx-test-gpu-park split)
 set_tests_properties(gpu_park_split PROPERTIES TIMEOUT 30)
 

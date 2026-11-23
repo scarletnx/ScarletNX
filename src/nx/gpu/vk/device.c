@@ -121,7 +121,7 @@ void vk_lock(void) {
         }
         vk_took();
         atomic_store_explicit(&g_vk_site, site, memory_order_relaxed);
-        /* With the renderer thread, the front end calls the renderer once the queue is empty (gpu_renderer_now). A guest memory
+        /* With gpu_split, the front end calls the renderer once the queue is empty (gpu_renderer_now). A guest memory
            write in that call went to the queue, and a big one waited for the renderer thread to run the queue first,
            with this lock held. The writes queued before it waited for this lock in gmem_before_write: one game's
            NVN copies locked up so at random. Under the lock this thread is the renderer, and its writes go to memory */

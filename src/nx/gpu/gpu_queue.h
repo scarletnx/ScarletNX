@@ -38,10 +38,7 @@ int gq_forward(u64 gva, void* dst, u64 size);
 void gq_drain_at(const char* file, int line);
 #define gq_drain() gq_drain_at(__FILE__, __LINE__) /* counted by where it is asked (the stats line) */
 void gq_stats_log(u64 presents); /* the stats line's: the front end's waits and the renderer thread's runs */
-void gq_present(void);           /* the renderer presented (any thread): the mode is measured by presents */
-/* the tests' mode, set before the first record: 1 the renderer thread always, 2 never, 0 the one that measures
-   faster, the runtime's */
-void gq_force(int mode);
+void gq_present(void);           /* the renderer presented (any thread): gpu_split=2 measures by presents */
 /* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that
    gq_call_begin returns, in the call's place in the queue. The front end fills them, then calls gq_call_end */
 typedef void (*GqFn)(const void* arg, u64 bytes);
