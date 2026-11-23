@@ -382,9 +382,102 @@ static void check_samplers(void) {
     check(s.wrap_u == 3 && s.wrap_v == 4 && s.wrap_p == 5, "border, clamp, mirror once to edge", 0);
 }
 
+/* the way back (nvn_tic_surface): a texture's or an image's descriptor as the color target it is, the target code
+   the format's own (nvn_rt_format), and nothing for what no color target is */
+static void check_surfaces(void) {
+    unsigned i;
+    u32 tic[8];
+    Surf2D s;
+    NvnTexture t;
+    NvnView v;
+    NvnTexLayout l;
+    for (i = 0; i < sizeof formats / sizeof *formats; i++) {
+        u32 f = formats[i].nvn;
+        int depth = 0, image;
+        u32 rt = nvn_rt_format(f, &depth);
+        for (image = 0; image < 2; image++) {
+            t = texture(f, NVN_TEXTURE_TARGET_2D, 300, 200, 1, 5);
+            nvn_tic_encode(&t, NULL, image, 0, tic);
+            if (rt && !depth)
+                check(nvn_tic_surface(tic, &s) && s.format == rt && s.addr == t.gpu && s.width == 300 &&
+                          s.height == 200 && !s.linear && s.depth == 1,
+                      "a color target's descriptor as that target", f);
+            else
+                check(!nvn_tic_surface(tic, &s) && !s.addr, "no color target: no surface", f);
+        }
+    }
+    /* an output image the size of a frame: block linear, its block height the layout's */
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D, 2560, 1440, 1, 1);
+    nvn_tex_layout(&t.d, &l);
+    nvn_tic_encode(&t, NULL, 1, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xE0 && s.width == 2560 && s.height == 1440 && !s.linear &&
+              s.bh == l.tile_h && !s.pitch,
+          "a 2560x1440 image as a B10G11R11 target", 0x3F);
+    /* pitch linear: the pitch in bytes, the width in texels */
+    t = texture(0x25, NVN_TEXTURE_TARGET_2D, 100, 50, 1, 1);
+    t.d.flags = NVN_TEXTURE_FLAGS_LINEAR;
+    t.d.stride = 512;
+    nvn_tic_encode(&t, NULL, 1, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.linear && s.pitch == 512 && s.width == 100 && s.height == 50 &&
+              s.format == 0xD5,
+          "a pitch-linear image", 0x25);
+    /* sRGB and BGRA: their own targets */
+    t = texture(0x38, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xD6, "RGBA8 sRGB", 0x38);
+    t = texture(0x9A, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xCF, "BGRA8", 0x9A);
+    /* a view's own channels: a word no format has takes the target of every format with its components when they
+       have one (B10G11R11's), and none when they differ (RGBA8's are also RGBX8's and BGRA8's). A view that makes
+       another format's descriptor is that format (RGBA8 through B G R A is BGRA8's word) */
+    memset(&v, 0, sizeof v);
+    v.set = NVN_VIEW_SWIZZLE;
+    v.swizzle[0] = 2, v.swizzle[1] = 2, v.swizzle[2] = 2, v.swizzle[3] = 1; /* R R R ONE */
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, &v, 0, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xE0, "B10G11R11 through a view's channels", 0x3F);
+    t = texture(0x25, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, &v, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "RGBA8 through R R R ONE: its components are several targets', none taken", 0x25);
+    v.swizzle[0] = 4, v.swizzle[1] = 3, v.swizzle[2] = 2, v.swizzle[3] = 5; /* B G R A */
+    nvn_tic_encode(&t, &v, 0, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xCF, "RGBA8 through B G R A: BGRA8's descriptor", 0x25);
+    t = texture(0x3C, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "RGB565: no target, though BGR565 has its components", 0x3C);
+    /* not one 2D level-0 single-sample image: none */
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 3);
+    memset(&v, 0, sizeof v);
+    v.set = NVN_VIEW_LEVELS;
+    v.base_level = 1;
+    v.levels = 1;
+    nvn_tic_encode(&t, &v, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "a view of level 1", 0x3F);
+    t = texture(0x3F, NVN_TEXTURE_TARGET_3D, 64, 64, 8, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "a 3D texture", 0x3F);
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D_ARRAY, 64, 64, 4, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "a 2D array of 4 layers", 0x3F);
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D_ARRAY, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(nvn_tic_surface(tic, &s) && s.format == 0xE0, "a 2D array of 1 layer", 0x3F);
+    t = texture(0x3F, NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 64, 64, 1, 1);
+    t.d.samples = 4;
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(!nvn_tic_surface(tic, &s), "a multisampled texture", 0x3F);
+    t = texture(0x34, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, 0x370000, tic);
+    check(!nvn_tic_surface(tic, &s), "a depth texture", 0x34);
+    memset(tic, 0, sizeof tic);
+    check(!nvn_tic_surface(tic, &s), "an empty entry", 0);
+}
+
 int main(void) {
     check_formats();
     check_rt_formats();
+    check_surfaces();
     check_targets();
     check_sparse();
     check_depth();

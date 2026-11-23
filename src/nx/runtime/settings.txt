@@ -1626,9 +1626,25 @@ setting GPU hook trace
     int 0 1000000
     default 0
     startup
-    help How many of a Switch 2 or NVN game's draws and dispatches the log names as a hook module's GPU chain would
-    help (docs/platforms/nx/hooks.md, Modules): each dispatch's program hash, call site in main, grid and block, each
-    help draw's fragment program hash and targets. For writing a module from a run. 0 = none
+    help How many of a Switch 2 or NVN game's draws and dispatches the log names (docs/platforms/nx/hooks.md, Finding a
+    help game's passes): each dispatch's program hash, call site in main, grid and block, its buffers and the images its
+    help handles name, each draw's fragment program hash, targets and viewport, and the records between them that aren't
+    help binds. For finding the passes a hook module replaces and the game's code that records them. 0 = none
+setting GPU hook trace from
+    key gpu_hook_trace_from
+    int 0 100000000
+    default 0
+    startup
+    help How many presents GPU hook trace lets go by before it logs, to trace a scene the game reaches later. It
+    help marks each present while it logs. 0 = from the start
+setting GPU hook trace words
+    key gpu_hook_trace_words
+    text 64
+    default ""
+    startup
+    help With GPU hook trace, words of a constant buffer each traced draw binds, as floats: its stage (0 vertex to 4
+    help fragment, 5 task, 6 mesh), slot, byte offset and how many 32-bit words (at most 128), four numbers separated
+    help by spaces or commas such as "0,1,0x40,16". A draw whose words are the ones logged before says so. Empty: none
 setting Shader corpus
     key shader_corpus
     text 1024

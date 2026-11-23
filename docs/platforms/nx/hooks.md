@@ -10,8 +10,7 @@
 * [Game patches: hooks by address](#game-patches-hooks-by-address)
 * [Modules](#modules)
   * [What a module applies to](#what-a-module-applies-to)
-  * [GPU chains](#gpu-chains)
-  * [Writing one from a run](#writing-one-from-a-run)
+  * [Finding a game's passes](#finding-a-games-passes)
   * [Modules in libraries](#modules-in-libraries)
 * [A game that rewrites a hooked function](#a-game-that-rewrites-a-hooked-function)
 * [A mod's call of the original](#a-mods-call-of-the-original)
@@ -294,17 +293,17 @@ handler finds its module's base and data.
 
 ## Modules
 
-A module is one game's patch as one unit (`hle/hook/module.h`): what it applies to, what it hooks on the CPU, what it
-hooks on the GPU, and its handlers, in one file of `src/nx/patches/`. `src/nx/patches/modules.c` lists every module
-built into the runtime, and nothing else names one. A module can also be a library of its own, built outside
-ScarletNX ([below](#modules-in-libraries)), which the runtime adds after them. When the game starts, `hook_install`
-takes each module of the list (`hook_modules_select`) and logs whether it applies, and why not (`hooks: module NAME
-doesn't apply, and leaves the game as it is: check 0 at main+100 differs at byte 1 (21 there)`). A module of another
-title isn't logged.
+A module is one game's patch as one unit (`hle/hook/module.h`): what it applies to, what it hooks on the CPU, and its
+handlers, in one file of `src/nx/patches/`. `src/nx/patches/modules.c` lists every module built into the runtime, and
+nothing else names one. A module can also be a library of its own, built outside ScarletNX
+([below](#modules-in-libraries)), which the runtime adds after them. When the game starts, `hook_install` takes each
+module of the list (`hook_modules_select`) and logs whether it applies, and why not (`hooks: module NAME doesn't
+apply, and leaves the game as it is: check 0 at main+100 differs at byte 1 (21 there)`). A module of another title
+isn't logged.
 
-A module that doesn't apply leaves the game as it is: the hooks of its family aren't installed, and its GPU chains
-are never looked for. `hooks=0` turns every module off, and `hooks_off` names modules as it names families (a
-module's name is its family's), so the game's `.ini` turns one off for that game alone.
+A module that doesn't apply leaves the game as it is: its hooks aren't installed. `hooks=0` turns every module off,
+and `hooks_off` names modules as it names families (a module's name is its family's), so the game's `.ini` turns one
+off for that game alone.
 
 ```c
 typedef struct {
@@ -315,8 +314,6 @@ typedef struct {
     const char* build_id; /* that module's build ID, the hex of its first bytes, NULL any */
     const HookModuleCode* code;
     u32 ncode;
-    const NvnHookChain* const* chains; /* its GPU hooks */
-    u32 nchains;
 } HookModule;
 ```
 
@@ -335,101 +332,26 @@ All of them must hold. A compiled-in module's CPU hooks are then the address hoo
 so it doesn't meet a mod's detours ([below](#a-game-that-rewrites-a-hooked-function)). A 32-bit game gets no module
 yet: `hook_install` chooses them for a 64-bit game alone.
 
-### GPU chains
+`hook_module_applied`, `hook_module_refused` and `hook_module_off` (`tests/hook_install.c` with
+`tests/hook_module_plain.c`) check a compiled-in module: one named after a family, its hook installed when its code
+check holds, and the function left to its own code when the check fails or `hooks_off` names the module.
 
-A game that runs its own upscaler or anti-aliasing records a chain of draws and dispatches. A module recognises the
-chain as a queue's records replay (`gpu/nvn/nvn_hook.c`, before the queue's other handlers in `nvn_replay.c`),
-skips it and records one operation in its place: for an upscaler, an upscale through the renderer's `upscale`, which
-picks the technology from the settings ([Upscalers](../../layers/gpu/upscalers.md)). The game's own chain is the
-fallback, exactly as recorded.
+### Finding a game's passes
 
-A chain (`NvnHookChain`) is up to 8 steps (`NvnHookStep`), each a draw or a dispatch and what it must be, each field 0
-for any:
-
-| Field | Of | Says |
-| --- | --- | --- |
-| `program` | both | the hash of the program's guest code (`nvn_hook_program_hash`: FNV-1a 64 of a dispatch's whole code when the record gives its size, an Ounce program's, else of its first 1 KiB, as of a draw's fragment program) |
-| `caller` | a dispatch | its call site, the game's link register, as an offset from main's base |
-| `block` | a dispatch | its block size |
-| `format` | a draw | its color target 0's format, the render target code |
-
-The hash is of the guest's code alone. The renderer's own program keys mix in the bound images' types and the launch
-size, so one pass can have several, and they change with the renderer.
-
-Each step has a role:
-
-- **OBSERVE** runs as recorded. What it saw is kept for the handler: a dispatch's state (`DispatchState`, what the
-  renderer's dispatch gets) and caller, or a draw's color target 0 and depth target as `Surf2D`s. Other work may come
-  between OBSERVE steps, and the first step seen again starts the chain again.
-- **SKIP**, a dispatch, is held back as the state the renderer would get (`nvn_draw_dispatch_state`). From the first
-  SKIP on, the chain holds the queue: only state binds (programs, textures, samplers, images, buffers, pools, push
-  constants) and barriers may come between its steps. A barrier is held back with the dispatches.
-- **ANCHOR**, the last step and a dispatch, is replaced by the chain's handler, `replace(const NvnHookMatch*)`. It gets
-  what every step saw and the queue's state, and returns 1 when it recorded the replacement. The held dispatches and
-  the anchor then never run, and the held barriers run after the replacement.
-
-What breaks a chain runs what it held back first, in the order recorded: another draw or dispatch, any other record
-(an inline uniform update, a copy, a report, an event), a wait, the end of the submission, more than 16 records held,
-or a handler that returns 0. The game's passes then run as on the console, and nothing needs the previous frame's
-state. A draw can't be skipped yet: holding one back would mean its whole draw state. With no module applied, each
-record costs one test.
-
-A handler builds its replacement from the steps: an upscaler's color is an observed draw's target, its output the
-image the anchor writes. It names no technology: it gives the kinds it takes besides a temporal one
-(`GPU_UPSCALE_SPATIAL_OK`, `GPU_UPSCALE_COPY_OK`), the color's range when it knows it (`GPU_UPSCALE_RANGE_GIVEN` with
-`GPU_UPSCALE_HDR` or not), and depth and motion vectors when it has them, and calls `nvn_hook_upscale`, which marks
-the upscale a module's (`GPU_UPSCALE_MODULE`) and returns 0 without a renderer. When no upscaler it takes can run,
-that returns 0, and so does the handler.
-
-`tests/vk_hook_upscale.c` has a module of no game: a scene's draw observed, a prepass skipped, the game's upscale
-pass replaced through the interface on a real device, and every fallback above, and a module whose check fails,
-whose title is another or that `hooks_off` names. `hook_module_applied`, `hook_module_refused` and `hook_module_off`
-(`tests/hook_install.c` with `tests/hook_module_plain.c`) check the CPU side: a module named after a family, its hook
-installed when its code check holds, and the function left to its own code when the check fails or `hooks_off` names
-the module.
-
-### Writing one from a run
-
-`gpu_hook_trace=N` (`[Debug]`) logs the game's first N draws and dispatches as a step names them: each dispatch's
-program hash, code size and address, call site in main, grid and block, and each draw's fragment program hash and
-targets. A chain is read off a frame of that log, with the game's own pictures of its passes (a RenderDoc capture)
-to tell their roles. The program hashes are the game's code, so they stay in the module of that game and in no
-other file.
-
-A module of one game, as a skeleton (each `0` a value read off the trace):
-
-```c
-/* src/nx/patches/one_game.c: one game's upscaler replaced by the runtime's */
-#include "nx/gpu/nvn/nvn_hook.h"
-#include "nx/gpu/renderer.h"
-#include "nx/hle/hook/module.h"
-
-static const NvnHookStep steps[] = {
-    {NVN_HOOK_DRAW, NVN_HOOK_OBSERVE, 0 /* the tonemap's fragment program */, 0, {0}, 0 /* its target's format */},
-    {NVN_HOOK_DISPATCH, NVN_HOOK_SKIP, 0 /* the game's prepass */, 0 /* its call site */},
-    {NVN_HOOK_DISPATCH, NVN_HOOK_ANCHOR, 0 /* the game's output pass */, 0 /* its call site */},
-};
-static int replace(const NvnHookMatch* m) {
-    GpuUpscale u = {0};
-    u.color = m->color[0]; /* the tonemap's target */
-    /* the output: the storage image the output pass writes, its handle in m->dispatch[2]'s constant bank, its
-       entry in the texture pool (DispatchState.tex_pool): not resolved by the runtime yet */
-    u.render[0] = u.color.width, u.render[1] = u.color.height;
-    u.out[0] = u.output.width, u.out[1] = u.output.height;
-    u.pre_exposure = 1;
-    u.flags = GPU_UPSCALE_RANGE_GIVEN | GPU_UPSCALE_SPATIAL_OK;
-    return u.output.addr && nvn_hook_upscale(&u);
-}
-static const NvnHookChain chain = {"one game's upscaler", steps, 3, replace};
-static const NvnHookChain* const chains[] = {&chain};
-const HookModule hook_module_one_game = {"one_game_upscaler", "the game's upscaler replaced", 0 /* its title */,
-                                         NULL, "0" /* main's build ID */, NULL, 0, chains, 1};
-```
-
-and its line in `modules.c`: `extern const HookModule hook_module_one_game;` and `&hook_module_one_game` before the
-list's `NULL`. A game without motion vectors or jitter gets the spatial upscaler under Best until the runtime makes
-motion from depth and the camera. A game whose chain writes what a later pass reads, besides the anchor's output,
-can't skip that step.
+A module that replaces a pass of the game's GPU work (its upscaler, say) hooks the game's function that records that
+pass. `gpu_hook_trace=N` (`[Debug]`, `gpu/nvn/nvn_trace.c`) finds the pass and that function: it logs the game's first
+N draws and dispatches as its queues replay them. Each dispatch's line has its program's hash (FNV-1a 64 of its code),
+its code's size and address, its call site in main (the return address of the game's call that recorded it), grid and
+block. An Ounce dispatch's line also has its packed c[0]'s buffers (address and size) and each texture and image
+handle with the image it names (address, render target format, size). Each draw's line has its fragment program's
+hash, targets and viewport. Each line ends with the records since the one before that aren't state binds or barriers
+(their op codes), and the log marks each wait, each end of a submission and each present. `gpu_hook_trace_from` lets
+that many presents go by first, to trace a scene the game reaches after its start. `gpu_hook_trace_words` adds words
+of one constant buffer of each draw (a stage, a slot, an offset and a count), as floats, to read a camera's matrices
+across frames. The pass is read off a frame of that log, with the game's own pictures of its passes (a RenderDoc
+capture) to tell their roles, and its call site leads to the function to hook (`tools/disasm.py`). The hashes, call
+sites and layouts are the game's, so they stay in the module of that game and in no other file. Off, the replay tests
+one flag per record and calls nothing of the trace. `nvn_trace` (`tests/nvn_trace.c`) checks its lines.
 
 ### Modules in libraries
 
@@ -529,7 +451,7 @@ and handlers that leave the function's code out, run it around their own work, a
 `nvn_commands` checks the record and `nvn_copy_formats` its replay, an upscaler's and the stand-in's.
 
 A module of one game, as a library (each `0` a value read off the game's code, its function found with
-[the trace](#writing-one-from-a-run)): its CPU hook on the function that records the game's upscaler pass, which
+[the trace](#finding-a-games-passes)): its CPU hook on the function that records the game's upscaler pass, which
 records the runtime's upscale in its place, or runs the game's own code when it can't:
 
 ```c

@@ -58,8 +58,7 @@ static const char* take(const char* path, const char* name, char* why, size_t si
         for (u32 i = 0; i < m->ncode; i++)
             own->code[i] = (HookModuleCode){m->code[i].module, m->code[i].offset, m->code[i].bytes};
         own->module =
-            (HookModule){m->name,  m->what, m->title, m->module, m->build_id, m->ncode ? own->code : NULL,
-                         m->ncode, NULL,    0};
+            (HookModule){m->name, m->what, m->title, m->module, m->build_id, m->ncode ? own->code : NULL, m->ncode};
         if ((index = hook_module_add(&own->module)) < 0) refused = "the list of modules is full";
     }
     if (refused) {

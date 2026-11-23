@@ -1,12 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Hook modules (docs/platforms/nx/hooks.md, "Modules"): a game's patch as one unit that says what it applies to (a
-   title, a module's build, code it checks), what it hooks on the CPU (the address hooks of its family, in
-   src/nx/patches/<name>.hook) and on the GPU (chains of draws and dispatches, gpu/nvn/nvn_hook.h), registered in one
-   list (src/nx/patches/modules.c), or a library's CPU hooks (module_lib.h), whose modules come after them. At start
-   each is applied, or refused with the reason in the log, and a refused one leaves the game as it is: its hooks aren't
-   installed and its chains are never looked for. hooks=0 turns every module off, and hooks_off names the modules
-   turned off, as it names families */
+   title, a module's build, code it checks) and what it hooks on the CPU: the address hooks of its family, in
+   src/nx/patches/<name>.hook, registered in one list (src/nx/patches/modules.c), or a library's CPU hooks
+   (module_lib.h), whose modules come after them. At start each is applied, or refused with the reason in the log, and
+   a refused one leaves the game as it is: its hooks aren't installed. hooks=0 turns every module off, and hooks_off
+   names the modules turned off, as it names families */
 #ifndef SNX_HLE_HOOK_MODULE_H
 #define SNX_HLE_HOOK_MODULE_H
 #include "nx/loader/module_abi.h"
@@ -19,8 +18,6 @@ typedef struct {
     const char* bytes;
 } HookModuleCode;
 
-typedef struct NvnHookChain NvnHookChain; /* gpu/nvn/nvn_hook.h */
-
 typedef struct {
     const char* name;     /* its word in hooks_off and in the log, the family of its address hooks */
     const char* what;     /* what it does, for the log */
@@ -29,8 +26,6 @@ typedef struct {
     const char* build_id; /* that module's build ID, the hex of its first bytes (as an address hook's key), NULL any */
     const HookModuleCode* code;
     u32 ncode;
-    const NvnHookChain* const* chains; /* its GPU hooks */
-    u32 nchains;
 } HookModule;
 
 /* the list: src/nx/patches/modules.c's, ending in NULL. A test links its own */

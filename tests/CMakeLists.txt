@@ -1143,6 +1143,16 @@ snx_test_target(snx-test-nvn-descriptors c23)
 target_include_directories(snx-test-nvn-descriptors PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-descriptors PRIVATE m)
 add_test(NAME nvn_descriptors COMMAND snx-test-nvn-descriptors)
+# gpu_hook_trace (src/nx/gpu/nvn/nvn_trace.c) over synthetic NVN records: off and gpu_hook_trace_from not live, the
+# presents, draws with their targets, viewport and constant buffer words, dispatches with their call site and the image
+# their c[0] handle names, the records between, the waits, a line past the log's 2048 bytes, the lines used up
+add_executable(snx-test-nvn-trace nvn_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_trace.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c")
+snx_test_target(snx-test-nvn-trace 11)
+add_dependencies(snx-test-nvn-trace snx_settings)
+target_include_directories(snx-test-nvn-trace PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
+target_link_libraries(snx-test-nvn-trace PRIVATE m)
+add_test(NAME nvn_trace COMMAND snx-test-nvn-trace)
 # nvn's texture storage answers (src/nx/gpu/nvn/nvn_tex.c nvn_tex_storage) against the game driver's rules
 add_executable(snx-test-nvn-tex-storage nvn_tex_storage.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c")
 snx_test_target(snx-test-nvn-tex-storage c23)
@@ -5019,11 +5029,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
             set_target_properties(snx-test-vk-fsr2 PROPERTIES LINKER_LANGUAGE CXX)
             add_test(NAME vk_fsr2 COMMAND snx-test-vk-fsr2)
             set_tests_properties(vk_fsr2 PROPERTIES SKIP_RETURN_CODE 77)
-            # a hook module of no game (hle/hook/module.c) with a GPU chain (gpu/nvn/nvn_hook.c) over a synthetic stream
-            # of NVN records, replaced through the upscalers' interface (gpu/vk/upscaler) on a real device, its
-            # fallbacks, the choice among the upscalers, and FSR 2 through the interface. Skipped (77) without a device
-            add_executable(snx-test-vk-hook-upscale vk_hook_upscale.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_hook.c"
-                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c" "${volk_SOURCE_DIR}/volk.c")
+            # a hook module's upscale (the replay of an upscale its CPU hook recorded) through the upscalers' interface
+            # (gpu/vk/upscaler) on a real device: the choice among the upscalers, the spatial one sharpened or not, the
+            # copy, none for FSR 2 without depth, and FSR 2 through the interface. Skipped (77) without a device
+            add_executable(snx-test-vk-hook-upscale vk_hook_upscale.c "${volk_SOURCE_DIR}/volk.c")
             snx_test_target(snx-test-vk-hook-upscale gnu23)
             add_dependencies(snx-test-vk-hook-upscale snx_settings)
             target_include_directories(snx-test-vk-hook-upscale PRIVATE "${PROJECT_SOURCE_DIR}/src"

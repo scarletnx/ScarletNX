@@ -96,8 +96,8 @@ typedef struct Renderer {
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
     /* An upscale (a Switch 2 game's DLSS evaluation, or a hook module's, GpuUpscale): 1 when the renderer wrote the
-       output, 0 for the caller's own fallback (the DLSS front end's filtered copy, a module's game chain). NULL in a
-       renderer without one */
+       output, 0 for the caller's own fallback (the front end's filtered copy, for a DLSS evaluation and a module's
+       recorded upscale alike). NULL in a renderer without one */
     int (*upscale)(const GpuUpscale* u);
     /* An Ounce's shading rate image (GpuShadingRate) for the draws after it: the id they give in DrawCall.shading_rate,
        0 when they shade each pixel (a renderer or device without it, an image it can't take). A later call can give

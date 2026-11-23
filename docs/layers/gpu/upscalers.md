@@ -28,9 +28,6 @@ frame the game finished, after everything here.
 - **A DLSS evaluation** (`nvnCommandBufferEvaluateDlss`, `gpu/nvn/nvn_dlss.c`): one `OP_DLSS` record, which the replay
   gives to the renderer's `upscale` (`gpu/nvn/nvn_copy.c`). It takes a temporal upscaler only. Its fallback is the
   front end's filtered copy, which unjitters to the nearest output pixel.
-- **A hook module's chain** (`gpu/nvn/nvn_hook.c`): the handler of a chain's last dispatch builds a `GpuUpscale` from
-  what the chain's steps saw and calls the same `upscale` through `nvn_hook_upscale`, with `GPU_UPSCALE_MODULE`. It says which kinds it takes
-  besides a temporal one (`GPU_UPSCALE_SPATIAL_OK`, `GPU_UPSCALE_COPY_OK`). Its fallback is the game's own passes.
 - **A hook module's recorded upscale** (`record_upscale` of a CPU hook's handler, [Hooks, CPU hooks in
   libraries](../../platforms/nx/hooks.md#cpu-hooks-in-libraries)): one `OP_UPSCALE` record in the game's command
   buffer, which the replay gives to the same `upscale` (`gpu/nvn/nvn_copy.c`) with `GPU_UPSCALE_MODULE`. It says which
@@ -80,7 +77,7 @@ When the preferred one is passed over, the reason comes back with the one that s
 passes, the call gets no backend and the reason of the first one it would take that is built in, and runs its own
 fallback. So a DLSS evaluation with `render_upscaler` set to the spatial upscaler still gets FSR 2: it takes temporal
 upscalers only. A module that gives no motion vectors gets the spatial upscaler under Best, when it takes one, and the
-game's own passes when it doesn't.
+filtered copy when it doesn't.
 
 ### Contexts and evaluations
 
@@ -156,9 +153,9 @@ that onto the game's output target.
 
 - `vk_fsr2` runs FSR 2 through `fsr2.h` directly: a still scene drawn with a new jitter each frame comes out nearer
   the scene than a bilinear upscale, and only with the jitter's sign right.
-- `vk_hook_upscale` runs the interface on a real device with no renderer: the choice and the fallback rule (an
-  unfilterable color included), the stubs not available, the spatial upscaler (with and without RCAS) and the copy
-  replacing a hook module's chain (the copy matching a bilinear upscale), the fallbacks to the game's passes, and FSR 2
+- `vk_hook_upscale` runs the interface on a real device with no renderer, as the replay of a module's recorded upscale
+  asks for it: the choice and the fallback rule (an unfilterable color included), the stubs not available, the spatial
+  upscaler (with and without RCAS), the copy matching a bilinear upscale, none for FSR 2 without depth, and FSR 2
   through the interface converging as `vk_fsr2` measures it (0.0135 against the scene on a Radeon 890M, 0.0134 on
-  llvmpipe, as through `fsr2.h`).
+  llvmpipe, as through `fsr2.h`). `nvn_copy_formats` checks the record's replay and its filtered copy.
 - Both are skipped (77) without a Vulkan device that writes storage images without a format.

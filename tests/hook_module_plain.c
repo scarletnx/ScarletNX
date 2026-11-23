@@ -7,7 +7,7 @@
 #include "nx/loader/hook_routes.h"
 
 static const HookModuleCode code[] = {{NULL, 0x40, "de ad be ef"}};
-static const HookModule plain = {"plain", "the test spec's plain family as a module", 0, NULL, NULL, code, 1, NULL, 0};
+static const HookModule plain = {"plain", "the test spec's plain family as a module", 0, NULL, NULL, code, 1};
 const HookModule* const g_hook_modules[] = {&plain, NULL};
 void hook_module_libs_load(int (*off)(const char* name)) { (void)off; }
 u32 hook_lib_cpu_count(void) { return 0; }
