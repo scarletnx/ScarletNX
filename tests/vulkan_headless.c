@@ -639,8 +639,9 @@ static int check_uma(void) {
 
 /* uma_copies (gpu/vk/uma.c's vk_uma_imports_dear): 2 copies a vertex range and a constant buffer, so no import is made
    for them and the GPU reads the bytes of the binding; 1 reads them in place, a CPU write after the binding included;
-   0 copies them on amdgpu's drivers only, where each import costs every submission. A range a write in place is
-   pending over stays in place either way (buffer.c's IN_DEAR) */
+   0 copies them on amdgpu's drivers, where each import costs every submission, and on a discrete GPU with host
+   imports, whose reads cross the bus. There read-only storage is copied too (vk_uma_storage_copied), with 2 as well,
+   and never with 1. A range a write in place is pending over stays in place either way (buffer.c's IN_DEAR) */
 static int check_uma_copies(void) {
     const u64 gva = 0x7400000, cpu = HEAP_BASE + 0x3400000, span = 0x10000;
     const int was = g_settings.guest_buffers_copied;
@@ -658,7 +659,9 @@ static int check_uma_copies(void) {
     g_settings.guest_buffers_copied = 0;
     const int amd =
         g_vk.driver_id == VK_DRIVER_ID_MESA_RADV || g_vk.driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE || linux_amd;
-    CHECK(vk_uma_imports_dear() == amd);
+    const int host_discrete = g_vk.mem_model != VK_MEM_UMA && !vk_uma_through_dmabuf();
+    CHECK(vk_uma_imports_dear() == (g_vk.mem_model != VK_MEM_UMA ? host_discrete : amd));
+    CHECK(vk_uma_storage_copied() == host_discrete);
     CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(gva, cpu, span);
     memset(GP(cpu), 0x11, (size_t)span);
@@ -667,6 +670,7 @@ static int check_uma_copies(void) {
     /* copied: no import, and the bytes of the binding */
     g_settings.guest_buffers_copied = 2;
     CHECK(vk_uma_imports_dear() == 1);
+    CHECK(vk_uma_storage_copied() == host_discrete);
     vk_lock();
     CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b, &off));
     CHECK(vk_uma_imports(cpu, span) == 0);
@@ -682,6 +686,7 @@ static int check_uma_copies(void) {
     /* in place: the import, and the write after the binding */
     g_settings.guest_buffers_copied = 1;
     CHECK(vk_uma_imports_dear() == 0);
+    CHECK(!vk_uma_storage_copied());
     vk_lock();
     CHECK(vk_buf_get_input(gva + 0x2000, 256, 4, &b, &off));
     CHECK(vk_uma_imports(cpu + 0x2000, 256) == 1);

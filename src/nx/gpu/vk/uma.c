@@ -329,11 +329,24 @@ static int imports_dear(void) {
     if (g_settings.guest_buffers_copied) return g_settings.guest_buffers_copied == 2; /* uma_copies */
     return g_vk.imports_dear;
 }
-/* a discrete GPU reads guest memory in place only through dma-bufs, whose import costs a submission no lookup of its
-   pages: its vertices, indices and constant buffers are read in place too, unless uma_copies copies them */
+/* A discrete GPU reads guest memory in place across the bus, where a copy in its own memory reads many times faster:
+   with vk_memory=2 on an RTX 4090, one game's race took 46 ms of GPU time a present against 11 ms copied (its compute
+   dispatches 34.5 against 10.0 ms a frame, its passes 10.1 against 2.2). There, with host imports, what the GPU only
+   reads is copied as where imports are dear: vertices, indices and constant buffers, and read-only storage too
+   (vk_uma_storage_copied). What the GPU writes, and what a write in place is pending over, stays in place. Through
+   dma-bufs, whose import costs a submission no lookup of its pages, the vertices, indices and constant buffers are read
+   in place, unless uma_copies copies them */
+static int uma_discrete(void) { return g_vk.mem_model != VK_MEM_UMA; }
+int vk_uma_through_dmabuf(void) { return g_uma.dmabuf; }
 int vk_uma_imports_dear(void) {
-    if (!g_settings.guest_buffers_copied && g_uma.dmabuf && g_vk.mem_model != VK_MEM_UMA) return 0;
+    if (!g_settings.guest_buffers_copied && uma_discrete()) return !g_uma.dmabuf;
     return imports_dear();
+}
+/* a draw's or a dispatch's read-only storage is copied where vk_uma_imports_dear copies vertices: on a discrete GPU with
+   host imports, unless uma_copies=1 reads it in place. Elsewhere it is read in place: on a GPU that shares memory, its
+   16 MiB windows were far dearer copied (5 frames a second on one, against 14.9) */
+int vk_uma_storage_copied(void) {
+    return uma_discrete() && !g_uma.dmabuf && g_settings.guest_buffers_copied != 1 && vk_uma_imports_dear();
 }
 u64 vk_uma_bound(void) { return g_uma.bound; }
 
