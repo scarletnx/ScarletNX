@@ -100,6 +100,10 @@ void core_set_prio(KThread* t, int prio); /* the effective priority, reordering 
 /* ---- sync.c: mutexes, condition variables, address arbitration, WaitSynchronization */
 u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag);
 u32 svc_arbitrate_unlock(u64 addr);
+/* svcArbitrateUnlock for a lock whose waiters may also wait on its word (os_sync.c): a thread waiting in the kernel gets
+   it, as there; else the word's waiter whose tag is given (0: none), as the console's kernel hands a mutex to a waiter;
+   else it is freed. *handed: 1 when it went to tag */
+u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed);
 /* the mutex words may have host threads waiting on them as futexes as well (nn/os_sync.c, set before the game's
    first thread): a mutex the kernel hands on or lets go of then wakes one of them, which looks at the word again */
 extern int g_lock_futex;
