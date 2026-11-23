@@ -342,10 +342,11 @@ static void on_brk(CPU* c, uint64_t pc, uint32_t imm) {
 int main(int argc, char** argv) {
     unsigned functions = 600, states = 8, i, s, k, nwords = 0;
     uint32_t words[SLOT];
-    struct snx_recompiler *rx, *rl;
-    struct snx_recompiled *mx, *ml;
-    uint8_t *mem[2], *data0;
-    uint64_t* hints;
+    struct snx_recompiler *rx = NULL, *rl = NULL;
+    struct snx_recompiled *mx = NULL, *ml = NULL;
+    uint8_t *mem[2] = {0}, *data0 = NULL;
+    uint64_t* hints = NULL;
+    int result = 1; /* every exit past the allocations frees them, so the sanitizers' leak check reads the test */
     RtAPI rt;
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
@@ -367,7 +368,7 @@ int main(int argc, char** argv) {
     rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     if (!rx || !rl) {
         fprintf(stderr, "FAIL: no recompiler\n");
-        return 1;
+        goto out;
     }
     snx_recompiler_set_backend(rx, 1);
     snx_recompiler_set_backend(rl, 0);
@@ -415,14 +416,15 @@ int main(int argc, char** argv) {
     if (!mx || !ml) {
         fprintf(stderr, "FAIL: recompiling: %s / %s\n", mx ? "" : snx_recompiler_error(rx),
                 ml ? "" : snx_recompiler_error(rl));
-        return 1;
+        goto out;
     }
     printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
     printf("recompiler backends: %lu functions, the x86-64 back end made %lu\n",
            (unsigned long)snx_recompiled_functions(mx), (unsigned long)snx_recompiled_x64_functions(mx));
     if (!snx_recompiled_x64_functions(mx)) {
         printf("recompiler backends: no x86-64 back end on this host: nothing to compare\n");
-        return 0;
+        result = 0;
+        goto out;
     }
     if (snx_recompiled_x64_functions(mx) * 10 < snx_recompiled_functions(mx) * 9) {
         fprintf(stderr, "FAIL: the x86-64 back end made under 90%% of the functions\n");
@@ -453,7 +455,7 @@ int main(int argc, char** argv) {
                 c[k].x[30] = STOP;
                 if (snx_recompiled_bind(m, &c[k])) {
                     fprintf(stderr, "FAIL: bind\n");
-                    return 1;
+                    goto out;
                 }
                 g_running = hints[i];
                 snx_recompiled_run(m, &c[k], hints[i], STOP);
@@ -478,10 +480,12 @@ int main(int argc, char** argv) {
         }
 done:
     printf("recompiler backends: %u functions, %u states each: %d failures\n", functions, states, failures);
+    result = failures != 0;
+out:
     snx_recompiled_free(mx);
     snx_recompiled_free(ml);
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
     free(mem[0]), free(mem[1]), free(data0), free(hints);
-    return failures != 0;
+    return result;
 }
