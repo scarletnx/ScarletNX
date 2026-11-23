@@ -1001,6 +1001,19 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     return n;
 }
 
+/* the CPU's bytes of [a, end) of a watch over a GPU buffer's pages (own_watch_in_place), which are no pool pages: read
+   through the buffer's view, into a buffer of this thread's first, as dst can be guest memory and mem.c's lock is held
+   for the read. 1, or 0 when they aren't such pages */
+static int ext_stage(u64 a, u64 end, u8* dst) {
+    for (u64 at = a; at < end;) {
+        u8 part[1024];
+        const u64 n = end - at < sizeof part ? end - at : sizeof part;
+        if (mem_ext_read(at, part, n)) return 0;
+        memcpy(dst + (at - a), part, (size_t)n);
+        at += n;
+    }
+    return 1;
+}
 /* the CPU's bytes of [a, b) into dst at a - addr: a page an owner is on through the mirror (its CPU bytes are in the
    pool), page by page, and each run of pages no entry is on as it is, with one look under the lock. A page landed
    meanwhile reads the same through either. A look for each page, in a range of 16 MiB with two small owners that one
@@ -1040,7 +1053,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
             }
         } else if (owned && !mem_pool_offset(a, &off))
             memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else
+        else if (!owned || !ext_stage(a, end, dst + (a - addr)))
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
     }
@@ -1152,7 +1165,9 @@ int own_hash(u64 addr, u64 size, u64* h) {
     return any;
 }
 
-int own_watch(u64 addr, u64 size) {
+/* own_watch, own_watch_in_place: in place, the pages stay a GPU buffer's (mem_ext_runs) where mem_own_prepare would
+   move them into the pool */
+static int watch(u64 addr, u64 size, int in_place) {
     u64 lo = addr & ~(g_own.page - 1), hi, end = addr + size;
     MemPoolRun buf[16];
     ResList rel = {0};
@@ -1162,7 +1177,8 @@ int own_watch(u64 addr, u64 size) {
     if (!g_own.traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_own.page - 1) & ~(g_own.page - 1);
     inflight_wait(lo, hi);
-    MemPoolRun* runs = own_runs(lo, hi, buf, sizeof buf / sizeof *buf, &n);
+    MemPoolRun* runs = in_place ? (mem_ext_runs(lo, hi - lo, buf, sizeof buf / sizeof *buf, &n) ? NULL : buf)
+                                : own_runs(lo, hi, buf, sizeof buf / sizeof *buf, &n);
     if (!runs) return -1;
     /* in place: each page armed by no entry yet keeps a copy of its bytes, all of them the CPU's, for own_stage. Read
        without faulting, as own_begin's edges: a page that can't be read is armed already and keeps what it has */
@@ -1204,6 +1220,8 @@ int own_watch(u64 addr, u64 size) {
     if (snap) scratch_put(&g_own.snap, snap);
     return 0;
 }
+int own_watch(u64 addr, u64 size) { return watch(addr, size, 0); }
+int own_watch_in_place(u64 addr, u64 size) { return watch(addr, size, 1); }
 
 int own_watched(u64 addr, u64 size) {
     u64 c = addr, end = addr + size;

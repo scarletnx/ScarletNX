@@ -1105,7 +1105,7 @@ static void test_moved(void) {
          guest memory moved into a GPU's buffer is the runtime's own, one beside it another owner's */
         char out[64], want[64];
         share_ok = 1;
-        CHECK(mem_migrate(HEAP_BASE, 0x1000, 7) == 0);
+        CHECK(mem_migrate(HEAP_BASE, 0x1000, 7, NULL) == 0);
         foreign.named[0][0] = HEAP_BASE, foreign.named[0][1] = HEAP_BASE + 0x1000;
         foreign.named[1][0] = HEAP_BASE + 0x1000, foreign.named[1][1] = HEAP_BASE + 0x2000;
         foreign.n = 2;

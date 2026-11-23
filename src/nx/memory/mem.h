@@ -179,8 +179,9 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
    reservation's own pages with their bytes. Unmapping or decommitting moved pages, or moving them into the pool, puts
    other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. Pool pages it
    moves are given back to the pool. 0, MEM_BADSTATE (not all of it is what mem_movable says), or MEM_NOMEM when the
-   host can't share them */
-int mem_migrate(u64 a, u64 size, int fd);
+   host can't share them. view is a mapping of fd's pages in the process (a memfd's), or NULL: own.c reads the CPU's
+   bytes of a trapped page through it (mem_ext_read), which the buffer keeps mapped while a run of its pages is */
+int mem_migrate(u64 a, u64 size, int fd, u8* view);
 int mem_unmigrate(u64 a, u64 size);
 /* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages or on pool pages
    that no other address maps (not a view's or its source's, not shared memory's, not those a service maps outside
@@ -248,6 +249,13 @@ typedef struct {
     u64 addr, size, pool; /* guest pages [addr, addr + size) are pool pages from pool on */
 } MemPoolRun;
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
+/* [a, a + size), whole pages, all a GPU's buffer's (mem_migrate) with a view of its pages, to be trapped where they are
+   (own_watch_in_place): a dma-buf of them keeps them, and a move into the pool would leave it the old ones. 0 with
+   the runs, each its own address as its "pool offset" (as without the pool), or -1 */
+int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
+/* the bytes of [a, a + size) through the view of the buffer whose pages are there (mem_migrate), under mem.c's lock,
+   which the view outlives: 0, or -1 when a run of such pages with a view doesn't hold them all */
+int mem_ext_read(u64 a, void* dst, u64 size);
 /* 1 when this thread holds mem.c's lock: the renderer's watch of owed bytes again (vk_rt_watch_owed) waits for a
    later vk_unlock, as mem_own_prepare would take the lock again */
 int mem_lock_held(void);
