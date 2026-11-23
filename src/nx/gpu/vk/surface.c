@@ -1960,7 +1960,7 @@ static u32 publish_gaps(const Surf* s, u64 size, const CpuRuns* newer, u64 (*r)[
     return n ? n : (u32)-1; /* -1: nothing to read, the flush writes it all */
 }
 u64 g_vk_publish_reads_cut, g_vk_publish_bytes_skipped; /* publishes that read only their gaps, and the bytes left */
-int vk_surf_publish(Surf* s) {
+static int surf_publish(Surf* s) {
     SNX_ZONE(z_publish, "surface publish");
     u64 size = flush_bytes(s);
     u32 mem_wgen = s ? s->mem_wgen : 0;
@@ -2079,6 +2079,21 @@ int vk_surf_publish(Surf* s) {
     rt_publish_newer(s, size, retired != 0);
     return 1;
 }
+/* surf_publish counted by why (VkRtWatchStats, vk_lock held): its bytes, and the CPU's time in the outermost one, as
+   a publish publishes the older targets under it first (vk_rt_before_publish_cpu) */
+static int publish_why(Surf* s, int why) {
+    static int depth;
+    const u64 size = s ? flush_bytes(s) : 0, a = depth ? 0 : plat_ns();
+    depth++;
+    const int r = surf_publish(s);
+    depth--;
+    if (!r) return 0;
+    g_vk_rt_watch.by[why]++;
+    g_vk_rt_watch.bytes[why] += size;
+    if (!depth) g_vk_rt_watch.ns[why] += plat_ns() - a;
+    return 1;
+}
+int vk_surf_publish(Surf* s) { return publish_why(s, VK_PUB_OTHER); }
 /* A draw's storage image kept on the GPU until the CPU touches its bytes, where the write-back read all of them on the
    CPU before the draw, and copied the image back after it, to merge the two with what the CPU wrote between. Here
    the span is GPU-owned from the bind on: by the owner a release published there before, or by one made now from
@@ -2630,8 +2645,8 @@ static void linear_drop(Surf* s) {
     drawn_pull(&g_linear, s, &s->in_linear);
     drawn_pull(&g_bl, s, &s->in_bl);
 }
-static void rt_publish_now(Surf* s) {
-    if (!vk_surf_publish(s)) vk_surf_flush(s, NULL);
+static void rt_publish_now(Surf* s, int why) {
+    if (!publish_why(s, why)) vk_surf_flush(s, NULL);
 }
 /* a block linear target s drawn since the last release, its pixels newer than memory: watched, or published */
 static void rt_watch(Surf* s) {
@@ -2651,7 +2666,7 @@ static void rt_watch(Surf* s) {
         if (g_vk_rt_watch.publishes++ < 4)
             LOG("vulkan: the %ux%u render target at %llx (%llu bytes) published at a release: the CPU read it lately\n",
                 s->w, s->h, (unsigned long long)s->gva, (unsigned long long)size);
-        rt_publish_now(s);
+        rt_publish_now(s, VK_PUB_CPU_LATELY);
         return;
     }
     for (u64 off = 0; off < size;) {
@@ -2666,7 +2681,12 @@ static void rt_watch(Surf* s) {
                10 ms of each (31 fps with this, 25 without) */
             /* memory an import holds (unified memory): the publish copies in place, with no trap */
             if (vk_own_watch(cpu, n) && vk_uma_held(cpu, n)) {
-                rt_publish_now(s);
+                static u32 said;
+                if (said++ < 8)
+                    LOG("vulkan: the %ux%u render target at %llx (%u layers, format %d, %llu bytes) published at a "
+                        "release: an import holds its memory\n",
+                        s->w, s->h, (unsigned long long)s->gva, s->layers, (int)s->f.vk, (unsigned long long)size);
+                rt_publish_now(s, VK_PUB_IMPORT);
                 return;
             }
             armed = 1;
@@ -2684,7 +2704,7 @@ void vk_rt_publish_drawn(void) {
             if (own_traps())
                 rt_watch(s);
             else
-                rt_publish_now(s);
+                rt_publish_now(s, VK_PUB_NO_TRAPS);
         }
     }
     while (g_bl.n) {
@@ -2707,7 +2727,7 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
                 "watched: published\n",
                 (unsigned long long)cpu, s->w, s->h, (unsigned long long)s->gva, (unsigned long long)rt_bytes(s));
         s->cpu_asked = g_vk_present + 1;
-        rt_publish_now(s);
+        rt_publish_now(s, VK_PUB_CPU_ACCESS);
     }
     if (pending.surfaces != local) free(pending.surfaces);
     vk_unlock();

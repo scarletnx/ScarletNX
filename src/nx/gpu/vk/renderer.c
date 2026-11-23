@@ -1188,6 +1188,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_rt_readbacks,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
+            /* the render targets published, a present over the 600, by why (vk.h's VK_PUB_*) */
+            static const char* const why[VK_PUB_N] = {"the CPU read it lately", "an import holds it",
+                                                      "the CPU touched it", "no traps", "other callers"};
+            char line[512];
+            int at = 0;
+            for (int k = 0; k < VK_PUB_N && at < (int)sizeof line; k++)
+                at += snprintf(line + at, sizeof line - (size_t)at, "%s%s %.1f (%.2f MB, %.3f ms)", k ? ", " : "",
+                               why[k], (double)g_vk_rt_watch.by[k] / 600.0,
+                               (double)g_vk_rt_watch.bytes[k] / 600.0 / 1e6, (double)g_vk_rt_watch.ns[k] / 600.0 / 1e6);
+            LOG("vulkan: render targets published a present, by why: %s\n", line);
+            for (int k = 0; k < VK_PUB_N; k++)
+                g_vk_rt_watch.by[k] = g_vk_rt_watch.bytes[k] = g_vk_rt_watch.ns[k] = 0;
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
