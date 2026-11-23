@@ -131,7 +131,7 @@ static void read_put(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
    there first. Read twice, a word that changed in between would give discovery one instruction and the emitter
    another (a branch to an address discovery made no block for) */
 static SnxU32 image_word_once(SnxCodegen* codegen, const SnxCodeImage* m, size_t off) {
-    if (!m->generation) return snx_code_image_word(m, off);
+    if (!m->generation && !codegen->watch_reads) return snx_code_image_word(m, off);
     SnxU64 address = m->base + off;
     if (codegen->read_capacity)
         for (size_t i = address_hash(address) & (codegen->read_capacity - 1); read_used(codegen)[i];
@@ -149,7 +149,7 @@ int snx_codegen_words_current(const SnxCodegen* codegen) {
         const SnxCodeImage* m = NULL;
         for (size_t k = 0; !m && k < codegen->module_count; ++k) {
             const SnxCodeImage* c = &codegen->modules[k];
-            if (c->generation && address >= c->base && address - c->base + 4 <= c->image_size) m = c;
+            if (address >= c->base && address - c->base + 4 <= c->image_size) m = c;
         }
         if (!m || snx_code_image_word(m, (size_t)(address - m->base)) != read_words(codegen)[i]) return 0;
     }
@@ -983,6 +983,7 @@ int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_
     codegen->modules = (SnxCodeImage*)snx_alloc((module_count ? module_count : 1) * sizeof(*modules));
     memcpy(codegen->modules, modules, module_count * sizeof(*modules));
     codegen->module_count = module_count;
+    codegen->watch_reads = 1; /* the JIT's memory changes under the batch: record every word it reads */
     Addresses work = {0}, inner = {0};
     AddressSet local = {0}, seen_seed = {0}, entries = {0}, inside = {0}, none = {0};
     Known stop = {&local, known, user};

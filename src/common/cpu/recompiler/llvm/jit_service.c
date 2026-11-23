@@ -711,9 +711,11 @@ static int image_generations_match(const SnxImageGeneration* generations, size_t
 
 /* the batch's code is still that of the module: no update since its snapshot, or none to a word the batch read. A
    batch thrown away for any update anywhere in its module never finished while another range of the module, or the
-   same bytes again, was written more often than a batch takes to compile */
+   same bytes again, was written more often than a batch takes to compile. A module with no generation counter (the NX
+   runtime's) has only the words: every one the batch read, the jump tables too, is what it must still hold */
 static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* generations, size_t count) {
-    return image_generations_match(generations, count) || snx_codegen_words_current(codegen);
+    if (count) return image_generations_match(generations, count);
+    return snx_codegen_words_current(codegen);
 }
 
 /* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
@@ -1140,7 +1142,6 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     batch.count = count;
     lock(&s->lock);
     SnxCodeImage* images = images_take(s, &image_count, taken);
-    SnxU64 epoch = s->epoch;
     unlock(&s->lock);
     int generation_snapshot = images && image_generations_take(images, image_count, &generations, &generation_count);
     if (images && generation_snapshot && s->cache.capacity && (left = (SnxU64*)malloc(count * sizeof(*left))) != NULL) {
@@ -1253,8 +1254,12 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
        so a thread that loads the address (relaxed, cpu.h: x86-64 keeps loads in order) reaches the code and data
        written before it. A slot something else filled meanwhile (another batch, a wrapper) keeps what it holds */
     lock(&s->lock);
+    /* the code the batch read may be exactly what it was even though memory changed meanwhile: then the compile
+       stands, and only a change in the words it read is a drop. Memory elsewhere changing is what a game does all the
+       time, and a batch can be a second of its time. Under the lock, so an invalidate cannot fall between the check of
+       the words and the publish */
     int current = generation_snapshot && batch_current(&codegen, generations, generation_count);
-    if (epoch == s->epoch && current) {
+    if (current) {
         for (size_t i = 0; !rc && i < codegen.function_count; ++i) {
             const SnxFunction* f = &codegen.functions[i];
             GuestFn code = unit_function(table, i);
@@ -1281,7 +1286,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         if (!rc) span_of_batch(s, &codegen, table);
     }
     /* a batch found changed earlier stays dropped though its words came back meanwhile: FAILED would end its pcs */
-    int dropped = epoch != s->epoch || !current || source_changed;
+    int dropped = !current || source_changed;
     for (size_t i = 0; i < count; ++i) {
         Entry* e = find(s, pcs[i]);
         const SnxFunction* f = rc ? NULL : snx_codegen_entry(&codegen, pcs[i]);
@@ -1778,7 +1783,7 @@ void snx_jit_invalidate_ranges(SnxJitService* s, SnxU64 addr, SnxU64 size, SnxJi
     size_t range_capacity = s->span_count;
     if (callback && range_capacity) ranges = (InvalidatedRange*)calloc(range_capacity, sizeof(*ranges));
     if (callback && range_capacity && !ranges) ranges_incomplete = 1;
-    /* a batch compiling now reads s->epoch before its code, and skips the publish when it has changed */
+    /* a batch compiling now reads s->epoch before its code, and refuses a cache record that memory changed since */
     ++s->epoch;
     if ((end - addr) / 4 < s->entry_capacity / 8) { /* a few lines (IC IVAU's 64 bytes): each pc looked up */
         for (SnxU64 pc = addr & ~(SnxU64)3; pc < end; pc += 4) {

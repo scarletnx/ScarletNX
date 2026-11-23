@@ -800,8 +800,36 @@ static void test_invalidate_in_flight(void) {
     snx_jit_drain(service);
     CHECK(get(0x4800) != NULL);
     snx_jit_stats(service, &stats);
-    printf("invalidate in flight: %lu batches dropped in 9 rounds, each pc compiled again\n", stats.dropped - dropped);
-    CHECK(stats.dropped > dropped);
+    printf("invalidate in flight: %lu batches dropped in 9 rounds of invalidating code they never read\n",
+           stats.dropped - dropped);
+    /* none: the batches read code no invalidation touched, and what a game does all the time elsewhere in memory must
+       not cost a batch its second of the game's time (code_fingerprint) */
+    CHECK(stats.dropped == dropped);
+    snx_jit_service_free(service);
+}
+
+/* the code a batch reads changing before it publishes: what the service holds is what memory holds, never the batch's
+   stale compile, and the pc is never left compiling */
+static void test_invalidate_own_code_in_flight(void) {
+    static const u32 once[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
+    static const u32 twice[] = {0x91000800, 0xD65F03C0}; /* add x0, x0, #2; ret */
+    CPU c;
+    int round;
+    service = start(0, 1);
+    if (!service) {
+        ++failures;
+        return;
+    }
+    for (round = 0; round < 16; ++round) {
+        const int other = round & 1;
+        put(0x6000, other ? once : twice, 2);
+        snx_jit_invalidate(service, 0x6000, 4);
+        CHECK(snx_jit_wait(service, 0x6000) != NULL);
+        cpu_init(&c, 0xF000);
+        run(&c, 0x6000);
+        CHECK(c.x[0] == (other ? 1 : 2) && c.pc == RETURN);
+    }
+    printf("a batch's own code changed: %d rounds, each runs what memory holds\n", round);
     snx_jit_service_free(service);
 }
 
@@ -1161,6 +1189,7 @@ int main(int argc, char** argv) {
     test_invalidate_middle();
     test_invalidated_callee();
     test_invalidate_in_flight();
+    test_invalidate_own_code_in_flight();
     test_image_map();
     test_region_limit(0);
     test_waited_priority();

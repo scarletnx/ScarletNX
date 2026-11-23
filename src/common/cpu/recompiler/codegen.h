@@ -31,6 +31,10 @@ typedef struct {
        them */
     int check_fetch;
     int hook_direct_calls;
+    /* record every word the codegen reads, also from a module with no generation: the JIT's memory changes under the
+       batch that reads it, and the words it read are what proves the batch is still of memory. The AOT build reads a
+       module that does not change, and leaves the block empty */
+    int watch_reads;
     /* the words read from a module whose copy can change while it is read (SnxCodeImage.generation), each taken from
        the module once, so discovery, the jump tables, the emitter and the JIT cache's hash agree on one version of
        every word: the one the code is built from. One block: read_capacity addresses, as many words, as many marks */
