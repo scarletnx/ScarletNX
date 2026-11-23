@@ -2221,13 +2221,13 @@ void vk_rec_command_report(double presents, int count) {
     };
     g_rec_kind_count = count;
     if (!g_rec_kind_total) return;
-    char line[512];
+    char line[2048];
     int at = 0;
     for (u64 i = 0; i < REC_KINDS; i++)
         for (size_t j = 0; j < sizeof names / sizeof *names; j++)
             if (g_rec_kind[i].fn == names[j].fn)
-                at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.0f",
-                               at ? "," : "", names[j].name, (double)g_rec_kind[i].n / (presents ? presents : 1.0));
+                at = snx_appendf(line, sizeof line, at, "%s %s %.0f", at ? "," : "", names[j].name,
+                                 (double)g_rec_kind[i].n / (presents ? presents : 1.0));
     LOG("vulkan: recording thread commands a present:%s\n", line);
     LOG("vulkan: recording thread merged %.0f barriers into an earlier one's call a present\n",
         (double)g_barrier_merged / (presents ? presents : 1.0));

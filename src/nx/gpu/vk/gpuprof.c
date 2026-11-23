@@ -806,22 +806,20 @@ static void gp_idle_report(void) {
                 LOG("vulkan: GPU   idle, %s: %.2f ms a present, %.1f times\n", g_idle_name[c],
                     (double)g_idle_ns[c] / 1e6 / f, (double)g_idles[c] / f);
         for (int k = 0; k < VK_WAIT_N; k++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.2f ms (%.1f, idle after them %.2f ms)",
-                           k ? "," : "", wait[k], (double)(g_vk_wait_ns[k] - wait0[k]) / 1e6 / f,
-                           (double)(g_vk_waits[k] - waits0[k]) / f, (double)g_round_ns[k] / 1e6 / f);
+            at = snx_appendf(line, sizeof line, at, "%s %s %.2f ms (%.1f, idle after them %.2f ms)", k ? "," : "",
+                             wait[k], (double)(g_vk_wait_ns[k] - wait0[k]) / 1e6 / f,
+                             (double)(g_vk_waits[k] - waits0[k]) / f, (double)g_round_ns[k] / 1e6 / f);
         LOG("vulkan: GPU   the GPU thread's waits for the graphics queue a present:%s; for the compute queue %.2f ms\n",
             line, (double)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) - cs0) / 1e6 / f);
         at = 0;
         for (int w = 0; w < VK_SUB_N; w++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.1f", w ? "," : "", why[w],
-                           (double)g_sub_why[w] / f);
+            at = snx_appendf(line, sizeof line, at, "%s %s %.1f", w ? "," : "", why[w], (double)g_sub_why[w] / f);
         LOG("vulkan: GPU   submissions a present by why:%s\n", line);
         u64 fill = 0;
         at = 0;
         for (int w = 0; w < VK_SUB_N; w++) {
             fill += g_fill_ns[w];
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.2f", w ? "," : "", why[w],
-                           (double)g_fill_ns[w] / 1e6 / f);
+            at = snx_appendf(line, sizeof line, at, "%s %s %.2f", w ? "," : "", why[w], (double)g_fill_ns[w] / 1e6 / f);
         }
         LOG("vulkan: GPU   idle while the next submission held commands not yet submitted, up to its GPU time: %.2f "
             "ms a present, %.2f ms of it before a submission the CPU waited for; by its why:%s\n",

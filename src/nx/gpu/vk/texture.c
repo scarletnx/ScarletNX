@@ -2793,9 +2793,9 @@ void vk_rt_copy_log(void) {
         char line[768];
         int at = 0;
         for (int i = 0; i < VK_RT_COPY_N && at < (int)sizeof line; i++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s %.2f for %s (%.2f ending a pass, %.0f KB)",
-                           i ? ";" : "", (double)n->written[i] / presents, why[i], (double)n->ended[i] / presents,
-                           (double)n->bytes[i] / 1024.0 / presents);
+            at = snx_appendf(line, sizeof line, at, "%s %.2f for %s (%.2f ending a pass, %.0f KB)", i ? ";" : "",
+                             (double)n->written[i] / presents, why[i], (double)n->ended[i] / presents,
+                             (double)n->bytes[i] / 1024.0 / presents);
         LOG("vulkan: copies of render targets a present over the last %llu presents:%s. %.2f a present came after "
             "another for the same draw or dispatch (%.2f ending a pass); one present had %llu copies at most, and "
             "%llu passes ended by them\n",
@@ -2804,8 +2804,8 @@ void vk_rt_copy_log(void) {
         at = 0;
         line[0] = 0;
         for (u32 i = 0; i < VK_RT_COPY_PAIRS && n->pair[i].n && at < (int)sizeof line; i++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s format %u to %u %.2f", i ? "," : "",
-                           n->pair[i].from, n->pair[i].to, (double)n->pair[i].n / presents);
+            at = snx_appendf(line, sizeof line, at, "%s format %u to %u %.2f", i ? "," : "", n->pair[i].from,
+                             n->pair[i].to, (double)n->pair[i].n / presents);
         if (at)
             LOG("vulkan: those copies between formats, a present (Vulkan's format numbers):%s; %.2f more of other "
                 "pairs\n",
@@ -3950,8 +3950,8 @@ void vk_tex_check_log(void) {
         int at = 0;
         for (int k = 0; k < GPU_WRITE_KINDS && at < (int)sizeof kinds; k++)
             if (g_tex_checks.by_kind[k])
-                at += snprintf(kinds + at, sizeof kinds - (size_t)at, "%s%llu by %s", at ? ", " : "",
-                               (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
+                at = snx_appendf(kinds, sizeof kinds, at, "%s%llu by %s", at ? ", " : "",
+                                 (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
         LOG("vulkan: the GPU-side writes of those loads of pieces, by the newest write on their pages: %s\n", kinds);
     }
     LOG("vulkan: full texture checks a present by what ended the texture's quiet: %.1f never quiet, %.1f a present, "

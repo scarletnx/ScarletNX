@@ -636,10 +636,9 @@ void vk_stage_report(void) {
     char line[512];
     int at = 0;
     for (u32 r = 0; r < XRING_N; r++)
-        at += snprintf(line + at, sizeof line - (size_t)at, " %s %llu/%llu/%llu", ring[r],
-                       (unsigned long long)(g_xfer[r][XFER_HOST] >> 20),
-                       (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20),
-                       (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
+        at = snx_appendf(
+            line, sizeof line, at, " %s %llu/%llu/%llu", ring[r], (unsigned long long)(g_xfer[r][XFER_HOST] >> 20),
+            (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20), (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
     LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s; the rings hold %llu MiB, %llu "
         "buffers made for them in all, %llu of the device ring's in system memory for want of the device's\n",
         line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made,
