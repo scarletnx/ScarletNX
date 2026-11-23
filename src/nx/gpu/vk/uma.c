@@ -98,7 +98,6 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/vk/vk.h"
-#include "nx/runtime/main.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/uma_pages.h"
@@ -729,13 +728,13 @@ static int dmabuf_importable(void) {
    vk_mirror_on): sparse residency of buffers and room for the mirror's buffer, as big as guest memory's address space,
    and an eighth more for its mask. Without the mirror a discrete GPU's programs write guest memory across the bus,
    which took 18.5 ms of GPU time a present against 10.9 copied, and auto copies there; with a small BAR window, which
-   was not measured, too. Windows alone: Linux's discrete GPUs are amdgpu's dma-bufs, or untested. An Ounce program
-   alone (g_ounce): the mirror takes the writes of the programs that log them, which are its SM86 programs. A game of
-   Maxwell programs writes guest memory across the bus all the same, and one ran its world at 10 to 20 frames a
-   second in place against 49 to 58 copied */
+   was not measured, too. Windows alone: Linux's discrete GPUs are amdgpu's dma-bufs, or untested. Any game: the
+   mirror takes the writes of the programs that log them (an Ounce game's SM86 programs), and the other storage that
+   draws and dispatches write is kept in the GPU's memory as on the copy path (buffer.c's copy_writable), where one
+   Maxwell game's world ran at 42 to 54 frames a second against 41 to 55 copied */
 static int host_discrete(void) {
 #if defined(_WIN32)
-    if (!g_ounce || g_vk.mem_model != VK_MEM_REBAR) return 0;
+    if (g_vk.mem_model != VK_MEM_REBAR) return 0;
     VkPhysicalDeviceFeatures f;
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &f);
