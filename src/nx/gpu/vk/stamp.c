@@ -15,8 +15,9 @@
    within the same present are packed back-to-back so mid-frame CPU stalls don't inflate a frame's GPU span, and across
    presents the timeline catches up to the time its work became ready (gpu_ready_ns). Overlapping pipelined submissions
    clip against the previous submission's raw end timestamp so busy time is not double-counted. Values keep rising (by
-   STEP_NS at least) and stay at or below the guest time at which they are made, except where that step puts one up to
-   STEP_NS past it, so a game that compares them with the CPU's tick still can.
+   STEP_NS at least) and stay at or below the guest time at which they are made, except where those steps put them
+   past it (STEP_NS for each report made while the timeline stands at the clock), so a game that compares them with
+   the CPU's tick still can.
    The compute queue's work is not counted, nor is the runtime's own work on the graphics queue between
    vk_stamp_runtime_begin and _end: the console's GPU doesn't do it. A game changed its render size, the runtime loaded
    each new render target from memory, and the game read that load as its own GPU time and changed its size again
@@ -61,6 +62,7 @@ static struct {
     } sub[SUB_N];
     u64 shead, stail;
     u64 end, last; /* the timeline's end, and the last value given (guest ns) */
+    u64 clock;     /* the guest's clock at the last fold: one below it has gone back */
     u64 prev_t1;   /* raw end timestamp of the latest folded submission, for clipping overlaps */
     u64 prev_ns;   /* the guest time it was folded at */
     int have_prev;
@@ -153,11 +155,15 @@ void vk_stamp_fold(u64 done) {
         const u32 frame = g_st.sub[g_st.stail % SUB_N].frame;
         const u32 bits = g_vk.gfx_timestamp_bits;
         const double period = g_vk.props.limits.timestampPeriod;
-        if (now < g_st.last) { /* guest clock moved back (save-state load): re-anchor */
+        /* the guest's clock went back (a save state's load): the timeline starts again there. The clock is compared
+           with its own last reading, not with the last value: reports made while the timeline stands at the clock are
+           each a step past the one before, so the last value can be past a clock that only went forward */
+        if (now < g_st.clock) {
             g_st.end = g_st.last = now;
             g_st.have_prev = 0;
             g_st.last_frame = ~0u;
         }
+        g_st.clock = now;
         /* after a second, the previous end can't overlap, and a counter of few valid bits can have wrapped past half
            its period (36 bits of 1 ns: 34 s), which would read as an overlap */
         if (g_st.have_prev && now - g_st.prev_ns > 1000000000u) g_st.have_prev = 0;
@@ -218,7 +224,7 @@ void vk_stamp_fold(u64 done) {
     }
 }
 void vk_stamp_reset(void) {
-    g_st.end = g_st.last = 0;
+    g_st.end = g_st.last = g_st.clock = 0;
     g_st.have_prev = 0;
     g_st.last_frame = ~0u;
 }
