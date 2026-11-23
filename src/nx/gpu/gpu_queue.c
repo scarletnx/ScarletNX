@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The queue from the GPU front end to the renderer's side (gpu_queue.h). A ring of records, each with its fence.
-   The front end puts a record in and goes on. The records run in their order: with gpu_split on a thread of their
-   own, the renderer thread, else on the front end's thread right after they are queued. gpu_split=2 (auto) changes
-   between the two as the game runs, at a present, by which one measures faster (gq_auto).
+   The front end puts a record in and goes on. The records run in their order: on a thread of their
+   own, the renderer thread, else on the front end's thread right after they are queued, changing between the two as
+   the game runs, at a present, by which one measures faster (gq_auto).
 
    A guest write of the front end (LOAD_CB's constant buffer data, inline-to-memory, a release) is a record, so a draw
    queued before it reads the memory from before it. The front end's own reads of memory wait for the fence of the
@@ -54,7 +54,8 @@ static struct {
     void* big;      /* or its bytes outside it, too many for the ring: the call runs from there */
     GqFn big_fn;
     u64 big_bytes;
-    int started;    /* the renderer thread runs (gpu_split) */
+    int started;    /* the renderer thread runs */
+    int force;      /* 0: the mode that measures faster (gq_auto); 1: the renderer thread always; 2: never (gq_force) */
     int on;         /* it takes the records, where the front end doesn't run them itself: the front end's alone */
     u64 queued;     /* the fence of the last record put in: the front end's alone */
     u64 written[1u << GQ_SLOT_BITS];
@@ -325,7 +326,8 @@ static void gq_mode(int on) {
     plat_wake_word(&g_gq.work);
 }
 void gq_present(void) { atomic_fetch_add_explicit(&g_gq.presents, 1, memory_order_relaxed); }
-/* gpu_split=2: which of the two runs the game's work a present faster, measured as it runs. A mode's cost is the GPU
+void gq_force(int mode) { g_gq.force = mode; }
+/* which of the two runs the game's work a present faster, measured as it runs. A mode's cost is the GPU
    thread's busy time a present (gpu_thread_busy_ns: outside its waits for the game's work, and with its waits for the
    renderer thread in it), or with the split the renderer thread's time in records where that is longer: the frame
    waits for the slower of the two. The split ran a race 13% slower on one machine and other games faster: a guess from
@@ -402,7 +404,7 @@ static void gq_auto(void) {
             const char *chosen = gqa_name(g_gq.on), *other = gqa_name(!g_gq.on);
             g_gqa.phase = 0;
             if (hi > lo * 1.25) { /* the scene moved across the probe: neither a win nor a loss */
-                LOG("gpu: gpu_split=auto: %.3f ms a present on %s between %.3f and %.3f ms on %s: unsettled, again "
+                LOG("gpu: the split: %.3f ms a present on %s between %.3f and %.3f ms on %s: unsettled, again "
                     "later\n",
                     probe, other, before, after, chosen);
                 g_gqa.until = p + g_gqa.hold;
@@ -414,12 +416,12 @@ static void gq_auto(void) {
                 gq_mode(!g_gq.on);
                 g_gqa.wins = 0;
                 g_gqa.hold = GQA_HOLD;
-                LOG("gpu: gpu_split=auto: %.3f ms a present on %s against %.3f and %.3f ms on %s: it runs on %s from "
+                LOG("gpu: the split: %.3f ms a present on %s against %.3f and %.3f ms on %s: it runs on %s from "
                     "now\n",
                     probe, other, before, after, chosen, other);
             } else {
                 if (!win) g_gqa.hold = g_gqa.hold * 2 < GQA_HOLD_MAX ? g_gqa.hold * 2 : GQA_HOLD_MAX;
-                LOG("gpu: gpu_split=auto: %.3f ms a present on %s against %.3f and %.3f ms on %s: %s\n", probe, other,
+                LOG("gpu: the split: %.3f ms a present on %s against %.3f and %.3f ms on %s: %s\n", probe, other,
                     before, after, chosen, win ? "a win, one more to change" : "it stays");
             }
             g_gqa.until = p + g_gqa.hold;
@@ -432,19 +434,18 @@ static GqRecord* gq_put(u32 kind, u64 gva, u64 size) {
     if (bytes > GQ_RING / 4) return NULL; /* too big for the ring: the caller runs it after the queue */
     if (!g_gq.ring) {
         if (!(g_gq.ring = (u8*)malloc(GQ_RING))) return NULL;
-        if (g_settings.gpu_split) {
+        if (g_gq.force != 2) {
             atomic_store_explicit(&g_gq.split, 1, memory_order_relaxed);
             if (plat_thread(gq_thread, NULL, 1u << 20)) {
                 char why[256];
                 fatal("gpu: could not start the renderer thread: %s\n", snx_os_error(why, sizeof why));
             }
             g_gq.started = g_gq.on = 1;
-            LOG("gpu: gpu_split=%s: the renderer sets up draws on a thread of its own%s\n",
-                g_settings.gpu_split == 2 ? "auto" : "1",
-                g_settings.gpu_split == 2 ? ", or on this one where that measures faster" : "");
+            LOG("gpu: the renderer sets up draws on a thread of its own%s\n",
+                g_gq.force ? "" : ", or on this one where that measures faster");
         }
     }
-    if (g_settings.gpu_split == 2 && g_gq.started) gq_auto();
+    if (!g_gq.force && g_gq.started) gq_auto();
     u64 at = gq_head() % GQ_RING;
     if (at + bytes > GQ_RING) { /* the ring's end: a filler record to it, and this one from the ring's start */
         u64 fill = GQ_RING - at;

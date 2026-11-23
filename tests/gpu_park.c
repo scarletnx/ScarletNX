@@ -382,7 +382,7 @@ static void expect(int ok, const char* what) {
 }
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
-/* ------------------------------------------------ gpu_split=1: gpu_queue.c's renderer thread runs the records */
+/* ------------------------------------------------ gq_force(1): gpu_queue.c's renderer thread runs the records */
 #define CBUF  (SEM + 0x300) /* a word of a constant buffer */
 #define EVENT (SEM + 0x200) /* an NVN event's word */
 /* a record that holds the renderer thread until the front end opens the gate: what the front end queues after it
@@ -450,7 +450,7 @@ static void stamped_release(void* arg) {
     open_gate();
 }
 static int split_main(void) {
-    g_settings.gpu_split = 1;
+    gq_force(1);
     cpu_store(CBUF, 3);
     gpu_call(cb_upload, NULL, NULL, 0);
     gpu_call(called, (void*)(uintptr_t)0x991, NULL, 0); /* a call runs once every record queued before it ran */
@@ -512,7 +512,7 @@ int main(int argc, char** argv) {
     /* the front stub runs draws and clears on the GPU thread as they come, so gpu_queue.c's records (DMA copies,
        writes) run there too, in their order with them: on a renderer thread of their own they ran after the clears
        that mark a job done */
-    g_settings.gpu_split = 0;
+    gq_force(2);
     /* A yielding call retains its lane's order without trapping the GPU thread. Another lane can signal it. */
     gpu_call_poll(poll_wait, (void*)(uintptr_t)0x970, 0);
     gpu_call_poll(poll_mark, (void*)(uintptr_t)0x971, 0);

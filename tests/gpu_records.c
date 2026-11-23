@@ -11,7 +11,7 @@
    end that names the inline bytes it changed (gpu_ds_inline_changed) sends only those, while the ranges chain from the
    generation the renderer's side has, are at most 16 and less than half of the group.
 
-   With the argument split, gpu_split's renderer thread runs the records: a draw that the front end queued reads the
+   With the argument split, gpu_queue.c's renderer thread runs the records: a draw that the front end queued reads the
    state as it was at the draw, while the front end has gone on and changed it */
 #include <pthread.h>
 #include <stdarg.h>
@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/renderer.c"
 
 /* ------------------------------------------------ what renderer.c reaches outside itself */
@@ -422,7 +423,7 @@ static void test_calls(void) {
     CHECK(nseen_mem == seen + 1, "gpu_mem_seen did not reach the renderer's mem_seen");
 }
 
-/* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
+/* ------------------------------------------------ gq_force(1): the renderer thread runs the records */
 static pthread_mutex_t gate_lk = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
 static int gate_open, gate_held;
@@ -447,7 +448,7 @@ static const Renderer split_renderer = {.name = "split", .draw = r_split_draw};
 static int split_main(void) {
     DrawOwner own = {0};
     DrawCall dc = {0};
-    g_settings.gpu_split = 1;
+    gq_force(1);
     g_renderer = &split_renderer;
     new_state(&a, 1, 0x10);
     gq_call(held, NULL, 0); /* the ring and the renderer thread start here */
@@ -479,10 +480,8 @@ static int split_main(void) {
 }
 
 int main(int argc, char** argv) {
-    /* the draws are set up on the renderer thread unless a setting turns it off */
-    CHECK(g_settings.gpu_split == 2, "gpu_split is %d by default, not 2 (auto)", g_settings.gpu_split);
     if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
-    g_settings.gpu_split = 0; /* the records run on this thread, as they are queued */
+    gq_force(2); /* the records run on this thread, as they are queued */
     test_copy();
     test_dispatch();
     test_records();

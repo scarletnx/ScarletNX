@@ -88,7 +88,7 @@ static void madeup_set(u64 a, int made) {
    goes on without a wait: one game asked the renderer for about 70 counts a frame, and the front end waited for
    every queued record each time. stamp: the timestamp is the clock's (gpu_ticks) as the report runs, where the draws
    before it have been set up, not ticks: the front end's own clock, read as it queued the report, is ahead of them
-   with gpu_split (gpu.h, gpu_release_write_stamped) */
+   with the renderer thread (gpu.h, gpu_release_write_stamped) */
 typedef struct {
     u64 a, value, ticks;
     u32 one, made, counted, owner, stamp;

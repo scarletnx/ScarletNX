@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Opt-in integration test: real renderer, no game data. Works with Mesa lavapipe and no display server. */
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
@@ -8318,7 +8319,7 @@ static int run_headless(int argc, char** argv) {
     /* the checks read each draw's counts and pixels right after the draw is made, on this thread: the renderer's side
        runs here too unless an argument asks for its thread (--gpu-split=1), where a draw is done only once that
        thread has taken it */
-    g_settings.gpu_split = 0;
+    gq_force(2);
     /* the checks of guest memory read in place bind vertices and constant buffers there, as the runtime did before
        uma_copies, whose auto copies them on amdgpu (vk_uma_imports_dear): in place unless the command line says
        otherwise (--uma_copies=0 or 2), and check_uma_copies takes each value itself */

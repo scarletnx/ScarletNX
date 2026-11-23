@@ -409,7 +409,7 @@ void gpu_release_stamp(u64 gva, const void* data, int top);
    the caller leaves the guest core first. Returns 0 when nothing is left to do */
 int gpu_release_stamp_sync(u64 cpu, int may_wait);
 /* a release of 16 bytes: the 8 at data, then the GPU's timestamp (gpu_ticks), read where the renderer's side performs
-   the release, in its place among the draws. With gpu_split the front end is ahead of them: read as it queued the
+   the release, in its place among the draws. With the renderer thread the front end is ahead of them: read as it queued the
    release, the two timestamps a game puts around a frame's draws were the front end's few milliseconds apart whatever
    the draws took, and a game that sizes its picture by that time drew at its largest */
 void gpu_release_write_stamped(u64 gva, const void* data);
