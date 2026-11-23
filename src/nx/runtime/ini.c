@@ -428,6 +428,8 @@ static const struct {
                       {"compress_shader_cache", "the shader cache is always packed, when the game closes"},
                       {"bc7_cache_gb", "the BC7 cache has no file to bound: it holds the levels used most in "
                                        "memory, up to an eighth of the machine's"},
+                      {"dlss_render_size", "now internal_resolution, of the same values"},
+                      {"dlss_upscaler", "now render_upscaler, whose 3 (None) is dlss_upscaler's 0 (a filtered copy)"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
@@ -437,8 +439,11 @@ const char* ini_deprecated(const char* k) {
 }
 static const struct {
     const char *key, *now;
-    } INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"},
-                      {"tracy_perf_map", "perf_map"}, {NULL, NULL}};
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"},
+                   {"emulated_cores", "emulated_cores_mode"},
+                   {"tracy_perf_map", "perf_map"},
+                   {"dlss_render_size", "internal_resolution"},
+                   {NULL, NULL}};
 const char* ini_renamed(const char* k) {
     int i;
     for (i = 0; INI_RENAMED[i].key; i++)

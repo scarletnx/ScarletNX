@@ -185,7 +185,8 @@ int vk_upscale(const GpuUpscale* u) {
     int module = (u->flags & GPU_UPSCALE_MODULE) != 0;
     const char* who = module ? "a hook module" : "the game's DLSS evaluations";
     const char* why;
-    if (!module && g_settings.dlss_upscaler != 1) return 0;
+    /* None: a DLSS evaluation is its front end's filtered copy (nvn_copy.c), 1:1 at the output's size */
+    if (!module && g_settings.render_upscaler == SNX_UPSCALER_COPY + 1) return 0;
     if (!g_vk.feat.shaderStorageImageReadWithoutFormat || !g_vk.feat.shaderStorageImageWriteWithoutFormat) {
         LOG_LIMIT(1,
                   "vulkan: the upscalers need storage images read and written without a format, which this GPU "

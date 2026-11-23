@@ -20,7 +20,7 @@ static inline int32_t nvn_dlss_scaled(int32_t size, float scale) {
    0.58 of it. A scale from a half up to the output's size may vary between a half of the output and all of it. A
    scale below a half is fixed, so the smallest and the largest are the optimal size. At the output's size the
    smallest is 0.99 of it.
-   setting is the DLSS render size setting, which replaces the optimal size when it is 1 to 5 (the output's size,
+   setting is the internal resolution setting, which replaces the optimal size when it is 1 to 5 (the output's size,
    1/1.5, 1/1.7, 1/2 and 1/3 of it). The smallest and the largest then widen to hold that size, since a game may
    evaluate only a render size between the two */
 static inline void nvn_dlss_sizes(int32_t width, int32_t height, int32_t method, int32_t setting, int32_t out[3][2]) {

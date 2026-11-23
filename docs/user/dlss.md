@@ -26,9 +26,9 @@ Nothing is installed: the program loads the files from that folder when the game
 | Key | Default | What it does |
 | --- | --- | --- |
 | `dlss_runtime` | empty | The folder above. Empty = no DLSS |
-| `render_upscaler` | `0` | `0` (Best) takes DLSS when it can run, `4` asks for it. `1` asks for FSR 2 even with the files there |
+| `render_upscaler` | `0` | `0` (Best) takes DLSS when it can run, `4` asks for it. `1` asks for FSR 2 even with the files there, `3` (None) a filtered copy |
 | `dlss_preset` | `2` | The DLSS model: `0` NVIDIA's choice for each mode, `1` to `4` the presets J, K, L, M. K by default: at 2x it takes less memory than NVIDIA's choice there (M), 158 against 214 MB at 2560x1440 |
-| `dlss_upscaler` | `1` | `0` turns the DLSS evaluations into a filtered copy, DLSS or not |
+| `internal_resolution` | `0` | The size the game renders at before DLSS: `0` the game's choice, `1` the output's size, `2` to `5` Quality to Ultra Performance |
 
 The mode follows the game: its render size against the output's picks DLAA, Quality, Balanced, Performance or Ultra
 Performance.
