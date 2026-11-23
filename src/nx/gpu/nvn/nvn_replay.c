@@ -290,8 +290,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                times its frame with two of them and sizes its rendering by the span */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
-            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, guest_gpu_ticks()))
-                break;
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address)) break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
             if (r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
                 snx_st_le64(v + 8, guest_gpu_ticks()); /* one thread's: a queued report's are read as its record runs */

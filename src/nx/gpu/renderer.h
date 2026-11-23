@@ -306,7 +306,7 @@ int gpu_render_state(u32 owner, u32* pred);
    renderer's side as the 3D engine's render enable is (maxwell/engines.c) */
 void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a);
 /* a samples-passed report at a of owner: the renderer's count when counted and it has one, else value, with ticks */
-void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks);
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value);
 /* a transform feedback control of the owner of ds (renderer.h xfb_control), in its place among the draws */
 void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride);
 void gpu_render_states_reset(void);

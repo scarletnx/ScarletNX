@@ -232,8 +232,8 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)op, (void)payload, (void)size, (void)stride;
     return 0;
 }
-int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) {
-    (void)d, (void)at, (void)ticks;
+int nvn_draw_samples(NvnDraw* d, u64 at) {
+    (void)d, (void)at;
     return 0;
 }
 int nvn_cmd_unfinished(u64 p) {

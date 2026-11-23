@@ -240,13 +240,16 @@ int main(void) {
     gpu_render_enable_nvn(ch.ds.owner, 1, VA + 32);
     expect(1, "NVN's mode 1 draws over counts that differ");
     gpu_render_enable_nvn(ch.ds.owner, 2, 0);
-    /* a samples-passed report with no count of the renderer's: the replay's value and its ticks */
+    /* a samples-passed report with no count of the renderer's: the replay's value and the clock's ticks as it runs */
     put64(32, 0);
     put64(40, 0);
-    gpu_report_samples(ch.ds.owner, VA + 32, 1, 1000, 77);
-    if (snx_ld_le64(vram + 32) != 1000 || snx_ld_le64(vram + 40) != 77) {
-        fprintf(stderr, "FAIL: a samples-passed report wrote %llu at ticks %llu, not 1000 at 77\n",
-                (unsigned long long)snx_ld_le64(vram + 32), (unsigned long long)snx_ld_le64(vram + 40));
+    const u64 before = gpu_ticks();
+    gpu_report_samples(ch.ds.owner, VA + 32, 1, 1000);
+    const u64 after = gpu_ticks();
+    if (snx_ld_le64(vram + 32) != 1000 || snx_ld_le64(vram + 40) < before || snx_ld_le64(vram + 40) > after) {
+        fprintf(stderr, "FAIL: a samples-passed report wrote %llu at ticks %llu, not 1000 at ticks from %llu to %llu\n",
+                (unsigned long long)snx_ld_le64(vram + 32), (unsigned long long)snx_ld_le64(vram + 40),
+                (unsigned long long)before, (unsigned long long)after);
         failures++;
     }
 

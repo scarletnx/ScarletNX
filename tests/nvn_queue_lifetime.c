@@ -230,10 +230,9 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     stride[1] = (i64)gr64(payload + 8);
     return 1;
 }
-int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) {
+int nvn_draw_samples(NvnDraw* d, u64 at) {
     (void)d;
     (void)at;
-    (void)ticks;
     return 0;
 }
 static u32 unfinished_asked; /* each jump of a walk asks once */

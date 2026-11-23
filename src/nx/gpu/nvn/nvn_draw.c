@@ -1140,7 +1140,7 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
     gpu_render_enable_nvn(d->ds.owner, r->mode, r->address);
     d->render_off = 0;
 }
-int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
+int nvn_draw_samples(NvnDraw* d, u64 address) {
     /* The console's counter always runs, so a report needs no reset first. One game reports at an address and 16 bytes
        on, around a depth pass, then draws its colour only when the two differ: it never resets */
     if (!d->samples && g_renderer->samples_enable && g_renderer->samples_reset) {
@@ -1149,7 +1149,7 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
         d->samples = 1;
     }
     /* the renderer's count, in its place among the draws, or the replay's made-up 1000 (nvn_replay.c) */
-    gpu_report_samples(d->ds.owner, address, d->samples, 1000, ticks);
+    gpu_report_samples(d->ds.owner, address, d->samples, 1000);
     return 1;
 }
 
