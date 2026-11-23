@@ -6,7 +6,7 @@
    holds the renderer's lock (gq_direct), which only that thread's own hold changes. A queued write
    marks each page it covers with its fence (written[]).
 
-   With the argument split, gpu_split's renderer thread runs the records: the front end goes on while it is behind, a
+   With the argument split, gpu_queue.c's renderer thread runs the records: the front end goes on while it is behind, a
    read of the front end waits only for a queued write over its bytes, and a read that queued writes cover takes their
    bytes over memory's with no wait. A read takes the fence of the newest write over its pages from written[] first,
    and looks in the list of recent writes only from that fence down */
@@ -184,7 +184,7 @@ static void* direct_elsewhere(void* arg) {
     return NULL;
 }
 
-/* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
+/* ------------------------------------------------ gq_force(1): the renderer thread runs the records */
 static pthread_mutex_t gate_lk = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
 static int gate_open, gate_held;
@@ -223,7 +223,7 @@ static u64 now_ns(void) {
     return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
 }
 static int split_main(void) {
-    g_settings.gpu_split = 1;
+    gq_force(1);
     front = pthread_self();
     hold(); /* the ring and the renderer thread start here */
     u8 a8[16], b4[4], got[16];
@@ -375,9 +375,9 @@ static int split_main(void) {
     CHECK(off_front == behind + 50, "%d of 50 records after the change back ran on the renderer thread",
           off_front - behind);
 
-    /* gpu_split=2: where one thread measures faster, two probes in a row change to it, and where the split measures
+    /* gq_force(0), the runtime's: where one thread measures faster, two probes in a row change to it, and where the split measures
        faster again, two more change back. Each present costs the GPU thread the mode's milliseconds */
-    g_settings.gpu_split = 2;
+    gq_force(0);
     /* a loading screen's presents, near empty: one thread five times faster, under GQA_FLOOR_MS, changes nothing */
     for (u32 p = 0; p < 3000; p++) {
         fake_busy += g_gq.on ? 500000 : 100000;
@@ -401,7 +401,7 @@ static int split_main(void) {
               want_on ? "two threads" : "one", p);
         CHECK(p > 2 * (2 * GQA_MEASURE + 2 * GQA_WARM), "auto changed after %u presents, before two probes", p);
     }
-    g_settings.gpu_split = 1;
+    gq_force(1);
     if (failed) {
         fprintf(stderr, "gpu_queue split: %d of %d checks failed\n", failed, checks);
         return 1;
@@ -413,7 +413,7 @@ static int split_main(void) {
 int main(int argc, char** argv) {
     front = pthread_self();
     if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
-    g_settings.gpu_split = 0; /* the records run on this thread, as they are queued */
+    gq_force(2); /* the records run on this thread, as they are queued */
     /* only the front end's thread queues */
     on_thread = 0;
     CHECK(!gq_queues(), "a thread other than the front end's queues");
