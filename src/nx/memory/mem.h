@@ -256,6 +256,9 @@ int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
 /* the bytes of [a, a + size) through the view of the buffer whose pages are there (mem_migrate), under mem.c's lock,
    which the view outlives: 0, or -1 when a run of such pages with a view doesn't hold them all */
 int mem_ext_read(u64 a, void* dst, u64 size);
+/* 1 when [a, a + size) is all the pages of one GPU's buffer side by side, view (mem_migrate's) mapping a's byte: a
+   region whose import is dead keeps those of its pages that nothing replaced (uma.c's imp_let_go) */
+int mem_ext_is(u64 a, u64 size, const u8* view);
 /* 1 when this thread holds mem.c's lock: the renderer's watch of owed bytes again (vk_rt_watch_owed) waits for a
    later vk_unlock, as mem_own_prepare would take the lock again */
 int mem_lock_held(void);

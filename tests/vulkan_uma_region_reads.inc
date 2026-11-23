@@ -373,4 +373,114 @@ static int check_uma_region_watch(void) {
         "read\n");
     return 0;
 }
+/* blue pixels of a 320x180 target at guest cpu, as the CPU reads them (a fault, when they are trapped): the count that
+   differ of the first 16 */
+static u32 urr_blue_differ(u64 cpu, u8 first[4]) {
+    u8 got[64];
+    memcpy(got, GP(cpu), sizeof got);
+    atomic_signal_fence(memory_order_seq_cst);
+    memcpy(first, got, 4);
+    u32 differ = 0;
+    for (u32 i = 0; i < sizeof got; i += 4)
+        differ += got[i] != 0 || got[i + 1] != 0 || got[i + 2] != 255 || got[i + 3] != 255;
+    return differ;
+}
+/* a thread that reads the target at its address (urr_reader_at) and keeps how many of its pixels differ, + 1 */
+static u64 urr_reader_at;
+static _Atomic u32 urr_reader_got;
+static void urr_reader(void* unused) {
+    (void)unused;
+    u8 first[4];
+    atomic_store_explicit(&urr_reader_got, urr_blue_differ(urr_reader_at, first) + 1, memory_order_release);
+}
+/* A dma-buf region lets go while a watch over a render target is on its pages: idle (vk_uma_frame after UMA_IDLE
+   presents unused), then dead (a result published GPU-owned over another page of it, which moves that page into the
+   pool). Its pages move back to the reservation's own with a copy that a trapped page would fault, under mem.c's lock
+   and vk_lock, while the trap thread waited for vk_lock in the landing of another thread's fault there, so it never
+   took the copy's: that hung. Here a reader faults on the target first, with vk_lock held. The targets pending there
+   are published before the move, and the reader and this thread then read their pixels */
+static int check_uma_region_letgo(void) {
+    const float blue[4] = {0, 0, 1, 1};
+    const u64 span = 20ull * 2 * 512 * 16, t = 0x40000;
+    VkBuffer r;
+    u64 ro;
+    if (!vk_uma() || !own_traps()) {
+        printf("skip: the watch over a region needs unified memory and traps\n");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    for (int dead = 0; dead < 2; dead++) {
+        const u64 gva = URR_GVA + 0xA00000 + (u64)dead * 0x200000, cpu = URR_CPU + 0xA00000 + (u64)dead * 0x200000;
+        CHECK(mem_map(cpu, 0x200000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gva, cpu, 0x200000);
+        memset(GP(cpu), 0x11, 0x200000);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        vk_rt_publish_drawn();
+        CHECK(vk_buf_get_strict(gva, 256, &r, &ro));
+        vk_finish();
+        const int region = vk_uma_region_held(cpu, 0x200000);
+        vk_unlock();
+        if (!region) {
+            CHECK(mem_unmap(cpu, 0x200000) == 0);
+            g_renderer->mem_may_have_changed();
+            free(ch);
+            printf("skip: no dma-buf region holds the window on this device\n");
+            return 0;
+        }
+        rt_clear_rect(ch, gva + t, blue, NULL);
+        vk_lock();
+        vk_rt_publish_drawn();
+        vk_unlock();
+        CHECK(own_watched(cpu + t, span));
+        VkOwnRes* owner = NULL;
+        vk_lock();
+        /* the reader's fault first: the trap thread then waits in its landing for vk_lock, which this thread holds */
+        const u64 faults = own_faults();
+        urr_reader_at = cpu + t;
+        atomic_store_explicit(&urr_reader_got, 0, memory_order_release);
+        CHECK(plat_thread(urr_reader, NULL, 0) == 0);
+        for (int ms = 0; own_faults() == faults; ms++) {
+            CHECK(ms < 5000);
+            plat_sleep_ns(1000000);
+        }
+        plat_sleep_ns(20000000);
+        if (dead) { /* a page of the region outside the target, GPU-owned: it moves into the pool, the region dies */
+            owner = uma_owner(0x1000, 0x42);
+            CHECK(owner);
+            vk_own_publish_owned(cpu + 0x180000, 0x1000, owner, 0);
+            vk_finish();
+        } else /* unused for longer than UMA_IDLE presents, at a present that looks for such imports */
+            g_vk_present = (g_vk_present / 60 + 12) * 60;
+        vk_uma_frame(); /* lets the region go */
+        const int gone = !vk_uma_region_held(cpu, 0x200000);
+        vk_unlock();
+        for (int ms = 0; !atomic_load_explicit(&urr_reader_got, memory_order_acquire); ms++) {
+            CHECK(ms < 5000);
+            plat_sleep_ns(1000000);
+        }
+        const u32 reader = atomic_load_explicit(&urr_reader_got, memory_order_acquire) - 1;
+        u8 first[4];
+        const u32 differ = urr_blue_differ(cpu + t, first) + reader;
+        if (differ || !gone)
+            fprintf(stderr,
+                    "a %s region let go under a watch: gone %d, %u of 16 pixels differ (first %02x %02x %02x "
+                    "%02x, want 00 00 ff ff)\n",
+                    dead ? "dead" : "idle", gone, differ, first[0], first[1], first[2], first[3]);
+        CHECK(gone && !differ);
+        if (owner) {
+            CHECK(!uma_landed(cpu + 0x180000, 0x1000, 0x42));
+            vk_own_res_unref(owner);
+        }
+        vk_lock();
+        vk_rt_before_write(gva, 0x200000, 0);
+        vk_unlock();
+        CHECK(mem_unmap(cpu, 0x200000) == 0);
+        g_renderer->mem_may_have_changed();
+    }
+    free(ch);
+    printf("in place: a region let go, idle and dead, under a watch: the target published first, its pixels read\n");
+    return 0;
+}
 #endif
