@@ -255,6 +255,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_video_decode_queue` | `auto` | `VK_KHR_video_decode_queue` |
 | `vk_khr_video_queue` | `auto` | `VK_KHR_video_queue` |
 | `vk_nv_device_diagnostic_checkpoints` | `auto` | `VK_NV_device_diagnostic_checkpoints` |
+| `vk_nv_device_diagnostics_config` | `auto` | `VK_NV_device_diagnostics_config`: with `vk_checkpoints=1` on NVIDIA, the driver also keeps shader debug info and what each resource is, for the report of a lost device |
 | `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
 | `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
 | `vk_nv_low_latency2` | `auto` | `VK_NV_low_latency2`: the boost `gpu_pstate` holds an NVIDIA GPU's clocks with, on each swapchain. Off, no clocks are held there |
