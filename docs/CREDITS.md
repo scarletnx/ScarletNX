@@ -156,6 +156,8 @@ and package manifest: `share/licenses/`. Component license files contain the ful
 Wimsy, the mascot and the runtime's icon ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
 The splash's Fuddles ([SVG metadata](../dist/splash/wimsy-fuddles.svg)): Wimsy with Fuddles' tails, circuits and
 colours, by AO55 after Liz's Wimsy, GPL-3.0-or-later.
+The splash's Christmas Wimsy ([SVG metadata](../dist/splash/wimsy-xmas.svg)), drawn in December only: Liz's Wimsy
+in candy cane, as she asked, red wings with white dots and a striped head and leaves, by AO55, GPL-3.0-or-later.
 
 The 3DS UDS command layouts and encrypted beacon framing in `src/3ds/services/uds.c`
 are adapted from Azahar's `nwm_uds.cpp` and `uds_beacon.cpp` at
