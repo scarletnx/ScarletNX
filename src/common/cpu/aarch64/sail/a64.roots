@@ -1,5 +1,7 @@
 # The roots of a64.sail (sailgen --extract, tools/sailgen/README.md): the decode functions of the subsets sailgen
 # generates, and the names it maps or lowers itself, which are neither followed nor copied.
+# Every A64 decode clause, copied alone for sailgen --encoders (a64_enc.inc): the encodings of the arm64 host's code
+encode __DecodeA64
 
 # A64 integer data processing (ir_int.c's plain integer instructions)
 root decode_adc_aarch64_instrs_integer_arithmetic_add_sub_carry

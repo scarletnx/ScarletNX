@@ -3320,7 +3320,7 @@ static int clause_root(unsigned n, const unsigned* roots, unsigned count) {
 
 /* the roots file: root NAME (a decode function), fixup NAME (one an overlay defines, with the clause that calls it: the
    legacy Thumb BL halves), and decoder NAME FAMILY... (a dispatcher, the clauses of the scattered decode functions it
-   names: one instruction set's); stop and lower lines are --extract's */
+   names: one instruction set's); stop, lower and encode lines are --extract's */
 static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
     size_t size, i;
     char* text = sg_read(path, &size);
