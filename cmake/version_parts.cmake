@@ -26,8 +26,9 @@ set(SNX_VERSION_LEFT_OUT
     src/common/cpu/recompiler/llvm/ir.h:SNX_IR_OBJECT_VERSION # the unit cache's objects, compiled again
     src/nx/gpu/vk/pipeline_file.c:PF_VERSION # the pipeline file, made again
     src/nx/gpu/vk/pipeline.c:PF_GUEST_VERSION # the same
-    src/nx/gpu/vk/bc7_cache.c:BC7_FILE_VERSION # the BC7 cache, started over
-    src/nx/gpu/vk/vk.h:VK_BC7_ENCODER_VERSION # the same
+    src/nx/gpu/vk/vk.h:VK_BC7_ENCODER_VERSION # the BC7 cache, started over
+    src/common/gpu/gl/gl_state.h:SNX_GL_STATE_VERSION # a save state's copy of the GL layer, refused with why
+    src/nx/gpu/shader/shader.h:SH_HMMA_BENCH_VERSION # the HMMA pick's file, measured again
     src/nx/gpu/shader/corpus.c:CORPUS_VERSION # the shader corpus, started over
     src/nx/gpu/gpu.c:GPU_STATE_VERSION # a save state's GPU section, refused saying why
     src/nx/gpu/nvn/nvn_save.c:NVN_STATE_VERSION # a save state's NVN section, the same
