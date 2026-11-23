@@ -815,7 +815,8 @@ static u32 land_slot_of(u64 key) { return (u32)(key >> 54) & 1023; }
 static void lander_queue(u64 addr, u64 size, VkOwnRes* r, u64 value);
 /* under vk_lock: r's bytes [off, off + size), published at guest cpu, copied early when its key is hot */
 static void early_copy(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
-    if (!g_settings.early_copy_back || r->by != VK_OWN_BY_TARGET || r->borrowed || r->early || vk_uma() ||
+    if (!g_settings.early_copy_back || r->by != VK_OWN_BY_TARGET || r->borrowed || r->early ||
+        (vk_uma() && !vk_uma_storage_copied()) ||
         size > g_vk.alloc_cap / 4)
         return;
     u64 key = land_key_of(r->by, cpu, size);
