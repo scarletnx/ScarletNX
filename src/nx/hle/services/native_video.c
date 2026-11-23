@@ -5,8 +5,10 @@
    when the vulkan_video setting asks for it), and the GPU writes a picture into the image the client acquires next, in
    the order of the fences RegisterImage and ReleaseImage gave. Then the codec's
    syncpoint reaches the image's fence, and the game reads the image (ReadDecoderOutputImageNv12, or its GPU mapping).
-   Every command takes g_host.native_video.lock. The structure and the command set follow closed PR #1009, which
-   implemented the same protocol in another layout of the runtime, checked against the game's SDK */
+   Every command takes g_host.native_video.lock. A thread of the service's own decodes (decoder_thread), and lets go of
+   the lock while FFmpeg works and while a picture is written, so every command returns at once, as the console's
+   decoder's do. The structure and the command set follow closed PR #1009, which implemented the same protocol in
+   another layout of the runtime, checked against the game's SDK */
 #include "nx/hle/hle.h"
 #include "nx/hle/services/native_video.h"
 #include "nx/gpu/gpu.h"
@@ -15,6 +17,7 @@
 #include "nx/gpu/video/host1x.h" /* ffmpeg_log_init */
 #include "nx/gpu/video/vic_regs.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/platform/tracy.h"
 #include <libavcodec/avcodec.h>
 #include <limits.h>
 #include <math.h>
@@ -81,8 +84,10 @@ int native_video_image_memory(u32 image, u64* cpu, u64* size, u32* linear_pitch)
 }
 /* The SDK destroys the native memory right after, with the images maybe still mapped for the GPU: the mappings stay
    until 427, and a codec skips an image whose pool went */
+static void wait_idle(const NativeVideoCodec* s);
 int native_video_pool_destroy(u32 image) {
     pm_lock(&g_host.native_video.lock);
+    wait_idle(NULL); /* it may be writing a picture into one of the pool's images */
     NativeVideoPool* p = nvideo_pool_find(NV->pools, NVIDEO_POOLS, image);
     int rc = p && p->first == image ? 0 : NVIDEO_NOT_FOUND;
     if (!rc) *p = (NativeVideoPool){0};
@@ -163,6 +168,26 @@ int native_video_busy(void) {
 static u32 codec_index(const NativeVideoCodec* s) { return (u32)(s - NV->codecs); }
 #define HOST(s) (&g_host.native_video.codecs[codec_index(s)])
 
+/* the decoder thread let go of codec s (of every codec, s NULL): a command that changes the codec's decoder, its images
+   or a pool waits for that first. The lock held */
+static void wait_idle(const NativeVideoCodec* s) {
+    HostNativeVideo* h = &g_host.native_video;
+    if (!h->busy || (s && h->busy != codec_index(s) + 1)) return;
+    h->waiters++;
+    while (h->busy && (!s || h->busy == codec_index(s) + 1)) pc_wait(&h->idle, &h->lock, -1);
+    if (!--h->waiters) pc_broadcast(&h->work);
+}
+/* the decoder thread at work on codec s with the lock let go, or back from it */
+static void unlock_busy(const NativeVideoCodec* s) {
+    g_host.native_video.busy = codec_index(s) + 1;
+    pm_unlock(&g_host.native_video.lock);
+}
+static void lock_idle(void) {
+    pm_lock(&g_host.native_video.lock);
+    g_host.native_video.busy = 0;
+    pc_broadcast(&g_host.native_video.idle);
+}
+
 static void backlog_drop(void* user, void* payload) {
     (void)user;
     AVPacket* pkt = payload;
@@ -183,10 +208,13 @@ static void backlog_free(NativeVideoCodec* s) {
     nvideo_backlog_free(b, backlog_drop, NULL);
 }
 static void host_free(NativeVideoCodec* s) {
+    wait_idle(s);
     backlog_free(s);
     nvideo_decoder_close(&HOST(s)->decoder);
     av_frame_free(&HOST(s)->frame);
     for (u32 i = 0; i < NVIDEO_INPUTS; i++) av_packet_free(&HOST(s)->packets[i]);
+    av_packet_free(&HOST(s)->sending);
+    HOST(s)->has_sending = 0;
     HOST(s)->nblack = 0;
 }
 /* back to a codec that was just made: its decoder, syncpoint, memory and event let go */
@@ -337,77 +365,155 @@ static int painted_black(const NativeVideoCodec* s, u32 id) {
         if (HOST(s)->black_images[i] == id) return 1;
     return 0;
 }
-/* the image filled with the frame (NULL: the end of the stream, no picture), its output queued and its fence reached */
+/* the image filled with the frame (NULL: the end of the stream, no picture), its output queued and its fence reached.
+   On the decoder thread, the lock held: the wait for the game's fence and the picture's write go with it let go (the
+   image, its pool and the decoder stay as they are meanwhile: wait_idle) */
 static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVFrame* f, u64 timestamp) {
-    NativeVideoPool* p = nvideo_pool_find(NV->pools, NVIDEO_POOLS, image->id);
-    u32 w = f ? (u32)f->width : 0, h = f ? (u32)f->height : 0;
-    if (image->wait_id < SYNCPT_IDS && !syncpt_wait(image->wait_id, image->wait_value, 200000000))
-        WARN_LIMIT(4, "gsv: video image %u: the game's fence %u on syncpoint %u isn't reached, written anyway\n",
-                   image->id, image->wait_value, image->wait_id);
+    const NativeVideoPool* found = nvideo_pool_find(NV->pools, NVIDEO_POOLS, image->id);
+    NativeVideoPool pool = found ? *found : (NativeVideoPool){0};
+    u32 w = f ? (u32)f->width : 0, h = f ? (u32)f->height : 0, id = image->id;
+    u32 wait_id = image->wait_id, wait_value = image->wait_value;
     int black = HOST(s)->decoder.way == NVIDEO_DECODER_BLACK; /* f is the stand-in's picture then */
-    if (f && p && !(black && painted_black(s, image->id))) {
-        if (native_video_image_write(p, image->id, f) && black && HOST(s)->nblack < NVIDEO_IMAGES)
-            HOST(s)->black_images[HOST(s)->nblack++] = image->id;
-    } else if (f && !p)
-        WARN_LIMIT(4, "gsv: video image %u has no pool: its picture is dropped\n", image->id);
+    int write = f && found && !(black && painted_black(s, id));
+    unlock_busy(s);
+    if (wait_id < SYNCPT_IDS && !syncpt_wait(wait_id, wait_value, 200000000))
+        WARN_LIMIT(4, "gsv: video image %u: the game's fence %u on syncpoint %u isn't reached, written anyway\n", id,
+                   wait_value, wait_id);
+    int wrote = write && native_video_image_write(&pool, id, f);
+    lock_idle();
+    if (wrote && black && HOST(s)->nblack < NVIDEO_IMAGES) HOST(s)->black_images[HOST(s)->nblack++] = id;
+    if (f && !found) WARN_LIMIT(4, "gsv: video image %u has no pool: its picture is dropped\n", id);
     u32 props[NVIDEO_PROPS];
-    nvideo_props(props, image->id, s->width, s->height, w ? w : s->width, h ? h : s->height, timestamp, !f);
+    nvideo_props(props, id, s->width, s->height, w ? w : s->width, h ? h : s->height, timestamp, !f);
     if (!(s->frames++ % 120) || !f)
-        LOG("gsv: video output %u: image %u, %ux%u, %llu us%s\n", s->frames, image->id, w, h,
-            (unsigned long long)timestamp, f ? "" : ", the end of the stream");
+        LOG("gsv: video output %u: image %u, %ux%u, %llu us%s\n", s->frames, id, w, h, (unsigned long long)timestamp,
+            f ? "" : ", the end of the stream");
     /* as host1x's NVDEC jobs: the increments after the picture's GPU work is recorded, which the game's GPU waits
        and CPU reads of the image then follow */
     syncpt_add(s->syncpoint, nvideo_image_fill(s, image, props));
 }
-/* the decoder fed and its pictures written while images are queued */
-static void codec_pump(NativeVideoCodec* s) {
+/* One step of codec s on the decoder thread, the lock held: the picture received written into the image the client
+   acquires next, or the end of the stream's output, or a picture taken from the decoder, or a packet given to it. FFmpeg
+   works with the lock let go. 1 when it did something */
+static int codec_step(NativeVideoCodec* s) {
     NativeVideoDecoder* dec = &HOST(s)->decoder;
     AVFrame* frame = HOST(s)->frame;
-    while (dec->way != NVIDEO_DECODER_NONE && s->started) {
-        NativeVideoImage* image;
+    if (dec->way == NVIDEO_DECODER_NONE || !s->started) return 0;
+    if (frame->buf[0] || s->eos == 2) {
+        NativeVideoImage* image = nvideo_image_next(s);
+        if (!image) return 0;
         if (frame->buf[0]) {
-            if (!(image = nvideo_image_next(s))) break;
             codec_output(s, image, frame, frame->pts == AV_NOPTS_VALUE ? 0 : (u64)frame->pts);
             av_frame_unref(frame);
-            continue;
-        }
-        if (s->eos == 2) {
-            if (!(image = nvideo_image_next(s))) break;
+        } else {
             codec_output(s, image, NULL, s->eos_timestamp);
             /* the stream ended: the decoder starts the next one (a movie that loops) from nothing */
             nvideo_decoder_flush(dec);
             s->eos = 0;
-            continue;
         }
-        int r = nvideo_decoder_receive(dec, frame);
-        if (!r) continue;
-        if (r == AVERROR_EOF) {
-            if (s->eos == 1) {
-                s->eos = 2;
-                continue;
-            }
-            nvideo_decoder_flush(dec);
-            break;
+        return 1;
+    }
+    unlock_busy(s);
+    int r = nvideo_decoder_receive(dec, frame);
+    lock_idle();
+    if (!r) return 1;
+    if (r == AVERROR_EOF) {
+        if (s->eos == 1) {
+            s->eos = 2;
+            return 1;
         }
-        if (r != AVERROR(EAGAIN)) {
-            WARN_LIMIT(8, "gsv: the video decoder failed (%d)\n", r);
-            break;
-        }
+        nvideo_decoder_flush(dec);
+        return 0;
+    }
+    if (r != AVERROR(EAGAIN)) {
+        WARN_LIMIT(8, "gsv: the video decoder failed (%d)\n", r);
+        return 0;
+    }
+    /* a packet for it: the one it refused last, else the ring's oldest, which the backlog refills. The end of the
+       stream is due from when it leaves the ring (nvideo_end_pending) */
+    if (!HOST(s)->has_sending) {
         nvideo_backlog_refill(&HOST(s)->backlog, s, backlog_take, s);
-        if (!s->input_count) break;
-        NativeVideoInput* in = &s->inputs[s->input_head];
-        AVPacket* pkt = HOST(s)->packets[s->input_head];
-        r = nvideo_decoder_send(dec, in->eos ? NULL : pkt);
-        if (r == AVERROR(EAGAIN)) break;
-        if (r < 0 && r != AVERROR_EOF) WARN_LIMIT(8, "gsv: the video decoder refused a packet (%d)\n", r);
+        if (!s->input_count) return 0;
+        const NativeVideoInput* in = &s->inputs[s->input_head];
+        av_packet_move_ref(HOST(s)->sending, HOST(s)->packets[s->input_head]);
+        HOST(s)->has_sending = in->eos ? 2 : 1;
         if (in->eos) {
             s->eos = 1;
             s->eos_timestamp = in->timestamp;
         }
-        av_packet_unref(pkt);
         nvideo_input_pop(s);
+        nvideo_backlog_refill(&HOST(s)->backlog, s, backlog_take, s);
+        submission_event(s);
     }
+    int end = HOST(s)->has_sending == 2;
+    unlock_busy(s);
+    r = nvideo_decoder_send(dec, end ? NULL : HOST(s)->sending);
+    lock_idle();
+    if (r == AVERROR(EAGAIN)) return 0; /* it holds pictures first: sent again after them */
+    if (r < 0 && r != AVERROR_EOF) WARN_LIMIT(8, "gsv: the video decoder refused a packet (%d)\n", r);
+    av_packet_unref(HOST(s)->sending);
+    HOST(s)->has_sending = 0;
+    return 1;
+}
+/* The decoder thread: every started codec's steps while one does something, then a wait for a command (kick) or for 2
+   ms, as a decoder that works in threads of its own (dav1d's) has its picture later. A game pause holds it between
+   steps (native_video_hold). Decoding in the commands themselves had each Submit and ReleaseImage of a movie's caller
+   wait milliseconds with the lock held: one game's movie player then took its decoder's output event before the format
+   event the library had signaled earlier, and read a picture of no size */
+static void decoder_thread(void* arg) {
+    HostNativeVideo* h = &g_host.native_video;
+    (void)arg;
+    SNX_THREAD_NAME("video decoder");
+    pm_lock(&h->lock);
+    for (;;) {
+        if (h->hold) {
+            h->held = 1;
+            pc_broadcast(&h->idle);
+            while (h->hold) pc_wait(&h->work, &h->lock, -1);
+            h->held = 0;
+        }
+        int did = 0;
+        for (u32 k = 0; k < NVIDEO_CODECS && !h->hold; k++) {
+            /* a command waiting for a codec it had let go of takes the lock first: the next step would take the codec
+               again before the command got in */
+            while (h->waiters && !h->hold) pc_wait(&h->work, &h->lock, -1);
+            if (NV->codecs[k].obj && NV->codecs[k].state == NVIDEO_CONFIGURED) did |= codec_step(&NV->codecs[k]);
+        }
+        if (!did && !h->hold) pc_wait(&h->work, &h->lock, 2000000);
+    }
+}
+/* work for the decoder thread, started at the first (its conditions made then: no one waits on them before); the lock
+   held */
+static void kick(void) {
+    HostNativeVideo* h = &g_host.native_video;
+    if (!h->running) {
+        pc_init(&h->work);
+        pc_init(&h->idle);
+        if (plat_thread(decoder_thread, NULL, (size_t)8 << 20)) fatal("Could not start the video decoder's thread");
+        h->running = 1;
+    }
+    pc_broadcast(&h->work);
+}
+/* the decoder thread woken for codec s, and its submission event as the ring is now: the movie library waits on the
+   event after each command, as the decoding inside the commands set it again every time */
+static void wake_decoder(NativeVideoCodec* s) {
     submission_event(s);
+    kick();
+}
+void native_video_hold(void) {
+    HostNativeVideo* h = &g_host.native_video;
+    pm_lock(&h->lock);
+    h->hold = 1;
+    if (h->running) pc_broadcast(&h->work);
+    while (h->running && !h->held) pc_wait(&h->idle, &h->lock, -1);
+    pm_unlock(&h->lock);
+}
+void native_video_release(void) {
+    HostNativeVideo* h = &g_host.native_video;
+    pm_lock(&h->lock);
+    h->hold = 0;
+    if (h->running) pc_broadcast(&h->work);
+    pm_unlock(&h->lock);
 }
 
 static int codec_initialize(NativeVideoCodec* s, u32 tmem, u64 size, u32 codec, u32 input_format,
@@ -491,6 +597,7 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
     ok = ok && HOST(s)->frame;
     nvideo_backlog_forget(&HOST(s)->backlog);
     for (u32 i = 0; i < NVIDEO_INPUTS && ok; i++) ok = (HOST(s)->packets[i] = av_packet_alloc()) != NULL;
+    ok = ok && (HOST(s)->sending = av_packet_alloc()) != NULL;
     if (!ok) {
         WARN("gsv: video codec %u: FFmpeg's decoder couldn't be opened\n", codec_index(s));
         host_free(s);
@@ -533,7 +640,7 @@ static int nn_gsv_INativeVideoCodec_RegisterImage(SvcObj* self, u32 image, const
     LOG("gsv: video codec %u: image %u registered, fence %u on syncpoint %u\n", codec_index(s), image, value,
         s->syncpoint);
     video_fence(s, value, fence);
-    codec_pump(s);
+    wake_decoder(s);
     R_SUCCEED();
 }
 static int nn_gsv_INativeVideoCodec_ReleaseImage(SvcObj* self, u32 image, u32 reserved,
@@ -546,12 +653,13 @@ static int nn_gsv_INativeVideoCodec_ReleaseImage(SvcObj* self, u32 image, u32 re
                                    (u32)wait->value);
     R_TRY(nvideo_image_release(s, image, wait_id < SYNCPT_IDS ? wait_id : ~0u, (u32)wait->value, &value));
     video_fence(s, value, fence);
-    codec_pump(s);
+    wake_decoder(s);
     R_SUCCEED();
 }
 static int nn_gsv_INativeVideoCodec_UnregisterImage(SvcObj* self, u32 image, const u32* reserved) {
     (void)reserved;
     LOG("gsv: video codec %u: image %u unregistered\n", codec_index(self->data), image);
+    wait_idle(self->data); /* it may be writing into the image */
     return nvideo_image_unregister(self->data, image);
 }
 static int nn_gsv_INativeVideoCodec_Start(SvcObj* self) {
@@ -559,7 +667,7 @@ static int nn_gsv_INativeVideoCodec_Start(SvcObj* self) {
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
     s->started = 1;
     LOG("gsv: video codec %u started\n", codec_index(s));
-    codec_pump(s);
+    wake_decoder(s);
     R_SUCCEED();
 }
 /* the inputs queued go to the decoder, and their pictures out as images come free: the decoder keeps its reference
@@ -567,7 +675,7 @@ static int nn_gsv_INativeVideoCodec_Start(SvcObj* self) {
 static int nn_gsv_INativeVideoCodec_Flush(SvcObj* self) {
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
-    codec_pump(s);
+    wake_decoder(s);
     R_SUCCEED();
 }
 /* the inputs and the decoder's pictures dropped. The outputs already written stay for GetOutputProperties: the
@@ -575,8 +683,11 @@ static int nn_gsv_INativeVideoCodec_Flush(SvcObj* self) {
 static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
+    wait_idle(s);
     nvideo_decoder_flush(&HOST(s)->decoder);
     av_frame_unref(HOST(s)->frame);
+    av_packet_unref(HOST(s)->sending);
+    HOST(s)->has_sending = 0;
     while (s->input_count) {
         av_packet_unref(HOST(s)->packets[s->input_head]);
         nvideo_input_pop(s);
@@ -597,10 +708,7 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
        movie library sends again until its output comes, is queued once */
     NativeVideoBacklog* b = &HOST(s)->backlog;
     int way = nvideo_submit_way(s, b, (u32)input.size, timestamp, eos);
-    if (way == NVIDEO_REFUSE_AGAIN || way == NVIDEO_REFUSE_KEEP) {
-        codec_pump(s); /* the decoder may take some first */
-        way = nvideo_submit_way(s, b, (u32)input.size, timestamp, eos);
-    }
+    if (way == NVIDEO_REFUSE_AGAIN || way == NVIDEO_REFUSE_KEEP) kick(); /* the decoder thread takes some on */
     if (way == NVIDEO_TAKE_SAME_END) {
         *consumed = 0;
         R_SUCCEED();
@@ -650,7 +758,7 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
         pkt->pts = (i64)timestamp;
     }
     if (eos) nvideo_input_push(s, 0, timestamp, 1);
-    codec_pump(s);
+    wake_decoder(s);
     *consumed = input.size;
     R_SUCCEED();
 }
@@ -658,8 +766,8 @@ static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 times
    Its loop (GetVp9DecoderOutputBufferProperties) passes any failure up, and the game aborts on it */
 static int nn_gsv_INativeVideoCodec_GetOutputProperties(SvcObj* self, u32* properties) {
     NativeVideoCodec* s = self->data;
-    codec_pump(s);
     int rc = nvideo_output_pop(s, properties);
+    wake_decoder(s);
     if (rc)
         WARN_LIMIT(4,
                    "gsv: video codec %u: output properties asked before an output (%s image for the decoder, %u "

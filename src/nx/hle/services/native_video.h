@@ -135,15 +135,24 @@ typedef struct {
     i64 black_pts;
     u32 black_due, black_end;
 } NativeVideoDecoder;
-/* the host's side, which a save state never holds: the lock over every command, and each codec's FFmpeg objects (the
-   same index as g_hle's codecs) */
+/* the host's side, which a save state never holds: the lock over every command, the decoder thread (native_video.c's
+   decoder_thread), and each codec's FFmpeg objects (the same index as g_hle's codecs) */
 typedef struct {
     PMutex lock;
+    PCond work; /* the decoder thread's: a packet, an image or a command for it, or a hold (made with the thread) */
+    PCond idle; /* the decoder thread let go of a codec (busy 0), or stopped for a hold (held) */
+    u32 busy;        /* the codec (index + 1) whose decoder and image the thread uses with the lock let go, 0 none */
+    u32 waiters;     /* commands waiting for the thread to let go of a codec: it waits for them between steps */
+    u32 running;     /* the thread was started */
+    u32 hold, held;  /* a game pause asks the thread to stop (hold), and it has (held) */
     struct {
         NativeVideoDecoder decoder;
         struct AVFrame* frame; /* a picture received and not yet written: frame->buf[0] set */
         struct AVPacket* packets[NVIDEO_INPUTS];
         NativeVideoBacklog backlog; /* its payloads: FFmpeg packets of their own */
+        /* the packet taken from the ring that the decoder refused (it holds pictures first), sent again next */
+        struct AVPacket* sending;
+        u32 has_sending;
         u32 black_images[NVIDEO_IMAGES], nblack; /* the images the stand-in painted black already, which stay so */
     } codecs[NVIDEO_CODECS];
 } HostNativeVideo;
@@ -228,6 +237,9 @@ int nvideo_vt_send(void* h, const struct AVPacket* pkt); /* avcodec_send_packet'
 int nvideo_vt_receive(void* h, struct AVFrame* frame);   /* avcodec_receive_frame's answers */
 void nvideo_vt_flush(void* h);                           /* the next stream starts from nothing: a movie that loops */
 #endif
+/* ---- native_video.c, for a game pause (pause.c): the decoder thread stops after the picture it is on, and goes on */
+void native_video_hold(void);
+void native_video_release(void);
 /* ---- native_video.c, for gsv.c's commands */
 int native_video_service(int encoder, int enable);                            /* 901, 903, 1001, 1003 */
 int native_video_open(int encoder, u32* session);                             /* 902, 905, 1002 */
