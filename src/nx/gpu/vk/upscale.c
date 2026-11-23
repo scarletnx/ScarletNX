@@ -38,6 +38,15 @@ static struct {
     SnxReproject* reproject;
 } g_upscale;
 
+struct VkJitter g_vk_jitter;
+/* the jitter's sequence: Halton bases 2 and 3, offsets in render pixels from -0.5 to 0.5, 8 of them */
+static u32 g_jitter_index;
+static float halton(u32 i, u32 base) {
+    float f = 1, r = 0;
+    for (; i; i /= base) f /= (float)base, r += f * (float)(i % base);
+    return r;
+}
+
 /* the FSR input conventions setting's bits (settings.txt) */
 enum { FLIP_JITTER_X = 1, FLIP_JITTER_Y = 2, FLIP_MOTION = 4, FLIP_INVERTED = 8, FLIP_JITTERED = 16, AUTO_EXPOSURE = 32, FLIP_HDR = 64 };
 
@@ -350,8 +359,24 @@ int vk_upscale(const GpuUpscale* u) {
     r.e.cb = cb;
     r.e.output = (SnxUpscaleImage){g_upscale.image, g_upscale.view, format, u->out[0], u->out[1]};
     r.e.render[0] = u->render[0], r.e.render[1] = u->render[1];
-    r.e.jitter[0] = conventions & FLIP_JITTER_X ? -u->jitter[0] : u->jitter[0];
-    r.e.jitter[1] = conventions & FLIP_JITTER_Y ? -u->jitter[1] : u->jitter[1];
+    float jitter[2] = {u->jitter[0], u->jitter[1]};
+    /* the scene's jitter of ours (GPU_UPSCALE_RUNTIME_JITTER), for a temporal upscaler only (a spatial one would show
+       it): this frame's draws into the depth took the offset set after the last evaluation (none at the first), and
+       the next frame's is set now. In our pixels, the render pixels the upscaler sees */
+    if (module && (u->flags & GPU_UPSCALE_RUNTIME_JITTER) && depth && snx_upscaler_caps(id)->kind == SNX_UP_TEMPORAL) {
+        int took = g_vk_jitter.on && g_vk_jitter.depth == depth->img;
+        jitter[0] = took ? g_vk_jitter.px[0] : 0, jitter[1] = took ? g_vk_jitter.px[1] : 0;
+        g_jitter_index = g_jitter_index % 8 + 1;
+        g_vk_jitter.depth = depth->img;
+        g_vk_jitter.size[0] = u->render[0], g_vk_jitter.size[1] = u->render[1];
+        g_vk_jitter.dsize[0] = depth->sw, g_vk_jitter.dsize[1] = depth->sh;
+        g_vk_jitter.px[0] = halton(g_jitter_index, 2) - 0.5f, g_vk_jitter.px[1] = halton(g_jitter_index, 3) - 0.5f;
+        g_vk_jitter.on = 1;
+        LOG_LIMIT(1, "vulkan: the runtime jitters the scene's draws for a hook module (Halton 2, 3, 8 offsets)\n");
+    } else if (module)
+        g_vk_jitter.on = 0;
+    r.e.jitter[0] = conventions & FLIP_JITTER_X ? -jitter[0] : jitter[0];
+    r.e.jitter[1] = conventions & FLIP_JITTER_Y ? -jitter[1] : jitter[1];
     float sign = conventions & FLIP_MOTION ? -1.0f : 1.0f;
     r.e.motion_scale[0] = u->motion_scale[0] * sign;
     r.e.motion_scale[1] = u->motion_scale[1] * sign;
