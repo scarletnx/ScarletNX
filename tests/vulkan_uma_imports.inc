@@ -386,7 +386,9 @@ static int check_uma_constants(void) {
 /* Where uma_copies copies constant buffers (vk_uma_imports_dear), their bytes are copied straight from guest memory
    into staging (render.c's cb_get), as on a GPU with memory of its own: the draw reads the 1.0 there. A draw that
    writes the page in place, recorded and not yet run, keeps the next lookup off that copy, whose bytes would be from
-   before the write: the constant buffer goes through the buffer cache, after the write, and the draw reads its 0.0 */
+   before the write: the constant buffer goes through the buffer cache, after the write, and the draw reads its 0.0.
+   On a discrete GPU with host imports (vk_uma_storage_copied) the write is a pending result of the copies' path
+   instead (buffer.c's copy_writable), with the same order */
 #define UMA_CD  (HEAP_BASE + 0x4c00000)
 #define UMA_GCD 0x4f5000000ull
 static int check_uma_constants_copied(void) {
@@ -408,11 +410,12 @@ static int check_uma_constants_copied(void) {
     const int copied = after.cb[VK_CB_COPIED] > before.cb[VK_CB_COPIED];
     /* the shader's write of zeros over c[0][0x600..0x6ff], in place and pending */
     vk_lock();
+    const int staged = vk_uma_storage_copied();
     CHECK(vk_buf_copy_writable(UMA_GCD + 0x600, 256, &w, &wo, 1));
-    const int inplace = !vk_buf_pending(UMA_GCD + 0x600, 256);
+    const int inplace = staged || !vk_buf_pending(UMA_GCD + 0x600, 256); /* staged: pending once committed, below */
     CHECK(!owned_test_fill(w, wo, 256, 0));
     vk_buf_writable_commit();
-    const int pending = vk_uma_pending(UMA_GCD + 0x644, 4);
+    const int pending = staged ? vk_buf_pending(UMA_GCD + 0x644, 4) : vk_uma_pending(UMA_GCD + 0x644, 4);
     vk_unlock();
     vk_draw_counts(&before);
     CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, red));
@@ -506,6 +509,11 @@ static int check_uma_atlas_pending(void) {
     }
     const int was = g_settings.guest_buffers_copied;
     g_settings.guest_buffers_copied = 2; /* the atlas: in place is check_uma_alias_in_place's */
+    if (vk_uma_storage_copied()) { /* a discrete GPU with host imports: there the earlier write isn't in place */
+        g_settings.guest_buffers_copied = was;
+        printf("skip: storage written by draws is kept in the GPU's memory on this device (vk_uma_storage_copied)\n");
+        return 0;
+    }
     CHECK(mem_map(UMA_AT, 0x200000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(UMA_GAT, UMA_AT, 0x200000);
     memset(GP(UMA_AT), 0x31, 0x1000);

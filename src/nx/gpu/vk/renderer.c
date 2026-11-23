@@ -364,6 +364,7 @@ static void vkr_method_barrier(int kind)
 	/* Surface and copy consumers retain their own dependencies. NVN's points need an additional buffer
 	 * barrier only after a shader write or a pending read that a later in-place writer could overwrite. */
 	if ((kind == 6 || kind == 7) && !vk_buf_order_pending(kind == 7)) {
+		vk_uma_order_request(); /* the writes in place: at the next write over them (uma.c's order) */
 		vk_unlock();
 		return;
 	}
