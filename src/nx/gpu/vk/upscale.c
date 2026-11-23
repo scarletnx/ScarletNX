@@ -353,5 +353,6 @@ int vk_upscale(const GpuUpscale* u) {
     else
         vk_rt_drawn(out);
     vk_surf_touch(out);
+    if (u->ran) *u->ran = snx_upscaler_caps(id)->name; /* the caps' name: a constant string */
     return 1;
 }

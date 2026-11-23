@@ -1463,6 +1463,46 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
     LOG_LIMIT(4, "nvn: DLSS evaluation of %dx%d at (%d, %d) to %dx%d at (%d, %d)\n", in_w, in_h, q.base[0][0],
               q.base[0][1], out_w, out_h, q.base[4][0], q.base[4][1]);
 }
+/* nvn_cmd.h: a hook module's upscale, recorded as the DLSS evaluation is, its textures snapshotted */
+int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r) {
+    const NvnCmdBuf* o = CB(cb);
+    if (o->magic != NVN_MAGIC('C', 'M', 'D', 'B') || !o->recording) {
+        LOG_LIMIT(4, "nvn: a hook module's upscale for %llx, which isn't a command buffer that records: not recorded\n",
+                  (unsigned long long)cb);
+        return 0;
+    }
+    for (int i = NVN_UPSCALE_COLOR; i <= NVN_UPSCALE_OUTPUT; i++)
+        if (!r->tex[i] || NVN_OBJ(const NvnTexture, r->tex[i])->magic != NVN_MAGIC('T', 'E', 'X', 0)) {
+            LOG_LIMIT(4, "nvn: a hook module's upscale whose %s %llx isn't a live texture: not recorded\n",
+                      i == NVN_UPSCALE_COLOR ? "color" : "output", (unsigned long long)r->tex[i]);
+            return 0;
+        }
+    if (!r->render[0] || !r->render[1] || !r->out[0] || !r->out[1]) {
+        LOG_LIMIT(4, "nvn: a hook module's upscale of %ux%u to %ux%u: not recorded\n", r->render[0], r->render[1],
+                  r->out[0], r->out[1]);
+        return 0;
+    }
+    /* no command of the driver's: it takes none of the game's command memory, and never runs the game's memory
+       callback from inside the hook's handler (the record goes in the runtime's memory when the game's has no room) */
+    u64 payload = rec(c, cb, OP_UPSCALE, SNAP_OFF(NvnPUpscale) + NVN_UPSCALE_TEXTURES * NVN_TEX_SNAP, 0);
+    NvnPUpscale* d = (NvnPUpscale*)(void*)GP(payload);
+    for (int i = 0; i < NVN_UPSCALE_TEXTURES; i++) {
+        d->tex[i] = tex_snap(payload, SNAP_OFF(NvnPUpscale), i, r->tex[i]);
+        copy_view(&d->view[i], &d->has_view[i], r->tex[i] ? r->view[i] : 0);
+    }
+    d->reset = r->reset != 0;
+    d->flags = r->flags;
+    memcpy(d->render, r->render, sizeof d->render);
+    memcpy(d->out, r->out, sizeof d->out);
+    memcpy(d->render_max, r->render_max, sizeof d->render_max);
+    memcpy(d->out_base, r->out_base, sizeof d->out_base);
+    memcpy(d->jitter, r->jitter, sizeof d->jitter);
+    memcpy(d->motion_scale, r->motion_scale, sizeof d->motion_scale);
+    d->pre_exposure = r->pre_exposure;
+    LOG_LIMIT(1, "nvn: a hook module recorded an upscale of %ux%u to %ux%u at (%d, %d) (first time)\n", r->render[0],
+              r->render[1], r->out[0], r->out[1], r->out_base[0], r->out_base[1]);
+    return 1;
+}
 /* a multisample resolve of the whole texture, recorded as a copy (nxnative's) */
 static void downsample(CPU* c, u64 cb, u64 s, u64 sv, u64 d, u64 dv) {
     NvnPCopyT2T* r = copy_t2t(c, cb, s, sv, d, dv);

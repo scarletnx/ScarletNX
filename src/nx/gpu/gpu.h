@@ -203,6 +203,7 @@ typedef struct {
     f32 near_plane, far_plane, fov_y;
     int reset;
     u32 flags;
+    const char** ran; /* where the renderer writes the name of the upscaler that ran, NULL for nowhere */
 } GpuUpscale;
 enum {
     /* NGX's feature bits, as a DLSS network's builder flags give them */
