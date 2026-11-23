@@ -200,3 +200,91 @@ static int check_uma_dma_region(void) {
     printf("in place: a read into device memory copies a region's bytes from the region on the GPU\n");
     return 0;
 }
+
+#if !defined(_WIN32)
+#include <sys/mman.h>
+/* the protection of the mapping at p, as /proc/self/maps gives it ("rw-s", "---s"): 1 when found */
+static int urr_prot(const void* p, char out[5]) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[512];
+    int found = 0;
+    if (!f) return 0;
+    while (!found && fgets(line, sizeof line, f)) {
+        unsigned long long lo, hi;
+        char perm[5];
+        if (sscanf(line, "%llx-%llx %4s", &lo, &hi, perm) == 3 && (unsigned long long)(uintptr_t)p >= lo &&
+            (unsigned long long)(uintptr_t)p < hi) {
+            memcpy(out, perm, 5);
+            found = 1;
+        }
+    }
+    fclose(f);
+    return found;
+}
+/* A dma-buf region (udmabuf) keeps the GPU's pages while the CPU's mapping of them is trapped: plan item 8 of
+   docs/dev/draw-cost.md watches a render target there in place of a publish at each release. The CPU's mapping of a
+   region's window is protected with no access, the GPU writes the region's buffer in 100 submissions, and the
+   mapping stays protected through them. Opened again, the CPU reads the GPU's last write, and the device is not lost
+   (a lost device is fatal) */
+static int check_uma_region_trap(void) {
+    const u64 gva = URR_GVA + 0x600000, cpu = URR_CPU + 0x600000;
+    VkBuffer r, buf;
+    u64 ro, off;
+    char before[5] = "", during[5] = "";
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(cpu, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x200000);
+    memset(GP(cpu), 0x11, 0x1000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(vk_buf_get_strict(gva, 256, &r, &ro)); /* a region over its window, also where imports are dear */
+    vk_finish();
+    if (!vk_uma_region_held(cpu, 0x1000)) {
+        vk_unlock();
+        CHECK(mem_unmap(cpu, 0x200000) == 0);
+        g_renderer->mem_may_have_changed();
+        printf("skip: no dma-buf region holds the window on this device\n");
+        return 0;
+    }
+    CHECK(vk_uma_cover(cpu, 0x1000, &buf, &off) == 1);
+    u8* host = GP(cpu);
+    CHECK(urr_prot(host, before));
+    CHECK(mprotect(host, 0x1000, PROT_NONE) == 0);
+    const VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    const VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                  .pMemoryBarriers = &mb};
+    u32 last = 0;
+    for (u32 k = 1; k <= 100; k++) {
+        last = 0x01010101u * (k & 0xFF);
+        vk_render_end();
+        rec_CmdFillBuffer(vk_cmd(), buf, off, 256, last);
+        rec_CmdPipelineBarrier2(vk_cmd(), &dep);
+        vk_finish();
+    }
+    CHECK(urr_prot(host, during));
+    CHECK(mprotect(host, 0x1000, PROT_READ | PROT_WRITE) == 0);
+    vk_unlock();
+    u32 differ = 0;
+    for (u32 i = 0; i < 256; i++) differ += host[i] != (u8)last;
+    const int kept = during[0] == '-' && during[1] == '-';
+    if (!kept || differ)
+        fprintf(stderr,
+                "a trapped region: the mapping was %s before and %s after 100 submissions (want no access), %u of 256 "
+                "bytes differ from the GPU's last write (first %02x, want %02x)\n",
+                before, during, differ, host[0], (u8)last);
+    CHECK(mem_unmap(cpu, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    CHECK(kept && !differ);
+    printf("in place: a dma-buf region kept the GPU's writes through 100 submissions with the CPU's mapping trapped "
+           "(%s)\n",
+           during);
+    return 0;
+}
+#endif

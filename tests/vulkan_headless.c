@@ -9062,6 +9062,9 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
+#if !defined(_WIN32)
+        if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
+#endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
         if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
