@@ -128,8 +128,17 @@ void gmem_read_quiet(u64 gva, void* dst, u64 size) { memcpy(dst, GP(gva), (size_
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { memcpy(GP(gva), data, len); }
 void gpu_i2m_block_now(const GpuI2m* t) { (void)t; }
 void gpu_release_write(u64 gva, const void* data, u32 n) { memcpy(GP(gva), data, n); }
-void gpu_release_stamp_now(u64 gva, const void* data, int top) { (void)top, memcpy(GP(gva), data, 16); }
-void gpu_release_stamp(u64 gva, const void* data, int top) { gpu_release_stamp_now(gva, data, top); }
+/* gpu.c's, with the clock this test has (guest_gpu_ticks: 0) */
+void gpu_release_ticks_now(u64 gva) { memset(GP(gva), 0, 8); }
+void gpu_release_write_stamped(u64 gva, const void* data) {
+    memcpy(GP(gva), data, 8);
+    gpu_release_ticks_now(gva + 8);
+}
+void gpu_release_stamp_ticked(u64 gva, const void* data, int top) {
+    (void)top;
+    gpu_release_write_stamped(gva, data);
+}
+void gpu_release_stamp(u64 gva, const void* data, int top) { gpu_release_stamp_ticked(gva, data, top); }
 u32 gmem_r32(u64 gva) { return gr32(gva); }
 u64 gmmu_translate(u64 gva) { return gva; }
 /* maxwell/engines.c's render enable and maxwell3d.c's held draw: none here */

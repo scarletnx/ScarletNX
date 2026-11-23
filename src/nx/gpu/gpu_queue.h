@@ -22,8 +22,11 @@ void gq_write(u64 gva, const void* src, u64 size);
 /* the same for a constant buffer upload, which gmem_write_cb_now stamps with gpu_mem_written_cb */
 void gq_write_cb(u64 gva, const void* src, u64 size);
 void gq_release(u64 gva, const void* data, u32 len);
+/* a release of the GPU's timestamp, 8 bytes at gva, read as the record runs (gpu_release_ticks_now): the front end's
+   reads of those bytes wait for it, as its value is not known until then */
+void gq_release_ticks(u64 gva);
 /* a timestamp report (gpu_release_stamp): the renderer takes its timestamp where the record runs, after the draws
-   queued before it */
+   queued before it, and the ticks at offset 8 are read then too (gpu_release_stamp_ticked) */
 void gq_release_stamp(u64 gva, const void* data, int top);
 void gq_i2m_block(const GpuI2m* t, u64 at, u64 size);
 /* the front end's read of [gva, gva + size): it waits for the fences of the writes queued over those pages */
@@ -51,7 +54,8 @@ int gmem_write_cb_now(u64 gva, const void* src, u64 size);
 /* guest memory read as it is, with no wait and nothing landed */
 void gmem_read_quiet(u64 gva, void* dst, u64 size);
 void gpu_release_write_now(u64 gva, const void* data, u32 len);
-void gpu_release_stamp_now(u64 gva, const void* data, int top);
+void gpu_release_ticks_now(u64 gva);
+void gpu_release_stamp_ticked(u64 gva, const void* data, int top);
 void gpu_i2m_block_now(const GpuI2m* t);
 
 #endif
