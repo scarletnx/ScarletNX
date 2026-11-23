@@ -8,9 +8,9 @@
    Checked: the submissions of one present packed back to back, so that the time the GPU sat idle between them is in
    no span; a new present from the time its work became ready, or from the end of the work before it when that is
    later; the runtime's own work left out, also where a command buffer's end cuts it; a submission the GPU began
-   before the one before it ended counted once; values that rise and stay at or below the guest's clock; a burst of
-   reports that fills the pool; the submission a report waits for; a counter of 36 valid bits that wraps; a reset, and
-   a clock that went back without one; and a queue without timestamps. */
+   before the one before it ended counted once; values that rise and stay at the guest's clock or a step past it; a
+   burst of reports that fills the pool; the submission a report waits for; a counter of 36 valid bits that wraps; a
+   reset, and a clock that went back without one; and a queue without timestamps. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -253,6 +253,18 @@ static void timeline(u32 bits) {
           "two reports at one instant: %llu and %llu ns", LL(value(a)), LL(value(b)));
     CHECK(value(c) > value(b) && value(c) <= 125 * MS, "a report of a submission done at 125 ms has %llu ns",
           LL(value(c)));
+
+    /* values still rise after a submission whose reports all stand at the guest's clock, each a step after the one
+       before: the clock has not gone back because the last value is those steps past it */
+    begin(17, 120 * MS, 150 * MS);
+    for (u32 i = 0; i < 100; i++) c = report(0, 180 * MS);
+    submit(180 * MS);
+    begin(17, 120 * MS, 180 * MS);
+    const u64 e = report(0, 181 * MS);
+    submit(181 * MS);
+    finish(125 * MS + 1000);
+    CHECK(value(e) > value(c), "a report after 100 at the guest's clock has %llu ns, the last of those %llu",
+          LL(value(e)), LL(value(c)));
 
     /* a report in the command buffer being recorded: asking for its submission submits it, and nothing is left to
        wait for once it is done */
