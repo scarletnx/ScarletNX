@@ -810,22 +810,24 @@ static void test_invalidated_callee(void) {
     snx_jit_service_free(service);
 }
 
-/* an invalidation of another range while a pc compiles: the batch read code that may be stale, so it publishes nothing
-   and its pcs go back to their queue. Before, they were left GONE with their pending bit set, which snx_jit_resolve's
-   fast path reads as "queued, wait for it": nothing queued them again, and the pc was never compiled (rt_miss's fatal,
-   a game's at 98f1fc4). Each batch is held from its epoch until the invalidation: without that the batch may end
-   before it however long the function is, when the host runs that thread first */
+/* an invalidation of another range while a pc compiles: the batch read words that the invalidation did not touch, so it
+   publishes what it compiled. Before, every invalidation dropped every batch in flight, and the pcs went back to their
+   queue: a pc was left GONE with its pending bit set, which snx_jit_resolve's fast path reads as "queued, wait for it",
+   twice nothing queued it, and it was never compiled (a game's at 98f1fc4). Each batch is held from its epoch until the
+   invalidation, without which the batch may end before it however long the function is, when the host runs that thread
+   first */
 #define IN_FLIGHT_PC 0x10000
-/* whether the batch queued for pc, held as it begins while memory elsewhere changes, is dropped, with nothing published
-   by its end (its thread is held in its report) */
-static int dropped_in_flight(u64 pc) {
-    int dropped = in_flight_wait(&in_flight.begun);
+/* whether the batch queued for pc, held as it begins while memory elsewhere changes, publishes anyway: the words it read
+   did not change, its report says it was not dropped, and its code is in the service at its end (its thread is held in
+   its report) */
+static int publishes_in_flight(u64 pc) {
+    int publishes = in_flight_wait(&in_flight.begun);
     snx_jit_invalidate(service, 0x8000, 0x10);
     hold(1);
     in_flight_release();
-    dropped = dropped && in_flight_wait(&in_flight.ended) && in_flight.dropped && get(pc) == NULL;
+    publishes = publishes && in_flight_wait(&in_flight.ended) && !in_flight.dropped && get(pc) != NULL;
     hold(0);
-    return dropped;
+    return publishes;
 }
 static void test_invalidate_in_flight(void) {
     static const u32 words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
@@ -840,28 +842,54 @@ static void test_invalidate_in_flight(void) {
         return;
     }
     put(IN_FLIGHT_PC, words, 2);
+    put(0x4800, words, 2);
     snx_jit_stats(service, &stats);
     dropped = stats.dropped;
     for (round = 0; ok && round < 8; ++round) {
         snx_jit_invalidate(service, IN_FLIGHT_PC, 4); /* the pc is new to the service again */
         in_flight_hold(IN_FLIGHT_PC);
         CHECK(snx_jit_resolve(service, IN_FLIGHT_PC) == NULL);
-        ok = dropped_in_flight(IN_FLIGHT_PC);
+        ok = publishes_in_flight(IN_FLIGHT_PC);
         CHECK(ok);
-        CHECK(snx_jit_wait(service, IN_FLIGHT_PC) != NULL); /* queued again, and compiled once nothing changes */
-        snx_jit_stats(service, &stats);
-        CHECK(stats.dropped == dropped + round + 1);
+        CHECK(snx_jit_wait(service, IN_FLIGHT_PC) != NULL); /* published: the wait finds its code */
     }
-    /* a warm pc goes back to the warm queue, and is compiled from there */
-    put(0x4800, words, 2);
+    /* a warm pc publishes too, and its code is compiled once nothing changes */
     in_flight_hold(0x4800);
     CHECK(snx_jit_warm(service, warm_pc, 1) == 1);
-    CHECK(dropped_in_flight(0x4800));
+    CHECK(publishes_in_flight(0x4800));
     snx_jit_drain(service);
     CHECK(get(0x4800) != NULL);
     snx_jit_stats(service, &stats);
-    printf("invalidate in flight: %lu batches dropped in 9 rounds, each pc compiled again\n", stats.dropped - dropped);
-    CHECK(stats.dropped == dropped + 9);
+    printf("invalidate in flight: %lu batches dropped in 9 rounds of invalidating code they never read\n",
+           stats.dropped - dropped);
+    /* none: the batches read words no invalidation touched (their own code did not change), and what a game does all
+       the time elsewhere in memory must not cost a batch its second of the game's time */
+    CHECK(stats.dropped == dropped);
+    snx_jit_service_free(service);
+}
+
+/* the code a batch reads changing before it publishes: what the service holds is what memory holds, never the batch's
+   stale compile, and the pc is never left compiling */
+static void test_invalidate_own_code_in_flight(void) {
+    static const u32 once[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
+    static const u32 twice[] = {0x91000800, 0xD65F03C0}; /* add x0, x0, #2; ret */
+    CPU c;
+    int round;
+    service = start(0, 1);
+    if (!service) {
+        ++failures;
+        return;
+    }
+    for (round = 0; round < 16; ++round) {
+        const int other = round & 1;
+        put(0x6000, other ? once : twice, 2);
+        snx_jit_invalidate(service, 0x6000, 4);
+        CHECK(snx_jit_wait(service, 0x6000) != NULL);
+        cpu_init(&c, 0xF000);
+        run(&c, 0x6000);
+        CHECK(c.x[0] == (other ? 1 : 2) && c.pc == RETURN);
+    }
+    printf("a batch's own code changed: %d rounds, each runs what memory holds\n", round);
     snx_jit_service_free(service);
 }
 
@@ -1237,6 +1265,7 @@ int main(int argc, char** argv) {
     test_invalidate_middle();
     test_invalidated_callee();
     test_invalidate_in_flight();
+    test_invalidate_own_code_in_flight();
     test_image_map();
     test_region_limit(0);
     test_waited_priority();
