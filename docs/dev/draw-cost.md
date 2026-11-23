@@ -124,6 +124,17 @@ change is done when the GPU thread's time for each frame drops in the race, the 
 written fall, the race's screenshots match at fixed frames, and the save thumbnail of commit 12f8977cd still holds
 its picture. On that host this is the largest single item, so it comes before items 6 and 7.
 
+Points 1 to 3 and 5 are in place for dma-buf regions (commit 73e87dc43). In the race, A/B/B/A against the commit
+before it, the frame rate went from 52 to 54 fps to 64 to 66, the GPU thread from 15.7 to 16.5 ms a present to 13.3
+to 13.5, and the staging of bindings from 147 MB a present on the GPU and 36 MB on the CPU to under 17 MB and 0.2 MB.
+What is left:
+
+- Point 4. A publish that runs still does the work for each page, and a CPU access to a watched region waits for the
+  GPU once for each run of guest memory.
+- A host pointer import still gets a publish at each release. A driver that imports guest memory that way (where
+  dma-bufs are not cheaper) gains nothing yet.
+- The save thumbnail of commit 12f8977cd, in its own game.
+
 ## Memory on the GPU
 
 - Give physical pools their memory when the GPU first uses them, in chunks of 4 MiB.
