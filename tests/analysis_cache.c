@@ -72,11 +72,11 @@ static int functions_equal(const SnxFunction* a, size_t na, const SnxFunction* b
         if (a[i].start != b[i].start || a[i].end != b[i].end || a[i].count != b[i].count ||
             a[i].leader_count != b[i].leader_count)
             return 0;
-        if (!!a[i].addresses != !!b[i].addresses) return 0;
+        if (!!a[i].addresses != !!b[i].addresses || !!a[i].leaders != !!b[i].leaders) return 0;
         for (j = 0; j < a[i].count; ++j)
             if (a[i].addresses && a[i].addresses[j] != b[i].addresses[j]) return 0;
         for (j = 0; j < a[i].count; ++j)
-            if (a[i].leaders[j] != b[i].leaders[j]) return 0;
+            if (a[i].leaders && a[i].leaders[j] != b[i].leaders[j]) return 0;
     }
     return 1;
 }
@@ -124,9 +124,9 @@ static void write_bad_file(const char* folder, const char* key, const unsigned c
     f = snx_fopen(path, "wb");
     CHECK(f != NULL);
     if (f) {
-        fwrite(payload, 1, size, f);
-        fwrite(trailer, 1, sizeof trailer, f);
-        fclose(f);
+        CHECK(fwrite(payload, 1, size, f) == size);
+        CHECK(fwrite(trailer, 1, sizeof trailer, f) == sizeof trailer);
+        CHECK(!fclose(f));
     }
     free(path);
 }
@@ -163,10 +163,10 @@ static void concurrent_child(const char* folder, const char* key, int n, SnxU64 
     src.functions = make_functions((size_t)n, base);
     src.function_count = (size_t)n;
     src.function_capacity = (size_t)n;
-    (void)snx_analysis_cache_store(cache, key, &src, error, sizeof error);
+    int rc = snx_analysis_cache_store(cache, key, &src, error, sizeof error);
     free_codegen(&src);
     snx_analysis_cache_close(cache);
-    _exit(0);
+    _exit(rc ? 2 : 0);
 }
 #endif
 
@@ -265,11 +265,23 @@ static int test_trailer_reject(const char* folder) {
     name = snx_format("%s.an", key);
     path = snx_path_join(folder, name);
     free(name);
+    /* corrupt one payload byte, keeping the magic and trailer: the hash must reject it */
+    f = snx_fopen(path, "r+b");
+    CHECK(f != NULL);
+    if (f) {
+        int byte = fgetc(f);
+        rewind(f);
+        fputc(byte ^ 1, f);
+        fclose(f);
+    }
+    CHECK(snx_analysis_cache_load(cache, key, &dst, error, sizeof error) != 0);
+    CHECK(dst.functions == NULL);
+    free_codegen(&dst);
     /* corrupt magic */
     f = snx_fopen(path, "r+b");
     CHECK(f != NULL);
     if (f) {
-        fseek(f, -40, SEEK_END);
+        fseek(f, -(long)SNX_ANALYSIS_TRAILER, SEEK_END);
         fputc('X', f);
         fclose(f);
     }
@@ -327,6 +339,11 @@ static int test_key_sensitivity(const char* folder) {
     /* text change */
     id.version = SNX_ANALYSIS_VERSION;
     c2 = snx_analysis_cache_open(folder, &id, error, sizeof error);
+    CHECK(c2 != NULL);
+    if (!c2) {
+        snx_analysis_cache_close(c1);
+        return 1;
+    }
     text[0] ^= 0xff;
     CHECK(snx_analysis_cache_key(c2, &mod, 1, hints, 1, k2) == 0);
     CHECK(strcmp(k1, k2) != 0);
@@ -416,11 +433,12 @@ static int test_soft_fail_open(const char* folder) {
     /* a regular file cannot be a parent directory, on any host */
     file = snx_path_join(folder, "not-a-folder");
     CHECK(file && !snx_write_file(file, "x", 1));
-    if (!file) return 1;
+    if (!file) return 0;
     path = snx_format("%s/analysis", file);
     cache = snx_analysis_cache_open(path, &id, error, sizeof error);
     CHECK(cache == NULL);
     CHECK(error[0] != 0);
+    if (cache) snx_analysis_cache_close(cache);
     free(path);
     free(file);
     return 1;
@@ -486,7 +504,7 @@ static int test_concurrent_store(const char* folder) {
     unsigned char text[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
     SnxCodeImage mod;
     SnxCodegen a = {0}, b = {0}, loaded = {0};
-    int iter, barrier[2], status;
+    int iter, barrier[2], status, pid1_running = 0;
     pid_t pid1, pid2;
     fill_module(&mod, text, sizeof text, 0x1000);
     cache = snx_analysis_cache_open(folder, &id, error, sizeof error);
@@ -498,13 +516,31 @@ static int test_concurrent_store(const char* folder) {
     b.functions = make_functions(5, 0x4000);
     b.function_count = b.function_capacity = 5;
     for (iter = 0; iter < 20; ++iter) {
-        CHECK(pipe(barrier) == 0);
+        pid1_running = 0;
+        if (pipe(barrier)) {
+            CHECK(0);
+            goto fail;
+        }
         pid1 = fork();
+        if (pid1 < 0) {
+            CHECK(0);
+            close(barrier[0]);
+            close(barrier[1]);
+            goto fail;
+        }
         if (pid1 == 0) {
             close(barrier[1]);
             concurrent_child(folder, key, 3, 0x2000, barrier[0]);
         }
+        pid1_running = 1;
         pid2 = fork();
+        if (pid2 < 0) {
+            CHECK(0);
+            close(barrier[0]);
+            (void)write(barrier[1], "xx", 2);
+            close(barrier[1]);
+            goto fail;
+        }
         if (pid2 == 0) {
             close(barrier[1]);
             concurrent_child(folder, key, 5, 0x4000, barrier[0]);
@@ -512,8 +548,8 @@ static int test_concurrent_store(const char* folder) {
         close(barrier[0]);
         (void)write(barrier[1], "xx", 2);
         close(barrier[1]);
-        CHECK(waitpid(pid1, &status, 0) == pid1);
-        CHECK(waitpid(pid2, &status, 0) == pid2);
+        CHECK(waitpid(pid1, &status, 0) == pid1 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(waitpid(pid2, &status, 0) == pid2 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
         memset(&loaded, 0, sizeof loaded);
         CHECK(snx_analysis_cache_load(cache, key, &loaded, error, sizeof error) == 0);
         CHECK(functions_equal(a.functions, 3, loaded.functions, loaded.function_count) ||
@@ -536,6 +572,12 @@ static int test_concurrent_store(const char* folder) {
     free_codegen(&b);
     snx_analysis_cache_close(cache);
     return 1;
+fail:
+    if (pid1_running) (void)waitpid(pid1, &status, 0);
+    free_codegen(&a);
+    free_codegen(&b);
+    snx_analysis_cache_close(cache);
+    return 0;
 }
 #else
 static int test_concurrent_store(const char* folder) {
@@ -576,6 +618,7 @@ static int test_analyze_roundtrip(const char* folder) {
     CHECK(snx_analysis_cache_load(cache, key, &loaded, error, sizeof error) == 0);
     CHECK(!snx_codegen_analyze(&live2, &mod, 1, NULL, 0, 1, 0));
     CHECK(functions_equal(live1.functions, live1.function_count, live2.functions, live2.function_count));
+    CHECK(loaded.function_count == live2.function_count);
     CHECK(functions_equal(live2.functions, live2.function_count, loaded.functions, loaded.function_count));
     CHECK(loaded.instruction_count == live2.instruction_count);
     /* a loaded analysis must get its image views back, or every word decodes as undefined */
@@ -690,8 +733,9 @@ int main(void) {
         return 1;
     }
     folder = snx_format("%s/snx-analysis-cache-test", root);
-    free(root);
     if (!folder) {
+        snx_remove_tree(root);
+        free(root);
         fprintf(stderr, "cannot make temp folder name\n");
         return 1;
     }
@@ -707,8 +751,9 @@ int main(void) {
     test_link_stamp(folder);
     test_soft_fail_open(folder);
     test_miss(folder);
-    snx_remove_tree(folder);
+    snx_remove_tree(root);
     free(folder);
+    free(root);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

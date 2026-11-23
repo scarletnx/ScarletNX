@@ -29,8 +29,6 @@ typedef struct {
     SnxU64 unit_cache_limit; /* the bytes the folder is held to after the build, its oldest objects removed; 0: none */
     /* the room on the unit cache's disk, as unit_cache.h's SnxUnitDisk reads it: NULL for snx_disk_room, a test's own */
     int (*unit_cache_disk)(const char* folder, SnxU64* free_bytes, SnxU64* total);
-    /* content-addressed cache of the discovery/analysis result (analysis_cache.h). NULL: always run the dense walk. When unit_cache is set and this is NULL, a subdir "analysis" under the unit cache is used. Open is soft-fail: an unwritable folder never aborts the build. */
-    const char* analysis_cache;
     /* when set, the snx_aot_ wrappers the descriptor got: one per entry when the profile cache's units link (they call
        them), else none */
     size_t* wrappers;

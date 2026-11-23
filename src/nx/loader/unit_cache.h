@@ -55,20 +55,18 @@ int snx_unit_cache_keep(const SnxUnitCache* cache, const char* key, const unsign
    always keeps a tenth of itself free, at most 10 GB: the cache's oldest objects are removed to make room for a new
    one, and one there is no room for is not cached. Each reason a unit is not cached is said once, for the first unit it
    stops; the counts (units not cached, objects removed for room, reused ones whose time could not be renewed) at
-   snx_unit_cache_close. Units of one cache may run on several threads. key, when not NULL, gets the unit's key when its
-   object is whole in the cache on return, else an empty string; the cache then holds that object until
-   snx_unit_cache_close, and makes no room by removing it, so that snx_unit_cache_read has it again. 0, or -1 with why
-   in error (snx_ir_object's) */
-/* key, when not NULL, receives the unit's key. hold_key also keeps that object out of trimming until the cache
-   closes, which a pack build needs when it frees the object and reads it back by key later. */
+   snx_unit_cache_close. Units of one cache may run on several threads. key, when not NULL, receives the unit's key.
+   hold_key keeps that object out of trimming until the cache closes, which a pack build needs when it frees the object
+   and reads it back by key later. 0, or -1 with why in error (snx_ir_object's) */
 int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* key,
                           int hold_key, char* error, size_t error_size);
 /* The object kept under key, malloc'd, its size in *size; NULL with why in error: the file and the system's reason
    when it cannot be read, or why it is not whole */
 unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, size_t* size, char* error,
                                    size_t error_size);
-/* An object read by a known key, with the same reuse bookkeeping as snx_unit_cache_object: held out of trimming and
-   its time renewed. NULL with why in error when the object is not whole or cannot be read. */
+/* An object read by a known key, with the same reuse bookkeeping as snx_unit_cache_object. It is held out of trimming
+   only when hold_key is set; its time is renewed either way. NULL with why in error when the object is not whole or
+   cannot be read. */
 unsigned char* snx_unit_cache_reuse(SnxUnitCache* cache, const char* key, int hold_key, size_t* size, char* error,
                                     size_t error_size);
 /* A digest of this cache's identity: LLVM, opt, tuning and object version. An ABI change must raise

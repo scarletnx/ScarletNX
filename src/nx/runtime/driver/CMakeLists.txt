@@ -33,7 +33,7 @@ add_library(snx_driver_llvm STATIC ../../loader/module_llvm.c ../../loader/modul
                                    ../../loader/unit_cache.c ../../loader/analysis_cache.c llvm_tuning.c disasm.c "${SNX_SETTINGS_LLVM}")
 set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-# OpenSSL: the unit cache's SHA-256 (unit_cache.c)
+# OpenSSL: SHA-256 in the unit cache and the analysis cache
 target_link_libraries(snx_driver_llvm PUBLIC snx_llvm snx_arm_llvm snx_nx_module snx_settings OpenSSL::Crypto)
 # LLVM's revision in the unit cache's key, where its headers name one
 include("${PROJECT_SOURCE_DIR}/cmake/llvm_revision.cmake")

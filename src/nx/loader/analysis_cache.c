@@ -4,8 +4,10 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
+#include "common/utilities/ascii.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include <openssl/evp.h>
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,21 +27,9 @@ struct SnxAnalysisCache {
     char folder[4096];
 };
 
-static void put64(unsigned char* p, SnxU64 v) {
-    int i;
-    for (i = 0; i < 8; ++i) p[i] = (unsigned char)(v >> (8 * i));
-}
-
-static SnxU64 get64(const unsigned char* p) {
-    SnxU64 v = 0;
-    int i;
-    for (i = 0; i < 8; ++i) v |= (SnxU64)p[i] << (8 * i);
-    return v;
-}
-
 static int field(EVP_MD_CTX* ctx, const void* data, size_t size) {
     unsigned char length[8];
-    put64(length, size);
+    snx_st_le64(length, size);
     return EVP_DigestUpdate(ctx, length, sizeof length) == 1 && (!size || EVP_DigestUpdate(ctx, data, size) == 1);
 }
 
@@ -148,8 +138,11 @@ int snx_analysis_cache_key(const SnxAnalysisCache* cache, const SnxCodeImage* mo
     ok &= field(ctx, &module_count, sizeof module_count);
     for (i = 0; i < module_count; ++i) {
         const SnxCodeImage* m = &modules[i];
-        if ((m->function_count && !m->functions) || (m->relptr_count && !m->relptrs) ||
-            (m->routed_count && !m->routed) || (m->fde_count && !m->fde)) {
+        if ((m->image_size && !m->image) || (m->function_count && !m->functions) ||
+            (m->relptr_count && !m->relptrs) || (m->routed_count && !m->routed) ||
+            (m->fde_count && !m->fde) ||
+            m->function_count > SIZE_MAX / sizeof(SnxU64) || m->relptr_count > SIZE_MAX / sizeof(SnxU64) ||
+            m->routed_count > SIZE_MAX / sizeof(SnxU64) || m->fde_count > SIZE_MAX / sizeof(SnxFde)) {
             ok = 0;
             break;
         }
@@ -163,7 +156,8 @@ int snx_analysis_cache_key(const SnxAnalysisCache* cache, const SnxCodeImage* mo
         ok &= field(ctx, m->routed, m->routed_count * sizeof(SnxU64));
         ok &= field(ctx, m->fde, m->fde_count * sizeof(SnxFde));
     }
-    if (ok) ok &= field(ctx, hints, hint_count * sizeof(SnxU64));
+    if (ok && hint_count <= SIZE_MAX / sizeof(SnxU64)) ok &= field(ctx, hints, hint_count * sizeof(SnxU64));
+    else ok = 0;
     if (!ok || EVP_DigestFinal_ex(ctx, dig, NULL) != 1) {
         EVP_MD_CTX_free(ctx);
         return -1;
@@ -245,7 +239,7 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         snprintf(error, error_size, "analysis payload hash mismatch");
         return -1;
     }
-    nfunc = get64(payload);
+    nfunc = snx_ld_le64(payload);
     off = 8;
     if (nfunc > 1000000ull) {
         free(file);
@@ -280,15 +274,15 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         SnxFunction* fn = &functions[i];
         SnxU64 start, end, count, leader_count, alen;
         if (off + 40 > size) goto truncated;
-        start = get64(payload + off);
+        start = snx_ld_le64(payload + off);
         off += 8;
-        end = get64(payload + off);
+        end = snx_ld_le64(payload + off);
         off += 8;
-        count = get64(payload + off);
+        count = snx_ld_le64(payload + off);
         off += 8;
-        leader_count = get64(payload + off);
+        leader_count = snx_ld_le64(payload + off);
         off += 8;
-        alen = get64(payload + off);
+        alen = snx_ld_le64(payload + off);
         off += 8;
         if (count > 10000000ull || (alen && alen != count) || leader_count > count) goto truncated;
         fn->start = start;
@@ -298,11 +292,11 @@ int snx_analysis_cache_load(SnxAnalysisCache* cache, const char* key, SnxCodegen
         if (alen) {
             size_t j;
             if (fn->count > (size - off) / 8) goto truncated;
-            while ((size_t)(cursor - block) % 8) ++cursor;
+            cursor = block + snx_align_up((size_t)(cursor - block), 8);
             fn->addresses = (SnxU64*)cursor;
             cursor += fn->count * sizeof(SnxU64);
             for (j = 0; j < fn->count; ++j) {
-                fn->addresses[j] = get64(payload + off);
+                fn->addresses[j] = snx_ld_le64(payload + off);
                 off += 8;
             }
         }
@@ -340,7 +334,8 @@ int snx_analysis_cache_load_unit_keys(const SnxAnalysisCache* cache, const char*
     unsigned char* file;
     size_t size = 0, i;
     int rc = -1;
-    if (!cache || !key || !options || !unit_keys) return -1;
+    if (!cache || !key || !options || !unit_keys || count > (SIZE_MAX - 72) / 64) return -1;
+    memset(unit_keys, 0, count * 65);
     name = snx_format("%s.units", key);
     path = snx_path_join(cache->folder, name);
     free(name);
@@ -348,12 +343,12 @@ int snx_analysis_cache_load_unit_keys(const SnxAnalysisCache* cache, const char*
     file = snx_read_file(path, &size);
     free(path);
     if (!file) return -1;
-    if (size >= 72 && !memcmp(file, options, 64) && get64(file + 64) == count && size >= 72 + count * 64) {
+    if (size >= 72 && !memcmp(file, options, 64) && snx_ld_le64(file + 64) == count && size >= 72 + count * 64) {
         int valid = 1;
         for (i = 0; i < count; ++i) {
             size_t j;
             for (j = 0; j < 64; ++j)
-                if (!isxdigit(file[72 + i * 64 + j])) valid = 0;
+                if (!snx_is_hex(file[72 + i * 64 + j])) valid = 0;
             memcpy(unit_keys[i], file + 72 + i * 64, 64);
             unit_keys[i][64] = 0;
         }
@@ -375,7 +370,7 @@ int snx_analysis_cache_store_unit_keys(const SnxAnalysisCache* cache, const char
     file = (unsigned char*)snx_alloc(size);
     if (!file) return -1;
     memcpy(file, options, 64);
-    put64(file + 64, (SnxU64)count);
+    snx_st_le64(file + 64, (SnxU64)count);
     for (i = 0; i < count; ++i) {
         if (!unit_keys[i][0] || strlen(unit_keys[i]) != 64) goto done;
         memcpy(file + 72 + i * 64, unit_keys[i], 64);
@@ -408,7 +403,7 @@ done:
     return rc;
 }
 
-/* The descriptor file: magic, the descriptor key, wrapped, entries, object size, the object, then its hash. */
+/* The descriptor file: magic, key, wrapped, entries, variants, object size, object, then its hash. */
 static const unsigned char g_descriptor_magic[8] = {'S', 'N', 'X', 'D', 'S', 'C', 'R', '1'};
 
 int snx_analysis_cache_load_descriptor(const SnxAnalysisCache* cache, const char* key, const unsigned char** object,
@@ -435,13 +430,13 @@ int snx_analysis_cache_load_descriptor(const SnxAnalysisCache* cache, const char
     if (!file || file_size < 8 + 64 + 32 + 32) goto done;
     if (memcmp(file, g_descriptor_magic, 8) || memcmp(file + 8, key, 64)) goto done;
     off = 8 + 64;
-    *wrapped = (size_t)get64(file + off);
+    *wrapped = (size_t)snx_ld_le64(file + off);
     off += 8;
-    *entries = (size_t)get64(file + off);
+    *entries = (size_t)snx_ld_le64(file + off);
     off += 8;
-    *variants = (size_t)get64(file + off);
+    *variants = (size_t)snx_ld_le64(file + off);
     off += 8;
-    object_size = (size_t)get64(file + off);
+    object_size = (size_t)snx_ld_le64(file + off);
     off += 8;
     if (object_size > file_size - off - 32) goto done;
     if (check_hash(key, file + 8 + 64, off - (8 + 64) + object_size, hash) ||
@@ -467,13 +462,13 @@ int snx_analysis_cache_store_descriptor(const SnxAnalysisCache* cache, const cha
     if (!file) return -1;
     memcpy(file, g_descriptor_magic, 8);
     memcpy(file + 8, key, 64);
-    put64(file + off, (SnxU64)wrapped);
+    snx_st_le64(file + off, (SnxU64)wrapped);
     off += 8;
-    put64(file + off, (SnxU64)entries);
+    snx_st_le64(file + off, (SnxU64)entries);
     off += 8;
-    put64(file + off, (SnxU64)variants);
+    snx_st_le64(file + off, (SnxU64)variants);
     off += 8;
-    put64(file + off, (SnxU64)size);
+    snx_st_le64(file + off, (SnxU64)size);
     off += 8;
     memcpy(file + off, object, size);
     off += size;
@@ -524,9 +519,9 @@ int snx_analysis_cache_load_link_stamp(const SnxAnalysisCache* cache, const char
     file = snx_read_file(path, &file_size);
     free(path);
     if (!file || file_size < 16 + 8 + 64 + 64 + 8 + 8 + 8 + 8 + 64 + 32) goto done;
-    if (memcmp(file, g_link_magic, 8) || get64(file + 8) != SNX_LINK_STAMP_VERSION ||
-        get64(file + 16) != (SnxU64)SNX_ABI || memcmp(file + 24, desc_key, 64) ||
-        memcmp(file + 88, identity, 64) || get64(file + 152) != count)
+    if (memcmp(file, g_link_magic, 8) || snx_ld_le64(file + 8) != SNX_LINK_STAMP_VERSION ||
+        snx_ld_le64(file + 16) != (SnxU64)SNX_ABI || memcmp(file + 24, desc_key, 64) ||
+        memcmp(file + 88, identity, 64) || snx_ld_le64(file + 152) != count)
         goto done;
     off = 160;
     for (i = 0; i < count; ++i) {
@@ -534,14 +529,14 @@ int snx_analysis_cache_load_link_stamp(const SnxAnalysisCache* cache, const char
         off += 64;
     }
     if (off + 8 > file_size) goto done;
-    length = (size_t)get64(file + off);
+    length = (size_t)snx_ld_le64(file + off);
     off += 8;
     if (length > file_size - off || length != strlen(output) || memcmp(file + off, output, length)) goto done;
     off += length;
     if (off + 8 + 8 + 64 + 32 > file_size) goto done;
-    *size = get64(file + off);
+    *size = snx_ld_le64(file + off);
     off += 8;
-    *mtime = get64(file + off);
+    *mtime = snx_ld_le64(file + off);
     off += 8;
     memcpy(sample, file + off, 64);
     sample[64] = 0;
@@ -567,23 +562,23 @@ int snx_analysis_cache_store_link_stamp(const SnxAnalysisCache* cache, const cha
     file = (unsigned char*)snx_alloc(total);
     if (!file) return -1;
     memcpy(file, g_link_magic, 8);
-    put64(file + 8, SNX_LINK_STAMP_VERSION);
-    put64(file + 16, (SnxU64)SNX_ABI);
+    snx_st_le64(file + 8, SNX_LINK_STAMP_VERSION);
+    snx_st_le64(file + 16, (SnxU64)SNX_ABI);
     memcpy(file + 24, desc_key, 64);
     memcpy(file + 88, identity, 64);
-    put64(file + 152, (SnxU64)count);
+    snx_st_le64(file + 152, (SnxU64)count);
     off = 160;
     for (i = 0; i < count; ++i) {
         memcpy(file + off, unit_keys[i], 64);
         off += 64;
     }
-    put64(file + off, (SnxU64)length);
+    snx_st_le64(file + off, (SnxU64)length);
     off += 8;
     memcpy(file + off, output, length);
     off += length;
-    put64(file + off, size);
+    snx_st_le64(file + off, size);
     off += 8;
-    put64(file + off, mtime);
+    snx_st_le64(file + off, mtime);
     off += 8;
     memcpy(file + off, sample, 64);
     off += 64;
@@ -624,13 +619,33 @@ int snx_analysis_cache_store(SnxAnalysisCache* cache, const char* key, const Snx
     SnxU64 nfunc;
     char reason[256];
     int rc = -1, written;
-    if (!cache || !key || !codegen) return -1;
+    if (!cache || !key || !codegen || !error) return -1;
     nfunc = codegen->function_count;
+    /* the loader refuses these limits; never store an entry it would reject */
+    if (nfunc > 1000000ull) {
+        snprintf(error, error_size, "implausible function count %llu", (unsigned long long)nfunc);
+        cache->store_fail++;
+        return -1;
+    }
     for (i = 0; i < codegen->function_count; ++i) {
         const SnxFunction* fn = &codegen->functions[i];
-        capacity += 40 + (fn->addresses ? fn->count * 8 : 0);
+        size_t bytes = 40 + (fn->addresses ? fn->count * 8 : 0);
+        if (fn->count > 10000000ull || (fn->leader_count && !fn->leaders) ||
+            fn->leader_count > fn->count || bytes > SIZE_MAX - capacity) {
+            snprintf(error, error_size, "implausible function %zu", i);
+            cache->store_fail++;
+            return -1;
+        }
         /* leaders is one flag per instruction: count bytes, of which leader_count are set. */
-        if (fn->leader_count) capacity += fn->count;
+        if (fn->leader_count) {
+            if (fn->count > SIZE_MAX - capacity - bytes) {
+                snprintf(error, error_size, "analysis payload is too large");
+                cache->store_fail++;
+                return -1;
+            }
+            bytes += fn->count;
+        }
+        capacity += bytes;
     }
     payload = (unsigned char*)snx_alloc(capacity);
     if (!payload) {
@@ -638,18 +653,18 @@ int snx_analysis_cache_store(SnxAnalysisCache* cache, const char* key, const Snx
         cache->store_fail++;
         return -1;
     }
-    put64(payload + used, nfunc);
+    snx_st_le64(payload + used, nfunc);
     used += 8;
     for (i = 0; i < codegen->function_count; ++i) {
         const SnxFunction* fn = &codegen->functions[i];
         SnxU64 alen = fn->addresses ? (SnxU64)fn->count : 0;
-        put64(payload + used, fn->start);      used += 8;
-        put64(payload + used, fn->end);        used += 8;
-        put64(payload + used, (SnxU64)fn->count);        used += 8;
-        put64(payload + used, (SnxU64)fn->leader_count); used += 8;
-        put64(payload + used, alen);           used += 8;
+        snx_st_le64(payload + used, fn->start);      used += 8;
+        snx_st_le64(payload + used, fn->end);        used += 8;
+        snx_st_le64(payload + used, (SnxU64)fn->count);        used += 8;
+        snx_st_le64(payload + used, (SnxU64)fn->leader_count); used += 8;
+        snx_st_le64(payload + used, alen);           used += 8;
         for (j = 0; j < (size_t)alen; ++j) {
-            put64(payload + used, fn->addresses[j]);
+            snx_st_le64(payload + used, fn->addresses[j]);
             used += 8;
         }
         if (fn->leader_count) {

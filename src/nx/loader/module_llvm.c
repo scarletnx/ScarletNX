@@ -78,7 +78,7 @@ static int output_sample(const char* path, char out[65]) {
     size_t size = (size_t)snx_file_size(path), first, last;
     FILE* f = snx_fopen(path, "rb");
     int ok = 0;
-    if (!buf || !f) {
+    if (!size || !buf || !f) {
         if (buf) free(buf);
         if (f) fclose(f);
         return -1;
@@ -894,7 +894,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
        and the recompiler library uses other discovery functions, so neither needs this cache. */
     if (!options->interp_only) {
         char analysis_folder[4200] = {0};
-        const char* analysis_path = build->analysis_cache;
+        const char* analysis_path = NULL;
         int analysis_hit = 0;
         SnxCodeImage* views = NULL;
         if (!analysis_path && build->unit_cache) {
@@ -918,6 +918,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                     size_t mi;
                     for (mi = 0; mi < loaded->module_count; ++mi) {
                         const SnxModuleImage* m = &loaded->modules[mi];
+                        views[mi] = (SnxCodeImage){0};
                         views[mi].image = m->image;
                         views[mi].image_size = m->image_size;
                         views[mi].base = m->base;
@@ -1036,19 +1037,23 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
        every other input to a unit's IR, so a key from another opt, tuning, LLVM or chunk size cannot be reused. */
     if (analysis && akey[0]) {
         char bound_id[65] = {0}, layout_id[65] = {0}, triple_id[65] = {0}, unit_id[65] = {0};
+        int digests_ok = 1;
         struct {
             char identity[64], bound[64], layout[64], triple[64], units_identity[64];
             SnxU64 chunk, hook, nro, units;
         } blob;
         memset(&blob, 0, sizeof blob);
         memcpy(blob.identity, akey, 64);
-        snx_analysis_cache_digest(options->bound ? options->bound : (const void*)"",
-                                  options->bound_count * sizeof(*options->bound), bound_id);
-        snx_analysis_cache_digest(build->layout ? build->layout : (const void*)"",
-                                  build->layout_count * sizeof(*build->layout), layout_id);
-        snx_analysis_cache_digest(build->triple ? build->triple : "", build->triple ? strlen(build->triple) : 0,
-                                  triple_id);
-        if (unit_cache) snx_unit_cache_identity_digest(unit_cache, unit_id);
+        digests_ok &= !snx_analysis_cache_digest(options->bound,
+                                                  options->bound ? options->bound_count * sizeof(*options->bound) : 0,
+                                                  bound_id);
+        digests_ok &= !snx_analysis_cache_digest(build->layout,
+                                                 build->layout ? build->layout_count * sizeof(*build->layout) : 0,
+                                                 layout_id);
+        digests_ok &= !snx_analysis_cache_digest(build->triple ? build->triple : "",
+                                                 build->triple ? strlen(build->triple) : 0, triple_id);
+        if (unit_cache) digests_ok &= !snx_unit_cache_identity_digest(unit_cache, unit_id);
+        if (!digests_ok) unit_id[0] = 0;
         memcpy(q.unit_id, unit_id, sizeof q.unit_id);
         memcpy(blob.bound, bound_id, 64);
         memcpy(blob.layout, layout_id, 64);
@@ -1058,7 +1063,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         blob.hook = (SnxU64)options->hook_direct_calls;
         blob.nro = options->nro_count;
         blob.units = q.count;
-        if (!snx_analysis_cache_digest(&blob, sizeof blob, options_id)) {
+        if (digests_ok && !snx_analysis_cache_digest(&blob, sizeof blob, options_id)) {
             memcpy(q.options_id, options_id, sizeof q.options_id);
             q.keys = (char (*)[65])snx_alloc(q.count * 65);
             if (q.keys) {
@@ -1074,14 +1079,24 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
              nros_id[65] = {0};
         size_t routes_n = (size_t)snx_hook_route_count(), n = 0, j;
         int ok = 0;
-        size_t bufsz = 4096 + routes_n * 64 + cache_count * 256 + (loaded->module_count + options->nro_count) * 256;
-        unsigned char *buf = (unsigned char*)snx_alloc(bufsz);
+        size_t bufsz = 4096;
+        unsigned char *buf;
+        int fits = routes_n <= (SIZE_MAX - bufsz) / 64;
+        if (fits) bufsz += routes_n * 64;
+        fits &= cache_count <= (SIZE_MAX - bufsz) / 256;
+        if (fits) bufsz += cache_count * 256;
+        fits &= loaded->module_count <= (SIZE_MAX - bufsz) / 256;
+        if (fits) bufsz += loaded->module_count * 256;
+        fits &= options->nro_count <= (SIZE_MAX - bufsz) / 256;
+        if (fits) bufsz += options->nro_count * 256;
+        if (!fits) bufsz = 0;
+        buf = fits ? (unsigned char*)snx_alloc(bufsz) : NULL;
         struct {
             char identity[64], options[64], npdm[64], modules[64], title[64], routes[64], jit[64], nros[64];
             SnxU64 packs, abi, nro_end;
         } d;
         memset(&d, 0, sizeof d);
-        if (buf) {
+        if (buf && fits) {
             ok |= desc_append(buf, bufsz, &n, &loaded->npdm.title_id, 8);
             ok |= desc_append(buf, bufsz, &n, &loaded->npdm.stack, 4);
             ok |= desc_append(buf, bufsz, &n, &loaded->npdm.prio, 4);
@@ -1164,7 +1179,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                 }
                 memcpy(keys[k], q.units[k].key, 65);
             }
-            if (have) snx_analysis_cache_store_unit_keys(q.analysis, q.akey, q.options_id, keys, q.count);
+            if (have && snx_analysis_cache_store_unit_keys(q.analysis, q.akey, q.options_id, keys, q.count))
+                snx_analysis_cache_setup_failed(q.analysis);
             free(keys);
         }
     }
@@ -1174,6 +1190,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     /* the module descriptor */
     start = snx_seconds();
+    /* a failed load may have written untrusted values into these outputs; start clean before the emit fallback */
+    wrapped = 0;
+    entry_count = 0;
+    variant_count = 0;
     if (analysis && desc_key[0] && !build->keep_ir) {
         const unsigned char* cached = NULL;
         if (snx_analysis_cache_load_descriptor(analysis, desc_key, &cached, &module_size, &wrapped, &entry_count,
@@ -1223,9 +1243,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             snx_error("LLVM backend: %s", error);
             goto done;
         }
-        if (analysis && desc_key[0])
+        if (analysis && desc_key[0] &&
             snx_analysis_cache_store_descriptor(analysis, desc_key, module_object, module_size, wrapped, entry_count,
-                                                 variant_count);
+                                                variant_count))
+            snx_analysis_cache_setup_failed(analysis);
     }
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
@@ -1324,10 +1345,18 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         }
         if (analysis && desc_key[0] && q.unit_id[0] && q.keys) {
             char sample[65] = {0};
-            if (!output_sample(build->output, sample))
+            size_t k;
+            int have = 1;
+            for (k = 0; k < q.count; ++k)
+                if (!q.keys[k][0]) have = 0;
+            if (!have) goto no_stamp;
+
+            if (!output_sample(build->output, sample) &&
                 snx_analysis_cache_store_link_stamp(analysis, akey, desc_key, q.unit_id, q.keys, q.count,
                                                     build->output, linked.size, (SnxU64)snx_file_time(build->output),
-                                                    sample);
+                                                    sample))
+                snx_analysis_cache_setup_failed(analysis);
+        no_stamp:;
         }
     }
     if (!options->quiet) {
