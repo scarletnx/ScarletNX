@@ -143,6 +143,11 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, DevMem* mem) { return (void
 u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) { return (void)size, (void)align, (void)buf, (void)off, NULL; }
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) { (void)wait, (void)wait_stage, (void)signal; }
 int vk_uma(void) { return 0; }
+int vk_uma_storage_copied(void) { return 0; }
+[[noreturn]] void vk_lost_stop(const char* msg) {
+    fprintf(stderr, "mirror_landing: %s\n", msg);
+    exit(1);
+}
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) { (void)host, (void)len, (void)since, (void)fn, (void)user; }
 int vk_written_since(const u8* host, u64 len, u32 since) { return (void)host, (void)len, (void)since, 0; }
 u32 vk_ww_epoch(void) { return 1; }

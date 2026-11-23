@@ -111,6 +111,7 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 n) {
 }
 void gpu_kick(void) {}
 void gpu_poll_why(u32 why) { (void)why; }
+u64 gpu_thread_busy_ns(void) { return 0; } /* gpu_split=2's measure (gpu_queue.c gq_auto): this test sets gpu_split=1 */
 /* each piece of work in its order, every one done */
 static void pump(void) {
     for (u32 i = 0; i < g_nwork; i++)
