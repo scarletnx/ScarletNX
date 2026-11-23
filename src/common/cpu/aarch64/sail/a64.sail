@@ -4,6 +4,14 @@
    BSD 3-Clause Clear License: LICENSE beside this file. Do not edit: a system's fixup goes in its overlay
    (README.md beside this file) */
 
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1) = {
+    SEE = 1;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_abs_aarch64_instrs_integer_arithmetic_unary_abs(Rd, Rn, sf)
+}
+
 val execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd : forall 'd 'datasize 'elements 'esize 'n ('neg : Bool),
   (0 <= 'n & 'n <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('elements), int('esize), int('n), bool('neg)) -> unit
@@ -23,6 +31,15 @@ function execute_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd (d, da
         result = Elem_set(result, e, esize, element[esize - 1 .. 0])
     };
     V_set(d, datasize) = result
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 2) = {
+    SEE = 2;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd(Rd, Rn, size, U)
 }
 
 val decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd : (bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -48,6 +65,15 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 4) = {
+    SEE = 4;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd(Rd, Rn, size, U)
 }
 
 val decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd : (bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -209,6 +235,16 @@ function execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_si
     V_set(d, datasize) = result
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 10) = {
+    SEE = 10;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd(Rd, Rn, Rm, size, U)
+}
+
 val decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
 
 function decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd (Rd, Rn, Rm, size, U, Q) = {
@@ -234,6 +270,16 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 12) = {
+    SEE = 12;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd(Rd, Rn, Rm, size, U)
 }
 
 val decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -730,6 +776,68 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitone, bitzero, bito
     decode_subs_addsub_ext_aarch64_instrs_integer_arithmetic_add_sub_extendedreg(Rd, Rn, imm3, option_name, Rm, S, op, sf)
 }
 
+function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 26) = {
+    SEE = 26;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let uimm4 = Slice(__opcode, 10, 4);
+    let op3 = Slice(__opcode, 14, 2);
+    let uimm6 = Slice(__opcode, 16, 6);
+    if [__opcode[14]] != 0b0 | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_addg_aarch64_instrs_integer_tags_mcaddtag(Xd, Xn, uimm4, op3, uimm6)
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 27) = {
+    SEE = 27;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_addhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 28) = {
+    SEE = 28;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_raddhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 29) = {
+    SEE = 29;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rsubhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 30) = {
+    SEE = 30;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_subhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow(Rd, Rn, o1, Rm, size, U, Q)
+}
+
 val execute_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_pair : forall 'd 'datasize 'elements 'esize 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {64, 128} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('elements), int('esize), int('m), int('n)) -> unit
@@ -773,6 +881,14 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     let size = Slice(__opcode, 22, 2);
     let Q = Slice(__opcode, 30, 1);
     decode_addp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_pair(Rd, Rn, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 32) = {
+    SEE = 32;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_addp_advsimd_pair_aarch64_instrs_vector_reduce_add_sisd(Rd, Rn, size)
 }
 
 val execute_aarch64_instrs_vector_reduce_add_simd : forall 'd 'datasize 'esize 'n,
@@ -867,6 +983,38 @@ function clause __DecodeA64_DataProcImm ((pc, ([bitone, _, _, bitone, bitzero, b
     let immlo = Slice(__opcode, 29, 2);
     let op = Slice(__opcode, 31, 1);
     decode_adrp_aarch64_instrs_integer_arithmetic_address_pc_rel(Rd, immhi, immlo, op)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 36) = {
+    SEE = 36;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let D = Slice(__opcode, 12, 1);
+    decode_aesd_advsimd_aarch64_instrs_vector_crypto_aes_round(Rd, Rn, D)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 37) = {
+    SEE = 37;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let D = Slice(__opcode, 12, 1);
+    decode_aese_advsimd_aarch64_instrs_vector_crypto_aes_round(Rd, Rn, D)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 38) = {
+    SEE = 38;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let D = Slice(__opcode, 12, 1);
+    decode_aesimc_advsimd_aarch64_instrs_vector_crypto_aes_mix(Rd, Rn, D)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 39) = {
+    SEE = 39;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let D = Slice(__opcode, 12, 1);
+    decode_aesmc_advsimd_aarch64_instrs_vector_crypto_aes_mix(Rd, Rn, D)
 }
 
 val execute_aarch64_instrs_integer_logical_immediate : forall 'd 'datasize 'n ('setflags : Bool),
@@ -1109,6 +1257,46 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitone, bitone, bitz
     let opc = Slice(__opcode, 29, 2);
     let sf = Slice(__opcode, 31, 1);
     decode_orr_log_imm_aarch64_instrs_integer_logical_immediate(Rd, Rn, imms, immr, N, opc, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 44) = {
+    SEE = 44;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_and_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_and_orr(Rd, Rn, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 45) = {
+    SEE = 45;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bic_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_logical_and_orr(Rd, Rn, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 46) = {
+    SEE = 46;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_orn_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_and_orr(Rd, Rn, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 47) = {
+    SEE = 47;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_orr_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_logical_and_orr(Rd, Rn, Rm, size, Q)
 }
 
 val execute_aarch64_instrs_integer_logical_shiftedreg : forall 'd 'datasize ('invert : Bool) 'm 'n ('setflags : Bool) 'shift_amount,
@@ -1944,6 +2132,30 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_autib_aarch64_instrs_integer_pac_autib_hint(op2, CRm)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000000100000001011111 as __opcode)) if SEE < 66) = {
+    SEE = 66;
+    let CRm = Slice(__opcode, 8, 4);
+    if (([__opcode[8]] != 0b0 | [__opcode[9]] != 0b0) | [__opcode[10]] != 0b0) | [__opcode[11]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_axflag_aarch64_instrs_integer_flags_axflag(CRm)
+    }
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 67) = {
+    SEE = 67;
+    let imm26 = Slice(__opcode, 0, 26);
+    let op = Slice(__opcode, 31, 1);
+    decode_b_uncond_aarch64_instrs_branch_unconditional_immediate(imm26, op)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 68) = {
+    SEE = 68;
+    let imm26 = Slice(__opcode, 0, 26);
+    let op = Slice(__opcode, 31, 1);
+    decode_bl_aarch64_instrs_branch_unconditional_immediate(imm26, op)
+}
+
 val execute_aarch64_instrs_branch_conditional_cond : (bits(4), bits(64)) -> unit
 
 function execute_aarch64_instrs_branch_conditional_cond (condition, offset) = {
@@ -1999,6 +2211,15 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitzero, bitone, bitzero, biton
     decode_bc_cond_aarch64_instrs_branch_conditional_hinted(cond, imm19)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 71) = {
+    SEE = 71;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_bcax_advsimd_aarch64_instrs_vector_crypto_sha3_bcax(Rd, Rn, Ra, Rm)
+}
+
 val execute_aarch64_instrs_vector_cvt_bf16_scalar : forall 'd 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
   (int('d), int('n)) -> unit
@@ -2029,6 +2250,35 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let Rd = Slice(__opcode, 0, 5);
     let Rn = Slice(__opcode, 5, 5);
     decode_bfcvt_float_aarch64_instrs_vector_cvt_bf16_scalar(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 73) = {
+    SEE = 73;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bfcvtn_advsimd_aarch64_instrs_vector_cvt_bf16_vector(Rd, Rn, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 74) = {
+    SEE = 74;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bfdot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_bfdot(Rd, Rn, H, Rm, M, L, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 75) = {
+    SEE = 75;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bfdot_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_bfdot(Rd, Rn, Rm, Q)
 }
 
 val execute_aarch64_instrs_integer_bitfield : forall 'd 'datasize ('extend : Bool) ('inzero : Bool) 'n 'r 's,
@@ -2204,6 +2454,143 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitone, bitzero, bitone, bitz
     let opc = Slice(__opcode, 29, 2);
     let sf = Slice(__opcode, 31, 1);
     decode_ubfm_aarch64_instrs_integer_bitfield(Rd, Rn, imms, immr, N, opc, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 79) = {
+    SEE = 79;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bfmlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_bf16_long(Rd, Rn, H, Rm, M, L, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 80) = {
+    SEE = 80;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bfmlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_acc_bf16_long(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 81) = {
+    SEE = 81;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_bfmmla_advsimd_aarch64_instrs_vector_bfmmla(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 82) = {
+    SEE = 82;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let cmode = Slice(__opcode, 12, 4);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let op = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bic_advsimd_imm_aarch64_instrs_vector_logical(Rd, h, g, f, e, d, cmode, c, b, a, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, _, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 83) = {
+    SEE = 83;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let cmode = Slice(__opcode, 12, 4);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let op = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_movi_advsimd_aarch64_instrs_vector_logical(Rd, h, g, f, e, d, cmode, c, b, a, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 84) = {
+    SEE = 84;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let cmode = Slice(__opcode, 12, 4);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let op = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mvni_advsimd_aarch64_instrs_vector_logical(Rd, h, g, f, e, d, cmode, c, b, a, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 85) = {
+    SEE = 85;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let cmode = Slice(__opcode, 12, 4);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let op = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_orr_advsimd_imm_aarch64_instrs_vector_logical(Rd, h, g, f, e, d, cmode, c, b, a, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 86) = {
+    SEE = 86;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc2 = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bif_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_bsl_eor(Rd, Rn, Rm, opc2, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 87) = {
+    SEE = 87;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc2 = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bit_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_bsl_eor(Rd, Rn, Rm, opc2, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 88) = {
+    SEE = 88;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc2 = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_bsl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_bsl_eor(Rd, Rn, Rm, opc2, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 89) = {
+    SEE = 89;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc2 = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_eor_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_bsl_eor(Rd, Rn, Rm, opc2, Q)
 }
 
 val execute_aarch64_instrs_branch_unconditional_register : forall 'm 'n ('pac : Bool) ('source_is_sp : Bool) ('use_key_a : Bool),
@@ -2606,6 +2993,12 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     let op = Slice(__opcode, 21, 2);
     let Z = Slice(__opcode, 24, 1);
     decode_reta_aarch64_instrs_branch_unconditional_register(Rm, Rn, M, A, op, Z)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 96) = {
+    SEE = 96;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_brk_aarch64_instrs_system_exceptions_debug_breakpoint(imm16)
 }
 
 val execute_aarch64_instrs_system_hints : SystemHintOp -> unit
@@ -3761,6 +4154,62 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_hint_aarch64_instrs_system_hints(op2, CRm)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000000011111 as __opcode)) if SEE < 105) = {
+    SEE = 105;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_nop_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001000111111 as __opcode)) if SEE < 106) = {
+    SEE = 106;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_psb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000010011111 as __opcode)) if SEE < 107) = {
+    SEE = 107;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_sev_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000010111111 as __opcode)) if SEE < 108) = {
+    SEE = 108;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_sevl_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010001001011111 as __opcode)) if SEE < 109) = {
+    SEE = 109;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_tsb_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000001011111 as __opcode)) if SEE < 110) = {
+    SEE = 110;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_wfe_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000001111111 as __opcode)) if SEE < 111) = {
+    SEE = 111;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_wfi_aarch64_instrs_system_hints(op2, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000000111111 as __opcode)) if SEE < 112) = {
+    SEE = 112;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    decode_yield_aarch64_instrs_system_hints(op2, CRm)
+}
+
 val execute_aarch64_instrs_memory_atomicops_cas_single : forall ('acquire : Bool) 'datasize 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
   (0 <= 't & 't <= 31 & 0 <= 's & 's <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
   (bool('acquire), int('datasize), int('n), int('regsize), bool('release), int('s), int('t), bool('tagchecked)) -> unit
@@ -4198,6 +4647,26 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_clrex_aarch64_instrs_system_monitors(CRm)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 125) = {
+    SEE = 125;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cls_advsimd_aarch64_instrs_vector_arithmetic_unary_clsz(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 126) = {
+    SEE = 126;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_clz_advsimd_aarch64_instrs_vector_arithmetic_unary_clsz(Rd, Rn, size, U, Q)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_cnt : forall 'd 'datasize 'n,
   (0 <= 'n & 'n <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('n), CountOp) -> unit
@@ -4252,6 +4721,90 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bito
     decode_clz_int_aarch64_instrs_integer_arithmetic_cnt(Rd, Rn, op, sf)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 129) = {
+    SEE = 129;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_sisd(Rd, Rn, op, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 130) = {
+    SEE = 130;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_simd(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 131) = {
+    SEE = 131;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_sisd(Rd, Rn, op, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 132) = {
+    SEE = 132;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_simd(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 133) = {
+    SEE = 133;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_sisd(Rd, Rn, op, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 134) = {
+    SEE = 134;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_simd(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 135) = {
+    SEE = 135;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_sisd(Rd, Rn, op, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 136) = {
+    SEE = 136;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_bulk_simd(Rd, Rn, op, size, U, Q)
+}
+
 val execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd : forall ('and_test : Bool) 'd 'datasize 'elements 'esize 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {8, 16, 32, 64, 128} & 0 <= 'd & 'd <= 31).
   (bool('and_test), int('d), int('datasize), int('elements), int('esize), int('m), int('n)) -> unit
@@ -4276,6 +4829,16 @@ function execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sis
           Zeros(esize))
     };
     V_set(d, datasize) = result
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 137) = {
+    SEE = 137;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd(Rd, Rn, Rm, size, U)
 }
 
 val decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -4303,6 +4866,16 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, 
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 139) = {
+    SEE = 139;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd(Rd, Rn, Rm, size, U)
 }
 
 val decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd : (bits(5), bits(5), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -4355,6 +4928,17 @@ function execute_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd (c
     V_set(d, datasize) = result
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 141) = {
+    SEE = 141;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(Rd, Rn, eq, Rm, size, U)
+}
+
 val decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
 
 function decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
@@ -4382,6 +4966,17 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_cmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 143) = {
+    SEE = 143;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(Rd, Rn, eq, Rm, size, U)
 }
 
 val decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
@@ -4413,6 +5008,17 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     decode_cmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 145) = {
+    SEE = 145;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(Rd, Rn, eq, Rm, size, U)
+}
+
 val decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
 
 function decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
@@ -4442,6 +5048,17 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, 
     decode_cmhi_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 147) = {
+    SEE = 147;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let eq = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_sisd(Rd, Rn, eq, Rm, size, U)
+}
+
 val decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd : (bits(5), bits(5), bits(1), bits(5), bits(2), bits(1), bits(1)) -> unit
 
 function decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd (Rd, Rn, eq, Rm, size, U, Q) = {
@@ -4469,6 +5086,392 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, 
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_cmhs_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_int_simd(Rd, Rn, eq, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 149) = {
+    SEE = 149;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_cmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_lessthan_sisd(Rd, Rn, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 150) = {
+    SEE = 150;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_lessthan_simd(Rd, Rn, size, Q)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 151) = {
+    SEE = 151;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_cnt_aarch64_instrs_integer_arithmetic_unary_cnt(Rd, Rn, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 152) = {
+    SEE = 152;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_cnt_advsimd_aarch64_instrs_vector_arithmetic_unary_cnt(Rd, Rn, size, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 153) = {
+    SEE = 153;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyp_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 154) = {
+    SEE = 154;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 155) = {
+    SEE = 155;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyprn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 156) = {
+    SEE = 156;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyprt_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 157) = {
+    SEE = 157;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyprtn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 158) = {
+    SEE = 158;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyprtrn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 159) = {
+    SEE = 159;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyprtwn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 160) = {
+    SEE = 160;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypt_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 161) = {
+    SEE = 161;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyptn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 162) = {
+    SEE = 162;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyptrn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 163) = {
+    SEE = 163;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyptwn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 164) = {
+    SEE = 164;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypwn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 165) = {
+    SEE = 165;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypwt_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 166) = {
+    SEE = 166;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypwtn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 167) = {
+    SEE = 167;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypwtrn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 168) = {
+    SEE = 168;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpypwtwn_aarch64_instrs_memory_mcpymset_cpy(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 169) = {
+    SEE = 169;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfp_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 170) = {
+    SEE = 170;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 171) = {
+    SEE = 171;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfprn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 172) = {
+    SEE = 172;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfprt_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 173) = {
+    SEE = 173;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfprtn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 174) = {
+    SEE = 174;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfprtrn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 175) = {
+    SEE = 175;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfprtwn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 176) = {
+    SEE = 176;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpt_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 177) = {
+    SEE = 177;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfptn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 178) = {
+    SEE = 178;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfptrn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 179) = {
+    SEE = 179;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfptwn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 180) = {
+    SEE = 180;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpwn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 181) = {
+    SEE = 181;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpwt_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 182) = {
+    SEE = 182;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpwtn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 183) = {
+    SEE = 183;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpwtrn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 184) = {
+    SEE = 184;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let op1 = Slice(__opcode, 22, 2);
+    let sz = Slice(__opcode, 30, 2);
+    decode_cpyfpwtwn_aarch64_instrs_memory_mcpymset_cpyf(Rd, Rn, op2, Rs, op1, sz)
 }
 
 val execute_aarch64_instrs_integer_crc : forall ('crc32c : Bool) 'd 'm 'n 'size,
@@ -4674,6 +5677,35 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bito
     decode_csneg_aarch64_instrs_integer_conditional_select(Rd, Rn, o2, cond, Rm, op, sf)
 }
 
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 191) = {
+    SEE = 191;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_ctz_aarch64_instrs_integer_arithmetic_unary_ctz(Rd, Rn, sf)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone] as __opcode)) if SEE < 192) = {
+    SEE = 192;
+    let LL = Slice(__opcode, 0, 2);
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_dcps1_aarch64_instrs_system_exceptions_debug_exception(LL, imm16)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero] as __opcode)) if SEE < 193) = {
+    SEE = 193;
+    let LL = Slice(__opcode, 0, 2);
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_dcps2_aarch64_instrs_system_exceptions_debug_exception(LL, imm16)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone] as __opcode)) if SEE < 194) = {
+    SEE = 194;
+    let LL = Slice(__opcode, 0, 2);
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_dcps3_aarch64_instrs_system_exceptions_debug_exception(LL, imm16)
+}
+
 val execute_aarch64_instrs_system_barriers_dmb : (MBReqDomain, MBReqTypes) -> unit
 
 function execute_aarch64_instrs_system_barriers_dmb (domain, types) = {
@@ -4723,6 +5755,11 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     let opc = Slice(__opcode, 5, 2);
     let CRm = Slice(__opcode, 8, 4);
     decode_dmb_aarch64_instrs_system_barriers_dmb(opc, CRm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010110101111110000001111100000 as __opcode)) if SEE < 196) = {
+    SEE = 196;
+    decode_drps_aarch64_instrs_branch_unconditional_dret()
 }
 
 val execute_aarch64_instrs_system_barriers_dsb : forall ('nXS : Bool).
@@ -4810,6 +5847,75 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_dsb_aarch64_instrs_system_barriers_dsb(opc, CRm)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 198) = {
+    SEE = 198;
+    let imm2 = Slice(__opcode, 10, 2);
+    decode_dsb_aarch64_instrs_system_barriers_dsb_nxs(imm2)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 199) = {
+    SEE = 199;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    decode_dup_advsimd_elt_aarch64_instrs_vector_transfer_vector_cpy_dup_sisd(Rd, Rn, imm5)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 200) = {
+    SEE = 200;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_dup_advsimd_elt_aarch64_instrs_vector_transfer_vector_cpy_dup_simd(Rd, Rn, imm5, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 201) = {
+    SEE = 201;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_dup_advsimd_gen_aarch64_instrs_vector_transfer_integer_dup(Rd, Rn, imm5, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 202) = {
+    SEE = 202;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_eor3_advsimd_aarch64_instrs_vector_crypto_sha3_eor3(Rd, Rn, Ra, Rm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010110100111110000001111100000 as __opcode)) if SEE < 203) = {
+    SEE = 203;
+    let op4 = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    decode_eret_aarch64_instrs_branch_unconditional_eret(op4, Rn, M, A)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 204) = {
+    SEE = 204;
+    let op4 = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let M = Slice(__opcode, 10, 1);
+    let A = Slice(__opcode, 11, 1);
+    decode_ereta_aarch64_instrs_branch_unconditional_eret(op4, Rn, M, A)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 205) = {
+    SEE = 205;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm4 = Slice(__opcode, 11, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ext_advsimd_aarch64_instrs_vector_transfer_vector_extract(Rd, Rn, imm4, Rm, Q)
+}
+
 val execute_aarch64_instrs_integer_ins_ext_extract_immediate : forall 'd 'datasize 'lsb 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'lsb & 'lsb <= 63 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('lsb), int('m), int('n)) -> unit
@@ -4849,6 +5955,44 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bit
     let N = Slice(__opcode, 22, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_extr_aarch64_instrs_integer_ins_ext_extract_immediate(Rd, Rn, imms, Rm, N, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 207) = {
+    SEE = 207;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_fabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp16_sisd(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 208) = {
+    SEE = 208;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp_sisd(Rd, Rn, Rm, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 209) = {
+    SEE = 209;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp16_simd(Rd, Rn, Rm, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 210) = {
+    SEE = 210;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp_simd(Rd, Rn, Rm, sz, U, Q)
 }
 
 val execute_aarch64_instrs_float_arithmetic_unary : forall 'd 'esize 'n,
@@ -5090,6 +6234,326 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     decode_fsqrt_float_aarch64_instrs_float_arithmetic_unary(Rd, Rn, opc, ftype)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 215) = {
+    SEE = 215;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fabs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_fp16(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 216) = {
+    SEE = 216;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fabs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_float(Rd, Rn, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 217) = {
+    SEE = 217;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fneg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_fp16(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 218) = {
+    SEE = 218;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fneg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_float(Rd, Rn, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 219) = {
+    SEE = 219;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_facge_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_sisd(Rd, Rn, ac, Rm, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 220) = {
+    SEE = 220;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_facge_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_sisd(Rd, Rn, ac, Rm, sz, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 221) = {
+    SEE = 221;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_facge_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_simd(Rd, Rn, ac, Rm, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 222) = {
+    SEE = 222;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_facge_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_simd(Rd, Rn, ac, Rm, sz, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 223) = {
+    SEE = 223;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_facgt_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_sisd(Rd, Rn, ac, Rm, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 224) = {
+    SEE = 224;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_facgt_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_sisd(Rd, Rn, ac, Rm, sz, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 225) = {
+    SEE = 225;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_facgt_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_simd(Rd, Rn, ac, Rm, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 226) = {
+    SEE = 226;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_facgt_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_simd(Rd, Rn, ac, Rm, sz, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 227) = {
+    SEE = 227;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_sisd(Rd, Rn, ac, Rm, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 228) = {
+    SEE = 228;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_sisd(Rd, Rn, ac, Rm, sz, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 229) = {
+    SEE = 229;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_simd(Rd, Rn, ac, Rm, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 230) = {
+    SEE = 230;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_simd(Rd, Rn, ac, Rm, sz, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 231) = {
+    SEE = 231;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_sisd(Rd, Rn, ac, Rm, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 232) = {
+    SEE = 232;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_sisd(Rd, Rn, ac, Rm, sz, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 233) = {
+    SEE = 233;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_simd(Rd, Rn, ac, Rm, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 234) = {
+    SEE = 234;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmge_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_simd(Rd, Rn, ac, Rm, sz, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 235) = {
+    SEE = 235;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_sisd(Rd, Rn, ac, Rm, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 236) = {
+    SEE = 236;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_sisd(Rd, Rn, ac, Rm, sz, E, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 237) = {
+    SEE = 237;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp16_simd(Rd, Rn, ac, Rm, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 238) = {
+    SEE = 238;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let E = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmgt_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_fp_simd(Rd, Rn, ac, Rm, sz, E, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 239) = {
+    SEE = 239;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_fp16(Rd, Rn, Rm, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 240) = {
+    SEE = 240;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_fp(Rd, Rn, Rm, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 241) = {
+    SEE = 241;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_faddp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_fp16(Rd, Rn, Rm, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 242) = {
+    SEE = 242;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_faddp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_fp(Rd, Rn, Rm, sz, U, Q)
+}
+
 val execute_aarch64_instrs_float_arithmetic_add_sub : forall 'd 'esize 'm 'n ('sub_op : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('esize), int('m), int('n), bool('sub_op)) -> unit
@@ -5187,6 +6651,33 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let Rm = Slice(__opcode, 16, 5);
     let ftype = Slice(__opcode, 22, 2);
     decode_fsub_float_aarch64_instrs_float_arithmetic_add_sub(Rd, Rn, op, Rm, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 245) = {
+    SEE = 245;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_faddp_advsimd_pair_aarch64_instrs_vector_reduce_fp16_add_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 246) = {
+    SEE = 246;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_faddp_advsimd_pair_aarch64_instrs_vector_reduce_fp_add_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitone, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 247) = {
+    SEE = 247;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rot = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcadd_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_fp_complex(Rd, Rn, rot, Rm, size, Q)
 }
 
 val execute_aarch64_instrs_float_compare_cond : forall 'datasize 'm 'n ('signal_all_nans : Bool),
@@ -5293,6 +6784,223 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let Rm = Slice(__opcode, 16, 5);
     let ftype = Slice(__opcode, 22, 2);
     decode_fccmpe_float_aarch64_instrs_float_compare_cond(nzcv, op, Rn, cond, Rm, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 250) = {
+    SEE = 250;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_sisd(Rd, Rn, op, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 251) = {
+    SEE = 251;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_sisd(Rd, Rn, op, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 252) = {
+    SEE = 252;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_simd(Rd, Rn, op, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 253) = {
+    SEE = 253;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmeq_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_simd(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 254) = {
+    SEE = 254;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_sisd(Rd, Rn, op, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 255) = {
+    SEE = 255;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_sisd(Rd, Rn, op, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 256) = {
+    SEE = 256;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_simd(Rd, Rn, op, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 257) = {
+    SEE = 257;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmge_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_simd(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 258) = {
+    SEE = 258;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_sisd(Rd, Rn, op, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 259) = {
+    SEE = 259;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_sisd(Rd, Rn, op, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 260) = {
+    SEE = 260;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_simd(Rd, Rn, op, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 261) = {
+    SEE = 261;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmgt_advsimd_zero_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_simd(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 262) = {
+    SEE = 262;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_sisd(Rd, Rn, op, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 263) = {
+    SEE = 263;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_sisd(Rd, Rn, op, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 264) = {
+    SEE = 264;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_bulk_simd(Rd, Rn, op, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 265) = {
+    SEE = 265;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmle_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_float_bulk_simd(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 266) = {
+    SEE = 266;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let rot = Slice(__opcode, 11, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_complex(Rd, Rn, rot, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, _, _, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 267) = {
+    SEE = 267;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let rot = Slice(__opcode, 13, 2);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_complex(Rd, Rn, H, rot, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 268) = {
+    SEE = 268;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_fcmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_lessthan_sisd(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 269) = {
+    SEE = 269;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fcmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_float_lessthan_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 270) = {
+    SEE = 270;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_fp16_lessthan_simd(Rd, Rn, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 271) = {
+    SEE = 271;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_float_lessthan_simd(Rd, Rn, sz, Q)
 }
 
 val execute_aarch64_instrs_float_compare_uncond : forall ('cmp_with_zero : Bool) 'datasize 'm 'n ('signal_all_nans : Bool),
@@ -5503,6 +7211,78 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let opc = Slice(__opcode, 15, 2);
     let ftype = Slice(__opcode, 22, 2);
     decode_fcvt_float_aarch64_instrs_float_convert_fp(Rd, Rn, opc, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 276) = {
+    SEE = 276;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtas_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_tieaway_sisd(Rd, Rn, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 277) = {
+    SEE = 277;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtas_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_tieaway_sisd(Rd, Rn, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 278) = {
+    SEE = 278;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtas_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_tieaway_simd(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 279) = {
+    SEE = 279;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtas_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_tieaway_simd(Rd, Rn, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 280) = {
+    SEE = 280;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtau_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_tieaway_sisd(Rd, Rn, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 281) = {
+    SEE = 281;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtau_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_tieaway_sisd(Rd, Rn, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 282) = {
+    SEE = 282;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtau_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_tieaway_simd(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 283) = {
+    SEE = 283;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtau_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_tieaway_simd(Rd, Rn, sz, U, Q)
 }
 
 val execute_aarch64_instrs_float_convert_int : forall 'd 'fltsize 'intsize ('is_unsigned : Bool) 'n 'part,
@@ -7099,6 +8879,393 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, 
     decode_ucvtf_float_int_aarch64_instrs_float_convert_int(Rd, Rn, opcode, rmode, ftype, sf)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 298) = {
+    SEE = 298;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtl_advsimd_aarch64_instrs_vector_arithmetic_unary_float_widen(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 299) = {
+    SEE = 299;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtms_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 300) = {
+    SEE = 300;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtms_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 301) = {
+    SEE = 301;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtms_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 302) = {
+    SEE = 302;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtms_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 303) = {
+    SEE = 303;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtmu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 304) = {
+    SEE = 304;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtmu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 305) = {
+    SEE = 305;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtmu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 306) = {
+    SEE = 306;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtmu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 307) = {
+    SEE = 307;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtns_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 308) = {
+    SEE = 308;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtns_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 309) = {
+    SEE = 309;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtns_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 310) = {
+    SEE = 310;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtns_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 311) = {
+    SEE = 311;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtnu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 312) = {
+    SEE = 312;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtnu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 313) = {
+    SEE = 313;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtnu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 314) = {
+    SEE = 314;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtnu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 315) = {
+    SEE = 315;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtps_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 316) = {
+    SEE = 316;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtps_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 317) = {
+    SEE = 317;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtps_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 318) = {
+    SEE = 318;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtps_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 319) = {
+    SEE = 319;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtpu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 320) = {
+    SEE = 320;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtpu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 321) = {
+    SEE = 321;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtpu_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 322) = {
+    SEE = 322;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtpu_advsimd_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 323) = {
+    SEE = 323;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzs_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 324) = {
+    SEE = 324;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzs_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 325) = {
+    SEE = 325;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzs_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 326) = {
+    SEE = 326;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzs_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 327) = {
+    SEE = 327;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzu_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_sisd(Rd, Rn, o1, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 328) = {
+    SEE = 328;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzu_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_sisd(Rd, Rn, o1, sz, o2, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 329) = {
+    SEE = 329;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzu_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_float_bulk_simd(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 330) = {
+    SEE = 330;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzu_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_float_bulk_simd(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 331) = {
+    SEE = 331;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtn_advsimd_aarch64_instrs_vector_arithmetic_unary_float_narrow(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 332) = {
+    SEE = 332;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fcvtxn_advsimd_aarch64_instrs_vector_arithmetic_unary_float_xtn_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 333) = {
+    SEE = 333;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtxn_advsimd_aarch64_instrs_vector_arithmetic_unary_float_xtn_simd(Rd, Rn, sz, Q)
+}
+
 val execute_aarch64_instrs_float_convert_fix : forall 'd 'fltsize 'fracbits 'intsize ('is_unsigned : Bool) 'n,
   (0 <= 'n & 'n <= 31 & 'intsize in {32, 64} & 1 <= 'fracbits & 'fracbits <= 64 & 'fltsize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('fltsize), int('fracbits), int('intsize), int('n), FPConvOp, FPRounding, bool('is_unsigned)) -> unit
@@ -7378,6 +9545,67 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([_, bitzero, bitzero, bitone, 
     let ftype = Slice(__opcode, 22, 2);
     let sf = Slice(__opcode, 31, 1);
     decode_ucvtf_float_fix_aarch64_instrs_float_convert_fix(Rd, Rn, scale, opcode, rmode, ftype, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 338) = {
+    SEE = 338;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzs_advsimd_fix_aarch64_instrs_vector_shift_conv_float_sisd(Rd, Rn, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 339) = {
+    SEE = 339;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzs_advsimd_fix_aarch64_instrs_vector_shift_conv_float_simd(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 340) = {
+    SEE = 340;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_fcvtzu_advsimd_fix_aarch64_instrs_vector_shift_conv_float_sisd(Rd, Rn, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 341) = {
+    SEE = 341;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fcvtzu_advsimd_fix_aarch64_instrs_vector_shift_conv_float_simd(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 342) = {
+    SEE = 342;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fdiv_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_div_fp16(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 343) = {
+    SEE = 343;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fdiv_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_div(Rd, Rn, Rm, sz, Q)
 }
 
 val execute_aarch64_instrs_float_arithmetic_div : forall 'd 'esize 'm 'n,
@@ -7879,6 +10107,616 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     decode_fminnm_float_aarch64_instrs_float_arithmetic_max_min(Rd, Rn, op, Rm, ftype)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 353) = {
+    SEE = 353;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_1985(Rd, Rn, Rm, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 354) = {
+    SEE = 354;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmax_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_1985(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 355) = {
+    SEE = 355;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_1985(Rd, Rn, Rm, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 356) = {
+    SEE = 356;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_1985(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 357) = {
+    SEE = 357;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_1985(Rd, Rn, Rm, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 358) = {
+    SEE = 358;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmin_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_1985(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 359) = {
+    SEE = 359;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_1985(Rd, Rn, Rm, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 360) = {
+    SEE = 360;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_1985(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 361) = {
+    SEE = 361;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnm_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_2008(Rd, Rn, Rm, a, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 362) = {
+    SEE = 362;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnm_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_2008(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 363) = {
+    SEE = 363;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnmp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_2008(Rd, Rn, Rm, a, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 364) = {
+    SEE = 364;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnmp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_2008(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 365) = {
+    SEE = 365;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnm_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_2008(Rd, Rn, Rm, a, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 366) = {
+    SEE = 366;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnm_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_2008(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 367) = {
+    SEE = 367;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnmp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp16_2008(Rd, Rn, Rm, a, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 368) = {
+    SEE = 368;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnmp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_fp_2008(Rd, Rn, Rm, sz, o1, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 369) = {
+    SEE = 369;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fmaxnmp_advsimd_pair_aarch64_instrs_vector_reduce_fp16_maxnm_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 370) = {
+    SEE = 370;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fmaxnmp_advsimd_pair_aarch64_instrs_vector_reduce_fp_maxnm_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 371) = {
+    SEE = 371;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fminnmp_advsimd_pair_aarch64_instrs_vector_reduce_fp16_maxnm_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 372) = {
+    SEE = 372;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fminnmp_advsimd_pair_aarch64_instrs_vector_reduce_fp_maxnm_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 373) = {
+    SEE = 373;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnmv_advsimd_aarch64_instrs_vector_reduce_fp16_maxnm_simd(Rd, Rn, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 374) = {
+    SEE = 374;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxnmv_advsimd_aarch64_instrs_vector_reduce_fp_maxnm_simd(Rd, Rn, sz, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 375) = {
+    SEE = 375;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnmv_advsimd_aarch64_instrs_vector_reduce_fp16_maxnm_simd(Rd, Rn, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 376) = {
+    SEE = 376;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminnmv_advsimd_aarch64_instrs_vector_reduce_fp_maxnm_simd(Rd, Rn, sz, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 377) = {
+    SEE = 377;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fmaxp_advsimd_pair_aarch64_instrs_vector_reduce_fp16_max_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 378) = {
+    SEE = 378;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fmaxp_advsimd_pair_aarch64_instrs_vector_reduce_fp_max_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 379) = {
+    SEE = 379;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fminp_advsimd_pair_aarch64_instrs_vector_reduce_fp16_max_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 380) = {
+    SEE = 380;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    decode_fminp_advsimd_pair_aarch64_instrs_vector_reduce_fp_max_sisd(Rd, Rn, sz, o1)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 381) = {
+    SEE = 381;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxv_advsimd_aarch64_instrs_vector_reduce_fp16_max_simd(Rd, Rn, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 382) = {
+    SEE = 382;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmaxv_advsimd_aarch64_instrs_vector_reduce_fp_max_simd(Rd, Rn, sz, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 383) = {
+    SEE = 383;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminv_advsimd_aarch64_instrs_vector_reduce_fp16_max_simd(Rd, Rn, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 384) = {
+    SEE = 384;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let o1 = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fminv_advsimd_aarch64_instrs_vector_reduce_fp_max_simd(Rd, Rn, sz, o1, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 385) = {
+    SEE = 385;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_fmla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp16_sisd(Rd, Rn, H, o2, Rm, M, L)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 386) = {
+    SEE = 386;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fmla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp_sisd(Rd, Rn, H, o2, Rm, M, L, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 387) = {
+    SEE = 387;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp16_simd(Rd, Rn, H, o2, Rm, M, L, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 388) = {
+    SEE = 388;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp_simd(Rd, Rn, H, o2, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 389) = {
+    SEE = 389;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_fmls_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp16_sisd(Rd, Rn, H, o2, Rm, M, L)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 390) = {
+    SEE = 390;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fmls_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp_sisd(Rd, Rn, H, o2, Rm, M, L, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 391) = {
+    SEE = 391;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmls_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp16_simd(Rd, Rn, H, o2, Rm, M, L, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 392) = {
+    SEE = 392;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmls_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_fp_simd(Rd, Rn, H, o2, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 393) = {
+    SEE = 393;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp16_fused(Rd, Rn, Rm, a, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 394) = {
+    SEE = 394;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let op = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_fused(Rd, Rn, Rm, sz, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 395) = {
+    SEE = 395;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let a = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmls_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp16_fused(Rd, Rn, Rm, a, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 396) = {
+    SEE = 396;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let op = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmls_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_fused(Rd, Rn, Rm, sz, op, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 397) = {
+    SEE = 397;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_mul_norounding_i_lower(Rd, Rn, H, S, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 398) = {
+    SEE = 398;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_mul_norounding_i_upper(Rd, Rn, H, S, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 399) = {
+    SEE = 399;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_mul_norounding_i_lower(Rd, Rn, H, S, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, bitone, bitone, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 400) = {
+    SEE = 400;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_mul_norounding_i_upper(Rd, Rn, H, S, Rm, M, L, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 401) = {
+    SEE = 401;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let S = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_mul_norounding_lower(Rd, Rn, Rm, sz, S, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 402) = {
+    SEE = 402;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let S = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_mul_norounding_upper(Rd, Rn, Rm, sz, S, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 403) = {
+    SEE = 403;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let S = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_mul_norounding_lower(Rd, Rn, Rm, sz, S, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 404) = {
+    SEE = 404;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let S = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_mul_norounding_upper(Rd, Rn, Rm, sz, S, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 405) = {
+    SEE = 405;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmov_advsimd_aarch64_instrs_vector_fp16_movi(Rd, h, g, f, e, d, c, b, a, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, _, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 406) = {
+    SEE = 406;
+    let Rd = Slice(__opcode, 0, 5);
+    let h = Slice(__opcode, 5, 1);
+    let g = Slice(__opcode, 6, 1);
+    let f = Slice(__opcode, 7, 1);
+    let e = Slice(__opcode, 8, 1);
+    let d = Slice(__opcode, 9, 1);
+    let cmode = Slice(__opcode, 12, 4);
+    let c = Slice(__opcode, 16, 1);
+    let b = Slice(__opcode, 17, 1);
+    let a = Slice(__opcode, 18, 1);
+    let op = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmov_advsimd_aarch64_instrs_vector_logical(Rd, h, g, f, e, d, cmode, c, b, a, op, Q)
+}
+
 val execute_aarch64_instrs_float_move_fp_imm : forall 'd 'datasize,
   ('datasize in {16, 32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), bits('datasize)) -> unit
@@ -7922,6 +10760,25 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let imm8 = Slice(__opcode, 13, 8);
     let ftype = Slice(__opcode, 22, 2);
     decode_fmov_float_imm_aarch64_instrs_float_move_fp_imm(Rd, imm8, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 408) = {
+    SEE = 408;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmul_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp16_product(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 409) = {
+    SEE = 409;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmul_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_product(Rd, Rn, Rm, sz, Q)
 }
 
 val execute_aarch64_instrs_float_arithmetic_mul_product : forall 'd 'esize 'm 'n ('negated : Bool),
@@ -8021,6 +10878,273 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let Rm = Slice(__opcode, 16, 5);
     let ftype = Slice(__opcode, 22, 2);
     decode_fnmul_float_aarch64_instrs_float_arithmetic_mul_product(Rd, Rn, op, Rm, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 412) = {
+    SEE = 412;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fmul_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp16_sisd(Rd, Rn, H, Rm, M, L, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 413) = {
+    SEE = 413;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fmul_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp_sisd(Rd, Rn, H, Rm, M, L, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 414) = {
+    SEE = 414;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmul_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp16_simd(Rd, Rn, H, Rm, M, L, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 415) = {
+    SEE = 415;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmul_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp_simd(Rd, Rn, H, Rm, M, L, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 416) = {
+    SEE = 416;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fmulx_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp16_sisd(Rd, Rn, H, Rm, M, L, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 417) = {
+    SEE = 417;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_fmulx_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp_sisd(Rd, Rn, H, Rm, M, L, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 418) = {
+    SEE = 418;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmulx_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp16_simd(Rd, Rn, H, Rm, M, L, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 419) = {
+    SEE = 419;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmulx_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_fp_simd(Rd, Rn, H, Rm, M, L, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 420) = {
+    SEE = 420;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_fmulx_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp16_extended_sisd(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 421) = {
+    SEE = 421;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_fmulx_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_extended_sisd(Rd, Rn, Rm, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 422) = {
+    SEE = 422;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmulx_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp16_extended_simd(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 423) = {
+    SEE = 423;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fmulx_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_fp_extended_simd(Rd, Rn, Rm, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 424) = {
+    SEE = 424;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_frecpe_advsimd_aarch64_instrs_vector_arithmetic_unary_special_recip_fp16_sisd(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 425) = {
+    SEE = 425;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_frecpe_advsimd_aarch64_instrs_vector_arithmetic_unary_special_recip_float_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 426) = {
+    SEE = 426;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frecpe_advsimd_aarch64_instrs_vector_arithmetic_unary_special_recip_fp16_simd(Rd, Rn, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 427) = {
+    SEE = 427;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frecpe_advsimd_aarch64_instrs_vector_arithmetic_unary_special_recip_float_simd(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 428) = {
+    SEE = 428;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_frecps_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_recps_fp16_sisd(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 429) = {
+    SEE = 429;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_frecps_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_recps_sisd(Rd, Rn, Rm, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 430) = {
+    SEE = 430;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frecps_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_recps_fp16_simd(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 431) = {
+    SEE = 431;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frecps_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_recps_simd(Rd, Rn, Rm, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 432) = {
+    SEE = 432;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_frecpx_advsimd_aarch64_instrs_vector_arithmetic_unary_special_frecpx_fp16(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 433) = {
+    SEE = 433;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_frecpx_advsimd_aarch64_instrs_vector_arithmetic_unary_special_frecpx(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 434) = {
+    SEE = 434;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frint32x_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round_frint_32_64(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 435) = {
+    SEE = 435;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frint32z_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round_frint_32_64(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 436) = {
+    SEE = 436;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frint64x_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round_frint_32_64(Rd, Rn, op, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 437) = {
+    SEE = 437;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frint64z_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round_frint_32_64(Rd, Rn, op, sz, U, Q)
 }
 
 val execute_aarch64_instrs_float_arithmetic_round_frint_32_64 : forall 'd 'esize 'intsize 'n,
@@ -8179,6 +11303,167 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     let op = Slice(__opcode, 15, 2);
     let ftype = Slice(__opcode, 22, 2);
     decode_frint64z_float_aarch64_instrs_float_arithmetic_round_frint_32_64(Rd, Rn, op, ftype)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 442) = {
+    SEE = 442;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frinta_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 443) = {
+    SEE = 443;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frinta_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 444) = {
+    SEE = 444;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frinti_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 445) = {
+    SEE = 445;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frinti_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 446) = {
+    SEE = 446;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintm_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 447) = {
+    SEE = 447;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintm_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 448) = {
+    SEE = 448;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintn_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 449) = {
+    SEE = 449;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintn_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 450) = {
+    SEE = 450;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintp_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 451) = {
+    SEE = 451;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintp_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 452) = {
+    SEE = 452;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintx_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 453) = {
+    SEE = 453;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintx_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 454) = {
+    SEE = 454;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintz_advsimd_aarch64_instrs_vector_arithmetic_unary_fp16_round(Rd, Rn, o1, o2, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 455) = {
+    SEE = 455;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 12, 1);
+    let sz = Slice(__opcode, 22, 1);
+    let o2 = Slice(__opcode, 23, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frintz_advsimd_aarch64_instrs_vector_arithmetic_unary_float_round(Rd, Rn, o1, sz, o2, U, Q)
 }
 
 val execute_aarch64_instrs_float_arithmetic_round_frint : forall 'd 'esize ('exact : Bool) 'n,
@@ -8601,6 +11886,173 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitzero, bitzero, bi
     decode_frintz_float_aarch64_instrs_float_arithmetic_round_frint(Rd, Rn, rmode, ftype)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 463) = {
+    SEE = 463;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_frsqrte_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_est_fp16_sisd(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 464) = {
+    SEE = 464;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_frsqrte_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_est_float_sisd(Rd, Rn, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 465) = {
+    SEE = 465;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frsqrte_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_est_fp16_simd(Rd, Rn, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 466) = {
+    SEE = 466;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frsqrte_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_est_float_simd(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 467) = {
+    SEE = 467;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_frsqrts_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_rsqrts_fp16_sisd(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 468) = {
+    SEE = 468;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    decode_frsqrts_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_rsqrts_sisd(Rd, Rn, Rm, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 469) = {
+    SEE = 469;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frsqrts_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_rsqrts_fp16_simd(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 470) = {
+    SEE = 470;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_frsqrts_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_rsqrts_simd(Rd, Rn, Rm, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 471) = {
+    SEE = 471;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fsqrt_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_fp16(Rd, Rn, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 472) = {
+    SEE = 472;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fsqrt_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 473) = {
+    SEE = 473;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp16_simd(Rd, Rn, Rm, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 474) = {
+    SEE = 474;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_fsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_fp_simd(Rd, Rn, Rm, sz, U, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 475) = {
+    SEE = 475;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    decode_gcsstr_aarch64_instrs_memory_gcs_general_register(Rt, Rn, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 476) = {
+    SEE = 476;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    decode_gcssttr_aarch64_instrs_memory_gcs_general_register(Rt, Rn, opc)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 477) = {
+    SEE = 477;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xm = Slice(__opcode, 16, 5);
+    decode_gmi_aarch64_instrs_integer_tags_mcinserttagmask(Xd, Xn, Xm)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 478) = {
+    SEE = 478;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_hlt_aarch64_instrs_system_exceptions_debug_halt(imm16)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero] as __opcode)) if SEE < 479) = {
+    SEE = 479;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_hvc_aarch64_instrs_system_exceptions_runtime_hvc(imm16)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 480) = {
+    SEE = 480;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm4 = Slice(__opcode, 11, 4);
+    let imm5 = Slice(__opcode, 16, 5);
+    decode_ins_advsimd_elt_aarch64_instrs_vector_transfer_vector_insert(Rd, Rn, imm4, imm5)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 481) = {
+    SEE = 481;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    decode_ins_advsimd_gen_aarch64_instrs_vector_transfer_integer_insert(Rd, Rn, imm5)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 482) = {
+    SEE = 482;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xm = Slice(__opcode, 16, 5);
+    decode_irg_aarch64_instrs_integer_tags_mcinsertrandomtag(Xd, Xn, Xm)
+}
+
 val execute_aarch64_instrs_system_barriers_isb : unit -> unit
 
 function execute_aarch64_instrs_system_barriers_isb () = {
@@ -8625,6 +12077,533 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     let opc = Slice(__opcode, 5, 2);
     let CRm = Slice(__opcode, 8, 4);
     decode_isb_aarch64_instrs_system_barriers_isb(opc, CRm)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 484) = {
+    SEE = 484;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 485) = {
+    SEE = 485;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 486) = {
+    SEE = 486;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1r_advsimd_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 487) = {
+    SEE = 487;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1r_advsimd_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 488) = {
+    SEE = 488;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 489) = {
+    SEE = 489;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 490) = {
+    SEE = 490;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2r_advsimd_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 491) = {
+    SEE = 491;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2r_advsimd_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 492) = {
+    SEE = 492;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 493) = {
+    SEE = 493;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 494) = {
+    SEE = 494;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3r_advsimd_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 495) = {
+    SEE = 495;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3r_advsimd_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 496) = {
+    SEE = 496;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 497) = {
+    SEE = 497;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 498) = {
+    SEE = 498;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4r_advsimd_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 499) = {
+    SEE = 499;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4r_advsimd_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 500) = {
+    SEE = 500;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st1_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 501) = {
+    SEE = 501;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st1_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 502) = {
+    SEE = 502;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st2_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 503) = {
+    SEE = 503;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st2_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 504) = {
+    SEE = 504;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st3_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 505) = {
+    SEE = 505;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st3_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 506) = {
+    SEE = 506;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let o2 = Slice(__opcode, 16, 1);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st4_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb(Rt, Rn, size, S, opcode, o2, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 507) = {
+    SEE = 507;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st4_advsimd_sngl_aarch64_instrs_memory_vector_single_post_inc(Rt, Rn, size, S, opcode, Rm, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 508) = {
+    SEE = 508;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 509) = {
+    SEE = 509;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld1_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 510) = {
+    SEE = 510;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 511) = {
+    SEE = 511;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld2_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 512) = {
+    SEE = 512;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 513) = {
+    SEE = 513;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld3_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 514) = {
+    SEE = 514;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 515) = {
+    SEE = 515;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ld4_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 516) = {
+    SEE = 516;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st1_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 517) = {
+    SEE = 517;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st1_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 518) = {
+    SEE = 518;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st2_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 519) = {
+    SEE = 519;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st2_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 520) = {
+    SEE = 520;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st3_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 521) = {
+    SEE = 521;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st3_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 522) = {
+    SEE = 522;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st4_advsimd_mult_aarch64_instrs_memory_vector_multiple_no_wb(Rt, Rn, size, opcode, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 523) = {
+    SEE = 523;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let opcode = Slice(__opcode, 12, 4);
+    let Rm = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_st4_advsimd_mult_aarch64_instrs_memory_vector_multiple_post_inc(Rt, Rn, size, opcode, Rm, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 524) = {
+    SEE = 524;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_ld64b_aarch64_instrs_memory_atomicops_ld_acc(Rt, Rn)
 }
 
 val execute_aarch64_instrs_memory_atomicops_ld : forall ('acquire : Bool) 'datasize ('is_load : Bool) 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
@@ -10048,6 +14027,32 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, b
     decode_lduminh_aarch64_instrs_memory_atomicops_ld(Rt, Rn, opc, Rs, R, A, size)
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 549) = {
+    SEE = 549;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ldap1_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb_ordered(Rt, Rn, size, S, opcode, R, L, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 550) = {
+    SEE = 550;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 10, 2);
+    let S = Slice(__opcode, 12, 1);
+    let opcode = Slice(__opcode, 13, 3);
+    let R = Slice(__opcode, 21, 1);
+    let L = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_stl1_advsimd_sngl_aarch64_instrs_memory_vector_single_no_wb_ordered(Rt, Rn, size, S, opcode, R, L, Q)
+}
+
 val execute_aarch64_instrs_memory_ordered_rcpc : forall 'datasize 'n 'offset 'regsize 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
   (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 'offset in {0, 1, 2, 4, 8} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
   (int('datasize), int('n), int('offset), int('regsize), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
@@ -10114,6 +14119,14 @@ function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitone, bitone, bitone,
     } else {
         decode_ldapr_aarch64_instrs_memory_ordered_rcpc(Rt, Rn, Rs, size)
     }
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 552) = {
+    SEE = 552;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapr_aarch64_instrs_memory_ordered_rcpc_writeback(Rt, Rn, size)
 }
 
 val decode_ldaprb_aarch64_instrs_memory_ordered_rcpc : (bits(5), bits(5), bits(5), bits(2)) -> unit
@@ -11010,6 +15023,26 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, 
     decode_stlurh_aarch64_instrs_memory_single_general_immediate_signed_offset_lda_stl(Rt, Rn, imm9, opc, size)
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 564) = {
+    SEE = 564;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldapur_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_offset_ordered(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 565) = {
+    SEE = 565;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stlur_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_offset_ordered(Rt, Rn, imm9, opc, size)
+}
+
 val execute_aarch64_instrs_memory_ordered : forall 'datasize ('limitedordered : Bool) 'n 'offset 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wback : Bool),
   (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
   (int('datasize), bool('limitedordered), MemOp, int('n), int('offset), int('regsize), bool('rt_unknown), int('t), bool('tagchecked), bool('wback)) -> unit
@@ -11415,6 +15448,14 @@ function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitzero, biton
     } else {
         decode_stlr_aarch64_instrs_memory_ordered(Rt, Rn, Rt2, o0, Rs, L, size)
     }
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 576) = {
+    SEE = 576;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 30, 2);
+    decode_stlr_aarch64_instrs_memory_ordered_writeback(Rt, Rn, size)
 }
 
 val decode_stlrb_aarch64_instrs_memory_ordered : (bits(5), bits(5), bits(5), bits(1), bits(5), bits(1), bits(2)) -> unit
@@ -13021,6 +17062,45 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitzero,
     }
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 595) = {
+    SEE = 595;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_ldclrp_aarch64_instrs_memory_atomicops_ld_128_ldclrp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 596) = {
+    SEE = 596;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_ldg_aarch64_instrs_integer_tags_mcgettag(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 597) = {
+    SEE = 597;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    decode_ldgm_aarch64_instrs_integer_tags_mcgettagarray(Xt, Xn)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 598) = {
+    SEE = 598;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc2 = Slice(__opcode, 12, 4);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldiapp_aarch64_instrs_memory_ordered_pair_ldiapp(Rt, Rn, opc2, Rt2, L, size)
+}
+
 val execute_aarch64_instrs_memory_pair_general_no_alloc : forall 'datasize 'n ('nontemporal : Bool) ('postindex : Bool) ('rt_unknown : Bool) 't 't2 ('tagchecked : Bool) ('wback : Bool),
   (0 <= 't2 & 't2 <= 31 & 0 <= 't & 't <= 31 & 0 <= 'n & 'n <= 31 & 'datasize in {32, 64}).
   (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), bool('rt_unknown), int('t), int('t2), bool('tagchecked), bool('wback)) -> unit
@@ -13192,6 +17272,94 @@ function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, biton
     let L = Slice(__opcode, 22, 1);
     let opc = Slice(__opcode, 30, 2);
     decode_stnp_gen_aarch64_instrs_memory_pair_general_no_alloc(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 601) = {
+    SEE = 601;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldnp_fpsimd_aarch64_instrs_memory_pair_simdfp_no_alloc(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 602) = {
+    SEE = 602;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stnp_fpsimd_aarch64_instrs_memory_pair_simdfp_no_alloc(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 603) = {
+    SEE = 603;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_fpsimd_aarch64_instrs_memory_pair_simdfp_post_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 604) = {
+    SEE = 604;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_fpsimd_aarch64_instrs_memory_pair_simdfp_pre_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 605) = {
+    SEE = 605;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldp_fpsimd_aarch64_instrs_memory_pair_simdfp_offset(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 606) = {
+    SEE = 606;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_fpsimd_aarch64_instrs_memory_pair_simdfp_post_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 607) = {
+    SEE = 607;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_fpsimd_aarch64_instrs_memory_pair_simdfp_pre_idx(Rt, Rn, Rt2, imm7, L, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 608) = {
+    SEE = 608;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rt2 = Slice(__opcode, 10, 5);
+    let imm7 = Slice(__opcode, 15, 7);
+    let L = Slice(__opcode, 22, 1);
+    let opc = Slice(__opcode, 30, 2);
+    decode_stp_fpsimd_aarch64_instrs_memory_pair_simdfp_offset(Rt, Rn, Rt2, imm7, L, opc)
 }
 
 val execute_aarch64_instrs_memory_pair_general_post_idx : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) ('rt_unknown : Bool) 't 't2 ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
@@ -14088,6 +18256,66 @@ function clause __DecodeA64_LoadStore ((pc, ([_, bitzero, bitone, bitzero, biton
     decode_stp_gen_aarch64_instrs_memory_pair_general_offset(Rt, Rn, Rt2, imm7, L, opc)
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 618) = {
+    SEE = 618;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 619) = {
+    SEE = 619;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 620) = {
+    SEE = 620;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 621) = {
+    SEE = 621;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_post_idx(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 622) = {
+    SEE = 622;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_pre_idx(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 623) = {
+    SEE = 623;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm12 = Slice(__opcode, 10, 12);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_imm_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_unsigned(Rt, Rn, imm12, opc, size)
+}
+
 val execute_aarch64_instrs_memory_literal_general : forall ('is_signed : Bool) ('nontemporal : Bool) 'size 't ('tagchecked : Bool),
   (0 <= 't & 't <= 31 & 'size in {4, 8}).
   (MemOp, bool('nontemporal), bits(64), bool('is_signed), int('size), int('t), bool('tagchecked)) -> unit
@@ -14226,6 +18454,14 @@ function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, b
     let imm19 = Slice(__opcode, 5, 19);
     let opc = Slice(__opcode, 30, 2);
     decode_prfm_lit_aarch64_instrs_memory_literal_general(Rt, imm19, opc)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 627) = {
+    SEE = 627;
+    let Rt = Slice(__opcode, 0, 5);
+    let imm19 = Slice(__opcode, 5, 19);
+    let opc = Slice(__opcode, 30, 2);
+    decode_ldr_lit_fpsimd_aarch64_instrs_memory_literal_simdfp(Rt, imm19, opc)
 }
 
 val execute_aarch64_instrs_memory_single_general_immediate_signed_post_idx : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
@@ -17662,6 +21898,55 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, b
     decode_strh_reg_aarch64_instrs_memory_single_general_register(Rt, Rn, S, option_name, Rm, opc, size)
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 665) = {
+    SEE = 665;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldr_reg_fpsimd_aarch64_instrs_memory_single_simdfp_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 666) = {
+    SEE = 666;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_str_reg_fpsimd_aarch64_instrs_memory_single_simdfp_register(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 667) = {
+    SEE = 667;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let W = Slice(__opcode, 11, 1);
+    let imm9 = Slice(__opcode, 12, 9);
+    let S = Slice(__opcode, 22, 1);
+    let M = Slice(__opcode, 23, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldra_aarch64_instrs_memory_single_general_immediate_signed_pac(Rt, Rn, W, imm9, S, M, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 668) = {
+    SEE = 668;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_ldsetp_aarch64_instrs_memory_atomicops_ld_128_ldsetp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
 val execute_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
   (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
   (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
@@ -18501,6 +22786,26 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, b
     let opc = Slice(__opcode, 22, 2);
     let size = Slice(__opcode, 30, 2);
     decode_sttrh_aarch64_instrs_memory_single_general_immediate_signed_offset_unpriv(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 678) = {
+    SEE = 678;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_ldur_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 679) = {
+    SEE = 679;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_stur_fpsimd_aarch64_instrs_memory_single_simdfp_immediate_signed_offset_normal(Rt, Rn, imm9, opc, size)
 }
 
 val execute_aarch64_instrs_memory_single_general_immediate_signed_offset_normal : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
@@ -19536,6 +23841,56 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bit
     decode_msub_aarch64_instrs_integer_arithmetic_mul_uniform_add_sub(Rd, Rn, Ra, o0, Rm, sf)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 692) = {
+    SEE = 692;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_accum(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 693) = {
+    SEE = 693;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mls_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_accum(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 694) = {
+    SEE = 694;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mla_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_int(Rd, Rn, H, o2, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 695) = {
+    SEE = 695;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mls_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_int(Rd, Rn, H, o2, Rm, M, L, size, Q)
+}
+
 val execute_aarch64_instrs_integer_ins_ext_insert_movewide : forall 'd 'datasize 'pos,
   (0 <= 'pos & 'pos <= 63 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), bits(16), MoveWideOp, int('pos)) -> unit
@@ -19673,6 +24028,62 @@ function clause __DecodeA64_DataProcImm ((pc, ([_, bitone, bitzero, bitone, bitz
     decode_movz_aarch64_instrs_integer_ins_ext_insert_movewide(Rd, imm16, hw, opc, sf)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 699) = {
+    SEE = 699;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let o0 = Slice(__opcode, 19, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_mrrs_aarch64_instrs_system_register_system_128(Rt, op2, CRm, CRn, op1, o0, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 700) = {
+    SEE = 700;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let o0 = Slice(__opcode, 19, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_msrr_aarch64_instrs_system_register_system_128(Rt, op2, CRm, CRn, op1, o0, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 701) = {
+    SEE = 701;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let o0 = Slice(__opcode, 19, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_mrs_aarch64_instrs_system_register_system(Rt, op2, CRm, CRn, op1, o0, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 702) = {
+    SEE = 702;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let o0 = Slice(__opcode, 19, 1);
+    let L = Slice(__opcode, 21, 1);
+    decode_msr_reg_aarch64_instrs_system_register_system(Rt, op2, CRm, CRn, op1, o0, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, bitone] as __opcode)) if SEE < 703) = {
+    SEE = 703;
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    decode_msr_imm_aarch64_instrs_system_register_cpsr(op2, CRm, op1)
+}
+
 val execute_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_product : forall 'd 'datasize 'elements 'esize 'm 'n ('poly : Bool),
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'esize in {8, 16, 32, 64} & 'datasize in {64, 128} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('elements), int('esize), int('m), int('n), bool('poly)) -> unit
@@ -19726,6 +24137,38 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero,
     let U = Slice(__opcode, 29, 1);
     let Q = Slice(__opcode, 30, 1);
     decode_mul_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_product(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 705) = {
+    SEE = 705;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_pmul_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_product(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 706) = {
+    SEE = 706;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_mul_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_int(Rd, Rn, H, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 707) = {
+    SEE = 707;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_not_advsimd_aarch64_instrs_vector_arithmetic_unary_not(Rd, Rn, Q)
 }
 
 val execute_aarch64_instrs_integer_pac_pacda_dp_1src : forall 'd 'n ('source_is_sp : Bool),
@@ -20064,6 +24507,16 @@ function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone
     decode_pacib_aarch64_instrs_integer_pac_pacib_hint(op2, CRm)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 715) = {
+    SEE = 715;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_pmull_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_mul_poly(Rd, Rn, Rm, size, Q)
+}
+
 val execute_aarch64_instrs_memory_single_general_immediate_unsigned : forall 'datasize ('is_signed : Bool) 'n ('nontemporal : Bool) ('postindex : Bool) 'regsize ('rt_unknown : Bool) 't ('tagchecked : Bool) ('wb_unknown : Bool) ('wback : Bool),
   (0 <= 't & 't <= 31 & 'regsize in {32, 64} & 0 <= 'n & 'n <= 31 & 'datasize in {8, 16, 32, 64}).
   (int('datasize), MemOp, int('n), bool('nontemporal), bits(64), bool('postindex), int('regsize), bool('rt_unknown), bool('is_signed), int('t), bool('tagchecked), bool('wb_unknown), bool('wback)) -> unit
@@ -20221,6 +24674,22 @@ function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bi
     decode_prfm_imm_aarch64_instrs_memory_single_general_immediate_unsigned(Rt, Rn, imm12, opc, size)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 717) = {
+    SEE = 717;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_rax1_advsimd_aarch64_instrs_vector_crypto_sha3_rax1(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 718) = {
+    SEE = 718;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rbit_advsimd_aarch64_instrs_vector_arithmetic_unary_rbit(Rd, Rn, Q)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_rbit : forall 'd 'datasize 'n,
   (0 <= 'n & 'n <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('n)) -> unit
@@ -20249,6 +24718,206 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitone, bitzero, bitone, bito
     let Rn = Slice(__opcode, 5, 5);
     let sf = Slice(__opcode, 31, 1);
     decode_rbit_int_aarch64_instrs_integer_arithmetic_rbit(Rd, Rn, sf)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 720) = {
+    SEE = 720;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwcas_aarch64_instrs_memory_rcw_cas(Rt, Rn, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 721) = {
+    SEE = 721;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwcasp_aarch64_instrs_memory_rcw_cas_128(Rt, Rn, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 722) = {
+    SEE = 722;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwclr_aarch64_instrs_memory_rcw_ld_rcwclr(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 723) = {
+    SEE = 723;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwclrp_aarch64_instrs_memory_rcw_ld_128_rcwclrp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 724) = {
+    SEE = 724;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwscas_aarch64_instrs_memory_rcws_cas(Rt, Rn, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 725) = {
+    SEE = 725;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwscasp_aarch64_instrs_memory_rcws_cas_128(Rt, Rn, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 726) = {
+    SEE = 726;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsclr_aarch64_instrs_memory_rcws_ld_rcwsclr(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 727) = {
+    SEE = 727;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsclrp_aarch64_instrs_memory_rcws_ld_128_rcwsclrp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 728) = {
+    SEE = 728;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwset_aarch64_instrs_memory_rcw_ld_rcwset(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 729) = {
+    SEE = 729;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsetp_aarch64_instrs_memory_rcw_ld_128_rcwsetp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 730) = {
+    SEE = 730;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsset_aarch64_instrs_memory_rcws_ld_rcwsset(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 731) = {
+    SEE = 731;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwssetp_aarch64_instrs_memory_rcws_ld_128_rcwssetp(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 732) = {
+    SEE = 732;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsswp_aarch64_instrs_memory_rcws_swp(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 733) = {
+    SEE = 733;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwsswpp_aarch64_instrs_memory_rcws_swp_128(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 734) = {
+    SEE = 734;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rs = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwswp_aarch64_instrs_memory_rcw_swp(Rt, Rn, opc, o3, Rs, R, A, S)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 735) = {
+    SEE = 735;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_rcwswpp_aarch64_instrs_memory_rcw_swp_128(Rt, Rn, opc, o3, Rt2, R, A, S)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_rev : forall 'container_size 'd 'datasize 'n,
@@ -20390,6 +25059,39 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitone, bitzero, bitone,
     decode_rev32_int_aarch64_instrs_integer_arithmetic_rev(Rd, Rn, opc, sf)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 739) = {
+    SEE = 739;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rev16_advsimd_aarch64_instrs_vector_arithmetic_unary_rev(Rd, Rn, o0, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 740) = {
+    SEE = 740;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rev32_advsimd_aarch64_instrs_vector_arithmetic_unary_rev(Rd, Rn, o0, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 741) = {
+    SEE = 741;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rev64_advsimd_aarch64_instrs_vector_arithmetic_unary_rev(Rd, Rn, o0, size, U, Q)
+}
+
 val execute_aarch64_instrs_integer_flags_rmif : forall 'lsb 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'lsb & 'lsb <= 63).
   (int('lsb), bits(4), int('n)) -> unit
@@ -20430,6 +25132,228 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitone, bitone,
     let imm6 = Slice(__opcode, 15, 6);
     let sf = Slice(__opcode, 31, 1);
     decode_rmif_aarch64_instrs_integer_flags_rmif(mask, Rn, imm6, sf)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, bitone, _, _, bitone, bitzero, _, _, _, _, _, bitone, bitone, _, _, _] as __opcode)) if SEE < 743) = {
+    SEE = 743;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 12, 1);
+    let option_name = Slice(__opcode, 13, 3);
+    let Rm = Slice(__opcode, 16, 5);
+    let opc = Slice(__opcode, 22, 2);
+    let size = Slice(__opcode, 30, 2);
+    decode_rprfm_reg_aarch64_instrs_memory_single_general_range(Rt, Rn, S, option_name, Rm, opc, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 744) = {
+    SEE = 744;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_rshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_logical(Rd, Rn, op, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 745) = {
+    SEE = 745;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_shrn_advsimd_aarch64_instrs_vector_shift_right_narrow_logical(Rd, Rn, op, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 746) = {
+    SEE = 746;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_saba_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_diff(Rd, Rn, ac, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 747) = {
+    SEE = 747;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_diff(Rd, Rn, ac, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 748) = {
+    SEE = 748;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uaba_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_diff(Rd, Rn, ac, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 749) = {
+    SEE = 749;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let ac = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uabd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_diff(Rd, Rn, ac, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 750) = {
+    SEE = 750;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sabal_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_diff(Rd, Rn, op, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 751) = {
+    SEE = 751;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sabdl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_diff(Rd, Rn, op, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 752) = {
+    SEE = 752;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uabal_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_diff(Rd, Rn, op, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 753) = {
+    SEE = 753;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uabdl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_diff(Rd, Rn, op, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 754) = {
+    SEE = 754;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sadalp_advsimd_aarch64_instrs_vector_arithmetic_unary_add_pairwise(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 755) = {
+    SEE = 755;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_saddlp_advsimd_aarch64_instrs_vector_arithmetic_unary_add_pairwise(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 756) = {
+    SEE = 756;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uadalp_advsimd_aarch64_instrs_vector_arithmetic_unary_add_pairwise(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 757) = {
+    SEE = 757;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uaddlp_advsimd_aarch64_instrs_vector_arithmetic_unary_add_pairwise(Rd, Rn, op, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 758) = {
+    SEE = 758;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_saddl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_long(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 759) = {
+    SEE = 759;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ssubl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_long(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 760) = {
+    SEE = 760;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uaddl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_long(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 761) = {
+    SEE = 761;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usubl_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_long(Rd, Rn, o1, Rm, size, U, Q)
 }
 
 val execute_aarch64_instrs_vector_reduce_add_long : forall 'd 'datasize 'elements 'esize ('is_unsigned : Bool) 'n,
@@ -20503,6 +25427,179 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, 
     decode_uaddlv_advsimd_aarch64_instrs_vector_reduce_add_long(Rd, Rn, size, U, Q)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 764) = {
+    SEE = 764;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_saddw_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_wide(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 765) = {
+    SEE = 765;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ssubw_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_wide(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 766) = {
+    SEE = 766;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uaddw_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_wide(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 767) = {
+    SEE = 767;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usubw_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_wide(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110011000011111111 as __opcode)) if SEE < 768) = {
+    SEE = 768;
+    let opc = Slice(__opcode, 5, 2);
+    let CRm = Slice(__opcode, 8, 4);
+    if (([__opcode[8]] != 0b0 | [__opcode[9]] != 0b0) | [__opcode[10]] != 0b0) | [__opcode[11]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_sb_aarch64_instrs_system_barriers_sb(opc, CRm)
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 769) = {
+    SEE = 769;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_scvtf_advsimd_fix_aarch64_instrs_vector_shift_conv_int_sisd(Rd, Rn, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 770) = {
+    SEE = 770;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_scvtf_advsimd_fix_aarch64_instrs_vector_shift_conv_int_simd(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 771) = {
+    SEE = 771;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_ucvtf_advsimd_fix_aarch64_instrs_vector_shift_conv_int_sisd(Rd, Rn, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 772) = {
+    SEE = 772;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ucvtf_advsimd_fix_aarch64_instrs_vector_shift_conv_int_simd(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 773) = {
+    SEE = 773;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_int_sisd(Rd, Rn, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 774) = {
+    SEE = 774;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_int_sisd(Rd, Rn, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 775) = {
+    SEE = 775;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_int_simd(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 776) = {
+    SEE = 776;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_int_simd(Rd, Rn, sz, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 777) = {
+    SEE = 777;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_ucvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_int_sisd(Rd, Rn, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 778) = {
+    SEE = 778;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    decode_ucvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_int_sisd(Rd, Rn, sz, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 779) = {
+    SEE = 779;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ucvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_int_simd(Rd, Rn, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitzero, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 780) = {
+    SEE = 780;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ucvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_float_conv_int_simd(Rd, Rn, sz, U, Q)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_div : forall 'd 'datasize ('is_unsigned : Bool) 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize in {32, 64} & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('m), int('n), bool('is_unsigned)) -> unit
@@ -20562,6 +25659,96 @@ function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bit
     decode_udiv_aarch64_instrs_integer_arithmetic_div(Rd, Rn, o1, Rm, sf)
 }
 
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 783) = {
+    SEE = 783;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sdot_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_dotp(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 784) = {
+    SEE = 784;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_udot_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_dotp(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 785) = {
+    SEE = 785;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sdot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_dotp(Rd, Rn, H, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 786) = {
+    SEE = 786;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_udot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_dotp(Rd, Rn, H, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 787) = {
+    SEE = 787;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setp_aarch64_instrs_memory_mcpymset_set(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 788) = {
+    SEE = 788;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setpn_aarch64_instrs_memory_mcpymset_set(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 789) = {
+    SEE = 789;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setpt_aarch64_instrs_memory_mcpymset_set(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 790) = {
+    SEE = 790;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setptn_aarch64_instrs_memory_mcpymset_set(Rd, Rn, op2, Rs, sz)
+}
+
 val execute_aarch64_instrs_integer_flags_setf : forall 'msb 'n,
   (0 <= 'n & 'n <= 31 & 'msb in {7, 15}).
   (int('msb), int('n)) -> unit
@@ -20590,6 +25777,323 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitzero, bitzero, bitone, bitone
     let sz = Slice(__opcode, 14, 1);
     let sf = Slice(__opcode, 31, 1);
     decode_setf_aarch64_instrs_integer_flags_setf(Rn, sz, sf)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 792) = {
+    SEE = 792;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setgp_aarch64_instrs_memory_mcpymset_setg(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 793) = {
+    SEE = 793;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setgpn_aarch64_instrs_memory_mcpymset_setg(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 794) = {
+    SEE = 794;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setgpt_aarch64_instrs_memory_mcpymset_setg(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([_, _, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 795) = {
+    SEE = 795;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op2 = Slice(__opcode, 12, 4);
+    let Rs = Slice(__opcode, 16, 5);
+    let sz = Slice(__opcode, 30, 2);
+    decode_setgptn_aarch64_instrs_memory_mcpymset_setg(Rd, Rn, op2, Rs, sz)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 796) = {
+    SEE = 796;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha1c_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_choose(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 797) = {
+    SEE = 797;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_sha1h_advsimd_aarch64_instrs_vector_crypto_sha2op_sha1_hash(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 798) = {
+    SEE = 798;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha1m_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_majority(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 799) = {
+    SEE = 799;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha1p_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_parity(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 800) = {
+    SEE = 800;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha1su0_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_sched0(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 801) = {
+    SEE = 801;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_sha1su1_advsimd_aarch64_instrs_vector_crypto_sha2op_sha1_sched1(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 802) = {
+    SEE = 802;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let P = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha256h_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_hash(Rd, Rn, P, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 803) = {
+    SEE = 803;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let P = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha256h2_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_hash(Rd, Rn, P, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 804) = {
+    SEE = 804;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_sha256su0_advsimd_aarch64_instrs_vector_crypto_sha2op_sha256_sched0(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 805) = {
+    SEE = 805;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha256su1_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_sched1(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 806) = {
+    SEE = 806;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha512h_advsimd_aarch64_instrs_vector_crypto_sha512_sha512h(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 807) = {
+    SEE = 807;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha512h2_advsimd_aarch64_instrs_vector_crypto_sha512_sha512h2(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 808) = {
+    SEE = 808;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_sha512su0_advsimd_aarch64_instrs_vector_crypto_sha512_sha512su0(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 809) = {
+    SEE = 809;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sha512su1_advsimd_aarch64_instrs_vector_crypto_sha512_sha512su1(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 810) = {
+    SEE = 810;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_shadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_halving_truncating(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 811) = {
+    SEE = 811;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uhadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_halving_truncating(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 812) = {
+    SEE = 812;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    decode_shl_advsimd_aarch64_instrs_vector_shift_left_sisd(Rd, Rn, immb, immh)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 813) = {
+    SEE = 813;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_shl_advsimd_aarch64_instrs_vector_shift_left_simd(Rd, Rn, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 814) = {
+    SEE = 814;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_shll_advsimd_aarch64_instrs_vector_arithmetic_unary_shift(Rd, Rn, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 815) = {
+    SEE = 815;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_shsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_int(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 816) = {
+    SEE = 816;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uhsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_int(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 817) = {
+    SEE = 817;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    decode_sli_advsimd_aarch64_instrs_vector_shift_left_insert_sisd(Rd, Rn, immb, immh)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 818) = {
+    SEE = 818;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sli_advsimd_aarch64_instrs_vector_shift_left_insert_simd(Rd, Rn, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 819) = {
+    SEE = 819;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3partw1_advsimd_aarch64_instrs_vector_crypto_sm3_sm3partw1(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 820) = {
+    SEE = 820;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3partw2_advsimd_aarch64_instrs_vector_crypto_sm3_sm3partw2(Rd, Rn, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 821) = {
+    SEE = 821;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Ra = Slice(__opcode, 10, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3ss1_advsimd_aarch64_instrs_vector_crypto_sm3_sm3ss1(Rd, Rn, Ra, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitzero, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 822) = {
+    SEE = 822;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm2 = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3tt1a_advsimd_aarch64_instrs_vector_crypto_sm3_sm3tt1a(Rd, Rn, imm2, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitzero, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 823) = {
+    SEE = 823;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm2 = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3tt1b_advsimd_aarch64_instrs_vector_crypto_sm3_sm3tt1b(Rd, Rn, imm2, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitzero, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 824) = {
+    SEE = 824;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm2 = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3tt2a_advsimd_aarch64_instrs_vector_crypto_sm3_sm3tt2a(Rd, Rn, imm2, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, bitone, bitzero, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 825) = {
+    SEE = 825;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm2 = Slice(__opcode, 12, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm3tt2b_advsimd_aarch64_instrs_vector_crypto_sm3_sm3tt2b(Rd, Rn, imm2, Rm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 826) = {
+    SEE = 826;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_sm4e_advsimd_aarch64_instrs_vector_crypto_sm4_sm4enc(Rd, Rn)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 827) = {
+    SEE = 827;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_sm4ekey_advsimd_aarch64_instrs_vector_crypto_sm4_sm4enckey(Rd, Rn, Rm)
 }
 
 val execute_aarch64_instrs_integer_arithmetic_mul_widening_32_64 : forall 'a 'd 'datasize 'destsize ('is_unsigned : Bool) 'm 'n ('sub_op : Bool),
@@ -20708,6 +26212,24 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone
     let Rm = Slice(__opcode, 16, 5);
     let U = Slice(__opcode, 23, 1);
     decode_umsubl_aarch64_instrs_integer_arithmetic_mul_widening_32_64(Rd, Rn, Ra, o0, Rm, U)
+}
+
+function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 832) = {
+    SEE = 832;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm8 = Slice(__opcode, 10, 8);
+    let sf = Slice(__opcode, 31, 1);
+    decode_smax_imm_aarch64_instrs_integer_arithmetic_max_min_smax_imm(Rd, Rn, imm8, sf)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 833) = {
+    SEE = 833;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_smax_reg_aarch64_instrs_integer_arithmetic_max_min_smax_reg(Rd, Rn, Rm, sf)
 }
 
 val execute_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_single : forall 'd 'datasize 'elements 'esize ('is_unsigned : Bool) 'm ('minimum : Bool) 'n,
@@ -21124,6 +26646,177 @@ function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, 
     decode_uminv_advsimd_aarch64_instrs_vector_reduce_int_max(Rd, Rn, op, size, U, Q)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone] as __opcode)) if SEE < 846) = {
+    SEE = 846;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_smc_aarch64_instrs_system_exceptions_runtime_smc(imm16)
+}
+
+function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 847) = {
+    SEE = 847;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm8 = Slice(__opcode, 10, 8);
+    let sf = Slice(__opcode, 31, 1);
+    decode_smin_imm_aarch64_instrs_integer_arithmetic_max_min_smin_imm(Rd, Rn, imm8, sf)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 848) = {
+    SEE = 848;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_smin_reg_aarch64_instrs_integer_arithmetic_max_min_smin_reg(Rd, Rn, Rm, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 849) = {
+    SEE = 849;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_accum(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 850) = {
+    SEE = 850;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_accum(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 851) = {
+    SEE = 851;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_accum(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 852) = {
+    SEE = 852;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_accum(Rd, Rn, o1, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 853) = {
+    SEE = 853;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_long(Rd, Rn, H, o2, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 854) = {
+    SEE = 854;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_long(Rd, Rn, H, o2, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 855) = {
+    SEE = 855;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_long(Rd, Rn, H, o2, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 856) = {
+    SEE = 856;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_long(Rd, Rn, H, o2, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 857) = {
+    SEE = 857;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let B = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_smmla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mat_mul_int_mla(Rd, Rn, B, Rm, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 858) = {
+    SEE = 858;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let B = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_ummla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mat_mul_int_mla(Rd, Rn, B, Rm, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 859) = {
+    SEE = 859;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let B = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let U = Slice(__opcode, 29, 1);
+    decode_usmmla_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mat_mul_int_mla(Rd, Rn, B, Rm, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 860) = {
+    SEE = 860;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smov_advsimd_aarch64_instrs_vector_transfer_integer_move_signed(Rd, Rn, imm5, Q)
+}
+
 val execute_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi : forall 'd 'datasize ('is_unsigned : Bool) 'm 'n,
   (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 'datasize == 64 & 0 <= 'd & 'd <= 31).
   (int('d), int('datasize), int('m), int('n), bool('is_unsigned)) -> unit
@@ -21187,6 +26880,1502 @@ function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone
     } else {
         decode_umulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi(Rd, Rn, Ra, Rm, U)
     }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 863) = {
+    SEE = 863;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smull_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_product(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 864) = {
+    SEE = 864;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umull_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_product(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 865) = {
+    SEE = 865;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_smull_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_long(Rd, Rn, H, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 866) = {
+    SEE = 866;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umull_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_long(Rd, Rn, H, Rm, M, L, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 867) = {
+    SEE = 867;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqabs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_sat_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 868) = {
+    SEE = 868;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqabs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_sat_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 869) = {
+    SEE = 869;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqneg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_sat_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 870) = {
+    SEE = 870;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqneg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_sat_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 871) = {
+    SEE = 871;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_saturating_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 872) = {
+    SEE = 872;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_saturating_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 873) = {
+    SEE = 873;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_saturating_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 874) = {
+    SEE = 874;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_saturating_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 875) = {
+    SEE = 875;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_double_sisd(Rd, Rn, H, o2, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 876) = {
+    SEE = 876;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmlal_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_double_simd(Rd, Rn, H, o2, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 877) = {
+    SEE = 877;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_double_sisd(Rd, Rn, H, o2, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 878) = {
+    SEE = 878;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let o2 = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmlsl_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_double_simd(Rd, Rn, H, o2, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 879) = {
+    SEE = 879;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_dmacc_sisd(Rd, Rn, o1, Rm, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 880) = {
+    SEE = 880;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmlal_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_dmacc_simd(Rd, Rn, o1, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 881) = {
+    SEE = 881;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_dmacc_sisd(Rd, Rn, o1, Rm, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 882) = {
+    SEE = 882;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o1 = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmlsl_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_dmacc_simd(Rd, Rn, o1, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 883) = {
+    SEE = 883;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqdmulh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 884) = {
+    SEE = 884;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmulh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 885) = {
+    SEE = 885;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqrdmulh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 886) = {
+    SEE = 886;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmulh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 887) = {
+    SEE = 887;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmulh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_high_sisd(Rd, Rn, H, op, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitzero, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 888) = {
+    SEE = 888;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmulh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_high_simd(Rd, Rn, H, op, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 889) = {
+    SEE = 889;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqrdmulh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_high_sisd(Rd, Rn, H, op, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 890) = {
+    SEE = 890;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let op = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmulh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_high_simd(Rd, Rn, H, op, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 891) = {
+    SEE = 891;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmull_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_double_sisd(Rd, Rn, Rm, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 892) = {
+    SEE = 892;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmull_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_disparate_mul_double_simd(Rd, Rn, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 893) = {
+    SEE = 893;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqdmull_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_double_sisd(Rd, Rn, H, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 894) = {
+    SEE = 894;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqdmull_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_double_simd(Rd, Rn, H, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 895) = {
+    SEE = 895;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqrdmlah_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_accum_sisd(Rd, Rn, S, Rm, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 896) = {
+    SEE = 896;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmlah_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_accum_simd(Rd, Rn, S, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 897) = {
+    SEE = 897;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqrdmlsh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_accum_sisd(Rd, Rn, S, Rm, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 898) = {
+    SEE = 898;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmlsh_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_doubling_accum_simd(Rd, Rn, S, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 899) = {
+    SEE = 899;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqrdmlah_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_high_sisd(Rd, Rn, H, S, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitzero, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 900) = {
+    SEE = 900;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmlah_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_high_simd(Rd, Rn, H, S, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 901) = {
+    SEE = 901;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqrdmlsh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_high_sisd(Rd, Rn, H, S, Rm, M, L, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 902) = {
+    SEE = 902;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let S = Slice(__opcode, 13, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrdmlsh_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mul_acc_high_simd(Rd, Rn, H, S, Rm, M, L, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 903) = {
+    SEE = 903;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqrshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 904) = {
+    SEE = 904;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 905) = {
+    SEE = 905;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqshl_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 906) = {
+    SEE = 906;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqshl_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 907) = {
+    SEE = 907;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_srshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 908) = {
+    SEE = 908;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_srshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 909) = {
+    SEE = 909;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 910) = {
+    SEE = 910;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 911) = {
+    SEE = 911;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqrshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 912) = {
+    SEE = 912;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqrshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 913) = {
+    SEE = 913;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqshl_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 914) = {
+    SEE = 914;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqshl_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 915) = {
+    SEE = 915;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_urshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 916) = {
+    SEE = 916;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_urshl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 917) = {
+    SEE = 917;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_ushl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_sisd(Rd, Rn, S, R, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 918) = {
+    SEE = 918;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let S = Slice(__opcode, 11, 1);
+    let R = Slice(__opcode, 12, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ushl_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_shift_simd(Rd, Rn, S, R, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 919) = {
+    SEE = 919;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqrshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 920) = {
+    SEE = 920;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 921) = {
+    SEE = 921;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 922) = {
+    SEE = 922;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 923) = {
+    SEE = 923;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqrshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 924) = {
+    SEE = 924;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqrshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 925) = {
+    SEE = 925;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 926) = {
+    SEE = 926;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqshrn_advsimd_aarch64_instrs_vector_shift_right_narrow_uniform_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 927) = {
+    SEE = 927;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    decode_sqrshrun_advsimd_aarch64_instrs_vector_shift_right_narrow_nonuniform_sisd(Rd, Rn, op, immb, immh)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 928) = {
+    SEE = 928;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqrshrun_advsimd_aarch64_instrs_vector_shift_right_narrow_nonuniform_simd(Rd, Rn, op, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 929) = {
+    SEE = 929;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    decode_sqshrun_advsimd_aarch64_instrs_vector_shift_right_narrow_nonuniform_sisd(Rd, Rn, op, immb, immh)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 930) = {
+    SEE = 930;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 11, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqshrun_advsimd_aarch64_instrs_vector_shift_right_narrow_nonuniform_simd(Rd, Rn, op, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 931) = {
+    SEE = 931;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqshl_advsimd_imm_aarch64_instrs_vector_shift_left_sat_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 932) = {
+    SEE = 932;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqshl_advsimd_imm_aarch64_instrs_vector_shift_left_sat_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 933) = {
+    SEE = 933;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqshlu_advsimd_aarch64_instrs_vector_shift_left_sat_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 934) = {
+    SEE = 934;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqshlu_advsimd_aarch64_instrs_vector_shift_left_sat_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 935) = {
+    SEE = 935;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqshl_advsimd_imm_aarch64_instrs_vector_shift_left_sat_sisd(Rd, Rn, op, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 936) = {
+    SEE = 936;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqshl_advsimd_imm_aarch64_instrs_vector_shift_left_sat_simd(Rd, Rn, op, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 937) = {
+    SEE = 937;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_saturating_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 938) = {
+    SEE = 938;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_saturating_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 939) = {
+    SEE = 939;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_saturating_sisd(Rd, Rn, Rm, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 940) = {
+    SEE = 940;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqsub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_sub_saturating_simd(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 941) = {
+    SEE = 941;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_sqxtn_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sat_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 942) = {
+    SEE = 942;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqxtn_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sat_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 943) = {
+    SEE = 943;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_uqxtn_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sat_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 944) = {
+    SEE = 944;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uqxtn_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sat_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 945) = {
+    SEE = 945;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    decode_sqxtun_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sqxtun_sisd(Rd, Rn, size)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 946) = {
+    SEE = 946;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sqxtun_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_sqxtun_simd(Rd, Rn, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 947) = {
+    SEE = 947;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_srhadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_halving_rounding(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 948) = {
+    SEE = 948;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_urhadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_halving_rounding(Rd, Rn, Rm, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 949) = {
+    SEE = 949;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    decode_sri_advsimd_aarch64_instrs_vector_shift_right_insert_sisd(Rd, Rn, immb, immh)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 950) = {
+    SEE = 950;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sri_advsimd_aarch64_instrs_vector_shift_right_insert_simd(Rd, Rn, immb, immh, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 951) = {
+    SEE = 951;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_srshr_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 952) = {
+    SEE = 952;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_srshr_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 953) = {
+    SEE = 953;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_srsra_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 954) = {
+    SEE = 954;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_srsra_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 955) = {
+    SEE = 955;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_sshr_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 956) = {
+    SEE = 956;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sshr_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 957) = {
+    SEE = 957;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_ssra_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 958) = {
+    SEE = 958;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ssra_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 959) = {
+    SEE = 959;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_urshr_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 960) = {
+    SEE = 960;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_urshr_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 961) = {
+    SEE = 961;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_ursra_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 962) = {
+    SEE = 962;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ursra_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 963) = {
+    SEE = 963;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_ushr_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 964) = {
+    SEE = 964;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ushr_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 965) = {
+    SEE = 965;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    decode_usra_advsimd_aarch64_instrs_vector_shift_right_sisd(Rd, Rn, o0, o1, immb, immh, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 966) = {
+    SEE = 966;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let o0 = Slice(__opcode, 12, 1);
+    let o1 = Slice(__opcode, 13, 1);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usra_advsimd_aarch64_instrs_vector_shift_right_simd(Rd, Rn, o0, o1, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 967) = {
+    SEE = 967;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sshll_advsimd_aarch64_instrs_vector_shift_left_long(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 968) = {
+    SEE = 968;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let immb = Slice(__opcode, 16, 3);
+    let immh = Slice(__opcode, 19, 4);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ushll_advsimd_aarch64_instrs_vector_shift_left_long(Rd, Rn, immb, immh, U, Q)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 969) = {
+    SEE = 969;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_st2g_aarch64_instrs_integer_tags_mcsettagpairpost(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 970) = {
+    SEE = 970;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_st2g_aarch64_instrs_integer_tags_mcsettagpairpre(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 971) = {
+    SEE = 971;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_st2g_aarch64_instrs_integer_tags_mcsettagpair(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 972) = {
+    SEE = 972;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    decode_st64b_aarch64_instrs_memory_atomicops_st_acc_st64b(Rt, Rn)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 973) = {
+    SEE = 973;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    decode_st64bv_aarch64_instrs_memory_atomicops_st_acc_st64bv(Rt, Rn, Rs)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, bitone, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 974) = {
+    SEE = 974;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rs = Slice(__opcode, 16, 5);
+    decode_st64bv0_aarch64_instrs_memory_atomicops_st_acc_st64bv0(Rt, Rn, Rs)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 975) = {
+    SEE = 975;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stg_aarch64_instrs_integer_tags_mcsettagpost(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 976) = {
+    SEE = 976;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stg_aarch64_instrs_integer_tags_mcsettagpre(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 977) = {
+    SEE = 977;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stg_aarch64_instrs_integer_tags_mcsettag(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 978) = {
+    SEE = 978;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    decode_stgm_aarch64_instrs_integer_tags_mcsettagarray(Xt, Xn)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 979) = {
+    SEE = 979;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xt2 = Slice(__opcode, 10, 5);
+    let simm7 = Slice(__opcode, 15, 7);
+    decode_stgp_aarch64_instrs_integer_tags_mcsettaganddatapairpost(Xt, Xn, Xt2, simm7)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 980) = {
+    SEE = 980;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xt2 = Slice(__opcode, 10, 5);
+    let simm7 = Slice(__opcode, 15, 7);
+    decode_stgp_aarch64_instrs_integer_tags_mcsettaganddatapairpre(Xt, Xn, Xt2, simm7)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 981) = {
+    SEE = 981;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xt2 = Slice(__opcode, 10, 5);
+    let simm7 = Slice(__opcode, 15, 7);
+    decode_stgp_aarch64_instrs_integer_tags_mcsettaganddatapair(Xt, Xn, Xt2, simm7)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 982) = {
+    SEE = 982;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc2 = Slice(__opcode, 12, 4);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let L = Slice(__opcode, 22, 1);
+    let size = Slice(__opcode, 30, 2);
+    decode_stilp_aarch64_instrs_memory_ordered_pair_stilp(Rt, Rn, opc2, Rt2, L, size)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 983) = {
+    SEE = 983;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stz2g_aarch64_instrs_integer_tags_mcsettagpairandzerodatapost(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 984) = {
+    SEE = 984;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stz2g_aarch64_instrs_integer_tags_mcsettagpairandzerodatapre(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 985) = {
+    SEE = 985;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stz2g_aarch64_instrs_integer_tags_mcsettagpairandzerodata(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 986) = {
+    SEE = 986;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stzg_aarch64_instrs_integer_tags_mcsettagandzerodatapost(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 987) = {
+    SEE = 987;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stzg_aarch64_instrs_integer_tags_mcsettagandzerodatapre(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 988) = {
+    SEE = 988;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let imm9 = Slice(__opcode, 12, 9);
+    decode_stzg_aarch64_instrs_integer_tags_mcsettagandzerodata(Xt, Xn, imm9)
+}
+
+function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 989) = {
+    SEE = 989;
+    let Xt = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    decode_stzgm_aarch64_instrs_integer_tags_mcsettagandzeroarray(Xt, Xn)
+}
+
+function clause __DecodeA64_DataProcImm ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 990) = {
+    SEE = 990;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let uimm4 = Slice(__opcode, 10, 4);
+    let op3 = Slice(__opcode, 14, 2);
+    let uimm6 = Slice(__opcode, 16, 6);
+    if [__opcode[14]] != 0b0 | [__opcode[15]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_subg_aarch64_instrs_integer_tags_mcsubtag(Xd, Xn, uimm4, op3, uimm6)
+    }
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 991) = {
+    SEE = 991;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xm = Slice(__opcode, 16, 5);
+    decode_subp_aarch64_instrs_integer_arithmetic_pointer_mcsubtracttaggedaddress(Xd, Xn, Xm)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 992) = {
+    SEE = 992;
+    let Xd = Slice(__opcode, 0, 5);
+    let Xn = Slice(__opcode, 5, 5);
+    let Xm = Slice(__opcode, 16, 5);
+    decode_subps_aarch64_instrs_integer_arithmetic_pointer_mcsubtracttaggedaddresssetflags(Xd, Xn, Xm)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitzero, bitzero, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 993) = {
+    SEE = 993;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let US = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_sudot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mat_mul_int_dotp(Rd, Rn, H, Rm, M, L, US, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, bitone, bitone, bitone, bitone, _, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 994) = {
+    SEE = 994;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let H = Slice(__opcode, 11, 1);
+    let Rm = Slice(__opcode, 16, 4);
+    let M = Slice(__opcode, 20, 1);
+    let L = Slice(__opcode, 21, 1);
+    let US = Slice(__opcode, 23, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usdot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_mat_mul_int_dotp(Rd, Rn, H, Rm, M, L, US, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 995) = {
+    SEE = 995;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_suqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 996) = {
+    SEE = 996;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_suqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, bitone, bitone, bitone, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 997) = {
+    SEE = 997;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    decode_usqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_sisd(Rd, Rn, size, U)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 998) = {
+    SEE = 998;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let U = Slice(__opcode, 29, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_simd(Rd, Rn, size, U, Q)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitone] as __opcode)) if SEE < 999) = {
+    SEE = 999;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_svc_aarch64_instrs_system_exceptions_runtime_svc(imm16)
 }
 
 val execute_aarch64_instrs_memory_atomicops_swp : forall ('acquire : Bool) 'datasize 'n 'regsize ('release : Bool) 's 't ('tagchecked : Bool),
@@ -21301,6 +28490,74 @@ function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitone, bitone, bitone, b
     decode_swph_aarch64_instrs_memory_atomicops_swp(Rt, Rn, Rs, R, A, size)
 }
 
+function clause __DecodeA64_LoadStore ((pc, ([bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, bitone, _, _, _, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1003) = {
+    SEE = 1003;
+    let Rt = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let opc = Slice(__opcode, 12, 3);
+    let o3 = Slice(__opcode, 15, 1);
+    let Rt2 = Slice(__opcode, 16, 5);
+    let R = Slice(__opcode, 22, 1);
+    let A = Slice(__opcode, 23, 1);
+    let S = Slice(__opcode, 30, 1);
+    decode_swpp_aarch64_instrs_memory_atomicops_swp_128(Rt, Rn, opc, o3, Rt2, R, A, S)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1004) = {
+    SEE = 1004;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let L = Slice(__opcode, 21, 1);
+    decode_sys_aarch64_instrs_system_sysops(Rt, op2, CRm, CRn, op1, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1005) = {
+    SEE = 1005;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let L = Slice(__opcode, 21, 1);
+    decode_sysl_aarch64_instrs_system_sysops(Rt, op2, CRm, CRn, op1, L)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1006) = {
+    SEE = 1006;
+    let Rt = Slice(__opcode, 0, 5);
+    let op2 = Slice(__opcode, 5, 3);
+    let CRm = Slice(__opcode, 8, 4);
+    let CRn = Slice(__opcode, 12, 4);
+    let op1 = Slice(__opcode, 16, 3);
+    let L = Slice(__opcode, 21, 1);
+    decode_sysp_aarch64_instrs_system_sysops_128(Rt, op2, CRm, CRn, op1, L)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, _, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1007) = {
+    SEE = 1007;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let len = Slice(__opcode, 13, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_tbl_advsimd_aarch64_instrs_vector_transfer_vector_table(Rd, Rn, op, len, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, _, _, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1008) = {
+    SEE = 1008;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 12, 1);
+    let len = Slice(__opcode, 13, 2);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_tbx_advsimd_aarch64_instrs_vector_transfer_vector_table(Rd, Rn, op, len, Rm, Q)
+}
+
 val execute_aarch64_instrs_branch_conditional_test : forall 'bit_pos 'datasize 't,
   (0 <= 't & 't <= 31 & 'datasize in {32, 64} & 0 <= 'bit_pos & 'bit_pos <= 63).
   (int('bit_pos), bits(1), int('datasize), bits(64), int('t)) -> unit
@@ -21358,6 +28615,182 @@ function clause __DecodeA64_BranchExcSys ((pc, ([_, bitzero, bitone, bitone, bit
     decode_tbz_aarch64_instrs_branch_conditional_test(Rt, imm14, b40, op, b5)
 }
 
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, bitzero, bitzero, bitzero, bitzero, bitzero] as __opcode)) if SEE < 1011) = {
+    SEE = 1011;
+    let imm16 = Slice(__opcode, 5, 16);
+    decode_tcancel_aarch64_instrs_system_tme_tcancel(imm16)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110011000001111111 as __opcode)) if SEE < 1012) = {
+    SEE = 1012;
+    decode_tcommit_aarch64_instrs_system_tme_tcommit()
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1013) = {
+    SEE = 1013;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_trn1_advsimd_aarch64_instrs_vector_transfer_vector_permute_transpose(Rd, Rn, op, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1014) = {
+    SEE = 1014;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_trn2_advsimd_aarch64_instrs_vector_transfer_vector_permute_transpose(Rd, Rn, op, Rm, size, Q)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, _, _, _, _, _] as __opcode)) if SEE < 1015) = {
+    SEE = 1015;
+    let Rt = Slice(__opcode, 0, 5);
+    decode_tstart_aarch64_instrs_system_tme_tstart(Rt)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitone, bitone, _, _, _, _, _] as __opcode)) if SEE < 1016) = {
+    SEE = 1016;
+    let Rt = Slice(__opcode, 0, 5);
+    decode_ttest_aarch64_instrs_system_tme_ttest(Rt)
+}
+
+function clause __DecodeA64_Reserved ((pc, ([bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1017) = {
+    SEE = 1017;
+    let imm16 = Slice(__opcode, 0, 16);
+    decode_udf_perm_undef_aarch64_instrs_udf(imm16)
+}
+
+function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1018) = {
+    SEE = 1018;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm8 = Slice(__opcode, 10, 8);
+    let sf = Slice(__opcode, 31, 1);
+    decode_umax_imm_aarch64_instrs_integer_arithmetic_max_min_umax_imm(Rd, Rn, imm8, sf)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitzero, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1019) = {
+    SEE = 1019;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_umax_reg_aarch64_instrs_integer_arithmetic_max_min_umax_reg(Rd, Rn, Rm, sf)
+}
+
+function clause __DecodeA64_DataProcReg ((pc, ([_, bitzero, bitzero, bitone, bitone, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1020) = {
+    SEE = 1020;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let sf = Slice(__opcode, 31, 1);
+    decode_umin_reg_aarch64_instrs_integer_arithmetic_max_min_umin_reg(Rd, Rn, Rm, sf)
+}
+
+function clause __DecodeA64_DataProcImm ((pc, ([_, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitone, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1021) = {
+    SEE = 1021;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm8 = Slice(__opcode, 10, 8);
+    let sf = Slice(__opcode, 31, 1);
+    decode_umin_imm_aarch64_instrs_integer_arithmetic_max_min_umin_imm(Rd, Rn, imm8, sf)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1022) = {
+    SEE = 1022;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm5 = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_umov_advsimd_aarch64_instrs_vector_transfer_integer_move_unsigned(Rd, Rn, imm5, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1023) = {
+    SEE = 1023;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_urecpe_advsimd_aarch64_instrs_vector_arithmetic_unary_special_recip_int(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitone, bitzero, bitone, bitone, bitone, bitzero, bitone, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1024) = {
+    SEE = 1024;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let sz = Slice(__opcode, 22, 1);
+    let Q = Slice(__opcode, 30, 1);
+    decode_ursqrte_advsimd_aarch64_instrs_vector_arithmetic_unary_special_sqrt_est_int(Rd, Rn, sz, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, bitone, bitzero, bitzero, bitone, bitone, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1025) = {
+    SEE = 1025;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let Rm = Slice(__opcode, 16, 5);
+    let Q = Slice(__opcode, 30, 1);
+    decode_usdot_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mat_mul_int_usdot(Rd, Rn, Rm, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1026) = {
+    SEE = 1026;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uzp1_advsimd_aarch64_instrs_vector_transfer_vector_permute_unzip(Rd, Rn, op, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitzero, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1027) = {
+    SEE = 1027;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_uzp2_advsimd_aarch64_instrs_vector_transfer_vector_permute_unzip(Rd, Rn, op, Rm, size, Q)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, _, _, _, _, _] as __opcode)) if SEE < 1028) = {
+    SEE = 1028;
+    let Rd = Slice(__opcode, 0, 5);
+    decode_wfet_aarch64_instrs_system_sysinstwithreg_wfet(Rd)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, ([bitone, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, bitone, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitzero, bitzero, bitzero, bitzero, bitone, _, _, _, _, _] as __opcode)) if SEE < 1029) = {
+    SEE = 1029;
+    let Rd = Slice(__opcode, 0, 5);
+    decode_wfit_aarch64_instrs_system_sysinstwithreg_wfit(Rd)
+}
+
+function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000000100000000111111 as __opcode)) if SEE < 1030) = {
+    SEE = 1030;
+    let CRm = Slice(__opcode, 8, 4);
+    if (([__opcode[8]] != 0b0 | [__opcode[9]] != 0b0) | [__opcode[10]] != 0b0) | [__opcode[11]] != 0b0 then {
+        throw(Error_ConstrainedUnpredictable())
+    } else {
+        decode_xaflag_aarch64_instrs_integer_flags_xaflag(CRm)
+    }
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitone, bitone, bitzero, bitzero, bitone, bitone, bitone, bitzero, bitone, bitzero, bitzero, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1031) = {
+    SEE = 1031;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let imm6 = Slice(__opcode, 10, 6);
+    let Rm = Slice(__opcode, 16, 5);
+    decode_xar_advsimd_aarch64_instrs_vector_crypto_sha3_xar(Rd, Rn, imm6, Rm)
+}
+
 val execute_aarch64_instrs_integer_pac_strip_dp_1src : forall 'd ('data : Bool), (0 <= 'd & 'd <= 31).
   (int('d), bool('data)) -> unit
 
@@ -21402,6 +28835,37 @@ function decode_xpac_aarch64_instrs_integer_pac_strip_hint () = {
 function clause __DecodeA64_BranchExcSys ((pc, (0b11010101000000110010000011111111 as __opcode)) if SEE < 1033) = {
     SEE = 1033;
     decode_xpac_aarch64_instrs_integer_pac_strip_hint()
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitone, bitzero, bitzero, bitzero, bitzero, bitone, bitzero, bitzero, bitone, bitzero, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1034) = {
+    SEE = 1034;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_xtn_advsimd_aarch64_instrs_vector_arithmetic_unary_extract_nosat(Rd, Rn, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1035) = {
+    SEE = 1035;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_zip1_advsimd_aarch64_instrs_vector_transfer_vector_permute_zip(Rd, Rn, op, Rm, size, Q)
+}
+
+function clause __DecodeA64_DataProcFPSIMD ((pc, ([bitzero, _, bitzero, bitzero, bitone, bitone, bitone, bitzero, _, _, bitzero, _, _, _, _, _, bitzero, bitone, bitone, bitone, bitone, bitzero, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 1036) = {
+    SEE = 1036;
+    let Rd = Slice(__opcode, 0, 5);
+    let Rn = Slice(__opcode, 5, 5);
+    let op = Slice(__opcode, 14, 1);
+    let Rm = Slice(__opcode, 16, 5);
+    let size = Slice(__opcode, 22, 2);
+    let Q = Slice(__opcode, 30, 1);
+    decode_zip2_advsimd_aarch64_instrs_vector_transfer_vector_permute_zip(Rd, Rn, op, Rm, size, Q)
 }
 
 enum Feature = {
