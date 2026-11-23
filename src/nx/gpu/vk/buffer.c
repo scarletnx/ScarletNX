@@ -2782,7 +2782,7 @@ static int keep_new(u64 gva, u32 len, u64 align, int ordered, VkBuffer* buf, u64
     int paged = ((gva | len) & 0xFFF) != 0; /* not whole pages: the page cache keeps it, where there is one */
     if (!own_traps())
         why = KF_TRAPS_OFF;
-    else if (vk_uma())
+    else if (vk_uma() && !vk_uma_storage_copied()) /* the hybrid stages storage as the copies' path does */
         why = KF_UMA;
     else if (!len)
         why = KF_EMPTY;
