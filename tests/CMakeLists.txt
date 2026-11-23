@@ -3120,6 +3120,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-surf-layouts gnu23)
     target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
     add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
+    # the timeline of NVN's timestamp reports (gpu/vk/stamp.c) over a model of the queue's timestamp queries, with no
+    # device: a present's submissions back to back, the runtime's own work left out, values that only rise
+    add_executable(snx-test-vk-stamp vk_stamp.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-stamp gnu23)
+    target_link_libraries(snx-test-vk-stamp PRIVATE snx_nx_flags)
+    add_test(NAME vk_stamp COMMAND snx-test-vk-stamp)
     # a draw that binds an owner where it is (gpu/vk/buffer.c buf_get_owned): one that a draw or the page cache wrote
     # in this submission takes a pass end and a barrier first, any other none
     add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c)
