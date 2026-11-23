@@ -185,6 +185,7 @@ typedef struct {
     /* VK_NV_device_diagnostic_checkpoints, enabled with vk_checkpoints=1 where the device has it: the draw or dispatch a
        GPU fault hangs on (record.c's vk_checkpoint_dump). has_checkpoints below is checkpoints.c's markers, on it too */
     int has_nv_checkpoints;
+    int has_nv_diag_config; /* VK_NV_device_diagnostics_config, with vk_checkpoints=1 */
     int has_fault; /* VK_EXT_device_fault: the GPU's own report of a fault, at a lost device */
     int has_coverage_to_color, has_post_depth_coverage;
     VkSampleLocationCaps sample_locations;

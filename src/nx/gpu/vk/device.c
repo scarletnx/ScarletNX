@@ -1000,6 +1000,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    int has_diag = 0;  /* VK_NV_device_diagnostics_config, with vk_checkpoints alone */
     int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
     /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
     int has_exec = 0;
@@ -1051,6 +1052,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_nv_checkpoints =
             g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         has_fault = snx_vk_choice_has(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        /* vk_checkpoints alone, as the checkpoints: the driver keeps more of what a fault needs (shader debug info,
+           what each resource is, its own checkpoints), at a cost of speed */
+        has_diag = g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
         has_so = snx_vk_choice_has(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         has_exec = g_settings.pipeline_stats[0] &&
                    snx_vk_choice_has(c, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
@@ -1269,6 +1273,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV qdiag = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
     VkPhysicalDeviceMemoryPriorityFeaturesEXT qpriority = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
@@ -1397,6 +1403,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
+                           has_diag ? &qdiag : NULL,
                            has_pageable ? &qpriority : NULL,
                            has_pageable ? &qpageable : NULL,
                            has_exec ? &qexec : NULL,
@@ -1487,6 +1494,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_nv_diag_config = has_diag && qdiag.diagnosticsConfig;
     g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
     g_vk.has_exec_stats = has_exec && qexec.pipelineExecutableInfo;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
@@ -2153,6 +2161,20 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     }
+    /* vk_checkpoints=1 on NVIDIA: the driver keeps shader debug info and what each resource is, and sets its own
+       checkpoints, for what a lost device's fault (vk_checkpoint_dump) and the checkpoints report */
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV fdiag = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
+        .pNext = chain,
+        .diagnosticsConfig = VK_TRUE};
+    VkDeviceDiagnosticsConfigCreateInfoNV cdiag = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
+        .pNext = &fdiag,
+        .flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV |
+                 VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV |
+                 VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV};
+    if (g_vk.has_nv_diag_config && snx_vk_choice_enable(c, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME))
+        chain = &cdiag;
     /* the GPU's own memory that the driver may move to system memory when it is short, the lowest priority first */
     VkPhysicalDeviceMemoryPriorityFeaturesEXT fpriority = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,

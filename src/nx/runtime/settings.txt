@@ -1641,7 +1641,9 @@ setting GPU checkpoints
     startup
     words Off|On
     help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
-    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning. Off, the
+    help lost logs the work each queue reached. On NVIDIA the driver also keeps shader debug info and what each
+    help resource is (VK_NV_device_diagnostics_config), which costs speed. Where the driver has no such extension it is
+    help only a warning. Off, the
     help device is made without it, so a RenderDoc capture also replays on a driver that lacks it
 setting Vulkan hidden commands
     label Hide Vulkan commands
@@ -2378,6 +2380,7 @@ setting @VK_KHR_video_decode_h264
 setting @VK_KHR_video_decode_queue
 setting @VK_KHR_video_queue
 setting @VK_NV_device_diagnostic_checkpoints
+setting @VK_NV_device_diagnostics_config
 setting @VK_NV_fragment_coverage_to_color
 setting @VK_NV_framebuffer_mixed_samples
 setting @VK_NV_low_latency2
