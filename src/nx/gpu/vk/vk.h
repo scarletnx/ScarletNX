@@ -1571,8 +1571,14 @@ void vk_rt_watch_hit(u64 cpu, u64 size);
 void vk_rt_watch_owed(void);
 /* the watches that releases armed over targets, the CPU accesses that published them, and the targets that releases
    published at once because the CPU read them lately: the statistics, and the tests */
+/* why a render target was published (vk_surf_publish): a release's, as the CPU read it lately (cpu_asked) or as an
+   import holds its memory (rt_watch); the CPU's access to a watched page (vk_rt_watch_hit); a release's with no traps
+   (a linear target, vk_rt_publish_drawn); any other caller (a dispatch's storage image, a write-back's, an overlay's) */
+enum { VK_PUB_CPU_LATELY, VK_PUB_IMPORT, VK_PUB_CPU_ACCESS, VK_PUB_NO_TRAPS, VK_PUB_OTHER, VK_PUB_N };
 typedef struct {
     u64 arms, hits, publishes;
+    /* since the last report: publishes that ran by why, with their bytes and the CPU's time in them */
+    u64 by[VK_PUB_N], bytes[VK_PUB_N], ns[VK_PUB_N];
 } VkRtWatchStats;
 extern VkRtWatchStats g_vk_rt_watch;
 void vk_surf_wrote(Surf* s); /* its image changed: its copies are out of date (wgen), and it is the newest (wseq) */
