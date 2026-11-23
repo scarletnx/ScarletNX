@@ -74,6 +74,8 @@ int gmem_write_now(u64 gva, const void* src, u64 size) {
     return 0;
 }
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { note('R', gva, data, len); }
+/* a timestamp report: 'T' for the top of the pipe's, 'S' for the other */
+void gpu_release_stamp_now(u64 gva, const void* data, int top) { note(top ? 'T' : 'S', gva, data, 16); }
 void gpu_i2m_block_now(const GpuI2m* t) {
     note('I', t->regs.dest.address, t->inner_buffer, t->copy_size);
     if (t->regs.line_count != 7 || t->regs.dest.block_height != 3) queued_in_run += 1000; /* the registers came along */
@@ -114,6 +116,12 @@ static void put_release(u64 gva, u32 v) {
     u8 b[4] = {(u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24)};
     want[nwant++] = (Ran){'R', gva, 4, fnv(b, 4)};
     gq_release(gva, b, 4);
+}
+static void put_stamp(u64 gva, u32 seed, int top) {
+    u8 b[16];
+    fill(b, sizeof b, seed);
+    want[nwant++] = (Ran){top ? 'T' : 'S', gva, sizeof b, fnv(b, sizeof b)};
+    gq_release_stamp(gva, b, top);
 }
 static void put_i2m(u64 gva, u32 n, u32 seed, u64 at, u64 size) {
     GpuI2m t = {0};
@@ -253,6 +261,17 @@ static int split_main(void) {
     open_gate();
     check_log("split pages first");
 
+    /* a queued timestamp report answers the front end's read of its bytes as it goes, as a release does */
+    hold();
+    u8 sent[16];
+    fill(sent, sizeof sent, 6);
+    put_stamp(0x9000, 6, 0);
+    memset(got, 0, sizeof got);
+    CHECK(nran == 0 && gq_forward(0x9000, got, sizeof got) == 1 && !memcmp(got, sent, sizeof got),
+          "the front end's read of a queued timestamp report did not get its bytes");
+    open_gate();
+    check_log("split timestamp report");
+
     /* many records of many sizes, with the renderer thread held at times: the ring wraps several times */
     off_front = 0;
     for (u32 i = 0; i < 30000; i++) {
@@ -343,10 +362,15 @@ int main(int argc, char** argv) {
     pthread_join(other, NULL);
     CHECK(gq_queues(), "another thread's hold of the renderer's lock stopped the front end's queue");
 
-    /* the four kinds in their order */
+    /* the kinds in their order: a timestamp report takes its place after the work queued before it, as a release
+       does */
     u64 f;
     put_write(0x10000, 64, 1);
     put_release(0x20000, 0x12345678);
+    put_stamp(0x21000, 6, 0);
+    f = g_gq.queued;
+    put_stamp(0x21010, 7, 1);
+    CHECK(g_gq.written[gq_slot(0x21)] == f + 1, "a timestamp report did not mark its page");
     put_i2m(0x30000, 300, 2, 0x30000, 0x4000);
     put_write(0x10010, 8, 3);
     put_cb(0x10020, 8, 9);
