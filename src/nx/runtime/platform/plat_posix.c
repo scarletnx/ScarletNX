@@ -514,6 +514,8 @@ static _Thread_local struct {
     _Atomic u32 wp_retried_at;
     void* _Atomic frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
     int freezing;              /* this thread froze the range frozen now (plat_freeze to plat_thaw) */
+    /* and moved it with what the write tracking says of it kept (WwKept): the thaw's to keep */
+    int frz_kept;
     int crashed;       /* this thread faulted already */
 } t_plat_posix;
 /* a range frozen while it is copied (plat_freeze, below) */
@@ -602,7 +604,12 @@ static void wp_hold(const u8* p, u64 size, u8 to) {
 /* the change wp_hold locked them for is done: the pages are in state to now (changed), or as they were but written:
    a change that failed partway (an mprotect, a mapping) may have made some writable */
 static void trap_wake(void);
-static void wp_let(const u8* p, u64 size, u8 to, int changed) {
+/* a page the tracking holds read only and unwritten, with no trap's part in it: the thaw of a range moved with its
+   states kept leaves it so (plat_thaw) */
+static int wp_quiet(u8 s) {
+    return (s & (WP_MAPPED | WP_CLEAN | WP_PROT | WP_ARMED | WP_TRAP)) == (WP_MAPPED | WP_CLEAN | WP_PROT);
+}
+static void wp_let_but(const u8* p, u64 size, u8 to, int changed, int quiet_stay) {
     u64 i, lo, hi, freed = 0;
     int woken = 0;
     if (wp_pages(p, size, &lo, &hi)) return;
@@ -611,6 +618,10 @@ static void wp_let(const u8* p, u64 size, u8 to, int changed) {
     for (i = lo; i < hi; i++) {
         u8 s = atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[i], memory_order_relaxed);
         if (!to && !s) continue;
+        if (quiet_stay && wp_quiet(s)) {
+            wp_unlock(i, (u8)(s & ~WP_LOCK));
+            continue;
+        }
         if (changed && (s & (WP_PROT | WP_TRAP))) freed++;
         if (changed && (s & WP_TRAP)) woken = 1;
         if (changed) wp_hot_over(i);
@@ -618,6 +629,18 @@ static void wp_let(const u8* p, u64 size, u8 to, int changed) {
     }
     if (freed) atomic_fetch_sub_explicit(&g_wp_held, freed, memory_order_relaxed);
     if (woken) trap_wake();
+}
+static void wp_let(const u8* p, u64 size, u8 to, int changed) { wp_let_but(p, size, to, changed, 0); }
+/* the change wp_hold locked them for wrote none of them and left each page's protection as its state has it: the
+   pages as they were, with to */
+static void wp_let_same(const u8* p, u64 size, u8 to) {
+    u64 i, lo, hi;
+    if (wp_pages(p, size, &lo, &hi)) return;
+    for (i = lo; i < hi; i++) {
+        u8 s = atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[i], memory_order_relaxed);
+        if (!to && !s) continue;
+        wp_unlock(i, (u8)((s & ~WP_LOCK) | to));
+    }
 }
 /* whether a is in the range frozen now: the freeze's to answer (frozen_wait) */
 static int frozen_at(const void* a) {
@@ -1094,6 +1117,110 @@ static void ww_scans_begin(void) {
 static void ww_scans_end(void) { atomic_fetch_sub_explicit(&g_ww_scans, 1, memory_order_seq_cst); }
 #endif
 
+#if defined(__linux__) /* plat_vm_share and plat_vm_unshare are Linux's */
+/* What the written-page tracking says of a range kept across a move of its pages that keeps their bytes
+   (plat_vm_share, plat_vm_unshare, on a range its caller froze). A mapping made again reads as written whole, and a
+   move writes nothing: what took that report for the CPU's writes loaded a guest page over the pixels the GPU had
+   drawn there and not yet written back. The range stays read only from the freeze to plat_thaw, so no write comes
+   between. The kernel's tracking: the pages a scan would report before the move are noted (written, a bit a page), no
+   scan runs meanwhile (g_ww_letgo, as a trap's let-go holds them), and the others are protected again once the new
+   mapping is registered. Tracking by protection keeps each page's state and protection through the move instead
+   (wp_let_same) */
+typedef struct {
+    u64* written; /* NULL: nothing noted, and the range reads as written after the move */
+    int held;     /* the scans wait */
+} WwKept;
+/* whether [p, p + size) is the range this thread froze (plat_freeze): it takes no write until plat_thaw */
+static int frozen_whole(const u8* p, u64 size) {
+    return t_plat_posix.freezing && p == atomic_load_explicit(&g_frz_lo, memory_order_relaxed) &&
+           p + size == atomic_load_explicit(&g_frz_hi, memory_order_relaxed);
+}
+#if defined(__linux__) && defined(PAGEMAP_SCAN)
+/* PAGEMAP_SCAN over [p, p + size) for the written pages: noted in written (a bit a page of page bytes), or with
+   written NULL protected again, so that they read as unwritten. 0, or -1 with errno */
+static int ww_walk_written(int pm, u8* p, u64 size, u64 page, u64* written) {
+    struct page_region regions[64];
+    u64 start = (u64)(uintptr_t)p, end = start + size;
+    while (start < end) {
+        struct pm_scan_arg arg = {.size = sizeof arg,
+                                  .flags = written ? 0 : PM_SCAN_WP_MATCHING,
+                                  .start = start,
+                                  .end = end,
+                                  .vec = (u64)(uintptr_t)regions,
+                                  .vec_len = sizeof regions / sizeof *regions,
+                                  .category_mask = PAGE_IS_WRITTEN,
+                                  .return_mask = PAGE_IS_WRITTEN};
+        const int n = ioctl(pm, PAGEMAP_SCAN, &arg);
+        if (n < 0) return -1;
+        for (int i = 0; written && i < n; i++)
+            for (u64 a = regions[i].start; a < regions[i].end; a += page) {
+                const u64 k = (a - (u64)(uintptr_t)p) / page;
+                written[k >> 6] |= (u64)1 << (k & 63);
+            }
+        /* a full vector may have stopped the walk early: on from where it stopped */
+        if ((u64)n < arg.vec_len || !arg.walk_end || arg.walk_end >= end) break;
+        start = arg.walk_end;
+    }
+    return 0;
+}
+#endif
+/* before the move of frozen [p, p + size): what a scan would report of it noted, and the scans held */
+static WwKept ww_keep(u8* p, u64 size) {
+    WwKept k = {NULL, 0};
+#if defined(__linux__) && defined(PAGEMAP_SCAN)
+    const u64 page = (u64)sysconf(_SC_PAGESIZE);
+    const int pm = atomic_load_explicit(&g_pagemap, memory_order_acquire);
+    int none = 0;
+    /* the tracking whose scans answer (plat_ww_scan): by protection, its states are kept where they are */
+    if (pm < 0 || (atomic_load_explicit(&g_wp, memory_order_acquire) && g_wp_track)) return k;
+    while (
+        !atomic_compare_exchange_strong_explicit(&g_ww_letgo, &none, 1, memory_order_seq_cst, memory_order_seq_cst)) {
+        none = 0;
+        sched_yield();
+    }
+    while (atomic_load_explicit(&g_ww_scans, memory_order_seq_cst)) sched_yield();
+    k.held = 1;
+    k.written = (u64*)calloc((size_t)((size / page + 63) / 64), sizeof *k.written);
+    if (k.written && ww_walk_written(pm, p, size, page, k.written)) {
+        const int why = errno;
+        free(k.written);
+        k.written = NULL;
+        errno = why;
+    }
+    if (!k.written)
+        WARN_LIMIT(4,
+                   "memory: which pages of %llu KiB of guest memory were written could not be read before they moved "
+                   "(error %d): all of them read as written at the next scan\n",
+                   (unsigned long long)(size >> 10), errno);
+#else
+    (void)p, (void)size;
+#endif
+    return k;
+}
+/* after it, the new mapping registered: with moved, the pages noted unwritten read so again; the scans go on */
+static void ww_kept(WwKept* k, u8* p, u64 size, int moved) {
+#if defined(__linux__) && defined(PAGEMAP_SCAN)
+    const u64 page = (u64)sysconf(_SC_PAGESIZE), pages = size / page;
+    const int pm = atomic_load_explicit(&g_pagemap, memory_order_acquire);
+    for (u64 i = 0, run = 0; k->written && moved && pm >= 0 && i <= pages; i++) {
+        if (i < pages && !(k->written[i >> 6] >> (i & 63) & 1)) continue;
+        if (i > run && ww_walk_written(pm, p + run * page, (i - run) * page, page, NULL))
+            WARN_LIMIT(4,
+                       "memory: %llu KiB of guest memory moved could not be watched for writes again (error %d): they "
+                       "read as written at the next scan\n",
+                       (unsigned long long)((i - run) * page >> 10), errno);
+        run = i + 1;
+    }
+    free(k->written);
+    k->written = NULL;
+    if (k->held) atomic_store_explicit(&g_ww_letgo, 0, memory_order_seq_cst);
+    k->held = 0;
+#else
+    (void)k, (void)p, (void)size, (void)moved;
+#endif
+}
+#endif
+
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     if (atomic_load_explicit(&g_wp, memory_order_acquire) && g_wp_track) return wp_scan(p, size, cb);
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
@@ -1420,9 +1547,15 @@ int plat_vm_share(u8* p, int fd, u64 size) {
     u8* view = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     int r = 0;
     if (view == (u8*)MAP_FAILED) return -1;
+    /* frozen, the range is mapped read only until plat_thaw and keeps what the written-page tracking says of it
+       (WwKept); not frozen, it reads as written, as any mapping made again */
+    const int frozen = frozen_whole(p, size);
+    WwKept kept = {NULL, 0};
+    if (frozen) kept = ww_keep(p, size);
     memcpy(view, p, (size_t)size);
     wp_hold(p, size, WP_MAPPED);
-    if (mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED) {
+    if (mmap(p, (size_t)size, (frozen ? PROT_READ : PROT_READ | PROT_WRITE) | g_vm_exec, MAP_SHARED | MAP_FIXED, fd,
+             0) == MAP_FAILED) {
         /* a failed MAP_FIXED may have taken p's pages with it: fresh ones with the copy */
         r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
                     MAP_FAILED
@@ -1430,9 +1563,14 @@ int plat_vm_share(u8* p, int fd, u64 size) {
                 : -3;
         if (r == -3) memcpy(p, view, (size_t)size);
     }
-    wp_let(p, size, WP_MAPPED, 1);
+    if (frozen && !r) {
+        wp_let_same(p, size, WP_MAPPED);
+        t_plat_posix.frz_kept = 1;
+    } else
+        wp_let(p, size, WP_MAPPED, 1);
     munmap(view, (size_t)size);
     if (r != -2) ww_remapped(p, size); /* a new mapping either way */
+    ww_kept(&kept, p, size, !r);
     return r;
 #else
     (void)p, (void)fd, (void)size;
@@ -1446,15 +1584,26 @@ int plat_vm_unshare(u8* p, u64 size) {
     u8* copy = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     int r;
     if (copy == (u8*)MAP_FAILED) return -1;
+    WwKept kept = {NULL, 0};
+    int frozen = frozen_whole(p, size);
+    if (frozen) kept = ww_keep(p, size);
     memcpy(copy, p, (size_t)size);
+    /* frozen, the copy moves over p read only, as p is until plat_thaw (WwKept) */
+    if (frozen && mprotect(copy, (size_t)size, PROT_READ | g_vm_exec)) frozen = 0;
     wp_hold(p, size, WP_MAPPED);
     r = mremap(copy, (size_t)size, (size_t)size, MREMAP_MAYMOVE | MREMAP_FIXED, p) == MAP_FAILED;
-    wp_let(p, size, WP_MAPPED, !r);
+    if (frozen && !r) {
+        wp_let_same(p, size, WP_MAPPED);
+        t_plat_posix.frz_kept = 1;
+    } else
+        wp_let(p, size, WP_MAPPED, !r);
     if (r) {
         munmap(copy, (size_t)size);
+        ww_kept(&kept, p, size, 0);
         return -2; /* MREMAP_FIXED may have unmapped p first */
     }
     ww_remapped(p, size);
+    ww_kept(&kept, p, size, frozen);
     return 0;
 #else
     (void)p, (void)size;
@@ -2506,24 +2655,43 @@ static void fault_handler_install(void) {
 void plat_freeze(u8* p, u64 size) {
     fault_handler_install();
     t_plat_posix.freezing = 1;
+    t_plat_posix.frz_kept = 0;
     atomic_store_explicit(&g_frz_lo, p, memory_order_release);
     atomic_store_explicit(&g_frz_hi, p + size, memory_order_release);
     atomic_store_explicit(&g_frozen, 1, memory_order_seq_cst);
-    /* under the write tracking's locks: a fault it is opening a page for finishes before the freeze protects it */
+    /* under the write tracking's locks: a fault it is opening a page for finishes before the freeze protects it. The
+       states stay, for a move that keeps them (plat_vm_share): a page the tracking held read only still is, and a
+       write to one waits for the thaw (wp_fault) */
     wp_hold(p, size, 0);
     mprotect(p, (size_t)size, PROT_READ | g_vm_exec);
-    wp_let(p, size, 0, 0);
+    wp_let_same(p, size, 0);
 }
 void plat_thaw(void) {
     u8* lo = atomic_load_explicit(&g_frz_lo, memory_order_relaxed);
     u64 size = (u64)(atomic_load_explicit(&g_frz_hi, memory_order_relaxed) - lo);
+    u64 a = 0, b = 0;
     /* readable and writable whatever is mapped there now (the copy's pages, or the old ones when it failed), and
-       written for the write tracking */
+       written for the write tracking. But in a range moved with its states kept (plat_vm_share): there the pages the
+       tracking holds read only and unwritten stay so */
     wp_hold(lo, size, WP_MAPPED);
-    mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec);
+    const int quiet_stay =
+        t_plat_posix.frz_kept && !wp_pages(lo, size, &a, &b) && lo >= g_wp_base && (b - a) << g_wp_shift == size;
+    t_plat_posix.frz_kept = 0;
+    if (!quiet_stay)
+        mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec);
+    else
+        for (u64 i = a, run = a; i <= b; i++) {
+            if (i < b && !wp_quiet(atomic_load_explicit(&atomic_load_explicit(&g_wp, memory_order_relaxed)[i],
+                                                        memory_order_relaxed)))
+                continue;
+            if (i > run)
+                mprotect(g_wp_base + (run << g_wp_shift), (size_t)((i - run) << g_wp_shift),
+                         PROT_READ | PROT_WRITE | g_vm_exec);
+            run = i + 1;
+        }
     atomic_store_explicit(&g_frozen, 0, memory_order_seq_cst);
     t_plat_posix.freezing = 0;
-    wp_let(lo, size, WP_MAPPED, 1);
+    wp_let_but(lo, size, WP_MAPPED, 1, quiet_stay);
     trap_futex_wake((_Atomic u32*)&g_frozen);
 }
 /* 1 when the fault at a is a write to the frozen range, which may go on now (after waiting for the thaw). The range
