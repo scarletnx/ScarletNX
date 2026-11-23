@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// The upscalers' anti-aliasing before a non-temporal upscale (passes.c): SMAA of Jorge Jimenez et al.'s reference
+// (SMAA.hlsl, MIT) as compute passes over images of the picture's own. SMAA_PASS 3 copies the picture into the first,
+// shifted back by the camera's jitter when the caller asks. 0 finds the edges (by luma, color or depth, flags' bits 4
+// and 5), 1 the blending weights (SMAA_FAST without the diagonal and corner searches, the Low and Medium presets), 2
+// blends (SMAA_REPROJECTION also packs the velocity, for T2x). For T2x, 4 turns the caller's motion vectors into SMAA's
+// velocity and 5 resolves the frame with the one before, reprojected and weighted by velocity, both frames taken back
+// by their jitter in 3 so that the resolve holds still. The presets' threshold and search steps are push constants. A
+// linear and unbounded picture is anti-aliased through a reversible tone map,
+// x / (1 + max(x)), and a square root, as SMAA's thresholds are made for a display's encoding: in linear light the
+// edges of a dark scene fall under them. Their inverses come on the way out, in the pass that flags DECODE
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D source;
+layout(binding = 1) uniform writeonly image2D result;
+layout(binding = 2) uniform sampler2D second;
+layout(binding = 3) uniform sampler2D third;
+layout(push_constant) uniform Pass {
+    uvec2 render, size, output_size;
+    float sharpness;
+    uint flags;
+    vec2 shift;
+    float threshold;
+    int steps, steps_diag, corner;
+    vec2 motion_scale, motion_size;
+    vec2 motion_bias;
+} pass;
+// flags: the picture is linear and unbounded, this pass gives it back so, the history is not this frame's
+const uint HDR = 1u, DECODE = 2u, RESET = 4u;
+
+#define SMAA_GLSL_4 1
+#define SMAA_THRESHOLD pass.threshold
+#define SMAA_MAX_SEARCH_STEPS pass.steps
+#define SMAA_MAX_SEARCH_STEPS_DIAG pass.steps_diag
+#define SMAA_CORNER_ROUNDING pass.corner
+#ifdef SMAA_FAST
+#define SMAA_DISABLE_DIAG_DETECTION
+#define SMAA_DISABLE_CORNER_DETECTION
+#endif
+#define SMAA_RT_METRICS vec4(1.0 / vec2(pass.size), vec2(pass.size))
+// the edges pass leaves a pixel without edges at 0, as the image is cleared to it, where a pixel shader discards
+#define discard
+#include "SMAA.hlsl"
+
+vec4 decode(vec4 c) {
+    if ((pass.flags & (HDR | DECODE)) == (HDR | DECODE)) {
+        c.rgb *= c.rgb;
+        c.rgb /= max(1.0 - max(c.r, max(c.g, c.b)), 1.0 / 1024.0);
+    }
+    return c;
+}
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(p, pass.output_size))) return;
+    vec2 texcoord = (vec2(p) + 0.5) / vec2(pass.size);
+    vec4 c;
+#if SMAA_PASS == 3
+    vec2 at = clamp(vec2(p) + 0.5 + pass.shift, vec2(0.5), vec2(pass.render) - 0.5);
+    c = textureLod(source, at / vec2(textureSize(source, 0)), 0.0);
+    if ((pass.flags & HDR) != 0u) c.rgb = sqrt(max(c.rgb, vec3(0.0)) / (1.0 + max(c.r, max(c.g, c.b))));
+#elif SMAA_PASS == 0
+    vec4 offset[3];
+    SMAAEdgeDetectionVS(texcoord, offset);
+    uint edges = (pass.flags >> 4) & 3u;
+    vec2 e;
+    if (edges == 2u)
+        e = SMAADepthEdgeDetectionPS(texcoord, offset, second);
+    else if (edges == 1u)
+        e = SMAAColorEdgeDetectionPS(texcoord, offset, source);
+    else
+        e = SMAALumaEdgeDetectionPS(texcoord, offset, source);
+    c = vec4(e, 0.0, 0.0);
+#elif SMAA_PASS == 1
+    vec2 pixcoord;
+    vec4 offset[3];
+    SMAABlendingWeightCalculationVS(texcoord, pixcoord, offset);
+    c = SMAABlendingWeightCalculationPS(texcoord, pixcoord, offset, source, second, third, vec4(0.0));
+#elif SMAA_PASS == 2
+    vec4 offset;
+    SMAANeighborhoodBlendingVS(texcoord, offset);
+#if SMAA_REPROJECTION
+    c = SMAANeighborhoodBlendingPS(texcoord, offset, source, second, third);
+#else
+    c = SMAANeighborhoodBlendingPS(texcoord, offset, source, second);
+#endif
+    c = decode(c);
+#elif SMAA_PASS == 4
+    // SMAA's velocity: where the pixel moved since the frame before, in our image's texture coordinates. The caller's
+    // motion vectors point from a pixel to where it was, motion_scale bringing them to pixels of motion_size. Our
+    // frames are taken back by their jitter, so vectors that include it move by motion_bias render pixels
+    vec2 at = (vec2(min(p, pass.render - 1u)) + 0.5) * pass.motion_size / vec2(pass.render);
+    vec2 m = textureLod(source, at / vec2(textureSize(source, 0)), 0.0).rg * pass.motion_scale;
+    m = m * vec2(pass.render) / pass.motion_size + pass.motion_bias;
+    c = vec4(-m / vec2(pass.size), 0.0, 0.0);
+#else
+    if ((pass.flags & RESET) != 0u)
+        c = SMAASamplePoint(source, texcoord);
+    else
+        c = SMAAResolvePS(texcoord, source, second, third);
+    c = decode(c);
+#endif
+    imageStore(result, ivec2(p), c);
+}

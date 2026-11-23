@@ -297,6 +297,45 @@ setting Render upscaler
     help NVIDIA's runtime in dlss_runtime's folder). FSR 3.1 or 4 and XeSS are not built in yet. Where the one asked
     help for can't run, or its caller can't take it (a DLSS evaluation takes a temporal one or None, a hook module the
     help kinds it names), the best one that can stands in
+setting Render anti aliasing
+    key render_anti_aliasing
+    label Render anti-aliasing
+    int 0 2
+    default 0
+    words Off|SMAA 1x|SMAA T2x
+    help The anti-aliasing of the game's 3D picture where no temporal upscaler runs (render_upscaler None, or a hook
+    help module's copy or spatial upscale), on the picture at the render size, before the upscale and before the game
+    help draws its interface over it. 1 = SMAA 1x. 2 = SMAA T2x: each frame taken back by the camera's jitter, then 1x,
+    help then resolved with the frame before, reprojected by the game's motion vectors and weighted by how alike their
+    help motion is: steady, whatever jitter says, and smoother than 1x where the jitter moved edges. It takes a game's DLSS
+    help evaluations: where no motion vectors are given (a hook module's upscale) it is 1x. A temporal upscaler (FSR 2,
+    help DLSS) resolves edges itself and takes none. 0 = none. SMAA S2x and 4x need the game drawn with multisampling,
+    help which a game made without it can't be
+setting SMAA quality
+    key smaa_quality
+    int 0 3
+    default 2
+    words Low|Medium|High|Ultra
+    help SMAA's preset: its edge threshold and how far it searches along an edge. 0 = Low (threshold 0.15, 4 steps),
+    help 1 = Medium (0.1, 8), both without the diagonal and corner searches, 2 = High (0.1, 16, diagonals 8), 3 = Ultra
+    help (0.05, 32, diagonals 16). Higher finds more edges and costs more
+setting SMAA edges
+    key smaa_edges
+    int 0 2
+    default 0
+    words Luma|Color|Depth
+    help What SMAA finds edges in: 0 = the picture's luma, 1 = its color (more edges, between colors of one
+    help brightness), 2 = the depth (geometry's edges alone, none inside textures), where the game's depth is given at
+    help the render size, else luma
+setting Jitter
+    key jitter
+    int 0 1
+    default 0
+    words Game's|Steady
+    help The camera's jitter where no temporal upscaler runs: a game made for DLSS moves its camera by a fraction of a
+    help pixel each frame, which a temporal upscaler resolves and a copy shows as a picture that shakes. 0 = as the game
+    help draws it, 1 = steady: the picture is taken back by the jitter the game gives (a resample, a little softer).
+    help SMAA T2x (render_anti_aliasing=2) does that itself
 setting FSR sharpness
     key fsr_sharpness
     float 0 1

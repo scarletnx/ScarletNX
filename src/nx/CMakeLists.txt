@@ -225,6 +225,21 @@ endforeach()
 # motion vectors from depth and a camera matrix (gpu/vk/upscaler/reproject.c), for callers without motion vectors
 snx_glsl_spirv(snx_upscaler SOURCE gpu/vk/upscaler/up_reproject.comp NAME up_reproject_spv
                HEADER nx/gpu/vk/upscaler/upscaler_spv.h)
+# SMAA before a copy or a spatial upscale (cmake/dependencies.cmake), the passes of one source (up_smaa.comp): the
+# picture's copy (3), the edges (0), the blending weights (1, with SMAA_FAST for the Low and Medium presets), the
+# blending (2, with SMAA_REPROJECTION for T2x), T2x's velocity (4) and its resolve (5). The C side takes the area and
+# search textures
+foreach(snx_smaa prep:3: edges:0: weights:1: weights_fast:1:SMAA_FAST=1 blend:2: blend_t2x:2:SMAA_REPROJECTION=1
+                 velocity:4: resolve:5:SMAA_REPROJECTION=1)
+    string(REPLACE ":" ";" snx_smaa "${snx_smaa}")
+    list(GET snx_smaa 0 snx_smaa_name)
+    list(GET snx_smaa 1 snx_smaa_pass)
+    list(GET snx_smaa 2 snx_smaa_more)
+    snx_glsl_spirv(snx_upscaler SOURCE gpu/vk/upscaler/up_smaa.comp NAME up_smaa_${snx_smaa_name}_spv
+                   HEADER nx/gpu/vk/upscaler/upscaler_spv.h DEFINES SMAA_PASS=${snx_smaa_pass} ${snx_smaa_more}
+                   INCLUDES "${SMAAShader_SOURCE_DIR}")
+endforeach()
+target_include_directories(snx_upscaler SYSTEM PRIVATE "${SMAAAreaTex_SOURCE_DIR}" "${SMAASearchTex_SOURCE_DIR}")
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the

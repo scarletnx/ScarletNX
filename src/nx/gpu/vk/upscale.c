@@ -222,8 +222,11 @@ int vk_upscale(const GpuUpscale* u) {
     int module = (u->flags & GPU_UPSCALE_MODULE) != 0;
     const char* who = module ? "a hook module" : "the game's DLSS evaluations";
     const char* why;
-    /* None: a DLSS evaluation is its front end's filtered copy (nvn_copy.c), 1:1 at the output's size */
-    if (!module && g_settings.render_upscaler == SNX_UPSCALER_COPY + 1) return 0;
+    /* None: a DLSS evaluation is its front end's filtered copy (nvn_copy.c), 1:1 at the output's size. With SMAA or a
+       steady picture asked for, the upscalers' copy runs it instead, after those */
+    int none = !module && g_settings.render_upscaler == SNX_UPSCALER_COPY + 1;
+    int before = g_settings.render_anti_aliasing || g_settings.jitter;
+    if (none && !before) return 0;
     if (!g_vk.feat.shaderStorageImageReadWithoutFormat || !g_vk.feat.shaderStorageImageWriteWithoutFormat) {
         LOG_LIMIT(1,
                   "vulkan: the upscalers need storage images read and written without a format, which this GPU "
@@ -321,14 +324,16 @@ int vk_upscale(const GpuUpscale* u) {
        evaluation takes a temporal one only: its front end's copy is its fallback */
     SnxUpscaleNeeds needs = {(depth ? SNX_UP_DEPTH : 0) | (motion || r.reproject ? SNX_UP_MOTION : 0) | SNX_UP_JITTER |
                                  (exposure ? SNX_UP_EXPOSURE : 0) | (reactive ? SNX_UP_REACTIVE : 0),
-                             SNX_UP_TEMPORAL | (u->flags & GPU_UPSCALE_SPATIAL_OK ? SNX_UP_SPATIAL : 0) |
-                                 (u->flags & GPU_UPSCALE_COPY_OK ? SNX_UP_COPY : 0),
+                             none ? SNX_UP_COPY
+                                  : SNX_UP_TEMPORAL | (u->flags & GPU_UPSCALE_SPATIAL_OK ? SNX_UP_SPATIAL : 0) |
+                                        (u->flags & GPU_UPSCALE_COPY_OK ? SNX_UP_COPY : 0),
                              hdr ? SNX_UP_HDR : SNX_UP_LDR,
                              {u->render[0], u->render[1]},
                              {u->out[0], u->out[1]},
                              cf,
                              format};
-    SnxUpscalerId id = snx_upscaler_choose((SnxUpscalerId)(g_settings.render_upscaler - 1), g_vk.phys, &needs, &why);
+    SnxUpscalerId id = snx_upscaler_choose(none ? SNX_UPSCALER_COPY : (SnxUpscalerId)(g_settings.render_upscaler - 1),
+                                           g_vk.phys, &needs, &why);
     if (id == SNX_UPSCALERS) {
         LOG_LIMIT(4, "vulkan: no upscaler takes %s's %ux%u to %ux%u (%s): %s\n",
                   module ? "a hook module" : "a DLSS evaluation", u->render[0], u->render[1], u->out[0], u->out[1], why,
@@ -391,11 +396,33 @@ int vk_upscale(const GpuUpscale* u) {
     r.e.fov_y = u->fov_y > 0 ? u->fov_y : 1.0f;
     r.e.reset = u->reset || g_upscale.fresh;
     r.e.sharpness = g_settings.fsr_sharpness;
+    /* where no temporal upscaler runs, the anti-aliasing and the steady picture the settings ask for: the picture
+       taken back by the jitter the caller gives, the game's own */
+    if (snx_upscaler_caps(id)->kind != SNX_UP_TEMPORAL) {
+        r.e.smaa = g_settings.render_anti_aliasing;
+        r.e.smaa_quality = g_settings.smaa_quality;
+        r.e.smaa_edges = g_settings.smaa_edges;
+        if (g_settings.jitter) r.e.shift[0] = u->jitter[0], r.e.shift[1] = u->jitter[1];
+        /* T2x resolves each frame with the one before, reprojected by the motion vectors: without them it is 1x.
+           Both frames are taken back by their jitter first, so the resolve is steady whatever the jitter setting */
+        if (r.e.smaa == 2 && !motion && !r.reproject) {
+            LOG_LIMIT(1, "vulkan: SMAA T2x runs as 1x for %s: no motion vectors are given\n", who);
+            r.e.smaa = 1;
+        }
+        if (r.e.smaa == 2) r.e.shift[0] = u->jitter[0], r.e.shift[1] = u->jitter[1];
+        /* depth edges need a depth image the size of our images */
+        if (r.e.smaa && r.e.smaa_edges == 2 && (!depth || depth->sw != render_max[0] || depth->sh != render_max[1])) {
+            LOG_LIMIT(1, "vulkan: SMAA finds the edges by luma for %s: %s\n", who,
+                      !depth ? "no depth is given" : "its depth isn't the render size");
+            r.e.smaa_edges = 0;
+        }
+    }
     g_upscale.last = now;
     g_upscale.fresh = 0;
     LOG_LIMIT(2,
               "vulkan: %s evaluation: color %d %ux%u, depth %d %ux%u, motion %d %ux%u scale %g %g, jitter %g %g, "
-              "pre-exposure %g, exposure %s, reactive %s, reset %d, flags %#x\n",
+              "pre-exposure %g, exposure %s, reactive %s, reset %d, flags %#x, render %ux%u to %ux%u, SMAA %d, "
+              "shifted back %g %g\n",
               snx_upscaler_caps(id)->name, (int)color->f.vk, color->sw, color->sh, depth ? (int)depth->f.vk : 0,
               depth ? depth->sw : 0, depth ? depth->sh : 0,
               motion        ? (int)motion->f.vk
@@ -403,7 +430,8 @@ int vk_upscale(const GpuUpscale* u) {
                             : 0,
               motion ? motion->sw : 0, motion ? motion->sh : 0, (double)r.e.motion_scale[0],
               (double)r.e.motion_scale[1], (double)r.e.jitter[0], (double)r.e.jitter[1], (double)u->pre_exposure,
-              exposure ? "given" : "none", reactive ? "given" : "none", r.e.reset, u->flags);
+              exposure ? "given" : "none", reactive ? "given" : "none", r.e.reset, u->flags, u->render[0], u->render[1],
+              u->out[0], u->out[1], r.e.smaa, (double)r.e.shift[0], (double)r.e.shift[1]);
     vk_rec_call(run, &r, sizeof r);
 
     /* our image onto the game's output */

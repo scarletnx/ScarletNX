@@ -293,6 +293,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # which FSR 2 never compiles, puts a comparison in an integer, which GLSL refuses. The upscalers' spatial pass
     # compiles it (src/nx/gpu/vk/upscaler/up_easu.comp)
     set(snx_fsr2_api_dir "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api")
+    # SMAA 1x (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez, MIT), the
+    # anti-aliasing the upscalers run before a copy or a spatial upscale (src/nx/gpu/vk/upscaler/up_smaa.comp): its
+    # reference shader and its precomputed area and search textures, each pinned in cpmfile.json at the commit its
+    # repository ends at
+    snx_package_file(smaa-shader)
+    snx_package_file(smaa-area-tex)
+    snx_package_file(smaa-search-tex)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_package_file(renderdoc_app)
 

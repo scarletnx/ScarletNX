@@ -204,6 +204,24 @@
         "repo": "libsdl-org/SDL",
         "version": "release-3.4.18"
     },
+    "smaa-area-tex": {
+        "hash": "78ca339b12976ca4fce8726cd2f927a87f75350286d76a770104ef2ec18e6f1978197388ebb333fc163b23a0a2ad0436c77ee24e60ffda45cfbc4ab7ec5437a5",
+        "package": "SMAAAreaTex",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/Textures/AreaTex.h",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+    },
+    "smaa-search-tex": {
+        "hash": "cf26b250536be3a8e1baa7fec1cfc3b31f5f598ced105b6dbedd66693d3cef01976f3499437df0ff897d847f580cea7c693c371e531b6d72389c4f3a43ef95cd",
+        "package": "SMAASearchTex",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/Textures/SearchTex.h",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+    },
+    "smaa-shader": {
+        "hash": "3a10efe25b0f7e33d9542159e381456ebd75593dc5e2543b91b0b52c9479588320a792f69b6e2cf7743b3203dabe6acc8592c9130c5dea6f02b0cde6072db3f2",
+        "package": "SMAAShader",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/SMAA.hlsl",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+    },
     "snx_av1_b8-01-size-66x66": {
         "hash": "d2a617948bfefdd48d652800e7807b284a0069e907326c512d92c394b4127210f539201980da5d3a018c38a7ad96fc5686ea298339429bef43cfd7391e092138",
         "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-01-size-66x66.ivf",
