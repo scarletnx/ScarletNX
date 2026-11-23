@@ -84,6 +84,22 @@ char* snx_format(const char* fmt, ...) {
     va_end(ap);
     return p;
 }
+int snx_appendf(char* out, size_t size, int at, const char* fmt, ...) {
+    if (!size) return 0;
+    if (at < 0) at = 0;
+    if ((size_t)at >= size - 1) return (int)(size - 1);
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out + at, size - (size_t)at, fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        out[at] = 0;
+        return at;
+    }
+    if ((size_t)at + (size_t)n < size) return at + n;
+    if (size >= 4) memcpy(out + size - 4, "...", 3);
+    return (int)(size - 1);
+}
 void snx_path_native(char* path) {
 #ifdef _WIN32
     for (; path && *path; ++path)

@@ -283,9 +283,9 @@ static void stage_report(void) {
     char line[1024];
     int at = 0;
     for (int w = 0; w < ST_N; w++)
-        at += snprintf(line + at, sizeof line - (size_t)at, " %s=%llu/%lluMB same %llu/%lluMB changed", names[w],
-                       (unsigned long long)g_st_n[w][0], (unsigned long long)(g_st_bytes[w][0] >> 20),
-                       (unsigned long long)g_st_n[w][1], (unsigned long long)(g_st_bytes[w][1] >> 20));
+        at = snx_appendf(line, sizeof line, at, " %s=%llu/%lluMB same %llu/%lluMB changed", names[w],
+                         (unsigned long long)g_st_n[w][0], (unsigned long long)(g_st_bytes[w][0] >> 20),
+                         (unsigned long long)g_st_n[w][1], (unsigned long long)(g_st_bytes[w][1] >> 20));
     LOG("vulkan: staged by reason:%s; by size <4K %lluMB <64K %lluMB <1M %lluMB >=1M %lluMB; %llu submits\n", line,
         (unsigned long long)(g_st_size[0] >> 20), (unsigned long long)(g_st_size[1] >> 20),
         (unsigned long long)(g_st_size[2] >> 20), (unsigned long long)(g_st_size[3] >> 20),
@@ -296,9 +296,9 @@ static void stage_report(void) {
         for (int s = 0; s < 64; s++)
             if (g_st_top[s].bytes && (best < 0 || g_st_top[s].bytes > g_st_top[best].bytes)) best = s;
         if (best < 0) break;
-        at += snprintf(line + at, sizeof line - (size_t)at, " %llx+%x:%llux/%lluMB", (unsigned long long)g_st_top[best].gva,
-                       g_st_top[best].len, (unsigned long long)g_st_top[best].n,
-                       (unsigned long long)(g_st_top[best].bytes >> 20));
+        at = snx_appendf(line, sizeof line, at, " %llx+%x:%llux/%lluMB", (unsigned long long)g_st_top[best].gva,
+                         g_st_top[best].len, (unsigned long long)g_st_top[best].n,
+                         (unsigned long long)(g_st_top[best].bytes >> 20));
         g_st_top[best].bytes = 0;
     }
     LOG("vulkan: staged most (address+largest length:copies/bytes):%s\n", line);

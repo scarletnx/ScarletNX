@@ -23,6 +23,10 @@ void* snx_alloc(size_t size);
 void* snx_realloc(void* ptr, size_t size);
 char* snx_strdup(const char* s);
 char* snx_format(const char* fmt, ...);
+/* fmt's text appended to out (size bytes) at at, the length of what out holds; returns the new length. A text past
+   the buffer's end is cut there, the line then ending in "...", and later calls add nothing: a line built piece by
+   piece never writes past out, as at += snprintf(out + at, size - at, ...) does once at passes size */
+int snx_appendf(char* out, size_t size, int at, const char* fmt, ...);
 /* 1 when text ends with ending, ASCII letters of either case alike (a file's extension) */
 int snx_ends_with_nocase(const char* text, const char* ending);
 /* a path's / turned into \ on Windows, the separator its system shows (C:\Users\...); nothing elsewhere */
