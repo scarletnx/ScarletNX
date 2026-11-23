@@ -6,6 +6,7 @@
 #include "vita/runtime/watch.h"
 #include "vita/runtime/process.h"
 #include <stdlib.h>
+#include <string.h>
 #include <stdatomic.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -183,6 +184,29 @@ bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since) {
             atomic_load_explicit(&g_watch.generation[i], memory_order_acquire) > since)
             return true;
     return false;
+}
+bool vita_watch_active(void) { return g_watch.state != NULL; }
+bool vita_watch_store(uint32_t address, const void* data, uint32_t size) {
+    uint64_t first, last;
+    const unsigned char* from = data;
+    if (!span(address, size, &first, &last)) return false;
+    lock();
+    uint64_t end = (uint64_t)address + size;
+    for (uint64_t i = first; i <= last;) {
+        bool protected_run = atomic_load_explicit(&g_watch.state[i], memory_order_acquire) == PROTECTED;
+        uint64_t stop = i + 1;
+        while (stop <= last &&
+               (atomic_load_explicit(&g_watch.state[stop], memory_order_acquire) == PROTECTED) == protected_run)
+            ++stop;
+        uint64_t begin = i * g_watch.page > address ? i * g_watch.page : address;
+        uint64_t finish = stop * g_watch.page < end ? stop * g_watch.page : end;
+        if (protected_run) page_protect(i, stop - i, true);
+        memcpy(g_watch.base + begin, from + (begin - address), (size_t)(finish - begin));
+        if (protected_run) page_protect(i, stop - i, false);
+        i = stop;
+    }
+    unlock();
+    return true;
 }
 uint64_t vita_watch_epoch(void) { return atomic_load_explicit(&g_watch.now, memory_order_acquire); }
 void vita_watch_written(uint32_t address, uint32_t size) {

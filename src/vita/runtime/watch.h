@@ -25,6 +25,11 @@ void vita_watch_written(uint32_t address, uint32_t size);
 /* the range writable again and written: before the system writes it (a file read), and when it is committed or
    decommitted */
 void vita_watch_release(uint32_t address, uint32_t size);
+/* whether writes are tracked at all */
+bool vita_watch_active(void);
+/* bytes into guest memory without a fault, a generation or a change of protection, for a copy of what the GPU wrote.
+   False when nothing is tracked, and the caller copies them itself */
+bool vita_watch_store(uint32_t address, const void* data, uint32_t size);
 /* a write fault at host address: true when it was a watched page's, now writable again (from the signal handler) */
 bool vita_watch_fault(uintptr_t host);
 #endif

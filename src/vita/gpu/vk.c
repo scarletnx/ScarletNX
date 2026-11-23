@@ -38,8 +38,6 @@ static void ban_say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn
 /* what the device can't go without, into need: how many */
 static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
     uint32_t needs = 0;
-    need[needs++] =
-        (VkExtensionNeed){VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, "the guest's memory the GPU uses is imported"};
     if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
     return needs;
 }
@@ -47,8 +45,7 @@ static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
 static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
     VkPhysicalDevice phys = c->phys;
-    if (!snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME))
-        return snx_vk_choice_refuse(c, "has no VK_EXT_external_memory_host to import the guest's memory");
+    v->host_import = snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
@@ -95,7 +92,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
-                                              .pNext = &host};
+                                              .pNext = v->host_import ? &host : NULL};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(phys, &properties);
     v->host_alignment = host.minImportedHostPointerAlignment ? host.minImportedHostPointerAlignment : 4096;
@@ -158,7 +155,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VkExtensionNeed need[2];
     VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
     SnxVkDeviceRequest request = {.who = "scarletnx-vita",
-                                  .none = "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host",
+                                  .none = "no Vulkan 1.3 device with dynamic rendering",
                                   .instance = v->host.instance.instance,
                                   .api = VK_API_VERSION_1_3,
                                   .queues = VK_QUEUE_GRAPHICS_BIT,
@@ -184,6 +181,9 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
+    if (!v->host_import)
+        fprintf(stderr, "scarletnx-vita: %s has no VK_EXT_external_memory_host, guest memory is copied\n",
+                v->properties.deviceName);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 8192},

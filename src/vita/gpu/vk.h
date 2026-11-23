@@ -26,6 +26,7 @@ typedef struct {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
     VkDeviceSize host_alignment; /* minImportedHostPointerAlignment */
+    bool host_import; /* guest memory is imported in place, else the renderer keeps host visible copies of it */
     bool preserve_infnan; /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
     bool bc; /* the device samples BC1 to BC3 (textureCompressionBC) */
     bool depth16_blit; /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
@@ -41,8 +42,8 @@ typedef struct {
     SnxVkRing ring; /* the submissions in flight, VITA_VK_SLOTS of them */
 } VitaVk;
 
-/* the device and the window (none headless, or without a display): false with the reason when the host has no
-   Vulkan 1.3 device with VK_EXT_external_memory_host */
+/* the device and the window (none headless, or without a display). False with the reason when the host has no
+   Vulkan 1.3 device with dynamic rendering. Without VK_EXT_external_memory_host the renderer copies guest memory */
 bool vita_vk_init(const char* title, char* error, size_t error_size);
 VitaVk* vita_vk(void); /* NULL before init */
 void vita_vk_free(void);
