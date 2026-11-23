@@ -4,6 +4,7 @@
    copied at the top of the file sailgen writes after bits.h and before the guest's part (x64_a64.h, x64_a32.h),
    which defines SgCtx with an SgX in it (sgx(g)) and keeps the guest's registers:
 
+     machdef.h  the code buffer and the forms' types every machine's back end shares (SgXBuf, SgXSel, SgXVForm);
      x64.h      x86-64's encodings, the instruction selection sailgen derived from the Intel SDM (x64_isel.inc) and
                 what mach.h asks of a machine (its registers, the vector forms its front makes values with);
      mach.h     what any machine's back end does: the SSA of the block's instructions, the folds as it is appended,
@@ -16,36 +17,9 @@
    (the assembly itself, virtual registers for operands: SgXIns), folds what is constant as it appends, and once the
    block is done drops what nothing reads, gives the virtual registers host ones and writes the bytes. */
 
-/* ---- the code ---- */
-
-typedef struct {
-    unsigned char* p;
-    size_t n, cap;
-    int disp;  /* a memory operand's displacement and index register (-1 none), for sgx_modrm */
-    int index;
-    size_t rip_at; /* where sgx_modrm put a RIP-relative operand's displacement (r/m SGX_RIP) */
-} SgXBuf;
 /* the r/m operand that is the constant pool's (RIP-relative: mod 00, r/m 101), which the assembler patches */
 #define SGX_RIP 32
 
-static inline void sgx_byte(SgXBuf* b, unsigned char x) {
-    if (b->n < b->cap) b->p[b->n] = x;
-    ++b->n;
-}
-static inline void sgx_bytes(SgXBuf* b, const char* hex) {
-    /* "F0 49 0F B1 14 32": the bytes as written */
-    while (*hex) {
-        unsigned v = 0, k;
-        while (*hex == ' ') ++hex;
-        if (!*hex) break;
-        for (k = 0; k < 2; ++k, ++hex) v = v * 16 + (unsigned)(*hex <= '9' ? *hex - '0' : *hex - 'A' + 10);
-        sgx_byte(b, (unsigned char)v);
-    }
-}
-static inline void sgx_imm(SgXBuf* b, long long v, int bytes) {
-    int i;
-    for (i = 0; i < bytes; ++i) sgx_byte(b, (unsigned char)((unsigned long long)v >> (8 * i)));
-}
 /* REX.X: the index register of a memory r/m operand is R8 to R15 */
 static inline unsigned sgx_rex_x(const SgXBuf* b, int rm) { return rm >= 16 && b->index >= 8 ? 2u : 0u; }
 
@@ -79,41 +53,6 @@ enum {
     SGX_F_BMI1 = 1, SGX_F_BMI2 = 2, SGX_F_LZCNT = 4, SGX_F_SSE3 = 8, SGX_F_SSSE3 = 16, SGX_F_SSE41 = 32,
     SGX_F_SSE42 = 64, SGX_F_PCLMUL = 128, SGX_F_F16C = 256, SGX_F_POPCNT = 512, SGX_F_AVX = 1024, SGX_F_FMA = 2048
 };
-
-/* a selected form (x64_isel.inc): its encoder; the feature it needs; its ModRM.rm operand; where each of the
-   primitive's inputs goes (the form's operand 0 to 3, or 16 + a fixed register); the inputs it reads whole (clean) and
-   those that are immediates; the immediate's fit; where the result is, whether zero extended, and the input it is tied
-   to (+1); the fixed registers it writes besides, the operands it needs zeroed before it, the flags it writes (CF PF AF
-   ZF SF OF); Arm's flags as its flags (0 CF ... 5 OF, negated by flag_neg's bit); CF the carry in's negation; and each
-   Arm condition's condition code on its flags */
-typedef struct {
-    void (*enc)(SgXBuf* b, const unsigned char* r, long long imm, int cc);
-    unsigned feature;
-    signed char rm;
-    signed char in[4];
-    unsigned char clean, imm;
-    signed char fit_bits;
-    char fit_kind;
-    signed char out;
-    unsigned char clean_out, tied;
-    unsigned clobber, zero, flags;
-    signed char flag_of[4];
-    unsigned char flag_neg, carry_neg;
-    signed char cc_of[16];
-} SgXSel;
-
-/* an SSE form an 'enc' line of x64.ops asks for (x64_isel.inc's sgx_v_NAME): its encoder, the CPUID flag it needs,
-   its operands (nops), which of them ModRM.reg, ModRM.rm and VEX.vvvv encode (-1 none), which are XMM registers
-   (xmask's bit k: operand k; the others general-purpose), and its immediate's bytes. Operand k's register goes in
-   the encoder's r[k], 16 + a base register for the memory an r/m operand may be */
-typedef struct SgXVForm {
-    void (*enc)(SgXBuf* b, const unsigned char* r, long long imm, int cc);
-    unsigned feature;
-    signed char nops, reg, rm, vvvv;
-    unsigned char xmask, imm_bytes;
-    const struct SgXVForm* vex; /* a two-operand SSE form's AVX twin (VPADDD for PADDD: untied, the first source in
-                                   VEX.vvvv), which sailgen --isel found in the manual's page; NULL for none */
-} SgXVForm;
 
 #include "x64_isel.inc"
 
