@@ -513,11 +513,18 @@ Write tracking watches a dma-buf region's pages as the rest of guest memory (`Im
 passes over), where it leaves an import's alone: the driver pinned the pages once, when the udmabuf was made, and
 leaves the CPU's page table alone at each submission. A probe on kernel 7.2.7 found userfaultfd's write-protect with
 `PAGEMAP_SCAN` reporting exactly the pages written on a memfd mapping whose pages a udmabuf holds, and minor faults
-registering there too. `mem_migrate`'s new mapping is registered again (`ww_remapped`), and its first scan reports
-every page written. The GPU's writes in place there reach the caches when their submit is done
-(`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks that a region's pages answer `vk_written_since`
-and that a CPU write there is found. In the race above, the caches stopped comparing the regions' bytes: about 12.0 and
-12.5 fps over its last 40 s against 10.7 and 11.2 with the regions untracked.
+registering there too. A region made or gone is no write. `mem_migrate` and `mem_unmigrate` keep what the tracking
+says of each page (`plat_vm_share`, `plat_vm_unshare`): the pages a scan would report are noted before the move, no
+scan runs during it, the new mapping is registered (`ww_remapped`, where every page reads as written) and the others
+are protected again, and the range stays read only from `plat_freeze` to `plat_thaw`, so no write comes between;
+tracking by protection keeps each page's state and protection through the move. A region that goes marks none of its
+pages changed (`imp_destroy`). A page marked written with no write reads as newer than a render target drawn there
+whose pixels are not in memory yet, and a texture over that target loads memory's bytes. The GPU's writes in place
+there reach the caches when their submit is done (`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks
+that a region's pages answer `vk_written_since`, that a CPU write there is found, and that a page nobody wrote stays
+unwritten through a region made, moved on into a bigger one and gone; `memory_alias` checks the moves under both
+trackings. In the race above, the caches stopped comparing the regions' bytes: about 12.0 and 12.5 fps over its last
+40 s against 10.7 and 11.2 with the regions untracked.
 
 ### Placed maps
 

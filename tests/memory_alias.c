@@ -170,6 +170,21 @@ static int scan_reports(u64 a, u64 size, u64 at) {
     if (plat_ww_scan(GP(a), size, on_written)) return -1;
     return g_written_lo <= at && at < g_written_hi;
 }
+#if defined(__linux__) /* test_migrate's, a Linux test */
+/* 1 when a scan of [a, a + size) works and reports the host page at `at` and no other, 0 when it reports none, -1 when
+   it fails or reports another */
+static int scan_only(u64 a, u64 size, u64 at) {
+    const u64 page = (u64)sysconf(_SC_PAGESIZE);
+    g_written_lo = ~0ull;
+    g_written_hi = 0;
+    if (plat_ww_scan(GP(a), size, on_written)) return -1;
+    if (!g_written_hi) return 0;
+    if (g_written_lo != (at & ~(page - 1)) || g_written_hi != g_written_lo + page)
+        fprintf(stderr, "a scan reported [%llx, %llx), not the page at %llx alone\n", (unsigned long long)g_written_lo,
+                (unsigned long long)g_written_hi, (unsigned long long)at);
+    return g_written_lo == (at & ~(page - 1)) && g_written_hi == g_written_lo + page ? 1 : -1;
+}
+#endif
 /* every range scans, and a write through it is reported (a scan first takes what remapping marked) */
 static void check_tracking(u64 a, u64 size) {
     if (!g_ww) return;
@@ -558,24 +573,33 @@ static u8 fill(u64 i) { return (u8)(i * 7 + 3); }
    memory) and back: the same bytes at the same addresses, one memory with the buffer's other view while moved, moved on
    from one buffer into a bigger one, back in the reservation's own pages; a part unmapped while moved reads zero when
    mapped again and the buffer keeps its bytes; only the guest's data on the reservation's own pages moves, and write
-   tracking keeps working over all of it */
+   tracking keeps working over all of it. A move is no write: of pages a scan left quiet, the next scan reports only
+   the one written since, after each move (into a buffer, on into a bigger one, back) */
 static void test_migrate(void) {
     const u64 a = HEAP_BASE + 32 * MIB, size = MIB, src = HEAP_BASE + MIB, dst = STACK_BASE + 0x200000;
+    const u64 page = (u64)sysconf(_SC_PAGESIZE);
     u8 *v1, *v2;
     int f1 = buffer(size, &v1), f2 = buffer(2 * size, &v2), zero = 1;
     CHECK(mem_map(a, 2 * size, MS_NORMAL, PERM_RW) == 0);
     u8* g = GP(a);
     for (u64 i = 0; i < 2 * size; i++) g[i] = fill(i);
     CHECK(mem_movable(a, 2 * size) && !mem_movable(a, 2 * size + 0x1000) && !mem_movable(a + 0x800, 0x1000));
+    if (g_ww) {
+        CHECK(scan_reports(a, 2 * size, a) >= 0); /* the fill's writes taken */
+        g[5 * page] = fill(5 * page);             /* a write of the byte it holds, before the move, not scanned yet */
+    }
     CHECK(mem_migrate(a, size, f1) == 0);
     for (u64 i = 0; i < size; i += 4093) CHECK(v1[i] == fill(i) && g[i] == v1[i]);
+    if (g_ww) CHECK(scan_only(a, 2 * size, a + 5 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[100] = 0x77;
     v1[200] = 0x55;
     CHECK(v1[100] == 0x77 && g[200] == 0x55);
     check_tracking(a, size);
     /* the first megabyte moves on from f1's pages, with the second from the reservation's */
+    if (g_ww) g[size + 9 * page] = fill(size + 9 * page);
     CHECK(mem_migrate(a, 2 * size, f2) == 0);
     CHECK(v2[100] == 0x77 && v2[200] == 0x55 && v2[size + 5] == fill(size + 5));
+    if (g_ww) CHECK(scan_only(a, 2 * size, a + size + 9 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[300] = 0x11;
     CHECK(v2[300] == 0x11 && v1[300] != 0x11);
     /* a part unmapped: fresh pages when mapped again, the buffer keeps its bytes, the rest stays moved */
@@ -585,7 +609,12 @@ static void test_migrate(void) {
     g[400] = 0x33;
     CHECK(v2[size] != 0x22 && v2[400] == 0x33);
     /* back in the reservation's own pages, each with its bytes */
+    if (g_ww) {
+        CHECK(scan_reports(a, 2 * size, a) >= 0); /* the writes above, and the pages mapped again, taken */
+        g[13 * page] = fill(13 * page);
+    }
     CHECK(mem_unmigrate(a, 2 * size) == 0);
+    if (g_ww) CHECK(scan_only(a, 2 * size, a + 13 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[500] = 0x44;
     CHECK(v2[500] != 0x44 && g[100] == 0x77 && g[300] == 0x11 && g[400] == 0x33 && g[size] == 0x22 &&
           g[size + 0x10000] == fill(size + 0x10000));

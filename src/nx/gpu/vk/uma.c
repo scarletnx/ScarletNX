@@ -82,9 +82,12 @@
      after a scan faulted every protected page in again: 16 ms for 32 MiB imported, against 0.3 ms. Write tracking
      can't tell there (vk_written_since), and its users compare the bytes. A dma-buf region's pages it watches as the
      rest of guest memory (Imp.tracked): the driver pinned them once, when the udmabuf was made, and leaves the CPU's
-     page table alone; mem_migrate's mapping is registered again (ww_remapped), and its first scan reports every page
-     written. The GPU's writes in place there reach the caches as everywhere, when their submit is done
-     (vk_uma_frame_done's gpu_mem_written_cpu), not through a scan. */
+     page table alone. A region made or gone is no write: the move keeps what the tracking says of each page
+     (plat_vm_share), and a region that goes marks none (imp_destroy). Marked written whole at either, a render target
+     drawn before, its pixels not yet in memory, read as older than memory: a racing game's colour grading table,
+     drawn once as eight targets in a page, loaded as zeros, and its race drew black under the HUD. The GPU's writes in
+     place there reach the caches as everywhere, when their submit is done (vk_uma_frame_done's gpu_mem_written_cpu),
+     not through a scan. */
 #include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -789,7 +792,8 @@ static void imp_destroy(const Imp* m) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
     if (m->fd >= 0) plat_gpu_buffer_free(m->fd, m->handle, m->size); /* a region's, whose pages moved off it */
-    vk_mem_changed(m->cpu, m->size); /* no scan watched its pages: what the CPU wrote there meanwhile counts */
+    /* no scan watched its pages: what the CPU wrote there meanwhile counts. A dma-buf region's were watched */
+    if (!m->tracked) vk_mem_changed(m->cpu, m->size);
 }
 /* dropped import i destroyed, then out of the list, which write tracking reads (vk_lock held) */
 static void gone_out(u32 i) {

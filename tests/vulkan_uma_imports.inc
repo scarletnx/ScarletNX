@@ -1355,11 +1355,29 @@ static int check_uma_migrate(void) {
     CHECK(vk_uma_migrate(way));
     u8* result = vk_readback_buffer(768, &rb);
     CHECK(result);
+    /* the fill taken by write tracking, in an epoch of its own: from here a page reads as written only by a write */
+    int watched = 0;
+    u32 quiet = 0;
+    if (way == 2) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        watched = vk_written_since(g, 4 * window, 0) >= 0;
+        quiet = vk_ww_now();
+    }
     /* the first window moves, with its bytes; a range beside it is in the same region */
     CHECK(vk_uma_get(UMA_GM + 0x1000, 256, 1, &b, &off) && off == 0x1000);
     CHECK(vk_uma_imports(UMA_M, 4 * window) == 1 && vk_uma_imports(UMA_M + window, 3 * window) == 0);
     CHECK(uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 0);
     CHECK(vk_uma_get(UMA_GM + 0x100000, 256, 1, &b2, &off2) && b2 == b && off2 == 0x100000);
+    /* a region made is no write: marked written whole by the move, a render target drawn there before, its pixels not
+       yet in memory, read as older than memory, and a texture over it loaded memory's bytes */
+    if (watched) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x4000, 0x4000, quiet) == 0);
+    }
     /* a dma-buf region's pages are watched for writes as the rest of guest memory (the driver leaves the CPU's page
        table alone): quiet, then a CPU write found. A host-memory region's aren't (vk_written_since -1) */
     if (way == 2 && vk_written_since(g + 0x4000, 0x4000, 0) >= 0) {
@@ -1399,6 +1417,13 @@ static int check_uma_migrate(void) {
     CHECK(uma_in_buffer(g) == 0 && g[0x1000] == 0x5a && g[0x40] == uma_fill(0x40));
     vk_uma_frame();
     CHECK(vk_uma_imports(UMA_M, 4 * window) == 0);
+    /* nor is a region gone, or moved on into a bigger one: a page of the first window that no one wrote */
+    if (watched) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x8000, 0x1000, quiet) == 0);
+    }
     /* a range of a region the GPU owns next (a result published over it): nothing waits for the copy recorded before,
        which reads the bytes from before, and the region goes, its other pages back with their bytes */
     if (own_traps()) {
