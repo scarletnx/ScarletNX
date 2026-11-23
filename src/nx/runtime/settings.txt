@@ -1703,9 +1703,10 @@ setting Guest buffers copied
     words Auto|In place|Copied
     help Where guest memory is read in place (vk_memory), whether vertices, indices and constant buffers are read there
     help too. 0 = copied on a driver that takes every import's pages again at each submission (amdgpu's: RADV, AMDVLK,
-    help AMD's on Linux), where each import costs every submission, but read in place on a discrete GPU, which takes
-    help guest memory through dma-bufs only, and read in place elsewhere. 1 = read in place.
-    help 2 = copied. A dispatch's storage ranges and what the GPU writes stay in place either way
+    help AMD's on Linux), where each import costs every submission, and on a discrete GPU that imports host memory,
+    help whose reads cross the bus: there read-only storage is copied too. Read in place on a discrete GPU through
+    help dma-bufs, and elsewhere. 1 = read in place. 2 = copied, and read-only storage too on a discrete GPU. What the
+    help GPU writes, and a range a write in place is pending over, stay in place either way
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1

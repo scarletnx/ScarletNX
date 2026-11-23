@@ -525,6 +525,8 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
    every submission, and vertices, indices and constant buffers are copied instead (buffer.c) */
 int vk_uma_imports_dear(void);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+int vk_uma_storage_copied(void); /* read-only storage is copied as vertices are where imports are dear (uma.c) */
+int vk_uma_through_dmabuf(void);  /* guest memory reaches the GPU through dma-bufs (uma.c) */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
