@@ -29,7 +29,8 @@ void gq_read_wait(u64 gva, u64 size);
    the read needs no wait. 0 when no such write is queued */
 int gq_forward(u64 gva, void* dst, u64 size);
 /* every queued record done, for the front end's points that need the whole renderer side */
-void gq_drain(void);
+void gq_drain_at(const char* file, int line);
+#define gq_drain() gq_drain_at(__FILE__, __LINE__) /* counted by where it is asked (the stats line) */
 void gq_stats_log(u64 presents); /* the stats line's: the front end's waits and the renderer thread's runs */
 void gq_present(void);           /* the renderer presented (any thread): gpu_split=2 measures by presents */
 /* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that

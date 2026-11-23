@@ -290,6 +290,8 @@ void gpu_draw_states_reset(void);
 /* the renderer's calls without a result, queued in their order */
 void gpu_method_barrier(int kind);
 void gpu_stream_incr(u32 id);
+/* on the front end: release_value(id) with the increments still queued for the renderer counted, with no drain */
+u32 gpu_release_value(u32 id);
 void gpu_stream_end(void);
 void gpu_mem_seen(void);
 void gpu_ready(void);
@@ -309,7 +311,8 @@ void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks);
 void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride);
 void gpu_render_states_reset(void);
 /* the renderer for any other call of the front end: after every queued record */
-const Renderer* gpu_renderer_now(void);
+const Renderer* gpu_renderer_now_at(const char* file, int line);
+#define gpu_renderer_now() gpu_renderer_now_at(__FILE__, __LINE__) /* counted by where it is asked (gq_drain_at) */
 /* The shading rate id (Renderer.shading_rate) for the draws after it, from a record in its place in the queue: the
    renderer's side keeps the id of its last call, and a draw that gives GPU_RATE_LAST in DrawCall.shading_rate takes
    it there. The draws after the call run after it, so each takes the id the call gave, as the front end would have
