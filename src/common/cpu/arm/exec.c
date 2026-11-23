@@ -217,6 +217,11 @@ void snx_arm_exec_free(SnxArmExec* e) {
     free(e);
 }
 
+/* A block is generated code, with no type signature before its entry, which the function sanitizer's check of an
+   indirect call reads: the 8 bytes before the callee. Before the first block of a code arena those are below the
+   arena, readable or not as the system placed the mappings made after it. So the call is made unchecked */
+[[clang::no_sanitize("function")]] static void run_block(SnxArmBlock block, SnxArmCPU* cpu) { block(cpu); }
+
 int snx_arm_exec_run(SnxArmExec* e, SnxArmCPU* cpu, const SnxArmExecRange* ranges, size_t range_count,
                      SnxArmSyscallFn syscall, void* context) {
     /* The code image base: blocks decode from it; generated code uses cpu->mem. */
@@ -229,7 +234,7 @@ int snx_arm_exec_run(SnxArmExec* e, SnxArmCPU* cpu, const SnxArmExecRange* range
             cpu->exit = SNX_ARM_BAD_ENTRY;
             break;
         }
-        block(cpu);
+        run_block(block, cpu);
         if (cpu->exit == SNX_ARM_SVC && syscall) {
             cpu->exit = SNX_ARM_OK;
             if (run_syscall(syscall, context, cpu, cpu->syndrome)) break;
