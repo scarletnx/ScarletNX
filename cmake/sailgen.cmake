@@ -10,7 +10,7 @@ set(snx_sailgen_sources "${PROJECT_SOURCE_DIR}/tools/sailgen/main.c" "${PROJECT_
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/extract.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/gen.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm_code.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/term.c"
-                        "${PROJECT_SOURCE_DIR}/tools/sailgen/isel.c")
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/isel.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/enc.c")
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
     include(ExternalProject)
@@ -59,6 +59,21 @@ function(snx_sailgen_a64 target)
         DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${bits}" "${core}" "${backend}" "${profile}"
         COMMENT "Generating the A64 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_sail.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a64_encoders(<target>): generates a64_enc.inc (an encoder for each decode clause of a64.sail: the
+# instruction table of the back end that writes A64 itself, the arm64 host's) into the build folder, and gives
+# <target> its include root
+function(snx_sailgen_a64_encoders target)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    add_custom_command(OUTPUT "${out}/a64_enc.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --encoders __DecodeA64 -o "${out}/a64_enc.inc" "${dir}/a64.sail"
+        DEPENDS snx-sailgen "${dir}/a64.sail"
+        COMMENT "Generating the A64 encoders from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_enc.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 

@@ -309,6 +309,30 @@ run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3'
 fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
 shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.
 
+## Encoders (`--encoders`)
+
+```sh
+sailgen --encoders __DecodeA64 [--roots ROOTS] -o a64_enc.inc a64.sail
+```
+
+A back end that writes an architecture's own code takes its encodings from that architecture's Sail, the same
+decode clauses the guest's emitters are generated from (`enc.c`). Each clause's pattern fixes some of the word's bits
+and its lets slice the others into the decode function's fields (`let Rd = Slice(__opcode, 0, 5)`); its encoder is
+the fixed bits ORed with each field in its place, a field the pattern fixes whole left out of its parameters:
+
+```c
+/* decode_add_addsub_shift_aarch64_instrs_integer_arithmetic_add_sub_shiftedreg */
+static inline SnxU32 sge_a64_add_addsub_shift(SnxU32 Rd, SnxU32 Rn, SnxU32 imm6, SnxU32 Rm, SnxU32 shift, SnxU32 sf);
+```
+
+named for the decode function, less `decode_` and its `_aarch64_instrs_...` (clauses whose decode functions are named
+alike get the shortest tail of the name that tells them apart: `ldr_imm_gen_post_idx`, `ldr_imm_gen_pre_idx`,
+`ldr_imm_gen_immediate_unsigned`), and `sge_a64_table` lists every encoder's fixed bits and fields. `a64.roots`'
+`encode __DecodeA64` line copies every A64 decode clause into `a64.sail` alone, nothing it names followed, so the
+instructions the guest's emitters make by hand or not at all (B, MRS, SVC, the Advanced SIMD) have encoders too
+(`--extract`'s `encode NAME`: the clauses of a decode function, or of every scattered function NAME begins).
+`tests/sailgen_encoders.c` (`sailgen_encoders`) holds them to words the Arm ARM gives.
+
 ## The x86-64 back end
 
 A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived when sailgen
