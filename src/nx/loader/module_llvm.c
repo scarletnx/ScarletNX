@@ -259,6 +259,15 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     if (q->x64) {
         SnxX64Options options = {0};
         options.stale = 1;
+        options.llvm_at = snx_ir_dump_pc();
+        if (q->bound_count) {
+            options.bound = bound_at;
+            options.bound_user = q;
+        }
+        if (q->import_count) {
+            options.direct = imported;
+            options.direct_user = q;
+        }
         made = (unsigned char*)snx_alloc(u->last - u->first);
         if (snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error, error_size)) {
             free(made);

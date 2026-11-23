@@ -689,6 +689,7 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     if (q->r->x64 && !q->r->keep_ir && u->last > u->first) {
         /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
         SnxX64Options options = {0};
+        options.llvm_at = snx_ir_dump_pc();
         made = (unsigned char*)calloc(u->last - u->first, 1);
         if (!made) {
             snprintf(error, error_size, "out of memory");
