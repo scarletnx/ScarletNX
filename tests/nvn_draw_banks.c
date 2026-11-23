@@ -31,9 +31,9 @@ const Renderer* g_renderer = &g_none;
 /* the render enable and the reports of the engines (maxwell/engines.c) */
 void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a) { (void)owner, (void)mode, (void)a; }
 /* as the renderer's side runs a report (report_run): the renderer's count when the counter was reset */
-void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value) {
     (void)value;
-    if (counted && g_renderer->samples_report) g_renderer->samples_report(owner, a, 16, ticks);
+    if (counted && g_renderer->samples_report) g_renderer->samples_report(owner, a, 16, 0);
 }
 void pm_init(PMutex* m) { (void)m; }
 int g_shader_sm86; /* shader.c's: Maxwell programs */
@@ -1635,12 +1635,12 @@ static void test_samples_without_reset(void) {
     g_none.samples_enable = count_samples_enable;
     g_none.samples_reset = count_samples_reset;
     g_none.samples_report = count_samples_report;
-    int first = nvn_draw_samples(q, 0x5000, 7);
+    int first = nvn_draw_samples(q, 0x5000);
     check(first == 1 && g_samples.on && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 1 &&
               g_samples.at == 0x5000,
           "a report before any reset: returned %d, counter on %u, %u enables, %u resets, %u reports, at %#llx", first,
           g_samples.on, g_samples.enables, g_samples.resets, g_samples.reports, (unsigned long long)g_samples.at);
-    int second = nvn_draw_samples(q, 0x5010, 8);
+    int second = nvn_draw_samples(q, 0x5010);
     check(second == 1 && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 2 &&
               g_samples.at == 0x5010,
           "the next report: returned %d, %u enables, %u resets, %u reports, at %#llx", second, g_samples.enables,
