@@ -376,7 +376,7 @@ calls once, before the game's threads. It returns the module (`SnxHookModule`): 
 name, what it does, its title, module and build ID, its code checks and its CPU hooks, which stay where they are for
 the run (the runtime never unloads a library it took). It returns NULL to refuse the runtime, after it logs why.
 
-**The version.** The ABI has its own, `SNX_HOOK_ABI_MAJOR` and `SNX_HOOK_ABI_MINOR`, 1.1 now. A new major changes
+**The version.** The ABI has its own, `SNX_HOOK_ABI_MAJOR` and `SNX_HOOK_ABI_MINOR`, 1.2 now. A new major changes
 what one side reads of the other. A new minor only adds: functions at the end of `SnxHookHost`, fields at the end of
 `SnxHookModule` and of `SnxHookRecordedUpscale`, which carries its size, and flags. The runtime takes a module of its
 own minor or an older one, and refuses one of another major or of a newer minor. In every major, the first fields of
@@ -392,7 +392,7 @@ of a module that is off is never loaded at start: none of its code runs in the g
 recompile is another process: it opens every library of the folder, an off one too, and calls its entry point to read
 its CPU hooks ([below](#cpu-hooks-in-libraries)), but runs no handler.
 
-**The log.** A library taken says `hooks: library PATH: module NAME (hook ABI 1.1), 1 CPU hook`. One refused says
+**The log.** A library taken says `hooks: library PATH: module NAME (hook ABI 1.2), 1 CPU hook`. One refused says
 `hooks: library PATH refused: WHY`, and is closed. It is refused when the system can't load it (with the system's
 reason), when it has no `snx_hook_module`, when that refuses the runtime, for another major or a newer minor, for a
 module named otherwise than its file or as another module, for more than 64 code checks or one without bytes, and for
@@ -444,6 +444,17 @@ names what ran and both surfaces, the first 4 times and at each change
 filtered copy stands in`). It returns 0, and records nothing, for a command buffer that isn't recording, a color or
 output that isn't a live texture, a size of 0 or a call outside a handler: the handler then calls `run_original`, and
 the game's own pass runs.
+
+**Motion vectors from depth (1.2).** A game with depth and a camera but no motion vectors of its own can still feed a
+temporal upscaler: with `SNX_HOOK_UPSCALE_REPROJECTED_MOTION`, depth given and motion not, the record's `reprojection`
+matrix (row-major) takes a render pixel of this frame, as (x, y, depth, 1) with x and y its place in the color's
+render rectangle as -1 to 1 (y down) and the depth as its texture stores it, to where it was in the frame before, in
+the same terms. It is the frame before's view-projection times the inverse of this frame's, with the picture's
+coordinates and the depth's range folded in by the module, which knows its game's conventions. At replay a compute
+pass (`gpu/vk/upscaler/reproject.c`) makes the motion vectors from the depth just before the upscaler runs, and the log
+says so once (`vulkan: motion vectors from depth for a hook module, up to WxH`). They are the camera's motion alone:
+whatever moves by itself gets the camera's motion at its pixels, which a temporal upscaler shows as a short trail. A
+record of 1.1's size has no matrix and is taken as before.
 
 **The display and the resolution multiplier (1.1).** `display_size(out)` gives the display's largest picture as the
 game is told it, the output a game sizes its frames for. `resolution_scale(cpu, scale, target, render)`, from a CPU

@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define SNX_HOOK_ABI_MAJOR 1
-#define SNX_HOOK_ABI_MINOR 1
+#define SNX_HOOK_ABI_MINOR 2
 
 #if defined(_WIN32)
 #define SNX_HOOK_EXPORT __declspec(dllexport)
@@ -69,7 +69,14 @@ typedef struct {
    jitter: the camera's offset in render pixels. motion_scale brings a motion vector to pixels of the motion vectors'
    size. reset: the history isn't this frame's (a cut, a new scene). size is sizeof (SnxHookRecordedUpscale) as the
    module was built. The runtime picks the upscaler from the settings, among those flags says the module takes: a
-   temporal one always, a spatial one or a copy when flags say so */
+   temporal one always, a spatial one or a copy when flags say so.
+   1.2, reprojection: for a game with depth and a camera but no motion vectors of its own, with
+   SNX_HOOK_UPSCALE_REPROJECTED_MOTION and depth given and motion not, the runtime makes the motion vectors from the
+   depth: reprojection (row-major) takes a render pixel of this frame, as (x, y, depth, 1) with x and y its place in the
+   color's render rectangle as -1 to 1 (y down) and depth as the depth texture stores it, to where it was in the frame
+   before, in the same terms (homogeneous, divided by w). It is the frame before's view-projection times the inverse of
+   this one's, with the picture's coordinates and the depth's range folded in. The camera's motion alone: things that
+   move by themselves get the camera's motion at their pixels. A 1.1 module's record (a smaller size) has none */
 typedef struct {
     uint32_t size;
     uint32_t flags; /* SNX_HOOK_UPSCALE_ */
@@ -78,6 +85,7 @@ typedef struct {
     int32_t out_base[2];
     float jitter[2], motion_scale[2], pre_exposure;
     int32_t reset;
+    float reprojection[16]; /* 1.2 */
 } SnxHookRecordedUpscale;
 enum {
     SNX_HOOK_UPSCALE_HDR = 1,             /* the color is HDR (with RANGE_GIVEN, else its format says) */
@@ -85,6 +93,7 @@ enum {
     SNX_HOOK_UPSCALE_JITTERED_MOTION = 4, /* motion vectors that include the jitter */
     SNX_HOOK_UPSCALE_INVERTED_DEPTH = 8,
     SNX_HOOK_UPSCALE_AUTO_EXPOSURE = 0x40,
+    SNX_HOOK_UPSCALE_REPROJECTED_MOTION = 0x100, /* 1.2: motion vectors from depth and reprojection, above */
     SNX_HOOK_UPSCALE_RANGE_GIVEN = 0x10000, /* HDR says the color's range */
     SNX_HOOK_UPSCALE_SPATIAL_OK = 0x40000,  /* a spatial upscaler will do */
     SNX_HOOK_UPSCALE_COPY_OK = 0x80000      /* a plain copy will do */

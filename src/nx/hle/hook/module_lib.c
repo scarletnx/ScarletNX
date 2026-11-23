@@ -224,6 +224,7 @@ static u32 flags_in(uint32_t flags) {
         {SNX_HOOK_UPSCALE_JITTERED_MOTION, GPU_UPSCALE_JITTERED_MOTION},
         {SNX_HOOK_UPSCALE_INVERTED_DEPTH, GPU_UPSCALE_INVERTED_DEPTH},
         {SNX_HOOK_UPSCALE_AUTO_EXPOSURE, GPU_UPSCALE_AUTO_EXPOSURE},
+        {SNX_HOOK_UPSCALE_REPROJECTED_MOTION, GPU_UPSCALE_REPROJECTED_MOTION},
         {SNX_HOOK_UPSCALE_RANGE_GIVEN, GPU_UPSCALE_RANGE_GIVEN},
         {SNX_HOOK_UPSCALE_SPATIAL_OK, GPU_UPSCALE_SPATIAL_OK},
         {SNX_HOOK_UPSCALE_COPY_OK, GPU_UPSCALE_COPY_OK},
@@ -238,8 +239,11 @@ static u32 flags_in(uint32_t flags) {
 static int host_record_upscale(SnxHookCpu* cpu, uint64_t command_buffer, const SnxHookRecordedUpscale* upscale) {
     const SnxHookTexture* t[NVN_UPSCALE_TEXTURES];
     NvnUpscaleRequest r = {0};
-    if (!cpu || !cpu->active || !upscale || upscale->size < sizeof(SnxHookRecordedUpscale)) return 0;
+    /* 1.1's fields at least: 1.2's reprojection where the module's size has it */
+    if (!cpu || !cpu->active || !upscale || upscale->size < offsetof(SnxHookRecordedUpscale, reprojection)) return 0;
     const SnxHookRecordedUpscale* x = upscale;
+    int reprojection =
+        upscale->size >= sizeof(SnxHookRecordedUpscale) && (x->flags & SNX_HOOK_UPSCALE_REPROJECTED_MOTION);
     t[NVN_UPSCALE_COLOR] = &x->color, t[NVN_UPSCALE_OUTPUT] = &x->output, t[NVN_UPSCALE_DEPTH] = &x->depth;
     t[NVN_UPSCALE_MOTION] = &x->motion, t[NVN_UPSCALE_EXPOSURE] = &x->exposure, t[NVN_UPSCALE_REACTIVE] = &x->reactive;
     /* the game's objects, read where they are: each in mapped memory */
@@ -262,6 +266,10 @@ static int host_record_upscale(SnxHookCpu* cpu, uint64_t command_buffer, const S
     r.pre_exposure = x->pre_exposure;
     r.reset = x->reset != 0;
     r.flags = flags_in(x->flags) | GPU_UPSCALE_MODULE;
+    if (reprojection)
+        memcpy(r.reprojection, x->reprojection, sizeof r.reprojection);
+    else
+        r.flags &= ~(u32)GPU_UPSCALE_REPROJECTED_MOTION;
     return nvn_cmd_record_upscale(cpu->c, command_buffer, &r);
 }
 

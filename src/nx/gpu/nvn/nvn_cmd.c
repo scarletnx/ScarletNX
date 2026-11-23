@@ -1498,6 +1498,7 @@ int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r) {
     memcpy(d->out_base, r->out_base, sizeof d->out_base);
     memcpy(d->jitter, r->jitter, sizeof d->jitter);
     memcpy(d->motion_scale, r->motion_scale, sizeof d->motion_scale);
+    memcpy(d->reprojection, r->reprojection, sizeof d->reprojection);
     d->pre_exposure = r->pre_exposure;
     LOG_LIMIT(1, "nvn: a hook module recorded an upscale of %ux%u to %ux%u at (%d, %d) (first time)\n", r->render[0],
               r->render[1], r->out[0], r->out[1], r->out_base[0], r->out_base[1]);

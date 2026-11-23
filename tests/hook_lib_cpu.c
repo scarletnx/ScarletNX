@@ -215,8 +215,8 @@ int main(void) {
     g_log[0] = 0;
     snprintf(g_settings.hook_modules_folder, sizeof g_settings.hook_modules_folder, "%s", HX_LIBS "/cpu");
     hook_install();
-    assert(said(": module hx_cpu (hook ABI 1.1), 4 CPU hooks\n"));
-    assert(said(": module hx_cpu_full (hook ABI 1.1), 1 CPU hook\n"));
+    assert(said(": module hx_cpu (hook ABI 1.2), 4 CPU hooks\n"));
+    assert(said(": module hx_cpu_full (hook ABI 1.2), 1 CPU hook\n"));
     assert(hook_lib_cpu_count() == 9);
     assert(said("hook: 0123456789abcdef0123456789abcdef01234567:100 at 10100 (main+100) runs module hx_cpu's skip\n"));
     assert(

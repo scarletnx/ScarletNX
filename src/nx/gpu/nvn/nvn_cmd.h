@@ -101,6 +101,7 @@ typedef struct {
     i32 out_base[2];
     f32 jitter[2], motion_scale[2], pre_exposure;
     int reset;
+    f32 reprojection[16]; /* with GPU_UPSCALE_REPROJECTED_MOTION */
 } NvnUpscaleRequest;
 /* 1 when recorded, 0 when cb isn't a command buffer that records, the color or the output isn't a live texture, a
    view or texture lies in no mapped memory, or a size is 0, each said in the log */

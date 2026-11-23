@@ -207,7 +207,8 @@ target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
 # the filtered copy and the spatial upscaler. Their compute passes are compiled from GLSL at build time, the spatial
 # ones with AMD's FSR 1 header from FSR 2's package, patched (.patch/fidelityfx-fsr2/0002-fsr1-easu-glsl.patch). Like
 # snx_fsr2 it knows no renderer, so tests/vk_upscaler.c links it alone
-add_library(snx_upscaler STATIC gpu/vk/upscaler/upscaler.c gpu/vk/upscaler/passes.c gpu/vk/upscaler/dlss.cpp)
+add_library(snx_upscaler STATIC gpu/vk/upscaler/upscaler.c gpu/vk/upscaler/passes.c gpu/vk/upscaler/reproject.c
+                          gpu/vk/upscaler/dlss.cpp)
 target_link_libraries(snx_upscaler PUBLIC snx_fsr2 snx_vk_common)
 # DLSS through NVIDIA Streamline (gpu/vk/upscaler/dlss.cpp) in a Windows build: Streamline's headers only, its loader
 # taken from the user's folder at run time. Windows' own libraries check NVIDIA's signature
@@ -221,6 +222,9 @@ foreach(snx_pass copy easu rcas)
                    HEADER nx/gpu/vk/upscaler/upscaler_spv.h DEFINES FFX_GLSL=1 FFX_GPU=1 FFX_HALF=0
                    INCLUDES "${snx_fsr2_api_dir}/shaders")
 endforeach()
+# motion vectors from depth and a camera matrix (gpu/vk/upscaler/reproject.c), for callers without motion vectors
+snx_glsl_spirv(snx_upscaler SOURCE gpu/vk/upscaler/up_reproject.comp NAME up_reproject_spv
+               HEADER nx/gpu/vk/upscaler/upscaler_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the

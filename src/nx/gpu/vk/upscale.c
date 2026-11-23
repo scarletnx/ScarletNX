@@ -11,6 +11,7 @@
    front end's filtered copy stands in */
 #include <string.h>
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/upscaler/reproject.h"
 #include "nx/gpu/vk/upscaler/upscaler.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
@@ -32,6 +33,9 @@ static struct {
     u32 failed_render[2], failed_out[2], failed_flags;
     VkFormat failed_format;
     int failed;
+    /* motion vectors made from depth for a hook module that gives a reprojection matrix (reproject.h), at the largest
+       render size asked so far */
+    SnxReproject* reproject;
 } g_upscale;
 
 /* the FSR input conventions setting's bits (settings.txt) */
@@ -40,12 +44,36 @@ enum { FLIP_JITTER_X = 1, FLIP_JITTER_Y = 2, FLIP_MOTION = 4, FLIP_INVERTED = 8,
 typedef struct {
     SnxUpscaler* up;
     SnxUpscaleEval e;
+    /* the motion vectors made first from the depth, with the matrix, when reproject is set */
+    SnxReproject* reproject;
+    float reprojection[16];
 } Run;
 static void run(const void* arg) {
     Run r;
     const char* why;
     memcpy(&r, arg, sizeof r);
+    if (r.reproject) snx_reproject_record(r.reproject, r.e.cb, &r.e.depth, r.e.render, r.reprojection, &r.e.motion);
     if (!snx_upscaler_evaluate(r.up, &r.e, &why)) LOG_LIMIT(4, "vulkan: an upscale failed: %s\n", why);
+}
+
+/* the motion vectors pass for render, made (again, larger) when the one there is smaller: NULL when the device
+   refuses it, said once */
+static SnxReproject* reprojection(const u32 render[2]) {
+    u32 have[2] = {0, 0};
+    if (g_upscale.reproject) snx_reproject_size(g_upscale.reproject, have);
+    if (g_upscale.reproject && have[0] >= render[0] && have[1] >= render[1]) return g_upscale.reproject;
+    if (g_upscale.reproject) {
+        vk_finish(); /* nothing recorded may still use its image or sets */
+        snx_reproject_destroy(g_upscale.reproject);
+    }
+    const char* why = NULL;
+    u32 size[2] = {have[0] > render[0] ? have[0] : render[0], have[1] > render[1] ? have[1] : render[1]};
+    g_upscale.reproject = snx_reproject_create(g_vk.dev, g_vk.phys, size, &why);
+    if (!g_upscale.reproject)
+        LOG_LIMIT(1, "vulkan: no motion vectors from depth for hook modules: %s\n", why ? why : "refused");
+    else
+        LOG_LIMIT(1, "vulkan: motion vectors from depth for a hook module, up to %ux%u\n", size[0], size[1]);
+    return g_upscale.reproject;
 }
 
 static void release(void) {
@@ -216,6 +244,12 @@ int vk_upscale(const GpuUpscale* u) {
     int has_depth = u->has_depth && has_color && input(&u->depth, 1, u->render, &depth, &r.e.depth);
     int has_motion =
         u->has_motion && has_color && (module || has_depth) && input(&u->motion, 0, one, &motion, &r.e.motion);
+    /* a hook module without motion vectors of its own, with depth and a reprojection matrix: they are made from the
+       depth on the recording thread, just before the upscaler runs */
+    if (module && !has_motion && has_depth && (u->flags & GPU_UPSCALE_REPROJECTED_MOTION)) {
+        r.reproject = reprojection(u->render);
+        if (r.reproject) memcpy(r.reprojection, u->reprojection, sizeof r.reprojection);
+    }
     if (!has_color || (!module && (!has_depth || !has_motion))) {
         LOG_LIMIT(4,
                   "vulkan: %s color (format %#x), depth (%#x) or motion vectors (%#x) aren't render targets the "
@@ -276,7 +310,7 @@ int vk_upscale(const GpuUpscale* u) {
     if (flags & SNX_UP_FLAG_AUTO_EXPOSURE) r.e.exposure = (SnxUpscaleImage){0};
     /* the upscaler: the setting's (0 Best, then upscaler.h's order), among the kinds the caller takes. A DLSS
        evaluation takes a temporal one only: its front end's copy is its fallback */
-    SnxUpscaleNeeds needs = {(depth ? SNX_UP_DEPTH : 0) | (motion ? SNX_UP_MOTION : 0) | SNX_UP_JITTER |
+    SnxUpscaleNeeds needs = {(depth ? SNX_UP_DEPTH : 0) | (motion || r.reproject ? SNX_UP_MOTION : 0) | SNX_UP_JITTER |
                                  (exposure ? SNX_UP_EXPOSURE : 0) | (reactive ? SNX_UP_REACTIVE : 0),
                              SNX_UP_TEMPORAL | (u->flags & GPU_UPSCALE_SPATIAL_OK ? SNX_UP_SPATIAL : 0) |
                                  (u->flags & GPU_UPSCALE_COPY_OK ? SNX_UP_COPY : 0),
@@ -321,6 +355,8 @@ int vk_upscale(const GpuUpscale* u) {
     float sign = conventions & FLIP_MOTION ? -1.0f : 1.0f;
     r.e.motion_scale[0] = u->motion_scale[0] * sign;
     r.e.motion_scale[1] = u->motion_scale[1] * sign;
+    /* the made motion vectors are in picture coordinates (0 to 1) of the render size */
+    if (r.reproject) r.e.motion_scale[0] = (float)u->render[0] * sign, r.e.motion_scale[1] = (float)u->render[1] * sign;
     r.e.pre_exposure = u->pre_exposure;
     r.e.frame_ms = g_upscale.last ? (float)((double)(now - g_upscale.last) / 1e6) : 0;
     /* DLSS takes no camera: planes and a field of view the depth tests are tolerant of (they scale the depth
@@ -336,10 +372,13 @@ int vk_upscale(const GpuUpscale* u) {
               "vulkan: %s evaluation: color %d %ux%u, depth %d %ux%u, motion %d %ux%u scale %g %g, jitter %g %g, "
               "pre-exposure %g, exposure %s, reactive %s, reset %d, flags %#x\n",
               snx_upscaler_caps(id)->name, (int)color->f.vk, color->sw, color->sh, depth ? (int)depth->f.vk : 0,
-              depth ? depth->sw : 0, depth ? depth->sh : 0, motion ? (int)motion->f.vk : 0, motion ? motion->sw : 0,
-              motion ? motion->sh : 0, (double)u->motion_scale[0], (double)u->motion_scale[1], (double)u->jitter[0],
-              (double)u->jitter[1], (double)u->pre_exposure, exposure ? "given" : "none", reactive ? "given" : "none",
-              r.e.reset, u->flags);
+              depth ? depth->sw : 0, depth ? depth->sh : 0,
+              motion        ? (int)motion->f.vk
+              : r.reproject ? -1
+                            : 0,
+              motion ? motion->sw : 0, motion ? motion->sh : 0, (double)r.e.motion_scale[0],
+              (double)r.e.motion_scale[1], (double)r.e.jitter[0], (double)r.e.jitter[1], (double)u->pre_exposure,
+              exposure ? "given" : "none", reactive ? "given" : "none", r.e.reset, u->flags);
     vk_rec_call(run, &r, sizeof r);
 
     /* our image onto the game's output */

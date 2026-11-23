@@ -204,6 +204,9 @@ typedef struct {
     int reset;
     u32 flags;
     const char** ran; /* where the renderer writes the name of the upscaler that ran, NULL for nowhere */
+    /* with GPU_UPSCALE_REPROJECTED_MOTION: this frame's render pixel (x, y as -1 to 1, y down, depth as stored) to
+       the frame before's, row-major (hle/hook/snx_hook_module.h's SnxHookRecordedUpscale) */
+    f32 reprojection[16];
 } GpuUpscale;
 enum {
     /* NGX's feature bits, as a DLSS network's builder flags give them */
@@ -212,6 +215,9 @@ enum {
     GPU_UPSCALE_JITTERED_MOTION = 4, /* motion vectors that include the jitter */
     GPU_UPSCALE_INVERTED_DEPTH = 8,
     GPU_UPSCALE_AUTO_EXPOSURE = 0x40,
+    /* the runtime's own: motion vectors made from depth and the reprojection matrix (a hook module's, without motion
+       vectors of its own) */
+    GPU_UPSCALE_REPROJECTED_MOTION = 0x100,
     /* the runtime's own: GPU_UPSCALE_HDR says the color's range (else its format does: a float format is HDR) */
     GPU_UPSCALE_RANGE_GIVEN = 1u << 16,
     /* a hook module's upscale (docs/platforms/nx/hooks.md), not a DLSS evaluation, which runs no upscaler with the

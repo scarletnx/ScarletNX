@@ -886,6 +886,7 @@ typedef struct {
     u32 render[2], out[2], render_max[2];
     i32 out_base[2];
     f32 jitter[2], motion_scale[2], pre_exposure;
+    f32 reprojection[16]; /* with GPU_UPSCALE_REPROJECTED_MOTION */
 } NvnPUpscale;
 typedef struct {
     u64 texture;
