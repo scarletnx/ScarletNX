@@ -2024,6 +2024,18 @@ target_compile_definitions(snx-test-os-light-event PRIVATE
     OS_LIGHT_INC="${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx-test-os-light-event/nn/hooks.hook.inc")
 target_compile_options(snx-test-os-light-event PRIVATE -Wno-string-concatenation)
 add_test(NAME os_light_event COMMAND snx-test-os-light-event)
+# the os_sync family's locks hand a lock to the oldest thread waiting on its word (src/nx/nn/os_sync.c), host
+# threads standing for the game's
+if(UNIX)
+    add_executable(snx-test-os-sync-handoff os_sync_handoff.c)
+    snx_test_target(snx-test-os-sync-handoff gnu23)
+    target_include_directories(snx-test-os-sync-handoff PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-os-sync-handoff PRIVATE scarletnx-platform)
+    snx_hookgen(snx-test-os-sync-handoff SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
+    target_compile_options(snx-test-os-sync-handoff PRIVATE -Wno-string-concatenation) # os_sync.c's split names
+    add_test(NAME os_sync_handoff COMMAND snx-test-os-sync-handoff)
+    set_tests_properties(os_sync_handoff PROPERTIES TIMEOUT 60)
+endif()
 # the alloc family's arena (src/nx/nn/alloc.c) in a program that links jemalloc as scarletnx does, whole and
 # unexported: ready, and its allocations in the guest's window above the layout; the SDK heap's functions on its
 # blocks, each in the runtime's route list (snx_nx_module's)

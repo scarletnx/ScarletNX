@@ -34,6 +34,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
+#include <string.h>
 
 /* the functions that write the two words, which the family takes all of or none of */
 static const char* const k_word_writers[] = {
@@ -125,11 +126,74 @@ i32 os_core_number_impl(CPU* c, u64 self) {
     return os_core_number(c);
 }
 
+/* ---- the threads waiting on a lock's word, oldest first, which a Leave hands the lock to as the console's kernel
+   hands a mutex to a waiter (svcArbitrateUnlock). Freed instead, the lock went back at once to the thread that let it
+   go: one game's movie library holds its mutex while it handles an event and lets go only while it waits, and took it
+   again each time before the game's thread waiting on it in a call ran, so that thread saw two of the library's
+   events at once and took them in the wrong order. A lock is in one of the table's slots while threads wait on it; one
+   that finds no room waits as before, with no place in the order */
+#define HAND_SLOTS   512
+#define HAND_PROBE   16
+#define HAND_WAITERS 16
+static struct {
+    u64 addr;
+    u32 n, tag[HAND_WAITERS];
+} g_hand[HAND_SLOTS];
+static PMutex g_hand_lk = PMUTEX_INIT;
+static u32 hand_slot(u64 addr, u32 k) { return (u32)(((addr >> 2) * 0x9E3779B1u + k) % HAND_SLOTS); }
+/* tag queued on the lock at addr: 1, or 0 when there was no room */
+static int hand_add(u64 addr, u32 tag) {
+    int done = 0;
+    pm_lock(&g_hand_lk);
+    for (u32 k = 0, free_slot = HAND_SLOTS; k < HAND_PROBE && !done; k++) {
+        u32 i = hand_slot(addr, k);
+        if (g_hand[i].n && g_hand[i].addr == addr) {
+            if (g_hand[i].n < HAND_WAITERS) g_hand[i].tag[g_hand[i].n++] = tag, done = 1;
+            break;
+        }
+        if (!g_hand[i].n && free_slot == HAND_SLOTS) free_slot = i;
+        if (k == HAND_PROBE - 1 && free_slot < HAND_SLOTS) {
+            g_hand[free_slot].addr = addr;
+            g_hand[free_slot].tag[0] = tag;
+            g_hand[free_slot].n = 1;
+            done = 1;
+        }
+    }
+    pm_unlock(&g_hand_lk);
+    return done;
+}
+static void hand_del(u64 addr, u32 tag) {
+    pm_lock(&g_hand_lk);
+    for (u32 k = 0; k < HAND_PROBE; k++) {
+        u32 i = hand_slot(addr, k);
+        if (!g_hand[i].n || g_hand[i].addr != addr) continue;
+        for (u32 j = 0; j < g_hand[i].n; j++)
+            if (g_hand[i].tag[j] == tag) {
+                memmove(&g_hand[i].tag[j], &g_hand[i].tag[j + 1], sizeof(u32) * (g_hand[i].n - j - 1));
+                g_hand[i].n--;
+                break;
+            }
+        break;
+    }
+    pm_unlock(&g_hand_lk);
+}
+/* the oldest thread waiting on the lock's word, 0 for none */
+static u32 hand_first(u64 addr) {
+    u32 tag = 0;
+    pm_lock(&g_hand_lk);
+    for (u32 k = 0; k < HAND_PROBE && !tag; k++) {
+        u32 i = hand_slot(addr, k);
+        if (g_hand[i].n && g_hand[i].addr == addr) tag = g_hand[i].tag[0];
+    }
+    pm_unlock(&g_hand_lk);
+    return tag;
+}
+
 /* ---- InternalCriticalSection: the word at cs */
 static void cs_enter(CPU* c, u64 cs) {
     _Atomic u32* p = word(c, cs);
     u32 tag = me(), v = 0;
-    int waited = 0;
+    int waited = 0, queued = 0;
 #if defined(SNX_TRACY)
     u64 t0 = 0; /* only the contention plot reads the clock */
 #endif
@@ -140,7 +204,9 @@ static void cs_enter(CPU* c, u64 cs) {
             if (cas(p, &v, tag | HANDLE_WAIT)) break;
             continue;
         }
+        if ((v & ~HANDLE_WAIT) == tag) break; /* handed to this thread by a Leave (cs_leave) */
         if (!(v & HANDLE_WAIT) && !cas(p, &v, v | HANDLE_WAIT)) continue;
+        if (!queued) queued = hand_add(cs, tag) ? 1 : -1;
         if (!waited) {
             hook_wait_begin();
             waited = 1;
@@ -151,6 +217,7 @@ static void cs_enter(CPU* c, u64 cs) {
         plat_wait_word(p, snx_le32(v | HANDLE_WAIT), -1);
         v = ld(p);
     }
+    if (queued > 0) hand_del(cs, tag);
     if (waited) {
         hook_wait_end();
         /* the wait left the core, so it is wall time, never a zone: the plot says how long contention blocked the
@@ -165,10 +232,11 @@ static int cs_try_enter(CPU* c, u64 cs) {
     return cas(word(c, cs), &v, me());
 }
 /* as the SDK's Leave: free at once unless someone waits, else the kernel's svcArbitrateUnlock, here with no SVC, hands
-   it to the best thread waiting there, or frees it, and wakes one waiting on the word (g_lock_futex) */
+   it to the best thread waiting there, else to the oldest waiting on the word, else frees it (g_lock_futex) */
 static void cs_leave(CPU* c, u64 cs) {
     u32 v = me();
-    if (!cas(word(c, cs), &v, 0)) svc_arbitrate_unlock(cs);
+    int handed;
+    if (!cas(word(c, cs), &v, 0)) svc_arbitrate_unlock_to(cs, hand_first(cs), &handed);
 }
 static int cs_mine(CPU* c, u64 cs) { return (ld(word(c, cs)) & ~HANDLE_WAIT) == me(); }
 
