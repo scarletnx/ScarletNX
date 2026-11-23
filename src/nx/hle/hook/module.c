@@ -7,7 +7,29 @@
 #include "nx/runtime/platform/log.h"
 
 enum { MODULES = 64 };
-static u8 g_applies[MODULES]; /* by the list's index */
+static u8 g_applies[MODULES]; /* by hook_module_at's index */
+static struct {
+    const HookModule* list[MODULES];
+    u32 count;
+} g_added; /* hook_module_add's */
+
+static u32 compiled_in(void) {
+    u32 n = 0;
+    while (g_hook_modules[n]) n++;
+    return n;
+}
+
+const HookModule* hook_module_at(u32 i) {
+    u32 n = compiled_in();
+    return i < n ? g_hook_modules[i] : i - n < g_added.count ? g_added.list[i - n] : NULL;
+}
+
+int hook_module_add(const HookModule* m) {
+    u32 n = compiled_in();
+    if (n + g_added.count >= MODULES) return -1;
+    g_added.list[g_added.count++] = m;
+    return (int)(n + g_added.count - 1);
+}
 static _Thread_local char g_why[192];
 
 static const SnxModInfo* find(const SnxModule* mod, const char* name) {
@@ -103,9 +125,9 @@ const char* hook_module_refusal(const HookModule* m, const SnxModule* mod, const
 }
 
 void hook_modules_select(const SnxModule* mod, const u8* mem, int (*off)(const char* name)) {
+    const HookModule* m;
     memset(g_applies, 0, sizeof g_applies);
-    for (u32 i = 0; g_hook_modules[i]; i++) {
-        const HookModule* m = g_hook_modules[i];
+    for (u32 i = 0; (m = hook_module_at(i)) != NULL; i++) {
         if (i == MODULES) {
             WARN("hooks: more than %d modules: %s and those after it aren't applied\n", MODULES, m->name);
             break;

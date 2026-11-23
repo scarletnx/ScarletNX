@@ -1759,6 +1759,73 @@ endforeach()
 target_compile_definitions(snx-test-hook-module-applied PRIVATE HOOK_MODULE_TEST=1)
 target_compile_definitions(snx-test-hook-module-refused PRIVATE HOOK_MODULE_TEST=2)
 target_compile_definitions(snx-test-hook-module-off PRIVATE HOOK_MODULE_TEST=3)
+# hook modules from libraries (hle/hook/module_lib.c, nx/loader/hook_libs.c): synthetic module libraries of no game, one
+# per case from tests/hook_module_lib_mod.c and built against hle/hook/snx_hook_module.h alone, loaded and refused as the
+# runtime loads them, and which game their modules apply to. snx-test-hook-module-lib --load PATH prints what the
+# runtime makes of any library
+set(snx_hx_libs "${CMAKE_CURRENT_BINARY_DIR}/hook_module_libs")
+set(snx_hx_targets)
+foreach(snx_hx IN ITEMS hx_good:1:/folder hx_off:2:/folder hx_major:3: hx_minor:4: hx_no_entry:5: hx_null:6:
+                        hx_misnamed:7: hx_empty:8: hx-dash:3:)
+    string(REPLACE ":" ";" snx_hx "${snx_hx}")
+    list(GET snx_hx 0 snx_hx_name)
+    list(GET snx_hx 1 snx_hx_case)
+    list(LENGTH snx_hx snx_hx_parts)
+    set(snx_hx_folder "")
+    if(snx_hx_parts GREATER 2)
+        list(GET snx_hx 2 snx_hx_folder)
+    endif()
+    add_library(snx-test-${snx_hx_name} MODULE hook_module_lib_mod.c)
+    snx_test_target(snx-test-${snx_hx_name} 11)
+    target_include_directories(snx-test-${snx_hx_name} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(snx-test-${snx_hx_name} PRIVATE HX_CASE=${snx_hx_case})
+    set_target_properties(snx-test-${snx_hx_name} PROPERTIES PREFIX "" OUTPUT_NAME ${snx_hx_name}
+                          SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                          LIBRARY_OUTPUT_DIRECTORY "${snx_hx_libs}${snx_hx_folder}")
+    list(APPEND snx_hx_targets snx-test-${snx_hx_name})
+endforeach()
+add_executable(snx-test-hook-module-lib hook_module_lib.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module_lib.c")
+snx_test_target(snx-test-hook-module-lib 11)
+add_dependencies(snx-test-hook-module-lib snx_settings ${snx_hx_targets})
+target_include_directories(snx-test-hook-module-lib PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                           "${PROJECT_BINARY_DIR}/settingsgen")
+target_compile_definitions(snx-test-hook-module-lib PRIVATE HX_LIBS="${snx_hx_libs}"
+                           HX_SUFFIX="${CMAKE_SHARED_LIBRARY_SUFFIX}")
+target_link_libraries(snx-test-hook-module-lib PRIVATE snx_nx_module scarletnx-common m)
+add_test(NAME hook_module_lib COMMAND snx-test-hook-module-lib)
+# the libraries' CPU hooks: hook_install (src/nx/hle/hook/hook.c, its adapter of the libraries'
+# hooks) over libraries of no game built from tests/hook_lib_cpu_mod.c, the recompile's route keys
+# (nx/loader/hook_libs.c), the hook the route list leaves out, and the handlers' CPU, memory, own code and upscale
+set(snx_hx_cpu_targets)
+foreach(snx_hx IN ITEMS hx_cpu:1:/cpu hx_cpu_title:2:/cpu hx_cpu_full:5:/cpu hx_cpu_nobuild:3:/cpu_bad
+                        hx_cpu_odd:4:/cpu_bad)
+    string(REPLACE ":" ";" snx_hx "${snx_hx}")
+    list(GET snx_hx 0 snx_hx_name)
+    list(GET snx_hx 1 snx_hx_case)
+    list(GET snx_hx 2 snx_hx_folder)
+    add_library(snx-test-${snx_hx_name} MODULE hook_lib_cpu_mod.c)
+    snx_test_target(snx-test-${snx_hx_name} 11)
+    target_include_directories(snx-test-${snx_hx_name} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(snx-test-${snx_hx_name} PRIVATE HX_CASE=${snx_hx_case})
+    set_target_properties(snx-test-${snx_hx_name} PROPERTIES PREFIX "" OUTPUT_NAME ${snx_hx_name}
+                          SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                          LIBRARY_OUTPUT_DIRECTORY "${snx_hx_libs}${snx_hx_folder}")
+    list(APPEND snx_hx_cpu_targets snx-test-${snx_hx_name})
+endforeach()
+add_executable(snx-test-hook-lib-cpu hook_lib_cpu.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module_lib.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+snx_test_target(snx-test-hook-lib-cpu 11)
+add_dependencies(snx-test-hook-lib-cpu snx_settings ${snx_hx_cpu_targets})
+target_include_directories(snx-test-hook-lib-cpu PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                           "${PROJECT_BINARY_DIR}/settingsgen")
+target_compile_definitions(snx-test-hook-lib-cpu PRIVATE HX_LIBS="${snx_hx_libs}"
+                           HX_SUFFIX="${CMAKE_SHARED_LIBRARY_SUFFIX}")
+target_link_libraries(snx-test-hook-lib-cpu PRIVATE snx_nx_module scarletnx-common)
+snx_service_swipc(snx-test-hook-lib-cpu)
+snx_hookgen(snx-test-hook-lib-cpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
+add_test(NAME hook_lib_cpu COMMAND snx-test-hook-lib-cpu)
 # the jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's bytes
 # against what llvm-mc disassembles them to, on any host
 add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")

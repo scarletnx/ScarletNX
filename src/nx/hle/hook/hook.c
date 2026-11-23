@@ -6,6 +6,7 @@
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/hook/jump.h"
 #include "nx/hle/hook/module.h"
+#include "nx/hle/hook/module_lib.h"
 #include "nx/runtime/nce/nce.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
@@ -175,6 +176,17 @@ static u32 first_word(u64 a) {
     return w;
 }
 
+/* A site's hook k: an entry of the generated table, or from HOOK_COUNT on a hook module library's CPU hook
+   (module_lib.h), k - HOOK_COUNT in its list. Its key or symbol, its handler's name for the log, and its family, which
+   is the library module's name */
+static const char* site_symbol(u32 k) { return k < HOOK_COUNT ? hook_symbol[k] : hook_lib_cpu(k - HOOK_COUNT)->key; }
+static const char* site_handler(u32 k) {
+    return k < HOOK_COUNT ? hook_handler[k] : hook_lib_cpu(k - HOOK_COUNT)->hook->name;
+}
+static const char* site_family(u32 k) {
+    return k < HOOK_COUNT ? hook_family_name[hook_family[k]] : hook_lib_cpu(k - HOOK_COUNT)->owner;
+}
+
 /* whether the code at pc, readable up to end, is the mod's trampoline of site i: the function's first k instructions
    (1, or 4 or 5 for a hook too far for a b, which wrote a nop when its address was unaligned) and a jump back to the
    one after them, a b, or an ldr x17, #8 and br x17 of the address after a nop that aligns it (And64InlineHook's,
@@ -294,7 +306,7 @@ int hook_states_refused(char* why, size_t whysize) {
     const HostHook* h = &g_host.hook;
     u32 i;
     for (i = 0; i < h->count; i++) {
-        const char* f = hook_family_name[hook_family[h->hook[i]]];
+        const char* f = site_family(h->hook[i]);
         if (atomic_load_explicit(&h->invalid[i], memory_order_acquire)) continue;
         if (!strcmp(f, "cond_var")) {
             snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
@@ -306,6 +318,20 @@ int hook_states_refused(char* why, size_t whysize) {
         }
     }
     return 0;
+}
+
+/* The one adapter of every hook module library's CPU hook (module_lib.h): the hook of the function at entry, its
+   handler run with the CPU as the call left it, then back to the caller's x30, as a generated adapter returns. A site
+   the game changed runs the game's code, as hook_invalidate left it */
+static void lib_adapter(CPU* RESTRICT c, u64 entry) {
+    int i = site_of(entry);
+    if (i < 0 || atomic_load_explicit(&g_host.hook.invalid[i], memory_order_acquire)) {
+        hook_invalidated(c, entry);
+        return;
+    }
+    c->pc = entry;
+    hook_lib_cpu_run(g_host.hook.hook[i] - HOOK_COUNT, c, entry);
+    c->pc = c->x[30];
 }
 
 /* which calls the module sends through the dispatch slots, once */
@@ -342,7 +368,9 @@ static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const 
     h->hook[h->count] = (u16)k;
     h->addr[h->count] = addr;
     h->orig[h->count] = nce_slot(atomic_load_explicit(&(*slot), memory_order_relaxed));
-    h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
+    h->fn[h->count] = k >= HOOK_COUNT                                 ? lib_adapter
+                      : verify[hook_family[k]] && hook_verify[k].pure ? verify_fn
+                                                                      : hook_fn[k];
     /* within its module: a function at the end of the last one has no mapped bytes after it */
     for (i = 0; i < 5; i++) h->head[h->count][i] = addr + 4 * i + 4 <= end ? first_word(addr + 4 * i) : 0;
     atomic_store_explicit(&h->invalid[h->count], 0, memory_order_relaxed);
@@ -352,14 +380,64 @@ static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const 
     for (s = index_slot(addr); h->index[s]; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1)) {}
     h->index[s] = (u16)(h->count + 1);
     atomic_store_explicit(slot, h->fn[h->count], memory_order_release);
-    nce_slot_taken(addr, hook_family_name[hook_family[k]]);
+    nce_slot_taken(addr, site_family((u32)k));
     jit_slot_taken(addr, h->fn[h->count]);
     h->count++;
-    if (!hook_routed(hook_symbol[k]))
+    if (k < HOOK_COUNT && !hook_routed(hook_symbol[k]))
         WARN("hooks: %s at %llx runs %s only for the calls through function pointers and the PLT stubs the module "
              "did not bind: the module's route list doesn't name it, so its direct calls run its own code. Recompile "
              "the game for them\n",
              name, (unsigned long long)addr, hook_handler[k]);
+}
+
+/* whether the module's route list names an address hook's key: a module without a list routes only the functions it
+   exports, which a key's function need not be */
+static int key_routed(const char* key) {
+    const SnxRoutes* r = g_routes;
+    return r && (r->all || hook_routed(key));
+}
+
+/* the CPU hooks of the hook module libraries whose modules apply (module_lib.h), each at its offset in the module its
+   module names, where the module's route list names its key. Not installed, with the reason in the log, where it
+   doesn't: the recompiled code calls that function directly, so its hook would see only some of its calls */
+static void hook_put_libs(const unsigned char verify[]) {
+    for (u32 n = 0; n < hook_lib_cpu_count(); n++) {
+        HookLibCpu* l = hook_lib_cpu(n);
+        const char* in = l->in ? l->in : "main";
+        const SnxModInfo* mi = NULL;
+        if (!hook_module_applies(l->module)) continue; /* module.c said why */
+        for (u32 i = 0; i < g_mod->nmods; i++)
+            if (g_mod->mods[i].name && !strcmp(g_mod->mods[i].name, in)) mi = &g_mod->mods[i];
+        if (!mi) {
+            WARN("hooks: module %s's CPU hook %s isn't installed: the game has no module %s\n", l->owner, l->hook->name,
+                 in);
+            continue;
+        }
+        u64 addr = mi->base + l->offset;
+        /* the key of its function in this build, whatever part of the ID the library gave: the recompile's */
+        snx_hook_build_key(mi->build_id, l->offset, l->key, sizeof l->key);
+        if (l->offset < mi->text_off || l->offset - mi->text_off >= mi->text_size || addr < g_code_lo ||
+            addr >= g_code_hi) {
+            WARN("hooks: module %s's CPU hook %s (%s) lies outside the code of %s, so it isn't installed\n", l->owner,
+                 l->hook->name, l->key, mi->name);
+            continue;
+        }
+        if (!key_routed(l->key)) {
+            WARN("hooks: module %s's CPU hook %s isn't installed: the game was recompiled without its key %s in the "
+                 "route list, so the recompiled code calls %s+%llx directly. Recompile the game (scarletnx -r) with "
+                 "the module's library in the hook modules folder\n",
+                 l->owner, l->hook->name, l->key, mi->name, (unsigned long long)l->offset);
+            continue;
+        }
+        if (site_of(addr) >= 0) {
+            WARN("hooks: module %s's CPU hook %s isn't installed: another hook has %s+%llx already\n", l->owner,
+                 l->hook->name, mi->name, (unsigned long long)l->offset);
+            continue;
+        }
+        hook_put((int)(HOOK_COUNT + n), addr, 0, mi->base + mi->size, l->key, verify);
+        LOG("hook: %s at %llx (%s+%llx) runs module %s's %s\n", l->key, (unsigned long long)addr, mi->name,
+            (unsigned long long)l->offset, l->owner, l->hook->name);
+    }
 }
 
 /* the address hooks (hookgen's [BUILDID:OFFSET]), each in the module built as its build ID, at its offset there */
@@ -389,7 +467,7 @@ u64 hook_site(const char* symbol) {
     const HostHook* h = &g_host.hook;
     u32 i;
     for (i = 0; i < h->count; i++)
-        if (!strcmp(hook_symbol[h->hook[i]], symbol)) return h->addr[i];
+        if (!strcmp(site_symbol(h->hook[i]), symbol)) return h->addr[i];
     return 0;
 }
 
@@ -478,9 +556,10 @@ void hook_install(void) {
         return;
     }
     if (!g_disp || !g_mod) return;
+    /* the hook modules (module.h), the libraries' after the compiled-in ones (module_lib.h): a module that doesn't
+       apply leaves its family's hooks and its CPU hooks out */
+    hook_module_libs_load(hook_family_off);
     routes_say();
-    /* the hook modules (module.h): a module that doesn't apply leaves its family's hooks out, and its GPU chains
-       (gpu/nvn/nvn_hook.c takes those of the modules that apply when the game makes its first queue) */
     hook_modules_select(g_mod, g_mem, hook_family_off);
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
@@ -546,6 +625,7 @@ void hook_install(void) {
             *hook_layouts[k] ? ", with the layouts " : "", hook_layouts[k]);
     }
     hook_put_addresses(off, verify);
+    hook_put_libs(verify);
     LOG("hooks: %u of the game's functions run the runtime's handlers\n", h->count);
 }
 
@@ -554,6 +634,15 @@ void hook_install(void) {
 static PMutex g_invalidate_lock = PMUTEX_INIT;
 static void hook_invalidate(u32 i) {
     HostHook* h = &g_host.hook;
+    if (h->hook[i] >= HOOK_COUNT) { /* a library's CPU hook: its adapter is shared, and checks invalid itself */
+        atomic_store_explicit(&h->stale[i], 1, memory_order_release);
+        atomic_store_explicit(&h->invalid[i], 1, memory_order_release);
+        WARN("hooks: the game changed the first instruction of %s at %llx from %08x to %08x, which module %s's CPU "
+             "hook %s answered: a mod's hook. That hook is off from here, and the game's code runs\n",
+             site_symbol(h->hook[i]), (unsigned long long)h->addr[i], snx_le32(h->head[i][0]),
+             snx_le32(first_word(h->addr[i])), site_family(h->hook[i]), site_handler(h->hook[i]));
+        return;
+    }
     GuestFn adapter = hook_fn[h->hook[i]];
     char why[320];
     const char* ext_handler = NULL;
@@ -562,8 +651,10 @@ static void hook_invalidate(u32 i) {
     int r, k;
     atomic_store_explicit(&h->stale[i], 1, memory_order_release); /* its own code is what the game put there */
     atomic_store_explicit(&h->invalid[i], 1, memory_order_release);
-    for (j = 0; j < h->count; j++) /* an adapter another site's invalidation already rewrote */
-        if (j != i && hook_fn[h->hook[j]] == adapter && atomic_load_explicit(&h->invalid[j], memory_order_acquire))
+    /* an adapter another site's invalidation already rewrote (a library's CPU hook has an adapter of its own) */
+    for (j = 0; j < h->count; j++)
+        if (j != i && h->hook[j] < HOOK_COUNT && hook_fn[h->hook[j]] == adapter &&
+            atomic_load_explicit(&h->invalid[j], memory_order_acquire))
             break;
     if (j == h->count && (r = snx_hook_jump_patch(adapter, hook_invalidated, why, sizeof why)) != 0) {
         if (r < 0)
@@ -586,7 +677,8 @@ static void hook_invalidate(u32 i) {
     }
     /* the other sites of its adapter: their code did not change, so their slots run it, their own */
     for (j = 0; j < h->count; j++)
-        if (j != i && hook_fn[h->hook[j]] == adapter && !atomic_load_explicit(&h->invalid[j], memory_order_acquire)) {
+        if (j != i && h->hook[j] < HOOK_COUNT && hook_fn[h->hook[j]] == adapter &&
+            !atomic_load_explicit(&h->invalid[j], memory_order_acquire)) {
             atomic_store_explicit(&h->invalid[j], 1, memory_order_release);
             atomic_store_explicit(&g_disp[(h->addr[j] - g_code_lo) >> 2], h->orig[j], memory_order_release);
             WARN("hooks: %s at %llx shares that native hook's code, so it runs its own code from here too\n",
@@ -701,8 +793,8 @@ void hook_orig_stale(GuestFn f) {
 const char* hook_at(u64 addr, const char** handler) {
     int i = site_of(addr);
     if (i < 0) return NULL;
-    *handler = hook_handler[g_host.hook.hook[i]];
-    return hook_symbol[g_host.hook.hook[i]];
+    *handler = site_handler(g_host.hook.hook[i]);
+    return site_symbol(g_host.hook.hook[i]);
 }
 
 void hook_run_original(CPU* c, u64 addr) {
