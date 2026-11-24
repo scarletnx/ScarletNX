@@ -389,6 +389,35 @@ static inline SgD sgx_fp(SgCtx* g, const char* sym, SgB path, SgD fpcr, SgD* ops
     if (has_desc) args[n++] = sgx_const(32, desc);
     return sg_d_slice(g, sgx_call(g, sym, 0, 1, args, n, 64), (long long)w - 1, 0);
 }
+/* ---- floating point every machine's back end makes the same way ----
+   FPRoundingMode is the back end's own (the mode FPCR holds when the guest runs); FRINT32/64 (FPRoundIntN), FJCVTZS
+   and BFCVT are the exact helpers' (x64_helpers.c) */
+#define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
+static inline int sg_FPRoundingMode(SgCtx* g, SgB path, SgD fpcr) {
+    (void)g, (void)path, (void)fpcr;
+    return SG_FP_ROUNDING_FPCR;
+}
+/* a rounding the Sail hands a lowered function as desc's rm + 1: FPRounding's 0-4 (TIEEVEN to TIEAWAY), 0 for FPCR's */
+static inline SnxU32 sgx_fp_rm(int rounding) {
+    if (rounding == SG_FP_ROUNDING_FPCR) return 0;
+    if (rounding < 0 || rounding > 4) sg_fail("a floating-point rounding the helpers do not take", rounding, 4);
+    return (SnxU32)rounding + 1;
+}
+static inline SgD sg_FPRoundIntN(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, long long intsize) {
+    return sgx_fp(g, "snx_x64_fp_round_int", path, fpcr, &a, 1, 1,
+                  a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)intsize << 16, a.w);
+}
+static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64, long long n, SgD* result, SgD* z) {
+    SgD reply;
+    if (!is64 || n != 32 || op.w != 64) sg_fail("FPToFixedJS other than a double to 32 bits", n, op.w);
+    reply = sgx_fp(g, "snx_x64_fp_jcvt", path, fpcr, &op, 1, 0, 0, 64);
+    *result = sg_d_slice(g, reply, 31, 0);
+    *z = sg_d_slice(g, reply, 32, 32);
+}
+static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
+    return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
+}
+
 /* ---- the machine's inline sequences: inputs in fixed registers ---- */
 
 static inline int sgx_mem(SgCtx* g);

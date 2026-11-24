@@ -220,17 +220,6 @@ static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
     ok = sgx_fp_hot_of(g, r, fpcr, w, &a, 1);
     return sgx_fp_cold_z(g, ok, r, "snx_x64_fp_unary", &a, 1, w | SNX_FP_SQRT << 8, 1);
 }
-#define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
-static inline int sg_FPRoundingMode(SgCtx* g, SgB path, SgD fpcr) {
-    (void)g, (void)path, (void)fpcr;
-    return SG_FP_ROUNDING_FPCR;
-}
-/* a rounding the Sail hands a lowered function as desc's rm + 1: FPRounding's 0-4 (TIEEVEN to TIEAWAY), 0 for FPCR's */
-static inline SnxU32 sgx_fp_rm(int rounding) {
-    if (rounding == SG_FP_ROUNDING_FPCR) return 0;
-    if (rounding < 0 || rounding > 4) sg_fail("a floating-point rounding the helpers do not take", rounding, 4);
-    return (SnxU32)rounding + 1;
-}
 /* ROUNDSx's immediate for FPRounding's TIEEVEN, POSINF, NEGINF, ZERO (FPCR's: TIEEVEN, which the guard holds it to);
    -1 for TIEAWAY, which x86 doesn't round by */
 static inline int sgx_round_imm(int rounding) {
@@ -259,10 +248,6 @@ static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int roundin
     bad = sg_b_or(g, sgx_fp_bad(g, fpcr, rounding == SG_FP_ROUNDING_FPCR ? SGX_FPCR_RMODE : 0, exact),
                   sg_b_or(g, sgx_fp_nan(g, ab, w), sgx_fp_flushed(g, fpcr, ab, w)));
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_round", &ab, 1, fpcr, 1, desc);
-}
-static inline SgD sg_FPRoundIntN(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, long long intsize) {
-    return sgx_fp(g, "snx_x64_fp_round_int", path, fpcr, &a, 1, 1,
-                  a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)intsize << 16, a.w);
 }
 /* FCVT between singles and doubles: CVTSS2SD (exact, but a denormal single FZ flushes) and CVTSD2SS (a single's roomy
    result, or a zero's: a denormal double gives neither); a NaN goes cold. Halves: the helper */
@@ -385,17 +370,6 @@ static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int 
     r = sgx_fp_cold(g, bad, r, "snx_x64_fp_to_int", &ob, 1, fpcr, 1, desc);
     return sg_d_slice(g, r, iw - 1, 0);
 }
-static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64, long long n, SgD* result, SgD* z) {
-    SgD reply;
-    if (!is64 || n != 32 || op.w != 64) sg_fail("FPToFixedJS other than a double to 32 bits", n, op.w);
-    reply = sgx_fp(g, "snx_x64_fp_jcvt", path, fpcr, &op, 1, 0, 0, 64);
-    *result = sg_d_slice(g, reply, 31, 0);
-    *z = sg_d_slice(g, reply, 32, 32);
-}
-static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
-    return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
-}
-
 #define SGX_RAX 0
 #define SGX_RCX 1
 #define SGX_RDX 2

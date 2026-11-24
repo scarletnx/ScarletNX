@@ -3478,6 +3478,24 @@ if(NOT WIN32)
     # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against its LLVM
     # back end: the same registers, flags, next pc and UNDEF from the same random states, word by word, on the host's
     # BMI1, BMI2 and LZCNT and without them
+    # sailgen's arm64 back end (its encoders the A64 Sail's) against the LLVM back end, its code run under Unicorn on
+    # any host (the test's memory mapped into it at the same addresses), where Unicorn is installed
+    find_path(SNX_UNICORN_INCLUDE_DIR unicorn/unicorn.h)
+    find_library(SNX_UNICORN_LIBRARY unicorn)
+    if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+        add_executable(snx-test-sail-arm64 sail_arm64.c sail_arm64_emit.c llvm_qemu_words.c llvm_steps.c
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+        snx_cpu_helpers_flags(snx-test-sail-arm64)
+        snx_test_target(snx-test-sail-arm64 gnu23)
+        target_include_directories(snx-test-sail-arm64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+        target_link_libraries(snx-test-sail-arm64 PRIVATE snx_llvm snx_driver "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
+        snx_decodetree_a64(snx-test-sail-arm64)
+        snx_sailgen_a64_arm64(snx-test-sail-arm64)
+        add_test(NAME sail_arm64 COMMAND snx-test-sail-arm64)
+        add_test(NAME sail_arm64_spill COMMAND snx-test-sail-arm64 --pool 3 --states 32)
+        set_tests_properties(sail_arm64 sail_arm64_spill PROPERTIES TIMEOUT 900)
+    endif()
     include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
     if(SNX_X64)
         add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c

@@ -506,6 +506,42 @@ UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, 
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
 
+### The arm64 back end (`arm64.h`, `arm64_asm.h`, `arm64_a64.h`)
+
+```sh
+sailgen --generate a64_x64.roots --backend bits.h --backend machdef.h --backend arm64.h --backend mach.h \
+        --backend arm64_asm.h --backend mach_a64.h --backend arm64_a64.h --profile a64.profile \
+        -o a64_arm64.inc a64.sail --overlay nx.sail
+```
+
+The host's own A64, around the same `mach.h` and `mach_a64.h`: the same roots, the same SSA and folds, the same
+register allocation (32 registers of each kind). Every word it writes is an encoder's of the A64 Sail's decode
+clauses (`a64_enc.inc`, `--encoders`), so the instruction table is the guest's own Sail. What `arm64.h` writes is
+which instruction each of `mach.h`'s primitives is, and that is their names: the primitives are the Arm ARM's own
+definitions (`x64.ops` writes them from AddWithCarry, ShiftReg, CountLeadingZeroBits), so SUBS is SUBS (shifted
+register), Arm's flags are the host's NZCV and each condition its own code (CMP then B.HI is CMP and CSEL HI), and the
+division is Arm's (`SGX_DIV_ARM`: no select keeps a divisor of 0 from it). Its immediates are A64's, which
+`sgx_imm_ok` answers for the front: an addition's imm12 (or imm12 shifted by 12) of the value or its negation (ADD of
+-k is SUB of k, with the same NZCV for k not 0; an addition of 0 stays one, a subtraction of 0 one, their C differing),
+a logical operation's bitmask (`sga_bitmask`, DecodeBitMasks inverted). An input is read whole (mach.h zero extends a
+narrower value first) only where the result or the flags depend on its bits above the value's: a compare's, a shift's
+to the right, a division's, CLZ's and REV's. A constant is MOVZ or MOVN, ORR of a bitmask, or MOVZ and MOVKs.
+
+`arm64_a64.h` keeps what is the machine's: the floating point through the exact helpers (`x64_helpers.c`'s
+`snx_x64_fp_*`, every operation: the host's own arithmetic needs the guest's FPCR, which the runtime's C would then
+run under too), the store-exclusive as cpu.h's value-based monitor (its checks, then LDAXR and STLXR of the value the
+load-exclusive read, compared at the access's size), the LSE atomics, CAS and CASP as load-exclusive loops, CRC32 the
+host's own (FEAT_CRC32), the barriers the guest's (DMB ISH, ISHLD, ISHST), an acquire load DMB ISHLD after it and a
+release store DMB ISH around it, and the ABI (AAPCS64: the state in X19, the frame below the saved X29, X30, X19 and
+X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
+
+**The test** (`tests/sail_arm64.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, and
+blocks of two to four of them, made into arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside the
+LLVM back end's steps from the same random states; registers, flags, the SIMD&FP state, guest memory, the next pc and
+UNDEF must match. The test's memory is mapped into Unicorn at its own addresses, so the code and the test's C share
+every pointer; a call out goes to a page of traps whose hook calls the native helper. `sail_arm64_spill` gives it
+three registers (`--pool 3`); `--dump WORD...` prints a block for a disassembler.
+
 ### AArch32 (`x64_a32.h`)
 
 ```sh

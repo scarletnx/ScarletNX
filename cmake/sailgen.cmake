@@ -142,3 +142,39 @@ function(snx_sailgen_gpu target isa)
     target_sources(${target} PRIVATE "${out}/${name}")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
+
+# the machine back end's files sailgen copies at the top of a guest's emitters, in their order, before the guest's
+# own (tools/sailgen/README.md): MACHINE x64's, as paths in out, and the --backend arguments that name them in args
+function(snx_sailgen_machine_backends machine guest out args)
+    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
+    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h")
+    if(EXISTS "${back}/mach_${guest}.h")
+        list(APPEND files "${back}/mach_${guest}.h")
+    endif()
+    list(APPEND files "${back}/${machine}_${guest}.h")
+    set(list "")
+    foreach(file IN LISTS files)
+        list(APPEND list --backend "${file}")
+    endforeach()
+    set(${out} "${files}" PARENT_SCOPE)
+    set(${args} "${list}" PARENT_SCOPE)
+endfunction()
+
+# snx_sailgen_a64_arm64(<target>): generates a64_arm64.inc (the A64 emitters of a64_x64.roots with sailgen's arm64
+# back end at its top: snx_sailgen_machine_backends' files, over the encoders of a64.sail, a64_enc.inc) into the build
+# folder, and gives <target> its include root. It builds on any host: the code it writes is arm64's
+function(snx_sailgen_a64_arm64 target)
+    snx_sailgen_a64_encoders(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(arm64 a64 files args)
+    add_custom_command(OUTPUT "${out}/a64_arm64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" ${args} --profile "${profile}" -o "${out}/a64_arm64.inc"
+                "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+        COMMENT "Generating the A64 emitters' arm64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_arm64.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
