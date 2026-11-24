@@ -216,7 +216,9 @@ int vk_nvdec_write(const NvdecPic* p) {
     r = nvdec_write(p, &hp);
     vk_unlock();
     if (p->hw) hw_unlock(&hp);
-    /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint */
+    /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint that
+       the guest reads the picture after. The wait lets go of vk_lock (uma.c's wait_out_why): held through it, the thread
+       recording the frame waited behind every picture */
     if (r) {
         vk_uma_mem_need_cpu(p->luma, p->ext_y);
         vk_uma_mem_need_cpu(p->chroma, p->ext_c);

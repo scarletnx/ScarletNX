@@ -14,7 +14,8 @@
 #include "nx/loader/hook_routes.h"
 #include "common/utilities/bits.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/x64/x64_cache.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "nx/loader/module_x64.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
@@ -239,7 +240,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     unsigned char* made = NULL;
     sprintf(name, "code_%03lu", (unsigned long)index);
     if (q->x64) {
-        SnxX64Options options = {0};
+        SnxNativeOptions options = {0};
         options.stale = 1;
         options.llvm_at = snx_ir_dump_pc();
         if (q->bound_count) {
@@ -251,8 +252,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             options.direct_user = q;
         }
         made = (unsigned char*)snx_alloc(u->last - u->first);
-        rc = snx_x64_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &u->reused,
-                                   error, error_size);
+        rc = snx_native_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &u->reused,
+                                      error, error_size);
         if (rc) {
             free(made);
             return -1;
@@ -884,10 +885,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
-    /* the x86-64 back end for this host's module (x64_codegen.h), LLVM making what it can't: not for another
-       machine's, nor where the IR is kept, counted (ir_stats) or every call goes through the table, nor with a
-       --layout (each function's own hot section is LLVM's) */
-    q.x64 = snx_x64_available() && !build->triple && !build->keep_ir && !options->hook_direct_calls &&
+    /* the host's native back end for this host's module (mach/native.h), LLVM making what it can't: not for another
+       machine's, nor where the IR is kept or counted (ir_stats), nor with a --layout (each function's own hot section
+       is LLVM's). With every call through the table (hook_direct_calls) its calls go through CPU.disp too */
+    q.x64 = snx_native_available() && !build->triple && !build->keep_ir &&
             !build->layout_count && !snx_ir_stats_on();
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
        through CPU.disp (--hook-direct-calls) none is bound */
@@ -926,8 +927,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
                    (unsigned long)build->layout_count);
     }
     if (!options->quiet)
-        printf("%s: %lu code unit%s and the module descriptor\n", q.x64 ? "x86-64 back end (LLVM where it can't)" : "LLVM",
-               (unsigned long)q.count, q.count == 1 ? "" : "s");
+        printf("%s%s: %lu code unit%s and the module descriptor\n", q.x64 ? snx_native_name() : "LLVM",
+               q.x64 ? " back end (LLVM where it can't)" : "", (unsigned long)q.count, q.count == 1 ? "" : "s");
     /* the x86-64 back end's units are quick and small: their threads all at once, not opened one a second as for
        LLVM's (the memory a unit of LLVM's takes is what the opening waits on) */
     if (q.count && q.x64 && build->jobs_open && !options->quiet) {
@@ -943,22 +944,36 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (q.x64 && !options->quiet) {
         size_t made = 0;
         for (i = 0; i < q.count; ++i) made += q.units[i].x64_made;
-        printf("x86-64 back end: %lu of %lu functions%s\n", (unsigned long)made, (unsigned long)codegen.function_count,
+        printf("%s back end: %lu of %lu functions%s\n", snx_native_name(), (unsigned long)made, (unsigned long)codegen.function_count,
                made == codegen.function_count ? "" : ", LLVM the rest");
     }
-    /* the module descriptor: without LLVM where the x86-64 back end made every function (and no profile cache's
-       units come in), LLVM's IR otherwise */
+    /* the module descriptor: without LLVM where the native back end made every function (with the profile cache's
+       units' variants and wrappers), LLVM's IR otherwise */
     start = snx_seconds();
-    x64_only = q.x64 && !cache_count;
+    x64_only = q.x64;
     for (i = 0; x64_only && i < q.count; ++i)
         if (q.units[i].object || q.units[i].x64_made != q.units[i].last - q.units[i].first) x64_only = 0;
     if (x64_only) {
-        if (snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, &module_object, &module_size,
-                               &entry_count, error, sizeof(error))) {
-            snx_error("x86-64 back end: %s", error);
+        SnxJitCacheRecord* records = cache_count ? (SnxJitCacheRecord*)calloc(cache_count, sizeof *records) : NULL;
+        size_t nrecords = 0;
+        if (cache_count && !records) {
+            snx_error("%s back end: out of memory", snx_native_name());
             goto done;
         }
-        if (build->wrappers) *build->wrappers = 0;
+        for (i = 0; i < cache_count; ++i)
+            if (snx_jit_cache_record(cache, i)) records[nrecords++] = *snx_jit_cache_record(cache, i);
+        int failed = snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, records, nrecords,
+                                        &module_object, &module_size, &entry_count, &variant_count, error,
+                                        sizeof(error));
+        free(records);
+        if (failed) {
+            snx_error("%s back end: %s", snx_native_name(), error);
+            goto done;
+        }
+        if (build->wrappers) *build->wrappers = nrecords ? entry_count : 0;
+        if (options->jit_cache && !options->quiet)
+            printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
+                   variant_count ? "" : " (the cache did not match the game)");
         goto descriptor_done;
     }
     ir = new_ir(build, "module", error, sizeof(error));

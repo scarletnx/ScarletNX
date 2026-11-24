@@ -8,13 +8,15 @@
    flags, the next pc and the runtime's UNDEF must match. Then sequences of two to four of those words (--sequences N)
    become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
    a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
-     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
-   --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too)
+     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose] [--dump WORD...]
+   --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too), --xmm N of its
+   sixteen vector ones (ctest: 6 with 3)
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
+#include <math.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -310,6 +312,372 @@ static size_t check_fz_hot(void) {
     return failures;
 }
 
+/* ---- the floating-point guards: which path an operation takes, for every pair (or triple) of the operands that tell
+   them apart, FPCR's rounding and FZ, and FPSR's IXC ---- */
+
+u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_convert(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_round(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+
+enum { G_ADD, G_SUB, G_MUL, G_DIV, G_SQRT, G_FMA, G_MAX, G_MIN, G_ROUND, G_CONVERT, G_COMPARE, G_TO_INT };
+typedef struct {
+    const char* text;
+    u32 word;
+    int op;
+    unsigned w, nops;
+} GuardCase;
+
+/* a float of w bits (32 or 64) as the host's double, exactly */
+static double guard_value(u64 bits, unsigned w) {
+    double d;
+    float f;
+    if (w == 64) {
+        memcpy(&d, &bits, sizeof d);
+        return d;
+    }
+    u32 low = (u32)bits;
+    memcpy(&f, &low, sizeof f);
+    return f;
+}
+static u64 guard_bits(double v, unsigned w) {
+    u64 d;
+    u32 f;
+    float s = (float)v;
+    memcpy(&d, &v, sizeof d);
+    memcpy(&f, &s, sizeof f);
+    return w == 64 ? d : f;
+}
+static int guard_nan(u64 v, unsigned w) {
+    return w == 64 ? v << 1 > 0xFFE0000000000000ull : (u32)(v << 1) > 0xFF000000u;
+}
+static int guard_zero(u64 v, unsigned w) { return !(w == 64 ? v << 1 : (u32)(v << 1)); }
+static int guard_denormal(u64 v, unsigned w) {
+    u64 m = w == 64 ? v & 0x7FFFFFFFFFFFFFFFull : v & 0x7FFFFFFFu;
+    return m && m < (w == 64 ? 0x0010000000000000ull : 0x00800000ull);
+}
+/* a result the host's arithmetic gives as Arm's without a flag but IXC: normal, above the smallest */
+static int guard_roomy(u64 v, unsigned w) {
+    u64 m = w == 64 ? v & 0x7FFFFFFFFFFFFFFFull : v & 0x7FFFFFFFu;
+    return w == 64 ? m > 0x0010000000000000ull && m < 0x7FF0000000000000ull : m > 0x00800000u && m < 0x7F800000u;
+}
+/* the host's result, in the operation's own precision */
+static u64 guard_host(const GuardCase* g, const u64* v) {
+    if (g->w == 64) {
+        double a = guard_value(v[0], 64), b = guard_value(v[1], 64), c = guard_value(v[2], 64);
+        return guard_bits(g->op == G_ADD    ? a + b
+                          : g->op == G_SUB  ? a - b
+                          : g->op == G_MUL  ? a * b
+                          : g->op == G_DIV  ? a / b
+                          : g->op == G_SQRT ? sqrt(a)
+                                            : fma(a, b, c),
+                          64);
+    }
+    float a = (float)guard_value(v[0], 32), b = (float)guard_value(v[1], 32), c = (float)guard_value(v[2], 32);
+    return guard_bits(g->op == G_ADD    ? a + b
+                      : g->op == G_SUB  ? a - b
+                      : g->op == G_MUL  ? a * b
+                      : g->op == G_DIV  ? a / b
+                      : g->op == G_SQRT ? sqrtf(a)
+                                        : fmaf(a, b, c),
+                      32);
+}
+/* whether the operation may take the inline code alone (v in the operands' order: FMADD's n, m, a) */
+static int guard_hot(const GuardCase* g, const u64* v, u32 fpcr, u32 fpsr) {
+    unsigned k, w = g->w;
+    int nan = 0, flushed = 0, rounds = (fpcr >> 22 & 3) == 0, ixc = fpsr >> 4 & 1;
+    for (k = 0; k < g->nops; ++k) {
+        nan |= guard_nan(v[k], w);
+        flushed |= (fpcr >> 24 & 1) && guard_denormal(v[k], w);
+    }
+    if (flushed) return 0;
+    switch (g->op) {
+        case G_MAX:
+        case G_MIN:
+        case G_ROUND:
+        case G_CONVERT:
+        case G_COMPARE: return !nan;
+        case G_TO_INT: {
+            double d = guard_value(v[0], w);
+            return ixc && !nan && d > -2147483649.0 && d < 2147483648.0;
+        }
+        default: break;
+    }
+    if (g->op == G_FMA && !(host_features() & SNX_X64_FMA)) return 0;
+    u64 r = guard_host(g, v);
+    if (!rounds) return 0;
+    if (guard_zero(r, w))
+        return g->op == G_MUL || g->op == G_FMA    ? guard_zero(v[0], w) || guard_zero(v[1], w)
+               : g->op == G_DIV || g->op == G_SQRT ? guard_zero(v[0], w)
+                                                   : 1;
+    return ixc && guard_roomy(r, w);
+}
+/* cpu.h's helper's result, which both paths' is */
+static u64 guard_exact(const GuardCase* g, CPU* c, const u64* v, u32 fpcr) {
+    u32 w = g->w;
+    switch (g->op) {
+        case G_ADD:
+        case G_SUB:
+        case G_MUL:
+        case G_DIV:
+            return snx_x64_fp_binary(c, v[0], v[1], fpcr,
+                                     w | (u32)(g->op == G_ADD   ? SNX_FP_ADD
+                                               : g->op == G_SUB ? SNX_FP_SUB
+                                               : g->op == G_MUL ? SNX_FP_MUL
+                                                                : SNX_FP_DIV)
+                                             << 8);
+        case G_SQRT: return snx_x64_fp_unary(c, v[0], fpcr, w | (u32)SNX_FP_SQRT << 8);
+        case G_FMA: return snx_x64_fp_fma(c, v[2], v[0], v[1], fpcr, w);
+        case G_MAX:
+        case G_MIN: return snx_x64_fp_minmax(c, v[0], v[1], fpcr, w | (u32)(g->op == G_MIN) << 8);
+        case G_ROUND: return snx_x64_fp_round(c, v[0], fpcr, w | 3u << 8); /* FRINTM: 2, NEGINF, and 1 */
+        case G_CONVERT: return snx_x64_fp_convert(c, v[0], fpcr, w | 64u << 8);
+        case G_COMPARE: return snx_x64_fp_compare(c, v[0], v[1], fpcr, w);
+        default: return (u32)snx_x64_fp_to_int(c, v[0], fpcr, w | 32u << 8 | 4u << 24); /* FCVTZS: 3, ZERO, and 1 */
+    }
+}
+static size_t check_fp_guards(void) {
+    static const GuardCase cases[] = {
+        {"FADD s0, s1, s2", 0x1E222820u, G_ADD, 32, 2},      {"FADD d0, d1, d2", 0x1E622820u, G_ADD, 64, 2},
+        {"FSUB s0, s1, s2", 0x1E223820u, G_SUB, 32, 2},      {"FSUB d0, d1, d2", 0x1E623820u, G_SUB, 64, 2},
+        {"FMUL s0, s1, s2", 0x1E220820u, G_MUL, 32, 2},      {"FMUL d0, d1, d2", 0x1E620820u, G_MUL, 64, 2},
+        {"FMUL s0, s1, s1", 0x1E210820u, G_MUL, 32, 1},      {"FDIV s0, s1, s2", 0x1E221820u, G_DIV, 32, 2},
+        {"FDIV d0, d1, d2", 0x1E621820u, G_DIV, 64, 2},      {"FSQRT s0, s1", 0x1E21C020u, G_SQRT, 32, 1},
+        {"FSQRT d0, d1", 0x1E61C020u, G_SQRT, 64, 1},        {"FMADD s0, s1, s2, s3", 0x1F020C20u, G_FMA, 32, 3},
+        {"FMADD d0, d1, d2, d3", 0x1F420C20u, G_FMA, 64, 3}, {"FMAX s0, s1, s2", 0x1E224820u, G_MAX, 32, 2},
+        {"FMIN d0, d1, d2", 0x1E625820u, G_MIN, 64, 2},      {"FRINTM s0, s1", 0x1E254020u, G_ROUND, 32, 1},
+        {"FRINTM d0, d1", 0x1E654020u, G_ROUND, 64, 1},      {"FCVT d0, s1", 0x1E22C020u, G_CONVERT, 32, 1},
+        {"FCMP s1, s2", 0x1E222020u, G_COMPARE, 32, 2},      {"FCMP d1, d2", 0x1E622020u, G_COMPARE, 64, 2},
+        {"FCVTZS w0, s1", 0x1E380020u, G_TO_INT, 32, 1},     {"FCVTZS w0, d1", 0x1E780020u, G_TO_INT, 64, 1},
+    };
+    /* each side of what the guards compare: zeros, the least and largest denormal, the smallest normal and the next,
+       numbers whose product is near it, one exact and one not, 2^31 and what is under it, the largest, infinity, NaNs */
+    static const u32 singles[] = {0,           0x80000000u, 0x00000001u, 0x807FFFFFu, 0x00800000u,
+                                  0x80800001u, 0x00800002u, 0x3F800000u, 0xBFC00000u, 0x40490FDBu,
+                                  0x5F000000u, 0x1F800001u, 0xCF000000u, 0x4F000000u, 0x7F7FFFFFu,
+                                  0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u};
+    static const u64 doubles[] = {0,
+                                  0x8000000000000000ull,
+                                  0x0000000000000001ull,
+                                  0x800FFFFFFFFFFFFFull,
+                                  0x0010000000000000ull,
+                                  0x8010000000000001ull,
+                                  0x0010000000000002ull,
+                                  0x3FF0000000000000ull,
+                                  0xBFF8000000000000ull,
+                                  0x400921FB54442D18ull,
+                                  0x5FE0000000000000ull,
+                                  0x1FF0000000000001ull,
+                                  0xC1E0000000000000ull,
+                                  0x41E0000000000000ull,
+                                  0x7FEFFFFFFFFFFFFFull,
+                                  0x7FF0000000000000ull,
+                                  0xFFF0000000000000ull,
+                                  0x7FF8000000000000ull,
+                                  0x7FF0000000000001ull};
+    enum { VALUES = sizeof singles / sizeof *singles };
+    static const u32 fpcrs[] = {0, 1u << 24, 1u << 22, 3u << 22 | 1u << 24};
+    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    size_t failures = 0, runs = 0, hot = 0;
+    if (code == MAP_FAILED) {
+        fprintf(stderr, "FAIL: the floating-point guards: no memory for the code\n");
+        return 1;
+    }
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; ++k) {
+        const GuardCase* g = &cases[k];
+        size_t total = g->nops == 3 ? VALUES * VALUES * VALUES : g->nops == 2 ? VALUES * VALUES : VALUES;
+        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+            !snx_x64_step(g->word, 0x1000, TARGET, host_features(), code, CODE_MAX) ||
+            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            fprintf(stderr, "FAIL: %s %08x: not made\n", g->text, (unsigned)g->word);
+            ++failures;
+            continue;
+        }
+        for (size_t at = 0; at < total * sizeof fpcrs / sizeof *fpcrs * 2; ++at) {
+            u32 fpcr = fpcrs[at / total % (sizeof fpcrs / sizeof *fpcrs)];
+            u32 fpsr = at / total / (sizeof fpcrs / sizeof *fpcrs) ? 0x10 : 0;
+            size_t pick = at % total;
+            CPU c = {0}, exact;
+            u64 v[3] = {0}, got, want;
+            unsigned long calls;
+            for (unsigned o = 0; o < g->nops; ++o, pick /= VALUES)
+                v[o] = g->w == 64 ? doubles[pick % VALUES] : singles[pick % VALUES];
+            if (g->word == 0x1E210820u) v[1] = v[0];
+            for (unsigned o = 0; o < 3; ++o) c.v[1 + o].d[0] = v[o], c.v[1 + o].d[1] = ~v[o];
+            if (g->w == 32)
+                for (unsigned o = 0; o < 3; ++o)
+                    c.v[1 + o].d[0] |= 0xA5A5A5A500000000ull; /* S's upper bits are not read */
+            c.fpcr = fpcr;
+            c.fpsr = fpsr;
+            c.pc = 0x1000;
+            exact = c;
+            want = guard_exact(g, &exact, v, fpcr);
+            calls = snx_x64_fp_calls();
+            run_step((Step)(void*)code, &c);
+            calls = snx_x64_fp_calls() - calls;
+            got = g->op == G_COMPARE  ? (u64)(c.n << 3 | c.z << 2 | c.cf << 1 | c.vf)
+                  : g->op == G_TO_INT ? c.x[0]
+                                      : c.v[0].d[0];
+            ++runs;
+            hot += !calls;
+            int want_hot = guard_hot(g, v, fpcr, fpsr);
+            if (got != want || c.fpsr != exact.fpsr || c.v[0].d[1] || calls != (unsigned long)!want_hot) {
+                if (++failures <= 12)
+                    fprintf(
+                        stderr,
+                        "FAIL: %s of %llx %llx %llx, FPCR %08x FPSR %02x: %016llx:%016llx (want %016llx), FPSR %08x "
+                        "(want %08x), %lu calls of the helper (want %d)\n",
+                        g->text, (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2], fpcr,
+                        fpsr, (unsigned long long)c.v[0].d[1], (unsigned long long)got, (unsigned long long)want,
+                        c.fpsr, exact.fpsr, calls, !want_hot);
+            }
+        }
+    }
+    /* each condition is a jump of its own: four operations in a row make none of them 0 or 1 (SETcc, 0F 90 to 0F 9F) */
+    static const struct {
+        const char* text;
+        u32 words[4];
+    } rows[] = {{"FMUL s", {0x1E220820u, 0x1E250883u, 0x1E2808E6u, 0x1E2B0949u}},
+                {"FADD d", {0x1E622820u, 0x1E652883u, 0x1E6828E6u, 0x1E6B2949u}},
+                {"FMADD s", {0x1F020C20u, 0x1F061CA4u, 0x1F0A2D28u, 0x1F0E3DACu}},
+                {"FSQRT d", {0x1E61C020u, 0x1E61C062u, 0x1E61C0A4u, 0x1E61C0E6u}},
+                {"FMAX s", {0x1E224820u, 0x1E254883u, 0x1E2848E6u, 0x1E2B4949u}},
+                {"FRINTM d", {0x1E654020u, 0x1E654062u, 0x1E6540A4u, 0x1E6540E6u}}};
+    for (size_t k = 0; k < sizeof rows / sizeof *rows; ++k) {
+        size_t count = 4, size = 0, set = 0;
+        if (!mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE))
+            size = snx_x64_block(rows[k].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX);
+        for (size_t at = 0; at + 1 < size; ++at) set += code[at] == 0x0F && code[at + 1] >> 4 == 9;
+        if (!size || count != 4 || set) {
+            fprintf(stderr, "FAIL: four %s: %zu bytes of %zu words (want 4), %zu SETcc (want none)\n", rows[k].text,
+                    size, count, set);
+            ++failures;
+        }
+    }
+    munmap(code, CODE_MAX);
+    printf("sail_x64: the floating-point guards, %zu runs of %zu words, %zu on the inline code alone: %zu failures\n",
+           runs, sizeof cases / sizeof *cases, hot, failures);
+    return failures;
+}
+
+/* guarded operations in a row, where one's limits are another's, the registers they need are all taken, an atomic
+   between them ends what lived in registers and a guest's flags live on the host's: the block's state after it is its
+   words' one by one. With every register, with three, with six vector ones (a guard's value in a spill slot) and
+   with three and six (a general-purpose value has no vector register to spill to) */
+static size_t check_fp_rows(void) {
+    enum { WORDS = 16, STATES = 400 };
+    static const struct {
+        const char* text;
+        u32 words[WORDS];
+    } rows[] = {
+        {"four limits alive",
+         {0x1E220820u, 0x1E650883u, 0x1F021C26u, 0x1F452488u, 0x1E2028CAu, 0x1E63390Bu, 0x1E202140u, 0x1E780161u}},
+        {"an atomic between",
+         {0x1E220820u, 0xB82600A7u, 0x1F021C26u, 0xB82600A7u, 0x1E61C062u, 0x1E221820u, 0x1E202008u}},
+        {"the guest's flags across",
+         {0x1E220820u, 0xEB090107u, 0x1E250883u, 0x9A8CB16Au, 0x1E6F29CDu, 0x9A8C816Du, 0x1E2E2000u, 0x9A8CA16Eu}},
+        {"guest values taking every register",
+         {0x8B030041u, 0x8B060024u, 0x8B010087u, 0x1E27C020u, 0x8B0400E8u, 0x8B010109u, 0x1E67C043u, 0x8B07012Au,
+          0x1E38000Bu, 0x8B08014Cu, 0x1E274085u}},
+        {"more vector values than a small pool",
+         {0x1E220820u, 0x1E650883u, 0x1E6808E7u, 0x1E2B090Au, 0x1F021C26u, 0x1E223843u, 0x1E6A48C9u, 0x1E224841u,
+          0x1E6828C5u, 0x1E202928u, 0x1E28082Bu, 0x1E2A6821u}},
+        {"a double's low half rounded where it is spilled",
+         {0x1E610810u, 0x1E630851u, 0x1E250892u, 0x1E2708D3u, 0x1E290914u, 0x1E2B0955u, 0x1E2D0996u, 0x1E254218u,
+          0x1E274239u, 0x1E332A5Au, 0x1E352A9Bu, 0x1E302ADCu, 0x1E322A3Du, 0x1E25427Eu}},
+        {"each kind", {0x1E222020u, 0x1E224823u, 0x1E380020u, 0x1E6540A4u, 0x1E22C066u, 0x1E21C067u, 0x1E665888u}},
+    };
+    static const u64 values[] = {0,
+                                 0x8000000080000000ull,
+                                 0x0000000000000001ull,
+                                 0x807FFFFF00000001ull,
+                                 0x0080000000800000ull,
+                                 0x3F8000003FC00000ull,
+                                 0x404900003F800000ull,
+                                 0x3FF8000000000000ull,
+                                 0xC00921FB54442D18ull,
+                                 0x7F80000000000000ull,
+                                 0x7FC000007FC00001ull,
+                                 0x7F7FFFFF7F7FFFFFull,
+                                 0x001FFFFF00000000ull,
+                                 0x000000000080000Aull};
+    static const u32 fpcrs[] = {0, 1u << 24, 1u << 22};
+    unsigned char* code = (unsigned char*)mmap(NULL, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE,
+                                               MAP_PRIVATE | MAP_ANON, -1, 0);
+    RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+    unsigned char* at = g_test.memory[0] + MEMORY_ZERO + 0x1000;
+    u64 seed = 0x9E3779B97F4A7C15ull;
+    size_t failures = 0, runs = 0;
+    int pool = snx_x64_pool(), xpool = snx_x64_xpool();
+    if (code == MAP_FAILED) {
+        fprintf(stderr, "FAIL: guarded operations in a row: no memory for the code\n");
+        return 1;
+    }
+    for (size_t k = 0; k < 4 * (sizeof rows / sizeof *rows); ++k) {
+        size_t n = 0, count, made;
+        const char* text = rows[k / 4].text;
+        snx_x64_set_pool(k & 1 ? 3 : pool);
+        snx_x64_set_xpool(k & 2 ? 6 : xpool);
+        while (n < WORDS && rows[k / 4].words[n]) ++n;
+        count = n;
+        if (mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE)) return 1;
+        made = snx_x64_block(rows[k / 4].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX) != 0;
+        for (size_t w = 0; w < n; ++w)
+            made += snx_x64_step(rows[k / 4].words[w], 0x1000 + 4 * w, TARGET, host_features(),
+                                 code + (w + 1) * CODE_MAX, CODE_MAX) != 0;
+        if (made != n + 1 || count != n || mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_EXEC)) {
+            fprintf(stderr, "FAIL: %s: %zu of %zu made, the block of %zu words\n", text, made, n + 1, count);
+            ++failures;
+            continue;
+        }
+        for (size_t state = 0; state < STATES; ++state) {
+            CPU c[2] = {{0}, {0}};
+            u64 memory[2];
+            for (unsigned r = 0; r < 16; ++r)
+                for (unsigned h = 0; h < 2; ++h) {
+                    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                    c[0].v[r].d[h] = values[(seed >> 33) % (sizeof values / sizeof *values)];
+                }
+            for (unsigned r = 0; r < 31; ++r) {
+                seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                c[0].x[r] = seed >> 7;
+            }
+            c[0].x[5] = 0x1000;
+            c[0].n = seed >> 40 & 1, c[0].z = seed >> 41 & 1, c[0].cf = seed >> 42 & 1, c[0].vf = seed >> 43 & 1;
+            c[0].fpcr = fpcrs[(seed >> 44) % 3];
+            c[0].fpsr = seed >> 47 & 1 ? 0x10 : 0;
+            c[0].mem = g_test.memory[0] + MEMORY_ZERO;
+            c[0].rt = &rt;
+            c[0].pc = 0x1000;
+            c[1] = c[0];
+            memset(at, 0x5A, 8);
+            run_step((Step)(void*)code, &c[0]);
+            memcpy(&memory[0], at, 8);
+            memset(at, 0x5A, 8);
+            for (size_t w = 0; w < n; ++w) run_step((Step)(void*)(code + (w + 1) * CODE_MAX), &c[1]);
+            memcpy(&memory[1], at, 8);
+            ++runs;
+            if (memcmp(c[0].x, c[1].x, sizeof c[0].x) || memcmp(c[0].v, c[1].v, sizeof c[0].v) || c[0].n != c[1].n ||
+                c[0].z != c[1].z || c[0].cf != c[1].cf || c[0].vf != c[1].vf || c[0].fpsr != c[1].fpsr ||
+                memory[0] != memory[1]) {
+                if (++failures <= 8)
+                    fprintf(stderr,
+                            "FAIL: %s, state %zu: the block differs from its words (FPCR %08x FPSR %02x: %02x, %02x)\n",
+                            text, state, c[0].fpcr, (unsigned)(seed >> 47 & 1 ? 0x10 : 0), c[0].fpsr, c[1].fpsr);
+            }
+        }
+    }
+    snx_x64_set_pool(pool);
+    snx_x64_set_xpool(xpool);
+    munmap(code, (WORDS + 1) * (size_t)CODE_MAX);
+    printf("sail_x64: guarded operations in a row, %zu runs: %zu failures\n", runs, failures);
+    return failures;
+}
+
 static int run(int argc, char** argv) {
     unsigned states = 64, samples = 3, sequences = 4000, i, k;
     unsigned hosts[2];
@@ -328,6 +696,8 @@ static int run(int argc, char** argv) {
             samples = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--pool") && i + 1 < (unsigned)argc)
             snx_x64_set_pool(atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--xmm") && i + 1 < (unsigned)argc)
+            snx_x64_set_xpool(atoi(argv[++i]));
         else if (!strcmp(argv[i], "--sequences") && i + 1 < (unsigned)argc)
             sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))
@@ -365,6 +735,8 @@ static int run(int argc, char** argv) {
         if (g_test.memory[k] == MAP_FAILED) return 1;
     }
     failures += check_fz_hot();
+    failures += check_fp_guards();
+    failures += check_fp_rows();
     failures += check_casp();
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);

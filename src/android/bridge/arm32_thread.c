@@ -14,6 +14,7 @@
    somewhere else). It runs between two blocks, or in a wait, never in the middle of a block */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/bridge.h"
 #include "common/utilities/endian.h"
 #include <errno.h>
 #include <pthread.h>
@@ -43,7 +44,8 @@ enum { L_EINTR = 4, L_EAGAIN = 11, L_ENOMEM = 12, L_EBUSY = 16, L_EINVAL = 22, L
 typedef struct ThreadInfo {
     uint32_t self, tid;
     uint32_t stack_base, stack_size;
-    _Atomic uint32_t* pending; /* the thread's arm32_pending_signals: the signals it runs, those not blocked */
+    _Atomic uint32_t* pending; /* the thread's arm32_pending_signals: the signals it runs, those not blocked. NULL once
+                                  it has ended: its thread-locals are gone */
     uint64_t sent, blocked; /* the signals sent and not run, and its mask, a bit for each (1 << (sig - 1)) */
     uint32_t keys[128];     /* pthread_getspecific's values */
     uint32_t cleanup;       /* __pthread_cleanup_push's list, the newest first */
@@ -67,6 +69,15 @@ static struct {
 
 static _Thread_local ThreadInfo* t_info;
 
+static void forget(ThreadInfo* t);
+/* a thread that the guest did not make ended: no one joins it, and its thread-locals, where its record says the signals
+   it has pending are, go with it. A guest's own has its record left for its join (thread_main) */
+static void info_end(void* what) {
+    if (t_info == what) t_info = NULL;
+    pthread_mutex_lock(&th.lock);
+    forget(what);
+    pthread_mutex_unlock(&th.lock);
+}
 /* the calling thread's record, made the first time (a thread of the JVM's too) */
 static ThreadInfo* me(void) {
     if (t_info) return t_info;
@@ -81,6 +92,7 @@ static ThreadInfo* me(void) {
     th.threads = t;
     pthread_mutex_unlock(&th.lock);
     t_info = t;
+    bridge_thread_keep(info_end, t);
     return t;
 }
 /* a thread by its pthread_t or its id, under th.lock */
@@ -618,6 +630,7 @@ static void* thread_main(void* p) {
     Start* s = p;
     arm32_cpu_with_stack(s->stack_size);
     ThreadInfo* t = me();
+    bridge_thread_keep(info_end, NULL); /* the join's, or the detached thread's own end's */
     t->created = true;
     t->detached = s->detached;
     t->start = s->start;
@@ -637,10 +650,11 @@ static void* thread_main(void* p) {
     t->done = true;
     bool detached = t->detached;
     t_info = NULL;
+    t->pending = NULL;
     if (detached) forget(t);
     pthread_cond_broadcast(&th.changed);
     pthread_mutex_unlock(&th.lock);
-    arm32_thread_end();
+    bridge_thread_end(); /* the rest: its guest stack, the shim's CPU */
     return NULL;
 }
 
@@ -820,7 +834,7 @@ static void update_deliverable(ThreadInfo* t) {
     uint64_t due = t->sent & ~t->blocked;
     /* SIGKILL and SIGSTOP are never blocked */
     due |= t->sent & (bit(9) | bit(19));
-    atomic_store_explicit(t->pending, (uint32_t)(due != 0), memory_order_release);
+    if (t->pending) atomic_store_explicit(t->pending, (uint32_t)(due != 0), memory_order_release);
 }
 static void send_to(ThreadInfo* t, unsigned sig) {
     t->sent |= bit(sig);
@@ -832,7 +846,7 @@ static uint32_t send_process(unsigned sig) {
     pthread_mutex_lock(&th.lock);
     ThreadInfo* target = !(self->blocked & bit(sig)) ? self : NULL;
     for (ThreadInfo* t = th.threads; t && !target; t = t->next)
-        if (!(t->blocked & bit(sig))) target = t;
+        if (!t->done && !(t->blocked & bit(sig))) target = t;
     send_to(target ? target : self, sig);
     pthread_mutex_unlock(&th.lock);
     return 0;
@@ -1109,6 +1123,7 @@ static int32_t send_tid(uint32_t tid, uint32_t sig) {
     if (sig >= NSIG_) return -L_EINVAL;
     pthread_mutex_lock(&th.lock);
     ThreadInfo* t = by_tid(tid);
+    if (t && t->done) t = NULL;
     if (t && sig) send_to(t, sig);
     pthread_mutex_unlock(&th.lock);
     return t ? 0 : -L_ESRCH;

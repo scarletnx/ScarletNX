@@ -416,7 +416,7 @@ function execute_FSWZADD() -> unit = {
     let a = Float32(R_read(UInt(Field(24, 8))));
     let b = Float32(R_read(UInt(Field(64, 8))));
     Capability(61);
-    let lane = SystemValue(0) & 0x00000003;
+    let lane = NativeLane() & 0x00000003;
     let shift = 0x00000006 - (lane << 1);
     let mode = (ZeroExtend(swizzle, 32) >> shift) & 0x00000003;
     let x = if mode == 0x00000001 then FNeg(a) else a;
@@ -714,8 +714,13 @@ val IsRegZero : Operand -> bool
 val Int64 : unit -> unit
 /* a system register (S2R's, S2UR's numbering) as the program reads it */
 val ProgramSr : int -> bits(32)
-/* the ballot of the predicate over the invocation's 32 lanes */
+/* the ballot of the predicate over the invocation's 32 lanes, of the lane alone where it is lone */
 val Ballot32 : bool -> bits(32)
+/* an invocation is a warp of its own (sm86_translate.c's lane_gate): its subgroup is not read */
+val Lone : unit -> bool
+/* the lane a SHFL or FSWZADD takes real lanes from, and whether this SHFL does */
+val NativeLane : unit -> bits(32)
+val ShflNative : unit -> bool
 /* the instruction's index in the program */
 val InsnIndex : unit -> int
 /* the program's stage (shader.h's ST_*), and a geometry program asks for passthrough */
@@ -870,7 +875,8 @@ function Shfl(b_imm : bool, c_reg : bool) -> unit = {
     let cc = UInt(Field(40, 13));
     let creg = if c_reg then R_read(UInt(Field(64, 8))) else 0x00000000;
     let b = if b_imm then to_bits(32, UInt(Field(53, 5))) else R_read(UInt(Field(32, 8)));
-    let id = SystemValue(0);
+    let native = ShflNative();
+    let id = if native then NativeLane() else 0x00000000;
     let lane = id & 0x0000001f;
     /* c's fields as the immediate's, at run time */
     let seg = if c_reg then (creg >> 8) & 0x0000001f else to_bits(32, MOD(DIV(cc, 256), 32));
@@ -885,11 +891,11 @@ function Shfl(b_imm : bool, c_reg : bool) -> unit = {
         _ => EOR(lane, b)
     };
     let ok = if mode == 1 then SInt(j) >= SInt(max_lane) else UInt(j) <= UInt(max_lane);
-    Capability(65);
-    /* the lane in the invocation's own 32, on a subgroup of 32 or 64 */
+    if native then Capability(65);
+    /* the lane in the invocation's own 32, on a subgroup of 32 or 64; a lone lane keeps its own value */
     let source = (id & 0xffffffe0) | (j & 0x0000001f);
     let value = R_read(UInt(Field(24, 8)));
-    let got = Shuffle(value, source);
+    let got = if native then Shuffle(value, source) else value;
     R_write(Dst(), if ok then got else value);
     PredWrite(UInt(Field(81, 3)), ok, 0)
 }
@@ -904,7 +910,7 @@ function execute_SHFL_RR() -> unit = Shfl(false, true)
 function Vote(u : bool) -> unit = {
     let pred = PredRead(UInt(Field(87, 3)), UInt(Field(90, 1)), 0);
     let how = UInt(Field(72, 2));
-    Capability(64);
+    if not_bool(Lone()) then Capability(64);
     let ballot = Ballot32(pred);
     if u then U_write(UInt(Field(16, 6)), ballot) else R_write(Dst(), ballot);
     if how > 2 then throw(Unsupported("VOTE mode %u", how));
@@ -925,15 +931,19 @@ function execute_MATCH() -> unit = {
     let r = UInt(Field(24, 8));
     let lo = R_read(r);
     let hi = if pair then R_read(if r >= RZ then r else r + 1) else 0x00000000;
-    let base = SystemValue(0) & 0xffffffe0;
-    Capability(65);
-    Capability(64);
     var mask : bits(32) = 0x00000000;
-    foreach (j from 0 to 31) {
-        let lane = base | to_bits(32, j);
-        let same_lo = Shuffle(lo, lane) == lo;
-        let same = if pair then same_lo & (Shuffle(hi, lane) == hi) else same_lo;
-        mask = mask | (if same then to_bits(32, 2 ^ j) else 0x00000000)
+    if Lone() then {
+        mask = 0x00000001 /* the lane itself, lane 0 */
+    } else {
+        let base = SystemValue(0) & 0xffffffe0;
+        Capability(65);
+        Capability(64);
+        foreach (j from 0 to 31) {
+            let lane = base | to_bits(32, j);
+            let same_lo = Shuffle(lo, lane) == lo;
+            let same = if pair then same_lo & (Shuffle(hi, lane) == hi) else same_lo;
+            mask = mask | (if same then to_bits(32, 2 ^ j) else 0x00000000)
+        }
     };
     let active = Ballot32(true);
     let m = mask & active;
@@ -959,9 +969,11 @@ function execute_REDUX() -> unit = {
         4 => if is_signed then 353 else 354,
         _ => if is_signed then 356 else 357
     };
-    Capability(63);
-    Capability(67);
-    U_write(UInt(Field(16, 6)), ClusterReduce32(opcode, R_read(UInt(Field(24, 8)))))
+    if Lone() then U_write(UInt(Field(16, 6)), R_read(UInt(Field(24, 8)))) else {
+        Capability(63);
+        Capability(67);
+        U_write(UInt(Field(16, 6)), ClusterReduce32(opcode, R_read(UInt(Field(24, 8)))))
+    }
 }
 
 /* the instructions that only manage the warp's convergence or wait for scoreboards: nothing is computed. BREAK takes

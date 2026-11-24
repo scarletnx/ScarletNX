@@ -7,6 +7,7 @@
 #include "3ds/aot/ctr_discover.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/common.h"
@@ -346,8 +347,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     SnxIr* ir = NULL;
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
-    unsigned char* armlib = NULL;
-    size_t armlib_size = 0;
+    size_t armlib_size = (size_t)snx_armlib_object_size;
     char *directory = NULL, *target = NULL, *staged = NULL, *previous = NULL, *kept = NULL, *recorded = NULL;
     const char* exports[1] = {"snx_ctr_module_v1"};
     Entry* entries = NULL;
@@ -469,8 +469,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         snprintf(label, sizeof label, "the module's index, %u block%s", count, count == 1 ? "" : "s");
         snx_report_unit(work.chunks + 1, work.chunks + 1, "index", label, 0, snx_seconds() - start);
     }
-    if (snx_ir_armlib_object(opt, &armlib, &armlib_size, error, error_size)) goto done;
-    objects[0].data = armlib, objects[0].size = armlib_size;
+    objects[0].data = (unsigned char*)snx_armlib_object, objects[0].size = armlib_size;
     uint64_t output_bytes = work.output_bytes + objects[1].size;
     if (output_bytes > OBJECT_LIMIT || armlib_size > OBJECT_LIMIT - output_bytes) {
         snprintf(error, error_size, "native object output limit exceeded including semantic helpers");
@@ -515,7 +514,6 @@ done:
     if (objects)
         for (unsigned i = 1; i < files; ++i) free((void*)objects[i].data);
     free(objects);
-    free(armlib);
     free(linked.data);
     free(entries);
     free(starts);

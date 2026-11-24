@@ -309,6 +309,30 @@ run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3'
 fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
 shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.
 
+## Encoders (`--encoders`)
+
+```sh
+sailgen --encoders __DecodeA64 [--roots ROOTS] -o a64_enc.inc a64.sail
+```
+
+A back end that writes an architecture's own code takes its encodings from that architecture's Sail, the same
+decode clauses the guest's emitters are generated from (`enc.c`). Each clause's pattern fixes some of the word's bits
+and its lets slice the others into the decode function's fields (`let Rd = Slice(__opcode, 0, 5)`); its encoder is
+the fixed bits ORed with each field in its place, a field the pattern fixes whole left out of its parameters:
+
+```c
+/* decode_add_addsub_shift_aarch64_instrs_integer_arithmetic_add_sub_shiftedreg */
+static inline SnxU32 sge_a64_add_addsub_shift(SnxU32 Rd, SnxU32 Rn, SnxU32 imm6, SnxU32 Rm, SnxU32 shift, SnxU32 sf);
+```
+
+named for the decode function, less `decode_` and its `_aarch64_instrs_...` (clauses whose decode functions are named
+alike get the shortest tail of the name that tells them apart: `ldr_imm_gen_post_idx`, `ldr_imm_gen_pre_idx`,
+`ldr_imm_gen_immediate_unsigned`), and `sge_a64_table` lists every encoder's fixed bits and fields. `a64.roots`'
+`encode __DecodeA64` line copies every A64 decode clause into `a64.sail` alone, nothing it names followed, so the
+instructions the guest's emitters make by hand or not at all (B, MRS, SVC, the Advanced SIMD) have encoders too
+(`--extract`'s `encode NAME`: the clauses of a decode function, or of every scattered function NAME begins).
+`tests/sailgen_encoders.c` (`sailgen_encoders`) holds them to words the Arm ARM gives.
+
 ## The x86-64 back end
 
 A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived when sailgen
@@ -407,12 +431,21 @@ the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--ise
 PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
 few pages in the manual's notation written for the test (`sailgen_isel`).
 
-### At run time (`x64.h`, `x64_a64.h`)
+### At run time (`x64.h`, `mach.h`, `x64_asm.h`, `x64_a64.h`)
 
 ```sh
-sailgen --generate a64_x64.roots --backend bits.h --backend x64.h --backend x64_a64.h --profile a64.profile \
-        -o a64_x64.inc a64.sail --overlay nx.sail
+sailgen --generate a64_x64.roots --backend bits.h --backend machdef.h --backend x64.h --backend mach.h \
+        --backend x64_asm.h --backend x64_a64.h --profile a64.profile -o a64_x64.inc a64.sail --overlay nx.sail
 ```
+
+The back end is four files: `machdef.h` the code buffer and the forms' types every machine's back end shares,
+`x64.h` holds x86-64's encodings and the selection (`x64_isel.inc`), with what `mach.h`
+asks of a machine (its registers' counts, the place of a fixed register in a form, the frame's register, a call's
+results, the vector forms its front makes values with); `mach.h` what any machine's back end does, below; and
+`x64_asm.h` x86-64's assembly of what `mach.h` leaves to the machine (the moves and spills the register allocation
+makes, the XMM registers' forms, the constant pool, the cold paths, the frame), through the hooks `mach.h` declares
+(`sgx_mov_rr`, `sgx_mov_mem`, `sgx_imm_ok`, `sgx_xdown`...). Another host's back end is its own pair of files around
+the same `mach.h`.
 
 The same generator (`gen.c`), with the x86-64 back end at the output's top in place of LLVM's: the CONST and STATIC
 times are folded when sailgen runs and when the emitter runs as for LLVM, and what is DYN is appended to a short SSA
@@ -427,7 +460,10 @@ k2` is one AND). Flags are the instruction that made them: AddWithCarry's NZCV i
 candidate's map of Arm's flags (SUBS's C is `setae`, ADDS's `setb`), an ANDS on the result of the AND that just set
 the flags is that AND (the selection lists its form for `ands` too), and ConditionHolds on them is the condition code
 the selection derived for that Arm condition on that form, while no instruction since has written the flags (before
-one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them).
+one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them). The guards of the scalar
+floating-point operations are no bools: a cold path (`sgx_cold_fp`) takes up to four tests, each twice a float's bits
+less a constant against a limit made once a region (a normal result above the smallest, a denormal operand FZ flushes,
+a NaN), and each test is its own MOVD, LEA, CMP and Jcc to the same cold code.
 
 When the block ends, `sgx_optimize` works on the SSA as a whole, where what reads each value and each instruction's
 flags is known: a store a later one to the same place overwrites (no load of it, no call of the runtime between) is
@@ -473,11 +509,47 @@ UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, 
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
 
+### The arm64 back end (`arm64.h`, `arm64_asm.h`, `arm64_a64.h`)
+
+```sh
+sailgen --generate a64_x64.roots --backend bits.h --backend machdef.h --backend arm64.h --backend mach.h \
+        --backend arm64_asm.h --backend mach_a64.h --backend arm64_a64.h --profile a64.profile \
+        -o a64_arm64.inc a64.sail --overlay nx.sail
+```
+
+The host's own A64, around the same `mach.h` and `mach_a64.h`: the same roots, the same SSA and folds, the same
+register allocation (32 registers of each kind). Every word it writes is an encoder's of the A64 Sail's decode
+clauses (`a64_enc.inc`, `--encoders`), so the instruction table is the guest's own Sail. What `arm64.h` writes is
+which instruction each of `mach.h`'s primitives is, and that is their names: the primitives are the Arm ARM's own
+definitions (`x64.ops` writes them from AddWithCarry, ShiftReg, CountLeadingZeroBits), so SUBS is SUBS (shifted
+register), Arm's flags are the host's NZCV and each condition its own code (CMP then B.HI is CMP and CSEL HI), and the
+division is Arm's (`SGX_DIV_ARM`: no select keeps a divisor of 0 from it). Its immediates are A64's, which
+`sgx_imm_ok` answers for the front: an addition's imm12 (or imm12 shifted by 12) of the value or its negation (ADD of
+-k is SUB of k, with the same NZCV for k not 0; an addition of 0 stays one, a subtraction of 0 one, their C differing),
+a logical operation's bitmask (`sga_bitmask`, DecodeBitMasks inverted). An input is read whole (mach.h zero extends a
+narrower value first) only where the result or the flags depend on its bits above the value's: a compare's, a shift's
+to the right, a division's, CLZ's and REV's. A constant is MOVZ or MOVN, ORR of a bitmask, or MOVZ and MOVKs.
+
+`arm64_a64.h` keeps what is the machine's: the floating point through the exact helpers (`x64_helpers.c`'s
+`snx_x64_fp_*`, every operation: the host's own arithmetic needs the guest's FPCR, which the runtime's C would then
+run under too), the store-exclusive as cpu.h's value-based monitor (its checks, then LDAXR and STLXR of the value the
+load-exclusive read, compared at the access's size), the LSE atomics, CAS and CASP as load-exclusive loops, CRC32 the
+host's own (FEAT_CRC32), the barriers the guest's (DMB ISH, ISHLD, ISHST), an acquire load DMB ISHLD after it and a
+release store DMB ISH around it, and the ABI (AAPCS64: the state in X19, the frame below the saved X29, X30, X19 and
+X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
+
+**The test** (`tests/sail_arm64.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, and
+blocks of two to four of them, made into arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside the
+LLVM back end's steps from the same random states; registers, flags, the SIMD&FP state, guest memory, the next pc and
+UNDEF must match. The test's memory is mapped into Unicorn at its own addresses, so the code and the test's C share
+every pointer; a call out goes to a page of traps whose hook calls the native helper. `sail_arm64_spill` gives it
+three registers (`--pool 3`); `--dump WORD...` prints a block for a disassembler.
+
 ### AArch32 (`x64_a32.h`)
 
 ```sh
-sailgen --generate a32.roots --backend bits.h --backend x64.h --backend x64_a32.h --profile a32.profile \
-        -o a32_x64.inc a32.sail arm.sail
+sailgen --generate a32.roots --backend bits.h --backend machdef.h --backend x64.h --backend mach.h \
+        --backend x64_asm.h --backend x64_a32.h --profile a32.profile -o a32_x64.inc a32.sail arm.sail
 ```
 
 The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
@@ -497,7 +569,7 @@ CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (lo
 multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT, the
 coprocessor's, the ARMv6 media and DSP ones, VFP and Advanced SIMD) are written in `x64_arm.c` over the same SSA. A
 Thumb block's 16-bit instructions are the Sail's (`sg_decode_t16`), whose conditions and flags follow ITSTATE, which is
-known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `x64_thumb.inc`, or the A32
+known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `mach_thumb.inc`, or the A32
 instruction of the same meaning whose emitter reads Thumb's PC. `sg_ITSTATE` and `sg_ITSTATE_set` carry it (IT sets the
 ones after it; an SVC, a BKPT and a block that ends inside an IT block leave it in CPSR). The VFP's scalar instructions keep their values in XMM
 registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`

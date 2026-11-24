@@ -23,7 +23,7 @@ fails.
 ## Running it
 
 ```sh
-python3 scripts/edenprobe.py run --runtime build/scarletnx --nro amberlith-1.0.0.nro --out /tmp/edenprobe \
+python3 scripts/edenprobe.py run --runtime build/scarletnx --nro amberlith-1.0.4.nro --out /tmp/edenprobe \
     --mode "quick notime cpu fs video display kernel audio hooks" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```

@@ -11,6 +11,11 @@
                    and what it lowers itself (gen.c's builtins)
      lower NAME    a function the back end lowers (FPAdd): its val is copied, for the generator to call the back
                    end's by, and the names the val's types name are followed; its definition is not
+     encode NAME   a decode function whose decode clauses alone are copied, nothing they name followed: what
+                   sailgen --encoders makes an encoder of, for a back end that writes the architecture's own code
+                   (B, MRS, SVC, the Advanced SIMD: instructions the guest's emitters make by hand or not at all,
+                   which the host's code needs); a NAME of __Decode, every clause of the scattered functions it begins
+                   (encode __DecodeA64: all of A64's)
    and decoder and fixup lines, which are the generator's (gen.c): a fixup is an overlay's decode function, which the
    inputs do not have */
 #include "sailgen.h"
@@ -40,6 +45,8 @@ static struct {
     unsigned stop_count;
     unsigned* lowers;
     unsigned lower_count;
+    unsigned* encodes;
+    unsigned encode_count;
     unsigned* queue;
     unsigned queue_count;
 } g_extract;
@@ -192,6 +199,7 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
     g_extract.roots = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
     g_extract.stops = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
     g_extract.lowers = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
+    g_extract.encodes = (unsigned*)sg_alloc(sizeof(unsigned) * (size + 1));
     for (f = 0; f < (unsigned)input_count; ++f) {
         g_extract.texts[f] = sg_read(inputs[f], &g_extract.sizes[f]);
         split(f);
@@ -210,18 +218,21 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
             while (i < e && isspace((unsigned char)roots[i])) ++i;
             w = word_at(roots, i, e);
             if (!w || (strcmp(word, "root") && strcmp(word, "stop") && strcmp(word, "lower") &&
-                       strcmp(word, "decoder") && strcmp(word, "fixup"))) {
+                       strcmp(word, "decoder") && strcmp(word, "fixup") && strcmp(word, "encode") &&
+                       strcmp(word, "keep"))) {
                 fprintf(stderr,
-                        "%s:%u: error: expected \"root NAME\", \"stop NAME\", \"lower NAME\", \"fixup NAME\" or "
-                        "\"decoder NAME FAMILY...\", found \"%.*s\"\n",
+                        "%s:%u: error: expected \"root NAME\", \"keep NAME\", \"stop NAME\", \"lower NAME\", "
+                        "\"encode NAME\", \"fixup NAME\" or \"decoder NAME FAMILY...\", found \"%.*s\"\n",
                         roots_path, line_no, (int)(e - i + w), roots + i - w);
                 free(roots);
                 return 1;
             }
             if (word[0] == 'd' || word[0] == 'f')
                 ; /* the generator's */
-            else if (word[0] == 'r')
+            else if (word[0] == 'r' || word[0] == 'k') /* keep: a root of the copy alone, which --generate skips */
                 g_extract.roots[g_extract.root_count++] = sg_intern(roots + i, w);
+            else if (word[0] == 'e')
+                g_extract.encodes[g_extract.encode_count++] = sg_intern(roots + i, w);
             else if (word[0] == 'l')
                 g_extract.lowers[g_extract.lower_count++] = sg_intern(roots + i, w);
             else
@@ -257,6 +268,34 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
         }
     }
     for (k = 0; k < g_extract.queue_count; ++k) follow(g_extract.queue[k]);
+    /* the encoded ones' clauses, kept after the walk so nothing they name is followed */
+    for (k = 0; k < g_extract.encode_count; ++k) {
+        const char* name = sg_str(g_extract.encodes[k]);
+        size_t length = strlen(name);
+        unsigned found = 0;
+        int family = !strncmp(name, "__Decode", 8);
+        for (i = 0; i < g_extract.count; ++i) {
+            Piece* p = &g_extract.pieces[i];
+            const char* t = g_extract.texts[p->file] + p->start;
+            size_t j, n = p->end - p->start;
+            if (!p->clause) continue;
+            if (family) {
+                if (!strncmp(sg_str(p->name), name, length)) p->keep = found = 1;
+                continue;
+            }
+            for (j = 0; j + length < n; ++j)
+                if (!memcmp(t + j, name, length) && t[j + length] == '(' &&
+                    (j == 0 || !(isalnum((unsigned char)t[j - 1]) || t[j - 1] == '_'))) {
+                    p->keep = 1;
+                    found = 1;
+                    break;
+                }
+        }
+        if (!found) {
+            fprintf(stderr, "%s: error: no decode clause calls %s (encode)\n", roots_path, name);
+            return 1;
+        }
+    }
     {
         const char* base = strrchr(roots_path, '/');
         sg_out("/* sail-arm's definitions that %s reaches (sailgen --extract), as they are in:\n",

@@ -144,20 +144,22 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
 # armlib.c: what a 32-bit module links instead (the AArch32 blocks' VFP, SIMD and crypto helpers)
 file(GLOB snx_armlib_sources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/*.h"
     "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/*_helpers.c")
-add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib.bc"
-    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -emit-llvm -I "${PROJECT_SOURCE_DIR}/src"
-        -c "${CMAKE_CURRENT_SOURCE_DIR}/armlib.c" -o "${CMAKE_CURRENT_BINARY_DIR}/armlib.bc"
+# in the host's object format, the modules' (Mach-O on Apple, which rtlib's object is not): what a 32-bit module links.
+# The AArch32 JIT loads it on powerpc64 alone (cpu/arm/exec.c)
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
+    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -I "${PROJECT_SOURCE_DIR}/src"
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/armlib.c" -o "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
     DEPENDS armlib.c libc.inc ${snx_armlib_sources} ${snx_rtlib_sources} VERBATIM)
-add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c"
-    COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/armlib.bc"
-        "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c" snx_armlib_bitcode
-    DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/armlib.bc" VERBATIM)
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c"
+    COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
+        "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c" snx_armlib_object
+    DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}" VERBATIM)
 
 add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c
     ir_int.c ir_sail.c ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c link.c link_elf.c link_coff.c link_macho.c elf_object.c objects_pack.c
     code_loader.c code_loader_coff.c gdb_jit.c jit_service.c jit_cache.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c"
     "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c" "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
-    "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c")
+    "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c")
 set_target_properties(snx_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 # The object loader needs no LLVM headers: strict ISO C23 (RFC #142), after the target's -std
 set_source_files_properties(elf_object.c code_loader.c code_loader_coff.c gdb_jit.c PROPERTIES COMPILE_OPTIONS "-std=c23;-pedantic-errors")
@@ -184,3 +186,42 @@ if(SNX_X64)
     snx_sailgen_a32_x64(snx_llvm)
     target_compile_definitions(snx_llvm PRIVATE SNX_HAVE_X64=1)
 endif()
+# the arm64 back end (src/common/cpu/recompiler/arm64): the same functions in A64, from the emitters sailgen
+# generates with the A64 Sail's encoders; built on every host (its code is arm64's, which the tests run under
+# Unicorn), the default code generator on arm64's ELF hosts
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/arm64/arm64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/arm64/arm64_arm.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mach/native.c")
+snx_sailgen_a64_arm64(snx_llvm)
+snx_sailgen_a32_arm64(snx_llvm)
+# the riscv64 back end (src/common/cpu/recompiler/rv64): the same functions in RV64, from the emitters sailgen
+# generates with its RISC layer over LLVM's RISC-V records (checked in: tools/sailgen/td); built on every host
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_arm.c")
+snx_sailgen_a64_risc(snx_llvm rv64)
+snx_sailgen_a32_risc(snx_llvm rv64)
+# and the powerpc64 back end (src/common/cpu/recompiler/ppc64), over LLVM's PowerPC records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64_arm.c")
+snx_sailgen_a64_risc(snx_llvm ppc64)
+snx_sailgen_a32_risc(snx_llvm ppc64)
+# and the mips64 back end (src/common/cpu/recompiler/mips64), over LLVM's MIPS records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64_arm.c")
+snx_sailgen_a64_risc(snx_llvm mips64)
+snx_sailgen_a32_risc(snx_llvm mips64)
+# the big-endian hosts' powerpc64 and mips64 back ends: the same sources with PPC_BE and MIPS_BE (their emitters' too)
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64be_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64be_arm.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64be_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64be_arm.c")
+# and the s390x back end (src/common/cpu/recompiler/s390x), over LLVM's SystemZ records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/s390x/s390x_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/s390x/s390x_arm.c")
+snx_sailgen_a64_risc(snx_llvm s390x)
+snx_sailgen_a32_risc(snx_llvm s390x)
+# and the loongarch64 back end (src/common/cpu/recompiler/la64), over LLVM's LoongArch records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/la64/la64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/la64/la64_arm.c")
+snx_sailgen_a64_risc(snx_llvm la64)
+snx_sailgen_a32_risc(snx_llvm la64)

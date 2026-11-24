@@ -7,6 +7,7 @@ prefix sg86
 static Field Uniform SrcNeg Dst IsZero SrcIsImm SrcImm FieldAt SrcNegAt IsZeroAt ReadsDstAt
 static Form SrcAbs SrcAbsRaw SrcNegRaw SrcIsReg SrcReg OpName FmulOverW Float64 I2fNearest
 static DstHasNext SrcIsCbuf InsnIndex Stage Passthrough IsRegZero AtomicOpcode AddressFromMemory GlobalAddress
+static Lone ShflNative
 static MEM_LOCAL HandleIndexed LegacyAddress GeometryOk ImapReads HasHandleSlot
 
 op IADD3 SM86_IADD3 SM86_UIADD3

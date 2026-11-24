@@ -1,0 +1,229 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* This host's native back end (native.h): the code generator whose code this machine runs */
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "common/cpu/recompiler/arm64/arm64_arm.h"
+#include "common/cpu/recompiler/la64/la64_arm.h"
+#include "common/cpu/recompiler/la64/la64_codegen.h"
+#include "common/cpu/recompiler/mips64/mips64_arm.h"
+#include "common/cpu/recompiler/mips64/mips64be_arm.h"
+#include "common/cpu/recompiler/mips64/mips64be_codegen.h"
+#include "common/cpu/recompiler/ppc64/ppc64be_arm.h"
+#include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
+#include "common/cpu/recompiler/s390x/s390x_arm.h"
+#include "common/cpu/recompiler/s390x/s390x_codegen.h"
+#include "common/cpu/recompiler/mips64/mips64_codegen.h"
+#include "common/cpu/recompiler/ppc64/ppc64_arm.h"
+#include "common/cpu/recompiler/ppc64/ppc64_codegen.h"
+#include "common/cpu/recompiler/rv64/rv64_arm.h"
+#include "common/cpu/recompiler/rv64/rv64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_arm.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include <stdlib.h>
+#include <string.h>
+
+int snx_native_available(void) {
+    return snx_x64_available() || snx_arm64_available() || snx_rv64_available() || snx_ppc64_available() ||
+           snx_mips64_available() || snx_la64_available() || snx_ppc64be_available() || snx_mips64be_available() ||
+           snx_s390x_available();
+}
+
+const char* snx_native_name(void) {
+    return snx_x64_available()     ? "x86-64"
+           : snx_arm64_available() ? "arm64"
+           : snx_rv64_available()  ? "riscv64"
+           : snx_ppc64_available() ? "ppc64le"
+           : snx_mips64_available() ? "mips64el"
+           : snx_la64_available()   ? "loongarch64"
+           : snx_ppc64be_available() ? "ppc64"
+           : snx_mips64be_available() ? "mips64"
+           : snx_s390x_available()    ? "s390x"
+                                   : "none";
+}
+
+int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
+                      unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    if (snx_x64_available())
+        return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_arm64_available())
+        return snx_arm64_object(codegen, first, last, options, snx_arm64_features(), made, object, size, error,
+                                error_size);
+    if (snx_rv64_available())
+        return snx_rv64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_ppc64_available())
+        return snx_ppc64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_mips64_available())
+        return snx_mips64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_la64_available())
+        return snx_la64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_ppc64be_available())
+        return snx_ppc64be_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_mips64be_available())
+        return snx_mips64be_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_s390x_available())
+        return snx_s390x_object(codegen, first, last, options, made, object, size, error, error_size);
+    memset(made, 0, last - first);
+    *object = NULL;
+    *size = 0;
+    return 0;
+}
+
+int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
+                             unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
+                             size_t error_size) {
+    if (snx_x64_available())
+        return snx_x64_cached_object(codegen, first, last, options, made, object, size, reused, error, error_size);
+    *reused = 0;
+    return snx_native_object(codegen, first, last, options, made, object, size, error, error_size);
+}
+
+/* the AArch32 blocks' compiler: the host's (x86-64's, arm64's or riscv64's) */
+struct SnxNativeArm {
+    SnxX64Arm* x64;
+    SnxArm64Arm* arm64;
+    SnxRv64Arm* rv64;
+    SnxPpc64Arm* ppc64;
+    SnxMips64Arm* mips64;
+    SnxLa64Arm* la64;
+    SnxPpc64beArm* ppc64be;
+    SnxMips64beArm* mips64be;
+    SnxS390xArm* s390x;
+    const char* why; /* the last block's refusal where it was here, NULL for the machine's own */
+};
+int snx_native_arm_available(void) {
+    return snx_x64_arm_available() || snx_arm64_arm_available() || snx_rv64_arm_available() ||
+           snx_ppc64_arm_available() || snx_mips64_arm_available() ||
+           snx_la64_arm_available() || snx_ppc64be_arm_available() || snx_mips64be_arm_available() ||
+           snx_s390x_arm_available();
+}
+SnxNativeArm* snx_native_arm_new(void) {
+    SnxNativeArm* c;
+    int ok;
+    if (!snx_native_arm_available() || !(c = (SnxNativeArm*)calloc(1, sizeof *c))) return NULL;
+    if (snx_x64_arm_available()) ok = !!(c->x64 = snx_x64_arm_new());
+    else if (snx_arm64_arm_available())
+        ok = !!(c->arm64 = snx_arm64_arm_new());
+    else if (snx_rv64_arm_available())
+        ok = !!(c->rv64 = snx_rv64_arm_new());
+    else if (snx_ppc64_arm_available())
+        ok = !!(c->ppc64 = snx_ppc64_arm_new());
+    else if (snx_mips64_arm_available())
+        ok = !!(c->mips64 = snx_mips64_arm_new());
+    else if (snx_la64_arm_available())
+        ok = !!(c->la64 = snx_la64_arm_new());
+    else if (snx_ppc64be_arm_available())
+        ok = !!(c->ppc64be = snx_ppc64be_arm_new());
+    else if (snx_mips64be_arm_available())
+        ok = !!(c->mips64be = snx_mips64be_arm_new());
+    else
+        ok = !!(c->s390x = snx_s390x_arm_new());
+    if (!ok) {
+        free(c);
+        return NULL;
+    }
+    return c;
+}
+void snx_native_arm_free(SnxNativeArm* c) {
+    if (!c) return;
+    snx_x64_arm_free(c->x64);
+    snx_arm64_arm_free(c->arm64);
+    snx_rv64_arm_free(c->rv64);
+    snx_ppc64_arm_free(c->ppc64);
+    snx_mips64_arm_free(c->mips64);
+    snx_la64_arm_free(c->la64);
+    snx_ppc64be_arm_free(c->ppc64be);
+    snx_mips64be_arm_free(c->mips64be);
+    snx_s390x_arm_free(c->s390x);
+    free(c);
+}
+int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                         size_t* consumed, SnxNativeArmNext next, void* user) {
+    c->why = NULL;
+    return c->x64     ? snx_x64_arm_block(c->x64, name, code, count, pc, consumed, next, user)
+           : c->arm64 ? snx_arm64_arm_block(c->arm64, name, code, count, pc, consumed, next, user)
+           : c->rv64  ? snx_rv64_arm_block(c->rv64, name, code, count, pc, consumed, next, user)
+           : c->ppc64 ? snx_ppc64_arm_block(c->ppc64, name, code, count, pc, consumed, next, user)
+           : c->mips64 ? snx_mips64_arm_block(c->mips64, name, code, count, pc, consumed, next, user)
+           : c->la64    ? snx_la64_arm_block(c->la64, name, code, count, pc, consumed, next, user)
+           : c->ppc64be ? snx_ppc64be_arm_block(c->ppc64be, name, code, count, pc, consumed, next, user)
+           : c->mips64be ? snx_mips64be_arm_block(c->mips64be, name, code, count, pc, consumed, next, user)
+                         : snx_s390x_arm_block(c->s390x, name, code, count, pc, consumed, next, user);
+}
+int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                           size_t* consumed, SnxNativeArmNext next, void* user) {
+    c->why = NULL;
+    if (c->x64) return snx_x64_thumb_block(c->x64, name, code, count, pc, consumed, next, user);
+    c->why = "a Thumb block, which this host's back end doesn't make";
+    *consumed = 0;
+    return 0;
+}
+const char* snx_native_arm_why(const SnxNativeArm* c) {
+    if (c->why) return c->why;
+    return c->x64     ? snx_x64_arm_why(c->x64)
+           : c->arm64 ? snx_arm64_arm_why(c->arm64)
+           : c->rv64  ? snx_rv64_arm_why(c->rv64)
+           : c->ppc64 ? snx_ppc64_arm_why(c->ppc64)
+           : c->mips64 ? snx_mips64_arm_why(c->mips64)
+           : c->la64    ? snx_la64_arm_why(c->la64)
+           : c->ppc64be ? snx_ppc64be_arm_why(c->ppc64be)
+           : c->mips64be ? snx_mips64be_arm_why(c->mips64be)
+                         : snx_s390x_arm_why(c->s390x);
+}
+int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks) {
+    return c->x64     ? snx_x64_arm_object(c->x64, object, size, blocks)
+           : c->arm64 ? snx_arm64_arm_object(c->arm64, object, size, blocks)
+           : c->rv64  ? snx_rv64_arm_object(c->rv64, object, size, blocks)
+           : c->ppc64 ? snx_ppc64_arm_object(c->ppc64, object, size, blocks)
+           : c->mips64 ? snx_mips64_arm_object(c->mips64, object, size, blocks)
+           : c->la64    ? snx_la64_arm_object(c->la64, object, size, blocks)
+           : c->ppc64be ? snx_ppc64be_arm_object(c->ppc64be, object, size, blocks)
+           : c->mips64be ? snx_mips64be_arm_object(c->mips64be, object, size, blocks)
+                         : snx_s390x_arm_object(c->s390x, object, size, blocks);
+}
+int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from) {
+    return c->x64     ? snx_x64_arm_absorb(c->x64, from->x64)
+           : c->arm64 ? snx_arm64_arm_absorb(c->arm64, from->arm64)
+           : c->rv64  ? snx_rv64_arm_absorb(c->rv64, from->rv64)
+           : c->ppc64 ? snx_ppc64_arm_absorb(c->ppc64, from->ppc64)
+           : c->mips64 ? snx_mips64_arm_absorb(c->mips64, from->mips64)
+           : c->la64    ? snx_la64_arm_absorb(c->la64, from->la64)
+           : c->ppc64be ? snx_ppc64be_arm_absorb(c->ppc64be, from->ppc64be)
+           : c->mips64be ? snx_mips64be_arm_absorb(c->mips64be, from->mips64be)
+                         : snx_s390x_arm_absorb(c->s390x, from->s390x);
+}
+int snx_native_arm_entry(SnxNativeArm* c, uint32_t key) {
+    return c->x64 ? snx_x64_arm_entry(c->x64, key)
+           : c->arm64 ? snx_arm64_arm_entry(c->arm64, key)
+           : c->rv64  ? snx_rv64_arm_entry(c->rv64, key)
+           : c->ppc64 ? snx_ppc64_arm_entry(c->ppc64, key)
+           : c->mips64 ? snx_mips64_arm_entry(c->mips64, key)
+           : c->la64    ? snx_la64_arm_entry(c->la64, key)
+           : c->ppc64be ? snx_ppc64be_arm_entry(c->ppc64be, key)
+           : c->mips64be ? snx_mips64be_arm_entry(c->mips64be, key)
+                         : snx_s390x_arm_entry(c->s390x, key);
+}
+
+/* the module descriptors' functions of the RISC machines (mach/risc_desc.inc, in their code generators) */
+#if !defined(_WIN32)
+extern const SnxNativeDesc snx_rv64_desc, snx_ppc64_desc, snx_ppc64be_desc, snx_mips64_desc, snx_mips64be_desc,
+    snx_la64_desc, snx_s390x_desc;
+static const SnxNativeDesc* const g_descs[] = {&snx_rv64_desc,   &snx_ppc64_desc, &snx_ppc64be_desc, &snx_mips64_desc,
+                                               &snx_mips64be_desc, &snx_la64_desc, &snx_s390x_desc};
+const SnxNativeDesc* snx_native_desc(void) {
+    if (snx_x64_available() || snx_arm64_available()) return NULL;
+    return snx_native_desc_named(snx_native_name());
+}
+const SnxNativeDesc* snx_native_desc_named(const char* name) {
+    for (size_t k = 0; k < sizeof g_descs / sizeof *g_descs; ++k)
+        if (!strcmp(g_descs[k]->name, name)) return g_descs[k];
+    return NULL;
+}
+#else
+const SnxNativeDesc* snx_native_desc(void) { return NULL; }
+const SnxNativeDesc* snx_native_desc_named(const char* name) {
+    (void)name;
+    return NULL;
+}
+#endif

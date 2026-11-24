@@ -10,7 +10,7 @@ set(snx_sailgen_sources "${PROJECT_SOURCE_DIR}/tools/sailgen/main.c" "${PROJECT_
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/extract.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/gen.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm_code.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/term.c"
-                        "${PROJECT_SOURCE_DIR}/tools/sailgen/isel.c")
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/isel.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/enc.c")
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
     include(ExternalProject)
@@ -59,6 +59,21 @@ function(snx_sailgen_a64 target)
         DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${bits}" "${core}" "${backend}" "${profile}"
         COMMENT "Generating the A64 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_sail.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a64_encoders(<target>): generates a64_enc.inc (an encoder for each decode clause of a64.sail: the
+# instruction table of the back end that writes A64 itself, the arm64 host's) into the build folder, and gives
+# <target> its include root
+function(snx_sailgen_a64_encoders target)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    add_custom_command(OUTPUT "${out}/a64_enc.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --encoders __DecodeA64 -o "${out}/a64_enc.inc" "${dir}/a64.sail"
+        DEPENDS snx-sailgen "${dir}/a64.sail"
+        COMMENT "Generating the A64 encoders from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_enc.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
@@ -126,4 +141,112 @@ function(snx_sailgen_gpu target isa)
         COMMENT "Generating the ${isa} instructions from Sail, ${what} (GPU mode)" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}")
     target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# the machine back end's files sailgen copies at the top of a guest's emitters, in their order (tools/sailgen/README.md):
+# MACHINE's (x64, arm64) and GUEST's (a64, a32), the guest's part every machine shares before the machine's own, as
+# paths in out, and the --backend arguments that name them in args
+# The RISC machines (riscv64...) share risc.h, risc_asm.h and risc_<guest>.h after their own header and assembly,
+# and have a guest part of their own only where it exists
+function(snx_sailgen_machine_backends machine guest out args)
+    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
+    set(risc rv64 ppc64 mips64 la64 s390x)
+    if(machine IN_LIST risc)
+        set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/risc.h" "${back}/mach.h"
+                  "${back}/risc_asm.h" "${back}/mach_${guest}.h" "${back}/risc_${guest}.h")
+        if(EXISTS "${back}/${machine}_${guest}.h")
+            list(APPEND files "${back}/${machine}_${guest}.h")
+        endif()
+    else()
+        set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h"
+                  "${back}/mach_${guest}.h" "${back}/${machine}_${guest}.h")
+    endif()
+    set(list "")
+    foreach(file IN LISTS files)
+        list(APPEND list --backend "${file}")
+    endforeach()
+    set(${out} "${files}" PARENT_SCOPE)
+    set(${args} "${list}" PARENT_SCOPE)
+endfunction()
+
+# snx_sailgen_a64_arm64(<target>): generates a64_arm64.inc (the A64 emitters of a64_x64.roots with sailgen's arm64
+# back end at its top: snx_sailgen_machine_backends' files, over the encoders of a64.sail, a64_enc.inc) into the build
+# folder, and gives <target> its include root. It builds on any host: the code it writes is arm64's
+function(snx_sailgen_a64_arm64 target)
+    snx_sailgen_a64_encoders(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(arm64 a64 files args)
+    add_custom_command(OUTPUT "${out}/a64_arm64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" ${args} --profile "${profile}" -o "${out}/a64_arm64.inc"
+                "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+        COMMENT "Generating the A64 emitters' arm64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_arm64.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a32_arm64(<target>): generates a32_arm64.inc (the AArch32 emitters of a32.roots with sailgen's arm64 back
+# end at its top, over the A64 Sail's encoders) into the build folder, and gives <target> its include root. It builds
+# on any host: the code it writes is arm64's
+function(snx_sailgen_a32_arm64 target)
+    snx_sailgen_a64_encoders(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(arm64 a32 files args)
+    add_custom_command(OUTPUT "${out}/a32_arm64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                -o "${out}/a32_arm64.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
+        COMMENT "Generating the AArch32 emitters' arm64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a32_arm64.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a64_risc(<target> <machine>): generates a64_<machine>.inc (the A64 emitters of a64_risc.roots with a RISC
+# machine's back end at its top: snx_sailgen_machine_backends' files, over its encoders from LLVM's TableGen records,
+# tools/sailgen/td/<machine>_enc.inc) into the build folder, and gives <target> its include roots. It builds on any
+# host: the code it writes is the machine's
+function(snx_sailgen_a64_risc target machine)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(${machine} a64 files args)
+    # one rule a directory: a big-endian host's targets (ppc64be...) share the machine's emitters
+    get_property(made DIRECTORY PROPERTY SNX_SAILGEN_A64_${machine})
+    if(NOT made)
+        set_property(DIRECTORY PROPERTY SNX_SAILGEN_A64_${machine} 1)
+        add_custom_command(OUTPUT "${out}/a64_${machine}.inc"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+            COMMAND snx-sailgen --generate "${dir}/a64_risc.roots" ${args} --profile "${profile}"
+                    -o "${out}/a64_${machine}.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+            DEPENDS snx-sailgen "${dir}/a64_risc.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+                    "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+            COMMENT "Generating the A64 emitters' ${machine} code from Sail" VERBATIM)
+    endif()
+    target_sources(${target} PRIVATE "${out}/a64_${machine}.inc")
+    target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
+endfunction()
+# snx_sailgen_a32_risc(<target> <machine>): a32_<machine>.inc, the AArch32 emitters' (as snx_sailgen_a32_arm64)
+function(snx_sailgen_a32_risc target machine)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(${machine} a32 files args)
+    # one rule a directory: a big-endian host's targets (ppc64be...) share the machine's emitters
+    get_property(made DIRECTORY PROPERTY SNX_SAILGEN_A32_${machine})
+    if(NOT made)
+        set_property(DIRECTORY PROPERTY SNX_SAILGEN_A32_${machine} 1)
+        add_custom_command(OUTPUT "${out}/a32_${machine}.inc"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+            COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                    -o "${out}/a32_${machine}.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+            DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
+                    "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+            COMMENT "Generating the AArch32 emitters' ${machine} code from Sail" VERBATIM)
+    endif()
+    target_sources(${target} PRIVATE "${out}/a32_${machine}.inc")
+    target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
 endfunction()

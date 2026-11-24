@@ -1057,8 +1057,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     u32* spv = vk_translate_spirv(code, CS_WINDOW, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
-        LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
-            p->si.first_unsupported[0] ? p->si.first_unsupported : "unsupported feature or shader");
+        LOG("vulkan: compute %016llx not translated: %s%s\n", (unsigned long long)key,
+            p->si.first_unsupported[0] ? p->si.first_unsupported : "unsupported feature or shader",
+            vk_lane_note((char[32]){0}, &p->si));
         return p;
     }
     /* not for a pipeline of an earlier run (vk_cs_pipe_load): one saved before the size was read has 0 in its key */

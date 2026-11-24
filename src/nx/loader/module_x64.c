@@ -1,23 +1,100 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An AOT module's descriptor without LLVM, for a module whose functions the x86-64 back end made (module_llvm.c):
+/* An AOT module's descriptor without LLVM, for a module whose functions a native back end made (module_llvm.c):
    the same symbols and data module_llvm.c's emit_module, emit_routes, emit_nros and emit_imports give, written by
-   x64_elf.h's builder, their few functions as bytes. The data's layout is module_abi.h's and nro_slots.h's C types,
-   the host's own (this is the host's module) */
+   x64_elf.h's builder, their few functions in the host's own code: x86-64's as bytes, arm64's by the A64 Sail's
+   encoders (a64_enc.inc), a RISC machine's by its back end (mach/native.h's SnxNativeDesc, mach/risc_desc.inc). The
+   data's layout is module_abi.h's and nro_slots.h's C types, the host's own (this is the host's module) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/loader.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/variants.h"
 #include "common/runtime/interface.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__x86_64__) && !defined(_WIN32)
+#if !defined(_WIN32)
+#if defined(__APPLE__)
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#else
 #include <elf.h>
+#endif
+/* AArch64's relocations (ELF for the Arm 64-bit Architecture, 5.7), which not every <elf.h> names, and x86-64's
+   PLT32 */
+enum {
+    A64_ABS64 = 257,
+    A64_ADR_PREL_PG_HI21 = 275,
+    A64_ADD_ABS_LO12_NC = 277,
+    A64_JUMP26 = 282,
+    A64_LDST64_ABS_LO12_NC = 286,
+    X64_PLT32 = 4
+};
+#include "a64_enc.inc"
+
+/* the descriptor's machine: a RISC machine's (g_desc), else arm64's where the arm64 back end made the module (this
+   host's), else x86-64's */
+static _Thread_local int g_arm64;
+static _Thread_local const SnxNativeDesc* g_desc;
+static _Thread_local int g_desc_failed; /* a function of g_desc's out of room */
+/* the object for the machine: d's (NULL: this host's x86-64 or arm64) */
+/* a function of g_desc's (f, made: 0) as name (flags), its literals' relocations */
+static void desc_put(SnxXElf* o, const char* name, int flags, const SnxNativeFn* f, int made) {
+    size_t at;
+    if (made) {
+        g_desc_failed = 1;
+        return;
+    }
+    at = snx_xelf_put(o, SNX_ELF_TEXT, f->code, f->size, 16);
+    snx_xelf_symbol(o, name, SNX_ELF_TEXT, at, f->size, flags | SNX_ELF_FUNC);
+    for (int k = 0; k < f->nrel; ++k)
+        snx_xelf_reloc(o, SNX_ELF_TEXT, at + f->rel[k].at, f->rel[k].sym,
+                       f->rel[k].type ? f->rel[k].type : g_desc->abs64, f->rel[k].addend);
+}
+static SnxXElf* desc_new(const SnxNativeDesc* d) {
+    SnxXElf* o = snx_xelf_new();
+    g_desc = d, g_desc_failed = 0;
+    g_arm64 = !d && !snx_x64_available() && snx_arm64_available();
+    if (o && d) {
+        snx_xelf_set_machine(o, d->em);
+        snx_xelf_set_flags(o, d->elf_flags);
+        snx_xelf_set_big(o, d->big);
+    } else if (o && g_arm64)
+        snx_xelf_set_machine(o, EM_AARCH64);
+    return o;
+}
+static void a64(SnxXElf* o, SnxU32 w) { snx_xelf_put(o, SNX_ELF_TEXT, &w, 4, 1); }
+/* ADRP Xd, sym; ADD Xd, Xd, :lo12:sym (+ addend) */
+static void a64_adr(SnxXElf* o, unsigned d, const char* sym, long long addend) {
+    size_t at = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+    snx_xelf_reloc(o, SNX_ELF_TEXT, at, sym, A64_ADR_PREL_PG_HI21, addend);
+    a64(o, sge_a64_adrp(d, 0, 0));
+    snx_xelf_reloc(o, SNX_ELF_TEXT, at + 4, sym, A64_ADD_ABS_LO12_NC, addend);
+    a64(o, sge_a64_add_addsub_imm(d, d, 0, 0, 1));
+}
+/* MOVZ and MOVKs of a doubleword */
+static void a64_movi(SnxXElf* o, unsigned d, SnxU64 v) {
+    unsigned k;
+    a64(o, sge_a64_movz(d, (SnxU32)(v & 0xFFFF), 0, 1));
+    for (k = 1; k < 4; ++k)
+        if ((v >> (16 * k)) & 0xFFFF) a64(o, sge_a64_movk(d, (SnxU32)((v >> (16 * k)) & 0xFFFF), k, 1));
+}
+/* a word's offset field at at (imm19 at bit 5) to the code here */
+static void a64_patch19(SnxXElf* o, size_t at) {
+    size_t here = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+    unsigned char* t = snx_xelf_bytes(o, SNX_ELF_TEXT);
+    SnxU32 w;
+    memcpy(&w, t + at, 4);
+    w = (w & ~(0x7FFFFu << 5)) | ((SnxU32)((here - at) / 4) & 0x7FFFFu) << 5;
+    memcpy(t + at, &w, 4);
+}
 
 /* ---- code bytes into .text ---- */
 static void b8(SnxXElf* o, unsigned v) {
@@ -42,13 +119,23 @@ static size_t fn_begin(SnxXElf* o, const char* name, int flags) {
 }
 /* const T* f(void) { return &sym; } */
 static void returns(SnxXElf* o, const char* name, const char* sym) {
+    if (g_desc) {
+        SnxNativeFn f;
+        desc_put(o, name, SNX_ELF_GLOBAL, &f, g_desc->returns(&f, sym));
+        return;
+    }
     fn_begin(o, name, SNX_ELF_GLOBAL);
+    if (g_arm64) {
+        a64_adr(o, 0, sym, 0);
+        a64(o, sge_a64_ret(30));
+        return;
+    }
     lea(o, 0, sym);
     b8(o, 0xC3);
 }
 /* a 64-bit pointer at offset of section, to sym */
 static void ptr(SnxXElf* o, int section, size_t at, const char* sym) {
-    snx_xelf_reloc(o, section, at, sym, R_X86_64_64, 0);
+    snx_xelf_reloc(o, section, at, sym, g_desc ? g_desc->abs64 : g_arm64 ? A64_ABS64 : R_X86_64_64, 0);
 }
 /* a string in .rodata, its local symbol name */
 static void string(SnxXElf* o, const char* text, const char* name) {
@@ -60,10 +147,41 @@ static void fn_name(char* out, size_t size, SnxU64 address) {
 }
 
 /* snx_module(): ENT_ADDR[i] = BASE + ENT_OFF[i], ENT_PTR[i] = FNS[ENT_FN[i]] for each entry (as emit_module's loop:
-   no relocation for each), then &MOD */
-static void module_fn(SnxXElf* o, size_t count) {
+   no relocation for each), then &MOD. ENT_FN is fn_at bytes past ENT_OFF and ENT_PTR ptr_at past ENT_ADDR, which a
+   RISC machine's loop reads */
+static void module_fn(SnxXElf* o, size_t count, size_t fn_at, size_t ptr_at) {
     size_t loop, jae, jmp, done;
+    if (g_desc) {
+        SnxNativeFn f;
+        desc_put(o, "snx_module", SNX_ELF_GLOBAL, &f, g_desc->module_fn(&f, count, SNX_CODE_BASE, fn_at, ptr_at));
+        return;
+    }
     fn_begin(o, "snx_module", SNX_ELF_GLOBAL);
+    if (g_arm64) {
+        /* X2-X6 the tables, X7 BASE, W8 the index, W9 count */
+        a64_adr(o, 2, "ENT_OFF", 0), a64_adr(o, 3, "ENT_FN", 0), a64_adr(o, 4, "ENT_ADDR", 0);
+        a64_adr(o, 5, "ENT_PTR", 0), a64_adr(o, 6, "FNS", 0);
+        a64_movi(o, 7, SNX_CODE_BASE);
+        a64(o, sge_a64_movz(8, 0, 0, 0));
+        a64_movi(o, 9, count);
+        loop = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_subs_addsub_shift(31, 8, 0, 9, 0, 0)); /* CMP W8, W9 */
+        jae = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_b_cond(2, 0));                              /* B.HS done */
+        a64(o, sge_a64_ldr_reg_gen(10, 2, 1, 2, 8, 2));            /* LDR W10, [X2, W8, UXTW #2] */
+        a64(o, sge_a64_add_addsub_shift(10, 10, 0, 7, 0, 1));      /* ADD X10, X10, X7 */
+        a64(o, sge_a64_str_reg_gen(10, 4, 1, 2, 8, 3));            /* STR X10, [X4, W8, UXTW #3] */
+        a64(o, sge_a64_ldr_reg_gen(10, 3, 1, 2, 8, 2));            /* LDR W10, [X3, W8, UXTW #2] */
+        a64(o, sge_a64_ldr_reg_gen(10, 6, 1, 3, 10, 3));           /* LDR X10, [X6, X10, LSL #3] */
+        a64(o, sge_a64_str_reg_gen(10, 5, 1, 2, 8, 3));            /* STR X10, [X5, W8, UXTW #3] */
+        a64(o, sge_a64_add_addsub_imm(8, 8, 1, 0, 0));             /* ADD W8, W8, #1 */
+        jmp = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_b_uncond((SnxU32)((long long)(loop - jmp) / 4) & 0x3FFFFFF));
+        a64_patch19(o, jae);
+        a64_adr(o, 0, "MOD", 0);
+        a64(o, sge_a64_ret(30));
+        return;
+    }
     lea(o, 6, "ENT_OFF");  /* rsi */
     lea(o, 7, "ENT_FN");   /* rdi */
     lea(o, 8, "ENT_ADDR"); /* r8 */
@@ -99,11 +217,141 @@ static void module_fn(SnxXElf* o, size_t count) {
     }
 }
 
+/* name (flags): a tail call through the pointer at sym + addend, read when it runs (an import's IMPORT_FN slot, a
+   cached unit's table's) */
+static void tail_slot(SnxXElf* o, const char* name, int flags, const char* sym, long long addend) {
+    size_t r;
+    if (g_desc) {
+        SnxNativeFn f;
+        desc_put(o, name, flags, &f, g_desc->tail_slot(&f, sym, addend));
+        return;
+    }
+    fn_begin(o, name, flags);
+    if (g_arm64) {
+        /* ADRP X16, sym + addend; LDR X16, [X16, :lo12:]; BR X16 */
+        r = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        snx_xelf_reloc(o, SNX_ELF_TEXT, r, sym, A64_ADR_PREL_PG_HI21, addend);
+        a64(o, sge_a64_adrp(16, 0, 0));
+        snx_xelf_reloc(o, SNX_ELF_TEXT, r + 4, sym, A64_LDST64_ABS_LO12_NC, addend);
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(16, 16, 0, 3));
+        a64(o, sge_a64_br(16));
+        return;
+    }
+    b8(o, 0xFF), b8(o, 0x25); /* jmp [rip + sym + addend] */
+    r = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
+    snx_xelf_reloc(o, SNX_ELF_TEXT, r, sym, R_X86_64_PC32, addend - 4);
+}
+/* name (flags): a tail call of sym (B, jmp) */
+static void tail_to(SnxXElf* o, const char* name, int flags, const char* sym) {
+    size_t r;
+    if (g_desc) {
+        SnxNativeFn f;
+        desc_put(o, name, flags, &f, g_desc->tail_to(&f, sym));
+        return;
+    }
+    fn_begin(o, name, flags);
+    r = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+    if (g_arm64) {
+        snx_xelf_reloc(o, SNX_ELF_TEXT, r, sym, A64_JUMP26, 0);
+        a64(o, sge_a64_b_uncond(0));
+        return;
+    }
+    b8(o, 0xE9);
+    snx_xelf_reloc(o, SNX_ELF_TEXT, r + 1, sym, X64_PLT32, -4);
+    snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
+}
+
+/* snx_variants(): the profile run's units the module links (the JIT cache's records), each function's leaders and
+   runs, its hashes and a tail call through its unit's table (snx_variant_<record>_<index>), as
+   module_variants.c's table gives them; the count of functions */
+static int variants(SnxXElf* o, const SnxJitCacheRecord* records, size_t record_count, size_t* count) {
+    size_t total = 0, i, j, at, k = 0;
+    SnxVariantFunction* fns;
+    SnxVariants table;
+    char name[64];
+    *count = 0;
+    for (i = 0; i < record_count; ++i) total += records[i].function_count;
+    if (!total) return 0;
+    if (total > 0xFFFFFFFFu) return -1;
+    if (!(fns = (SnxVariantFunction*)calloc(total, sizeof *fns))) return -1;
+    for (i = 0; i < record_count; ++i)
+        for (j = 0; j < records[i].function_count; ++j, ++k) {
+            const SnxJitCacheFunction* f = &records[i].functions[j];
+            fns[k].start = f->start;
+            fns[k].leader_count = (SnxU32)f->leader_count;
+            fns[k].run_count = (SnxU32)f->run_count;
+            fns[k].h1 = f->h1;
+            fns[k].h2 = f->h2;
+        }
+    at = snx_xelf_put(o, SNX_ELF_RELRO, fns, total * sizeof *fns, 8);
+    snx_xelf_symbol(o, "VARIANT_FNS", SNX_ELF_RELRO, at, total * sizeof *fns, SNX_ELF_LOCAL);
+    free(fns);
+    for (i = 0, k = 0; i < record_count; ++i)
+        for (j = 0; j < records[i].function_count; ++j, ++k) {
+            const SnxJitCacheFunction* f = &records[i].functions[j];
+            size_t place = at + k * sizeof(SnxVariantFunction), data;
+            if (f->leader_count) {
+                data = snx_xelf_put(o, SNX_ELF_RODATA, f->leaders, f->leader_count * 8, 8);
+                snprintf(name, sizeof name, "VARIANT_L_%zu_%zu", i, j);
+                snx_xelf_symbol(o, name, SNX_ELF_RODATA, data, f->leader_count * 8, SNX_ELF_LOCAL);
+                ptr(o, SNX_ELF_RELRO, place + offsetof(SnxVariantFunction, leaders), name);
+            }
+            if (f->run_count) {
+                data = snx_xelf_put(o, SNX_ELF_RODATA, f->runs, f->run_count * sizeof *f->runs, 8);
+                snprintf(name, sizeof name, "VARIANT_R_%zu_%zu", i, j);
+                snx_xelf_symbol(o, name, SNX_ELF_RODATA, data, f->run_count * sizeof *f->runs, SNX_ELF_LOCAL);
+                ptr(o, SNX_ELF_RELRO, place + offsetof(SnxVariantFunction, runs), name);
+            }
+            snprintf(name, sizeof name, "snx_variant_%zu_%zu", i, j);
+            tail_slot(o, name, SNX_ELF_LOCAL, records[i].name, (long long)(8 * j));
+            ptr(o, SNX_ELF_RELRO, place + offsetof(SnxVariantFunction, fn), name);
+        }
+    memset(&table, 0, sizeof table);
+    table.version = SNX_VARIANTS_VERSION;
+    table.count = (SnxU32)total;
+    at = snx_xelf_put(o, SNX_ELF_RELRO, &table, sizeof table, 8);
+    snx_xelf_symbol(o, "VARIANTS", SNX_ELF_RELRO, at, sizeof table, SNX_ELF_LOCAL);
+    ptr(o, SNX_ELF_RELRO, at + offsetof(SnxVariants, functions), "VARIANT_FNS");
+    returns(o, "snx_variants", "VARIANTS");
+    *count = total;
+    return 0;
+}
+
 /* snx_import_dyn(c, e): the function dispatch has for e (CPU.disp, inside [code_lo, code_hi) and aligned), else the
    runtime's miss, tail called with c and e: snx_lookup's, as emit_imports' CALLDYN */
 static void import_dyn(SnxXElf* o) {
     size_t miss, found, at;
+    if (g_desc) {
+        SnxNativeFn f;
+        desc_put(o, "snx_import_dyn", SNX_ELF_LOCAL, &f, g_desc->import_dyn(&f));
+        return;
+    }
     fn_begin(o, "snx_import_dyn", SNX_ELF_LOCAL);
+    if (g_arm64) {
+        /* X0 c, X1 e; X16 and X17 scratch */
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(16, 0, (SnxU32)(offsetof(CPU, code_lo) / 8), 3));
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(17, 0, (SnxU32)(offsetof(CPU, code_hi) / 8), 3));
+        a64(o, sge_a64_sub_addsub_shift(17, 17, 0, 16, 0, 1));
+        a64(o, sge_a64_sub_addsub_shift(16, 1, 0, 16, 0, 1));
+        a64(o, sge_a64_subs_addsub_shift(31, 16, 0, 17, 0, 1));
+        miss = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_b_cond(2, 0));                      /* B.HS miss */
+        a64(o, sge_a64_ands_log_imm(31, 1, 1, 0, 1, 1));   /* TST X1, #3 */
+        at = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_b_cond(1, 0));                      /* B.NE miss */
+        a64(o, sge_a64_ubfm(16, 16, 63, 2, 1, 1));         /* LSR X16, X16, #2 */
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(17, 0, (SnxU32)(offsetof(CPU, disp) / 8), 3));
+        a64(o, sge_a64_ldr_reg_gen(16, 17, 1, 3, 16, 3));  /* LDR X16, [X17, X16, LSL #3] */
+        found = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
+        a64(o, sge_a64_cbnz(16, 0, 1));
+        a64_patch19(o, miss);
+        a64_patch19(o, at);
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(16, 0, (SnxU32)(offsetof(CPU, rt) / 8), 3));
+        a64(o, sge_a64_ldr_imm_gen_immediate_unsigned(16, 16, (SnxU32)(offsetof(RtAPI, miss) / 8), 3));
+        a64_patch19(o, found);
+        a64(o, sge_a64_br(16));
+        return;
+    }
     b8(o, 0x48), b8(o, 0x89), b8(o, 0xF0);                                   /* mov rax, rsi */
     b8(o, 0x48), b8(o, 0x2B), b8(o, 0x87), b32(o, (SnxU32)offsetof(CPU, code_lo)); /* sub rax, [rdi + lo] */
     b8(o, 0x48), b8(o, 0x8B), b8(o, 0x97), b32(o, (SnxU32)offsetof(CPU, code_hi)); /* mov rdx, [rdi + hi] */
@@ -140,11 +388,19 @@ static void import_dyn(SnxXElf* o) {
 }
 
 int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
-                       const SnxU64* imports, size_t import_count, unsigned char** object, size_t* size,
-                       size_t* entry_count, char* error, size_t error_size) {
-    SnxXElf* o = snx_xelf_new();
+                       const SnxU64* imports, size_t import_count, const SnxJitCacheRecord* records,
+                       size_t record_count, unsigned char** object, size_t* size, size_t* entry_count,
+                       size_t* variant_count, char* error, size_t error_size) {
+    return snx_x64_descriptor_for(snx_native_desc(), codegen, options, loaded, imports, import_count, records,
+                                  record_count, object, size, entry_count, variant_count, error, error_size);
+}
+int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen, const SnxCodegenOptions* options,
+                           const SnxProgram* loaded, const SnxU64* imports, size_t import_count,
+                           const SnxJitCacheRecord* records, size_t record_count, unsigned char** object,
+                           size_t* size, size_t* entry_count, size_t* variant_count, char* error, size_t error_size) {
+    SnxXElf* o = desc_new(desc);
     SnxModuleEntry* entries;
-    size_t count, i, nfns = codegen->function_count ? codegen->function_count : 1, at;
+    size_t count, i, nfns = codegen->function_count ? codegen->function_count : 1, at, fn_at = 0, ptr_at = 0;
     SnxU64 lo = ~(SnxU64)0, hi = 0;
     char name[48];
     int rc;
@@ -203,13 +459,15 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
         }
         at = snx_xelf_put(o, SNX_ELF_RODATA, off, 4 * n, 4);
         snx_xelf_symbol(o, "ENT_OFF", SNX_ELF_RODATA, at, 4 * n, SNX_ELF_LOCAL);
-        at = snx_xelf_put(o, SNX_ELF_RODATA, fn, 4 * n, 4);
-        snx_xelf_symbol(o, "ENT_FN", SNX_ELF_RODATA, at, 4 * n, SNX_ELF_LOCAL);
+        fn_at = snx_xelf_put(o, SNX_ELF_RODATA, fn, 4 * n, 4);
+        snx_xelf_symbol(o, "ENT_FN", SNX_ELF_RODATA, fn_at, 4 * n, SNX_ELF_LOCAL);
+        fn_at -= at;
         free(off), free(fn);
         at = snx_xelf_put(o, SNX_ELF_BSS, NULL, 8 * n, 8);
         snx_xelf_symbol(o, "ENT_ADDR", SNX_ELF_BSS, at, 8 * n, SNX_ELF_LOCAL);
-        at = snx_xelf_put(o, SNX_ELF_BSS, NULL, 8 * n, 8);
-        snx_xelf_symbol(o, "ENT_PTR", SNX_ELF_BSS, at, 8 * n, SNX_ELF_LOCAL);
+        ptr_at = snx_xelf_put(o, SNX_ELF_BSS, NULL, 8 * n, 8);
+        snx_xelf_symbol(o, "ENT_PTR", SNX_ELF_BSS, ptr_at, 8 * n, SNX_ELF_LOCAL);
+        ptr_at -= at;
     }
     /* MODS[]: the modules */
     {
@@ -266,7 +524,21 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
         ptr(o, SNX_ELF_DATA, at + offsetof(SnxModule, fn_len), "FN_LEN");
         ptr(o, SNX_ELF_DATA, at + offsetof(SnxModule, stale), "snx_stale");
     }
-    module_fn(o, count);
+    module_fn(o, count, fn_at, ptr_at);
+    /* snx_aot_<entry>: what the profile run's units' direct calls name (ir_codegen.c), a tail call of the entry's
+       function, where there are any */
+    for (i = 0; record_count && i < count; ++i) {
+        char target[48];
+        snprintf(name, sizeof name, "snx_aot_%llx", (unsigned long long)entries[i].address);
+        fn_name(target, sizeof target, codegen->functions[entries[i].function].start);
+        tail_to(o, name, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN, target);
+    }
+    if (variants(o, records, record_count, variant_count)) {
+        free(entries);
+        snx_xelf_free(o);
+        snprintf(error, error_size, "the variant table is too large or out of memory");
+        return -1;
+    }
     /* snx_routes(): the route list's hashes, sorted */
     {
         size_t n = snx_hook_route_count();
@@ -317,12 +589,8 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
         snx_xelf_symbol(o, "IMPORT_ADDR", SNX_ELF_RODATA, at, 8 * import_count, SNX_ELF_LOCAL);
         for (i = 0; i < import_count; ++i) {
             /* snx_aot_<address>: jmp [IMPORT_FN + 8i] (the pointer the runtime may change, read once) */
-            size_t r;
             snprintf(name, sizeof name, "snx_aot_%llx", (unsigned long long)imports[i]);
-            fn_begin(o, name, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN);
-            b8(o, 0xFF), b8(o, 0x25);
-            r = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
-            snx_xelf_reloc(o, SNX_ELF_TEXT, r, "IMPORT_FN", R_X86_64_PC32, (long long)(8 * i) - 4);
+            tail_slot(o, name, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN, "IMPORT_FN", (long long)(8 * i));
         }
         memset(&table, 0, sizeof table);
         table.version = SNX_NRO_IMPORTS_VERSION;
@@ -336,9 +604,9 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
     }
     free(entries);
     *entry_count = count;
-    rc = snx_xelf_write(o, object, size);
+    rc = g_desc_failed ? -1 : snx_xelf_write(o, object, size);
     snx_xelf_free(o);
-    if (rc) snprintf(error, error_size, "out of memory");
+    if (rc) snprintf(error, error_size, g_desc_failed ? "a descriptor function too large" : "out of memory");
     return rc;
 }
 
@@ -347,7 +615,12 @@ int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* optio
    module's i64 the runtime writes (hidden: the blocks read it PC-relative), and snx_module_arm() returning &MOD */
 int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
                            unsigned char** object, size_t* size, char* error, size_t error_size) {
-    SnxXElf* o = snx_xelf_new();
+    return snx_x64_arm_descriptor_for(snx_native_desc(), loaded, options, keys, count, object, size, error, error_size);
+}
+int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* loaded, const SnxCodegenOptions* options,
+                               const SnxU32* keys, size_t count, unsigned char** object, size_t* size, char* error,
+                               size_t error_size) {
+    SnxXElf* o = desc_new(desc);
     size_t at, n = count ? count : 1;
     char name[48];
     if (!o) {
@@ -428,25 +701,40 @@ int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* op
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, poll_offset), "snx_arm_poll_offset");
     }
     returns(o, "snx_module_arm", "MOD");
-    int rc = snx_xelf_write(o, object, size);
+    int rc = g_desc_failed ? -1 : snx_xelf_write(o, object, size);
     snx_xelf_free(o);
-    if (rc) snprintf(error, error_size, "out of memory");
+    if (rc) snprintf(error, error_size, g_desc_failed ? "a descriptor function too large" : "out of memory");
     return rc;
 }
 
 #else
+int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* loaded, const SnxCodegenOptions* options,
+                               const SnxU32* keys, size_t count, unsigned char** object, size_t* size, char* error,
+                               size_t error_size) {
+    (void)desc;
+    return snx_x64_arm_descriptor(loaded, options, keys, count, object, size, error, error_size);
+}
+int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen, const SnxCodegenOptions* options,
+                           const SnxProgram* loaded, const SnxU64* imports, size_t import_count,
+                           const SnxJitCacheRecord* records, size_t record_count, unsigned char** object,
+                           size_t* size, size_t* entry_count, size_t* variant_count, char* error, size_t error_size) {
+    (void)desc;
+    return snx_x64_descriptor(codegen, options, loaded, imports, import_count, records, record_count, object, size,
+                              entry_count, variant_count, error, error_size);
+}
 int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
                            unsigned char** object, size_t* size, char* error, size_t error_size) {
     (void)loaded, (void)options, (void)keys, (void)count, (void)object, (void)size;
-    snprintf(error, error_size, "no x86-64 back end on this host");
+    snprintf(error, error_size, "no native back end's objects on this host");
     return -1;
 }
 int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
-                       const SnxU64* imports, size_t import_count, unsigned char** object, size_t* size,
-                       size_t* entry_count, char* error, size_t error_size) {
+                       const SnxU64* imports, size_t import_count, const SnxJitCacheRecord* records,
+                       size_t record_count, unsigned char** object, size_t* size, size_t* entry_count,
+                       size_t* variant_count, char* error, size_t error_size) {
     (void)codegen, (void)options, (void)loaded, (void)imports, (void)import_count, (void)object, (void)size;
-    (void)entry_count;
-    snprintf(error, error_size, "no x86-64 back end on this host");
+    (void)entry_count, (void)records, (void)record_count, (void)variant_count;
+    snprintf(error, error_size, "no native back end's objects on this host");
     return -1;
 }
 #endif

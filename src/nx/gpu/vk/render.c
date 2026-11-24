@@ -1305,7 +1305,12 @@ u32 vk_memory_handles(const ShaderInfo* si, const struct Sm86EvalIo* io, u32* ou
         probes[np++] = st->cbuf_off;
         probes[np++] = st->bl2 ? st->bl2_off : st->cbuf_off;
     }
-    if (np && !sm86_eval((const u64(*)[2])si->memh, si->nmemh, io, probes, np, values))
+    if (np == 0) return 0;
+    u32 nmemh = SH_MEMH_NUM(si->nmemh);
+    int evaluated = si->nmemh & SH_MEMH_DIRECT
+                        ? direct_eval_memh(si->memh, nmemh, io, probes, np, values)
+                        : sm86_eval((const u64(*)[2])si->memh, nmemh, io, probes, np, values);
+    if (!evaluated)
         LOG_LIMIT(4, "vulkan: a program's texture handles from memory could not be read (some are 0)\n");
     for (int i = 0, k = 0; i < nt; i++) {
         const ShTex* st = &si->tex[i];

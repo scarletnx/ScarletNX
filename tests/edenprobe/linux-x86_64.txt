@@ -1,5 +1,5 @@
 # Amberlith cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v1.0.0
+# build: v1.0.4
 # mode: audio cpu display fs hooks kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
@@ -304,6 +304,7 @@ reference: repeating folds every index onto a texel
 reference: sampling a region one texel per pixel moves the texture to its corner
 reference: scene: no two of its colours and texels are alike, and a wrong pixel is named by the part it shows
 reference: scene: the four quarters, the hidden quad and the moved square are where the scene's description puts them
+reference: sched: a better thread started on the caller's core must run before the call returns
 reference: sched: a case that could not run says why, and the note adds the cases up
 reference: sched: a step keeps its first place and time, and one not taken comes last
 reference: sched: inheritance passes on the console's order and names what stalled
@@ -624,6 +625,7 @@ reference: with no margin every pixel is judged
 reference: with the clamp off a primitive past a depth plane is clipped, with it on kept
 reference: z of -1, -0.5, 0 and 0.5 are depths 0, 0.25, 0.5 and 0.75 from minus one
 sched: a thread behind a spinning one moves to an idle core of its mask
+sched: a thread started at a better priority on the caller's core runs before svcStartThread returns
 sched: a thread that becomes ready at a better priority takes the core from one spinning
 sched: svcSleepThread(0) leaves the thread on its core
 sched: the inherited priority passes down a chain of owners
@@ -656,6 +658,7 @@ support: a case banned on this machine is skipped as banned, its line said, unti
 support: a case inherits neither another case's samples nor a pass's leftovers
 support: a case its frontend says could not be asked ends as a skip, whatever its verdict
 support: a case known to hang is skipped until hang asks, and retry does not run it
+support: a case known to hang runs on a machine a run showed it return on
 support: a case name becomes the file name it reads like
 support: a case named after another's expected picture does not land on it
 support: a case on the crash list is skipped as crashed until retry asks for it
@@ -871,6 +874,7 @@ support: the word hooks asks the services through the SDK's functions, a word of
 support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
 support: the word notime turns the timing passes off and says so
+support: the word nowindow keeps the mod's window closed and nothing else
 support: the word stress, and nothing else, asks for the stress cases
 support: the word vram=<MiB> says the machine's graphics memory, and a bad number says the one it keeps
 support: the words game and frames=<n> run the scene and set its frames, and a bad number says the one it keeps
@@ -884,6 +888,9 @@ support: two names that agree for longer than a stem still get one each
 support: untimed suites report no time
 support: what repeats is the direction pressed, whatever else is held
 support: what the start screen chooses is the run's mode, the label the file's
+support: with no pad to read, the results draw no key and no hint to press, and count down in words
+support: with no pad to read, the running screen offers no B and says the results come up by themselves
+support: with no pad to read, the start screen draws no tab and no key, and says its run begins by itself
 svc: a closed handle among two fails svcWaitSynchronization with InvalidHandle
 svc: a handle closed once answers InvalidHandle when closed again
 svc: a pending cancel meets a timeout of 0 with TimedOut and stays pending

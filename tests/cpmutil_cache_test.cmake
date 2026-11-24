@@ -8,8 +8,9 @@
 # there. A download that fails says the URL and the status; a folder a fetch cut short is fetched again; a file of one
 # download that is not the pinned one is downloaded again, or refused in a <package>_CUSTOM_DIR, with both hashes; a
 # configure waits for another one's fetch of the same package instead of removing it, and takes what it fetched;
-# another package's fetch goes on beside it; and a package's patches are applied, again when they change, and stop the
-# configure where one does not apply without fuzz.
+# another package's fetch goes on beside it; a package's patches are applied, and stop the configure where one does not
+# apply without fuzz; and a patched package's folder is named by its patches (their bytes in order), so two sets of
+# them have each its own folder in a cache, while a package with no patches keeps <package>/<version>.
 # CPMUtil's 5 s between tries is left out: each failure would take 30 s
 # the policies of the CMake the build needs: a script has none of its own, and before CMake 4 an unset CMP0054 read
 # if(kind STREQUAL "arc") as the variable arc
@@ -26,6 +27,7 @@ file(REMOVE_RECURSE "${WORK}")
 file(WRITE "${WORK}/payload/one.txt" "the whole file\n")
 file(WRITE "${WORK}/payload/arc-1/a.c" "int a;\n")
 file(WRITE "${WORK}/payload/pat-1/text.txt" "one\ntwo\nthree\nfour\nfive\nsix\nseven\n")
+file(WRITE "${WORK}/payload/pat-1/more.txt" "eight\n")
 foreach(kind arc pat)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E tar czf ${kind}.tar.gz ${kind}-1 WORKING_DIRECTORY "${WORK}/payload"
                     RESULT_VARIABLE failed)
@@ -43,13 +45,17 @@ if(NOT served MATCHES "^/")
     set(url "file:///${served}")
 endif()
 set(cache "${WORK}/cache")
-file(WRITE "${WORK}/project/cpmfile.json" "{
+# the pins, the one of pat with its patches: a JSON array's contents
+function(write_pins patches)
+    file(WRITE "${WORK}/project/cpmfile.json" "{
     \"arc\": {\"url\": \"${url}/arc.tar.gz\", \"version\": \"1\", \"hash\": \"${arc_hash}\"},
     \"one\": {\"url\": \"${url}/one.txt\", \"version\": \"1\", \"hash\": \"${one_hash}\"},
     \"pat\": {\"url\": \"${url}/pat.tar.gz\", \"version\": \"1\", \"hash\": \"${pat_hash}\",
-             \"patches\": [\"0001-four.patch\"]}
+             \"patches\": [${patches}]}
 }
 ")
+endfunction()
+write_pins("\"0001-four.patch\"")
 # KIND (arc or one) added as cmake/dependencies.cmake adds it, after WAIT names a file to appear (the other fetch's
 # lock taken), its download paused with PAUSE; its folder written to folder.txt
 file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)
@@ -222,37 +228,118 @@ file(LOCK \"${lock}\" RELEASE)
     endif()
 endforeach()
 
-# A package's patches (.patch/<key>/, cpmfile.json's "patches"): applied to what the fetch extracts; applied again on a
-# fresh copy when one changes; one that does not apply as it is written, without fuzz, stops the configure, naming it
-# and the folder, and leaves the folder to be fetched again
+# A package's patches (.patch/<key>/, cpmfile.json's "patches"): applied to what the fetch extracts, in a folder named
+# by the version and by the first 10 characters of the SHA-512 of their bytes, in the order the list gives; one that does
+# not apply as it is written, without fuzz, stops the configure, naming it and the folder, and leaves the folder to be
+# fetched again
 function(patch_four line context)
     file(WRITE "${WORK}/project/.patch/pat/0001-four.patch" "--- a/text.txt\n+++ b/text.txt\n@@ -1,7 +1,7 @@\n"
                " ${context}\n two\n three\n-four\n+${line}\n five\n six\n seven\n")
 endfunction()
+# the folder the patches ARGN (names in .patch/pat) give
+function(patched_folder out)
+    set(bytes "")
+    foreach(name IN LISTS ARGN)
+        file(READ "${WORK}/project/.patch/pat/${name}" content)
+        string(APPEND bytes "${content}")
+    endforeach()
+    string(SHA512 key "${bytes}")
+    string(SUBSTRING "${key}" 0 10 key)
+    set(${out} "${cache}/pat/1-${key}" PARENT_SCOPE)
+endfunction()
+function(text_of out folder)
+    set(text "")
+    if(EXISTS "${folder}/text.txt")
+        file(READ "${folder}/text.txt" text)
+    endif()
+    set(${out} "${text}" PARENT_SCOPE)
+endfunction()
 file(COPY "${WORK}/payload/pat.tar.gz" DESTINATION "${served}")
-set(pat "${cache}/pat/1")
+# a cache made before the folder was named by the patches, the version alone its name: read by none and left as it is
+file(WRITE "${cache}/pat/1/text.txt" "an older version's\n")
+file(WRITE "${cache}/pat/1/.cpm_patch_key" "none")
+set(sets "")
 foreach(line FOUR Four)
     patch_four(${line} one)
     configure(pat)
-    set(text "")
-    if(EXISTS "${pat}/text.txt")
-        file(READ "${pat}/text.txt" text)
+    patched_folder(want 0001-four.patch)
+    text_of(text "${folder}")
+    if(failed OR NOT folder STREQUAL want OR NOT text STREQUAL "one\ntwo\nthree\n${line}\nfive\nsix\nseven\n" OR
+       NOT EXISTS "${want}/.cpm_patch_key")
+        fail("pat: the patch that writes ${line} gave [${text}] in [${folder}], not ${want}:\n${out}")
     endif()
-    if(failed OR NOT text STREQUAL "one\ntwo\nthree\n${line}\nfive\nsix\nseven\n" OR NOT EXISTS "${pat}/.cpm_patch_key")
-        fail("pat: the patch that writes ${line} gave [${text}]:\n${out}")
+    list(APPEND sets "${want}")
+endforeach()
+text_of(text "${cache}/pat/1")
+if(NOT text STREQUAL "an older version's\n")
+    fail("pat: the folder named by the version alone reads [${text}]")
+endif()
+# each set of patches has kept its own, and is taken from there with nothing served: a branch that goes back
+list(REMOVE_DUPLICATES sets)
+list(LENGTH sets distinct)
+if(NOT distinct EQUAL 2)
+    fail("pat: two sets of patches are in [${sets}]")
+endif()
+file(REMOVE_RECURSE "${served}")
+foreach(line FOUR Four)
+    patch_four(${line} one)
+    configure(pat)
+    patched_folder(want 0001-four.patch)
+    text_of(text "${folder}")
+    if(failed OR NOT folder STREQUAL want OR NOT text STREQUAL "one\ntwo\nthree\n${line}\nfive\nsix\nseven\n")
+        fail("pat: with nothing served, the patches that write ${line} are not in ${want}, [${folder}] is:\n${out}")
     endif()
 endforeach()
-# its first line of context another: a fuzz of 1 would apply it
-patch_four(FOUR uno)
-configure(pat)
-if(NOT failed OR EXISTS "${pat}/.cpm_patch_key")
-    fail("pat: a patch that applies only with fuzz was applied:\n${out}")
+file(COPY "${WORK}/payload/pat.tar.gz" DESTINATION "${served}")
+# two patches in the other order are another set, and the same bytes under another name are the same set
+file(WRITE "${WORK}/project/.patch/pat/0002-more.patch" "--- a/more.txt\n+++ b/more.txt\n@@ -1 +1 @@\n-eight\n+EIGHT\n")
+patch_four(FOUR one)
+foreach(order "0001-four.patch;0002-more.patch" "0002-more.patch;0001-four.patch")
+    list(JOIN order "\", \"" names)
+    write_pins("\"${names}\"")
+    configure(pat)
+    patched_folder(want ${order})
+    text_of(text "${folder}")
+    set(more "")
+    if(EXISTS "${folder}/more.txt")
+        file(READ "${folder}/more.txt" more)
+    endif()
+    if(failed OR NOT folder STREQUAL want OR NOT text STREQUAL "one\ntwo\nthree\nFOUR\nfive\nsix\nseven\n" OR
+       NOT more STREQUAL "EIGHT\n")
+        fail("pat: the patches [${order}] gave [${text}${more}] in [${folder}], not ${want}:\n${out}")
+    endif()
+    list(APPEND sets "${want}")
+endforeach()
+list(REMOVE_DUPLICATES sets)
+list(LENGTH sets distinct)
+if(NOT distinct EQUAL 4)
+    fail("pat: four sets of patches are in [${sets}]")
 endif()
-says(pat-fuzz "${WORK}/project/.patch/pat/0001-four.patch does not apply to ${pat}:")
+file(RENAME "${WORK}/project/.patch/pat/0002-more.patch" "${WORK}/project/.patch/pat/0003-more.patch")
+write_pins("\"0001-four.patch\", \"0003-more.patch\"")
+configure(pat)
+list(GET sets 2 want)
+if(failed OR NOT folder STREQUAL want)
+    fail("pat: a patch renamed with the same bytes is in [${folder}], not ${want}:\n${out}")
+endif()
+write_pins("\"0001-four.patch\"")
+# its first line of context another: a fuzz of 1 would apply it. The folder it is left in is fetched again by the next
+# configure, which fails the same, and the others' stay
+patch_four(FOUR uno)
+patched_folder(pat 0001-four.patch)
+foreach(again 0 1)
+    file(WRITE "${pat}/half" "")
+    configure(pat)
+    if(NOT failed OR EXISTS "${pat}/.cpm_patch_key" OR EXISTS "${pat}/half")
+        fail("pat: a patch that applies only with fuzz was applied, or its folder is not fetched again:\n${out}")
+    endif()
+    says(pat-fuzz "${WORK}/project/.patch/pat/0001-four.patch does not apply to ${pat}:")
+endforeach()
 patch_four(FOUR one)
 configure(pat)
-if(failed OR NOT EXISTS "${pat}/.cpm_patch_key")
-    fail("pat: a folder a patch did not apply to is not fetched again:\n${out}")
+patched_folder(pat 0001-four.patch)
+if(failed OR NOT folder STREQUAL pat OR NOT EXISTS "${pat}/.cpm_patch_key")
+    fail("pat: a patch that applies, after one that did not, is in [${folder}], not ${pat}:\n${out}")
 endif()
 # a folder of the packager's for a patched package, which CPMUtil would take unpatched: refused, with the patches
 configure(pat "-Dpat_CUSTOM_DIR=${WORK}/payload/pat-1")

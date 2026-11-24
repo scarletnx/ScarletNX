@@ -9,6 +9,7 @@
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/successors.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
@@ -685,8 +686,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
     SnxIr* ir = NULL;
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
-    unsigned char* armlib = NULL;
-    size_t armlib_size = 0, *starts = NULL;
+    size_t* starts = NULL;
     char *target = NULL, *staged = NULL, *kept = NULL, *recorded = NULL;
     Stub* stubs = NULL;
     const char* exports[1] = {"snx_vita_module_v1"};
@@ -754,8 +754,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
         goto done;
     }
     if (!index_object(ir, image, d.blocks, d.count, &objects[1], kept, error, error_size)) goto done;
-    if (snx_ir_armlib_object(opt, &armlib, &armlib_size, error, error_size)) goto done;
-    objects[0].data = armlib, objects[0].size = armlib_size;
+    objects[0].data = (unsigned char*)snx_armlib_object, objects[0].size = (size_t)snx_armlib_object_size;
     if (snx_link(objects, files, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
     if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, target)) {
         char why[256];
@@ -769,7 +768,6 @@ done:
     if (objects)
         for (unsigned i = 1; i < files; ++i) free((void*)objects[i].data);
     free(objects);
-    free(armlib);
     free(stubs);
     free(linked.data);
     free(staged);

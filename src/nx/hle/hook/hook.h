@@ -68,6 +68,9 @@ void hook_missed_text(char* out, size_t n);
    SDK with a declaration for a 32-bit game and none for that SDK (HOOK_A32_READ_SDK), else a sentence with the SDK's
    version and module, HOOK_A32_READ_SDK, how many of the functions each family has, and what a player can do */
 void hook_unread_text(char* out, size_t n);
+/* The same stop with the settings turning the hooks of family off: "" unless hook_family_off(family), else a sentence
+   with the setting that does, its value and its default */
+void hook_off_text(char* out, size_t n, const char* family);
 /* the SDK the declarations for a 32-bit game were read in, 0.12.16, the one 32-bit SDK read: they hold for it alone
    (a32 @version) */
 #define HOOK_A32_READ_SDK (0u << 16 | 12u << 8 | 16u)

@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright 2026 crueter
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
-# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with four
+# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with five
 # changes of ours, which an update keeps: fetch_package fetches a package under a lock, cpm_download's failure names
-# the URL and the status, apply_patches applies without fuzz and stops on a patch that does not apply, and CMake 3.28
-# is the minimum, here and in CPM.cmake, which sets CMP0168 where CMake has it
+# the URL and the status, apply_patches applies without fuzz and stops on a patch that does not apply, AddPackage names
+# a patched package's folder by its patches, and CMake 3.28 is the minimum, here and in CPM.cmake, which sets CMP0168
+# where CMake has it
 
 cmake_minimum_required(VERSION 3.28)
 
@@ -919,6 +920,14 @@ function(AddPackage)
             set(key ${PKG_ARGS_CUSTOM_KEY})
         else()
             set(key ${PKG_ARGS_VERSION})
+        endif()
+
+        # A patched package's folder is named by its patches too: two trees that patch it otherwise had one folder,
+        # which each fetched again under the other's build. Without patches the name is the version's alone
+        compute_patch_key("${PKG_ARGS_PATCHES}" patch_key)
+        if (NOT patch_key STREQUAL "none")
+            string(SUBSTRING "${patch_key}" 0 10 patch_key)
+            string(APPEND key "-${patch_key}")
         endif()
 
         # cache path

@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c) against the AArch32 block compiler's LLVM
-   ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which
-   LLVM 22's -O2 makes otherwise in one case (VRSHL's witness, below): the same words consumed, and the same results
-   from the same random states.
+/* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 or
+   SNX_TEST_RV64 the arm64 or riscv64 back end's (run under Unicorn: snx-test-arm-arm64, -rv64, without the hot paths'
+   witnesses, the chain and Thumb), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
+   module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in
+   one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]...
          [--halves HEX[,HEX]...] [--dump]
    Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
@@ -20,13 +21,82 @@
    armed or not on a register's address with the value there or another): the registers, CPSR, the exit and its
    syndrome, the monitor, the TLS registers, the VFP registers and FPSCR, and guest memory must match. --pool N keeps
    the x86 values in N host registers, so they spill; --features takes the host's BMI1 (1), BMI2 (2) and LZCNT (4) out
-   where not in MASK; --word runs the words given, one block each, and says what each state did; --dump prints a
-   failing state's start */
+   where not in MASK; --word runs the words given (HEX, or HEX,HEX... in a row), one block each, and says what each
+   state did; --dump prints a failing state's start */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#if defined(SNX_TEST_ARM64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/arm64/arm64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxArm64Arm Back;
+#define back_(name) snx_arm64_arm_##name
+#define BACK_NAME   "arm64"
+#define BACK_UC     HOSTUC_ARM64
+#elif defined(SNX_TEST_LA64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/la64/la64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxLa64Arm Back;
+#define back_(name) snx_la64_arm_##name
+#define BACK_NAME   "loongarch64"
+#define BACK_UC     HOSTUC_LA64
+#elif defined(SNX_TEST_MIPS64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/mips64/mips64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxMips64Arm Back;
+#define back_(name) snx_mips64_arm_##name
+#define BACK_NAME   "mips64el"
+#define BACK_UC     HOSTUC_MIPS64EL
+#elif defined(SNX_TEST_PPC64BE)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/ppc64/ppc64be_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxPpc64beArm Back;
+#define back_(name) snx_ppc64be_arm_##name
+#define BACK_NAME   "ppc64"
+#define BACK_UC     HOSTUC_PPC64
+#elif defined(SNX_TEST_S390X)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/s390x/s390x_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxS390xArm Back;
+#define back_(name) snx_s390x_arm_##name
+#define BACK_NAME   "s390x"
+#define BACK_UC     HOSTUC_S390X
+#elif defined(SNX_TEST_MIPS64BE)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/mips64/mips64be_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxMips64beArm Back;
+#define back_(name) snx_mips64be_arm_##name
+#define BACK_NAME   "mips64"
+#define BACK_UC     HOSTUC_MIPS64
+#elif defined(SNX_TEST_PPC64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/ppc64/ppc64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxPpc64Arm Back;
+#define back_(name) snx_ppc64_arm_##name
+#define BACK_NAME   "ppc64le"
+#define BACK_UC     HOSTUC_PPC64LE
+#elif defined(SNX_TEST_RV64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/rv64/rv64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxRv64Arm Back;
+#define back_(name) snx_rv64_arm_##name
+#define BACK_NAME   "riscv64"
+#define BACK_UC     HOSTUC_RV64
+#else
 #include "common/cpu/recompiler/x64/x64_arm.h"
+typedef SnxX64Arm Back;
+#define back_(name) snx_x64_arm_##name
+#define BACK_NAME   "x86-64"
+#endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include <stdint.h>
@@ -47,8 +117,8 @@ static struct {
     int pool;
     u64 seed;
     size_t failures, refused, ran, compared, words, consumed_words;
-    uint32_t only[64];
-    size_t nonly;
+    uint32_t only[64][MAX_WORDS];
+    size_t nonly, only_n[64];
     uint16_t halves[MAX_HALF]; /* --halves: one Thumb block */
     size_t nhalves;
     char why[200];
@@ -175,6 +245,12 @@ static const Class* pick_class(void) {
 
 /* ---- running ---- */
 
+#ifdef SNX_TEST_NATIVE
+#define SNX_TEST_SWAP_ARM 1
+#include "support/swap_state.h"
+static void swap_arm(void* cpu) { snx_test_swap_arm((SnxArmCPU*)cpu); }
+#endif
+
 typedef struct {
     SnxArmCPU cpu;
     unsigned char mem[MEM_SIZE];
@@ -271,30 +347,32 @@ static const char* differs(const RunState* a, const RunState* b) {
     const SnxArmCPU *x = &a->cpu, *y = &b->cpu;
     for (unsigned r = 0; r < 16; ++r)
         if (x->r[r] != y->r[r])
-            return snprintf(why, sizeof g_test.why, "r%u %08x, x86-64 %08x", r, x->r[r], y->r[r]), why;
-    if (x->cpsr != y->cpsr) return snprintf(why, sizeof g_test.why, "cpsr %08x, x86-64 %08x", x->cpsr, y->cpsr), why;
-    if (x->exit != y->exit) return snprintf(why, sizeof g_test.why, "exit %u, x86-64 %u", x->exit, y->exit), why;
+            return snprintf(why, sizeof g_test.why, "r%u %08x, " BACK_NAME " %08x", r, x->r[r], y->r[r]), why;
+    if (x->cpsr != y->cpsr)
+        return snprintf(why, sizeof g_test.why, "cpsr %08x, " BACK_NAME " %08x", x->cpsr, y->cpsr), why;
+    if (x->exit != y->exit) return snprintf(why, sizeof g_test.why, "exit %u, " BACK_NAME " %u", x->exit, y->exit), why;
     if (x->syndrome != y->syndrome)
-        return snprintf(why, sizeof g_test.why, "syndrome %08x, x86-64 %08x", x->syndrome, y->syndrome), why;
+        return snprintf(why, sizeof g_test.why, "syndrome %08x, " BACK_NAME " %08x", x->syndrome, y->syndrome), why;
     if (x->exclusive_valid != y->exclusive_valid || x->exclusive_address != y->exclusive_address ||
         x->exclusive_size != y->exclusive_size || x->exclusive_value != y->exclusive_value)
         return snprintf(why, sizeof g_test.why,
-                        "monitor valid %u address %08x size %u value %016llx, x86-64 %u %08x %u %016llx",
+                        "monitor valid %u address %08x size %u value %016llx, " BACK_NAME " %u %08x %u %016llx",
                         x->exclusive_valid, x->exclusive_address, x->exclusive_size,
                         (unsigned long long)x->exclusive_value, y->exclusive_valid, y->exclusive_address,
                         y->exclusive_size, (unsigned long long)y->exclusive_value),
                why;
     if (x->tpidrurw != y->tpidrurw || x->tpidruro != y->tpidruro) return "the TLS registers";
     if (x->fpscr != y->fpscr)
-        return snprintf(why, sizeof g_test.why, "fpscr %08x, x86-64 %08x", x->fpscr, y->fpscr), why;
+        return snprintf(why, sizeof g_test.why, "fpscr %08x, " BACK_NAME " %08x", x->fpscr, y->fpscr), why;
     for (unsigned i = 0; i < 32; ++i)
         if (x->d[i] != y->d[i])
-            return snprintf(why, sizeof g_test.why, "d%u %016llx, x86-64 %016llx", i, (unsigned long long)x->d[i],
+            return snprintf(why, sizeof g_test.why, "d%u %016llx, " BACK_NAME " %016llx", i,
+                            (unsigned long long)x->d[i],
                             (unsigned long long)y->d[i]),
                    why;
     for (size_t i = 0; i < MEM_SIZE; ++i)
         if (a->mem[i] != b->mem[i])
-            return snprintf(why, sizeof g_test.why, "guest memory at %04zx: %02x, x86-64 %02x", i, a->mem[i],
+            return snprintf(why, sizeof g_test.why, "guest memory at %04zx: %02x, " BACK_NAME " %02x", i, a->mem[i],
                             b->mem[i]),
                    why;
     return "";
@@ -473,6 +551,31 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
     return rc;
 }
 
+#if defined(SNX_TEST_NATIVE)
+/* the native object loaded into Unicorn, the helpers its blocks call its traps: each block's function in addr */
+static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* blocks, size_t count, SnxU64* addr) {
+    char error[512] = "";
+    if (!hostuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
+        !hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
+        !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
+        !hostuc_native(uc, "snx_arm_crypto", (void*)snx_arm_crypto) ||
+        hostuc_load(uc, object, size, error, sizeof error)) {
+        fprintf(stderr, "FAIL: the " BACK_NAME " object: %s\n", error);
+        return 1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        char name[16];
+        if (!blocks[i].made) continue;
+        snprintf(name, sizeof name, "B_%zu", i);
+        if (!(addr[i] = hostuc_symbol(uc, name))) {
+            fprintf(stderr, "FAIL: the " BACK_NAME " object has no %s\n", name);
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif
+
 static void block_text(const Block* b, char* out, size_t size) {
     size_t at = 0;
     for (size_t i = 0; i < b->n && at < size; ++i)
@@ -481,18 +584,30 @@ static void block_text(const Block* b, char* out, size_t size) {
 }
 
 /* the chunk's blocks made by both, loaded and run */
-static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
+static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("llvm", ir->ctx);
     SnxCodeLoader *lloader = NULL, *xloader = NULL;
     unsigned char *lobj = NULL, *xobj = NULL;
     size_t lsize = 0, xsize = 0, made = 0;
     SnxU64 *laddr = calloc(count + 1, sizeof *laddr), *xaddr = calloc(count + 1, sizeof *xaddr);
     char error[512], text[100];
+#if defined(SNX_TEST_NATIVE)
+    /* the native code's world: the states in memory Unicorn maps at their own addresses */
+    HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
+    if (s) hostuc_swapper(uc, swap_arm, &s[1].cpu); /* a big-endian machine's state turned over around its runs */
+#else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
+#endif
     int rc = 0;
     if (!laddr || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
-        free(laddr), free(xaddr), free(s);
+        free(laddr), free(xaddr);
+#if defined(SNX_TEST_NATIVE)
+        if (uc) hostuc_free(uc);
+#else
+        free(s);
+#endif
         LLVMDisposeModule(module);
         ++g_test.failures;
         return -1;
@@ -513,21 +628,26 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             break;
         }
         b->consumed = lc;
+#if defined(SNX_TEST_NATIVE)
+        b->made = back_(block)(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL);
+#else
         b->made = b->thumb ? snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL)
-                           : snx_x64_arm_block(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL);
+                           : back_(block)(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL);
+#endif
         if (!b->made) {
             SnxA32Kind k = b->thumb ? SNX_A32_UNDEFINED : snx_a32_decode(b->words[0]);
             block_text(b, text, sizeof text);
             ++g_test.refused;
             ++g_test.refusals[k & 63];
-            fprintf(stderr, "FAIL: [%s]: the x86-64 back end refused it: %s\n", text, snx_x64_arm_why(x64));
+            fprintf(stderr, "FAIL: [%s]: the " BACK_NAME " back end refused it: %s\n", text, back_(why)(x64));
             ++g_test.failures;
             continue;
         }
         ++made;
         if (xc != lc) {
             block_text(b, text, sizeof text);
-            fprintf(stderr, "FAIL: [%s]: LLVM's block takes %zu words, the x86-64 back end's %zu\n", text, lc, xc);
+            fprintf(stderr, "FAIL: [%s]: LLVM's block takes %zu words, the " BACK_NAME " back end's %zu\n", text, lc,
+                    xc);
             ++g_test.failures;
             b->made = 0;
         }
@@ -544,7 +664,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
         g_test.ll = NULL;
     }
     if (!rc && (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
-                snx_x64_arm_object(x64, &xobj, &xsize, NULL))) {
+                back_(object)(x64, &xobj, &xsize, NULL))) {
         fprintf(stderr, "FAIL: an object: %s\n", error);
         ++g_test.failures;
         rc = -1;
@@ -561,8 +681,13 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
         ++g_test.failures;
         rc = -1;
     }
+#if defined(SNX_TEST_NATIVE)
     if (!rc && (load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
-                (made && load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)))) {
+                (made && load_uc(uc, xobj, xsize, blocks, count, xaddr)))) {
+#else
+    if (!rc && (load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
+                (made && load(xloader, xobj, xsize, BACK_NAME, blocks, count, 1, xaddr)))) {
+#endif
         ++g_test.failures;
         rc = -1;
     }
@@ -577,6 +702,12 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
                 g_test.seed = seed;
                 start(&s[side], k);
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
+#if defined(SNX_TEST_NATIVE)
+                if (side) {
+                    if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
+                    continue;
+                }
+#endif
                 run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
             }
             ++g_test.ran;
@@ -584,8 +715,8 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             why = differs(&s[0], &s[1]);
             if (g_test.nonly) {
                 block_text(b, text, sizeof text);
-                printf("[%s] state %u: LLVM exit %u r15 %08x cpsr %08x, x86-64 exit %u r15 %08x cpsr %08x%s%s\n", text,
-                       k, s[0].cpu.exit, s[0].cpu.r[15], s[0].cpu.cpsr, s[1].cpu.exit, s[1].cpu.r[15], s[1].cpu.cpsr,
+                printf("[%s] state %u: LLVM exit %u r15 %08x cpsr %08x, " BACK_NAME " exit %u r15 %08x cpsr %08x%s%s\n",
+                       text, k, s[0].cpu.exit, s[0].cpu.r[15], s[0].cpu.cpsr, s[1].cpu.exit, s[1].cpu.r[15], s[1].cpu.cpsr,
                        *why ? ": " : "", why);
             }
             if (*why) {
@@ -607,7 +738,11 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             }
         }
     }
+#if defined(SNX_TEST_NATIVE)
+    hostuc_free(uc);
+#else
     free(s);
+#endif
     free(lobj);
     free(xobj);
     free(laddr);
@@ -618,6 +753,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
     return rc;
 }
 
+#if !defined(SNX_TEST_NATIVE)
 /* ---- the VFP's hot paths, witnessed: each word with its operands and FPSCR, and how many times its x86-64 block calls
    snx_arm_fp_x64 (0: the hot path made the result), its results LLVM's ---- */
 
@@ -693,7 +829,7 @@ static const Witness witnesses[] = {
     {"VTRN.8 D0, D1", 0xf3b20081u, 0x10u, 0x0706050403020100ull, 0x1716151413121110ull, 0, 0, 0},
 };
 
-static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
+static int run_witnesses(SnxIr* ir, Back* x64) {
     size_t count = sizeof witnesses / sizeof *witnesses, failures = 0;
     Block* blocks = (Block*)calloc(count, sizeof *blocks);
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("witnesses", ir->ctx);
@@ -719,16 +855,16 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
         blocks[i].n = 1;
         if (!snx_arm_llvm_block(module, name, blocks[i].words, 1, PC, &consumed) ||
             !(blocks[i].made =
-                  snx_x64_arm_block(x64, name, (const unsigned char*)blocks[i].words, 1, PC, &consumed, NULL, NULL))) {
+                  back_(block)(x64, name, (const unsigned char*)blocks[i].words, 1, PC, &consumed, NULL, NULL))) {
             fprintf(stderr, "FAIL: the witness %s (%08x): a back end refused it\n", witnesses[i].what,
                     witnesses[i].word);
             return 1;
         }
     }
     if (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
-        snx_x64_arm_object(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
+        back_(object)(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
         !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
-        load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)) {
+        load(xloader, xobj, xsize, BACK_NAME, blocks, count, 1, xaddr)) {
         fprintf(stderr, "FAIL: the witnesses' objects: %s\n", error);
         return 1;
     }
@@ -801,17 +937,17 @@ static size_t endian_next(void* user, uint32_t key, size_t units, size_t count, 
     keys[0] = PC + 4;
     return 1;
 }
-static int run_endian_chain(SnxX64Arm* x64) {
+static int run_endian_chain(Back* x64) {
     static const uint32_t msr[1] = {0xe122f000u}, mov[1] = {0xe3a01001u}; /* MSR CPSR_x, R0 (E its bit 9); MOV R1, #1 */
     unsigned char* object = NULL;
     size_t consumed = 0, size = 0, failures = 0;
     char error[512] = "", name[16];
     snprintf(name, sizeof name, "A_%08x", PC);
     SnxCodeLoader* loader = NULL;
-    if (!snx_x64_arm_block(x64, NULL, (const unsigned char*)msr, 1, PC, &consumed, endian_next, NULL) ||
-        !snx_x64_arm_block(x64, NULL, (const unsigned char*)mov, 1, PC + 4, &consumed, endian_next, NULL) ||
-        snx_x64_arm_object(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
-        fprintf(stderr, "FAIL: the MSR's chain: %s%s\n", snx_x64_arm_why(x64), error);
+    if (!back_(block)(x64, NULL, (const unsigned char*)msr, 1, PC, &consumed, endian_next, NULL) ||
+        !back_(block)(x64, NULL, (const unsigned char*)mov, 1, PC + 4, &consumed, endian_next, NULL) ||
+        back_(object)(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
+        fprintf(stderr, "FAIL: the MSR's chain: %s%s\n", back_(why)(x64), error);
         return 1;
     }
     SnxLinkInput input = {.data = object, .size = size, .name = "chain"};
@@ -860,7 +996,7 @@ static uint8_t rshl8(int8_t x, int8_t s) {
 /* VRSHL.S8 Q6, Q14, Q3 against rshl8, not LLVM: each lane's shift 0, +-1, -8 and -9, 7 and 8, -128 and 127, and a lane
    that shifts by 0 beside one that shifts by -128 in one doubleword, which LLVM 22 at -O2 gives the other's (its lane
    shifted right by 1) */
-static int run_vrshl_witness(SnxX64Arm* x64) {
+static int run_vrshl_witness(Back* x64) {
     static const uint32_t word[1] = {0xf206c56cu};
     static const int8_t shift[16] = {0, -1, 1, -8, -9, 7, 8, 127, -128, 3, -2, 0, -7, 0, 0, -128};
     static const int8_t value[16] = {0x67, -27, 127, -128, 1, -1, 64, -64, 100, -100, 3, -3, 0x22, 0x67, 0x40, -27};
@@ -869,9 +1005,9 @@ static int run_vrshl_witness(SnxX64Arm* x64) {
     char error[512] = "", name[16];
     snprintf(name, sizeof name, "A_%08x", PC);
     SnxCodeLoader* loader = NULL;
-    if (!snx_x64_arm_block(x64, NULL, (const unsigned char*)word, 1, PC, &consumed, NULL, NULL) ||
-        snx_x64_arm_object(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
-        fprintf(stderr, "FAIL: VRSHL's witness: %s%s\n", snx_x64_arm_why(x64), error);
+    if (!back_(block)(x64, NULL, (const unsigned char*)word, 1, PC, &consumed, NULL, NULL) ||
+        back_(object)(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
+        fprintf(stderr, "FAIL: VRSHL's witness: %s%s\n", back_(why)(x64), error);
         return 1;
     }
     SnxLinkInput input = {.data = object, .size = size, .name = "vrshl"};
@@ -967,7 +1103,7 @@ static const ThumbCase thumb_cases[] = {
     /* an UNDEFINED word under an IT condition that always holds (the AL block's 1111): the block goes on past it */
     {"IT AL of an UNDEFINED word, then a POP", {0xBFED, 0x49E9, 0xEB92, 0x2741, 0xBD1B}, 5, 0, 0, 0, 0, 0, ANY},
 };
-static int run_thumb_witnesses(SnxIr* ir, SnxX64Arm* x64) {
+static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
     size_t count = sizeof thumb_cases / sizeof *thumb_cases, failures = 0;
     Block* blocks = (Block*)calloc(count, sizeof *blocks);
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("thumb witnesses", ir->ctx);
@@ -996,7 +1132,7 @@ static int run_thumb_witnesses(SnxIr* ir, SnxX64Arm* x64) {
         if (!snx_thumb_llvm_block(module, name, b->half, b->n, PC, &consumed) ||
             !(b->made = snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xconsumed, NULL, NULL))) {
             fprintf(stderr, "FAIL: the Thumb witness %s: a back end refused it: %s\n", thumb_cases[i].what,
-                    snx_x64_arm_why(x64));
+                    back_(why)(x64));
             return 1;
         }
         if (consumed != xconsumed) {
@@ -1006,9 +1142,9 @@ static int run_thumb_witnesses(SnxIr* ir, SnxX64Arm* x64) {
         }
     }
     if (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
-        snx_x64_arm_object(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
+        back_(object)(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
         !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
-        load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)) {
+        load(xloader, xobj, xsize, BACK_NAME, blocks, count, 1, xaddr)) {
         fprintf(stderr, "FAIL: the Thumb witnesses' objects: %s\n", error);
         return 1;
     }
@@ -1043,13 +1179,16 @@ static int run_thumb_witnesses(SnxIr* ir, SnxX64Arm* x64) {
     LLVMDisposeModule(module);
     return 0;
 }
+#endif
 
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir = NULL;
     g_test.states = 16;
     g_test.blocks = 6000;
+#if !defined(SNX_TEST_NATIVE)
     g_test.thumb = 4000;
+#endif
     g_test.features = ~0u;
     g_test.seed = 0xa32;
     for (int i = 1; i < argc; ++i) {
@@ -1071,9 +1210,15 @@ int main(int argc, char** argv) {
             g_test.ll = argv[++i];
         else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
-        else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64)
-            g_test.only[g_test.nonly++] = (uint32_t)strtoul(argv[++i], NULL, 16);
-        else if (!strcmp(argv[i], "--halves") && i + 1 < argc) {
+        else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64) {
+            const char* w = argv[++i];
+            size_t n = 0;
+            for (char* end; n < MAX_WORDS && *w; w = *end == ',' ? end + 1 : end) {
+                g_test.only[g_test.nonly][n++] = (uint32_t)strtoul(w, &end, 16);
+                if (end == w) break;
+            }
+            g_test.only_n[g_test.nonly++] = n;
+        } else if (!strcmp(argv[i], "--halves") && i + 1 < argc) {
             char* at = argv[++i];
             while (g_test.nhalves < MAX_HALF) {
                 g_test.halves[g_test.nhalves++] = (uint16_t)strtoul(at, &at, 16);
@@ -1088,26 +1233,47 @@ int main(int argc, char** argv) {
                            argv[i]),
                    2;
     }
-    if (!snx_x64_arm_available()) {
-        printf("SKIP: no x86-64 back end on this host\n");
+#if defined(SNX_TEST_NATIVE)
+    {
+        HostUc* probe = hostuc_new(BACK_UC, 1u << 16);
+        if (!probe) {
+            printf("SKIP: no Unicorn " BACK_NAME "\n");
+            return 77;
+        }
+        hostuc_free(probe);
+    }
+    if (g_test.thumb || g_test.nhalves)
+        return fprintf(stderr,
+                       "FAIL: --thumb %u, --halves of %zu: the " BACK_NAME " back end makes no Thumb blocks yet\n",
+                       g_test.thumb, g_test.nhalves),
+               2;
+#else
+    if (!back_(available)()) {
+        printf("SKIP: no " BACK_NAME " back end on this host\n");
         return 77;
     }
+#endif
     if (snx_ir_init(error, sizeof error) || !(ir = snx_ir_new_jit("arm-x64", '2', error, sizeof error))) {
         fprintf(stderr, "FAIL: no LLVM for this host: %s\n", error);
         return 1;
     }
-    SnxX64Arm* x64 = snx_x64_arm_new();
+    Back* x64 = back_(new)();
     Block* blocks = (Block*)calloc(CHUNK, sizeof *blocks);
     if (!x64 || !blocks) {
-        fprintf(stderr, "FAIL: out of memory for the x86-64 back end's compiler or the blocks\n");
+        fprintf(stderr, "FAIL: out of memory for the " BACK_NAME " back end's compiler or the blocks\n");
         return 1;
     }
-    snx_x64_arm_limit(x64, g_test.pool, g_test.features | ~7u);
+#if defined(SNX_TEST_NATIVE)
+    back_(limit)(x64, g_test.pool, ~0u);
+    size_t done = 0;
+#else
+    back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
     if (!g_test.nonly && !g_test.nhalves && run_witnesses(ir, x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_endian_chain(x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
+#endif
     if (g_test.nhalves) {
         blocks[0].thumb = 1;
         blocks[0].n = g_test.nhalves;
@@ -1117,8 +1283,8 @@ int main(int argc, char** argv) {
         done = 1;
     } else if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
-            blocks[i].words[0] = g_test.only[i];
-            blocks[i].n = 1;
+            memcpy(blocks[i].words, g_test.only[i], sizeof blocks[i].words);
+            blocks[i].n = g_test.only_n[i];
         }
         run_chunk(ir, x64, blocks, g_test.nonly);
         done = g_test.nonly;
@@ -1161,7 +1327,7 @@ int main(int argc, char** argv) {
         printf("\n");
     }
     printf("%zu blocks of %zu words (%zu in the blocks LLVM made of them), %zu compared from %u states each: %zu runs, "
-           "%zu refused by the x86-64 back end\n",
+           "%zu refused by the " BACK_NAME " back end\n",
            done, g_test.words, g_test.consumed_words, g_test.compared, g_test.states, g_test.ran, g_test.refused);
     {
         static const SnxArmVectorOp hot[] = {AV_FADD,  AV_FSUB,  AV_FMUL,  AV_FDIV, AV_FMLA, AV_FMLS,
@@ -1186,7 +1352,7 @@ int main(int argc, char** argv) {
                    g_test.exits[e]);
     printf("\n");
     free(blocks);
-    snx_x64_arm_free(x64);
+    back_(free)(x64);
     snx_ir_free(ir);
     if (g_test.failures) printf("%zu failures\n", g_test.failures);
     return g_test.failures != 0;

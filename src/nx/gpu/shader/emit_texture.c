@@ -4,6 +4,19 @@
 #include "nx/gpu/shader/translate.h"
 #include "nx/gpu/shader/minmax_spirv.h"
 
+/* Memory slots match only the probe collected for this use's original definition, not an ordinary bindless bank. */
+static int direct_memh_emit_slot(const Tr* tr, u32 use, u32 reg, u32 type, u32 array, u32 shadow, u32 ms) {
+    u32 probe = shader_direct_memory_probe(tr->flow, tr->si, tr->memh_at, use, reg);
+    if (probe == SH_PROBE_NONE) return -1;
+    for (int k = 0; k < tr->texture_count; k++) {
+        const ShTex* t = &tr->textures[k];
+        if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == probe && t->type == type && t->array == array &&
+            t->shadow == shadow && ((t->flags >> 1) & 1) == ms)
+            return k;
+    }
+    return -1;
+}
+
 /* a texture instruction's array layer: the low 16 bits of its register */
 u32 shader_array_layer(DirectCtx* c, u32 r) {
     return spv_emit_unary(
@@ -499,14 +512,20 @@ void shader_tex_tld(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     int handle_count =
         op == O_TLD_B ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
     if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
-    int type = ty >> 1, array = ty & 1, multisample = (int)B(w, 50, 1), slot = 0;
-    while (slot < texture_count &&
-           (textures[slot].cbuf_off != off || textures[slot].type != type || textures[slot].array != array ||
-            textures[slot].shadow || textures[slot].bindless != (op == O_TLD_B) ||
-            !!(textures[slot].flags & 2) != multisample ||
-            (op == O_TLD_B &&
-             !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2, off2, indexed, ldc))))
-        slot++;
+        int type = ty >> 1, array = ty & 1, multisample = (int)B(w, 50, 1);
+        int slot = op == O_TLD_B && !handle_count
+                       ? direct_memh_emit_slot(t, i, b, type, array, 0, multisample)
+                       : -1;
+        if (slot < 0) {
+            slot = 0;
+            while (slot < texture_count &&
+                   (textures[slot].cbuf_off != off || textures[slot].type != type || textures[slot].array != array ||
+                    textures[slot].shadow || textures[slot].bindless != (op == O_TLD_B) ||
+                    !!(textures[slot].flags & 2) != multisample ||
+                    (op == O_TLD_B &&
+                     !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2, off2, indexed, ldc))))
+                slot++;
+        }
     if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
     u32 x = reg_read_as(c, a + array, i32_type);
     u32 y = type == 0 ? spv_emit_constant_u32(&c->emit, i32_type, 0) : reg_read_as(c, a + array + 1, i32_type);
@@ -817,29 +836,47 @@ void shader_tex_tex(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     int array = B(w, 28, 1), shadow = B(w, 50, 1);
     int slot = 0;
     if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
+        int memory_slot = bindless && !handle_count ? direct_memh_emit_slot(t, i, b, type, array, shadow, 0) : -1;
     /* a handle the writes don't agree on: each constant buffer handle that can reach it is sampled, and the sample
-       of the one whose word equals the register is kept (zeros when none does: a handle from memory, unbound) */
+           of the one whose word equals the register is kept (zeros when none does) */
     u32 cand_bank[SH_HANDLE_CANDIDATES], cand_off[SH_HANDLE_CANDIDATES];
-    int candidates = bindless && !handle_count
+        u32 cand_bank2[SH_HANDLE_CANDIDATES] = {0}, cand_off2[SH_HANDLE_CANDIDATES] = {0};
+        u8 cand_words[SH_HANDLE_CANDIDATES];
+        int pair_candidates = 0;
+        int candidates = bindless && !handle_count && memory_slot < 0
                          ? shader_direct_handle_candidates(t->flow, i, b, cand_bank, cand_off, SH_HANDLE_CANDIDATES)
                          : 1;
-    int choose = bindless && !handle_count;
-    u32 handle = choose ? reg_read(c, b) : 0, chosen = 0, sample = 0;
+        if (!candidates && bindless && !handle_count && memory_slot < 0) {
+            candidates = shader_direct_handle_candidates_pair(t->flow, i, b, cand_bank, cand_off, cand_bank2,
+                                                              cand_off2, cand_words, SH_HANDLE_CANDIDATES);
+            pair_candidates = candidates > 0;
+        }
+        int choose = bindless && !handle_count && memory_slot < 0;
+        u32 handle = choose ? reg_read(c, b) : 0;
+        u32 chosen = 0, sample = 0;
     int chosen_slot = -1;
     for (int cand = 0; cand < candidates; cand++) {
         if (choose) {
             bank = cand_bank[cand];
             off = cand_off[cand];
+                if (pair_candidates) {
+                    bank2 = cand_bank2[cand];
+                    off2 = cand_off2[cand];
+                }
+            }
+            int handle_words = pair_candidates ? cand_words[cand] : (handle_count ? handle_count : 1);
+            if (memory_slot >= 0) {
+                slot = memory_slot;
+            } else {
+                slot = 0;
+                while (slot < texture_count &&
+                       (textures[slot].cbuf_off != off || textures[slot].shadow != shadow ||
+                        textures[slot].type != type || textures[slot].array != array ||
+                        textures[slot].bindless != bindless || (textures[slot].flags & 3) ||
+                        (bindless && !shader_direct_bindless_matches(&textures[slot], bank, handle_words, bank2, off2,
+                                                                     indexed, ldc))))
+                    slot++;
         }
-        int handle_words = handle_count ? handle_count : 1;
-        slot = 0;
-        while (slot < texture_count &&
-               (textures[slot].cbuf_off != off || textures[slot].shadow != shadow || textures[slot].type != type ||
-                textures[slot].array != array || textures[slot].bindless != bindless ||
-                (textures[slot].flags & 3) ||
-                (bindless &&
-                 !shader_direct_bindless_matches(&textures[slot], bank, handle_words, bank2, off2, indexed, ldc))))
-            slot++;
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
         /* LC adds a packed word before coordinates, even for a non-array texture. Its low half is the layer and
        its high half is an unsigned minimum LOD with eight fractional bits (Mesa nak_nir_lower_tex.c). */
@@ -961,8 +998,16 @@ void shader_tex_tex(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 bits = shadow || texture_vec4[slot] == vec4_u32
                            ? sample
                            : spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_u32, sample);
-            u32 word = shader_cbuf_read_dynamic(c, bank, shader_u32(c, off * 4));
-            u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
+                u32 word = bank == SH_HANDLE_IMM ? shader_u32(c, off)
+                                                 : shader_cbuf_read_dynamic(c, bank, shader_u32(c, off * 4));
+                if (handle_words == 2) {
+                    u32 sampler_word = bank2 == SH_HANDLE_IMM
+                                           ? shader_u32(c, off2)
+                                           : shader_cbuf_read_dynamic(c, bank2, shader_u32(c, off2 * 4));
+                    /* LOP.OR leaves texture|sampler in Rb itself; Rb+1 is not a second runtime handle. */
+                    word = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, word, sampler_word);
+                }
+                u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
             chosen = spv_emit_ternary(&c->emit, SPV_OP_SELECT, kept_type, match, bits, chosen);
         }
     }
@@ -1009,7 +1054,9 @@ void shader_tex_txd(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     int handle_count =
         bindless ? shader_direct_track_image_handle_pair(t->flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
     if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, a, stage, &ldc);
-    int slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
+        int slot = bindless && !handle_count ? direct_memh_emit_slot(t, i, a, type, array, 0, 0) : -1;
+        if (slot < 0)
+            slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
                                         handle_count, bank2, off2, indexed, ldc);
     if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
     u32 coord = a + (u32)bindless, packed_reg = coord + count, values[4], dx[3], dy[3], k;
@@ -1110,13 +1157,25 @@ void shader_tex_txq(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
     int handle_count =
         bindless ? shader_direct_track_image_handle_pair(t->flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-    int slot;
+        int slot = -1;
     u32 qtype = 1, qarray = 0;
     if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, a, stage, &ldc);
-    if (!indexed && shader_direct_query_type(t->flow, bindless, bank, off, &qtype, &qarray))
+        u32 memory_probe = bindless && !handle_count
+                               ? shader_direct_memory_probe(t->flow, t->si, t->memh_at, i, a)
+                               : SH_PROBE_NONE;
+        if (memory_probe != SH_PROBE_NONE) {
+            for (int k = 0; k < texture_count; k++) {
+                if ((textures[k].flags & SNX_TEX_MEMORY) && textures[k].cbuf_off == memory_probe) {
+                    slot = k;
+                    qtype = textures[k].type;
+                    qarray = textures[k].array;
+                    break;
+                }
+            }
+        } else if (!indexed && shader_direct_query_type(t->flow, bindless, bank, off, &qtype, &qarray)) {
         slot = shader_direct_typed_slot(textures, texture_count, off, qtype, qarray, 0, 0, bindless, bank,
                                         handle_count, bank2, off2, indexed, ldc);
-    else {
+        } else {
         slot = shader_direct_query_slot(textures, texture_count, off, bindless, bank, handle_count, bank2, off2,
                                         indexed, ldc);
         if (slot < texture_count) { /* the key's hint typed it (tex_query_hint); 2D without one */
@@ -1163,7 +1222,9 @@ void shader_tex_tmml(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     int handle_count =
         bindless ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
     if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
-    int slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
+        int slot = bindless && !handle_count ? direct_memh_emit_slot(t, i, b, type, array, 0, 0) : -1;
+        if (slot < 0)
+            slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
                                         handle_count, bank2, off2, indexed, ldc);
     if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
     /* a 1D texture is bound as a 2D one of height 1 */
@@ -1221,13 +1282,16 @@ void shader_tex_tld4(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 ty = op == O_TLD4S ? 2 : B(w, 28, 3);
     u32 type = ty >> 1, array = ty & 1;
     u32 shadow = B(w, 50, 1);
-    int slot = 0;
-    while (slot < texture_count &&
-           (textures[slot].cbuf_off != off || textures[slot].type != type || textures[slot].array != array ||
-            textures[slot].shadow != shadow || textures[slot].bindless != bindless ||
-            (bindless &&
-             !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2, off2, indexed, ldc))))
-        slot++;
+        int slot = bindless && !handle_count ? direct_memh_emit_slot(t, i, b, type, array, shadow, 0) : -1;
+        if (slot < 0) {
+            slot = 0;
+            while (slot < texture_count &&
+                   (textures[slot].cbuf_off != off || textures[slot].type != type || textures[slot].array != array ||
+                    textures[slot].shadow != shadow || textures[slot].bindless != bindless ||
+                    (bindless &&
+                     !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2, off2, indexed, ldc))))
+                slot++;
+        }
     if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
     u32 x = reg_read_as(c, a + array, c->f32_type);
     u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)

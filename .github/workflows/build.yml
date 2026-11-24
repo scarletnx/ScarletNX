@@ -58,11 +58,12 @@ env:
 # and SPIRV-Tools' spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with
 # MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are
 # cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's, the four cross
-# builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a
-# restore key, so a bump downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each
-# compiling job restores from the newest one a push saved; a push saves it again, trimmed to what the run used, and a
-# pull request's run saves none: it reads main's (the appimage job says why). The artifacts are what `cmake --install`
-# puts in place: the binaries with the licenses that go with them.
+# builds, a Windows architecture's, Apple, Android), named by the hash of cpmfile.json and of the patches (a patched
+# package's folder is named by its patches), with the name before the hash as a restore key, so a bump downloads only
+# the packages it changed. Compiles go through ccache, whose .cache/ccache each compiling job restores from the newest
+# one a push saved; a push saves it again, trimmed to what the run used, and a pull request's run saves none: it reads
+# main's (the appimage job says why). The artifacts are what `cmake --install` puts in place: the binaries with the
+# licenses that go with them.
 jobs:
   # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
   # nothing
@@ -107,9 +108,9 @@ jobs:
     # Another release or other mode words want its file written again
     env:
       # the release's tag and its NRO's name, which carries the version
-      EDENPROBE_VERSION: v1.0.0
-      EDENPROBE_NRO: amberlith-1.0.0.nro
-      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+      EDENPROBE_VERSION: v1.0.4
+      EDENPROBE_NRO: amberlith-1.0.4.nro
+      EDENPROBE_SHA256: 3271c4af392cd21e842e1ea89b370eb376da154f039dbe9e7f5c5a2193a2bed0
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
@@ -160,7 +161,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-${{ matrix.arch }}-
       # ccache under every compile, FFmpeg's, OpenSSL's and SPIRV-Tools' too, of every tree this job builds: from the
       # newest cache of this job on this branch, else on main, as a pull request has none of its own (saved below). Each
@@ -632,7 +633,7 @@ jobs:
       - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-x86_64-
       - uses: actions/cache/restore@v5
         with:
@@ -774,7 +775,7 @@ jobs:
       - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-x86_64-
       - uses: actions/cache/restore@v5
         with:
@@ -873,7 +874,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-cross-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-cross-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-cross-
       # ccache and the dependency builds, as in the appimage job. The container builds as root: what it makes in them
       # goes back to the runner's user before each is saved
@@ -1292,7 +1293,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-windows-${{ matrix.arch }}-
       # ccache, set up as in the appimage job
       - uses: actions/cache/restore@v5
@@ -1519,7 +1520,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-android-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-android-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-android-
       # Each ABI's LLVM is saved as soon as it is built, as the apple job saves its own: the hour of one is kept when
       # the other's build or a later step fails, or the run is cancelled
@@ -1747,7 +1748,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-apple-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-apple-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-apple-
       # LLVM's libraries for each (scripts/apple-llvm.sh) with AArch64's code generator alone, the one the recompiler
       # uses, built once per script and Xcode. Saved as soon as they are built: actions/cache saves only a job that

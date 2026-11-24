@@ -5,6 +5,7 @@
    bounds, GET_SYNCPOINT, SUBMIT's validation and promised fences, the command stream reaching the engine (and not
    past its registers), a host class wait holding a job back, and a close that runs what was queued first */
 #include "nx/gpu/video/host1x.c"
+#include "nx/gpu/renderer.h" /* the stream that stream_tests gives host1x */
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -96,6 +97,10 @@ int nvmap_get(u32 h, u64* addr, u32* size) {
     if (alive && size_of[h] == ~0u) *size = 0;
     return alive;
 }
+
+/* ---- the renderer's table: set by stream_tests, to see that host1x asks nothing of its stream */
+const Renderer* g_renderer;
+int g_renderer_up;
 
 /* ---- syncpoints */
 static pthread_mutex_t sp_lk = PTHREAD_MUTEX_INITIALIZER;
@@ -297,10 +302,43 @@ static void channel_tests(void) {
     host1x_close(NULL);
 }
 
+/* ---- a job's syncpoint increments, stepped on the host once the job's commands are done */
+/* The renderer's stream here counts what host1x asks of it. A picture is in guest memory when the renderer's write
+   returns (vk_nvdec_write, vk_vic_compose), so the job's increments step on the host after its commands. Queued through
+   the stream instead, they were held behind the GPU thread's own releases, and stream_end from the channel's worker, a
+   thread that is not the stream's, let those go in the middle of it: the guest then wrote what the commands after them
+   read (release.c) */
+static u32 st_nincr, st_ends;
+static void st_incr(u32 id) {
+    (void)id;
+    st_nincr++;
+}
+static void st_end(void) { st_ends++; }
+static const Renderer st_renderer = {.stream_incr = st_incr, .stream_end = st_end};
+
+static void stream_tests(void) {
+    const u32 job[] = {1u << 28 | 0x10 << 16 | 2, 0x200 / 4, 0}; /* an NVDEC method, written, and the execute */
+    H1Ch* ch = host1x_open(0);
+    u32 s0, f[2], inc[4], before;
+    CHECK(ch != NULL);
+    memset(buf, 0, sizeof buf);
+    put(0, 16);
+    CHECK(host1x_ioctl(ch, 0x02, buf, 8) == 4);
+    s0 = get_syncpoint(ch, 0);
+    g_renderer = &st_renderer, g_renderer_up = 1;
+    before = sp_val[s0 & 255];
+    inc[0] = s0, inc[1] = 3;
+    CHECK(submit_job(ch, job, 3, 3, inc, 1, 0, f) == 0);
+    host1x_close(ch);
+    CHECK(sp_val[s0 & 255] == before + 3 && st_nincr == 0 && st_ends == 0);
+    g_renderer = NULL, g_renderer_up = 0;
+}
+
 int main(void) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     channel_tests();
+    stream_tests();
     free(g_mem);
     printf("host1x_channel: %u checks passed\n", checks);
     return 0;

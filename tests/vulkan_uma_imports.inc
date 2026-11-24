@@ -724,6 +724,87 @@ static int check_uma_publish(void) {
     return 0;
 }
 
+/* A video picture over memory an import holds is copied there on the GPU (vk_uma_publish), neither owned nor trapped:
+   the picture is in guest memory when its write returns, as the caller steps a syncpoint then that the guest reads it
+   after (host1x.c's run_job, native_video.c's codec_output). The wait for it lets go of vk_lock: the submission waits
+   for a semaphore that another thread signals once it held the lock after the submission was made, or after 5 s without
+   it, so the wait cannot end first. Before, the decoder's thread held the lock through it, and the recording of the
+   frame waited for each picture of a video */
+#define UMA_NV  (HEAP_BASE + 0x4600000)
+#define UMA_GNV 0x4e8000000ull
+static struct {
+    _Atomic int got, done;
+    _Atomic u64 before; /* the submission before the picture's */
+    VkSemaphore gate;
+} g_nv;
+static void uma_nvdec_thread(void* p) {
+    (void)p;
+    const u64 end = plat_ns() + 5000000000ull;
+    while (plat_ns() < end && !atomic_load_explicit(&g_nv.got, memory_order_relaxed)) {
+        if (vk_trylock()) {
+            if (vk_last_submit() > atomic_load_explicit(&g_nv.before, memory_order_relaxed))
+                atomic_store_explicit(&g_nv.got, 1, memory_order_release);
+            vk_unlock();
+        }
+        plat_sleep_ns(100000);
+    }
+    VkSemaphoreSignalInfo signal = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = g_nv.gate, .value = 1};
+    VK_OK(vkSignalSemaphore(g_vk.dev, &signal));
+    atomic_store_explicit(&g_nv.done, 1, memory_order_release);
+}
+static int check_uma_nvdec(void) {
+    enum { W = 64, H = 32, P = 256 };
+    static u8 y[W * H], u[W / 2 * (H / 2)], v[W / 2 * (H / 2)];
+    VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
+    VkBuffer b;
+    u64 o;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_NV, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GNV, UMA_NV, 0x200000);
+    memset(GP(UMA_NV), 0x11, 0x10000);
+    for (u32 i = 0; i < W * H; i++) y[i] = (u8)(i * 7 + 3);
+    for (u32 i = 0; i < sizeof u; i++) u[i] = (u8)(i * 3 + 1), v[i] = (u8)(i * 5 + 2);
+    CHECK(VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, &g_nv.gate)));
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GNV, 0x10000, 4, &b, &o)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_NV, 0x10000);
+    vk_finish();
+    vk_submit_after(g_nv.gate, 1, 2); /* the next submission, the picture's, waits for the gate */
+    atomic_store_explicit(&g_nv.before, vk_last_submit(), memory_order_relaxed);
+    vk_unlock();
+    CHECK(!plat_thread(uma_nvdec_thread, NULL, 1u << 16));
+    NvdecPic p = {{y, u, v}, {W, W / 2, W / 2}, W, H, UMA_NV, UMA_NV + 0x4000, P * H, P * (H / 2), P, P, H, 0};
+    p.pitch_linear = 1;
+    CHECK(g_renderer->nvdec_write(&p));
+    int there = 1; /* as a guest load sees it */
+    for (u32 j = 0; j < H && there; j++) there = !memcmp(GP(UMA_NV) + j * P, y + j * W, W);
+    for (u32 j = 0; j < H / 2 && there; j++)
+        for (u32 i = 0; i < W / 2 && there; i++)
+            there = GP(UMA_NV + 0x4000)[j * P + 2 * i] == u[j * (W / 2) + i] &&
+                    GP(UMA_NV + 0x4000)[j * P + 2 * i + 1] == v[j * (W / 2) + i];
+    int owned = own_lookup(UMA_NV, P * H, NULL, 0) != 0;
+    while (!atomic_load_explicit(&g_nv.done, memory_order_acquire)) plat_sleep_ns(1000000);
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    vkDestroySemaphore(g_vk.dev, g_nv.gate, NULL);
+    CHECK(mem_unmap(UMA_NV, 0x200000) == 0);
+    const int got = atomic_load_explicit(&g_nv.got, memory_order_acquire);
+    if (!held || owned || !there || !got)
+        fprintf(stderr,
+                "a video picture in place: held %d, owned %d, %s guest memory when its write returned, vk_lock %s\n",
+                held, owned, there ? "in" : "not in", got ? "let go during its wait" : "not let go in 5 s of its wait");
+    CHECK(held && !owned && there && got);
+    printf("in place: a video picture is in guest memory when its write returns, vk_lock let go during its wait\n");
+    return 0;
+}
+
 /* A dispatch runs on the graphics queue and writes its storage in place: a compute program stores 0x5eed through an NVN
    descriptor in cbuf 0; no compute result is pending after it, the range is imported, and the CPU reads the store */
 #define UMA_Q  (HEAP_BASE + 0x3800000)

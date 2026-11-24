@@ -57,7 +57,13 @@ void bridge_prepare(uint64_t address);
 
 /* the calling thread's guest stack: its lowest address and its size */
 void bridge_stack(uint64_t* base, size_t* size);
-/* the calling thread's state gone (its guest stack freed): as a thread that ran guest code ends */
+/* The calling thread keeps what, which end(what) ends as the thread does, whoever made it: one of the JVM's ends with
+   no call into the bridge. One what for each end: a later one replaces it, and NULL takes it back (end is not called).
+   The pairs are in the heap, not in the thread-locals: a host may have freed those before end runs (Darwin does), so
+   end takes all it needs from what, and a thread-local of the same is a cache that end clears only if it still holds
+   it */
+void bridge_thread_keep(void (*end)(void* what), void* what);
+/* all the calling thread keeps ended now: as a thread that ran guest code ends */
 void bridge_thread_end(void);
 
 /* the guest's stack guard (bionic's __stack_chk_guard, TLS slot 5) */

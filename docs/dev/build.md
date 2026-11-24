@@ -351,12 +351,14 @@ Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`), without ThinLTO
 matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
 
 CPMUtil downloads each package [cpmfile.json](../../cpmfile.json) pins once into a shared `.cache/cpm` cache, at
-`<package>/<version>`, checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
+`<package>/<version>` (`<package>/<version>-<key>` for a patched one, the first 10 characters of the SHA-512 of its
+patches), checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
 needs the matching sources already in the cache, or `-D<package>_CUSTOM_DIR=/path` naming a folder that holds one (a
 package of one file is checked against its pin there too; a patched package, FFmpeg's and FidelityFX-FSR2's, is
-refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, extracted and patched
-again when its patches change. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
-there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
+refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, one folder for each
+set of patches: trees of branches that patch it otherwise share the cache and not the folder. A folder of patches no tree
+uses any more stays until it is deleted. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test
+vectors download there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
 built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)), and GNU Unifont's `.hex` (the menu's CJK and Hangul
 letters of game titles) only when the menu is. Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
 the system's package when `find_package` finds 3.4.18 or newer, else the pinned static source build;
@@ -410,7 +412,8 @@ To update a package:
    `numeric_version`, as lz4's entry has it, spare that).
 2. Download the file, check it against the digest its release publishes (GitHub shows each asset's SHA-256), and put
    its SHA-512 in `hash`: `cmake -E sha512sum <file>`. Never the hash of what a configure happened to fetch.
-3. Configure: the new version downloads into `CPM_SOURCE_CACHE/<package>/<version>`.
+3. Configure: the new version downloads into `CPM_SOURCE_CACHE/<package>/<version>` (with the patches' key after it
+   where it has patches).
 
 To add one:
 

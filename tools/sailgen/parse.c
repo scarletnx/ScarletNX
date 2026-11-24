@@ -18,6 +18,8 @@ enum { T_EOF, T_ID, T_NUM, T_BITS, T_STR, T_PUNCT };
 
 static unsigned intern_c(const char* text) { return sg_intern(text, strlen(text)); }
 
+jmp_buf* sg_fail_jump;
+
 void sg_fail(unsigned node, const char* fmt, ...) {
     va_list ap;
     if (node && node < g_parse.node_count)
@@ -28,6 +30,7 @@ void sg_fail(unsigned node, const char* fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+    if (sg_fail_jump) longjmp(*sg_fail_jump, 1);
     exit(1);
 }
 
@@ -129,6 +132,8 @@ static SgToken lex(void) {
     } else if (isdigit((unsigned char)s[g_parse.lex.pos])) {
         size_t e = g_parse.lex.pos;
         while (e < n && isdigit((unsigned char)s[e])) ++e;
+        if (e + 1 < n && s[e] == '.' && isdigit((unsigned char)s[e + 1])) /* a real's (0.5): its fraction */
+            for (++e; e < n && isdigit((unsigned char)s[e]);) ++e;
         t.kind = T_NUM;
         t.length = e - g_parse.lex.pos;
     } else if (isalpha((unsigned char)s[g_parse.lex.pos]) || s[g_parse.lex.pos] == '_' || s[g_parse.lex.pos] == '$' ||
@@ -284,22 +289,25 @@ static unsigned list_append(unsigned* first, unsigned last, unsigned item) {
 static unsigned parse_block(void);
 static unsigned parse_match(void);
 
-static SgU64 bits_value(const SgToken* t, unsigned* width) {
+/* a bit literal's value in 64-bit pieces, the lowest first (chunks[0]); its width. Up to 4096 bits (crypto's tables) */
+#define SG_BITS_CHUNKS 64
+static void bits_value(const SgToken* t, unsigned* width, SgU64* chunks) {
     const char* s = g_parse.lex.file->text + t->start;
-    SgU64 v = 0;
-    unsigned w = 0;
+    unsigned w = 0, step, k;
     size_t i;
     int hex = s[1] == 'x';
+    step = hex ? 4 : 1;
+    for (k = 0; k < SG_BITS_CHUNKS; ++k) chunks[k] = 0;
     for (i = 2; i < t->length; ++i) {
         int c = s[i], d;
         if (c == '_') continue;
         d = isdigit(c) ? c - '0' : (tolower(c) - 'a' + 10);
-        if (w + (hex ? 4 : 1) > 64) fail_at(t, "a bit literal over 64 bits");
-        v = hex ? (v << 4) | (SgU64)d : (v << 1) | (SgU64)d;
-        w += hex ? 4 : 1;
+        if (w + step > 64 * SG_BITS_CHUNKS) fail_at(t, "a bit literal over 4096 bits");
+        for (k = SG_BITS_CHUNKS - 1; k > 0; --k) chunks[k] = (chunks[k] << step) | (chunks[k - 1] >> (64 - step));
+        chunks[0] = (chunks[0] << step) | (SgU64)d;
+        w += step;
     }
     *width = w;
-    return v;
 }
 
 /* the arguments of a call, after its "(" */
@@ -328,9 +336,19 @@ static unsigned parse_args(void) {
     }
 }
 
+/* the last primary was an expression in parentheses (a type ascription may follow it: "(e) : bool") */
+static int g_paren;
 static unsigned parse_primary(void) {
     SgToken t = *peek();
     unsigned n;
+    if (t.kind == T_NUM && memchr(g_parse.lex.file->text + t.start, '.', t.length)) {
+        /* a real literal: a name no definition has, so the generator refuses what reads one (the reciprocal
+           estimates' real arithmetic) */
+        take();
+        n = node(N_ID, t.line);
+        NODE(n).name = intern_c("__a_real_literal");
+        return n;
+    }
     if (t.kind == T_NUM) {
         take();
         n = node(N_NUM, t.line);
@@ -338,11 +356,28 @@ static unsigned parse_primary(void) {
         return n;
     }
     if (t.kind == T_BITS) {
-        unsigned w;
+        unsigned w, k, rest;
+        SgU64 chunks[SG_BITS_CHUNKS];
         take();
-        n = node(N_BITS, t.line);
-        NODE(n).value = bits_value(&t, &w);
-        NODE(n).width = (unsigned short)w;
+        bits_value(&t, &w, chunks);
+        /* over 64 bits (crypto's constants and tables): the 64-bit pieces concatenated, the highest first */
+        n = 0;
+        for (k = 0, rest = w; rest; ++k) {
+            unsigned piece = node(N_BITS, t.line), width = rest > 64 ? 64 : rest;
+            NODE(piece).value = chunks[k];
+            NODE(piece).width = (unsigned short)width;
+            rest -= width;
+            if (!n)
+                n = piece;
+            else {
+                unsigned cat = node(N_BINOP, t.line);
+                NODE(cat).name = intern_c("@");
+                NODE(cat).a = piece;
+                NODE(cat).b = n;
+                n = cat;
+            }
+        }
+        if (!n) fail_at(&t, "an empty bit literal");
         return n;
     }
     if (t.kind == T_STR) {
@@ -368,6 +403,7 @@ static unsigned parse_primary(void) {
         }
         if (at(")")) {
             take();
+            g_paren = 1;
             return e;
         }
         n = node(N_TUPLE, t.line);
@@ -402,6 +438,12 @@ static unsigned parse_primary(void) {
                 if (at("..")) {
                     take();
                     NODE(n).c = parse_binary(2);
+                }
+                if (at("]")) {
+                    /* a field punned, [r with F] for [r with F = F] (a debug register's update, never generated) */
+                    take();
+                    NODE(n).d = NODE(n).b;
+                    return n;
                 }
                 expect("=");
                 NODE(n).d = parse_expr();
@@ -489,6 +531,14 @@ static unsigned parse_primary(void) {
         NODE(n).d = parse_expr();
         return n;
     }
+    if (at("while")) {
+        take();
+        n = node(N_WHILE, t.line);
+        NODE(n).a = parse_expr();
+        expect("do");
+        NODE(n).b = parse_expr();
+        return n;
+    }
     if (at("return")) {
         take();
         n = node(N_RETURN, t.line);
@@ -542,7 +592,17 @@ static unsigned parse_primary(void) {
 }
 
 static unsigned parse_postfix(void) {
-    unsigned e = parse_primary();
+    unsigned e;
+    g_paren = 0;
+    e = parse_primary();
+    if (g_paren && at(":")) {
+        /* (e) : type, as an operand of a binary operator (sail-arm's SIMD decode: "(match ...) : bool | ...") */
+        unsigned typed = node(N_TYPED, NODE(e).line);
+        take();
+        NODE(typed).a = e;
+        NODE(typed).b = parse_type();
+        e = typed;
+    }
     for (;;) {
         if (at("[")) {
             unsigned n = node(N_INDEX, NODE(e).line), i;

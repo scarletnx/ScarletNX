@@ -274,6 +274,11 @@ enum { SNX_ELF_PPC_ELFV1 = 1, SNX_ELF_PPC_ELFV2 = 2 };
 unsigned snx_elf_ppc_abi(unsigned e_flags);
 /* the host's byte order, ELFDATA2LSB or ELFDATA2MSB: the objects' and the module's */
 unsigned char snx_elf_host_data(void);
+/* a relocatable ELF64 object's tables (its header, section headers, symbols and relocations; not the sections' bytes)
+   turned from this host's byte order to the other (to_foreign) or back, MIPS64's r_info as n64 lays it out: an
+   object written here for a host of the other order, or one of the other order read here. 0, -1 where its tables
+   aren't inside it */
+int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign);
 void snx_elf_free(SnxElfObject* o);
 const char* snx_elf_symbol_name(const SnxElfObject* o, const Elf64_Sym* s);
 const char* snx_elf_section_name(const SnxElfObject* o, size_t index);

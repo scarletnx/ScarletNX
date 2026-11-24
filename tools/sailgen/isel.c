@@ -2658,7 +2658,8 @@ static const char* xmm_feature_c(const char* f) {
     static const char* const names[][2] = {{"SSE", "0"},           {"SSE2", "0"},          {"SSE3", "SGX_F_SSE3"},
                                            {"SSSE3", "SGX_F_SSSE3"}, {"SSE4_1", "SGX_F_SSE41"}, {"SSE4_2", "SGX_F_SSE42"},
                                            {"PCLMULQDQ", "SGX_F_PCLMUL"}, {"F16C", "SGX_F_F16C"}, {"POPCNT", "SGX_F_POPCNT"},
-                                           {"AVX", "SGX_F_AVX"},   {"FMA", "SGX_F_FMA"},   {"", "0"}};
+                                           {"AVX", "SGX_F_AVX"},   {"FMA", "SGX_F_FMA"},   {"AES", "SGX_F_AES"},
+                                           {"SHA", "SGX_F_SHA"},   {"", "0"}};
     unsigned k;
     for (k = 0; k < sizeof names / sizeof *names; ++k)
         if (!strcmp(f, names[k][0])) return names[k][1];

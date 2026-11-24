@@ -7887,6 +7887,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
 #include "vulkan_compute_lone_lane.inc"
+#include "vulkan_sm86_lanes.inc"
 #include "vulkan_memory_release.inc"
 #include "vulkan_descriptor_heaps.inc"
 #include "vulkan_link_presents.inc"
@@ -8766,6 +8767,8 @@ static int run_headless(int argc, char** argv) {
             result = check_lone_lane();
         else if (!strcmp(name, "compute_lone_lane"))
             result = check_compute_lone_lane();
+        else if (!strcmp(name, "sm86_lanes"))
+            result = check_sm86_lanes();
         else if (!strcmp(name, "fragment_flow_lod"))
             result = check_fragment_flow_lod();
         else if (!strcmp(name, "fragment_quad"))
@@ -9044,6 +9047,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
+        if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
@@ -9078,7 +9082,7 @@ static int run_headless(int argc, char** argv) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
                     "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
-                    "texture_pending, dispatch_constants, "
+                    "nvdec, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
                     "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
@@ -9102,6 +9106,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
+        CHECK(!check_uma_nvdec());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_dispatch_open());
         CHECK(!check_uma_texture_pending());
@@ -9323,6 +9328,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shared_spill());
     CHECK(!check_compute_arena_count());
     CHECK(!check_compute_lone_lane());
+    CHECK(!check_sm86_lanes());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
@@ -9379,6 +9385,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
+    CHECK(!check_uma_nvdec());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_dispatch_open());
     CHECK(!check_uma_texture_pending());

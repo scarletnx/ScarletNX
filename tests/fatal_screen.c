@@ -43,6 +43,13 @@ int main(void) {
                              "declarations for a 32-bit game were read in SDK 0.12.16 alone, so 132 of its SDK "
                              "functions run their own code (nn_fs 44), which needs services"),
                   "64-bit update"));
+    /* the native functions turned off by a setting (sm.c's stop): which, and the way out */
+    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
+                             "nn::pctl (nn/pctl.c). hooks=0 (its default is 1) runs every SDK function's own code"),
+                  "(hooks=0)"));
+    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
+                             "nn::pctl (nn/pctl.c). hooks_off=nn_pctl (its default is \"\") names the nn_pctl family"),
+                  "Hook families off"));
     assert(!fatal_hint("svc 0x7f is not implemented"));
 
     /* at spaces, never past the width */

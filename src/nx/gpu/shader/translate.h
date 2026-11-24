@@ -8,19 +8,12 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
+#include "nx/gpu/shader/warp_notes.h"
 #include <assert.h>
 #include <stdlib.h>
 
 enum { VAR_PRED = 255, VAR_FLAG = VAR_PRED + 7, VAR_COUNT = VAR_FLAG + 4 };
 
-/* The registers, predicates and flags each instruction reads and writes, noted as it is written (warp_idioms.c): a word
-   each, the instruction << 10 | the variable << 1 | 1 for a write. A guarded write's read of what it keeps is not one */
-typedef struct {
-    u32 *word, n, cap;
-    u32 at;   /* the instruction being written, 0 before the first */
-    int full; /* one did not fit in memory */
-} ShNotes;
-void shader_note(ShNotes* notes, u32 variable, u32 write);
 typedef struct {
     SpvEmitter emit;
     u32 u32_type, f32_type, f16_type, f64_type, bool_type, zero, true_value, false_value, glsl;
@@ -173,6 +166,9 @@ typedef struct {
        in a program with a JMP, there is no telling (direct_reaching_def) */
     u32* block_start;
     u32 known_to;
+    /* by instruction: the BRK or CONT target resolved from the program's CRS
+       stack, or 0 when the stack does not resolve statically */
+    u32* pop_targets;
 } ShFlow;
 /* f for the n words at insn, which stay its own until shader_flow_free: 0 when memory runs out */
 int shader_flow_init(ShFlow* f, const u64* insn, u32 n);
@@ -261,11 +257,21 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
 /* the most constant buffer handles one TEX.B chooses among (shader_direct_handle_candidates) */
 #define SH_HANDLE_CANDIDATES 4
 int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max);
+/* Two-word and mixed candidates for a predicated write in the use's own block. */
+int shader_direct_handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, u32* bank2s,
+                                         u32* off2s, u8* words, int max);
 int shader_al2p_predicate_unseen(const ShFlow* f, u32 at);
 u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc);
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
                                    u32 ldc);
 int shader_direct_query_type(const ShFlow* f, int bindless, u32 bank, u32 off, u32* type, u32* array);
+/* A compacted Maxwell memory-handle chain, and the probe of a use whose original definition it contains. */
+u32 shader_direct_memory_handle(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32* count, u32 use,
+                                u32 reg);
+void shader_direct_memory_finish(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32 count, ShTex* textures,
+                                 int texture_count);
+u32 shader_direct_memory_probe(const ShFlow* f, const ShaderInfo* si, const u32 memh_at[SH_MEMH_MAX], u32 use,
+                               u32 reg);
 u32* shader_untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg);
 u32* shader_untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8* gb_at, u32* pop_targets);
 int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, int stage, ShaderInfo* si, u64** moved,
@@ -274,6 +280,9 @@ int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, in
    gives on the console, 0 with the reason in why. pop_targets: each SYNC, BRK and CONT's, NULL where they aren't known */
 int shader_lone_lane_gives(const ShFlow* f, const u32* pop_targets, const ShNotes* notes, const ShaderInfo* si,
                            char* why, size_t size);
+/* the same of a program in pseudo instructions (warp_notes.h, sm86_lone.c) */
+int shader_lone_lane_gives_pseudo(const ShFlow* f, const ShNotes* notes, const ShaderInfo* si, const ShLanePlan* plan,
+                                  char* why, size_t size);
 /* emit_int.c */
 u32 shader_vm_select(DirectCtx* c, u32 i32_type, u32 value, u32 select);
 u32 shader_video_operand(DirectCtx* c, u32 i32_type, u32 i64_type, u32 u64_type, u32 value, u32 select);
@@ -591,6 +600,7 @@ typedef struct {
     const u64* insn;
     u32 n;
     const ShFlow* flow; /* insn's, for the searches of dataflow.c */
+    const u32* memh_at; /* original instruction index of each compacted Maxwell memory-handle instruction */
     u32* sph;
     u32 target;
     int passthrough;

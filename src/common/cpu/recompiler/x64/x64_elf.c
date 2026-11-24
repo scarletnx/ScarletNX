@@ -6,9 +6,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* only module_x64.c, on the x86-64 hosts whose objects are ELF, makes one: Windows and Darwin have no <elf.h> */
-#if defined(__x86_64__) && !defined(_WIN32)
+/* module_x64.c makes one for any machine whose objects are ELF (elf_object.h has the definitions where the system's
+   <elf.h> is missing) */
+#if !defined(_WIN32)
+#if defined(__APPLE__)
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#else
 #include <elf.h>
+#endif
+/* elf_object.c's (its header clashes with this one's): r_info of a symbol and a type, MIPS64's n64 layout on EM_MIPS;
+   the host's byte order; an object's tables turned to the other */
+Elf64_Xword snx_elf_info(unsigned machine, size_t symbol, unsigned type);
+unsigned char snx_elf_host_data(void);
+int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign);
 
 typedef struct {
     unsigned char* p;
@@ -34,6 +44,9 @@ struct SnxXElf {
     Rel* rels;
     size_t nrels, cap_rels;
     int oom;
+    unsigned machine; /* EM_X86_64 unless snx_xelf_set_machine said */
+    unsigned flags;   /* e_flags (snx_xelf_set_flags) */
+    int big;          /* a big-endian machine's (snx_xelf_set_big) */
 };
 
 static int room(Buf* b, size_t n) {
@@ -68,8 +81,12 @@ SnxXElf* snx_xelf_new(void) {
     int k;
     if (o)
         for (k = 0; k < SNX_ELF_SECTIONS; ++k) o->align[k] = k == SNX_ELF_TEXT ? 16 : 8;
+    if (o) o->machine = EM_X86_64;
     return o;
 }
+void snx_xelf_set_machine(SnxXElf* o, unsigned machine) { o->machine = machine; }
+void snx_xelf_set_flags(SnxXElf* o, unsigned flags) { o->flags = flags; }
+void snx_xelf_set_big(SnxXElf* o, int big) { o->big = big; }
 void snx_xelf_free(SnxXElf* o) {
     size_t i;
     int k;
@@ -229,7 +246,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
     for (i = 0; i < o->nrels; ++i) {
         Elf64_Rela r;
         r.r_offset = o->rels[i].offset;
-        r.r_info = ELF64_R_INFO(undef_index[i], o->rels[i].type);
+        r.r_info = snx_elf_info(o->machine, undef_index[i], o->rels[i].type);
         r.r_addend = o->rels[i].addend;
         put(&rela[o->rels[i].section], &r, sizeof r);
     }
@@ -315,10 +332,11 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
         while (file.n % 8) put(&file, NULL, 1);
         memcpy(eh.e_ident, ELFMAG, SELFMAG);
         eh.e_ident[EI_CLASS] = ELFCLASS64;
-        eh.e_ident[EI_DATA] = ELFDATA2LSB;
+        eh.e_ident[EI_DATA] = o->big ? ELFDATA2MSB : ELFDATA2LSB;
         eh.e_ident[EI_VERSION] = EV_CURRENT;
         eh.e_type = ET_REL;
-        eh.e_machine = EM_X86_64;
+        eh.e_machine = (Elf64_Half)o->machine;
+        eh.e_flags = o->flags;
         eh.e_version = EV_CURRENT;
         eh.e_shoff = file.n;
         eh.e_ehsize = sizeof eh;
@@ -328,6 +346,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
     }
     put(&file, sh, (size_t)nsh * sizeof *sh);
     if (file.p) memcpy(file.p, &eh, sizeof eh);
+    if (file.p && eh.e_ident[EI_DATA] != snx_elf_host_data()) snx_elf_byteswap(file.p, file.n, 1);
     for (k = 0; k < SNX_ELF_SECTIONS; ++k) free(rela[k].p);
     free(strtab.p), free(symtab.p), free(shstr.p), free(table), free(utable), free(sym_index), free(undef_index), free(undef);
     if (!file.p) return -1;

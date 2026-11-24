@@ -9,7 +9,9 @@ Sail; it is BSD 3-Clause Clear (copyright Arm Limited and its authors), in `LICE
 
 `a64.roots` names what is copied: the decode functions of each subset (`root`), the names the generator knows or
 lowers itself, the state no instruction there reaches, and the NX's fixups, which are not followed (`stop`), and the
-functions the back end lowers, of which only the `val` is copied (`lower`: the floating-point arithmetic).
+functions the back end lowers, of which only the `val` is copied (`lower`: the floating-point arithmetic). Every A64
+decode clause is also copied alone (`encode __DecodeA64`), for the encoders of the back end that writes A64 itself
+(`tools/sailgen` `--encoders`).
 `tools/sailgen --extract` copies every definition the roots reach, in sail-arm's order. To update it, fetch the files of
 a newer commit and run, from the repository's root:
 

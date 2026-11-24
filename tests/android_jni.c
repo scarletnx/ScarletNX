@@ -297,7 +297,7 @@ static void* attached32(void* out) {
     }
     find_both32(word32(genv), arm32_jni_env(), out, 128);
     vm32(DETACH_CURRENT_THREAD, 0, 0);
-    arm32_thread_end();
+    bridge_thread_end();
     return NULL;
 }
 /* the app's 32-bit native method that FindClass runs in: an export the guest's RegisterNatives binds */

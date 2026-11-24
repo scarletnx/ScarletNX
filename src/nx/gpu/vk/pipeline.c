@@ -514,7 +514,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
 static int sm86_program(const u8* code, u32 max_bytes, Sm86Program* p) {
     return sm86_find_programs(code, max_bytes, p, 1) == 1;
 }
-static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words) {
+static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, int lanes) {
     Sm86Program p;
     u32 sph[SM86_SPH_BYTES / 4];
     if (!sm86_program(code, max_bytes, &p) || !p.complete) {
@@ -532,7 +532,14 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
         }
         for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
     }
-    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz);
+    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz, lanes);
+}
+const char* vk_lane_note(char out[32], const ShaderInfo* si) {
+    static const char lanes[] = "subgroup ballot/shuffle unavailable";
+    out[0] = 0;
+    if (!strncmp(si->first_unsupported, lanes, sizeof lanes - 1))
+        snprintf(out, 32, " (%u lanes of 32)", g_vk_subgroup_lanes);
+    return out;
 }
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
@@ -559,7 +566,11 @@ u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInf
                                             VK_SHADER_STAGE_TASK_BIT_EXT,
                                             VK_SHADER_STAGE_MESH_BIT_EXT};
     VkShaderStageFlagBits shader_stage = stages[stage];
-    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
+    /* a task or mesh program runs in pipelines that ask for subgroups of 32 (mesh_choose), or not at all */
+    int lanes = stage == ST_TS || stage == ST_MS || (g_vk_subgroup_stages & shader_stage) ? SM86_LANES_WARP
+                : g_vk_quad_stages & shader_stage                                        ? SM86_LANES_QUAD
+                                                                                          : 0;
+    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words, lanes)
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
                                                   g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
@@ -1583,8 +1594,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
             return NULL;
         }
         if (s->failed)
-            WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
-                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
+            WARN("vulkan: shader %016llx (stage %d) not translated: %s%s\n", (unsigned long long)h, stage,
+                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls",
+                 vk_lane_note((char[32]){0}, &s->si));
         g_pipeline.sh_new++;
         g_pipeline.sh_ns += plat_ns() - t0;
         s->next = g_pipeline.shh[h & 1023];
@@ -4040,8 +4052,9 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
        and is counted as failed, for this build and driver. Taking every failure without a reason as one to try again
        would walk the files again on every run of a game with a program that fails so */
     if (!translated) {
-        LOG("vulkan: %s %016llx not translated: %s\n", shipped_stage_name(stage), (unsigned long long)h,
-            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls");
+        LOG("vulkan: %s %016llx not translated: %s%s\n", shipped_stage_name(stage), (unsigned long long)h,
+            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls",
+            vk_lane_note((char[32]){0}, &s.si));
         return SHIP_FAILED;
     }
     if (!at) return SHIP_STOP;

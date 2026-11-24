@@ -372,6 +372,32 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     shader_flow_free(&f);
     return r;
 }
+
+/* A memory slot is keyed by its compacted probe, never by the constant-buffer address of an ordinary bindless one. */
+static int direct_memh_slot(const ShFlow* flow, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32* nmemh,
+                            ShTex textures[SH_MAXTEX], int* texture_count, u32 use, u32 reg, u32 type, u32 array,
+                            u32 shadow, u32 ms) {
+    u32 probe = shader_direct_memory_handle(flow, si, memh_at, nmemh, use, reg);
+    if (probe == SH_PROBE_NONE) return -1;
+    for (int k = 0; k < *texture_count; k++) {
+        ShTex* t = &textures[k];
+        if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == probe && t->type == type && t->array == array &&
+            t->shadow == shadow && ((t->flags >> 1) & 1) == ms)
+            return k;
+    }
+    if (*texture_count >= SH_MAXTEX) return -2;
+    int slot = (*texture_count)++;
+    textures[slot] = (ShTex){
+        .cbuf_off = probe,
+        .type = type,
+        .array = array,
+        .shadow = shadow,
+        .bindless = 1,
+        .flags = SNX_TEX_MEMORY | (ms ? 2 : 0),
+    };
+    return slot;
+}
+
 /* to_spirv's translation, once flow holds the program's words and what dataflow.c's searches ask of them */
 static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
                       int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs,
@@ -420,6 +446,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     u32 cbuf_max[18] = {0};
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
+    u32 memh_at[SH_MEMH_MAX] = {0}, nmemh = 0;
+    si->nmemh = 0;
+    si->memh_none = 0;
+    si->memh_why[0] = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     u64 tex_asked = 0;                   /* slots TXQ or TMML name: their size, levels or level of detail asked */
     u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
@@ -1098,11 +1128,18 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             int handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
-            int read_slot =
-                shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
-                                             bindless, bank, handle_count, bank2, off2, indexed, ldc);
+            int read_slot = -1;
+            if (bindless && !handle_count)
+                read_slot = direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, b, type, array,
+                                             0, multisample);
+            if (read_slot == -2) return snx_reject(si, "texture descriptor count");
+            if (bindless && !handle_count && read_slot < 0)
+                return shader_untracked_handle(si, "texture", insn, i, b);
+            if (read_slot < 0)
+                read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0,
+                                                         multisample ? 2 : 0, bindless, bank, handle_count, bank2,
+                                                         off2, indexed, ldc);
             if (read_slot < 0) return snx_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             if (op->id == O_TLD ? !shader_direct_own_pixel_fetch(flow, i) : 1) tex_elsewhere |= 1ull << read_slot;
@@ -1330,32 +1367,54 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
+            int type = B(insn[i], 28, 3) >> 1;
+            int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
+            int memory_slot = bindless && !handle_count
+                                  ? direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, b,
+                                                     type, array, shadow, 0)
+                                  : -1;
+            if (memory_slot == -2) return snx_reject(si, "texture descriptor count");
             /* a handle the writes don't agree on: each constant buffer handle that can reach it, chosen when it runs */
             u32 cand_bank[SH_HANDLE_CANDIDATES], cand_off[SH_HANDLE_CANDIDATES];
-            int candidates = bindless && !handle_count ? shader_direct_handle_candidates(flow, i, b, cand_bank,
-                                                                                         cand_off, SH_HANDLE_CANDIDATES)
-                                                       : 1;
+            u32 cand_bank2[SH_HANDLE_CANDIDATES], cand_off2[SH_HANDLE_CANDIDATES];
+            u8 cand_words[SH_HANDLE_CANDIDATES];
+            int pair_candidates = 0;
+            int candidates = bindless && !handle_count && memory_slot < 0
+                                 ? shader_direct_handle_candidates(flow, i, b, cand_bank, cand_off,
+                                                                   SH_HANDLE_CANDIDATES)
+                                 : 1;
+            if (!candidates && bindless && !handle_count && memory_slot < 0) {
+                candidates = shader_direct_handle_candidates_pair(flow, i, b, cand_bank, cand_off, cand_bank2,
+                                                                  cand_off2, cand_words, SH_HANDLE_CANDIDATES);
+                pair_candidates = candidates > 0;
+            }
             if (!candidates) return shader_untracked_handle(si, "texture", insn, i, b);
-            if (bindless && !handle_count && chosen_tex++ == 0) {
+            if (bindless && !handle_count && memory_slot < 0 && chosen_tex++ == 0) {
                 int at = snprintf(chosen_why, sizeof chosen_why, "TEX.B at %x, R%u:", i * 8, b);
                 for (int cand = 0; cand < candidates && at > 0 && (size_t)at < sizeof chosen_why; cand++)
                     at += snprintf(chosen_why + at, sizeof chosen_why - (size_t)at, "%s c[%u][0x%x]", cand ? "," : "",
                                    cand_bank[cand], cand_off[cand] * 4);
             }
-            int type = B(insn[i], 28, 3) >> 1;
-            int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
             int read_slot = -1;
             for (int cand = 0; cand < candidates; cand++) {
-                if (bindless && !handle_count) {
-                    bank = cand_bank[cand];
-                    off = cand_off[cand];
+                if (memory_slot >= 0) {
+                    read_slot = memory_slot;
+                } else {
+                    if (bindless && !handle_count) {
+                        bank = cand_bank[cand];
+                        off = cand_off[cand];
+                        if (pair_candidates) {
+                            bank2 = cand_bank2[cand];
+                            off2 = cand_off2[cand];
+                        }
+                    }
+                    int handle_words = pair_candidates ? cand_words[cand] : (handle_count ? handle_count : 1);
+                    read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
+                                                             bindless, bank, handle_words, bank2, off2, indexed, ldc);
                 }
-                read_slot =
-                    shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                                 handle_count ? handle_count : 1, bank2, off2, indexed, ldc);
                 if (read_slot < 0) return snx_reject(si, "texture descriptor count");
                 tex_read |= 1ull << read_slot;
-                if (!handle_count && bindless) tex_elsewhere |= 1ull << read_slot;
+                if (!handle_count && bindless && memory_slot < 0) tex_elsewhere |= 1ull << read_slot;
             }
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
             int plain = type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1;
@@ -1388,10 +1447,18 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
+            int memory_slot = bindless && !handle_count
+                                  ? direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, b, type,
+                                                     array, 0, 0)
+                                  : -1;
+            if (memory_slot == -2) return snx_reject(si, "texture descriptor count");
+            if (bindless && !handle_count && memory_slot < 0)
+                return shader_untracked_handle(si, "texture", insn, i, b);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            int asked_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
-                                                          bank, handle_count, bank2, off2, indexed, ldc);
+            int asked_slot = memory_slot >= 0
+                                 ? memory_slot
+                                 : shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0,
+                                                                bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (asked_slot < 0) return snx_reject(si, "texture descriptor count");
             tex_asked |= 1ull << asked_slot;
             for (u32 k = 0; k < array + (type == 0 ? 1 : type == 1 ? 2 : 3); k++)
@@ -1411,10 +1478,18 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
+            int memory_slot = bindless && !handle_count
+                                  ? direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, a, type,
+                                                     array, 0, 0)
+                                  : -1;
+            if (memory_slot == -2) return snx_reject(si, "texture descriptor count");
+            if (bindless && !handle_count && memory_slot < 0)
+                return shader_untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, a, stage, &ldc);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
-                                                         bank, handle_count, bank2, off2, indexed, ldc);
+            int read_slot = memory_slot >= 0
+                                ? memory_slot
+                                : shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0,
+                                                               bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return snx_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
@@ -1434,11 +1509,27 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, a, stage, &ldc);
+            u32 memory_probe = bindless && !handle_count
+                                   ? shader_direct_memory_handle(flow, si, memh_at, &nmemh, i, a)
+                                   : SH_PROBE_NONE;
+            if (bindless && !handle_count && memory_probe == SH_PROBE_NONE)
+                return shader_untracked_handle(si, "texture", insn, i, a);
             u32 qtype = 1, qarray = 0;
-            int guessed = 0, qslot;
-            if (!indexed && !shader_direct_query_type(flow, bindless, bank, off, &qtype, &qarray)) {
+            int guessed = 0, qslot, have_type = 0;
+            if (memory_probe != SH_PROBE_NONE) {
+                for (int k = 0; k < texture_count; k++) {
+                    if ((textures[k].flags & SNX_TEX_MEMORY) && textures[k].cbuf_off == memory_probe) {
+                        qtype = textures[k].type;
+                        qarray = textures[k].array;
+                        have_type = 1;
+                        break;
+                    }
+                }
+            } else if (indexed || shader_direct_query_type(flow, bindless, bank, off, &qtype, &qarray)) {
+                have_type = 1;
+            }
+            if (!have_type) {
                 /* nothing else in the program reads that texture (one game queries a volume through a bound handle
                    and fetches it through a bindless one, which no tracking joins): the header's dimension, from the
                    key, once the renderer has bound it; 2D before that */
@@ -1449,8 +1540,12 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 }
                 guessed = 1;
             }
-            qslot = shader_direct_add_typed_slot(textures, &texture_count, off, qtype, qarray, 0, 0, bindless, bank,
-                                                 handle_count, bank2, off2, indexed, ldc);
+            qslot = memory_probe != SH_PROBE_NONE
+                        ? direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, a, qtype, qarray,
+                                           0, 0)
+                        : shader_direct_add_typed_slot(textures, &texture_count, off, qtype, qarray, 0, 0, bindless,
+                                                       bank, handle_count, bank2, off2, indexed, ldc);
+            if (qslot == -2) return snx_reject(si, "texture descriptor count");
             if (qslot < 0) return snx_reject(si, "texture descriptor count");
             if (guessed) tex_query |= 1ull << qslot;
             tex_asked |= 1ull << qslot;
@@ -1471,12 +1566,20 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             int handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
             u32 shadow = B(insn[i], 50, 1);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
-                                                         bindless, bank, handle_count, bank2, off2, indexed, ldc);
+            int memory_slot = bindless && !handle_count
+                                  ? direct_memh_slot(flow, si, memh_at, &nmemh, textures, &texture_count, i, b, type,
+                                                     array, shadow, 0)
+                                  : -1;
+            if (memory_slot == -2) return snx_reject(si, "texture descriptor count");
+            if (bindless && !handle_count && memory_slot < 0)
+                return shader_untracked_handle(si, "texture", insn, i, b);
+            int read_slot = memory_slot >= 0
+                                ? memory_slot
+                                : shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
+                                                               bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return snx_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
@@ -2968,12 +3071,14 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
 
     size_t case_index = 0;
+    shader_direct_memory_finish(flow, si, memh_at, nmemh, textures, texture_count);
     const Tr tr = {
         .si = si,
         .stage = stage,
         .insn = insn,
         .n = n,
         .flow = flow,
+        .memh_at = memh_at,
         .sph = sph,
         .target = target,
         .passthrough = passthrough,
@@ -3328,6 +3433,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.early_fragment_tests = si->early_fragment_tests;
     next.writes_viewport = viewport_used;
     memcpy(next.tex, textures, (size_t)texture_count * sizeof textures[0]);
+    next.nmemh = si->nmemh;
+    next.memh_none = si->memh_none;
+    memcpy(next.memh, si->memh, sizeof next.memh);
+    memcpy(next.memh_why, si->memh_why, sizeof next.memh_why);
     for (u32 i = 0; i < 18; i++)
         if (cbuf_used[i]) {
             next.cbuf_mask |= 1u << i;

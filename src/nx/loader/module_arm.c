@@ -2,9 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game module of a 32-bit program, ahead of time. The AArch32 block compiler (cpu/arm/llvm.h) makes one host
    function per block, from its entry to the next control transfer, and the runtime runs them one after another
-   (nx/runtime/arm.c). On an x86-64 host the x86-64 back end makes the blocks it can (recompiler/x64/x64_arm.h), as it
-   finds them, and LLVM the rest. The blocks are found by following the code from what is known to be code: each
-   module's entry, its function symbols, the code pointers its relocations make, and the addresses the runtime recorded in the hints
+   (nx/runtime/arm.c). On an x86-64 or arm64 host its native back end makes the blocks it can (recompiler/mach/native.h:
+   x64/x64_arm.h's, arm64/arm64_arm.h's), as it finds them, and LLVM the rest. The blocks are found by following the code
+   from what is known to be code: each module's entry,
+   its function symbols, the code pointers its relocations make, and the addresses the runtime recorded in the hints
    file because it had to compile them while the game ran (nx/runtime/arm.c). From each block, the blocks its last
    instruction leads to: a direct branch's target, and the next instruction after a call or a conditional transfer.
    An indirect branch's targets are known only when the game runs, unless something above names them */
@@ -14,7 +15,8 @@
 #include "nx/loader/module_abi.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/x64/x64_arm.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "nx/loader/module_x64.h"
 #include "snx_settings.h"
 #include "common/utilities/endian.h"
@@ -39,9 +41,9 @@
 typedef struct {
     SnxU32 key; /* the address, with bit 0 set for Thumb */
     SnxU32 units;
-    unsigned char x64; /* the x86-64 back end made it (discovery's object), else LLVM makes it in a unit */
+    unsigned char x64; /* the native back end made it (discovery's object), else LLVM makes it in a unit */
 } Block;
-/* the reasons the x86-64 back end left blocks to LLVM, counted (snx_x64_arm_why's text) */
+/* the reasons the native back end left blocks to LLVM, counted (snx_x64_arm_why's text) */
 #define WHYS 64
 typedef struct {
     const char* why;
@@ -57,9 +59,9 @@ typedef struct {
     SnxU32* work;
     size_t work_count, work_capacity;
     int collect; /* queue only lists the keys in work, for one block's successors (block_next) */
-    /* the x86-64 back end, which makes each block it can as it is found (the first thread's, whose object takes the
+    /* the native back end, which makes each block it can as it is found (the first thread's, whose object takes the
        others' blocks); NULL for none */
-    SnxX64Arm* x64;
+    SnxNativeArm* x64;
     size_t x64_made;
     Why whys[WHYS];
     size_t nwhys;
@@ -293,21 +295,21 @@ static void block_name(char* out, SnxU32 key) {
 }
 
 static size_t block_next(const SnxProgram* p, SnxU32 key, size_t units, size_t count, SnxU32* next);
-/* the successors an x86-64 block jumps to directly: the keys discover queues after it, which are blocks the module has */
+/* the successors a native block jumps to directly: the keys discover queues after it, which are blocks the module has */
 static size_t x64_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
     return block_next((const SnxProgram*)user, key, units, count, keys);
 }
-/* one thread of discovery's: its x86-64 back end (whose blocks go into the module's object), its scratch module for
+/* one thread of discovery's: its native back end (whose blocks go into the module's object), its scratch module for
    LLVM's, and what it counted */
 typedef struct {
-    SnxX64Arm* x64;
+    SnxNativeArm* x64;
     SnxIr* scratch;
     Why whys[WHYS];
     size_t nwhys, x64_made;
     char error[256];
 } Finder;
 /* a key of a round: the words its block covers, the words the block compiler was given (Thumb's successors read them
-   as it walked them), and whether the x86-64 back end made it */
+   as it walked them), and whether the native back end made it */
 typedef struct {
     SnxU32 key;
     size_t units, count;
@@ -327,7 +329,7 @@ typedef struct {
     Finder* finder;
 } Round;
 
-/* the block at key made by the x86-64 back end into f's blocks: 1 with *units the words or halfwords it covers of the
+/* the block at key made by the native back end into f's blocks: 1 with *units the words or halfwords it covers of the
    *count it was given, 0 where it leaves it to LLVM (why counted). It reads the guest's code in place, as far as the block
    goes */
 static int x64_block(Finder* f, const SnxProgram* p, SnxU32 key, size_t* units, size_t* count) {
@@ -337,9 +339,9 @@ static int x64_block(Finder* f, const SnxProgram* p, SnxU32 key, size_t* units, 
     const unsigned char* code = code_at(p, address, &bytes);
     *count = bytes / (thumb ? 2 : 4);
     if (*count > BLOCK_LIMIT) *count = BLOCK_LIMIT;
-    if (!(thumb ? snx_x64_thumb_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p)
-                : snx_x64_arm_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p))) {
-        const char* why = snx_x64_arm_why(f->x64);
+    if (!(thumb ? snx_native_thumb_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p)
+                : snx_native_arm_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p))) {
+        const char* why = snx_native_arm_why(f->x64);
         size_t k = 0;
         while (k < f->nwhys && strcmp(f->whys[k].why, why)) ++k;
         if (k == f->nwhys && k < WHYS) f->whys[f->nwhys++].why = why;
@@ -350,7 +352,7 @@ static int x64_block(Finder* f, const SnxProgram* p, SnxU32 key, size_t* units, 
     ++f->x64_made;
     return 1;
 }
-/* one key: made by the x86-64 back end where it can, else compiled into the scratch module to learn where it ends */
+/* one key: made by the native back end where it can, else compiled into the scratch module to learn where it ends */
 static int find(Finder* f, const SnxProgram* p, Found* k) {
     k->x64 = f->x64 && x64_block(f, p, k->key, &k->units, &k->count);
     if (!k->x64) {
@@ -448,7 +450,7 @@ static int run_round(Round* r, Finder* finders, unsigned threads) {
 }
 
 /* Every block reachable from the known code, found in rounds: each round makes the keys queued so far on the threads
-   (the x86-64 back end makes an A32 block then, into its thread's blocks; any other is compiled once into its
+   (the native back end makes an A32 block then, into its thread's blocks; any other is compiled once into its
    thread's scratch module to learn where it ends, the block compiler decides that, and thrown away: the units compile
    them again, in parallel), then queues what follows each, in their order, for the next round. A small round runs on
    the calling thread alone */
@@ -462,7 +464,7 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
     int rc = 0;
     for (size_t i = 0; i < threads; ++i) {
         finders[i].scratch = snx_ir_new("discovery", '0', error, error_size);
-        finders[i].x64 = d->x64 && i ? snx_x64_arm_new() : d->x64;
+        finders[i].x64 = d->x64 && i ? snx_native_arm_new() : d->x64;
         if (!finders[i].scratch || (d->x64 && !finders[i].x64)) {
             if (finders[i].scratch) snprintf(error, error_size, "out of memory");
             rc = -1;
@@ -526,11 +528,11 @@ done:
             if (k < d->nwhys) d->whys[k].count += finders[i].whys[w].count;
         }
         if (i && finders[i].x64) {
-            if (!rc && snx_x64_arm_absorb(d->x64, finders[i].x64)) {
+            if (!rc && snx_native_arm_absorb(d->x64, finders[i].x64)) {
                 snprintf(error, error_size, "out of memory");
                 rc = -1;
             }
-            snx_x64_arm_free(finders[i].x64);
+            snx_native_arm_free(finders[i].x64);
         }
         snx_ir_free(finders[i].scratch);
     }
@@ -571,7 +573,7 @@ typedef struct {
     const SnxProgram* program;
     const Block* blocks; /* the units' (LLVM's), sorted by key */
     size_t nblocks;
-    const Block* all; /* every block of the module, the x86-64 back end's too: what a block may go on to */
+    const Block* all; /* every block of the module, the native back end's too: what a block may go on to */
     size_t nall;
     const SnxLlvmBuild* build;
     Unit* units;
@@ -956,8 +958,8 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     SnxIr* ir = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
-    unsigned char *module_object = NULL, *armlib_object = NULL, *x64_object = NULL;
-    size_t module_size = 0, armlib_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
+    unsigned char *module_object = NULL, *x64_object = NULL;
+    size_t module_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
     Block* llvm = NULL;
     const char* exports[1];
     char error[1024], *tmp = NULL;
@@ -969,11 +971,11 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     if (!loaded->module_count) return snx_error("no modules to generate");
     if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
     d.program = loaded;
-    /* the x86-64 back end makes the A32 blocks it can, for this host's module (not where the IR is to be kept) */
-    if (snx_x64_arm_available() && !build->triple && !build->keep_ir) {
-        d.x64 = snx_x64_arm_new();
+    /* the native back end makes the A32 blocks it can, for this host's module (not where the IR is to be kept) */
+    if (snx_native_arm_available() && !build->triple && !build->keep_ir) {
+        d.x64 = snx_native_arm_new();
         if (!d.x64) {
-            snx_error("x86-64 back end: out of memory");
+            snx_error("%s back end: out of memory", snx_native_name());
             goto done;
         }
     }
@@ -986,19 +988,19 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     if (!options->quiet) printf("AArch32: %lu blocks found (%.1f s)\n", (unsigned long)d.count, snx_seconds() - start);
     if (d.x64) {
         size_t made = 0;
-        /* the entry the x86-64 back end's blocks jump to, for each block LLVM makes */
+        /* the entry the native back end's blocks jump to, for each block LLVM makes */
         for (i = 0; i < d.count; ++i)
-            if (!d.blocks[i].x64 && snx_x64_arm_entry(d.x64, d.blocks[i].key)) {
-                snx_error("x86-64 back end: out of memory");
+            if (!d.blocks[i].x64 && snx_native_arm_entry(d.x64, d.blocks[i].key)) {
+                snx_error("%s back end: out of memory", snx_native_name());
                 goto done;
             }
-        if (snx_x64_arm_object(d.x64, &x64_object, &x64_size, &made)) {
-            snx_error("x86-64 back end: out of memory");
+        if (snx_native_arm_object(d.x64, &x64_object, &x64_size, &made)) {
+            snx_error("%s back end: out of memory", snx_native_name());
             goto done;
         }
         if (!options->quiet) {
             made = d.x64_made;
-            printf("x86-64 back end: %zu of %zu AArch32 blocks%s\n", made, d.count,
+            printf("%s back end: %zu of %zu AArch32 blocks%s\n", snx_native_name(), made, d.count,
                    made == d.count ? "" : ", LLVM the rest");
             /* what kept the others from it, the most common first */
             for (size_t i = 0; i < d.nwhys; ++i) {
@@ -1018,7 +1020,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         if (!d.blocks[i].x64) llvm[nllvm++] = d.blocks[i];
     limit = options->chunk_instrs ? options->chunk_instrs : (size_t)g_settings.unit_size;
     if (d.x64) {
-        /* the few blocks the x86-64 back end left, spread over the whole code: units of a sixteenth of their code at
+        /* the few blocks the native back end left, spread over the whole code: units of a sixteenth of their code at
            most (of 1024 instructions at least; never more than the units asked), so the threads share them rather than
            one thread take most */
         size_t total = 0;
@@ -1042,12 +1044,12 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     q.build = build;
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
-    /* LLVM's few units the x86-64 back end left are small: their threads all at once, not opened one a second while the
+    /* LLVM's few units the native back end left are small: their threads all at once, not opened one a second while the
        memory holds them (as module_llvm.c runs its x86-64 units) */
     if (q.count && d.x64 && build->jobs_open && !options->quiet) {
         unsigned threads = build->jobs < 1 ? 1 : build->jobs;
         if (threads > q.count) threads = (unsigned)q.count;
-        printf("aot_threads=0 (Auto): %u thread%s at once, LLVM's units of the blocks the x86-64 back end left\n",
+        printf("aot_threads=0 (Auto): %u thread%s at once, LLVM's units of the blocks the native back end left\n",
                threads, threads == 1 ? "" : "s");
     }
     if (q.count) run(&q, build->jobs, d.x64 ? 0 : build->jobs_open);
@@ -1057,13 +1059,13 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     }
     start = snx_seconds();
     if (d.x64) {
-        /* the descriptor without LLVM, as the x86-64 back end's blocks are (module_x64.c) */
+        /* the descriptor without LLVM, as the native back end's blocks are (module_x64.c) */
         SnxU32* keys = (SnxU32*)snx_alloc((d.count + 1) * sizeof(*keys));
         for (i = 0; i < d.count; ++i) keys[i] = d.blocks[i].key;
         rc = snx_x64_arm_descriptor(loaded, options, keys, d.count, &module_object, &module_size, error, sizeof(error));
         free(keys);
         if (rc) {
-            snx_error("x86-64 back end: %s", error);
+            snx_error("%s back end: %s", snx_native_name(), error);
             rc = -1;
             goto done;
         }
@@ -1080,13 +1082,10 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    if (snx_ir_armlib_object(build->opt, &armlib_object, &armlib_size, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
     inputs = (SnxLinkInput*)snx_alloc((q.count + 3) * sizeof(*inputs));
-    inputs[n].data = armlib_object;
-    inputs[n].size = armlib_size;
+    /* the one the recompiler's build compiled (rtlib_object.h) */
+    inputs[n].data = (unsigned char*)snx_armlib_object;
+    inputs[n].size = (size_t)snx_armlib_object_size;
     inputs[n++].name = "armlib";
     inputs[n].data = module_object;
     inputs[n].size = module_size;
@@ -1099,7 +1098,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     if (x64_object) {
         inputs[n].data = x64_object;
         inputs[n].size = x64_size;
-        inputs[n++].name = "x86-64 blocks";
+        inputs[n++].name = "native blocks";
     }
     exports[0] = "snx_module_arm";
     if (snx_link(inputs, n, exports, 1, base_name(build->output), &linked, error, sizeof(error))) {
@@ -1113,7 +1112,8 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         goto done;
     }
     if (!options->quiet)
-        printf("%s module: %.1f MB, %lu AArch32 blocks\n", x64_object ? "x86-64 and LLVM" : "LLVM",
+        printf("%s%s module: %.1f MB, %lu AArch32 blocks\n", x64_object ? snx_native_name() : "",
+               x64_object ? " and LLVM" : "LLVM",
                (double)linked.size / 1000000.0, (unsigned long)d.count);
     rc = 0;
 done:
@@ -1121,10 +1121,9 @@ done:
     free(q.units);
     free(inputs);
     free(module_object);
-    free(armlib_object);
     free(x64_object);
     free(llvm);
-    snx_x64_arm_free(d.x64);
+    snx_native_arm_free(d.x64);
     free(linked.data);
     free(tmp);
     free(d.blocks);

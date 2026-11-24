@@ -22,6 +22,7 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
 extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
@@ -168,6 +169,25 @@ void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void*
     memcpy(out, r, 16);
 }
 
+/* the cryptographic instructions where the host has none for them: out from Vd's, Vn's and Vm's values (x, y, z); op
+   v_sha1's or v_sha256's, or from 0x20 AESE, AESD (x with the key y), AESMC, AESIMC (of x) */
+void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op) {
+    CPU s; /* the three registers alone */
+    (void)c;
+    memcpy(&s.v[0], x, 16);
+    memcpy(&s.v[1], y, 16);
+    memcpy(&s.v[2], z, 16);
+    if (op >= 0x22)
+        v_aesmc(&s.v[0], &s.v[0], (int)op - 0x22);
+    else if (op >= 0x20)
+        v_aes(&s.v[0], &s.v[1], (int)op - 0x20);
+    else if (op == 0x12 || (op >= 4 && op <= 6))
+        v_sha256(&s, op, 0, 1, 2);
+    else
+        v_sha1(&s, op, 0, 1, 2);
+    memcpy(out, &s.v[0], 16);
+}
+
 /* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's
    SGX_M_CRC), RIP-relative from the code */
 const u32 snx_x64_crc32_table[256] = {
@@ -215,3 +235,40 @@ const u32 snx_x64_crc32_table[256] = {
     0x54DE5729u, 0x23D967BFu, 0xB3667A2Eu, 0xC4614AB8u, 0x5D681B02u, 0x2A6F2B94u,
     0xB40BBE37u, 0xC30C8EA1u, 0x5A05DF1Bu, 0x2D02EF8Du,
 };
+
+/* ---- for the back ends without inline code of their own for these (risc_a64.h's) ---- */
+
+/* CRC32 or (desc bit 4) CRC32C of the low (desc & 15) bytes of value into acc, a bit at a time (the reflected
+   polynomials, no inversion: the instructions' own) */
+u64 snx_x64_crc32(u64 acc, u64 value, u32 desc) {
+    u32 crc = (u32)acc, poly = desc & 16 ? 0x82F63B78u : 0xEDB88320u;
+    unsigned k, bit;
+    for (k = 0; k < (desc & 15); ++k) {
+        crc ^= (u8)(value >> (8 * k));
+        for (bit = 0; bit < 8; ++bit) crc = crc & 1 ? (crc >> 1) ^ poly : crc >> 1;
+    }
+    return crc;
+}
+/* STXP of two doublewords at a (cpu.h's stxp: the reservation's pair compared and swapped by snx_cas128) */
+u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2) {
+    u8* M = c->mem;
+    return stxp(c, M, a, 3, v1, v2);
+}
+/* CASP of doublewords at a: the old pair (low, high), the desired stored where it was the expected. The pair is read
+   by snx_cas128 (a compare-and-swap of what was read with itself), so the old value is one atomic snapshot. The low one
+   is in the first result register on either byte order, where an __int128's is in the second of a big-endian one */
+typedef struct {
+    u64 lo, hi;
+} SnxX64Pair;
+SnxX64Pair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
+    u8* M = c->mem;
+    u64* p = (u64*)MP(a);
+    for (;;) {
+        u64 r0 = atomic_load_explicit((_Atomic u64*)p, memory_order_relaxed);
+        u64 r1 = atomic_load_explicit((_Atomic u64*)(p + 1), memory_order_relaxed);
+        u64 o0 = SNX_GUEST64(r0), o1 = SNX_GUEST64(r1);
+        int match = o0 == e0 && o1 == e1;
+        if (snx_cas128(c, p, o0, o1, match ? d0 : o0, match ? d1 : o1)) /* its values the guest's */
+            return (SnxX64Pair){o0, o1};
+    }
+}

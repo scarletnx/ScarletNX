@@ -171,11 +171,13 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
     return r;
 }
 /* a thread waits on its word, polled here until the word moves: a wait the word never ends fails the test after 2 s
-   instead of hanging it, and each wake of a word is counted (snx_kct_woken, by the word's thread) */
-static _Atomic unsigned snx_kct_woken[KTHREAD_MAX];
+   instead of hanging it, and each wait on a word and each wake of it is counted (snx_kct_waits and snx_kct_woken, by
+   the word's thread) */
+static _Atomic unsigned snx_kct_waits[KTHREAD_MAX], snx_kct_woken[KTHREAD_MAX];
 void plat_wait_word(_Atomic u32* w, u32 v, i64 ns) {
     struct timespec pause = {0, 100000};
     (void)ns; /* the waits here have no timeout */
+    atomic_fetch_add_explicit(&snx_kct_waits[w - g_host.thread.wword], 1u, memory_order_seq_cst);
     for (int i = 0; i < 20000 && atomic_load_explicit(w, memory_order_acquire) == v; i++) nanosleep(&pause, NULL);
     if (atomic_load_explicit(w, memory_order_acquire) == v) fatal("a wait on a thread's word was never ended\n");
 }
@@ -256,6 +258,14 @@ static int settle(KThread* t, int want) {
     struct timespec pause = {0, 1000000};
     for (int i = 0; i < 2000 && on_core(t) != want; i++) nanosleep(&pause, NULL);
     return on_core(t);
+}
+/* until t's host thread has waited on its word more than before times, for up to 2 s: 1 if it has */
+static int waited_on_word(const KThread* t, unsigned before) {
+    struct timespec pause = {0, 1000000};
+    const _Atomic unsigned* waits = &snx_kct_waits[t - g_hle.thread.threads];
+    for (int i = 0; i < 2000 && atomic_load_explicit(waits, memory_order_seq_cst) == before; i++)
+        nanosleep(&pause, NULL);
+    return atomic_load_explicit(waits, memory_order_seq_cst) != before;
 }
 /* until the 16-bit word at guest address at holds want, for up to 2 s; what it holds then */
 static u16 settle16(u64 at, u16 want) {
@@ -662,6 +672,69 @@ int main(void) {
     CHECK(moved_to("", 0), "2 host CPUs for 3 cores");
     core_leave(a);
     core_leave(b);
+
+    /* svcStartThread: the thread it starts has its core, or its place in line, as the call returns, before its host
+       thread runs (none does here until the test makes one), as a thread is ready then on the console. Its host thread
+       finds the core it was given, or waits for it in the one place it has */
+    host(twelve, 12);
+    reset();
+    a = thread(0, 45, 0, 1), b = thread(1, 43, 0, 1);
+    core_enter(a);
+    CHECK(kthread_start(b) == 0 && b->on_core == -2 && b->core == 0, "43 started on 45's core: %d, waiting for %d",
+          b->on_core, b->core);
+    CHECK(atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1, "45 is not asked to let go for it");
+    unsigned waits = atomic_load_explicit(&snx_kct_waits[1], memory_order_seq_cst);
+    pthread_create(&h, NULL, enter_body, b);
+    CHECK(waited_on_word(b, waits), "its host thread doesn't wait for the core");
+    pm_lock(&g_host.thread.core_lk);
+    CHECK(b->on_core == -2 && g_hle.thread.core_wait[0] == kt_ix(b) && !b->core_next,
+          "its host thread lined it up again: on core %d, %u then %u in line", b->on_core, g_hle.thread.core_wait[0],
+          b->core_next);
+    b->core_next = 0; /* a second place in line is a loop, which the next hand-off would never leave */
+    pm_unlock(&g_host.thread.core_lk);
+    core_leave(a);
+    CHECK(settle(b, 0) == 0, "the started thread got core %d", b->on_core);
+    pthread_join(h, NULL);
+    CHECK(!g_hle.thread.core_wait[0] && g_hle.thread.core_best[0] == 64, "it is still in line");
+    core_leave(b);
+    reset(); /* an idle core is its own at once, and its host thread only pins itself */
+    a = thread(0, 44, 1, 2);
+    int host_moves = snx_kct_moves;
+    CHECK(kthread_start(a) == 0 && a->on_core == 1 && snx_kct_moves == host_moves,
+          "44 started on an idle core: on core %d, %d moves", a->on_core, snx_kct_moves - host_moves);
+    core_enter(a);
+    CHECK(a->on_core == 1 && moved_to("1 4 7 10", host_moves + 1), "its host thread: on core %d", a->on_core);
+    core_leave(a);
+    reset(); /* a holder with the started thread behind it moves to an idle core at its next SVC, with no host thread
+                of that one's: what a thread read of its core before svcStartThread returned is not its core after */
+    a = thread(0, 44, 1, 7), b = thread(1, 50, 1, 2);
+    core_enter(a);
+    CHECK(kthread_start(b) == 0 && b->on_core == -2, "50 started behind 44: %d", b->on_core);
+    core_preempt(a);
+    CHECK(a->on_core == 0 && b->on_core == 1, "44 on core %d, 50 on core %d", a->on_core, b->on_core);
+    core_leave(a);
+    core_leave(b);
+    /* the host thread's number its slot's last thread left is not the started thread's: a fault of that host thread,
+       another thread's by now, lends no core of its */
+    {
+        KThread* t;
+        for (int i = 0; i < KTHREAD_MAX; i++) g_host.thread.host_tid[i] = 4242;
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0, &t) == 0 && kthread_start(t) == 0 && t->on_core == 0,
+              "a thread started on core 0: %d", t->on_core);
+        kthread_fault_lend(4242);
+        CHECK(t->on_core == 0, "another thread's fault lent its core: %d", t->on_core);
+        core_leave(t);
+        t->state = 2; /* exited */
+        kobj_unref(&t->o);
+        for (int i = 0; i < KTHREAD_MAX; i++) g_host.thread.host_tid[i] = 0;
+    }
+    /* with the cores left to the host, a started thread takes none */
+    reset();
+    g_settings.emulated_cores_mode = 0;
+    a = thread(0, 44, 1, 2);
+    CHECK(kthread_start(a) == 0 && a->on_core == -1 && !g_hle.thread.core_owner[1], "no core model: on core %d",
+          a->on_core);
+    g_settings.emulated_cores_mode = SNX_KERNEL_CORES_AUTO;
 
     /* a host thread the system refuses: the fatal says why, and the log the stack it asked and what the address space
        holds */

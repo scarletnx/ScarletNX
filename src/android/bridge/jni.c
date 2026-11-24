@@ -150,10 +150,15 @@ static _Thread_local unsigned t_app_calls;
 
 /* ---- the guest's JNIEnv of this thread ---- */
 
+static void env_end(void* what) {
+    if (t_env == what) t_env = NULL;
+    free(what);
+}
 static GuestEnv* guest_env(JNIEnv* host) {
     if (!t_env) {
         t_env = snx_alloc(sizeof *t_env);
         t_env->table = (uint64_t)(uintptr_t)j.env_table;
+        bridge_thread_keep(env_end, t_env);
     }
     t_env->host = host;
     return t_env;

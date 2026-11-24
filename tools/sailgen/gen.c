@@ -96,6 +96,7 @@ typedef struct {
     unsigned width;    /* the instruction's bits its pattern has: 32, or a T16 halfword's 16 */
     unsigned decoder;  /* the dispatcher that tries it (Decoder) */
     unsigned shadowed; /* the earlier clause that covers it and hands no word on, plus 1 */
+    int skipped;       /* SAILGEN_SKIP's: the generator could not make it, left out */
     int sees;          /* it hands some words on to the next clause (a throw of Error_See) */
     int guarded;       /* its guard tests the word beyond its pattern's bits (B T1's cond != 0b1111) */
 } Clause;
@@ -1151,9 +1152,13 @@ static Val halves_call(unsigned n, unsigned def, Val* args, unsigned count, cons
     if (!w || w->var >= 0 || strcmp(w->val.c, width))
         sg_fail(n, "%s's base is not where %s is as wide as its bits", self, sg_str(h->width));
     emit("/* %s: the sum of the elements, from its halves */\n", self);
-    k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum,
-                           "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))",
-                           args[h->x].c, size.c, args[h->x].c, size.c);
+    if (backend_defines_function("sg_l_elem"))
+        k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum,
+                               "sg_d_from_l(g, sg_l_reduce_add(g, sg_l_elem(g, %s, %s, (unsigned)((%s).w / (%s))), 0))",
+                               args[h->x].c, size.c, args[h->x].c, size.c);
+    else /* a machine's back end: its elements added one after another (mach.h) */
+        k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum, "sg_d_reduce_add(g, %s, (unsigned)(%s))",
+                               args[h->x].c, size.c);
     if (k >= sizeof g_gen.halves_sum) sg_fail(n, "a sum's C over %zu characters", sizeof g_gen.halves_sum);
     g_gen.halves = n;
     g_gen.halves_indent = g_gen.indent;
@@ -3046,7 +3051,7 @@ static Val foreach_loop(unsigned n) {
     /* from 0 by 1 up: tried as one vector operation, the lanes from 0 to `to` (lanes, above); from 1, as the fold of
        the lanes from 0 into accumulators that start at the first lane's value (accumulate) */
     if (!g_gen.lane && !g_gen.in_helper && from.bt == BT_CONST && (from.value == 0 || from.value == 1) &&
-        by.bt == BT_CONST && by.value == 1 && !N(n).dec && !lane_refused(n)) {
+        by.bt == BT_CONST && by.value == 1 && !N(n).dec && !lane_refused(n) && backend_defines_function("sg_l_elem")) {
         Buffer scratch = {0, 0, 0}, *out = g_gen.out;
         int indent = g_gen.indent;
         g_gen.lane = 1;
@@ -3091,6 +3096,33 @@ static Val foreach_loop(unsigned n) {
     return unit();
 }
 
+/* while a do b: run while the recompiler runs, its condition known there (the loops of FP's estimates' helpers) */
+static Val while_loop(unsigned n) {
+    unsigned saved = g_gen.depth;
+    Val c;
+    if (g_gen.dynamic_branch) sg_fail(n, "a while %s", stateless());
+    if (g_gen.lane) {
+        lane_refuse("a loop inside an element loop");
+        return unit();
+    }
+    emit("for (;;) {\n");
+    ++g_gen.indent;
+    c = eval(N(n).a, 0);
+    if (c.kind != K_BOOL || c.bt >= BT_DYN) sg_fail(n, "a while whose condition is known only when the guest runs");
+    if (c.bt == BT_CONST) {
+        if (c.value) sg_fail(n, "a while that never ends");
+        emit("break;\n");
+    } else {
+        char buffer[sizeof c.c];
+        emit("if (!(%s)) break;\n", cond_text(c.c, buffer, sizeof buffer));
+    }
+    stmt(N(n).b);
+    g_gen.depth = saved;
+    --g_gen.indent;
+    emit("}\n");
+    return unit();
+}
+
 static Val eval(unsigned n, int tail) {
     Val v;
     if (!n) return unit();
@@ -3104,7 +3136,8 @@ static Val eval(unsigned n, int tail) {
             return v;
         case N_BOOL: return val_const(K_BOOL, (long long)N(n).value);
         case N_UNIT: return unit();
-        case N_ID: return ident(n);
+        case N_ID: /* a string literal (an IMPDEF choice's description) is no value the code reads */
+            return name_of(n)[0] == '"' ? unit() : ident(n);
         case N_CALL: v = call(n); break;
         case N_BINOP: v = binop(n); break;
         case N_NEG: {
@@ -3143,6 +3176,7 @@ static Val eval(unsigned n, int tail) {
         case N_VAR: declare_var(N(n).name, N(n).c, N(n).b); return unit();
         case N_ASSIGN: assign(N(n).a, eval(N(n).b, 0)); return unit();
         case N_FOREACH: return foreach_loop(n);
+        case N_WHILE: return while_loop(n);
         case N_RETURN:
             if (g_gen.in_helper && !tail) {
                 Val r = eval(N(n).a, 0);
@@ -3320,7 +3354,7 @@ static int clause_root(unsigned n, const unsigned* roots, unsigned count) {
 
 /* the roots file: root NAME (a decode function), fixup NAME (one an overlay defines, with the clause that calls it: the
    legacy Thumb BL halves), and decoder NAME FAMILY... (a dispatcher, the clauses of the scattered decode functions it
-   names: one instruction set's); stop and lower lines are --extract's */
+   names: one instruction set's); stop, lower and encode lines are --extract's */
 static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
     size_t size, i;
     char* text = sg_read(path, &size);
@@ -3517,7 +3551,22 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
                 (clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
                 (clauses[k].value & clauses[i].mask) == clauses[i].value)
                 clauses[k].shadowed = i + 1;
-        if (!clauses[k].shadowed) generate_decode(&clauses[k]);
+        if (clauses[k].shadowed) continue;
+        if (getenv("SAILGEN_SKIP")) {
+            /* a development run's: a clause the generator can't make is said and left out (its helpers' text may be
+               cut short: the output is for finding what works, not for building) */
+            jmp_buf jb;
+            sg_fail_jump = &jb;
+            if (setjmp(jb)) {
+                fprintf(stderr, "skipped: %s\n", sg_str(g_parse.defs[clauses[k].decode].name));
+                clauses[k].skipped = 1;
+                sg_fail_jump = NULL;
+                continue;
+            }
+            generate_decode(&clauses[k]);
+            sg_fail_jump = NULL;
+        } else
+            generate_decode(&clauses[k]);
     }
     sg_out("/* Generated by tools/sailgen (--generate %s) from", roots_path);
     for (i = 0; i < g_parse.file_count; ++i) sg_out(" %s", g_parse.files[i].path);
@@ -3544,7 +3593,7 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
         for (i = 0; i < clause_count; ++i) {
             const char* decode = sg_str(g_parse.defs[clauses[i].decode].name);
             long long since = root_since(decode);
-            if (clauses[i].decoder != d) continue;
+            if (clauses[i].decoder != d || clauses[i].skipped) continue;
             if (clauses[i].shadowed) {
                 sg_out("    /* %s: its words are %s's */\n", decode,
                        sg_str(g_parse.defs[clauses[clauses[i].shadowed - 1].decode].name));

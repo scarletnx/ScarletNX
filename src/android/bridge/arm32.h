@@ -39,12 +39,11 @@ uint32_t arm32_call(uint32_t fn, const uint32_t* words, unsigned count, uint32_t
 uint32_t arm32_errno_address(void);
 
 /* a thread's state: its CPU made with a stack of stack_size bytes the first time (arm32_cpu's is 8 MiB), its pthread_t
-   (its TLS block's address), its id (gettid's), its stack, and its state freed as the thread ends */
+   (its TLS block's address), its id (gettid's) and its stack. Its state ends with it (bridge_thread_keep) */
 SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size);
 uint32_t arm32_thread_self(void);
 uint32_t arm32_thread_id(void);
 void arm32_thread_stack(uint32_t* base, uint32_t* size);
-void arm32_thread_end(void);
 /* the signals sent to the calling thread and not run yet, a bit for each (arm32_thread.c): the dispatch loop runs
    them between blocks with arm32_signals_run, which sets up each handler's frame from c */
 extern _Thread_local _Atomic uint32_t arm32_pending_signals;

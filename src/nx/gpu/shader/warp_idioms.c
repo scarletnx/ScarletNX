@@ -35,6 +35,7 @@ enum {
     MASK,       /* the ballot of the running lanes */
     LEADER,     /* the highest of them */
     COUNT,      /* how many */
+    MASK_REV,   /* the ballot's bits reversed */
     MASK_BELOW, /* those below the lane */
     RANK,       /* how many of those */
     PART_LOW,   /* the first and second of the three XMADs of a 32-bit product by COUNT */
@@ -45,8 +46,10 @@ enum {
     SWAPPED,   /* SHFL.BFLY of a value */
     REDUCED,   /* the IMNMX of a value and its SWAPPED, some steps of it */
     IS_LEADER, /* predicates */
+    IS_OTHER,  /* the lane is not the leader */
     IS_LANE0,
     IS_FULL,
+    IS_SAME, /* the lanes' addresses are the same */
     KINDS
 };
 static const char* const kind_name[KINDS] = {"a plain value",
@@ -55,6 +58,7 @@ static const char* const kind_name[KINDS] = {"a plain value",
                                              "the ballot",
                                              "the leader's lane",
                                              "the count of lanes",
+                                             "the ballot reversed",
                                              "the ballot below the lane",
                                              "the lane's rank",
                                              "part of a product by the count",
@@ -65,8 +69,10 @@ static const char* const kind_name[KINDS] = {"a plain value",
                                              "another lane's value",
                                              "a warp's minimum or maximum",
                                              "the leader's predicate",
+                                             "the other lanes' predicate",
                                              "lane 0's predicate",
-                                             "the whole warp's predicate"};
+                                             "the whole warp's predicate",
+                                             "the lanes' addresses' predicate"};
 
 #define NONE        0xffffffffu
 #define RZ          255u
@@ -92,13 +98,16 @@ typedef struct {
     u32* home;    /* SWAPPED and REDUCED: the block its steps are in, NONE for more than one */
     u8* claimed;  /* lane 0's atomics that a whole warp's path accounts for */
     u8 lanes[VAR_COUNT]; /* a lane's value is written to it somewhere before */
+    const ShLanePlan* plan; /* of a pseudo program (warp_notes.h), NULL for Maxwell's */
+    u8* lead;            /* 1 an instruction that only the leader runs, 2 one that only the others run */
+    u8* sum;             /* an addition of the combined add's old value and the lane's rank */
     char* why;
     size_t size;
 } Warp;
 
 static int refuse(Warp* a, u32 at, const char* what) {
     snprintf(a->why, a->size, "subgroup ballot/shuffle unavailable: %s at %x: %s",
-             a->f->op[at] ? a->f->op[at]->name : "?", (at - 10) * 8, what);
+             a->f->op[at] ? a->f->op[at]->name : "?", a->plan ? a->plan->where[at] : (at - 10) * 8, what);
     return 0;
 }
 
@@ -272,12 +281,21 @@ static int uniform(Warp* a, u32 at, u32 variable, int depth) {
     int op = a->f->op[d]->id;
     if (op == O_S2R) return B(w, 20, 8) >= 0x25 && B(w, 20, 8) <= 0x27;
     if (op != O_LDC && op != O_LDS && (op == O_CS2R || !shader_pure_op(op))) return 0;
-    for (u32 q = a->note_at[d]; q < a->note_at[d + 1]; q++)
+    for (u32 q = a->note_at[d]; q < a->note_at[d + 1]; q++) {
+        /* what only the leader runs: its predicate is none of the value's */
+        if (a->lead && a->lead[d] && a->note[q] >> 1 == VAR_PRED + B(w, 16, 3)) continue;
         if (!(a->note[q] & 1) && !uniform(a, d, a->note[q] >> 1, depth + 1)) return 0;
+    }
     return 1;
 }
 
 static int reg_uniform(Warp* a, u32 at, u32 r) { return r == RZ || uniform(a, at, r, 0); }
+/* whether the two ballots that instructions x and y come from count the same lanes: one ballot, or in a pseudo program
+   (a plan), two of one basic block, whose lanes are the same from its start to its end */
+static int same_vote(const Warp* a, u32 x, u32 y) {
+    u32 p = a->vote[x], q = a->vote[y];
+    return p == q || (a->plan && a->block[p] == a->block[q]);
+}
 
 /* IMNMX's pick (bit 0: the maximum) and sign (bit 1), and the atomic opcode of each: OpAtomicUMin, UMax, SMin, SMax */
 static u8 minmax_of(u64 w) { return (u8)(B(w, 42, 1) | B(w, 48, 1) << 1); }
@@ -323,10 +341,11 @@ static int address_uniform(Warp* a, u32 k, u32 data) {
 #define XMAD_MRG        0x5b007fa800070000ull /* XMAD.MRG Rd, Ra, Rb.H1, RZ */
 #define XMAD_HIGH       0x5b30001800070000ull /* XMAD.PSL.CBCC Rd, Ra.H1, Rb.H1, Rc */
 
-/* whether instruction k reads no lane's value: 1, or the refusal */
+/* whether instruction k reads no lane's value, its leader's predicate aside: 1, or the refusal */
 static int plain_use(Warp* a, u32 k) {
     for (u32 q = a->note_at[k]; q < a->note_at[k + 1]; q++) {
         u32 d;
+        if (a->lead && a->lead[k] && a->note[q] >> 1 == VAR_PRED + B(a->insn[k], 16, 3)) continue;
         int kind = a->note[q] & 1 ? PLAIN : kind_of(a, k, a->note[q] >> 1, &d);
         if (kind != PLAIN) return refuse(a, k, kind < 0 ? "a lane's value among others" : kind_name[kind]);
     }
@@ -337,12 +356,19 @@ static int plain_use(Warp* a, u32 k) {
 static int guarded_atomic(Warp* a, u32 k, u32 atomic, u32 data, u32 result) {
     u32 dg, dd;
     int kg = guard_kind(a, k, &dg), kd = reg_kind(a, k, data, &dd), negated = B(a->insn[k], 19, 1);
-    if (kg != IS_LEADER && kg != IS_LANE0 && kg != IS_FULL) return plain_use(a, k);
-    if (negated != (kg == IS_FULL)) return refuse(a, k, "under a lane's predicate, negated");
+    if (kg == IS_SAME) /* the lane's own atomic where the warp's addresses differ: a lone lane's never do */
+        return negated && a->plan->own[k] ? 1 : refuse(a, k, "not its own's");
+    if (kg != IS_LEADER && kg != IS_OTHER && kg != IS_LANE0 && kg != IS_FULL) return plain_use(a, k);
+    /* the leader's: its own predicate true, or the other lanes' false */
+    const int leader = kg == IS_LEADER || kg == IS_OTHER;
+    if (negated != (kg == IS_FULL || kg == IS_OTHER)) return refuse(a, k, "under a lane's predicate, negated");
     if (kd < 0) return refuse(a, k, "a lane's value among others");
-    if (!address_uniform(a, k, data)) return refuse(a, k, "its address is not the warp's");
-    if (kg == IS_LEADER) {
-        if (atomic != 234 || (kd != COUNT && kd != SCALED) || a->vote[dd] != a->vote[dg])
+    if (!(a->plan && a->plan->same[k]) && !address_uniform(a, k, data))
+        return refuse(a, k, "its address is not the warp's");
+    if (leader) {
+        /* the warp's minimum or maximum of one value, whatever it is, is what every lane's own gives */
+        if (atomic >= 236 && atomic <= 239 && kd == PLAIN && result == RZ && reg_uniform(a, k, data)) return 1;
+        if (atomic != 234 || (kd != COUNT && kd != SCALED) || !same_vote(a, dd, dg))
             return refuse(a, k, "not the leader's add of the count");
         if (a->block[a->vote[dg]] != a->block[k]) return refuse(a, k, "not in its ballot's block");
         if (result == RZ) return 1;
@@ -401,10 +427,37 @@ static int use(Warp* a, u32 k) {
     u32 ra = B(w, 8, 8), rb = B(w, 20, 8), da, db, data, result, atomic = atomic_of(w, op, &data, &result);
     if (atomic && !plain_guard(w)) return guarded_atomic(a, k, atomic, data, result);
     if (is_flow(op) && guard_kind(a, k, &da) == IS_FULL && B(w, 19, 1)) return 1; /* whole_warp */
+    if (a->plan && is_flow(op) && guard_kind(a, k, &da) == IS_SAME) /* out of the run that only they take (a match) */
+        return a->plan->leave[k] && B(w, 19, 1) ? 1 : refuse(a, k, "the lanes' addresses");
+    if (a->plan && !is_flow(op)) {
+        int kg = guard_kind(a, k, &da), negated = B(w, 19, 1);
+        if (kg == IS_LEADER || kg == IS_OTHER) {
+            /* what only the leader runs, or only the others, in a warp: a lone lane is the leader, so the others' run
+               in none, and neither may do what the other lanes would see */
+            a->lead[k] = (kg == IS_LEADER) != negated ? 1 : 2;
+            if (op != O_S2R && op != O_LDC && op != O_LDS && op != O_NOP && !shader_pure_op(op) && op < LO_BREV)
+                return refuse(a, k, "only some lanes run it");
+            w = (w & ~(0xfull << 16)) | 7ull << 16; /* the forms below are of an instruction that always runs */
+        }
+    }
     if ((w & ~REGS_DB) == FLO_U32 && reg_kind(a, k, rb, &db) == MASK) return mark(a, k, LEADER, a->vote[db]);
     if ((w & ~REGS_DB) == POPC_R) {
         int kb = reg_kind(a, k, rb, &db);
         if (kb == MASK || kb == MASK_BELOW) return mark(a, k, kb == MASK ? COUNT : RANK, a->vote[db]);
+    }
+    switch (op) {
+        case LO_BREV:
+            if (reg_kind(a, k, rb, &db) == MASK) return mark(a, k, MASK_REV, a->vote[db]);
+            return plain_use(a, k);
+        case LO_FLO_SH:
+            if (reg_kind(a, k, rb, &db) == MASK_REV) return mark(a, k, LEADER, a->vote[db]);
+            return plain_use(a, k);
+        case LO_ISETP_NE: {
+            int ka = reg_kind(a, k, ra, &da), kb = reg_kind(a, k, rb, &db);
+            if ((ka == LEADER && kb == LANE) || (ka == LANE && kb == LEADER))
+                return mark(a, k, IS_OTHER, a->vote[ka == LEADER ? da : db]);
+            return plain_use(a, k);
+        }
     }
     if ((w & ~REGS_DAB) == LOP_AND) {
         int ka = reg_kind(a, k, ra, &da), kb = reg_kind(a, k, rb, &db);
@@ -423,7 +476,10 @@ static int use(Warp* a, u32 k) {
     if ((w & ~(REGS_DAB | 1ull << 42 | 1ull << 48)) == IMNMX_R && reduction(a, k, ra, rb)) return 1;
     if ((w & ~REGS_DAB) == IADD_R) {
         int ka = reg_kind(a, k, ra, &da), kb = reg_kind(a, k, rb, &db);
-        if (((ka == BASE && kb == RANK) || (ka == RANK && kb == BASE)) && a->vote[da] == a->vote[db]) return 1;
+        if (((ka == BASE && kb == RANK) || (ka == RANK && kb == BASE)) && same_vote(a, da, db)) {
+            if (a->sum) a->sum[k] = 1;
+            return 1;
+        }
     }
     if ((w & ~REGS_DAB) == XMAD_LOW && product_part(a, k, PART_LOW, ra, rb)) return 1;
     if ((w & ~REGS_DAB) == XMAD_MRG && product_part(a, k, PART_MRG, ra, rb)) return 1;
@@ -444,6 +500,7 @@ static int instruction(Warp* a, u32 k) {
         if ((w & ~(0xffull | 3ull << 48)) != VOTE_ALL) return refuse(a, k, "not the running lanes' ballot");
         return mark(a, k, MASK, k);
     }
+    if (op == LO_MATCH) return mark(a, k, IS_SAME, k);
     if (op != O_SHFL) return use(a, k);
     if ((w & ~(0xffffull | 0x1full << 20)) == SHFL_BFLY && bit && !(bit & (bit - 1)) && ra != RZ) {
         int kind = reg_kind(a, k, ra, &d);
@@ -455,7 +512,7 @@ static int instruction(Warp* a, u32 k) {
         /* its value is the leader's: the combined add's result, the last write of it in the block, which is the ballot's
            too. What else may be in the register is the other lanes', which nothing reads */
         u32 last = written_before(a, k, ra);
-        if (last < a->n && a->kind[last] == OLD && a->vote[last] == a->vote[d]) return mark(a, k, BASE, a->vote[d]);
+        if (last < a->n && a->kind[last] == OLD && same_vote(a, last, d)) return mark(a, k, BASE, a->vote[d]);
     }
     return refuse(a, k, "no combined add's, no reduction's");
 }
@@ -559,6 +616,58 @@ static int settle(Warp* a, const ShaderInfo* si) {
     return 1;
 }
 
+/* in a pseudo program: the runs of the lanes whose addresses are the same, which a lone lane always takes: they store
+   nothing but the leader's atomics of the compared address, go on from their end, and nothing they write is read after
+   it, but each lane's own value of own_dst, which the leader's old value and its rank come to in a lone lane */
+static int matches(Warp* a) {
+    u32 defs[MAX_DEFS];
+    int entry;
+    for (u32 m = 0; m < a->plan->runs; m++) {
+        const ShMatchRun* r = &a->plan->run[m];
+        for (u32 k = r->from; k < r->to && k < a->n; k++) {
+            if (!IDX_OK(k)) continue;
+            const int id = a->f->op[k]->id, flow = is_flow(id);
+            if (flow) return refuse(a, k, "a branch in the lanes' own");
+            u32 data, result;
+            int atomic = atomic_of(a->insn[k], id, &data, &result) != 0;
+            if (atomic ? !(a->plan->same[k] && guard_kind(a, k, &data) != PLAIN) : id == O_STG)
+                return refuse(a, k, "more than a combined add");
+        }
+        for (u32 k = r->to; k < a->n; k++) {
+            if (!IDX_OK(k)) continue;
+            for (u32 q = a->note_at[k]; q < a->note_at[k + 1]; q++) {
+                if (a->note[q] & 1) continue;
+                u32 v = a->note[q] >> 1, count = reaching(a, k, v, defs, &entry);
+                if (count > MAX_DEFS) return refuse(a, k, "too many writes of what it reads");
+                for (u32 d = 0; d < count; d++) {
+                    if (defs[d] < r->from || defs[d] >= r->to) continue;
+                    if (v != r->own_dst || !a->sum[defs[d]]) return refuse(a, k, "the lanes' own value");
+                }
+            }
+        }
+    }
+    return 1;
+}
+/* in a pseudo program: what only the leader or only the others write is read by what they run alone, or through a SHFL
+   from the leader, which the kinds have looked at */
+static int leads(Warp* a) {
+    u32 defs[MAX_DEFS];
+    int entry;
+    for (u32 k = 11; k < a->n; k++) {
+        if (!IDX_OK(k)) continue;
+        for (u32 q = a->note_at[k]; q < a->note_at[k + 1]; q++) {
+            u32 v = a->note[q] >> 1;
+            if ((a->note[q] & 1) || (a->kind[k] == BASE && v == B(a->insn[k], 8, 8))) continue;
+            u32 count = reaching(a, k, v, defs, &entry);
+            if (count > MAX_DEFS) return refuse(a, k, "too many writes of what it reads");
+            for (u32 d = 0; d < count; d++)
+                if (a->lead[defs[d]] && holds(a->insn[defs[d]]) != holds(a->insn[k]))
+                    return refuse(a, k, "the leader's own value");
+        }
+    }
+    return 1;
+}
+
 static int by_instruction(Warp* a, const ShNotes* notes) {
     a->note = malloc((notes->n ? notes->n : 1) * sizeof *a->note);
     if (!a->note) return 0;
@@ -586,26 +695,35 @@ void shader_note(ShNotes* notes, u32 variable, u32 write) {
     notes->word[notes->n++] = notes->at << 10 | variable << 1 | write;
 }
 
-int shader_lone_lane_gives(const ShFlow* f, const u32* pop_targets, const ShNotes* notes, const ShaderInfo* si,
-                           char* why, size_t size) {
+static int lane_gives(const ShFlow* f, const u32* pop_targets, const ShNotes* notes, const ShaderInfo* si,
+                      const ShLanePlan* plan, char* why, size_t size) {
     size_t n = f->n, each = n + 1;
-    Warp a = {.f = f, .insn = f->insn, .n = f->n, .pop = pop_targets, .why = why, .size = size};
+    Warp a = {.f = f, .insn = f->insn, .n = f->n, .pop = pop_targets, .plan = plan, .why = why, .size = size};
     snprintf(why, size, "subgroup ballot/shuffle unavailable: out of memory");
     if (notes->full || n > DIRECT_WORDS_MAX) return 0;
     /* the arrays by instruction, the words first */
-    u32* words = calloc(each, (7 + 2 * GUARDS) * sizeof *words + 4);
+    u32* words = calloc(each, (7 + 2 * GUARDS) * sizeof *words + 6);
     if (!words) return 0;
     a.note_at = words, a.from_at = words + each, a.block = words + 2 * each, a.vote = words + 3 * each;
     a.root = words + 4 * each, a.version = words + 5 * each, a.home = words + 6 * each, a.seen = words + 7 * each;
     a.queue = a.seen + GUARDS * each;
     a.kind = (u8*)(a.queue + GUARDS * each), a.steps = a.kind + each, a.minmax = a.kind + 2 * each;
     a.claimed = a.kind + 3 * each;
+    a.lead = a.kind + 4 * each, a.sum = a.kind + 5 * each;
     int good = by_instruction(&a, notes) && flow_make(&a);
     for (u32 k = 11; good && k < a.n; k++)
         if (IDX_OK(k)) good = instruction(&a, k);
-    good = good && settle(&a, si);
+    good = good && settle(&a, si) && (!plan || (leads(&a) && matches(&a)));
     free(a.note);
     free(a.from);
     free(words);
     return good;
+}
+int shader_lone_lane_gives(const ShFlow* f, const u32* pop_targets, const ShNotes* notes, const ShaderInfo* si,
+                           char* why, size_t size) {
+    return lane_gives(f, pop_targets, notes, si, NULL, why, size);
+}
+int shader_lone_lane_gives_pseudo(const ShFlow* f, const ShNotes* notes, const ShaderInfo* si, const ShLanePlan* plan,
+                                  char* why, size_t size) {
+    return lane_gives(f, NULL, notes, si, plan, why, size);
 }
