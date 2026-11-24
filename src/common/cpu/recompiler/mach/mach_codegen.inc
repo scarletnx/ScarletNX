@@ -657,6 +657,10 @@ static int sys(Unit* u, SnxU32 word) {
         case 4: { /* DC ZVA: the 64 bytes of the block at a zeroed, four 16-byte stores */
             SgX* x = sgx(g);
             SgD block = sg_d_and(g, a, sgx_const(64, ~(SnxU64)63));
+            if (!SGX_HAS_VREGS) { /* eight of 8 bytes */
+                for (int d = 0; d < 64; d += 8) sg_GuestMemWrite(g, sg_d_add_int(g, block, d), 8, 0, sgx_const(64, 0));
+                return 1;
+            }
             int z = sgx_xconst(x, 0, 0), base = sgx_mem(g), index = sgx_reg(x, &block), k, in[4] = {0, z, 0, 0};
             for (k = 0; k < 4; ++k)
                 sgx_vins(x, SGX_VF_ST16, 0, 0, in, 0, 0, SGX_VM_GUEST, base, index, 16 * k, 0, 0);

@@ -4046,6 +4046,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
                  ${snx_half_words})
+        # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
+        add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS)
+        set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers

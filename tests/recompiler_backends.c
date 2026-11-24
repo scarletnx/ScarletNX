@@ -554,8 +554,11 @@ static OpWord* op_words(char** ops, unsigned nops, int variants, size_t* count) 
         for (k = 0; name && ops && k < nops; ++k)
             if (!strcmp(name, ops[k])) break;
         if (!name || (ops && k == nops)) continue;
+        /* CNTPCT's and CNTVCT's time is another in each run */
+        if (variants && ((w & ~31u) == 0xD53BE020u || (w & ~31u) == 0xD53BE040u)) continue;
         list[j++] = (OpWord){name, w};
-        if (!variants) continue;
+        /* a system word's fields are no registers: DC ZVA of another would write anywhere */
+        if (!variants || (w & 0xFFC00000u) == 0xD5000000u) continue;
         v = (w & ~31u) | (w >> 5 & 31);
         if (op_name(v) == name) list[j++] = (OpWord){name, v};
         v = (w & ~31u) | (w >> 16 & 31);
