@@ -351,6 +351,17 @@ static void check_surface(VitaProcess* p) {
     finish(p);
     CHECK(!wrong(p, b + 256 * 4, 192, 5) && !wrong(p, a + 0x1000, 192, 5), "the CPU's row of the surface is lost");
 }
+/* a tiled color surface whose last tiles its height does not fill: the scene's store reaches guest memory whole, the
+   tile past the bytes its rows would take with it */
+static void check_tiled(VitaProcess* p) {
+    uint32_t b = block_make(p, BLOCK, true), rows = 64 * 4 * 48, size = 2 * 2 * 4096;
+    fill(p, b, size, 1);
+    uint64_t serial = scene(p, b, 64, 48, 64, GXM_COLOR_SURFACE_TILED);
+    fill(p, b + rows, size - rows, 2); /* once the scene loaded it: its store comes after */
+    vita_render_wait(p, serial);
+    CHECK(!wrong_from(p, b + rows, 16 * 128, 1, rows), "%u bytes of the last tile are not what the scene stored",
+          (unsigned)wrong_from(p, b + rows, 16 * 128, 1, rows));
+}
 /* a depth surface stored at the scene's end: every sample the background's, in its rows alone */
 static void check_depth(VitaProcess* p) {
     if (!vita_vk()->depth16_blit) return;
@@ -409,6 +420,7 @@ static const struct {
     {"straddle", check_straddle, false},
     {"again", check_again, false},
     {"surface", check_surface, false},
+    {"tiled", check_tiled, true},
     {"depth", check_depth, false},
     {"picture", check_picture, false},
 };
