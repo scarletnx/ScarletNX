@@ -356,9 +356,10 @@ static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int 
     SgXTest t[SGX_TESTS];
     int vx, nt;
     if (rounding == SG_FP_ROUNDING_FPCR) sg_fail("FPToFixed in FPCR's mode: the helper takes the encoding's", rounding, 0);
-    if (integer != 32 && integer != 64) sg_fail("a conversion to an integer of this width", integer, 0);
+    if (integer != 16 && integer != 32 && integer != 64)
+        sg_fail("a conversion to an integer of this width", integer, 0);
     if (fbits < 0 || fbits > 64) sg_fail("FPToFixed of these fraction bits", fbits, 0);
-    if (path || (w != 32 && w != 64) || imm < 0 || (imm != 3 && !(x->features & SGX_F_SSE41)))
+    if (path || (w != 32 && w != 64) || integer == 16 || imm < 0 || (imm != 3 && !(x->features & SGX_F_SSE41)))
         return sgx_fp(g, "snx_x64_fp_to_int", path, fpcr, &op, 1, 1, desc, (unsigned)integer);
     nt = sgx_fp_test(g, t, 0, SGX_T_DENORMAL, 1, fpcr, w);
     o = sgx_fo(g, op);

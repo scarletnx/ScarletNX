@@ -510,7 +510,10 @@ the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one wor
 `sg_x64_block` words in a row one (up to a branch or an UNDEF), one SSA: CMP then B.HI is `cmp` then `cmova` of the
 two pcs, the condition code the selection derived for HI on CMP's flags, with no flag stored and read back between.
 `a64_x64.roots` is a64.roots' integer part whole: the data processing, the branch operands, the hints and barriers, and
-the loads and stores of the general-purpose registers. Guest memory is `CPU.mem` plus the address, a memory operand
+the loads and stores of the general-purpose registers; its scalar floating point; and the Advanced SIMD the back end's
+own vector code (`x64/x64_vec.c`) leaves, element by element (half precision, the dot products, the rounding and
+saturating doubling multiplications, the shifts by a register that round or saturate...), so that no A64 instruction
+of a guest's is left to another back end. Guest memory is `CPU.mem` plus the address, a memory operand
 `[M + address + disp]` of the same MOV and MOVZX forms (a byte's and a halfword's store MOV r/m8 and r/m16, the 16-bit
 forms taking the operand-size prefix the opcode column leaves out); an x86 load is already an acquire one, a release
 store is MFENCE after it, a barrier of all accesses MFENCE and one of loads or stores alone nothing (x86's ordering,
@@ -537,6 +540,13 @@ complement each made where something reads it, the carry, the borrow and the hig
 word asks of them is refused: `UInt` and `SInt` of more than 64 bits, the bits past the 64th, a comparison past 64 bits,
 a sum past 128, a product of other than two signed doublewords, a shift right by the guest's amount of more than one
 doubleword. `SatQ` is one comparison and a choice where the integer fits 64 bits.
+
+### The RISC back ends (`rv64.h`, `ppc64.h`, `mips64.h`, `la64.h`, `s390x.h`, over `risc.h`)
+
+Machines without vector registers here: every A64 instruction is `a64_risc.roots`', the Advanced SIMD as general-purpose
+doublewords, element by element, the floating point and AES's tables the exact helpers' (`x64_helpers.c`). A clause not
+there needs a feature no guest has. `recompiler_<machine>_refused` fails where a word of the Switch's, or of the Ounce's
+half precision and dot products, is left to another back end.
 
 ### The arm64 back end (`arm64.h`, `arm64_asm.h`, `arm64_a64.h`)
 

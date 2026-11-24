@@ -4007,6 +4007,15 @@ foreach(family IN ITEMS
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
     set_tests_properties(recompiler_backends_${name} PROPERTIES TIMEOUT 600)
 endforeach()
+# half precision (an Android phone's): the ops whose words x64_vec.c makes of singles and doubles
+add_test(NAME recompiler_backends_half COMMAND snx-test-recompiler-backends --target android --states 48 --ops FADD_v FSUB_v
+         FMUL_v FDIV_v FABD_v FABD_s FMAX_v FMIN_v FMAXNM_v FMINNM_v FMLA_v FMLS_v FMUL_vi FMLA_vi FMLS_vi FNEG_v FABS_v
+         FSQRT_v FCMEQ_v FCMGE_v FCMGT_v FCMEQ_s FCMGE_s FCMGT_s FACGE_v FACGT_v FCMEQ0_v FCMGE0_v FCMGT0_v FCMLE0_v
+         FCMLT0_v FCVTZS_vi FCVTZU_vi SCVTF_vi UCVTF_vi FCVTZS_vf FCVTZU_vf SCVTF_vf UCVTF_vf SCVTF_f UCVTF_f FCVTZS_f
+         FCVTZU_f FADDP_v FADDP_s FMAXP_v FMINP_v FMAXNMP_v FMINNMP_v FMAXP_s FMINP_s FMAXNMP_s FMINNMP_s FMAXV_h FMINV_h
+         FMAXNMV_h FMINNMV_h FMUL_si FMLA_si FMLS_si FRECPE_v FRECPE_s FRSQRTE_v FRSQRTE_s FRECPS_v FRECPS_s FRSQRTS_v
+         FRSQRTS_s FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v)
+set_tests_properties(recompiler_backends_half PROPERTIES TIMEOUT 900)
 # the same without FMA, AES-NI and SHA-NI (0x800, 0x1000, 0x2000), where the helpers do their work
 add_test(NAME recompiler_backends_plain_ops COMMAND snx-test-recompiler-backends --without 0x3d07 --states 48 --ops
          FRECPS_v FRECPS_s FRSQRTS_v FRSQRTS_s FMLA_si FMLS_si AESE AESD AESMC AESIMC SHA256H SHA256H2 SHA256SU0
@@ -4027,6 +4036,12 @@ add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --s
 set_tests_properties(recompiler_backends_lanes PROPERTIES TIMEOUT 600)
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
+# each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling
+# multiplications) and of the Ounce's is the native back end's: none of their words is left to LLVM
+foreach(target switch android ounce)
+    add_test(NAME recompiler_backends_refused_${target} COMMAND snx-test-recompiler-backends --refused --target ${target})
+    set_tests_properties(recompiler_backends_refused_${target} PROPERTIES TIMEOUT 600)
+endforeach()
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
@@ -4053,7 +4068,15 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
+        foreach(target switch android ounce)
+            add_test(NAME recompiler_${m}_refused_${target} COMMAND snx-test-recompiler-${m} --refused --target ${target})
+            set_tests_properties(recompiler_${m}_refused_${target} PROPERTIES TIMEOUT 600)
+        endforeach()
     endforeach()
+    # an arm64 host with none of the features a guest's word may be its own with (all but LSE, CRC32 and CSSC)
+    add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7fff8
+             --target android)
+    set_tests_properties(recompiler_arm64_refused_plain PROPERTIES TIMEOUT 600)
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
