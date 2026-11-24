@@ -107,9 +107,9 @@ jobs:
     # Another release or other mode words want its file written again
     env:
       # the release's tag and its NRO's name, which carries the version
-      EDENPROBE_VERSION: v1.0.0
-      EDENPROBE_NRO: amberlith-1.0.0.nro
-      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+      EDENPROBE_VERSION: v1.0.4
+      EDENPROBE_NRO: amberlith-1.0.4.nro
+      EDENPROBE_SHA256: 3271c4af392cd21e842e1ea89b370eb376da154f039dbe9e7f5c5a2193a2bed0
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
