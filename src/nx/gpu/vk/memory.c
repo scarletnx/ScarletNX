@@ -1602,6 +1602,13 @@ u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n) 
     return need;
 }
 
+int vk_image_resident_has(VkImage img, u32 first, u32 n) {
+    const Pieces* p = pieces_of(img);
+    if (!p || !p->per_layer || first > p->n || n > p->n - first) return 0;
+    for (u32 i = first; i < first + n; i++)
+        if (!p->pages[i]) return 0;
+    return 1;
+}
 int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes) {
     Pieces* p = pieces_of(img);
     *bytes = p ? p->bound : 0;

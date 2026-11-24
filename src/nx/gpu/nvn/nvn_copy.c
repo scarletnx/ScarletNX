@@ -50,6 +50,8 @@ static const char* copy_skip(u32 why) {
 /* A texture's level as a surface plane: the snapshot t, its view v (NULL for none), the level's block dimensions
    (texels a block: bw x bh, bpb bytes), its blocks a row and rows, and which slice a copy's z names */
 typedef struct {
+    u64 tex;   /* the texture's first byte */
+    u32 level, layer0; /* the view's level, and its first layer */
     u64 base;  /* the level's first layer */
     u64 layer; /* bytes between layers */
     int bl, volume;
@@ -83,8 +85,13 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     p->wb = (w + (u32)p->bw - 1) / (u32)p->bw * (u32)bpb;
     p->rows = (h + (u32)p->bhp - 1) / (u32)p->bhp;
     p->layer = l.layer_size;
+    p->tex = t->gpu;
+    p->level = level;
     p->base = t->gpu + nvn_tex_level_offset(&t->d, level);
-    if (v && (v->set & NVN_VIEW_LAYERS)) p->base += (u64)v->min_layer * l.layer_size;
+    if (v && (v->set & NVN_VIEW_LAYERS)) {
+        p->layer0 = v->min_layer;
+        p->base += (u64)v->min_layer * l.layer_size;
+    }
     p->volume = t->d.target == NVN_TEXTURE_TARGET_3D;
     p->depth = p->volume ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
     if (t->d.flags & NVN_TEX_LINEAR) {
@@ -205,6 +212,11 @@ static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int t
         *b = (GpuDmaSide){0};
         b->addr = r->buffer + at;
         b->pitch = (u32)row;
+        if (to_tex && !p.volume) { /* the renderer copies the rows into that texture's image as well */
+            o.tex = p.tex;
+            o.tex_level = p.level;
+            o.tex_layer = p.layer0 + (u32)(region.zoffset + k);
+        }
         o.snap = snap ? snap + at : NULL;
         if (r->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))
             copy_buffer_mirrored(&o, p.bpb, to_tex, (u32)r->flags);

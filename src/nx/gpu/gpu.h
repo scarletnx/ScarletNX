@@ -334,6 +334,11 @@ typedef struct {
     GpuDmaSide src, dst;
     const u8* snap;
     u64 snap_id;
+    /* the texture the front end copies into, when it names one (NVN's buffer-to-texture copy): its first byte, and the
+       level and layer of it that dst is. tex 0: none named, and a texture at dst.addr is taken as its level 0 of
+       layer 0 (vk_tex_dma_rows) */
+    u64 tex;
+    u32 tex_level, tex_layer;
 } GpuDmaOp;
 /* A 2D engine blit (maxwell/fermi2d.c) the renderer does on the GPU: each destination pixel of columns x0 to x1 - 1
    and rows y0 to y1 - 1 the source pixel at column scol[x - x0] and row srow[y - y0] (nearest sampled, the tables
