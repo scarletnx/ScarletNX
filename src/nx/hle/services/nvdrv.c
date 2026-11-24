@@ -979,7 +979,7 @@ static int fence_on_gpu_thread(u32 id, u32 val) {
         SNX_ZONE_T(z_nv_fence, "svc nvdrv fence", "fence %u>%u at %u on GPU thread", id, val, syncpt_read(id));
         return 1;
     }
-    [[maybe_unused]] u64 started = plat_ns();
+    [[maybe_unused]] u64 started = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     if (!syncpt_wait(id, val, FENCE_WAIT_NS))
         WARN_LIMIT(
             8,

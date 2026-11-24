@@ -329,6 +329,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
 /* the wait's decision, as small bits for the wait's message: 1 the syncpoint, 2 the present on the display, 4 the
    pacer's ready time, 8 the timeout, 16 nothing fenced the sync */
 enum { SYNC_W_SYNCPT = 1, SYNC_W_SHOWN = 2, SYNC_W_READY = 4, SYNC_W_TIMEOUT = 8, SYNC_W_UNFENCED = 16 };
+/* *ns the wait's nanoseconds, for the trace: NULL reads no clock for it */
 static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     /* start rolls to each phase for the timeout budget; entered stays at the call for the duration we report */
@@ -336,7 +337,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
     int waited = 0;
     *why = 0;
-    *ns = 0;
+    if (ns) *ns = 0;
     if (!atomic_load_explicit(&s->fenced, memory_order_acquire)) {
         LOG_LIMIT(8,
                   "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx): the wait "
@@ -349,7 +350,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
         *why |= SYNC_W_SYNCPT;
         if (!left || !syncpt_wait(s->syncpt, s->value, left)) {
             *why |= SYNC_W_TIMEOUT;
-            *ns = nvn_now() - entered;
+            if (ns) *ns = nvn_now() - entered;
             return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
         }
         waited = 1;
@@ -361,7 +362,7 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
         *why |= SYNC_W_SHOWN;
         if (!shown_wait(s, start, left, &waited)) {
             *why |= SYNC_W_TIMEOUT;
-            *ns = nvn_now() - entered;
+            if (ns) *ns = nvn_now() - entered;
             return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
         }
     }
@@ -373,13 +374,13 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout, u32* why, u64* ns) {
         if (left >= 0 && (u64)left - (used < (u64)left ? used : (u64)left) < ready - now) {
             if ((u64)left > used) plat_sleep_ns(left - (i64)used);
             *why |= SYNC_W_TIMEOUT;
-            *ns = nvn_now() - entered;
+            if (ns) *ns = nvn_now() - entered;
             return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
         }
         plat_sleep_ns((i64)(ready - now));
         waited = 1;
     }
-    *ns = nvn_now() - entered;
+    if (ns) *ns = nvn_now() - entered;
     return waited ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
 }
 /* off the guest core while it waits (nvn_wait_begin); a poll (timeout 0) never waits */
@@ -389,13 +390,13 @@ i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
     u64 ns = 0;
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     nvn_queue_context_set("wait s%u=%u", s->syncpt, s->value);
-    if (!timeout) return sync_wait(c, sync, timeout, &why, &ns);
+    if (!timeout) return sync_wait(c, sync, timeout, &why, NULL);
     /* nvn_wait_begin parks the fiber: a zone over the wait would show a parked thread as busy. No zone here; the
        plot carries the wait in microseconds, and the message carries why it ended and what it waited for */
     trace_msg("nvn sync wait %u=%u shown %u from %llx: %s", s->syncpt, s->value, s->shown, caller(c),
               nvn_queue_context());
     nvn_wait_begin();
-    r = sync_wait(c, sync, timeout, &why, &ns);
+    r = sync_wait(c, sync, timeout, &why, snx_tracy_attached() ? &ns : NULL); /* the trace's alone */
     nvn_wait_end();
     SNX_PLOT("nvn sync wait us", (double)(ns / 1000));
     trace_msg("nvn sync wait %u>%u at %u why %x %s %llu us: %s", s->syncpt, s->value,
@@ -647,14 +648,14 @@ static void slot_wait(const NvnWindow* o, i32 i) {
     u64 now = nvn_now();
     int drawn = !o->drawn_syncpt[i] || syncpt_wait(o->drawn_syncpt[i], o->drawn[i], 0);
     if (o->shown_at[i] <= now && drawn) return;
-    u64 waited = plat_ns();
+    u64 waited = snx_tracy_attached() ? plat_ns() : 0; /* the plot's and the message's alone */
     /* no zone over the wait: nvn_wait_begin parks the fiber, and a zone would show a parked thread as busy. The plot
        carries the wait in microseconds */
     nvn_wait_begin();
     if (o->shown_at[i] > now) plat_sleep_ns((i64)(o->shown_at[i] - now));
     if (!drawn) syncpt_wait(o->drawn_syncpt[i], o->drawn[i], -1); /* the present is queued: the replay reaches it */
     nvn_wait_end();
-    u64 us = (plat_ns() - waited) / 1000;
+    u64 us = waited ? (plat_ns() - waited) / 1000 : 0;
     SNX_PLOT("nvn acquire wait us", (double)us);
     /* on the timeline, name what held the texture: its present's slot on the pacer, the replay of that present, or
        both. sync_wait and the replay's zone name the queue's sync waits */
