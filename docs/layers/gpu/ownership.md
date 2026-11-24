@@ -720,8 +720,10 @@ Vulkan references: [host pointer import](https://docs.vulkan.org/spec/latest/cha
 5. Windows and the other hosts. Linux without minor faults and Android trap by protection now (`memory_traps=1`
    tests that path on any Linux), and so does Windows, landing in place with no pool ([above](#windows-macos);
    `tests/memory_own.c` runs there too). macOS and FreeBSD need the alias pool first (a shared memory object). Until
-   then their `plat_trap_*` fail, and a published result lands at once (a readback per result, correct and slow). The
-   setting `memory_traps=2` makes a Linux or Windows host take that path, to measure and test it there.
+   then their `plat_trap_*` fail, and a published result lands at once (a readback per result, correct and slow),
+   written through guest memory itself and told to write tracking as the GPU's write (`vk_ww_land`): taken for the
+   CPU's, a storage image stored after an upload landed there kept memory's older bytes at its publish. The setting
+   `memory_traps=2` makes a Linux or Windows host take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
    writable storage, transform feedback and the engines' results are written there in place, and dispatches run on the

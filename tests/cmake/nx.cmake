@@ -445,6 +445,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
         PASS_REGULAR_EXPRESSION "PASS headless Vulkan in place, publish_notraps"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a result landed where no owner can take it, as a host without traps lands every publish over memory no import
+    # holds: write tracking takes the landing as the GPU's write (tests/vulkan_write_tracking.inc's landed_here), with
+    # the host's own tracking and with page protection, the pair macOS has
+    add_test(NAME vulkan_headless_notraps_landing COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_landing_protection
+        COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    set_tests_properties(vulkan_headless_notraps_landing vulkan_headless_notraps_landing_protection PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=landed_here"
+        PASS_REGULAR_EXPRESSION "write tracking: a landing with no owner is the GPU's write"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with the guest memory that draws read kept by page in sparse buffers, and what draws write to
     # guest memory kept there too (gpu/vk/pagespace.c). A device without sparse buffers or write tracking runs the
     # checks as before

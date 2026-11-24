@@ -112,6 +112,7 @@ u8* plat_alias_mirror(void) { abort(); }
 uint64_t plat_ns(void) { abort(); }
 int plat_thread(PThreadFn fn, void* arg, size_t stack) { abort(); }
 int plat_vm_read(const void* p, void* dst, u64 size) { abort(); }
+u64 plat_vm_page(void) { abort(); }
 void plat_ww_cool(u8* p, u64 size, void (*cb)(u8*, u64)) { abort(); }
 int plat_ww_hot_in(const u8* p, u64 size) { abort(); }
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8*, u64)) { abort(); }

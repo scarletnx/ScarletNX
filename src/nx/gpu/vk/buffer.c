@@ -2614,6 +2614,60 @@ void vk_ww_cool(const u8* host, u64 len) {
     ww_take_scanned(); /* newer than every baseline before, and no newer than the one the caller takes next */
     ww_take_peers();
 }
+/* A landing with no owner (owned.c's own_publish on a host without traps): n bytes of a GPU result written at guest
+   cpu through guest memory itself, where an owner's go through the mirror. The write is the GPU's, counted when the
+   result was published (gpu_mem_written_cpu), and a scan would report its pages as the CPU's, newer than every
+   baseline: a storage image stored after an upload landed there gave its texels up for memory's older bytes (15 of a
+   probe's storage cases, on each host run without traps). So what the CPU wrote on the pages until now is taken in
+   first, the bytes go in, and the pages are scanned again at once: a page of that scan counts only where it holds
+   other bytes than the landing left, what the CPU wrote meanwhile. The bytes beside the landing on its first and
+   last page are kept for that. No scan of another thread comes between: the pages' leaves are claimed throughout */
+static WwStage g_wstage_land;
+static u8 g_wland_beside[2][SNX_PLAT_PAGE_MAX]; /* under vk_lock */
+/* whether the host page at lo, of size bytes, holds what the landing of n bytes of src at cpu left there */
+static int land_page_same(u64 lo, u64 size, u64 cpu, const u8* src, u64 n) {
+    const u64 hi = lo + size, a = lo > cpu ? lo : cpu, b = hi < cpu + n ? hi : cpu + n;
+    if (a < b && memcmp(GP(a), src + (a - cpu), b - a)) return 0;
+    if (lo < cpu && memcmp(GP(lo), g_wland_beside[0], cpu - lo)) return 0;
+    return hi <= cpu + n || !memcmp(GP(cpu + n), g_wland_beside[1], hi - (cpu + n));
+}
+void vk_ww_land(u64 cpu, const u8* src, u64 n) {
+    /* by the host's pages, which a scan reports whole: 16 KiB ones hold four of the guest's */
+    const u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + n + page - 1) & ~(page - 1),
+              l0 = lo >> WW_LEAF_SHIFT, l1 = (hi - 1) >> WW_LEAF_SHIFT;
+    u64 end;
+    if (!n) return;
+    /* nothing watches the pages: no check has asked yet, the host tracks no writes, or an import holds them, whose
+       pages the scans leave alone (vk_uma_import_in) */
+    if (g_ww <= 0 || cpu >= AS_SIZE || n > AS_SIZE - cpu || hi > AS_SIZE ||
+        atomic_load_explicit(&g_wscan_failed, memory_order_acquire) || vk_uma_import_in(lo, hi, &end) < hi) {
+        memcpy(GP(cpu), src, n);
+        return;
+    }
+    for (u64 l = l0; l <= l1; l++)
+        while (!ww_claim(l)) plat_yield();
+    memcpy(g_wland_beside[0], GP(lo), cpu - lo);
+    memcpy(g_wland_beside[1], GP(cpu + n), hi - (cpu + n));
+    /* what was written until now marked before the bytes change: a page an owner's landing left (vk_ww_landed) is
+       held to that landing's bytes */
+    t_buffer.wstage = &g_wstage_check;
+    int r = plat_ww_scan(GP(lo), hi - lo, ww_note);
+    ww_publish(&g_wstage_check);
+    ww_take_scanned();
+    memcpy(GP(cpu), src, n);
+    t_buffer.wstage = &g_wstage_land;
+    if (!r) r = plat_ww_scan(GP(lo), hi - lo, ww_note);
+    t_buffer.wstage = &g_wstage_check;
+    for (int i = 0; i < g_wstage_land.n; i++)
+        for (u64 at = g_wstage_land.r[i].a & ~(page - 1); at < g_wstage_land.r[i].e; at += page)
+            if (r || at < lo || at >= hi || !land_page_same(at, page, cpu, src, n)) ww_note(GP(at), page);
+    g_wstage_land.n = 0;
+    ww_publish(&g_wstage_check);
+    if (r < 0) atomic_store_explicit(&g_wscan_failed, 1, memory_order_release);
+    for (u64 l = l0; l <= l1; l++) atomic_store_explicit(&g_wleaf_busy[l], 0, memory_order_release);
+    ww_take_scanned();
+    ww_take_peers();
+}
 /* fn(user, at, n) for each run of [host, host + len) on pages written after since, at the range's byte offset at: for
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 static int page_written(u64 pg, u32 since) {
