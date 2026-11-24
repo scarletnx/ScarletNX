@@ -215,6 +215,7 @@ typedef struct {
     /* the GPU thread's, under vk_lock */
     Imp imp[UMA_MAX]; /* sorted by cpu, none overlapping, nimp of them; their dead flags under lk */
     u32 nimp;
+    _Atomic u32 untracked; /* untracked_count's */
     Imp* gone; /* dropped from the table, the driver's until the submit that last read them is done: ngone of cap; their
                   entries and count under lk too */
     u32 ngone, capgone;
@@ -317,6 +318,16 @@ static_assert(offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
                   offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE,
               "two groups of Uma share a cache line");
 static Uma g_uma = {.lk = PMUTEX_INIT, .align = 4096, .out_pages = {.also = &g_pend_any}};
+/* the count of what write tracking's scans leave alone (vk_uma_import_in): imports that are not dma-buf regions, dropped
+   ones not yet destroyed, chunks of GPU memory and their views. Counted again at each change of those lists, on the
+   thread that makes it; vk_uma_import_in reads it with no lock. Where it is 0, as with every import a dma-buf region,
+   the answer is that none is there: the lock it took for that was 2% of the renderer thread in an Ounce game's race */
+static void untracked_count(void) {
+    u32 n = g_uma.nchunk + g_uma.nview;
+    for (u32 i = 0; i < g_uma.nimp; i++) n += !g_uma.imp[i].tracked;
+    for (u32 i = 0; i < g_uma.ngone; i++) n += !g_uma.gone[i].tracked;
+    atomic_store_explicit(&g_uma.untracked, n, memory_order_release);
+}
 /* this thread's: vk_uma_gpu_reads, the caller copies the in-place writes pending on the GPU */
 static _Thread_local struct {
     int gpu_reads;
@@ -845,6 +856,7 @@ static void gone_out(u32 i) {
     imp_destroy(&g_uma.gone[i]);
     pm_lock(&g_uma.lk);
     g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
+    untracked_count();
     pm_unlock(&g_uma.lk);
 }
 /* the dropped imports whose last reader is done are destroyed (vk_lock held) */
@@ -878,10 +890,12 @@ static void imp_drop(u32 i) {
         g_uma.capgone = cap;
     }
     g_uma.gone[g_uma.ngone++] = g_uma.imp[i];
+    untracked_count();
     g_uma.dropped++;
     g_uma.regions++;
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
+    untracked_count();
     pm_unlock(&g_uma.lk);
 }
 /* the import at i goes from the table (imp_drop), and a region's pages still in its buffer first move back into the
@@ -953,6 +967,7 @@ static void imp_kill(u32 i, int dead) {
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
+    untracked_count();
     pm_unlock(&g_uma.lk);
     g_uma.dropped++;
     g_uma.regions++;
@@ -1172,6 +1187,7 @@ static void chunk_give_back(u32 i) {
     g_uma.cgone[g_uma.ncgone++] = c;
     memmove(&g_uma.chunk[i], &g_uma.chunk[i + 1], sizeof *g_uma.chunk * (size_t)(g_uma.nchunk - i - 1));
     g_uma.nchunk--;
+    untracked_count();
     pm_unlock(&g_uma.lk);
     g_uma.chunks_gone++;
     g_uma.regions++;
@@ -1219,6 +1235,7 @@ static int placed_commit(u64 a, u64 size) {
     memmove(&g_uma.chunk[i + 1], &g_uma.chunk[i], sizeof *g_uma.chunk * (size_t)(g_uma.nchunk - i));
     g_uma.chunk[i] = m;
     g_uma.nchunk++;
+    untracked_count();
     pm_unlock(&g_uma.lk);
     g_uma.chunks_made++;
     g_uma.regions++;
@@ -1248,6 +1265,7 @@ static void view_unmap(u64 a, u64 size) {
             g_uma.view[i] = (View){v.dst, v.src, lo - v.dst};
             g_uma.view[i + 1] = (View){hi, v.src + (hi - v.dst), v.dst + v.size - hi};
             g_uma.nview++;
+            untracked_count();
             i += 2;
         } else if (v.dst < lo) { /* its head stays */
             g_uma.view[i].size = lo - v.dst;
@@ -1258,6 +1276,7 @@ static void view_unmap(u64 a, u64 size) {
         } else { /* all of it */
             memmove(&g_uma.view[i], &g_uma.view[i + 1], sizeof *g_uma.view * (size_t)(g_uma.nview - i - 1));
             g_uma.nview--;
+            untracked_count();
         }
         pm_unlock(&g_uma.lk);
     }
@@ -1336,6 +1355,7 @@ static int placed_view(u64 dst, u64 src, u64 size) {
         memmove(&g_uma.view[i + 1], &g_uma.view[i], sizeof *g_uma.view * (size_t)(g_uma.nview - i));
         g_uma.view[i] = (View){dst + at, s, n};
         g_uma.nview++;
+        untracked_count();
         pm_unlock(&g_uma.lk);
         at += n;
     }
@@ -1649,6 +1669,7 @@ static u32 imp_get(u64 cpu, u64 len) {
     memmove(&g_uma.imp[first + 1], &g_uma.imp[first], sizeof *g_uma.imp * (size_t)(g_uma.nimp - first));
     g_uma.imp[first] = m;
     g_uma.nimp++;
+    untracked_count();
     g_uma.regions++;
     pm_unlock(&g_uma.lk);
     if (opened) plat_ww_close(GP(lo), hi - lo);
@@ -2465,7 +2486,7 @@ void vk_uma_mapping_end(void) {
 u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) {
     u64 lo = end;
     *hi = end;
-    if (!vk_uma() || cpu >= end) return end;
+    if (!vk_uma() || cpu >= end || !atomic_load_explicit(&g_uma.untracked, memory_order_acquire)) return end;
     pm_lock(&g_uma.lk);
     /* the first import a scan leaves alone: not a dma-buf region, whose pages the driver doesn't take again at each
        submission (an ordinary shared mapping of a memfd, which a scan protects and watches, as wp.c's probe found on
