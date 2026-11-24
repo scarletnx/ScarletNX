@@ -2740,9 +2740,11 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
                 sgx_byte(c, (unsigned char)(0x80 | (dst & 7) << 3 | 3));
                 sgx_imm(c, i->disp, 4);
             } else if (k + 1 == i->ckat) {
-                if (dst >= 8) sgx_byte(c, 0x41); /* mov dst32, imm32 */
+                /* mov dst32, imm32, or where the constant has bits past 32 (an AArch32 helper's param) mov dst, imm64 */
+                int wide = ((SnxU64)i->imm >> 32) != 0;
+                if (dst >= 8 || wide) sgx_byte(c, (unsigned char)(0x40 | (wide ? 8 : 0) | (dst >= 8)));
                 sgx_byte(c, (unsigned char)(0xB8 | (dst & 7)));
-                sgx_imm(c, i->imm, 4);
+                sgx_imm(c, i->imm, wide ? 8 : 4);
             } else if (vv->cls) {
                 if (vv->reg >= 0) {
                     const SgXVForm* f = i->cw32 >> k & 1 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
