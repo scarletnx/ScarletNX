@@ -8,6 +8,7 @@
 * [Measure first](#measure-first)
 * [The work](#the-work)
   * [What the items are worth after item 8, on the desktop](#what-the-items-are-worth-after-item-8-on-the-desktop)
+* [The course load](#the-course-load)
 * [Memory on the GPU](#memory-on-the-gpu)
 * [Out of scope](#out-of-scope)
 
@@ -200,6 +201,34 @@ The lock calls are 13.5% across them all. The largest named one is `vk_uma_impor
 (`ww_scan_free`, 2.0 to 2.5%): it takes `g_uma.lk` for each piece a scan reads, where on that host every import is a
 dma-buf region that the scans watch anyway. So on that host item 7 is the one large item left, and items 3, 4 and 5
 are small.
+
+## The course load
+
+The plan's last step was the course load of an Ounce game, measured on 2026-11-24 after the merge of main. With a
+warm pipeline cache it is now two frames of 300 to 350 ms, each with about 200 MB of texture pieces. It was 3 to 4 s
+before items 5b and 8 and before ASTC Auto followed the memory.
+
+The pieces are three sparse 8192x8192 arrays of 68 layers with 12 levels each. Two are ASTC 8x8, held as BC7. One is
+held as it is, at a byte a texel. The game streams them a layer at a time. It maps about 1,344 brick pages a layer and
+fills them with NVN buffer-to-texture copies. Those copies are DMA launches whose results are GPU-owned, and the
+texture's next check loads the pieces from those owners on the GPU.
+
+In a Tracy capture the load is one draw of 1.3 s on the renderer thread, and in it:
+
+- **0.76 s** waits in the BC7 encoder's pace (`astc.c`, `vk_submit_upload_wait`). The GPU timestamps give about
+  0.54 s of BC7 encodes for the load: 4.7 gigatexels at about 10 gigatexels a second, in dispatches of 1.3 megatexels
+  on average. That is the cost of the data with the quick build, which these arrays already take. It is not a slow
+  encoder.
+- **0.27 s** in `block_find` and `space_take`, about 25,000 runs for the sparse pages' binds. That is Tracy's cost for
+  each zone, not the allocator's. A perf profile of the normal build over the same load gives `block_find` 0.02% of
+  the samples. A remembered pick of the allocator's walk, exact against the full walk over 65,000 picks, changed
+  nothing measurable, and it was not kept.
+
+What would make the load shorter is less to encode: a BC7 cache key for a sparse texture's pieces. Today the pieces
+have no key, because their pages are GPU-owned (`astc_content`). A key from the bytes of the copy's source would let
+the persistent cache serve the next load of the same course. `vk_tex_dma_rows` could also take copies into any layer
+and level of a texture that needs no conversion, which would leave out the owner and the piece load for the third
+array. Neither changes the frame rate, only the time to load.
 
 ## Memory on the GPU
 
