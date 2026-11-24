@@ -12,7 +12,9 @@
    game's own allocator made before its functions were hooked or through a path no hook covers, goes to the hooked
    function's own code (hook_run_original), which made it. A module whose operator delete looks the block's allocator
    up by the block's address, and copies that code where no hook takes it, keeps its own operator new
-   (alloc_new_shape), so that no block of the arena reaches such a copy.
+   (alloc_new_shape), so that no block of the arena reaches such a copy. So does one whose operator new takes its block
+   from an allocator object and whose operator delete asks which of the game's heaps the block is in (heap_by_block): a
+   block of the arena is in none.
 
    jemalloc's functions are the program's own where it links jemalloc (weak references, as an executable exports only
    the C library's names of them), else looked up at run time (dlsym, je_ names on macOS): a build without it
@@ -739,6 +741,7 @@ static int same_loads(const u64* a, u32 na, const u64* b, u32 nb) {
     return 1;
 }
 
+static int heap_by_block(const SnxModInfo* mi, const char** fresh, u64* fresh_at, u64* by_block);
 /* operator new's check: 0 when the module that holds addr copies the code of an operator delete that does the
    lookup, so that its new keeps its own code; read once a module, and said once */
 int alloc_new_shape(u64 addr) {
@@ -780,7 +783,15 @@ int alloc_new_shape(u64 addr) {
         if (c && !count) first = at, first_of = k;
         count += c;
     }
-    if (m < sizeof g_alloc.copied) g_alloc.copied[m] = count ? -1 : 1;
+    const char* fresh;
+    u64 fresh_at, by_block;
+    int by_heap = !count && heap_by_block(mi, &fresh, &fresh_at, &by_block);
+    if (by_heap)
+        LOG("hooks: %s takes the block of its %s at %llx from an allocator object through its table, and its operator "
+            "delete at %llx asks which heap a block is in: its operator new keeps its own code, as a block of the "
+            "arena is in no heap\n",
+            mi->name, fresh, (unsigned long long)fresh_at, (unsigned long long)by_block);
+    if (m < sizeof g_alloc.copied) g_alloc.copied[m] = count || by_heap ? -1 : 1;
     for (i = 0; count && kernel_symbol(i, &a, &name); i++) { /* the delete whose code the first copy has */
         u64 sig[COPY_LOADS], end;
         u32 n;
@@ -795,7 +806,7 @@ int alloc_new_shape(u64 addr) {
             (unsigned long long)first);
         said = 1;
     }
-    return !count;
+    return !count && !by_heap;
 }
 
 /* ============================================================ a game's own allocator objects */
@@ -836,13 +847,36 @@ static int branch_reg(u32 w) {
     if ((w & 0xFFDFFC1Fu) == 0xD61F0000u || (w & 0xFEDFF800u) == 0xD61F0800u) return (int)(w >> 5 & 31);
     return -1;
 }
+/* whether instruction w at a (b the register its indirect branch or call goes to, -1 for none) ends the walk of a
+   function whose last instruction is before end: an unconditional branch, a return or an indirect branch past every
+   forward branch's target, the furthest of which is furthest's */
+static int walk_ends(u32 w, u64 a, u64 end, int b, u64* furthest) {
+    u64 to;
+    if ((w & 0xFC000000u) == 0x14000000u) { /* b: a jump within the function, else its end (a tail call) */
+        to = a + (u64)(i64)((i32)(w << 6) >> 4);
+        if (to > a && to < end) {
+            if (to > *furthest) *furthest = to;
+            return 0;
+        }
+    } else if ((w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u) { /* b.cond, cbz, cbnz */
+        to = a + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
+        if (to > *furthest) *furthest = to;
+        return 0;
+    } else if ((w & 0x7E000000u) == 0x36000000u) { /* tbz, tbnz */
+        to = a + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
+        if (to > *furthest) *furthest = to;
+        return 0;
+    } else if ((w & 0xFFFFFC1Fu) != 0xD65F0000u && (w & 0xFFFFFBFFu) != 0xD65F0BFFu && (b < 0 || (w >> 21 & 1)))
+        return 0; /* not ret, retaa, retab, br or its authenticated forms */
+    return a >= *furthest;
+}
 /* whether the function at addr (size bytes, 0 when unknown) calls through an object's table */
 int alloc_object_call(u64 addr, u64 size) {
     u32 table = 0, entry = 0, object = 0; /* registers that hold an object's table, an entry of it, the object */
     u64 end = addr + (size && size < ALLOC_SCAN * 4 ? size : ALLOC_SCAN * 4), furthest = addr;
     for (u64 a = addr; a < end && in_module(a, 4); a += 4) {
         u32 w = snx_ld_le32(GP(a)), n = 0, imm = 0, gone = written(w);
-        int b = branch_reg(w), t = load64(w, &n, &imm), ends = 0;
+        int b = branch_reg(w), t = load64(w, &n, &imm);
         if (b >= 0 && (entry >> b & 1) && (object & 1)) return 1;
         u32 was_table = t >= 0 && (table >> n & 1);
         u32 copy = (w & 0xFFE0FFE0u) == 0xAA0003E0u && (object >> (w >> 16 & 31) & 1);
@@ -854,25 +888,91 @@ int alloc_object_call(u64 addr, u64 size) {
             else if (!imm && (u32)t != n)
                 table = 1u << t, entry = 0, object = n != 31 ? 1u << n : 0;
         }
-        /* where the function ends: an unconditional branch, a return or an indirect branch past every forward
-           branch's target */
-        if ((w & 0xFC000000u) == 0x14000000u) { /* b: a jump within the function, else its end (a tail call) */
-            u64 to = a + (u64)(i64)((i32)(w << 6) >> 4);
-            if (to > a && to < end) {
-                if (to > furthest) furthest = to;
-            } else
-                ends = 1;
-        } else if ((w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u) { /* b.cond, cbz, cbnz */
-            u64 to = a + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
-            if (to > furthest) furthest = to;
-        } else if ((w & 0x7E000000u) == 0x36000000u) { /* tbz, tbnz */
-            u64 to = a + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
-            if (to > furthest) furthest = to;
-        } else if ((w & 0xFFFFFC1Fu) == 0xD65F0000u || (w & 0xFFFFFBFFu) == 0xD65F0BFFu || (b >= 0 && !(w >> 21 & 1)))
-            ends = 1; /* ret, retaa, retab, br and its authenticated forms */
-        if (ends && a >= furthest) break;
+        if (walk_ends(w, a, end, b, &furthest)) break;
     }
     return 0;
+}
+/* ============================================================ a heap that finds its blocks by address */
+/* A game's operator new may take its block from the current heap of a heap manager, an allocator object's virtual
+   alloc, and its operator delete ask which heap contains the block, a function given the block's address whose result's
+   table it then calls through. Such an engine finds the heap of its objects the same way: one's base class asks from
+   its constructor which heap contains the object, and joins that heap's list of objects only when there is one, for the
+   heap to destroy them when it ends. A block of the arena is in no heap, so an object there joins no list and no heap
+   ever destroys it: one game's thread object kept its stack mapped past the end of its stage, whose heap then gave the
+   stack's address out again, and the game ended in svcBreak when the next stage's thread found it still mapped. So in a
+   module whose operator new and delete are so (heap_by_block), operator new keeps its own code, as in a module that
+   copies its delete's lookup (alloc_new_shape): what it returns is the game's heap's. malloc, free and the hooked
+   deletes stay the arena's, and a block of the arena that the game's malloc makes is no object of the engine's. A
+   delete that asks the thread's current heap and not the block, or frees it through the SDK, and one beside a new that
+   calls nothing through an object, leave its module's new hooked.
+
+   A function's walk follows its registers as values (Values): what a load, a move or a call gives. A virtual call is an
+   indirect branch or call to an entry of the table of the object in x0, the entry a load from the table and the table
+   the first word of the object, which a load gives. An operator new is one that makes such a call (object_call). An
+   operator delete is one whose object is the result of a call given the block (x1 to x7: x0 still has the block at a
+   call that takes no argument, as one to the thread's current heap does not, so x0 is no sign). A call loses x0 to
+   x18, which a call may write; a walk reads the instructions in order, past both sides of a conditional branch */
+#define WALK_VALUES (2 * ALLOC_SCAN + 32)
+typedef struct {
+    u16 reg[32];             /* each register's value, 0 for one not followed (x31's is never read) */
+    u16 object[WALK_VALUES]; /* the value is the first word of this value, 0 for none */
+    u16 table[WALK_VALUES];  /* the value is an entry of this value, a table, 0 for none */
+    u8 asked[WALK_VALUES];   /* the value is the result of a call given the block */
+    u32 made;                /* the values made, from 1 */
+} Values;
+static u16 make(Values* v) { return v->made < WALK_VALUES ? (u16)v->made++ : 0; }
+/* whether the function at addr (size bytes, 0 when unknown) makes a virtual call (above); by_block: only to an object
+   that is the result of a call given the function's first argument */
+static int object_call(u64 addr, u64 size, int by_block) {
+    Values v = {.made = 32}; /* x0 to x30's own at the entry are 1 to 31: the block is 1 */
+    u64 end = addr + (size && size < ALLOC_SCAN * 4 ? size : ALLOC_SCAN * 4), furthest = addr;
+    for (u16 k = 0; k < 31; k++) v.reg[k] = (u16)(k + 1);
+    for (u64 a = addr; a < end && in_module(a, 4); a += 4) {
+        u32 w = snx_ld_le32(GP(a)), n = 0, imm = 0, r, gone = written(w);
+        int b = branch_reg(w), t = load64(w, &n, &imm);
+        if (b >= 0 && v.table[v.reg[b]]) {
+            u32 object = v.object[v.table[v.reg[b]]];
+            if (object && v.reg[0] == object && (!by_block || v.asked[object])) return 1;
+        }
+        if ((w & 0xFC000000u) == 0x94000000u || (b >= 0 && (w >> 21 & 1))) { /* bl, blr: the result is in x0 */
+            u8 given = 0;
+            for (r = 1; r < 8; r++) given |= v.reg[r] == 1;
+            for (r = 0; r < 19; r++) v.reg[r] = 0;
+            v.reg[30] = 0;
+            v.reg[0] = make(&v);
+            v.asked[v.reg[0]] = given;
+        } else if ((w & 0xFFE0FFE0u) == 0xAA0003E0u) { /* mov xd, xm */
+            v.reg[w & 31] = (w >> 16 & 31) == 31 ? 0 : v.reg[w >> 16 & 31];
+        } else if (t >= 0 && t != 31 && n != 31) {
+            u16 base = v.reg[n], to = make(&v);
+            v.object[to] = imm ? 0 : base;
+            v.table[to] = base && v.object[base] ? base : 0;
+            v.reg[t] = to;
+        } else {
+            for (r = 0; r < 31; r++)
+                if (gone >> r & 1) v.reg[r] = make(&v);
+        }
+        if (v.made >= WALK_VALUES || walk_ends(w, a, end, b, &furthest)) break;
+    }
+    return 0;
+}
+
+/* whether mi has such a heap: an operator new that makes a virtual call and an operator delete that asks for its object
+   by the block, the first of each at *fresh_at (its name *fresh) and *by_block */
+static int heap_by_block(const SnxModInfo* mi, const char** fresh, u64* fresh_at, u64* by_block) {
+    const char* name;
+    u64 a;
+    *fresh = NULL, *fresh_at = *by_block = 0;
+    for (u32 i = 0; kernel_symbol(i, &a, &name) && !(*fresh && *by_block); i++) {
+        if (!name || a < mi->base || a - mi->base >= mi->size) continue;
+        if (!*fresh && !strncmp(name, "_Zn", 3) && listed(name, k_family, sizeof k_family / sizeof *k_family) &&
+            object_call(a, kernel_symbol_size(i), 0))
+            *fresh = name, *fresh_at = a;
+        if (!*by_block && listed(name, k_deletes, sizeof k_deletes / sizeof *k_deletes) &&
+            object_call(a, kernel_symbol_size(i), 1))
+            *by_block = a;
+    }
+    return *fresh && *by_block;
 }
 /* the reason the family is off for the game's own allocator, NULL when it may run (said once) */
 const char* alloc_kept(void) {

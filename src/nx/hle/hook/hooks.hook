@@ -205,7 +205,8 @@ hook strdup(const char* s) -> addr = alloc_strdup
 hook strndup(const char* s, u64 max) -> addr = alloc_strndup
 # operator new keeps its own code in a module whose operator delete looks the block's allocator up by its address and
 # is copied where no hook takes it, inlined or in a function no symbol names (alloc_new_shape): a block of the arena
-# there would be looked up past the game's table
+# there would be looked up past the game's table. And in one whose new takes its block from an allocator object and
+# whose delete asks which heap the block is in: a block of the arena is in none of the game's heaps
 hook _Znwm(u64 size) -> addr = alloc_new check alloc_new_shape
 hook _Znam(u64 size) -> addr = alloc_new check alloc_new_shape
 hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned check alloc_new_shape
