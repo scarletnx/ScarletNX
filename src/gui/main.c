@@ -32,6 +32,7 @@
 #include "common/utilities/font.h"
 #include "common/network/https.h"
 #include "gui/gpu_driver.h"
+#include "gui/jdk.h"
 #include "gui/bluetooth.h"
 #include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
@@ -11832,6 +11833,19 @@ static void mic_words(App* app, int group) {
     SDL_free(ids);
     if (on) SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
+/* the Java home row's words, after The build's: the JDKs of this machine, read as its group opens */
+static void jdk_words(App* app, int group) {
+    const char* home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+    char **roots, **jdks;
+    size_t n = 0, count = 0;
+    int row = setting_row(app, "java_home");
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    roots = gui_jdk_roots(home, &n);
+    jdks = roots ? gui_jdks((const char* const*)roots, &count) : NULL;
+    if (count) gui_settings_add_words(screen_settings(app), row, (const char* const*)jdks, (int)count);
+    gui_jdks_free(jdks, count);
+    gui_jdks_free(roots, n);
+}
 /* ---- a path setting (settings.txt's path): Enter opens the system's picker, a folder's, a file's or a save dialog's,
    its answer an app->path_picked event; Ctrl+V and a drop give it a path too, Del takes it off ---- */
 /* row is a path, which a paste or a drop may give */
@@ -12050,6 +12064,7 @@ static void open_group(App* app, int g) {
     app->first = app->group_first[g];
     app->page = -1;
     mic_words(app, g);
+    jdk_words(app, g);
     group_view(app, g);
 }
 static void open_pad(App* app, int row);
