@@ -99,6 +99,18 @@ static const Class classes[] = {
     {"MRC, MCR p15 c13 c0 2 and 3 (TLS)", 0x0fef0fdfu, 0x0e0d0f50u, SNX_A32_COPROC, 1},
     {"MRC, MCR p15", 0x0f000f10u, 0x0e000f10u, SNX_A32_COPROC, 1},
     {"UNDEFINED", 0x0ff000f0u, 0x07f000f0u, SNX_A32_UNDEFINED, 1},
+    /* ARMv6's and ARMv7's DSP and media */
+    {"parallel add and subtract", 0x0f800f10u, 0x06000f10u, SNX_A32_PARALLEL, 3},
+    {"SSAT, USAT", 0x0fa00030u, 0x06a00010u, SNX_A32_SATURATE, 1},
+    {"SSAT16, USAT16", 0x0fb00ff0u, 0x06a00f30u, SNX_A32_SATURATE, 1},
+    {"PKHBT, PKHTB", 0x0ff00030u, 0x06800010u, SNX_A32_PACK, 1},
+    {"SEL", 0x0ff00ff0u, 0x06800fb0u, SNX_A32_SELECT, 1},
+    {"QADD, QSUB, QDADD, QDSUB", 0x0f900ff0u, 0x01000050u, SNX_A32_QARITH, 1},
+    {"halfword multiplies", 0x0f900090u, 0x01000080u, SNX_A32_HALF_MUL, 2},
+    {"dual and most significant word multiplies", 0x0f800010u, 0x07000010u, SNX_A32_DUAL_MUL, 2},
+    {"USAD8, USADA8", 0x0ff000f0u, 0x07800010u, SNX_A32_ABS_DIFF, 1},
+    {"CRC32, CRC32C", 0x0f900df0u, 0x01000040u, SNX_A32_CRC32, 1},
+    {"SETEND", 0xfffffdffu, 0xf1010000u, SNX_A32_SETEND, 1},
     /* VFP: its loads and stores, transfers, FPSCR's, and its data processing (the A57's, scalar) */
     {"VLDR, VSTR", 0x0f200e00u, 0x0d000a00u, SNX_A32_VECTOR, 3},
     {"VLDM, VSTM, VPUSH, VPOP", 0x0e000e00u, 0x0c000a00u, SNX_A32_VECTOR, 2},

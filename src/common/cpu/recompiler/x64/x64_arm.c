@@ -451,6 +451,217 @@ static void acquire_release(SgCtx* g) {
     }
 }
 
+/* ---- ARMv6's and ARMv7's DSP and media instructions: llvm.c's parallel and media, in 64-bit lanes ---- */
+
+/* the bits lo..lo+bits-1 of x, sign- or zero-extended to 64 bits */
+static SgD lane(SgCtx* g, SgD x, unsigned lo, unsigned bits, int sign) {
+    SgD f = sg_d_slice(g, x, lo + bits - 1, lo);
+    return sign ? sg_d_sext(g, f, 64) : sg_d_zext(g, f, 64);
+}
+/* a < b, a > b and a >= b of 64-bit values, signed (sg_i_cmp's 2, 4 and 5) */
+static SgB less(SgCtx* g, SgD a, SgD b) { return sg_i_cmp(g, 2, sgx_int(a, 1), sgx_int(b, 1)); }
+static SgB greater(SgCtx* g, SgD a, SgD b) { return sg_i_cmp(g, 4, sgx_int(a, 1), sgx_int(b, 1)); }
+static SgB at_least(SgCtx* g, SgD a, SgD b) { return sg_i_cmp(g, 5, sgx_int(a, 1), sgx_int(b, 1)); }
+/* the signed 64-bit v clamped to lo..hi, and whether it was outside */
+static SgD clamp(SgCtx* g, SgD v, long long lo, long long hi, SgB* saturated) {
+    SgD low = sgx_const(64, (SnxU64)lo), high = sgx_const(64, (SnxU64)hi);
+    SgB under = less(g, v, low), over = greater(g, v, high);
+    *saturated = sg_b_or(g, under, over);
+    return sg_d_select(g, under, low, sg_d_select(g, over, high, v));
+}
+/* the signed 64-bit v's low word, and whether v didn't fit in it */
+static SgD narrow(SgCtx* g, SgD v, SgB* overflow) {
+    SgD r = sg_d_slice(g, v, 31, 0);
+    *overflow = sg_b_not(g, sg_d_eq(g, sg_d_sext(g, r, 64), v));
+    return r;
+}
+/* CPSR's bits under mask = bits, the fields NZCV the region keeps written first */
+static void cpsr_bits(SgCtx* g, SnxU32 mask, SgD bits) {
+    sg_flags_flush(g);
+    SgD c = sg_d_or(g, sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask)), bits);
+    g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
+}
+/* Q is sticky: an instruction that saturates or overflows sets it, none clears it but MSR */
+static void sticky_q(SgCtx* g, SgB set) {
+    SgD q = sg_d_lsl(g, sg_d_zext(g, sgx_bool_bits(sgx(g), set), 32), 27);
+    cpsr_bits(g, 0, q);
+}
+/* RdHi:RdLo, and RdHi:RdLo = v */
+static SgD rdhi_rdlo(SgCtx* g, unsigned hi, unsigned lo) { return sg_d_concat(g, reg(g, hi), reg(g, lo)); }
+static void set_rdhi_rdlo(SgCtx* g, unsigned hi, unsigned lo, SgD v) {
+    sg_GPR_write(g, lo, sg_d_slice(g, v, 31, 0));
+    sg_GPR_write(g, hi, sg_d_slice(g, v, 63, 32));
+}
+static SgD mul64(SgCtx* g, SgD a, SgD b) { return SGX_OP(sgx(g), mul, 64, a, b); }
+
+/* {S,Q,SH,U,UQ,UH}{ADD16,ASX,SAX,SUB16,ADD8,SUB8}, lane by lane, where no sum or difference overflows 64 bits. The
+   modular forms set GE: a lane's sum or difference >= 0, an unsigned sum's carry out */
+static void parallel(SgCtx* g) {
+    SnxU32 w = g->word;
+    unsigned form = (w >> 20) & 3, u = (w >> 22) & 1, op = (w >> 5) & 7, bits = op >= 4 ? 8 : 16, lanes = 32 / bits;
+    condition(g);
+    SgD x = reg(g, (w >> 16) & 15), y = reg(g, w & 15), r = sgx_const(32, 0), ge = sgx_const(32, 0);
+    for (unsigned i = 0; i < lanes; ++i) {
+        /* ASX: the low lane subtracts Rm's high halfword, the high lane adds its low one. SAX the other way */
+        unsigned from = op == 1 || op == 2 ? lanes - 1 - i : i;
+        int subtract = op == 3 || op == 7 || (op == 1 && i == 0) || (op == 2 && i == 1);
+        SgD p = lane(g, x, i * bits, bits, !u), q = lane(g, y, from * bits, bits, !u);
+        SgD v = subtract ? sg_d_sub(g, p, q) : sg_d_add(g, p, q);
+        if (form == 1) {
+            SgB set = at_least(g, v, sgx_const(64, u && !subtract ? 1ull << bits : 0));
+            ge = sg_d_or(g, ge,
+                         sg_d_select(g, set, sgx_const(32, bits == 16 ? 3u << (2 * i) : 1u << i), sgx_const(32, 0)));
+        } else if (form == 2) {
+            SgB unused;
+            v = u ? clamp(g, v, 0, (1 << bits) - 1, &unused)
+                  : clamp(g, v, -(1 << (bits - 1)), (1 << (bits - 1)) - 1, &unused);
+        } else
+            v = sg_d_asr(g, v, 1);
+        r = sg_d_or(g, r, sg_d_lsl(g, sg_d_zext(g, sg_d_slice(g, v, bits - 1, 0), 32), i * bits));
+    }
+    if (form == 1) cpsr_bits(g, 0x000f0000u, sg_d_lsl(g, ge, 16));
+    sg_GPR_write(g, (w >> 12) & 15, r);
+}
+
+/* SSAT, USAT and their 16-bit forms, PKHBT and PKHTB, SEL, QADD and its kin, the halfword and dual multiplies,
+   USAD8 and USADA8, CRC32 and CRC32C */
+static void media(SgCtx* g, SnxA32Kind kind) {
+    SnxU32 w = g->word;
+    unsigned n = (w >> 16) & 15, d = (w >> 12) & 15, s = (w >> 8) & 15, op;
+    condition(g);
+    SgD x = reg(g, w & 15), r, v;
+    SgB saturated;
+    switch (kind) {
+        case SNX_A32_SATURATE: {
+            int u = !!(w & (1u << 22));
+            if ((w & 0x0fb00ff0) == 0x06a00f30) { /* SSAT16, USAT16: to 1..16 or 0..15 bits */
+                unsigned bits = ((w >> 16) & 15) + !u;
+                long long lo = u ? 0 : -(1ll << (bits - 1)), hi = u ? (1ll << bits) - 1 : (1ll << (bits - 1)) - 1;
+                SgB any = sg_bool(g, 0);
+                r = sgx_const(32, 0);
+                for (unsigned i = 0; i < 2; ++i) {
+                    v = clamp(g, lane(g, x, i * 16, 16, 1), lo, hi, &saturated);
+                    any = sg_b_or(g, any, saturated);
+                    r = sg_d_or(g, r, sg_d_lsl(g, sg_d_zext(g, sg_d_slice(g, v, 15, 0), 32), i * 16));
+                }
+                saturated = any;
+            } else { /* SSAT, USAT: Rm LSL or ASR (ASR #32 encoded as 0), to 1..32 or 0..31 bits */
+                unsigned bits = ((w >> 16) & 31) + !u;
+                long long lo = u ? 0 : -(1ll << (bits - 1)), hi = u ? (1ll << bits) - 1 : (1ll << (bits - 1)) - 1;
+                v = shift_imm(g, x, (w >> 5) & 2, (w >> 7) & 31);
+                r = sg_d_slice(g, clamp(g, sg_d_sext(g, v, 64), lo, hi, &saturated), 31, 0);
+            }
+            sticky_q(g, saturated);
+            sg_GPR_write(g, d, r);
+            return;
+        }
+        case SNX_A32_PACK: /* PKHBT: Rn's bottom, Rm LSL's top. PKHTB: Rn's top, Rm ASR's bottom */
+            v = shift_imm(g, x, w & 0x40 ? 2 : 0, (w >> 7) & 31);
+            r = w & 0x40 ? sg_d_or(g, sg_d_and(g, reg(g, n), sgx_const(32, 0xffff0000u)),
+                                   sg_d_and(g, v, sgx_const(32, 0xffff)))
+                         : sg_d_or(g, sg_d_and(g, reg(g, n), sgx_const(32, 0xffff)),
+                                   sg_d_and(g, v, sgx_const(32, 0xffff0000u)));
+            sg_GPR_write(g, d, r);
+            return;
+        case SNX_A32_SELECT: { /* each byte from Rn where its GE bit is set, else from Rm: a GE bit spread to a byte */
+            SgD c = sgx_a32_cpsr(g), mask = sg_d_sext(g, sg_d_slice(g, c, 19, 19), 8);
+            for (unsigned i = 3; i-- > 0;)
+                mask = sg_d_concat(g, mask, sg_d_sext(g, sg_d_slice(g, c, 16 + i, 16 + i), 8));
+            sg_GPR_write(g, d, sg_d_or(g, sg_d_and(g, reg(g, n), mask), sg_d_and(g, x, sg_d_not(g, mask))));
+            return;
+        }
+        case SNX_A32_QARITH: { /* Rm + or - Rn, Rn doubled with saturation first for QDADD and QDSUB */
+            SgD y = sg_d_sext(g, reg(g, n), 64);
+            SgB first = sg_bool(g, 0);
+            op = (w >> 21) & 3;
+            if (op & 2) y = clamp(g, sg_d_add(g, y, y), INT32_MIN, INT32_MAX, &first);
+            v = op & 1 ? sg_d_sub(g, sg_d_sext(g, x, 64), y) : sg_d_add(g, sg_d_sext(g, x, 64), y);
+            r = sg_d_slice(g, clamp(g, v, INT32_MIN, INT32_MAX, &saturated), 31, 0);
+            sticky_q(g, sg_b_or(g, first, saturated));
+            sg_GPR_write(g, d, r);
+            return;
+        }
+        case SNX_A32_HALF_MUL: { /* Rd (RdHi) n, Ra (RdLo) d, Rm s, Rn the low field: N picks Rn's half, M Rm's */
+            SgD m = lane(g, reg(g, s), w & 0x40 ? 16 : 0, 16, 1);
+            op = (w >> 21) & 3;
+            if (op == 1) { /* SMLAW<y>, SMULW<y>: the top 32 bits of the 48-bit product */
+                v = sg_d_slice(g, sg_d_asr(g, mul64(g, sg_d_sext(g, x, 64), m), 16), 31, 0);
+                if (w & 0x20) {
+                    sg_GPR_write(g, n, v);
+                    return;
+                }
+                r = narrow(g, sg_d_add(g, sg_d_sext(g, v, 64), sg_d_sext(g, reg(g, d), 64)), &saturated);
+                sticky_q(g, saturated);
+                sg_GPR_write(g, n, r);
+                return;
+            }
+            v = mul64(g, lane(g, x, w & 0x20 ? 16 : 0, 16, 1), m); /* at most 2^30 */
+            if (op == 0) {                                         /* SMLA<x><y>: Q on overflow */
+                r = narrow(g, sg_d_add(g, v, sg_d_sext(g, reg(g, d), 64)), &saturated);
+                sticky_q(g, saturated);
+                sg_GPR_write(g, n, r);
+            } else if (op == 2) /* SMLAL<x><y> */
+                set_rdhi_rdlo(g, n, d, sg_d_add(g, rdhi_rdlo(g, n, d), v));
+            else
+                sg_GPR_write(g, n, sg_d_slice(g, v, 31, 0));
+            return;
+        }
+        case SNX_A32_DUAL_MUL: { /* Rd (RdHi) n, Ra (RdLo) d, Rm s, Rn the low field */
+            SgD m = reg(g, s);
+            op = (w >> 5) & 7;
+            if (((w >> 20) & 7) == 5) { /* SMMLA, SMMUL, SMMLS: the top 32 bits of (Ra << 32) +/- Rn * Rm, R rounds */
+                SgD acc = d != 15 ? sg_d_lsl(g, sg_d_zext(g, reg(g, d), 64), 32) : sgx_const(64, 0);
+                v = mul64(g, sg_d_sext(g, x, 64), sg_d_sext(g, m, 64));
+                v = op >= 6 ? sg_d_sub(g, acc, v) : sg_d_add(g, acc, v);
+                if (w & 0x20) v = sg_d_add(g, v, sgx_const(64, 0x80000000u));
+                sg_GPR_write(g, n, sg_d_slice(g, v, 63, 32));
+                return;
+            }
+            if (w & 0x20) m = sg_d_ror(g, m, 16); /* X: exchange Rm's halves */
+            r = mul64(g, lane(g, x, 0, 16, 1), lane(g, m, 0, 16, 1));
+            v = mul64(g, lane(g, x, 16, 16, 1), lane(g, m, 16, 16, 1));
+            v = op & 2 ? sg_d_sub(g, r, v) : sg_d_add(g, r, v);
+            if (((w >> 20) & 7) == 4) { /* SMLALD, SMLSLD */
+                set_rdhi_rdlo(g, n, d, sg_d_add(g, rdhi_rdlo(g, n, d), v));
+                return;
+            }
+            if (d != 15) v = sg_d_add(g, v, sg_d_sext(g, reg(g, d), 64)); /* SMLAD, SMLSD; SMUAD, SMUSD without Ra */
+            r = narrow(g, v, &saturated);
+            sticky_q(g, saturated);
+            sg_GPR_write(g, n, r);
+            return;
+        }
+        case SNX_A32_ABS_DIFF: { /* USAD8, USADA8: Rd n, Ra d, Rm s, Rn the low field */
+            SgD m = reg(g, s);
+            r = d != 15 ? reg(g, d) : sgx_const(32, 0);
+            for (unsigned i = 0; i < 4; ++i) {
+                v = sg_d_sub(g, lane(g, x, i * 8, 8, 0), lane(g, m, i * 8, 8, 0));
+                v = sg_d_select(g, less(g, v, sgx_const(64, 0)), sg_d_sub(g, sgx_const(64, 0), v), v);
+                r = sg_d_add(g, r, sg_d_slice(g, v, 31, 0));
+            }
+            sg_GPR_write(g, n, r);
+            return;
+        }
+        default: { /* CRC32, CRC32C: the reflected CRC of Rm's low 1, 2 or 4 bytes onto Rn, without inversions */
+            unsigned bits = 8u << ((w >> 21) & 3);
+            SgD poly = sgx_const(32, w & 0x200 ? 0x82f63b78u : 0xedb88320u);
+            r = sg_d_xor(g, reg(g, n), bits == 32 ? x : sg_d_and(g, x, sgx_const(32, (1u << bits) - 1)));
+            for (unsigned i = 0; i < bits; ++i)
+                r = sg_d_xor(g, sg_d_lsr(g, r, 1),
+                             sg_d_and(g, poly, sg_d_sub(g, sgx_const(32, 0), sg_d_and(g, r, sgx_const(32, 1)))));
+            sg_GPR_write(g, d, r);
+            return;
+        }
+    }
+}
+/* SETEND: E, which a block reads only on entry, so the block ends after it and the next one's entry checks it */
+static int setend(SgCtx* g) {
+    condition(g);
+    cpsr_bits(g, SNX_ARM_E, sgx_const(32, g->word & SNX_ARM_E));
+    g->e_written = 1;
+    return 1;
+}
+
 /* ---- VFP: llvm_vector.inc's scalar part (vector_memory, vector_transfer, vector_fp), its hot paths fp_call's ---- */
 
 /* the D bank's byte offset off (S2n at Dn's, S2n+1 4 past it: the host's little-endian words) as a state field */
@@ -765,6 +976,16 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
             sgx_a32_machine(g, SGX_A32_FENCE, 0);
             return 0;
         case SNX_A32_HINT: return 0; /* hints may complete without waiting */
+        case SNX_A32_PARALLEL: parallel(g); return 0;
+        case SNX_A32_SATURATE:
+        case SNX_A32_PACK:
+        case SNX_A32_SELECT:
+        case SNX_A32_QARITH:
+        case SNX_A32_HALF_MUL:
+        case SNX_A32_DUAL_MUL:
+        case SNX_A32_ABS_DIFF:
+        case SNX_A32_CRC32: media(g, kind); return 0;
+        case SNX_A32_SETEND: return setend(g);
         case SNX_A32_VECTOR: vfp(g); return 0;
         case SNX_A32_COPROC: { /* the backend's (SnxArmRt.coproc): it reads or writes the registers, or stops here */
             SgD word = sgx_const(32, w);
