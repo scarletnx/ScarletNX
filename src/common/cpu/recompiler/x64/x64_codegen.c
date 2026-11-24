@@ -533,7 +533,7 @@ static int fp_ldst(Unit* u, SnxU32 word, SnxU64 pc) {
     unsigned rt = word & 31, rn = word >> 5 & 31;
     if ((word & 0x3F000000u) == 0x1C000000u) { /* LDR (literal) */
         unsigned opc = word >> 30;
-        long long imm = (long long)((word >> 5) & 0x7FFFF) << 45 >> 43; /* imm19 * 4 */
+        long long imm = snx_sext64((word >> 5) & 0x7FFFF, 19) * 4; /* imm19 * 4 */
         if (opc == 3) return 0;
         v_load(g, rt, sgx_const(64, pc + (SnxU64)imm), 4 << opc);
         return 1;
