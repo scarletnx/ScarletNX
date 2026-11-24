@@ -431,7 +431,8 @@ void vk_display_fifo(int fifo) { atomic_store_explicit(&g_dc.fifo, fifo, memory_
 
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     int r = 1;
-    u64 t_wait = plat_ns(); /* the game's pace wait; the blocking wait gets a plot, not a zone */
+    u64 t_wait =
+        snx_tracy_attached() ? plat_ns() : 0; /* the game's pace wait; the blocking wait gets a plot, not a zone */
     if (!atomic_load_explicit(&g_dc.started, memory_order_acquire) ||
         !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed)) {
         SNX_PLOT("vk pres display wait ms", (double)(plat_ns() - t_wait) / 1e6);

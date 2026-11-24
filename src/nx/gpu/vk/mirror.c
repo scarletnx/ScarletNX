@@ -1133,7 +1133,7 @@ static void harvest_left(const u32* left, u32 n) {
        reason and a plot carries the wait's cost; no zone around a blocking wait. */
     SNX_MSG("vk pres: mirror harvest past its room, a pass of its own",
             sizeof("vk pres: mirror harvest past its room, a pass of its own") - 1);
-    u64 t_left = plat_ns();
+    u64 t_left = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     MirRange* r = malloc((size_t)n * sizeof *r);
     if (!r) fatal("Out of memory landing the GPU mirror's writes");
     for (u32 i = 0; i < n; i++) r[i] = (MirRange){left[i], (u64)left[i] + 1};
@@ -1238,7 +1238,7 @@ void vk_mirror_done(u64 done) {
     static int busy;
     if (busy) return;
     busy = 1;
-    u64 t_done = plat_ns(), landed = 0; /* CPU time and pages of taking the harvests in */
+    u64 t_done = snx_tracy_attached() ? plat_ns() : 0, landed = 0; /* CPU time and pages of taking the harvests in */
     for (;;) {
         u32 b = 0;
         while (b < g_mir_nbatch && g_mir_batch[b].submit > done) b++;
@@ -1291,7 +1291,7 @@ static int mir_pending(u64 gva, u64 len) {
 }
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
-    u64 t_need = plat_ns();
+    u64 t_need = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     vk_lock();
     /* the submits the GPU has already finished are landed first, which hands over their pages with no wait at all: a
        finish submits what is being recorded and waits for every submission the game has open, and this game's pages

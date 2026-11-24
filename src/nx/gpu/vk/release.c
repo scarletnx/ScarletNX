@@ -750,7 +750,7 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
                                 (unsigned long long)sgate);
             if (nmsg > 0) SNX_MSG(stall_msg, (size_t)(nmsg < (int)sizeof stall_msg ? nmsg : (int)sizeof stall_msg - 1));
         }
-        u64 t_stall = plat_ns();
+        u64 t_stall = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
         pm_lock(&g_rlock);
         hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
         g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed);

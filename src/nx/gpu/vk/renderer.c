@@ -695,16 +695,16 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     /* the present's own finish time: a finish blocks, so its cost goes in a plot, not a zone. A message names the
        rare decision that asked for it (which GPU wait held this present back and why). The zone below starts after
        the two finishes that can open this function, so neither is charged to it. */
-    u64 finish_ns = 0;
+    u64 finish_ns = 0; /* the finish plot's alone: its clock reads only with a client */
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, kind = (src || void_frame) && hdr ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         SNX_MSG("vk pres: finish for a lost or renewed window", sizeof("vk pres: finish for a lost or renewed window") - 1);
-        u64 t_fin = plat_ns();
+        u64 t_fin = snx_tracy_attached() ? plat_ns() : 0;
         vk_finish();
-        finish_ns += plat_ns() - t_fin;
+        if (t_fin) finish_ns += plat_ns() - t_fin;
         g_lost = !vk_surface_recreate();
         g_generation = backend_window_generation();
     }
@@ -717,9 +717,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
          atomic_load_explicit((_Atomic int*)&g_settings.vsync, memory_order_relaxed) != g_vk.sc_vsync)) {
         SNX_MSG("vk pres: finish for a new swapchain (size, kind or vsync)",
                 sizeof("vk pres: finish for a new swapchain (size, kind or vsync)") - 1);
-        u64 t_fin = plat_ns();
+        u64 t_fin = snx_tracy_attached() ? plat_ns() : 0;
         vk_finish();
-        finish_ns += plat_ns() - t_fin;
+        if (t_fin) finish_ns += plat_ns() - t_fin;
         g_sc_kind = kind;
         vk_swapchain_create(kind);
         tried = 1;
@@ -1040,7 +1040,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         }
         /* What resource maintenance cost this frame. A trim can land results and wait for the GPU, so this is a plot
            with a start time, not a zone. The existing "vk resource" plots give the categories; this is their sum. */
-        u64 t_maint = plat_ns();
+        u64 t_maint = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();
@@ -1432,9 +1432,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         SNX_MSG("vk pres: finish to recreate after the present", sizeof("vk pres: finish to recreate after the present") - 1);
         SNX_ZONE_END(z_show); /* vk_finish blocks: its cost is in the plot, not in this zone */
-        u64 t_fin = plat_ns();
+        u64 t_fin = snx_tracy_attached() ? plat_ns() : 0;
         vk_finish();
-        finish_ns += plat_ns() - t_fin;
+        if (t_fin) finish_ns += plat_ns() - t_fin;
         vk_swapchain_create(kind);
     }
     if (g_vk.sc_lost) { /* a create found the surface lost: the next frame makes it anew */
