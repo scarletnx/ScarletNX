@@ -2892,6 +2892,13 @@ if(SNX_TRACY)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
 endif()
 
+# the profiler's macros without its client (runtime/platform/tracy.h): none evaluates an argument, so a clock read or a
+# lookup written into one costs nothing in a build without Tracy; and nvn_queue.h's context setter likewise
+add_executable(snx-test-tracy-off tracy_off.c)
+snx_test_target(snx-test-tracy-off c23)
+target_include_directories(snx-test-tracy-off PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME tracy_off COMMAND snx-test-tracy-off)
+
 # a collection's programs (common.h's snx_program_index, game_ini.h's hand-over, mods.h's own mods of a program)
 add_executable(snx-test-collection-programs collection_programs.c)
 snx_test_target(snx-test-collection-programs c23)

@@ -5,6 +5,7 @@
 #ifndef SNX_NVN_QUEUE_H
 #define SNX_NVN_QUEUE_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* the file's state, g_nvn.queue (gpu/nvn/nvn_state.h): the submissions made; the window's frame period on the pacer's
    clock (atomic), which bounds a wait for the display; whether the display is stuck (atomic: it didn't show a present
@@ -30,6 +31,8 @@ u64 nvn_now(void);
    call can change it. nvn_replay.c uses both functions for its replay zone. */
 #define NVN_QUEUE_CONTEXT_SIZE 128
 void nvn_queue_context_set(const char* fmt, ...);
+/* the arguments too are read only with a client, so a caller's lookup for the text costs nothing without one */
+#define nvn_queue_context_set(...) (snx_tracy_attached() ? nvn_queue_context_set(__VA_ARGS__) : (void)0)
 const char* nvn_queue_context(void);
 
 #endif

@@ -21,7 +21,7 @@
 
 /* a socket command's result is a small count or a negative errno. Casting a negative one to u64 would show a huge
    zone value, so the value carries the errno instead */
-static u64 net_result_value(int64_t r) { return (u64)(r < 0 ? -r : r); }
+[[maybe_unused]] static u64 net_result_value(int64_t r) { return (u64)(r < 0 ? -r : r); } /* a zone's alone */
 
 /* A guest thread held in a socket wait long enough to matter: one message names the command and the byte count. */
 static void net_blocked(const char* what, u64 ns, int64_t bytes) {
