@@ -3849,6 +3849,7 @@ static void gba_remake(App* app, const char* got) {
     assert(strstr(argv, "scarletnx-agb") && strstr(argv, "scarletnx-agb") < strchr(argv, '\n'));
     free(argv);
     pump_until(app, &app->covering);
+    assert(!app->cover_thread); /* waited for, not left to end on its own */
 }
 /* the row of the made game named "made", as Games says it */
 static void made_kind(App* app, char* kind, size_t size) {
@@ -3973,6 +3974,7 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
         app->queue.job[i].console = GUI_GBA;
         cover_made(app, i);
         pump_until(app, &app->covering);
+        assert(!app->cover_thread); /* waited for, not left to end on its own */
         queue_drop(app, i);
         bytes = (char*)snx_read_file(icon, &size);
         assert(bytes && size == g_covers_net.png_size && !memcmp(bytes, g_covers_net.png, size));
@@ -4019,6 +4021,7 @@ static void download_driver(App* app, const char* temporary) {
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_FETCH);
     pump_until(app, &app->fetching);
+    assert(!app->fetch_thread);
     assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 4);
     assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
            strstr(app->fetch_error[2], "API rate limit exceeded"));
@@ -4064,6 +4067,7 @@ static void download_driver(App* app, const char* temporary) {
     render(app);
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(!strcmp(
         app->editor.note + strlen(app->editor.note) -
             strlen("Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"),
@@ -4075,6 +4079,7 @@ static void download_driver(App* app, const char* temporary) {
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(strstr(app->editor.note, "Not downloaded: GET https://example.invalid/gone.zip: HTTP 404") &&
            !strstr(app->editor.note, "aaaa"));
     /* a package's: downloaded and added, GPU Drivers showing it picked */
@@ -4083,6 +4088,7 @@ static void download_driver(App* app, const char* temporary) {
            !strstr(pick_label(app, 0), "proprietary"));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "turnip") &&
            !strcmp(app->gpu_driver, "turnip") && !strcmp(app->drivers_form.value[1], "(*)"));
     assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. GPU driver for every "
@@ -4096,12 +4102,14 @@ static void download_driver(App* app, const char* temporary) {
     g_fake_net.lists = 0;
     key(app, SDLK_RETURN); /* Download Driver */
     pump_until(app, &app->fetching);
+    assert(!app->fetch_thread);
     assert(g_fake_net.lists == 1 && app->fetch_groups == 1 && !strcmp(app->fetch_label[0], "v1.9.0") &&
            !strcmp(app->fetch_form.value[0], "Latest, Recommended"));
     key(app, SDLK_RETURN);
     assert(app->picks.count == 1 && strstr(pick_label(app, 0), "radv-xclipse-27.0.0-devel-cc87fdf.zip, "));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "radv-xclipse-27.0.0-devel-cc87fdf"));
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true);

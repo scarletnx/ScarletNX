@@ -787,6 +787,8 @@ typedef struct App {
        release each is), a release's downloads in the picks box, the download going and what it said last */
     GuiHttpsGet https_get; /* NULL in a build without OpenSSL */
     Uint32 fetch_event;    /* the threads' answers (fetch_answer) */
+    /* the lists' thread and the download's, waited for at their last answer */
+    SDL_Thread *fetch_thread, *download_thread;
     bool fetching, downloading;
     GuiDriverReleases fetch_lists[GUI_DRIVER_REPOS];
     int fetch_state[GUI_DRIVER_REPOS];
@@ -805,6 +807,7 @@ typedef struct App {
     /* Settings > GBA > Covers: the box being fetched (covering), the games waiting for theirs, those whose box did not
        come, and whether the No-Intro list was fetched in this session */
     Uint32 cover_event;
+    SDL_Thread* cover_thread; /* waited for at its answer */
     bool covering, cover_list_fetched;
     GuiCoverJob* cover_wait[GUI_COVERS_WAIT];
     int cover_waiting;
@@ -10944,19 +10947,23 @@ static int SDLCALL download_run(void* data) {
     free(job);
     return 0;
 }
-/* a thread for run with job, detached: 0 when it could not start, said in the note */
-static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
-    SDL_Thread* t;
+/* a thread that has pushed its last answer: it ends at once, and the handle goes. Not SDL_DetachThread, which reads the
+   thread's handle after it marks the thread detached: a thread that ends in between frees it first (SDL 3.4.18) */
+static void thread_ended(SDL_Thread** thread) {
+    if (*thread) SDL_WaitThread(*thread, NULL);
+    *thread = NULL;
+}
+/* a thread for run with job into *thread: 0 when it could not start, said in the note */
+static int fetch_start(App* app, SDL_Thread** thread, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
     if (!app->fetch_event) app->fetch_event = SDL_RegisterEvents(1);
     job->event = app->fetch_event;
     job->get = app->https_get;
-    t = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
-    if (!t) {
+    *thread = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
+    if (!*thread) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Download Driver: no thread: %s"), SDL_GetError());
         free(job);
         return 0;
     }
-    SDL_DetachThread(t);
     return 1;
 }
 /* row r of the page, a label, a value and the help the bar shows, of repository repo and release (or GUI_FETCH_*) */
@@ -11111,7 +11118,7 @@ static void open_fetch(App* app) {
         }
         job = (GuiFetchJob*)calloc(1, sizeof *job);
         if (job) job->gpu = fetch_gpu(app);
-        app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
+        app->fetching = job && fetch_start(app, &app->fetch_thread, fetch_run, "driver lists", job);
     }
     fetch_show(app, 0, app->downloading ? app->download_said : "");
 }
@@ -11157,7 +11164,7 @@ static void fetch_download(App* app, int i) {
     snprintf(app->download_name, sizeof app->download_name, "%s", a->name);
     snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s..."), a->name);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", app->download_said);
-    app->downloading = fetch_start(app, download_run, "driver download", job);
+    app->downloading = fetch_start(app, &app->download_thread, download_run, "driver download", job);
 }
 /* Select on a row: a release's box of its downloads, More opening its repository's releases and Less closing them (the
    focus on its More), a repository that failed fetched again */
@@ -11202,12 +11209,16 @@ static void fetch_answer(App* app, int code, void* data) {
             app->fetch_state[i] = GUI_FETCH_FAILED;
             gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
         }
-        if (a->last) app->fetching = false;
+        if (a->last) {
+            app->fetching = false;
+            thread_ended(&app->fetch_thread);
+        }
         free(a->r.body);
         if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
     } else {
         GuiFetchAnswer* a = (GuiFetchAnswer*)data;
         app->downloading = false;
+        thread_ended(&app->download_thread);
         if (a->failed) {
             snprintf(app->download_said, sizeof app->download_said, snx_tr("Not downloaded: %s"), a->why);
             gui_log("Download Driver: %s", a->why);
@@ -11320,22 +11331,20 @@ said:
 /* the next game waiting for its box, on a thread, while none is being fetched */
 static void cover_next(App* app) {
     GuiCoverJob* job;
-    SDL_Thread* t;
     if (app->covering || !app->cover_waiting) return;
     job = app->cover_wait[0];
     memmove(app->cover_wait, app->cover_wait + 1, (size_t)--app->cover_waiting * sizeof *app->cover_wait);
     if (!app->cover_event) app->cover_event = SDL_RegisterEvents(1);
     job->event = app->cover_event;
     job->list_fetched = app->cover_list_fetched;
-    t = app->cover_event ? SDL_CreateThread(cover_run, "box art", job) : NULL;
-    if (!t) {
+    app->cover_thread = app->cover_event ? SDL_CreateThread(cover_run, "box art", job) : NULL;
+    if (!app->cover_thread) {
         snprintf(app->message, sizeof app->message, snx_tr("%s: no box art: no thread: %s"), snx_path_leaf(job->folder),
                  SDL_GetError());
         free(job);
         cover_next(app);
         return;
     }
-    SDL_DetachThread(t);
     app->covering = true;
 }
 /* the failure kept for the game in folder: its index, cover_failed_count for none */
@@ -11371,6 +11380,7 @@ static const char* cover_why(const App* app, const char* path) {
 /* the thread's answer: its game's icon drawn again from its new file, or why none came kept; then the next */
 static void cover_answer(App* app, GuiCoverJob* job) {
     app->covering = false;
+    thread_ended(&app->cover_thread);
     app->cover_list_fetched = app->cover_list_fetched || job->list_fetched;
     if (job->failed)
         cover_said(app, job->folder, job->why);

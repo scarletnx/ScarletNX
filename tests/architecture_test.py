@@ -91,6 +91,33 @@ class ArchitectureTests(unittest.TestCase):
         both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
         self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
 
+    def detach_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_detached_threads(root)
+
+    def test_a_detached_thread_is_rejected(self):
+        errors = self.detach_errors(
+            {
+                'src/gui/a.c': 'void f(SDL_Thread* t) {\n    SDL_DetachThread(t);\n}\n',
+                'src/gui/b.cpp': 'void g() { SDL_DetachThread (0); }\n',
+                'src/gui/e.m': 'void i(void) { SDL_DetachThread(0); }\n',
+            }
+        )
+        self.assertEqual(len(errors), 3)
+        self.assertIn('src/gui/a.c:2: SDL_DetachThread reads a thread that may have ended and been freed', errors[0])
+        self.assertIn('src/gui/b.cpp:1: SDL_DetachThread', errors[1])
+
+    def test_a_joined_thread_and_a_comment_pass(self):
+        files = {
+            'src/gui/c.c': '/* not SDL_DetachThread(t) */\nvoid h(SDL_Thread* t) { SDL_WaitThread(t, 0); }\n',
+            'src/gui/d.c': 'const char* s = "SDL_DetachThread(t)";\nint My_SDL_DetachThread_count;\n',
+        }
+        self.assertEqual(self.detach_errors(files), [])
+
     def thread_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
