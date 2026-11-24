@@ -67,12 +67,14 @@ static void trace_msg(const char* fmt, ...) {
     va_end(ap);
     if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
 }
+/* its arguments read only with a client too: a syncpoint's value or the caller for the text costs nothing without one */
+#define trace_msg(...) (snx_tracy_attached() ? trace_msg(__VA_ARGS__) : (void)0)
 
 /* The last NVN queue operation of this thread, as text. The replay zone and the present and wait messages add it.
    Build the text only while a profiler client is attached. vsnprintf caps it below NVN_QUEUE_CONTEXT_SIZE bytes. */
 static _Thread_local char t_queue_context[NVN_QUEUE_CONTEXT_SIZE];
 
-void nvn_queue_context_set(const char* fmt, ...) {
+void(nvn_queue_context_set)(const char* fmt, ...) {
     if (!snx_tracy_attached()) return;
     va_list ap;
     va_start(ap, fmt);

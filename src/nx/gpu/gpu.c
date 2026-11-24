@@ -719,9 +719,12 @@ int gpu_class_known(u32 cls) { return engine_of(cls) != ENG_NONE; }
 enum { ENG_N = ENG_DMA + 1 };
 static const char* const g_eng_name[ENG_N] = {"none", "3d", "compute", "i2m", "2d", "dma"};
 /* index 0 is ENG_NONE and is never plotted, so the names line up with the engine ids ENG_3D to ENG_DMA */
-static const char* const g_eng_plot[ENG_N] = {NULL, "gpu engine 3d methods", "gpu engine compute methods",
-                                              "gpu engine i2m methods", "gpu engine 2d methods",
-                                              "gpu engine dma methods"};
+[[maybe_unused]] static const char* const g_eng_plot[ENG_N] = {NULL,
+                                                               "gpu engine 3d methods",
+                                                               "gpu engine compute methods",
+                                                               "gpu engine i2m methods",
+                                                               "gpu engine 2d methods",
+                                                               "gpu engine dma methods"};
 /* the class each engine runs, for the job's zone text: the low byte of the class names the engine (engine_of) */
 static const u32 g_eng_class[ENG_N] = {0, CLASS_MAXWELL_B, CLASS_KEPLER_COMPUTE_B,
                                        CLASS_KEPLER_INLINE_TO_MEMORY_B, CLASS_FERMI_TWOD_A,
@@ -998,7 +1001,7 @@ static PMutex g_qlk = PMUTEX_INIT;
 /* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
    in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
    until the lock is announced (or a client starts), so a mark is a no-op then. */
-static SnxTracyLock* gpu_queue_context(void) {
+[[maybe_unused]] static SnxTracyLock* gpu_queue_context(void) {
     void* named = atomic_load_explicit(&g_qlk.tracy, memory_order_acquire);
     return named ? *(SnxTracyLock**)named : NULL;
 }

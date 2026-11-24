@@ -18,7 +18,7 @@
 /* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
    in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
    until the lock is announced (or a client starts), so a mark is a no-op then. */
-static SnxTracyLock* audren_lock_context(void) {
+[[maybe_unused]] static SnxTracyLock* audren_lock_context(void) {
     void* named = atomic_load_explicit(&g_host.audren.lk.tracy, memory_order_acquire);
     return named ? *(SnxTracyLock**)named : NULL;
 }

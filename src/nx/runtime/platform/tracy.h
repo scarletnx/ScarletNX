@@ -269,46 +269,45 @@ void snx_tracy_shutdown(void);
 #else
 /* Defined by tracy.c in both builds; without a client no parameter callback can change it. */
 extern _Atomic int snx_tracy_frame_images_live;
-/* The one stub form consumes the arguments that would otherwise warn as unused: a value a caller computed for a
-   color or depth is still a use. Names, text and context handles are dropped, because no emission here reads them. */
+/* The stubs use their arguments through sizeof, which never evaluates them: a value a caller computed for one is still
+   a use, so nothing warns, and no call in an argument (a clock read for a plot) runs without the client. */
 #define SNX_ZONE_IMPL(ctx, name, color, cs, depth)                                                                     \
-    [[maybe_unused]] int ctx = ((void)(name), (void)(color), (void)(cs), (void)(depth), 0)
-#define SNX_ZONE(ctx, name) SNX_ZONE_IMPL(ctx, name, 0, 0, 0)
-#define SNX_ZONE_C(ctx, name, color) SNX_ZONE_IMPL(ctx, name, (color), 0, 0)
-#define SNX_ZONE_CS(ctx, name, depth) SNX_ZONE_IMPL(ctx, name, 0, 1, (depth))
-#define SNX_ZONE_TRANSIENT(ctx, name)       [[maybe_unused]] int ctx = ((void)(name), 0)
-#define SNX_ZONE_TRANSIENT_CS(ctx, name, depth) [[maybe_unused]] int ctx = ((void)(name), (void)(depth), 0)
-#define SNX_ZONE_COLOR(zctx, color)        ((void)(zctx), (void)(color))
-/* The stubs consume the arguments that would otherwise warn as unused: a value a caller computed for one is still a
-   use, so a build without the client does not warn about it. Names, text, colors, depths and context handles are
-   dropped, because no emission here reads them. */
-#define SNX_ZONE_TEXT(ctx, ...)  ((void)(ctx), (void)sizeof(#__VA_ARGS__))
-#define SNX_ZONE_NAME(zctx, text, size) ((void)(zctx), (void)(text), (void)(size))
-#define SNX_ZONE_NAME_F(zctx, fmt, ...) ((void)(zctx), (void)(fmt))
-#define SNX_ZONE_VALUE(ctx, value) ((void)(value))
-#define SNX_MSG(text, size)      ((void)(text), (void)(size))
-#define SNX_LOG(text, size, severity, color, depth)                                                                  \
-    ((void)(text), (void)(size), (void)(severity), (void)(color), (void)(depth))
-#define SNX_MSG_CS(text, size, depth) ((void)(text), (void)(size), (void)(depth))
-#define SNX_ZONE_T(ctx, name, ...)         [[maybe_unused]] int ctx = ((void)(name), (void)sizeof(#__VA_ARGS__), 0)
-#define SNX_ZONE_V(ctx, name, value)       [[maybe_unused]] int ctx = ((void)(value), 0)
-#define SNX_ZONE_TV(ctx, name, value, ...) [[maybe_unused]] int ctx = ((void)(name), (void)(value), (void)sizeof(#__VA_ARGS__), 0)
+    [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(color), (void)sizeof(cs), (void)sizeof(depth), 0)
+#define SNX_ZONE(ctx, name)                     [[maybe_unused]] int ctx = ((void)sizeof(name), 0)
+#define SNX_ZONE_C(ctx, name, color)            [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(color), 0)
+#define SNX_ZONE_CS(ctx, name, depth)           [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(depth), 0)
+#define SNX_ZONE_TRANSIENT(ctx, name)           [[maybe_unused]] int ctx = ((void)sizeof(name), 0)
+#define SNX_ZONE_TRANSIENT_CS(ctx, name, depth) [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(depth), 0)
+#define SNX_ZONE_COLOR(zctx, color)             ((void)sizeof(zctx), (void)sizeof(color))
+#define SNX_ZONE_TEXT(ctx, ...)                 ((void)sizeof(ctx), (void)sizeof(#__VA_ARGS__))
+#define SNX_ZONE_NAME(zctx, text, size)         ((void)sizeof(zctx), (void)sizeof(text), (void)sizeof(size))
+#define SNX_ZONE_NAME_F(zctx, fmt, ...)         ((void)sizeof(zctx), (void)sizeof(fmt))
+#define SNX_ZONE_VALUE(ctx, value)              ((void)sizeof(value))
+#define SNX_MSG(text, size)                     ((void)sizeof(text), (void)sizeof(size))
+#define SNX_LOG(text, size, severity, color, depth)                                                                    \
+    ((void)sizeof(text), (void)sizeof(size), (void)sizeof(severity), (void)sizeof(color), (void)sizeof(depth))
+#define SNX_MSG_CS(text, size, depth) ((void)sizeof(text), (void)sizeof(size), (void)sizeof(depth))
+#define SNX_ZONE_T(ctx, name, ...)    [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(#__VA_ARGS__), 0)
+#define SNX_ZONE_V(ctx, name, value)  [[maybe_unused]] int ctx = ((void)sizeof(value), 0)
+#define SNX_ZONE_TV(ctx, name, value, ...)                                                                             \
+    [[maybe_unused]] int ctx = ((void)sizeof(name), (void)sizeof(value), (void)sizeof(#__VA_ARGS__), 0)
 #define SNX_ZONE_END(ctx)        ((void)0)
-#define SNX_MEM_ALLOC(ptr, size, pool) ((void)(ptr), (void)(size), (void)(pool))
-#define SNX_MEM_FREE(ptr, pool) ((void)(ptr), (void)(pool))
-#define SNX_MEM_ALLOC_D(ptr, size, pool) ((void)(ptr), (void)(size), (void)(pool))
-#define SNX_MEM_FREE_D(ptr, pool) ((void)(ptr), (void)(pool))
-#define SNX_MEM_DISCARD(name)   ((void)(name))
+#define SNX_MEM_ALLOC(ptr, size, pool)   ((void)sizeof(ptr), (void)sizeof(size), (void)sizeof(pool))
+#define SNX_MEM_FREE(ptr, pool)          ((void)sizeof(ptr), (void)sizeof(pool))
+#define SNX_MEM_ALLOC_D(ptr, size, pool) ((void)sizeof(ptr), (void)sizeof(size), (void)sizeof(pool))
+#define SNX_MEM_FREE_D(ptr, pool)        ((void)sizeof(ptr), (void)sizeof(pool))
+#define SNX_MEM_DISCARD(name)            ((void)sizeof(name))
 #define SNX_FRAME_MARK()        ((void)0)
-#define SNX_FRAME_MARK_NAMED(name) ((void)(name))
-#define SNX_FRAME_SCOPED(ctx, name)        [[maybe_unused]] int ctx = ((void)(name), 0)
+#define SNX_FRAME_MARK_NAMED(name)       ((void)sizeof(name))
+#define SNX_FRAME_SCOPED(ctx, name)      [[maybe_unused]] int ctx = ((void)sizeof(name), 0)
 #define SNX_SECTION_SCOPED_C(ctx, name, category)                                                                      \
-    [[maybe_unused]] SnxTracySection ctx = ((void)(name), (void)(category), (SnxTracySection){0})
-#define SNX_SECTION_SCOPED(ctx, name) SNX_SECTION_SCOPED_C(ctx, name, 0)
-#define SNX_LOCK_MARK(lockctx) ((void)(lockctx))
-#define SNX_PLOT(name, value)   ((void)(name), (void)(value))
-#define SNX_PLOT_CFG(name, value, type, step, fill, color)                                                            \
-    ((void)(name), (void)(value), (void)(type), (void)(step), (void)(fill), (void)(color))
+    [[maybe_unused]] SnxTracySection ctx = ((void)sizeof(name), (void)sizeof(category), (SnxTracySection){0})
+#define SNX_SECTION_SCOPED(ctx, name) [[maybe_unused]] SnxTracySection ctx = ((void)sizeof(name), (SnxTracySection){0})
+#define SNX_LOCK_MARK(lockctx)        ((void)sizeof(lockctx))
+#define SNX_PLOT(name, value)         ((void)sizeof(name), (void)sizeof(value))
+#define SNX_PLOT_CFG(name, value, type, step, fill, color)                                                             \
+    ((void)sizeof(name), (void)sizeof(value), (void)sizeof(type), (void)sizeof(step), (void)sizeof(fill),              \
+     (void)sizeof(color))
 #include "common/utilities/common.h"
 /* the thread's name for the system: the "threads:" line of the log (main.c), a debugger and a crash report name the
    threads by it */
