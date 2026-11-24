@@ -751,7 +751,8 @@ static u32 extension_needs(const SnxVkExtensions* e, int core13, VkExtensionNeed
     return needs;
 }
 
-/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
+/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others: after
+   has_cs_warp32, which may add compute */
 static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderStageFlags stages) {
     static const struct {
         VkShaderStageFlags bit;
@@ -770,7 +771,10 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
     }
     LOG("vulkan: subgroups of %u lanes, operations %#x, stages %#x: VOTE and SHFL use them in %s programs%s\n", size,
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
-        g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
+        g_vk_subgroup_stages || !stages ? (size < 32 && (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT)
+                                               ? ", in subgroups of 32 that their pipelines ask for"
+                                               : "")
+                                        : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
         LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
             "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
@@ -854,14 +858,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                               .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
-    g_vk_subgroup_stages =
-        subgroup.subgroupSize >= 32 &&
-                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                                                 VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)) ==
-                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                     VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
-            ? subgroup.supportedStages
-            : 0;
+    const VkSubgroupFeatureFlags warp_operations =
+        VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+    const int warp_operates = (subgroup.supportedOperations & warp_operations) == warp_operations;
+    g_vk_subgroup_stages = subgroup.subgroupSize >= 32 && warp_operates ? subgroup.supportedStages : 0;
     /* a driver that lists the stage and gives wrong ballot and shuffle results there (Turnip's geometry stage, as
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
@@ -872,7 +872,6 @@ static bool choose_device(SnxVkChoice* c, void* user) {
        quadOperationsInAllStages, is about the other stages) */
     g_spirv_translate.quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                                      (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
-    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
        pipeline that lists it): pipeline.c puts the stride in the pipeline then */
@@ -1544,6 +1543,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                              sizes.maxSubgroupSize >= 32 &&
                              (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
+    /* a device whose own subgroups are narrower and that lets a compute pipeline ask for 32 serves a compute program's
+       VOTE and SHFL so: compute.c asks, for a program that reads other lanes */
+    if (warp_operates && g_vk.has_cs_warp32 && (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        g_vk_subgroup_stages |= VK_SHADER_STAGE_COMPUTE_BIT;
+        g_spirv_translate.quad_compute = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0;
+    }
+    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     /* after has_cs_warp32: the compute-task path's task program needs it (mesh_choose) */
     mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
