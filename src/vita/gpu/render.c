@@ -367,9 +367,11 @@ static bool mirror_range(struct VitaRender* r, uint32_t address, uint32_t size, 
         vkFreeMemory(v->device, m.memory, NULL);
         return false;
     }
+    /* whole: a page protected before, and not written since the watch began, looks unchanged to a new copy too */
     m.mirror = map;
+    m.since = vita_watch_protect(address, size);
+    memcpy(m.mirror, r->mem + address, size);
     *out = m;
-    mirror_sync(r, out);
     return true;
 }
 static bool import_range(struct VitaRender* r, VitaProcess* p, uint32_t address, uint32_t size, Import* out) {

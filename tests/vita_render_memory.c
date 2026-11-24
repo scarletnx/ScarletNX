@@ -266,6 +266,36 @@ static void check_many(VitaProcess* p) {
     CHECK(!lost, "%u bytes the CPU wrote between the GPU's writes are lost", (unsigned)lost);
     CHECK(!wrong(p, c + 0x100, 0x200, 1), "the write into another block is not in guest memory");
 }
+/* memory that was there before its writes were watched (the module's segments), mapped a second time, and once more
+   while a part of it is mapped. Another block is mapped between, so the memory a copy gets is not its old one */
+static void check_again(VitaProcess* p) {
+    vita_watch_free();
+    uint32_t a = vita_alloc(p, &p->user, BLOCK, BLOCK);
+    fill(p, a, 0x8000, 1);
+    CHECK(vita_watch_init(p), "the watch is refused");
+    uint32_t b = block_make(p, BLOCK, true), between = block_make(p, BLOCK, false);
+    fill(p, between, BLOCK, 7);
+    for (unsigned n = 0; n < 3; ++n) {
+        vita_render_map(p, between, BLOCK);
+        CHECK(copy(p, between, between + 0x10000, 0x1000), "the transfer between is refused");
+        finish(p);
+        vita_render_unmap(p, between);
+        vita_render_map(p, a, BLOCK);
+        CHECK(copy(p, a, b + n * 0x8000, 0x8000), "transfer %u is refused", n);
+        finish(p);
+        CHECK(!wrong(p, b + n * 0x8000, 0x8000, 1), "mapping %u: %u bytes the GPU reads are wrong", n,
+              (unsigned)wrong(p, b + n * 0x8000, 0x8000, 1));
+        vita_render_unmap(p, a);
+    }
+    vita_render_map(p, between, BLOCK);
+    vita_render_unmap(p, between);
+    vita_render_map(p, a, 0x4000);
+    vita_render_map(p, a, BLOCK);
+    CHECK(copy(p, a + 0x2000, b + 0x18000, 0x4000), "the transfer across the mappings is refused");
+    finish(p);
+    CHECK(!wrong_from(p, b + 0x18000, 0x4000, 1, 0x2000), "a second mapping: %u bytes the GPU reads are wrong",
+          (unsigned)wrong_from(p, b + 0x18000, 0x4000, 1, 0x2000));
+}
 /* a scene on a color surface of width x height, its rows stride pixels, nothing drawn: loaded and stored */
 static uint64_t scene(VitaProcess* p, uint32_t at, uint32_t width, uint32_t height, uint32_t stride, uint32_t type) {
     GxmContext* c = &p->gxm->context;
@@ -356,6 +386,7 @@ static const struct {
     {"beside_quiet", check_beside_quiet, false},
     {"gaps", check_gaps, false},
     {"many", check_many, false},
+    {"again", check_again, false},
     {"surface", check_surface, false},
     {"depth", check_depth, false},
     {"picture", check_picture, false},
