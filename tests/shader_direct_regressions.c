@@ -2727,15 +2727,11 @@ static void issue126_shader_modes(void) {
               info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
           "a merged split handle retains both descriptor sources");
     free(code);
-    /* A predicated LOP in the sample's own block leaves a split handle on one path and another split handle on the
-       other. Both are bound, and the pair of words selects the sample per path. */
     const u64 pair_or_alt = (pair_or & ~((0x1full << 34) | (0xfull << 16))) | (3ull << 34) | (1ull << 16);
     const u64 predicated_choice[] = {0x4c98078800070006ull, pair_or, pair_or_alt, tex_b};
     code = translate(predicated_choice, 4, ST_FS, &info, &words, 1);
-    check_translated(code, &info, "a predicated split handle in one block samples per path");
-    check(code && info.ntex == 2 && info.tex[0].bl2 && info.tex[1].bl2 && info.tex[0].bl2_cbuf == 2 &&
-              info.tex[1].bl2_cbuf == 3 && info.tex[0].bl2_off == 0x100 && info.tex[1].bl2_off == 0x100,
-          "both predicated split handles bind their sampler");
+    /* c[2][0] | c[2][0x400], and on P1's path | c[3][0x400] too: three words, and a slot holds two */
+    check_refused(code, &info, "untracked texture handle", "a handle of three words is refused");
     free(code);
     u64 disagree[7];
     memcpy(disagree, joined, sizeof disagree);
@@ -6345,6 +6341,42 @@ static void tex_b_predicated_handle_pair(void) {
     }
 }
 
+/* Handles whose writes the tracking must not take for one: each is right or refused, whatever the flow */
+static void tex_b_handle_writes(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31);
+    const u64 c2_0 = 0x4c98078800070000ull, c2_4 = c2_0 | (1ull << 20), c2_8 = c2_0 | (2ull << 20);
+    const u64 mov = 0x5c98078000000000ull, lop = 0x4c47020800070000ull, p0 = 0, not_p0 = 8ull << 16, always = 7ull << 16;
+    ShaderInfo info;
+    size_t words = 0;
+    const char* why;
+    float x = -1.0f;
+    /* R8 = 0; R6 = c[2][0]; BRA to the condition; body: R6 = c[2][4]; R8 = 1; condition: P0 = R8 < c[3][0]; @P0 BRA to
+       the body; TEX.B R6. The loop is entered at its condition, so its body is reached from after it alone */
+    const u64 below = (fsetp_cbuf3(0, 0) & ~(0xffull << 8)) | (8ull << 8);
+    const u64 rotated[] = {mov32i(8, 0), c2_0 | 6, flow_bra(2, 5, 7), c2_4 | 6, mov32i(8, 0x3f800000u), below,
+                           flow_bra(6, 3, 0), tex_b};
+    const u32 c2[4] = {0x00100001u, 0x00200002u, 0, 0}, c3[4] = {0x3f000000u, 0, 0, 0};
+    int ran = chosen_sample(rotated, 8, c2, c3, 0, &info, &x, &why);
+    check(ran && x == 2.0f, "a loop entered at its condition leaves its body's handle");
+    /* a copy of a two-word handle refuses the candidates, and the write after it adds none */
+    const u64 copied[] = {fsetp_cbuf3(0, 0), c2_0 | 7, lop | 7 | (7ull << 8) | (1ull << 20), mov | p0 | 6 | (7ull << 20),
+                          ((c2_8 & ~(0xfull << 16)) | not_p0) | 6, tex_b};
+    u32* code = translate(copied, 6, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a predicated copy of a two-word handle is refused");
+    free(code);
+    /* a loop that copies the handle between two registers ends */
+    const u64 around[] = {mov | always | 7 | (6ull << 20), fsetp_cbuf3(0, 0), mov | always | 6 | (7ull << 20),
+                          ((c2_0 & ~(0xfull << 16)) | p0) | 6, tex_b, flow_bra(5, 0, 0)};
+    code = translate(around, 6, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a handle copied around a loop is refused");
+    free(code);
+    /* three words: neither two of them is the handle */
+    const u64 three[] = {c2_0 | 7, lop | 7 | (7ull << 8) | (1ull << 20), lop | 6 | (7ull << 8) | (2ull << 20), tex_b};
+    code = translate(three, 4, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a handle of three words is refused");
+    free(code);
+}
+
 /* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
    ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
    edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
@@ -7303,6 +7335,7 @@ int main(int argc, char** argv) {
     fragment_quad_reads();
     fragment_flow_derivatives();
     tex_b_predicated_handle_pair();
+    tex_b_handle_writes();
     tex_b_chosen_handle();
     bindless_multisample_order();
     helper_loop_exit();

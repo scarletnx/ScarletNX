@@ -319,21 +319,21 @@ static int direct_mark(u8* seen, u32 use, u32 at) {
     return 1;
 }
 
-/* Whether control from from can reach use, by the flow instructions as far as they are known: -1 when a jump's target
+/* Whether control from from can reach to with no step past last, by the flow instructions as far as they are known: -1 when a jump's target
    isn't (an indirect jump, or a BRK or CONT whose CRS stack doesn't resolve), so the caller keeps what it asked about.
    The bitset is walked to a fixed point, which reaches through loops as well as forward edges. */
-static int direct_can_reach(const ShFlow* f, u32 from, u32 use) {
+static int direct_reach_within(const ShFlow* f, u32 from, u32 last, u32 to) {
     const u64* insn = f->insn;
     u8 seen[DIRECT_WORDS_MAX / 8];
     u32 k;
     int changed = 1;
-    if (from > use) return 0;
-    if (use >= DIRECT_WORDS_MAX) return -1;
+    if (from > last) return 0;
+    if (last >= DIRECT_WORDS_MAX) return -1;
     memset(seen, 0, sizeof seen);
     seen[from >> 3] |= (u8)(1u << (from & 7));
     while (changed) {
         changed = 0;
-        for (k = from; k <= use; k++) {
+        for (k = from; k <= last; k++) {
             const Op* op;
             const u32* targets;
             const u8* elsewhere;
@@ -342,7 +342,7 @@ static int direct_can_reach(const ShFlow* f, u32 from, u32 use) {
             int fall = 1;
             if (!(seen[k >> 3] >> (k & 7) & 1)) continue;
             if (!IDX_OK(k)) {
-                changed |= direct_mark(seen, use, k + 1);
+                changed |= direct_mark(seen, last, k + 1);
                 continue;
             }
             op = f->op[k];
@@ -358,7 +358,7 @@ static int direct_can_reach(const ShFlow* f, u32 from, u32 use) {
                 case O_CONT: {
                     u32 target = f->pop_targets ? f->pop_targets[k] : 0;
                     if (!target) return -1;
-                    changed |= direct_mark(seen, use, target);
+                    changed |= direct_mark(seen, last, target);
                     fall = !flow_always(insn[k]);
                     break;
                 }
@@ -371,12 +371,16 @@ static int direct_can_reach(const ShFlow* f, u32 from, u32 use) {
             if (count < 0) return -1;
             if (op->id == O_BRX && !count) return -1;
             for (t = 0; t < count; t++)
-                if (!elsewhere[t]) changed |= direct_mark(seen, use, targets[t]);
-            if (fall) changed |= direct_mark(seen, use, k + 1);
+                if (!elsewhere[t]) changed |= direct_mark(seen, last, targets[t]);
+            if (fall) changed |= direct_mark(seen, last, k + 1);
         }
     }
-    return seen[use >> 3] >> (use & 7) & 1;
+    return seen[to >> 3] >> (to & 7) & 1;
 }
+static int direct_can_reach(const ShFlow* f, u32 from, u32 use) { return direct_reach_within(f, from, use, use); }
+/* Whether the program's entry can reach at: over the whole program, as a loop entered at its condition reaches its body
+   from after it. -1 where a jump's target isn't known */
+static int direct_entry_reaches(const ShFlow* f, u32 at) { return f->n ? direct_reach_within(f, 11, f->n - 1, at) : 0; }
 
 /* Where index's basic block starts: the last place control can arrive at before it, as direct_reaching_def finds it. */
 static u32 direct_block_start(const ShFlow* f, u32 index) {
@@ -730,7 +734,7 @@ static int direct_reaching_def_same(const ShFlow* f, u32 index, u32 reg, int (*s
         /* A write in an earlier block that control never carries to index isn't the value there: the block's branch
            jumped past the use. A write no path from the entry reaches, such as one an unconditional BRA jumps over, is
            not a source either. Unknown reach stays conservative. */
-        if (j < block_start && (direct_can_reach(f, j + 1, index) == 0 || direct_can_reach(f, 11, j) == 0)) continue;
+        if (j < block_start && (direct_can_reach(f, j + 1, index) == 0 || direct_entry_reaches(f, j) == 0)) continue;
         /* A write under the complement of index's guard, the predicate kept since, runs in none of index's lanes */
         if ((guard & 7) != 7 && B(insn[j], 16, 4) == (guard ^ 8) && !crossed && !(pred_written >> (guard & 7) & 1))
             continue;
@@ -1580,7 +1584,8 @@ static int direct_texture_word(const ShFlow* f, u32 index, u32 reg, u32* bank, u
     if (depth > 6 || reg == 255) return 0;
     j = direct_reaching_def(f, index, reg);
     if (j < 0) return 0;
-    return direct_handle_definition(f, (u32)j, bank, off, &bank2, &off2, depth + 1);
+    /* a half that is itself two words would leave one of the three out: its texture would be read with another sampler */
+    return direct_handle_definition(f, (u32)j, bank, off, &bank2, &off2, depth + 1) == 1;
 }
 
 static int direct_handle_definition(const ShFlow* f, u32 j, u32* bank, u32* off, u32* bank2, u32* off2, int depth) {
@@ -1768,7 +1773,7 @@ static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u3
         if (ndefs == 63) return -1;
         reach = ndefs ? (1ull << ndefs) - 1 : 0;
     }
-    for (u32 d = 0; d < ndefs; d++) {
+    for (u32 d = 0; d < ndefs && count >= 0; d++) {
         u32 k = defs[d], bank, off, bank2, off2;
         const Op* op = f->op[k];
         int seen = 0, words;
@@ -1799,11 +1804,12 @@ int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* ba
    branch-merge cases stay refused: a write outside the block, or a set with no predicated write, returns no candidates.
    Every candidate is collected, including a one-word write that the LOP's texture half may extend. */
 static int handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, u32* bank2s,
-                                  u32* off2s, u8* words, int count, int max) {
+                                  u32* off2s, u8* words, int count, int max, int depth) {
     u32 defs[63], ndefs = 0;
     u64 reach;
     int predicated = 0, joined = 0;
-    if (reg == 255) return count;
+    /* RZ or a copy too deep: a value that isn't a candidate */
+    if (reg == 255 || depth > 4) return count;
     reach = direct_reaching_writes(f, index, reg, defs, &ndefs);
     if (!reach) {
         /* Unknown CFG gives a superset within this block: every write before the use, plus a loop write reaching back. */
@@ -1827,7 +1833,8 @@ static int handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u32* bank
         if (f->block_start[k] != f->block_start[index]) return 0;
         if (op->id == O_MOV_R) {
             /* A copy adds the source's candidates where the MOV reads it. */
-            n = handle_candidates_pair(f, k, B(f->insn[k], 20, 8), banks, offs, bank2s, off2s, words, count, max);
+            n = handle_candidates_pair(f, k, B(f->insn[k], 20, 8), banks, offs, bank2s, off2s, words, count, max,
+                                       depth + 1);
             if (n < 0) return n;
             count = n;
             continue;
@@ -1852,7 +1859,7 @@ int shader_direct_handle_candidates_pair(const ShFlow* f, u32 index, u32 reg, u3
                                          u32* off2s, u8* words, int max) {
     /* One split candidate is enough when every other reaching write is a non-handle value: the complete runtime word
        still has to match texture|sampler, so the false path keeps the existing no-match zero sample. */
-    int count = handle_candidates_pair(f, index, reg, banks, offs, bank2s, off2s, words, 0, max);
+    int count = handle_candidates_pair(f, index, reg, banks, offs, bank2s, off2s, words, 0, max, 0);
     return count > 0 ? count : 0;
 }
 
