@@ -30,6 +30,7 @@ typedef struct {
     uint32_t image_size[64][3]; /* what a size query of the sampled image at each binding answers; its levels are 1 */
     uint32_t fetched[64][3];    /* the coordinates of the last OpImageFetch of the image at each binding */
     uint32_t gather[64][4][4];  /* what an OpImageGather of each component of the image at each binding returns */
+    uint32_t element[64];       /* the element of an array of images or samplers at each binding the last access took */
     int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
     int helper;                 /* the invocation is a fragment's helper: OpIsHelperInvocationEXT answers true */
     int half_flush;             /* PackHalf2x16 flushes f16 subnormals to a signed zero, as a driver may */

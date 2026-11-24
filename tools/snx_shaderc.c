@@ -44,6 +44,7 @@ static void shell_quote(char* out, size_t size, const char* path) {
 int main(int argc, char** argv) {
     const char *dir = NULL, *out = NULL;
     int validate = 0, verbose = 0, flush = SH_FTZ_MODE, dispatch_reconverge = 0, opt = 0;
+    int tex_table = 0, pool_map = 0, gbuf_address = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
@@ -63,16 +64,22 @@ int main(int argc, char** argv) {
             g_shader_sm86 = 1;
         else if (!strcmp(argv[i], "--no-doubles")) /* a device without shaderFloat64, which Apple's are */
             g_spirv_translate.float64 = 0;
+        else if (!strcmp(argv[i], "--tex-table")) /* SM86 textures through the texture table, as the desktop has them */
+            tex_table = 1;
+        else if (!strcmp(argv[i], "--pool-map")) /* and their plain slots through the pool map (ShCaps.pool_map) */
+            tex_table = pool_map = 1;
+        else if (!strcmp(argv[i], "--gbuf-address")) /* with the table, global memory (and the map) by device address */
+            tex_table = gbuf_address = 1;
         else if (!strcmp(argv[i], "--direct")) { /* accepted for older corpus commands */
         } else if (argv[i][0] != '-' && !dir)
             dir = argv[i];
         else {
-            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
+            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge] [--tex-table] [--pool-map] [--gbuf-address]\n", argv[0]);
             return 2;
         }
     }
     if (!dir) {
-        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
+        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush | --native-flush] [--opt] [--sm86] [--no-doubles] [--dispatch-reconverge] [--tex-table] [--pool-map] [--gbuf-address]\n", argv[0]);
         return 2;
     }
     /* Match a renderer with non-uniform sampled image array indexing. Otherwise indexed
@@ -81,6 +88,15 @@ int main(int argc, char** argv) {
     /* and VK_KHR_shader_maximal_reconvergence, which NVIDIA, AMD and Intel drivers have: programs whose lanes
        reconverge take structured control flow as on such a device (--dispatch-reconverge keeps their dispatch loop) */
     g_spirv_translate.maximal_reconvergence = !dispatch_reconverge;
+    /* the texture table of a desktop renderer (vk/pipeline.c): constant buffers in windows, the table at the set after
+       the five stage sets; the pool map and device addresses on it as asked */
+    if (tex_table) {
+        g_spirv_translate.cb_windows = 1;
+        g_spirv_translate.tex_table = 1;
+        g_spirv_translate.table_set = 5;
+        g_spirv_translate.pool_map = (unsigned)pool_map;
+        g_spirv_translate.gbuf_address = (unsigned)gbuf_address;
+    }
     DIR* directory = opendir(dir);
     if (!directory) {
         fprintf(stderr, "cannot open %s\n", dir);
