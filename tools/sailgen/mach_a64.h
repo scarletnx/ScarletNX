@@ -221,7 +221,8 @@ enum {
     SGX_M_FENCE_ST, /* of stores alone */
     SGX_M_FPENTER,  /* the guest's FPCR into the host's, its FPSR cleared (a machine running the guest's own floating
                        point: arm64's) */
-    SGX_M_FPLEAVE   /* the host's FPSR ORed into the guest's, the host's FPCR its own again */
+    SGX_M_FPLEAVE,  /* the host's FPSR ORed into the guest's, the host's FPCR its own again */
+    SGX_M_SETNZCV   /* the host's flags in[0]'s bits 31-28 (arm64's MSR NZCV: the guest's, for a word that reads them) */
 };
 
 /* a call of the helper sym (x64_helpers.c's) or of the runtime's function at rt_offset in RtAPI, the state first
