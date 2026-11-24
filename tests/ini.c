@@ -185,6 +185,17 @@ int main(void) {
         char list[512];
         assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
     }
+    /* a float stepped as the menus step one: a quarter, a twentieth within a range of 2, to the next point of that grid
+       the way it goes, from one between two the nearer that way, stopping at the ends; a step down never skips a point
+       (1.25 down was 0.75: the down step's rounding took the point below as well) */
+    {
+        assert(ini_float_step(1.25, 0.25, 16, -1) == 1.0 && ini_float_step(1.0, 0.25, 16, 1) == 1.25);
+        assert(ini_float_step(1.3, 0.25, 16, -1) == 1.25 && ini_float_step(1.3, 0.25, 16, 1) == 1.5);
+        assert(ini_float_step(0.25, 0.25, 16, -1) == 0.25 && ini_float_step(16, 0.25, 16, 1) == 16);
+        assert(ini_float_step(0, 0, 1, 1) == 0.05 && ini_float_step(0.07, 0, 1, -1) == 0.05 &&
+               ini_float_step(0.1, 0, 1, -1) == 0.05);
+        assert(ini_float_step(-0.3, -1, 1, -1) > -0.3501 && ini_float_step(-0.3, -1, 1, -1) < -0.3499); /* 7 twentieths */
+    }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
     {

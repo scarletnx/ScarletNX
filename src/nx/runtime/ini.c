@@ -225,6 +225,15 @@ void ini_word(const IniOpt* o, int v, char* out, size_t n) {
     }
     snprintf(out, n, "%d", v); /* no word for it */
 }
+double ini_float_step(double v, double lo, double hi, int dir) {
+    double unit = hi - lo > 2 ? 0.25 : 0.05, at = v / unit, grid = (double)(long long)(at + (at < 0 ? -0.5 : 0.5));
+    double to;
+    if (at - grid < 1e-9 && grid - at < 1e-9) /* on the grid: the next point of it */
+        to = (grid + (dir < 0 ? -1 : 1)) * unit;
+    else /* between two points: the one that way */
+        to = (dir < 0 ? (double)(long long)(at - (at < 0 ? 1 : 0)) : (double)(long long)(at + (at < 0 ? 0 : 1))) * unit;
+    return to < lo ? lo : to > hi ? hi : to;
+}
 int ini_step(const IniOpt* o, int v, int dir) {
     int step = step_of(o), count;
     if (!o->words || strchr(o->words, '#') || (o->flags & INI_SLIDER)) {

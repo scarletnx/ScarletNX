@@ -126,6 +126,10 @@ const char* ini_only_words(int flags);
 const char* ini_only(const IniOpt* o);
 /* an INI_INT's value v as the menus read it: its word, or the number */
 void ini_word(const IniOpt* o, int v, char* out, size_t n);
+/* a float's v a step down (dir -1) or up (1) as the menus step one: by a quarter, a twentieth where lo to hi is 2 or
+   less, to the next point of that grid the way it goes (from one between two, the nearer that way), stopping at lo
+   and hi */
+double ini_float_step(double v, double lo, double hi, int dir);
 /* v a step down (dir -1) or up (1): words go round, numbers and a slider's words stop at lo and hi */
 int ini_step(const IniOpt* o, int v, int dir);
 /* the sections' settings but the INI_IN_GAME ones as the launcher reads them (gui/settings.h), a line each: section
