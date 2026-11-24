@@ -496,6 +496,32 @@ static inline SgD sgx_estimate32(SgCtx* g, SgD a, int sqrt) {
 }
 static inline SgD sg_UnsignedRecipEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 0); }
 static inline SgD sg_UnsignedRSqrtEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 1); }
+/* FMLAL's product added (path 0: always): the halves as singles, exactly, then the single's fused multiply-add */
+static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD fpcr);
+static inline SgD sgx_half_single(SgCtx* g, SgD a, SgD fpcr) {
+    SgD args[2];
+    args[0] = sg_d_zext(g, a, 64);
+    args[1] = sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 64);
+    return sg_d_slice(g, sgx_call(g, "snx_x64_half", 0, 0, args, 2, 64), 31, 0);
+}
+static inline SgD sg_FPMulAddH(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD fpcr) {
+    SgD x = sgx_half_single(g, a, fpcr), y = sgx_half_single(g, b, fpcr);
+    return sg_FPMulAdd(g, path, addend, x, y, fpcr);
+}
+/* BFDOT's step, which neither reads FPCR (FEAT_EBF16's FPCR.EBF is not kept) nor raises a flag */
+static inline SgD sg_BFDotAdd(SgCtx* g, SgB path, SgD sum, SgD a0, SgD a1, SgD b0, SgD b1, SgD fpcr) {
+    SgD args[3];
+    (void)path, (void)fpcr;
+    args[0] = sg_d_zext(g, sum, 64);
+    args[1] = sg_d_zext(g, sg_d_concat(g, a1, a0), 64);
+    args[2] = sg_d_zext(g, sg_d_concat(g, b1, b0), 64);
+    return sg_d_slice(g, sgx_call(g, "snx_x64_bfdot", 0, 0, args, 3, 64), 31, 0);
+}
+/* SM4's substitution of a byte */
+static inline SgD sg_Sbox(SgCtx* g, SgD a) {
+    SgD x = sg_d_zext(g, a, 64);
+    return sg_d_slice(g, sgx_call(g, "snx_x64_sm4_box", 0, 0, &x, 1, 64), 7, 0);
+}
 /* AES's SubBytes, MixColumns and their inverses (op 0 to 3), a doubleword at a time: each takes its bytes, or its two
    columns, alone */
 static inline SgD sgx_aes(SgCtx* g, SgD a, unsigned op) {

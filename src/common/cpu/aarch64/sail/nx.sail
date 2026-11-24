@@ -343,3 +343,55 @@ function UsingAArch32 () = false
 // sail-arm declares HaveFP16Ext and leaves its answer to its runtime: the guest's FEAT_FP16
 val HaveFP16Ext : unit -> bool
 function HaveFP16Ext () = IsFeatureImplemented(FEAT_FP16)
+
+// A bfloat16 is the single of its bits over 16 zeros, so BFMLAL's product is added as the singles' is
+val BFMulAddH : forall 'N, 'N == 32. (bits('N), bits(div('N, 2)), bits(div('N, 2)), FPCRType) -> bits('N)
+function BFMulAddH (addend, op1, op2, fpcr) = FPMulAdd(addend, op1 @ Zeros(16), op2 @ Zeros(16), fpcr)
+
+// EL0's allocation tags are off (SCTLR_EL1.ATA0 clear, as a process without PR_MTE's): the tag IRG, ADDG and SUBG give an
+// address is 0, whatever GCR_EL1 excludes
+val execute_aarch64_instrs_integer_tags_mcaddtag : forall ('ADD : Bool) 'd 'n, (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
+  (bool('ADD), int('d), int('n), bits(64), bits(4)) -> unit
+function execute_aarch64_instrs_integer_tags_mcaddtag (ADD, d, n, offset, tag_offset) = {
+    let operand1 : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let sum : bits(64) = if ADD then operand1 + offset else operand1 - offset;
+    let result : bits(64) = (sum[63 .. 60] @ 0x0) @ sum[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+val execute_aarch64_instrs_integer_tags_mcsubtag : forall ('ADD : Bool) 'd 'n, (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
+  (bool('ADD), int('d), int('n), bits(64), bits(4)) -> unit
+function execute_aarch64_instrs_integer_tags_mcsubtag (ADD, d, n, offset, tag_offset) = {
+    let operand1 : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let sum : bits(64) = if ADD then operand1 + offset else operand1 - offset;
+    let result : bits(64) = (sum[63 .. 60] @ 0x0) @ sum[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+val execute_aarch64_instrs_integer_tags_mcinsertrandomtag : forall 'd 'm 'n, (0 <= 'd & 'd <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'n & 'n <= 31).
+  (int('d), int('m), int('n)) -> unit
+function execute_aarch64_instrs_integer_tags_mcinsertrandomtag (d, m, n) = {
+    let operand : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let result : bits(64) = (operand[63 .. 60] @ 0x0) @ operand[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+// GMI sets the bit the address's tag numbers: a shift of 1, where the Sail sets a bit of a number only the guest knows
+val execute_aarch64_instrs_integer_tags_mcinserttagmask : forall 'd 'm 'n, (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'd & 'd <= 31).
+  (int('d), int('m), int('n)) -> unit
+function execute_aarch64_instrs_integer_tags_mcinserttagmask (d, m, n) = {
+    let address : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    X_set(d, 64) = X_read(m, 64) | LSL(ZeroExtend(0b1, 64), MOD(UInt(address[59 .. 56]), 64))
+}

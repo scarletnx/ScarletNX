@@ -1607,20 +1607,22 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         *r = shift(n, name[0] == 'L' ? (name[2] == 'L' ? 0 : 1) : name[0] == 'A' ? 2 : 3);
         return 1;
     }
-    if (!strcmp(name, "MOD") || !strcmp(name, "DIV")) {
+    /* MOD and DIV, and the mod and div of a type's width (bits(div('esize, 2))) */
+    if (!strcmp(name, "MOD") || !strcmp(name, "DIV") || !strcmp(name, "mod") || !strcmp(name, "div")) {
+        int mod = name[0] == 'M' || name[0] == 'm';
         need_args(n, 2);
         a = arg(n, 0);
         b = need_static_int(n, arg(n, 1), "a divisor");
         if (a.kind != K_INT) sg_fail(n, "%s of other than an integer", name);
         if (a.bt == BT_DYN) {
-            if (name[0] != 'M') sg_fail(n, "DIV of an integer known only at run time");
+            if (!mod) sg_fail(n, "DIV of an integer known only at run time");
             *r = val_c(K_INT, BT_DYN, "sg_i_mod(g, %s, %s)", a.c, b.c);
         } else if (a.bt == BT_CONST && b.bt == BT_CONST && b.value) {
             long long m = a.value % b.value;
             if (m < 0) m += b.value < 0 ? -b.value : b.value;
-            *r = val_const(K_INT, name[0] == 'M' ? m : (a.value - m) / b.value);
+            *r = val_const(K_INT, mod ? m : (a.value - m) / b.value);
         } else
-            *r = val_c(K_INT, BT_STATIC, "sg_%s(%s, %s)", name[0] == 'M' ? "mod" : "div", a.c, b.c);
+            *r = val_c(K_INT, BT_STATIC, "sg_%s(%s, %s)", mod ? "mod" : "div", a.c, b.c);
         return 1;
     }
     if (!strcmp(name, "RoundTowardsZero")) { /* RoundTowardsZero(Real(a) / Real(b)): the integer quotient */
