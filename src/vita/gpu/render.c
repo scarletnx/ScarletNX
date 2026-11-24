@@ -341,6 +341,16 @@ static void mirror_written(struct VitaRender* r, const Import* m, uint32_t addre
     }
     r->writeback[r->writebacks++] = (Writeback){import, address, row, stride, rows, serial};
 }
+/* A write of the GPU's told to the watch. The copies that were up to date stay so: no other memory changed, and the copy
+   the write is in has it */
+static void gpu_wrote(struct VitaRender* r, uint32_t address, uint32_t size) {
+    uint64_t before = vita_watch_epoch();
+    vita_watch_written(address, size);
+    uint64_t now = vita_watch_epoch();
+    if (r->vk->host_import || now != before + 1) return; /* no copies, or a write of the game's came between */
+    for (unsigned i = 0; i < IMPORTS; ++i)
+        if (r->imports[i].mirror && r->imports[i].epoch == before) r->imports[i].since = r->imports[i].epoch = now;
+}
 /* the writes of submissions up to done (of one import's copy, or of all for IMPORTS) stored to guest memory */
 static void mirror_drain(struct VitaRender* r, uint64_t done, uint32_t only) {
     unsigned kept = 0;
@@ -1026,7 +1036,7 @@ uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c) {
         if (r->color->synced) {
             /* the store is the memory's newest write, which the textures on it and the other surfaces take */
             color_written(r, m, r->color);
-            vita_watch_written(r->color->address, color_bytes(c));
+            gpu_wrote(r, r->color->address, color_bytes(c));
             r->color->since = vita_watch_protect(r->color->address, color_bytes(c));
         }
         /* the depth into its memory when the game keeps it (force store), which it reads as a texture */
@@ -1054,7 +1064,7 @@ uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c) {
                                    dm->buffer, 1, &store);
             uint32_t depth_stride = (c->depth.control >> GXM_DEPTH_STRIDE_SHIFT) * 2;
             mirror_written(r, dm, c->depth.depth, d->width * fx * 2, depth_stride, d->height * fy);
-            vita_watch_written(c->depth.depth, depth_stride * d->height * fy);
+            gpu_wrote(r, c->depth.depth, depth_stride * d->height * fy);
         }
         memory_barrier(cb);
         r->rendering = false;
@@ -1692,7 +1702,7 @@ static void color_write_back(struct VitaRender* r, VitaProcess* p, VkCommandBuff
     barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->layout);
     memory_barrier(cb);
     if (stored) color_written(r, m, s);
-    vita_watch_written(s->address, s->stride * bytes * s->height); /* the scene's later stores write it again */
+    gpu_wrote(r, s->address, s->stride * bytes * s->height); /* the scene's later stores write it again */
 }
 bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, uint32_t bytes_per_pixel,
                                uint32_t src_address, uint32_t src_x, uint32_t src_y, int32_t src_stride,
@@ -1771,7 +1781,7 @@ bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, 
     }
     memory_barrier(cb);
     mirror_written(r, dst, (uint32_t)dst_begin, (uint32_t)row_bytes, (uint32_t)dst_stride, height);
-    vita_watch_written((uint32_t)dst_begin, (uint32_t)dst_span);
+    gpu_wrote(r, (uint32_t)dst_begin, (uint32_t)dst_span);
     if (rendering) rendering_resume(r, cb);
     return true;
 }
@@ -2292,7 +2302,7 @@ bool vita_render_picture(VitaProcess* p, uint32_t address, uint32_t pitch, uint3
     if (r->rendering) rendering_pause(cb);
     bool ok = compute(r, cb, r->picture, r->staging[slot].buffer, from, m->buffer, at, total, &params, sizeof params, words);
     if (ok) mirror_written(r, m, address, total, total, 1);
-    vita_watch_written(address, total);
+    gpu_wrote(r, address, total);
     if (r->rendering) rendering_resume(r, cb);
     return ok;
 }
