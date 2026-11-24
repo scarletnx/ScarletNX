@@ -2,13 +2,15 @@
    Copyright 2026 the ScarletNX contributors */
 /* What an x86-64 unit's object is made from (x64_codegen.h's snx_x64_unit_facts), which the unit cache keys the unit
    by: each answer the back end's code depends on changes it, and code the unit never asks about does not. f0 calls
-   f1, a PLT stub (ADRP x16, LDR x17, ADD x16, BR x17); below them, NOP; RET is one function and BL +8; RET two (a
-   RET only that BL reaches comes next). f0's
-   unit's facts are the same twice, and change with f0's index (two functions below it), the guest's features, the
-   call's target routed (a hook names it), imported (SnxX64Options.direct), the stub bound (bound), the stale checks
-   and the function ir_dump_pc names; MOV x0, #1; RET below them, one function as NOP; RET is but other code, which f0 never reaches, leaves them
-   as they were. The back end's own code, the rest of the key (snx_x64_code), is the segment that holds it. On a host
-   without the back end it passes, saying so */
+   f1, a PLT stub (ADRP x16, LDR x17, ADD x16, BR x17). Below them NOP; RET is one function; BL +8; RET two, the second
+   NOP; NOP falling through into f0; BL h; RET two, h between f0 and f1. f0's unit's facts are the same twice, and
+   change with f0's index and f1's, f1's alone, the guest's features, the call's target routed (a hook names it),
+   imported (SnxX64Options.direct), the stub bound (bound), the stale checks and the function ir_dump_pc names; f1's
+   unit's with its own index alone and its BR bound; the fall-through's with what its next function answers (routed).
+   MOV x0, #1; RET below them, one function as NOP; RET is but other code, which f0 never reaches, leaves f0's as they
+   were. The back end's own code, the rest of the key (snx_x64_code), is the segment that holds it. The host's
+   features, the one fact no test on one host changes, are left to the reading. On a host without the back end it
+   passes, saying so */
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include <stdio.h>
@@ -17,7 +19,9 @@
 
 #define BASE  0x10000u
 #define G     0x10000u /* the code below f0 */
+#define X     0x10008u /* NOP; NOP, into f0, where BL +8 reaches it */
 #define F0    0x10010u /* BL F1; RET */
+#define H     0x10018u /* RET, where BL h reaches it */
 #define F1    0x10020u /* the stub */
 #define WORDS 16u
 
@@ -44,36 +48,38 @@ static void put(void* user, const void* data, size_t size) {
 }
 
 static unsigned char g_image[WORDS * 4];
-enum { NOP_RET, BL_RET, MOV_RET };
+enum { NOP_RET, BL_RET, MOV_RET, BL_H };
 static void image(int below) {
-    const unsigned g_code[3] = {below == NOP_RET  ? 0xD503201Fu
-                                : below == BL_RET ? 0x94000002u
-                                                  : 0xD2800020u,
-                                0xD65F03C0u, 0xD65F03C0u};
+    static const unsigned first[] = {0xD503201Fu /* NOP */, 0x94000002u /* BL X */, 0xD2800020u /* MOV x0, #1 */,
+                                     0x94000006u /* BL H */};
+    const unsigned g_code[4] = {first[below], 0xD65F03C0u, 0xD503201Fu, 0xD503201Fu};
     const unsigned f0_code[2] = {0x94000004u /* BL F1 */, 0xD65F03C0u};
     /* ADRP x16, page of F1; LDR x17, [x16, #0x100]; ADD x16, x16, #0x100; BR x17 */
     const unsigned f1_code[4] = {0x90000010u, 0xF9408211u, 0x91040210u, 0xD61F0220u};
     unsigned words[WORDS] = {0};
-    words[0] = g_code[0], words[1] = g_code[1], words[2] = g_code[2];
+    for (unsigned i = 0; i < 4; ++i) words[i] = g_code[i];
     words[4] = f0_code[0], words[5] = f0_code[1];
+    words[6] = 0xD65F03C0u; /* h */
     for (unsigned i = 0; i < 4; ++i) words[8 + i] = f1_code[i];
     for (unsigned i = 0; i < WORDS; ++i)
         for (unsigned b = 0; b < 4; ++b) g_image[4 * i + b] = (unsigned char)(words[i] >> (8 * b));
 }
 
 /* the analysis of the image as image() made it, from F0; the functions it found said where it did not find f0 and
-   f1, or not count below them */
-static int analyze(SnxCodegen* codegen, size_t below) {
+   f1, or not count below f0 and f1 at f1_index */
+static int analyze(SnxCodegen* codegen, size_t below, size_t f1_index) {
     static SnxCodeImage module;
     const SnxU64 hint = F0;
-    const SnxFunction* f0;
+    const SnxFunction *f0, *f1;
     int rc;
     module = (SnxCodeImage){.image = g_image, .image_size = sizeof g_image, .base = BASE, .text_size = sizeof g_image};
     rc = snx_codegen_analyze(codegen, &module, 1, &hint, 1, 1, 0);
     f0 = rc ? NULL : snx_codegen_function(codegen, F0);
-    if (f0 && snx_codegen_function(codegen, F1) && (size_t)(f0 - codegen->functions) == below) return 0;
-    fprintf(stderr, "the analysis found %zu functions, where f0, f1 and %zu below them were wanted:",
-            rc ? 0 : codegen->function_count, below);
+    f1 = rc ? NULL : snx_codegen_function(codegen, F1);
+    if (f0 && f1 && (size_t)(f0 - codegen->functions) == below && (size_t)(f1 - codegen->functions) == f1_index)
+        return 0;
+    fprintf(stderr, "the analysis found %zu functions, where f0 at index %zu and f1 at %zu were wanted:",
+            rc ? 0 : codegen->function_count, below, f1_index);
     for (size_t i = 0; !rc && i < codegen->function_count; ++i)
         fprintf(stderr, " %llx (%zu words)", (unsigned long long)codegen->functions[i].start,
                 codegen->functions[i].count);
@@ -91,16 +97,17 @@ static SnxU64 bound(void* user, SnxU64 address, int* guard) {
     return address == F1 + 12 ? F0 : 0;
 }
 
-/* f0's unit's facts under options */
-static Facts facts(const SnxCodegen* codegen, const SnxX64Options* options) {
+/* the facts of the unit of the function at start under options */
+static Facts unit_facts(const SnxCodegen* codegen, SnxU64 start, const SnxX64Options* options) {
     Facts f = {0};
-    const SnxFunction* fn = snx_codegen_function(codegen, F0);
+    const SnxFunction* fn = snx_codegen_function(codegen, start);
     if (fn) {
         size_t i = (size_t)(fn - codegen->functions);
         snx_x64_unit_facts(codegen, i, i + 1, options, put, &f);
     }
     return f;
 }
+static Facts facts(const SnxCodegen* codegen, const SnxX64Options* options) { return unit_facts(codegen, F0, options); }
 /* whether one of the segments snx_x64_code puts holds the back end's own code */
 static int held;
 static void segment(void* user, const void* data, size_t size) {
@@ -114,7 +121,7 @@ static int same(const Facts* a, const Facts* b) {
 }
 
 int main(void) {
-    SnxCodegen one, two, other;
+    SnxCodegen one, two, mid, other;
     SnxX64Options plain = {0}, options;
     Facts base, again, f;
     if (!snx_x64_available()) {
@@ -122,9 +129,13 @@ int main(void) {
         return 0;
     }
     image(NOP_RET);
-    check(!analyze(&one, 1), "NOP; RET is one function below f0");
+    check(!analyze(&one, 1, 2), "NOP; RET is one function below f0");
     image(BL_RET);
-    check(!analyze(&two, 2), "BL +8; RET is two");
+    check(!analyze(&two, 2, 3), "BL +8; RET is two");
+    check(snx_codegen_function(&two, X) && snx_codegen_function(&two, X)->count == 2,
+          "the second, NOP; NOP, ends where f0 starts");
+    image(BL_H);
+    check(!analyze(&mid, 1, 3) && snx_codegen_function(&mid, H), "BL h; RET puts h between f0 and f1");
     image(NOP_RET);
     base = facts(&one, &plain);
     again = facts(&one, &plain);
@@ -132,8 +143,34 @@ int main(void) {
     free(again.bytes);
 
     f = facts(&two, &plain);
-    check(!same(&base, &f), "f0's index (two functions below it) changes them");
+    check(!same(&base, &f), "f0's index and f1's (two functions below both) change them");
     free(f.bytes);
+    f = facts(&mid, &plain);
+    check(!same(&base, &f), "f1's index alone (h between f0 and f1) changes them");
+    free(f.bytes);
+    {
+        Facts a = unit_facts(&one, F1, &plain), b = unit_facts(&mid, F1, &plain);
+        check(a.size && !same(&a, &b), "f1's unit's own index alone (h below it) changes its facts");
+        free(b.bytes);
+        options = plain;
+        options.bound = bound;
+        b = unit_facts(&one, F1, &options);
+        check(!same(&a, &b), "f1's BR bound changes its unit's facts");
+        free(b.bytes);
+        free(a.bytes);
+    }
+    {
+        static const SnxU64 routed[1] = {F0 - BASE};
+        Facts a = unit_facts(&two, X, &plain), b;
+        two.modules[0].routed = routed;
+        two.modules[0].routed_count = 1;
+        b = unit_facts(&two, X, &plain);
+        check(a.size && !same(&a, &b), "the function it falls through to routed changes the fall-through's facts");
+        two.modules[0].routed = NULL;
+        two.modules[0].routed_count = 0;
+        free(a.bytes);
+        free(b.bytes);
+    }
     one.features ^= 1;
     f = facts(&one, &plain);
     check(!same(&base, &f), "the guest's features change them");
@@ -173,13 +210,14 @@ int main(void) {
 
     /* other code below f0, one function as before: f0 never reaches it */
     image(MOV_RET);
-    check(!analyze(&other, 1), "MOV x0, #1; RET is one function below f0");
+    check(!analyze(&other, 1, 2), "MOV x0, #1; RET is one function below f0");
     f = facts(&other, &plain);
     check(same(&base, &f), "code f0 never reaches leaves them as they were");
     free(f.bytes);
     free(base.bytes);
     snx_codegen_free(&one);
     snx_codegen_free(&two);
+    snx_codegen_free(&mid);
     snx_codegen_free(&other);
     check(!snx_x64_code(segment, NULL) && held, "the back end's own code is one of the segments put");
     printf("x64 unit facts: %s\n", failures ? "FAILED" : "passed");
