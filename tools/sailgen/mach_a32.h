@@ -17,7 +17,10 @@
    - Hosted memory: no range check (a guard faults on the host), the rest as flat memory.
    - Checked memory: each transfer is one call of the runtime library (rt_helpers.c's snx_arm_checked_access), its bytes
      in the state's words (checked.h): a load's read from there, a store's written there and then sent.
-   The condition of
+   - The ARM7TDMI's and the ARM946E's bus (flat memory): an access the bus hook takes (SnxArmCPU.io) leaves the hot code
+     for a call of snx_arm_io_read or snx_arm_io_write (sgx_a32_bus), the rest is direct; a misaligned load rotates, a
+     store aligns, and a write whose hook says so ends the block after its instruction (sgx_a32_yield_check). The
+   condition of
    an instruction (ConditionPassed) is a jump past it, made where it first changes something (sg_when's deferred
    skip), so a clause that hands its word on (sg_see) has emitted nothing but what nothing reads. The machine's
    AArch32 part writes the jumps to labels, the machine instructions (SGX_A32_*) and the exits' and the monitor's
@@ -40,12 +43,24 @@ typedef struct {
     SnxU32 syndrome, pc;
 } SgA32Exit;
 /* a way out of the block the machine's AArch32 part does not write itself (the block compiler's, mach_arm.inc): where
-   undefined, the backend's (snx_arm_undefined of the word, for the reason) and R15 = next where it set no exit */
+   undefined, the backend's (snx_arm_undefined of the word, for the reason) and R15 = next where it set no exit; else
+   R15 = next alone (a yield) */
 typedef struct {
     int label, undefined;
     unsigned reason;
     SnxU32 word, pc, next;
 } SgA32Out;
+/* an access that left the hot code for the bus hook (sgx_a32_bus): its label, where the hot code goes on, the runtime
+   library's function and its arguments but the address and a store's value (already in their registers), and the
+   caller-saved registers with values read after it, kept in the frame's slots from slot */
+typedef struct {
+    int label, back;
+    const char* sym;
+    SnxU32 size, key, pc;
+    int load;
+    unsigned live;
+    int slot;
+} SgA32Bus;
 /* a store's check of the exclusive monitor that found it armed: its cold path, the address's register and the bytes,
    and where the hot code goes on */
 typedef struct {
@@ -104,9 +119,13 @@ struct SgCtx {
        to its base register */
     unsigned pair;
     SnxU32 offset;
-    /* the block's options (codegen.h) */
+    /* the block's options (codegen.h), and its address, which a trace slot counts from */
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
+    SnxU32 trace, skipped, block_pc;
+    /* what the bus hook's writes of the instruction returned, ORed (yields: there was one): nonzero ends the block */
+    SgD yield;
+    int yields;
     /* a checked transfer's address, size and operation (checked.h), a store's sent once (sent) */
     SgD transfer;
     unsigned transfer_bytes, transfer_op;
@@ -114,6 +133,8 @@ struct SgCtx {
     unsigned group_at; /* the bytes of a multiple transfer already moved */
     SgA32Out* outs;
     int nouts, cap_outs;
+    SgA32Bus* buses;
+    int nbuses, cap_buses;
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
@@ -145,6 +166,8 @@ static inline int sgx_dead_words(SnxU64 dead, SnxU32 vdead, unsigned short* word
 /* the guest's architecture version (arm.sail's ArchVersion): the block's profile's */
 static inline long long sg_ArchVersion(SgCtx* g) {
     switch (g->profile) {
+        case SNX_ARM_PROFILE_ARM7TDMI: return 4;
+        case SNX_ARM_PROFILE_ARM946E: return 5;
         case SNX_ARM_PROFILE_ARM11: return 6;
         case SNX_ARM_PROFILE_A9: return 7;
         default: return 8;
@@ -152,6 +175,10 @@ static inline long long sg_ArchVersion(SgCtx* g) {
 }
 static inline int sgx_a32_hosted(const SgCtx* g) { return g->memory == SNX_ARM_MEMORY_HOSTED; }
 static inline int sgx_a32_checked(const SgCtx* g) { return g->memory == SNX_ARM_MEMORY_CHECKED; }
+static inline int sgx_a32_arm7(const SgCtx* g) { return g->profile == SNX_ARM_PROFILE_ARM7TDMI; }
+static inline int sgx_a32_arm9(const SgCtx* g) { return g->profile == SNX_ARM_PROFILE_ARM946E; }
+/* the two whose bus has the hook, loads that rotate, stores that align and a PC stored as PC + 12 */
+static inline int sgx_a32_legacy(const SgCtx* g) { return sgx_a32_arm7(g) || sgx_a32_arm9(g); }
 /* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): the block's until the instruction selects the other */
 static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->thumb ? 2 : 1; }
 static inline void sg_SetInstrSet(SgCtx* g, int iset) { g->iset = iset; }
@@ -329,8 +356,11 @@ enum {
     SGX_A32_UNDEF_END, /* after snx_arm_undefined: R15 = imm where it set no exit, then the block's return */
     SGX_A32_CHECK,     /* after a call of the backend's: the block's return where it set an exit */
     /* the block compiler's own (mach_arm.inc's sgx_machine_op), on every machine: */
-    SGX_A32_OUT /* to a new way out (SgA32Out) on cc: kv[0] the word, imm its reason + 1; kv[1] the instruction's
-                          address, and the next one's from bit 32 */
+    SGX_A32_OUT, /* to a new way out (SgA32Out) on cc: kv[0] the word, imm its reason + 1, 0 for a yield; kv[1] the
+                    instruction's address, and the next one's from bit 32 */
+    SGX_A32_BUS /* on cc, out of the hot code to sym(state, in[0] the address, imm its size, kv[0]'s low word or in[3]),
+                    R15 kv[0]'s high word, else sel's access of [in[1] + in[2]]: a load's into SGX_RET (kv[1] 1), or a
+                    store of in[3], SGX_RET then 0 */
 };
 
 /* a machine instruction, after the fields written are stored: whatever it does may leave the region (a jump, an exit)
@@ -430,6 +460,15 @@ static inline void sgx_a32_trap_on(SgCtx* g, SgB bad, unsigned reason) {
     i->kv[0] = g->word;
     i->kv[1] = (SnxU32)g->pc | (SnxU64)g->next << 32;
 }
+/* the instruction's end: the block's where a write of it through the bus hook returned nonzero, R15 the next
+   instruction's (llvm.c's yield_check) */
+static inline void sgx_a32_yield_check(SgCtx* g) {
+    if (!g->yields) return;
+    g->yields = 0;
+    SgXIns* i = sgx_a32_on(g, SGX_A32_OUT, sg_b_not(g, sg_d_is_zero(g, g->yield)));
+    i->imm = 0;
+    i->kv[1] = (SnxU32)g->pc | (SnxU64)g->next << 32;
+}
 /* a Thumb ITSTATE in CPSR: [1:0] in bits 26:25, [7:2] in 15:10 (SG_IT_BITS) */
 #define SG_IT_BITS 0x0600FC00u
 static inline SnxU32 sg_it_bits(unsigned itstate) { return (SnxU32)((itstate & 3u) << 25 | (itstate >> 2) << 10); }
@@ -461,12 +500,20 @@ static inline void sgx_a32_stop(SgCtx* g, unsigned code, SgD syndrome, SnxU32 pc
 }
 static inline void sg_AArch32_CallSupervisor(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_SVC, imm); }
 static inline void sg_AArch32_SoftwareBreakpoint(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_BREAKPOINT, imm); }
-/* the ARM7TDMI's MULS's carry and its trace: a profile this back end makes no block of */
-static inline void sg_MultiplyCarry(SgCtx* g) { sg_fail("the ARM7TDMI's multiply carry", (long long)g->word, 0); }
-static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) {
-    (void)g;
-    (void)multiplier;
+/* the ARM7TDMI's multiply carry, the runtime library's, from the operands before the result lands
+   (llvm.c's multiply) */
+static inline void sg_MultiplyCarry(SgCtx* g) {
+    SgD args[2] = {sgx_const(32, g->word), sgx_const(32, (SnxU64)g->thumb)};
+    sgx_a32_commit(g);
+    sgx_a32_call(g, "snx_arm_multiply_carry", args, 2, 0);
 }
+/* the instruction's trace slot (codegen.h's SnxArmCodegenOptions) gets v */
+static inline void sgx_a32_trace(SgCtx* g, SgD v) {
+    if (!g->trace) return;
+    sgx_a32_commit(g);
+    sgx_a32_put(g, g->trace + (((SnxU32)g->pc - g->block_pc) >> (g->thumb ? 1 : 2)) * 4, 32, v);
+}
+static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) { sgx_a32_trace(g, multiplier); }
 
 /* ---- calls ---- */
 
@@ -493,7 +540,9 @@ static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs,
 
 /* ---- guest memory ---- */
 
-/* the region's min(mem_size, 2^32): an access whose last byte is past it aborts (llvm.c's bounds) */
+/* the region's min(mem_size, 2^32): an access whose last byte is past it aborts (llvm.c's bounds). The ARM7TDMI's and
+   the ARM946E's window runs past 4 GiB by a guard (agb/cpu/memmap.c), where an access the console's bus wraps lands:
+   its size as it is */
 static inline SgD sgx_a32_limit(SgCtx* g) {
     SgX* x = sgx(g);
     if (!g->limit) {
@@ -502,7 +551,7 @@ static inline SgD sgx_a32_limit(SgCtx* g) {
         i->disp = (int)offsetof(SnxArmCPU, mem_size);
         i->def = sgx_vreg(x, x->n - 1, 64);
         SgD size = sgx_val(64, i->def), top = sgx_const(64, 1ull << 32);
-        SgD l = sg_d_select(g, sgx_d_ult(g, top, size), top, size);
+        SgD l = sgx_a32_legacy(g) ? size : sg_d_select(g, sgx_d_ult(g, top, size), top, size);
         g->limit = sgx_reg(x, &l);
     }
     return sgx_val(64, g->limit);
@@ -624,6 +673,125 @@ static inline void sgx_a32_fetch(SgCtx* g, SnxU32 word, unsigned bytes) {
     sgx_a32_exit(g, sg_d_eq(g, status, sgx_const(32, SNX_ARM_CODE_CHANGED)), SNX_ARM_CODE_CHANGED, pc, 0);
 }
 
+/* ---- the ARM7TDMI's and the ARM946E's bus: the hook's regions, and the access that leaves the hot code for it ---- */
+
+/* where the hook may take an access at address: the regions' top bytes, and everything past the console's 28 bits; on
+   the ARM946E its registers' window alone (llvm.c's io_route, but for the hook's own presence, the
+   runtime library's) */
+static inline SgB sgx_a32_route(SgCtx* g, SgD address, int store) {
+    sg_flags_flush(g); /* the condition made here stays the flags of the jump on it */
+    SgD top = sg_d_lsr(g, address, 24);
+    if (sgx_a32_arm9(g)) return sg_d_eq(g, top, sgx_const(32, 4));
+    SnxU32 regions = store ? SNX_ARM_IO_STORE_REGIONS : SNX_ARM_IO_REGIONS;
+    SgD bit = sg_d_and(g, sg_d_shift_dyn(g, sgx_const(32, regions), sg_d_and(g, top, sgx_const(32, 31)), 1),
+                       sgx_const(32, 1));
+    return sg_b_not(g, sg_d_is_zero(g, sg_d_or(g, bit, sg_d_lsr(g, address, 28))));
+}
+/* the access of bytes at [CPU.mem + address], or where out holds the runtime library's with hook (the address the hook
+   gets) and size: what it gives, a load's value zero extended to 32 bits, a store's of value 0 or what the hook
+   returned */
+static inline SgD sgx_a32_bus(SgCtx* g, SgB out, SgD hook, SgD address, int bytes, unsigned size, const SgD* value) {
+    SgX* x = sgx(g);
+    const SgXSel* s;
+    if (x->b[out].kind == SGX_B_CONST && !x->b[out].v) { /* an address known to be none of the hook's */
+        if (!value) return sg_d_zext(g, sgx_a32_load(g, address, bytes, 0), 32);
+        sgx_a32_store(g, address, bytes, 0, bytes < 4 ? sg_d_slice(g, *value, 8 * bytes - 1, 0) : *value);
+        return sgx_const(32, 0);
+    }
+    if (value)
+        s = bytes == 1   ? sgx_a32_mem_form(sgx_sel_mov_8, sgx_sel_mov_8_n, 1)
+            : bytes == 2 ? sgx_a32_mem_form(sgx_sel_mov_16, sgx_sel_mov_16_n, 1)
+                         : sgx_a32_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 1);
+    else
+        s = bytes == 1   ? sgx_a32_mem_form(sgx_sel_zext8_32, sgx_sel_zext8_32_n, 0)
+            : bytes == 2 ? sgx_a32_mem_form(sgx_sel_zext16_32, sgx_sel_zext16_32_n, 0)
+                         : sgx_a32_mem_form(sgx_sel_mov_32, sgx_sel_mov_32_n, 0);
+    /* an argument of 64 bits each, so no ABI's rule for a narrower one matters */
+    SgD h = sgx_zext(x, hook, 64), at = sgx_zext(x, address, 64),
+        v = value ? sg_d_zext(g, *value, 64) : sgx_const(64, 0);
+    int in[4] = {0};
+    in[0] = sgx_reg(x, &h);
+    in[1] = sgx_a32_mem(g);
+    in[2] = sgx_reg(x, &at);
+    if (value) in[3] = sgx_reg(x, &v);
+    int from = 0, cc = sgx_bool_cc(x, out, &from);
+    SgXIns* i = sgx_append(x, SGX_K_MACHINE);
+    i->op = SGX_A32_BUS;
+    i->cc = (unsigned char)cc;
+    i->flags_from = from;
+    i->sel = s;
+    i->sym = value ? "snx_arm_io_write" : "snx_arm_io_read";
+    i->imm = size;
+    i->kv[0] = sgx_a32_arm9(g) ? ~0u : (SnxU32)g->pc | (SnxU32)g->thumb; /* where the open bus is read from */
+    i->kv[0] |= (SnxU64)(SnxU32)g->pc << 32;
+    i->kv[1] = !value;
+    for (int k = 0; k < 4; ++k) i->in[k] = in[k];
+    i->fixed[0] = sgx_a32_args[0], i->fixed[1] = sgx_a32_args[3], i->fixed[2] = sgx_a32_args[1];
+    i->fixed[3] = sgx_a32_args[2];
+    i->side = 1;
+    i->def = sgx_vreg(x, x->n - 1, 64);
+    SgD r = sg_d_slice(g, sgx_val(64, i->def), 31, 0);
+    /* the hook may change any of the state: the region's registers and CPSR are read again after it */
+    x->flags_ins = -1;
+    for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
+    g->cpsr = g->limit = g->mem = 0;
+    g->origin = -1;
+    return r;
+}
+/* a single transfer's load of bytes (1, 2, 4) at address: the aligned unit, a misaligned one rotated through 32 bits,
+   an ARMv4T LDRSH at an odd address the byte there (llvm.c's readmem on the two) */
+static inline SgD sgx_a32_bus_read(SgCtx* g, SgD address, int bytes, int sign) {
+    SgX* x = sgx(g);
+    int odd = sign && bytes == 2 && sgx_a32_arm7(g);
+    sgx_reg(x, &address);
+    SgD aligned = bytes > 1 ? sg_d_and(g, address, sgx_const(32, ~(SnxU32)(bytes - 1))) : address;
+    unsigned size = (unsigned)bytes | (odd ? SNX_ARM_IO_SIGNED : 0) | (sgx_a32_arm9(g) ? SNX_ARM_IO_ARM9 : 0);
+    sgx_reg(x, &aligned);
+    SgB out = sgx_a32_route(g, address, 0);
+    if (odd) /* the byte's, and its sign, are the runtime library's */
+        out = sg_b_or(g, out, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, address, sgx_const(32, 1)))));
+    SgD v = sgx_a32_bus(g, out, sgx_a32_arm7(g) ? address : aligned, aligned, bytes, size, NULL);
+    if (odd) return sg_d_sext(g, sg_d_slice(g, v, 15, 0), 32);
+    /* the ARM946E-S rotates a word alone: its halfword loads read the aligned unit as it is */
+    if (bytes > 1 && (sgx_a32_arm7(g) || bytes == 4))
+        v = sg_d_shift_dyn(g, v, sg_d_lsl(g, sg_d_and(g, address, sgx_const(32, (SnxU32)(bytes - 1))), 3), 3);
+    return sign && bytes < 4 ? sg_d_sext(g, sg_d_slice(g, v, 8 * bytes - 1, 0), 32) : v;
+}
+/* a multiple transfer's word at address: below the save memory its word's, on the ARM946E everywhere (llvm.c's
+   list_address) */
+static inline SgD sgx_a32_list_address(SgCtx* g, SgD address) {
+    SgD word = sg_d_and(g, address, sgx_const(32, ~3u));
+    if (sgx_a32_arm9(g)) return word;
+    return sg_d_select(g, sgx_d_ult(g, address, sgx_const(32, SNX_ARM_SAVE_MEMORY)), word, address);
+}
+static inline SgD sgx_a32_list_read(SgCtx* g, SgD address) {
+    SgD at = sgx_a32_list_address(g, address);
+    sgx_reg(sgx(g), &at);
+    SgB out = sgx_a32_route(g, at, 0);
+    return sgx_a32_bus(g, out, at, at, 4, 4u | SNX_ARM_IO_LIST | (sgx_a32_arm9(g) ? SNX_ARM_IO_ARM9 : 0), NULL);
+}
+/* a store of bytes through the bus (list: a multiple transfer's word): what the hook returned joins the instruction's
+   yields (llvm.c's writemem, writemem_list) */
+static inline void sgx_a32_bus_write(SgCtx* g, SgD address, int bytes, SgD value, int list) {
+    SgX* x = sgx(g);
+    SgD at = list        ? sgx_a32_list_address(g, address)
+             : bytes > 1 ? sg_d_and(g, address, sgx_const(32, ~(SnxU32)(bytes - 1)))
+                         : address;
+    unsigned size = 0x100u | (unsigned)bytes | (list ? SNX_ARM_IO_LIST : 0) | (sgx_a32_arm9(g) ? SNX_ARM_IO_ARM9 : 0);
+    value.w = 32; /* the register, whose low bits are stored: the hook sees it whole */
+    sgx_reg(x, &value);
+    sgx_reg(x, &at);
+    if (!list) {
+        sgx_reg(x, &address);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_valid), 32, sgx_const(32, 0));
+    }
+    SgD hook = list ? at : address; /* the raw address: the save memory's 8 bit bus picks the lane from it */
+    SgB out = sgx_a32_route(g, hook, 1);
+    SgD r = sgx_a32_bus(g, out, hook, at, bytes, size, &value);
+    g->yield = g->yields ? sg_d_or(g, g->yield, r) : r;
+    g->yields = 1;
+}
+
 /* ---- an instruction's transfer, of any profile and mode: begun (its range and alignment checked, a checked load's
    bytes read), moved, ended (a checked store's bytes sent) ---- */
 
@@ -634,6 +802,7 @@ static inline void sgx_a32_transfer(SgCtx* g, SgD address, unsigned bytes, unsig
     sgx_reg(x, &address);
     if (!sgx_a32_checked(g)) {
         sgx_a32_bounds(g, address, bytes, alignment);
+        sgx_a32_trace(g, address);
         return;
     }
     if (alignment > 1)
@@ -650,6 +819,8 @@ static inline void sgx_a32_transfer(SgCtx* g, SgD address, unsigned bytes, unsig
 /* a single load of bytes (1, 2 or 4) of the transfer, disp bytes into it, to 32 bits */
 static inline SgD sgx_a32_read(SgCtx* g, SgD address, int bytes, int disp, int sign) {
     SgD v;
+    if (sgx_a32_legacy(g))
+        return sgx_a32_bus_read(g, disp ? sg_d_add(g, address, sgx_const(32, (SnxU32)disp)) : address, bytes, sign);
     v = sgx_a32_checked(g) ? sgx_a32_word(g, (unsigned)disp, (unsigned)(8 * bytes))
                            : sgx_a32_load(g, address, bytes, disp);
     if (bytes == 4) return v;
@@ -657,12 +828,18 @@ static inline SgD sgx_a32_read(SgCtx* g, SgD address, int bytes, int disp, int s
 }
 /* a multiple transfer's word, disp bytes into it */
 static inline SgD sgx_a32_read_list(SgCtx* g, SgD address, int disp) {
+    if (sgx_a32_legacy(g))
+        return sgx_a32_list_read(g, disp ? sg_d_add(g, address, sgx_const(32, (SnxU32)disp)) : address);
     return sgx_a32_checked(g) ? sgx_a32_word(g, (unsigned)disp, 32) : sgx_a32_load(g, address, 4, disp);
 }
 /* the low bytes of value (32 bits) stored, disp bytes into the transfer; the exclusive monitor's check is the caller's
-   (sgx_a32_written) */
+   (sgx_a32_written), but the two profiles' with the hook, whose single stores clear it and whose
+   multiple ones do not */
 static inline void sgx_a32_write(SgCtx* g, SgD address, int bytes, int disp, SgD value, int list) {
-    (void)list;
+    if (sgx_a32_legacy(g)) {
+        sgx_a32_bus_write(g, disp ? sg_d_add(g, address, sgx_const(32, (SnxU32)disp)) : address, bytes, value, list);
+        return;
+    }
     if (sgx_a32_checked(g)) {
         if (disp % 4) sg_fail("a checked transfer's byte past a word's first", disp, bytes);
         sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words) + (size_t)disp, 32, value);
@@ -673,16 +850,17 @@ static inline void sgx_a32_write(SgCtx* g, SgD address, int bytes, int disp, SgD
 /* a store's end: the monitor's one check for its bytes (their range overlaps the reservation exactly where one of its
    words does), then a checked one's bytes sent */
 static inline void sgx_a32_written(SgCtx* g, SgD address, unsigned bytes) {
-    sgx_a32_monitor(g, address, bytes);
+    if (!sgx_a32_legacy(g)) sgx_a32_monitor(g, address, bytes);
     if (sgx_a32_checked(g)) sgx_a32_checked_access(g, g->transfer_op, g->transfer, g->transfer_bytes);
 }
 
-/* a multiple transfer's range, checked before its first access (arm.sail's GuestTransfer): word aligned */
+/* a multiple transfer's range, checked before its first access (arm.sail's GuestTransfer): word aligned, but on the
+   ARM7TDMI and the ARM946E, whose buses take an unaligned base */
 static inline void sg_GuestTransfer(SgCtx* g, SgD address, long long bytes, int write) {
     sgx_a32_commit(g);
     if (g->group) sg_fail("a second multiple transfer in one instruction", (long long)g->word, 0);
     sgx_reg(sgx(g), &address);
-    sgx_a32_transfer(g, address, (unsigned)bytes, 4, write, 1);
+    sgx_a32_transfer(g, address, (unsigned)bytes, sgx_a32_legacy(g) ? 1 : 4, write, 1);
     g->group = 1;
     g->group_write = write;
     g->group_start = address;
@@ -705,16 +883,21 @@ static inline SgD sg_GuestRead(SgCtx* g, SgD address, long long size, int aligne
     if (g->group) {
         unsigned at = g->group_at;
         g->group_at += (unsigned)size;
+        if (sgx_a32_legacy(g)) return sgx_a32_list_read(g, address);
         return sgx_a32_checked(g) ? sgx_a32_word(g, at, 32) : sgx_a32_load(g, address, (int)size, 0);
     }
     sgx_a32_transfer(g, address, (unsigned)size, 1, 0, 0);
-    if (sgx_a32_checked(g)) return sg_d_slice(g, sgx_a32_read(g, address, (int)size, 0, 0), 8 * size - 1, 0);
+    if (sgx_a32_legacy(g) || sgx_a32_checked(g))
+        return sg_d_slice(g, sgx_a32_read(g, address, (int)size, 0, 0), 8 * size - 1, 0);
     return sgx_a32_load(g, address, (int)size, 0);
 }
+/* an ARMv4T halfword load's 32 bits as its bus gives them (arm.sail's GuestReadHalfwordV4) */
 static inline SgD sg_GuestReadHalfwordV4(SgCtx* g, SgD address, int sign) {
-    (void)address;
-    (void)sign;
-    sg_fail("an ARMv4T halfword load", (long long)g->word, 0);
+    sgx_a32_commit(g);
+    if (g->group) sg_fail("a halfword load in a multiple transfer", (long long)g->word, 0);
+    sgx_reg(sgx(g), &address);
+    sgx_a32_transfer(g, address, 2, 1, 0, 0);
+    return sgx_a32_read(g, address, 2, 0, sign);
 }
 static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int aligned, SgD value) {
     (void)aligned;
@@ -724,7 +907,9 @@ static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int alig
     if (g->group) {
         unsigned at = g->group_at;
         g->group_at += (unsigned)size;
-        if (sgx_a32_checked(g)) {
+        if (sgx_a32_legacy(g))
+            sgx_a32_bus_write(g, address, (int)size, value, 1);
+        else if (sgx_a32_checked(g)) {
             /* a word of the transfer, sent as its last one is in (sg_transfer_commit) */
             sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words) + at, 32, value);
             sgx_a32_monitor(g, address, (unsigned)size);
