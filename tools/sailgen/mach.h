@@ -1261,7 +1261,6 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
     SgXIns* i;
     SgXBool* b = &x->b[c];
     int known = !c || b->kind == SGX_B_CONST, always = c && known && b->v;
-    if (always) ntests = 0;
     if (known && !always && !ntests) return tied;
     if (ntests > SGX_TESTS) sg_fail("a cold path of this many tests", ntests, SGX_TESTS);
     for (j = 0; j < nargs + (fpcr_at >= 0) + (k_at >= 0); ++j) {
@@ -1297,6 +1296,7 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
         for (j = 0; j < i->ntests; ++j) /* the same value's again: an operand that is both of them */
             seen |= i->test[j].kind == p->kind && i->in[i->test[j].of] == i->in[p->of];
         if (seen) continue;
+        if (!x->v[i->in[p->of]].cls) sg_fail("a cold path's test of a value in no vector register", n, p->of);
         if (p->limit)
             for (l = 6; i->in[l] && i->in[l] != p->limit;)
                 if (++l == SGX_INS_IN) sg_fail("a cold path's tests of more than two limits", n, ntests);

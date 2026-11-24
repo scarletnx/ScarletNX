@@ -184,7 +184,7 @@ static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
     SgX* x = a->x;
     SgXIns* i = &x->ins[at];
     SgXBuf* b = a->b;
-    unsigned avoid = cls ? 0 : 1u << out;
+    unsigned avoid = 0;
     int k, t = -1;
     /* the result is in out: no value moved out of the way goes there */
     if (cls)
@@ -192,10 +192,9 @@ static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
     else
         a->owner[out] = -1;
     for (k = 0; k < i->ntests; ++k) {
-        int l = i->test[k].limit ? i->in[i->test[k].limit] : 0, v = i->test[k].of ? i->in[i->test[k].of] : 0;
+        int l = i->test[k].limit ? i->in[i->test[k].limit] : 0;
         if (l && x->v[l].reg < 0 && x->v[l].slot < 0) sgx_in_reg(a, l, at, avoid);
         if (l && x->v[l].reg >= 0) avoid |= 1u << x->v[l].reg;
-        if (v && !x->v[v].cls && x->v[v].reg >= 0) avoid |= 1u << x->v[v].reg;
     }
     if (i->ntests) t = sgx_free_reg(a, at, avoid);
     if (i->flags_from >= 0) {
@@ -206,25 +205,19 @@ static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
     }
     for (k = 0; k < i->ntests; ++k) {
         unsigned w = i->test[k].w;
-        int v = i->test[k].of ? i->in[i->test[k].of] : i->in[0], xcls = x->v[v].cls;
-        int reg = i->test[k].of ? x->v[v].reg : out, from = t, cc;
+        int v = i->in[i->test[k].of], reg = i->test[k].of ? x->v[v].reg : out, cc;
         SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull,
                inf = w == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
         SnxU64 less = i->test[k].kind == SGX_T_NORMAL ? (normal + 1) << 1 : i->test[k].kind == SGX_T_DENORMAL ? 2 : 0;
         unsigned char r[4] = {0, 0, 0, 0};
-        if (xcls && reg >= 0) {
+        if (reg >= 0) {
             const SgXVForm* f = w == 32 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
             r[(int)f->rm] = (unsigned char)t;
             r[(int)f->reg] = (unsigned char)reg;
             f->enc(b, r, 0, 0);
-        } else if (reg >= 0)
-            from = reg;
-        else if (!xcls && x->v[v].xmm >= 0)
-            sgx_movq(b, 0, x->v[v].xmm, t);
-        else
+        } else
             sgx_mov_mem(a, 1, (int)w, t, SGX_RSP, 8 * x->v[v].slot);
-        r[0] = (unsigned char)t;
-        r[1] = r[2] = (unsigned char)from;
+        r[0] = r[1] = r[2] = (unsigned char)t;
         /* twice the bits less the constant, one LEA's displacement but for a double's smallest normal */
         sgx_enc_lea(b, r, less >> 31 ? 0 : -(long long)less, w == 64, 1);
         if (less >> 31) sgx_op_pool(a, 0x2B, t, less); /* sub */
