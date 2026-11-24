@@ -9,7 +9,8 @@
    entered as a function, through a pointer, reads its slot and goes where it says. Two's stub, a stub of a function
    a hook names and every stub of a recompile with --hook-direct-calls must call through the table. The call is made
    where the BL or B is (the IR of the calling function calls the three functions itself), and goes to the stub's own
-   function once the guest has changed the stub's code.
+   function once the guest has changed the stub's code. The function whose IR is printed is LLVM's; built again
+   without the print, every function is the x86-64 back end's where it is built, and runs the same.
      plt_calls SCARLETNX DATA */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -402,9 +403,10 @@ int main(int argc, char** argv) {
         hooked = candidate;
     }
     check(hooked && strlen(hooked) < 100 && snx_hook_routed(hooked), "the route list names a symbol");
-    /* 0: as it is. 1: ext_add by a name a hook names. 2: with every call through its dispatch slot */
-    for (pass = 0; pass < 3; ++pass) {
-        const char* ext = pass == 1 && hooked ? hooked : "ext_add";
+    /* 0: as it is, printing the calling function's IR. 1: as it is. 2: ext_add by a name a hook names. 3: with every
+       call through its dispatch slot */
+    for (pass = 0; pass < 4; ++pass) {
+        const char* ext = pass == 2 && hooked ? hooked : "ext_add";
         main_image(main_bytes, ext);
         sdk_image(sdk_bytes, ext);
         path = snx_path_join(exefs, "main");
@@ -422,17 +424,17 @@ int main(int argc, char** argv) {
         args[k++] = "--outdir";
         args[k++] = out;
         args[k++] = "--nce=0"; /* code made ahead of time, which an NCE recompile has none of */
-        if (pass == 2) args[k++] = "--hook-direct-calls";
+        if (pass == 3) args[k++] = "--hook-direct-calls";
         if (!pass) args[k++] = dump; /* the IR of the function that calls through the stubs, in the output */
         args[k] = NULL;
         if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
             check(0, "the game recompiles");
         }
-        if (pass < 2 && (!text || !strstr(text, bound_line)))
+        if (pass < 3 && (!text || !strstr(text, bound_line)))
             fprintf(stderr, "wanted: %s in:\n%s\n", bound_line, text ? text : "");
-        check(text && (pass == 2 ? !strstr(text, "PLT: ") : strstr(text, bound_line) != NULL),
-              pass == 2 ? "nothing is bound when every call goes through its dispatch slot"
+        check(text && (pass == 3 ? !strstr(text, "PLT: ") : strstr(text, bound_line) != NULL),
+              pass == 3 ? "nothing is bound when every call goes through its dispatch slot"
                         : "the recompile says how many calls through the PLT it made direct");
         if (!pass) { /* the call is made where the BL or B is, not in the stub's function */
             const SnxU64 a = SNX_CODE_BASE, b = SNX_CODE_BASE + 0x4000;
@@ -444,9 +446,13 @@ int main(int argc, char** argv) {
             /* its last branch too, which keeps the call of the stub for a slot that holds another address */
             check(ir_calls(text, a + STUB + 48), "the branch to a stub is run in the stub's place");
         }
+        if (text && strstr(text, "x86-64 back end: ") && pass < 2)
+            check(pass ? !strstr(text, ", LLVM the rest") : strstr(text, ", LLVM the rest") != NULL,
+                  pass ? "the x86-64 back end makes every function, the calling one too"
+                       : "the function whose IR is printed is LLVM's");
         free(text);
         text = NULL;
-        module_runs(module, main_bytes, sdk_bytes, pass == 2 ? TABLE : pass ? ROUTED : BOUND);
+        module_runs(module, main_bytes, sdk_bytes, pass == 3 ? TABLE : pass == 2 ? ROUTED : BOUND);
     }
     check(!snx_remove_tree(root), "fixture cleanup");
     free(module);

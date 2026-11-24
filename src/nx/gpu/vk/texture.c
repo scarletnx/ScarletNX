@@ -151,8 +151,6 @@ static void mark_pages(void* ctx, u64 gva, u64 cpu, u64 n) {
                 }
     }
 }
-/* A sparse texture's memory bound where guest memory maps its texels now (memory.c vk_image_sparse_bind), with room
-   made for it under the budget: -1 when memory ran out, 0 when nothing changed, 1 when the binds changed */
 /* The blocks of a sparse texture's levels finer than floor, in bits (the order vk_image_sparse_bind takes), left
    without memory: as resident_floor does for a texture bound by tiles, its views sampled no finer than the first
    level left (tex_view). The mip tail stays */
@@ -524,6 +522,7 @@ static int up_convert(Upload* u, const VkFmt* f, const UpConv* c) {
     return 1;
 }
 static int up_flush(Upload* u) {
+    SNX_SECTION_SCOPED_C(sec_batch, "vk texture upload batch", 7); /* one batch: its barriers, conversions and image copies */
     int ok = 1;
     up_cb(u);
     if (u->moves) vk_bl_barrier(u->cb, 0);
@@ -1016,7 +1015,6 @@ u64 vk_tex_coarser(Surf* t) {
         t->sys_levels = (u8)n;
         t->upload_valid = 0;
         g_shed_coarser++;
-        (void)was;
         return r < 0 ? 0 : freed;
     }
     if (t->sparse) { /* its finest level's blocks released; the levels left keep their memory and their texels */
@@ -2160,11 +2158,14 @@ static int tex_upload(Surf* t) {
     SNX_ZONE_END(z);
     return r;
 }
-static int tex_upload_(Surf* t);
 static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
+    /* the format family at a glance on the timeline: compressed, sRGB, depth/stencil, plain color */
+    SNX_ZONE_COLOR(z_up, f->depth ? 0x2980B9 : f->conv == VKC_ASTC ? 0x8E44AD
+                                               : (t->fkey >> 31)      ? 0xD35400
+                                                                      : 0x27AE60);
     g_tex_loads.uploads++;
     if (!t->bricks) /* a brick at a time for the others */
         atomic_fetch_add_explicit(&g_tex_upload_bytes, t->size, memory_order_relaxed);
@@ -2382,7 +2383,7 @@ static int tex_copy_pending(Surf* t) {
                            .bufferRowLength = t->pitch / f->bpp,
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {t->w, t->h, 1}};
-    vk_all_barrier(cb); /* the writer's, in stream order */
+    vk_all_barrier_by(VK_BAR_TEXTURE, cb); /* the writer's, in stream order */
     vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     rec_CmdCopyBufferToImage(cb, ib, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &r);
@@ -2489,10 +2490,13 @@ static int tex_can_piece(const Surf* t);
 /* t's format in a log line: an ASTC footprint and the format it is held in, decoded, else Vulkan's */
 static const char* tex_format_name(const Surf* t, char* s, size_t n) {
     const VkFmt* f = &t->f;
-    if (f->conv == VKC_ASTC)
-        snprintf(s, n, "ASTC %ux%u as %s", f->bw, f->bh,
-                 f->vk == VK_FORMAT_BC7_UNORM_BLOCK || f->vk == VK_FORMAT_BC7_SRGB_BLOCK ? "BC7" : "RGBA8");
-    else
+    if (f->conv == VKC_ASTC) {
+        u32 bcn = vk_astc_bcn(f->vk);
+        const char* held = f->vk == VK_FORMAT_BC7_UNORM_BLOCK || f->vk == VK_FORMAT_BC7_SRGB_BLOCK
+                               ? "BC7"
+                               : bcn ? vk_astc_bcn_name(bcn) : "RGBA8";
+        snprintf(s, n, "ASTC %ux%u as %s", f->bw, f->bh, held);
+    } else
         snprintf(s, n, "format %d", (int)f->vk);
     return s;
 }
@@ -2591,6 +2595,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     }
     Surf* t = calloc(1, sizeof *t);
     if (!t) return NULL;
+    SNX_MEM_ALLOC_D(t, sizeof *t, "texture objects");
     t->msaa = (u8)msaa;
     t->ms_raw = msaa != 0;
     t->gva = gva;
@@ -2678,6 +2683,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
                               : "the device makes no such image with sparse residency, or it is under 4 MiB");
         if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE | (written ? VK_OWN_WRITTEN : VK_OWN_MOVES),
                                    &t->bytes)) {
+            SNX_MEM_FREE_D(t, "texture objects");
             free(t);
             return NULL;
         }
@@ -2795,9 +2801,9 @@ void vk_rt_copy_log(void) {
         char line[768];
         int at = 0;
         for (int i = 0; i < VK_RT_COPY_N && at < (int)sizeof line; i++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s %.2f for %s (%.2f ending a pass, %.0f KB)",
-                           i ? ";" : "", (double)n->written[i] / presents, why[i], (double)n->ended[i] / presents,
-                           (double)n->bytes[i] / 1024.0 / presents);
+            at = snx_appendf(line, sizeof line, at, "%s %.2f for %s (%.2f ending a pass, %.0f KB)", i ? ";" : "",
+                             (double)n->written[i] / presents, why[i], (double)n->ended[i] / presents,
+                             (double)n->bytes[i] / 1024.0 / presents);
         LOG("vulkan: copies of render targets a present over the last %llu presents:%s. %.2f a present came after "
             "another for the same draw or dispatch (%.2f ending a pass); one present had %llu copies at most, and "
             "%llu passes ended by them\n",
@@ -2806,8 +2812,8 @@ void vk_rt_copy_log(void) {
         at = 0;
         line[0] = 0;
         for (u32 i = 0; i < VK_RT_COPY_PAIRS && n->pair[i].n && at < (int)sizeof line; i++)
-            at += snprintf(line + at, sizeof line - (size_t)at, "%s format %u to %u %.2f", i ? "," : "",
-                           n->pair[i].from, n->pair[i].to, (double)n->pair[i].n / presents);
+            at = snx_appendf(line, sizeof line, at, "%s format %u to %u %.2f", i ? "," : "", n->pair[i].from,
+                             n->pair[i].to, (double)n->pair[i].n / presents);
         if (at)
             LOG("vulkan: those copies between formats, a present (Vulkan's format numbers):%s; %.2f more of other "
                 "pairs\n",
@@ -2841,6 +2847,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
             if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
             vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
             vk_defer_bytes(x->bytes);
+            SNX_MEM_FREE_D(x, "render targets"); /* crop: rt_copy allocated it with this kind; surf_free reports it too */
             free(x);
             continue;
         }
@@ -2849,6 +2856,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     if (!c) {
         c = calloc(1, sizeof *c);
         if (!c) return guest ? NULL : rt;
+        SNX_MEM_ALLOC_D(c, sizeof *c, "render targets"); /* crop: surf_free reports the matching free */
         c->gva = rt->gva;
         c->w = w;
         c->h = h;
@@ -2864,6 +2872,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (c->msaa &&
             !vk_ms_supported(f.vk, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, c->msaa)) {
+            SNX_MEM_FREE_D(c, "render targets"); /* surf_create_ and tex_create free these on their error paths too */
             free(c);
             return guest ? NULL : rt;
         }
@@ -2882,6 +2891,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         /* its pixels, which draws sample and guest memory may not have: above textures in priority (ledger.c), but
            not a target's for the out-of-memory gate and the reserve (vk_cache_image_create). rt was used now: it stays */
         if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_IMAGE_OTHER, &c->bytes)) {
+            SNX_MEM_FREE_D(c, "render targets"); /* surf_create_ and tex_create free these on their error paths too */
             free(c);
             return guest ? NULL : rt;
         }
@@ -3020,6 +3030,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
     if (!c) {
         c = calloc(1, sizeof *c);
         if (!c) return NULL;
+        SNX_MEM_ALLOC_D(c, sizeof *c, "render targets"); /* saved target: surf_free reports the matching free */
         c->gva = rt->gva;
         c->w = rt->w;
         c->h = rt->h;
@@ -3047,6 +3058,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
         if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_IMAGE_OTHER, &c->bytes)) { /* as rt_copy's */
+            SNX_MEM_FREE_D(c, "render targets"); /* surf_create_ and tex_create free these on their error paths too */
             free(c);
             return NULL;
         }
@@ -3058,6 +3070,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
         if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &c->att))) {
             vk_defer_image(c->img, c->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
             vk_defer_bytes(c->bytes);
+            SNX_MEM_FREE_D(c, "render targets"); /* surf_create_ and tex_create free these on their error paths too */
             free(c);
             return NULL;
         }
@@ -3533,7 +3546,7 @@ static int tex_zero(Surf* t) {
                 }
         }
     if (n) rec_CmdCopyBufferToImage(cb, buf, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), n, r);
-    vk_all_barrier(cb); /* the blocks loaded next go over the zeros */
+    vk_all_barrier_by(VK_BAR_TEXTURE, cb); /* the blocks loaded next go over the zeros */
     return 1;
 }
 /* t, a texture with holes in its mapping: its image cleared, then the blocks of its mapped runs loaded; loaded whole
@@ -3913,13 +3926,22 @@ static int quiet_own(Surf* t, u64 gva, int* why) {
 }
 /* a texture found for a header checked against its memory: whole without a full check where it is quiet (quiet_own) */
 static Surf* tex_check(Surf* t, u64 gva) {
+    /* frequent, so a small code: bits 0..2 are why the full check ran (0 quiet hit, 1 a present, 2 an epoch, 3 a
+       GPU write, 4 no quiet baseline), bit 3 is set when it found the texture gone or had to load it again */
+    SNX_ZONE(z, "vk mem texture check");
+    [[maybe_unused]] char fname[64];
     g_tex_checks.checks++;
     int why = 0;
     /* what can change t outside a check (a failed load, a level given up, Auto's read again) */
     if (t->quiet && gva == t->gva && t->upload_valid && !t->bc7_reread) {
         if (quiet_own(t, gva, &why)) {
             g_tex_checks.quiet++;
-            return g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
+            Surf* r = g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
+            SNX_ZONE_VALUE(z, r == t ? 0u : 8u); /* a new Surf: the quiet check missed a load or a loss */
+            SNX_ZONE_TEXT(z, "%ux%ux%u %lluKB %s: quiet hit%s", t->w, t->h, t->layers * t->depth3d,
+                          (unsigned long long)(t->size >> 10), tex_format_name(t, fname, sizeof fname),
+                          r == t ? "" : ", cross found a change");
+            return r;
         }
     }
     if (why == 1)
@@ -3930,7 +3952,13 @@ static Surf* tex_check(Surf* t, u64 gva) {
         g_tex_checks.full_write++;
     else
         g_tex_checks.full_never++;
-    return tex_check_counted(t, gva);
+    Surf* r = tex_check_counted(t, gva);
+    SNX_ZONE_VALUE(z, (u64)((why ? why : 4) | (r ? 0 : 8)));
+    SNX_ZONE_TEXT(z, "%ux%ux%u %lluKB %s: %s%s", t->w, t->h, t->layers * t->depth3d,
+                  (unsigned long long)(t->size >> 10), tex_format_name(t, fname, sizeof fname),
+                  why == 1 ? "a present" : why == 2 ? "an epoch" : why == 3 ? "a GPU write" : "no quiet baseline",
+                  r ? "" : ", gone or loaded again");
+    return r;
 }
 void vk_tex_full_counts(u64 out[6]) {
     out[0] = g_tex_checks.full_never;
@@ -3960,8 +3988,8 @@ void vk_tex_check_log(void) {
         int at = 0;
         for (int k = 0; k < GPU_WRITE_KINDS && at < (int)sizeof kinds; k++)
             if (g_tex_checks.by_kind[k])
-                at += snprintf(kinds + at, sizeof kinds - (size_t)at, "%s%llu by %s", at ? ", " : "",
-                               (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
+                at = snx_appendf(kinds, sizeof kinds, at, "%s%llu by %s", at ? ", " : "",
+                                 (unsigned long long)g_tex_checks.by_kind[k], g_write_kinds[k]);
         LOG("vulkan: the GPU-side writes of those loads of pieces, by the newest write on their pages: %s\n", kinds);
     }
     LOG("vulkan: full texture checks a present by what ended the texture's quiet: %.1f never quiet, %.1f a present, "
@@ -4173,6 +4201,11 @@ texture_from_memory:
        as a storage image right after its publish, vk_tex_note_writeback), else its own, which the check below loads
        again as before. A storage or raw lookup keeps its own format, which its views need */
     Surf *same = NULL, *twin = NULL;
+    /* frequent, so a small code: 0 no surface found (a new texture), 1 the same format, 2 an sRGB twin used as same.
+       Value 2 is set in two cases: no same-format surface was found, so the twin is taken with no dirty check; or a
+       same-format surface was found but its bytes were written since its check and the twin's were not, so the twin
+       replaces it */
+    SNX_ZONE(z_memo, "vk mem texture memo");
     for (Surf* t = vk_surf_first(gva); t; t = vk_surf_next(t)) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
             t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
@@ -4187,6 +4220,10 @@ texture_from_memory:
     if (twin &&
         (!same || (gpu_mem_dirty_since(same->gw, gva, same->size) && !gpu_mem_dirty_since(twin->gw, gva, twin->size))))
         same = twin;
+    else
+        twin = NULL; /* the same format was taken: the zone must not say a twin was used */
+    SNX_ZONE_VALUE(z_memo, same ? (twin ? 2u : 1u) : 0u);
+    SNX_ZONE_END(z_memo);
     if (same) return tex_check(same, gva);
     if (!format_samples(f.vk)) return NULL;
     /* this texture's levels in one layer; the layers before the last one take their whole stride. Its levels from the
@@ -4231,6 +4268,8 @@ texture_from_memory:
         }
         const u32 slot = (u32)(kind_memo_key >> 52) & 4095;
         if (kind_memo_key && g_kind.memo[slot].key == kind_memo_key) {
+            /* rare: the bytes' kind is known from an earlier texture, so no GPU read of their blocks */
+            SNX_ZONE_T(z_kind, "vk mem astc kind memo", "%s", "memo hit, no GPU kind read");
             const int outcome = astc_kind_outcome(g_kind.memo[slot].kind, srgb, 0);
             kind_unknown = 0;
             vk_astc_kind_seen(outcome, plat_ns() - started, 0);

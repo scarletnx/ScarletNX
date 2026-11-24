@@ -1,0 +1,524 @@
+# The x86-64 back end's primitives (x64.h): what each computes, in the SDM's own notation, so that sailgen --isel
+# reads them with the parser it reads the manual's Operation sections with, evaluates both to terms, and picks for
+# each primitive the instructions whose pages compute the same (README.md, "Instruction selection").
+#
+#   op NAME WIDTH... (OPERAND, ...)    then the pseudocode, up to 'end'
+#
+# WIDTH is each width the primitive is selected at (W in the code). An operand is bits of W (A, B), bits of a width
+# of its own (S:8), an immediate the recompiler knows (imm K:L, of log2(W) bits; imm K:32), the condition of a flag
+# consumer (cond P: CMOVcc's and SETcc's condition), or a carry in (carry CIN, a flag the instruction reads).
+# RESULT is the value; N, Z, C and V the flags as Arm's AddWithCarry and the logical instructions set them, which the
+# selection matches with Intel's (CF, ZF, SF, OF, or their negation) where an instruction gives them.
+#
+# The definitions follow the Arm ARM's pseudocode (AddWithCarry, LSL, CountLeadingZeroBits), so what is derived is
+# where Intel's instructions compute Arm's functions, and that is all the recompiler takes from them.
+
+op add 32 64 (A, B)
+RESULT := A + B;
+end
+
+op sub 32 64 (A, B)
+RESULT := A - B;
+end
+
+# AddWithCarry(A, B, '0'), the Arm ARM's J1.1.3: the flags of an addition
+op adds 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(B);
+signed_sum := SInt(A) + SInt(B);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# AddWithCarry(A, NOT(B), '1'): SUBS and CMP
+op subs 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# ADDS and SUBS of a 32-bit immediate, sign extended (ADD and SUB's immediate forms, with their flags)
+op adds_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(B);
+signed_sum := SInt(A) + SInt(B);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+op subs_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# CMP: SUBS's flags alone
+op cmp 32 64 (A, B)
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+R := unsigned_sum[W-1:0];
+N := R[W-1];
+Z := IsZero(R);
+C := UInt(R) != unsigned_sum;
+V := SInt(R) != signed_sum;
+end
+
+# AddWithCarry(A, B, CIN): ADCS
+op adcs 32 64 (A, B, carry CIN)
+unsigned_sum := UInt(A) + UInt(B) + UInt(CIN);
+signed_sum := SInt(A) + SInt(B) + UInt(CIN);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+# AddWithCarry(A, NOT(B), CIN): SBCS
+op sbcs 32 64 (A, B, carry CIN)
+unsigned_sum := UInt(A) + UInt(NOT B) + UInt(CIN);
+signed_sum := SInt(A) + SInt(NOT B) + UInt(CIN);
+RESULT := unsigned_sum[W-1:0];
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := UInt(RESULT) != unsigned_sum;
+V := SInt(RESULT) != signed_sum;
+end
+
+op neg 32 64 (A)
+RESULT := 0 - A;
+end
+
+op not 32 64 (A)
+RESULT := NOT A;
+end
+
+op and 32 64 (A, B)
+RESULT := A AND B;
+end
+
+op or 32 64 (A, B)
+RESULT := A OR B;
+end
+
+op xor 32 64 (A, B)
+RESULT := A XOR B;
+end
+
+# BIC: A AND NOT B
+op bic 32 64 (A, B)
+RESULT := A AND (NOT B);
+end
+
+# ANDS and TST: the logical flags (N and Z of the result, C and V cleared)
+op ands 32 64 (A, B)
+RESULT := A AND B;
+N := RESULT[W-1];
+Z := IsZero(RESULT);
+C := 0;
+V := 0;
+end
+
+op tst 32 64 (A, B)
+R := A AND B;
+N := R[W-1];
+Z := IsZero(R);
+C := 0;
+V := 0;
+end
+
+op mul 32 64 (A, B)
+RESULT := (UInt(A) * UInt(B))[W-1:0];
+end
+
+# UMULH and SMULH: the high half of the 128-bit product
+op umulh 64 (A, B)
+RESULT := (UInt(A) * UInt(B))[127:64];
+end
+
+op smulh 64 (A, B)
+RESULT := (SInt(A) * SInt(B))[127:64];
+end
+
+# UDIV and SDIV of 64 bits (32-bit ones are of their extensions): the quotient truncated toward zero, which DIV and
+# IDIV give but for the divisor 0 and the one quotient that doesn't fit; those the recompiler keeps from them (a
+# divisor of 1 in their place, its select making Arm's result), which ASSUME says. SDIV's dividend high half (hi) is
+# the sign extension of A (CQO's RDX)
+op udiv 64 (A, B)
+ASSUME NOT IsZero(B)
+RESULT := (UInt(A) / UInt(B))[W-1:0];
+end
+
+op sdiv 64 (A, hi H:A, B)
+ASSUME NOT IsZero(B) AND NOT (A = 8000000000000000H AND B = FFFFFFFFFFFFFFFFH)
+RESULT := (SInt(A) / SInt(B))[W-1:0]; (* signed division *)
+end
+
+# LSL, LSR, ASR and ROR by a constant (the shift's immediate forms)
+op lsl_i 32 64 (A, imm K:L)
+RESULT := LSL(A, UInt(K));
+end
+
+op lsr_i 32 64 (A, imm K:L)
+RESULT := LSR(A, UInt(K));
+end
+
+op asr_i 32 64 (A, imm K:L)
+RESULT := ASR(A, UInt(K));
+end
+
+op ror_i 32 64 (A, imm K:L)
+RESULT := ROR(A, UInt(K));
+end
+
+# LSLV, LSRV, ASRV, RORV: the amount is the register's value modulo the width (ShiftReg's 'UInt(operand2) MOD
+# datasize')
+op lslv 32 64 (A, B)
+RESULT := LSL(A, UInt(B) MOD W);
+end
+
+op lsrv 32 64 (A, B)
+RESULT := LSR(A, UInt(B) MOD W);
+end
+
+op asrv 32 64 (A, B)
+RESULT := ASR(A, UInt(B) MOD W);
+end
+
+op rorv 32 64 (A, B)
+RESULT := ROR(A, UInt(B) MOD W);
+end
+
+# CountLeadingZeroBits(x) = N - 1 - HighestSetBit(x)
+op clz 32 64 (A)
+RESULT := W;
+FOR i := 0 TO W - 1 DO
+    IF A[i] = 1 THEN RESULT := W - 1 - i; FI;
+ROF;
+end
+
+op ctz 32 64 (A)
+RESULT := W;
+FOR i := W - 1 DOWNTO 0 DO
+    IF A[i] = 1 THEN RESULT := i; FI;
+ROF;
+end
+
+# REV: the bytes in the other order
+op rev 32 64 (A)
+RESULT := 0;
+FOR i := 0 TO W / 8 - 1 DO
+    RESULT[8 * i + 7:8 * i] := A[W - 1 - 8 * i:W - 8 - 8 * i];
+ROF;
+end
+
+# extensions: UXTB, UXTH, SXTB, SXTH, SXTW and the 32-bit move that zero extends
+op zext8 32 64 (S:8)
+RESULT := ZeroExtend(S, W);
+end
+
+op zext16 32 64 (S:16)
+RESULT := ZeroExtend(S, W);
+end
+
+op zext32 64 (S:32)
+RESULT := ZeroExtend(S, W);
+end
+
+op sext8 32 64 (S:8)
+RESULT := SignExtend(S, W);
+end
+
+op sext16 32 64 (S:16)
+RESULT := SignExtend(S, W);
+end
+
+op sext32 64 (S:32)
+RESULT := SignExtend(S, W);
+end
+
+# a move: at 8 and 16 bits the stores of a byte and a halfword (MOV r/m8, MOV r/m16)
+op mov 8 16 32 64 (A)
+RESULT := A;
+end
+
+# a constant: of the width, or of 32 bits sign extended to 64
+op movi 32 64 (imm K:W)
+RESULT := K;
+end
+
+op movi_s32 64 (imm K:32)
+RESULT := SignExtend(K, W);
+end
+
+# an addition of a 32-bit immediate, sign extended (the immediate forms of ADD, SUB, AND, OR, XOR, CMP)
+op add_i 32 64 (A, imm K:32)
+RESULT := A + SignExtend(K, W);
+end
+
+op and_i 32 64 (A, imm K:32)
+RESULT := A AND SignExtend(K, W);
+end
+
+op or_i 32 64 (A, imm K:32)
+RESULT := A OR SignExtend(K, W);
+end
+
+op xor_i 32 64 (A, imm K:32)
+RESULT := A XOR SignExtend(K, W);
+end
+
+op cmp_i 32 64 (A, imm K:32)
+B := SignExtend(K, W);
+unsigned_sum := UInt(A) + UInt(NOT B) + 1;
+signed_sum := SInt(A) + SInt(NOT B) + 1;
+R := unsigned_sum[W-1:0];
+N := R[W-1];
+Z := IsZero(R);
+C := UInt(R) != unsigned_sum;
+V := SInt(R) != signed_sum;
+end
+
+# CSEL and CSET: a choice by a condition on the flags
+op csel 32 64 (A, B, cond P)
+IF P = 1 THEN RESULT := A; ELSE RESULT := B; FI;
+end
+
+op cset 32 64 (cond P)
+RESULT := ZeroExtend(P, W);
+end
+
+# Arm's conditions (ConditionHolds, the Arm ARM's J1.1.3), on the flags a primitive above gives; the selection finds
+# Intel's condition code that is the same function of the instruction's flags (Jcc's, SETcc's and CMOVcc's tables)
+cond EQ Z = 1
+cond NE Z = 0
+cond CS C = 1
+cond CC C = 0
+cond MI N = 1
+cond PL N = 0
+cond VS V = 1
+cond VC V = 0
+cond HI C = 1 AND Z = 0
+cond LS NOT (C = 1 AND Z = 0)
+cond GE N = V
+cond LT N != V
+cond GT Z = 0 AND N = V
+cond LE NOT (Z = 0 AND N = V)
+
+# ---- SSE forms, by their instruction column: encoders only ----
+# 'enc NAME FORM' asks for FORM's encoder and operands (x64.h's SgXVForm sgx_v_NAME), from its row's opcode column:
+# what the instruction does isn't derived here (the legacy SSE pages give their lanes in comments, 'Repeat operation
+# for 2nd through 15th byte'). x64_a64.h and x64_codegen.c use them as the Arm ARM's vector operations, which
+# recompiler_backends and sail_x64 hold against the LLVM back end. A form the manual lacks stops the build.
+enc movdqu_ld MOVDQU xmm1, xmm2/m128
+enc movdqu_st MOVDQU xmm2/m128, xmm1
+enc movaps MOVAPS xmm1, xmm2/m128
+enc movq_xr MOVQ xmm, r/m64
+enc movq_rx MOVQ r/m64, xmm
+enc movd_xr MOVD xmm, r/m32
+enc movd_rx MOVD r/m32, xmm
+enc movq_ld MOVQ xmm1, xmm2/m64
+enc movq_st MOVQ xmm2/m64, xmm1
+enc movss_ld MOVSS xmm1, m32
+enc movss_st MOVSS xmm2/m32, xmm1
+enc movss_rr MOVSS xmm1, xmm2
+enc movsd_rr MOVSD xmm1, xmm2
+enc movhlps MOVHLPS xmm1, xmm2
+enc movlhps MOVLHPS xmm1, xmm2
+enc pinsrb PINSRB xmm1, r32/m8, imm8
+enc pinsrw PINSRW xmm, r32/m16, imm8
+enc pinsrd PINSRD xmm1, r/m32, imm8
+enc pinsrq PINSRQ xmm1, r/m64, imm8
+enc pextrb PEXTRB reg/m8, xmm2, imm8
+enc pextrw PEXTRW reg, xmm, imm8
+enc pextrd PEXTRD r/m32, xmm2, imm8
+enc pextrq PEXTRQ r/m64, xmm2, imm8
+enc pmovmskb PMOVMSKB reg, xmm
+enc movmskps MOVMSKPS reg, xmm
+enc movmskpd MOVMSKPD reg, xmm
+enc ptest PTEST xmm1, xmm2/m128
+enc paddb PADDB xmm1, xmm2/m128
+enc paddw PADDW xmm1, xmm2/m128
+enc paddd PADDD xmm1, xmm2/m128
+enc paddq PADDQ xmm1, xmm2/m128
+enc psubb PSUBB xmm1, xmm2/m128
+enc psubw PSUBW xmm1, xmm2/m128
+enc psubd PSUBD xmm1, xmm2/m128
+enc psubq PSUBQ xmm1, xmm2/m128
+enc paddsb PADDSB xmm1, xmm2/m128
+enc paddsw PADDSW xmm1, xmm2/m128
+enc paddusb PADDUSB xmm1, xmm2/m128
+enc paddusw PADDUSW xmm1, xmm2/m128
+enc psubsb PSUBSB xmm1, xmm2/m128
+enc psubsw PSUBSW xmm1, xmm2/m128
+enc psubusb PSUBUSB xmm1, xmm2/m128
+enc psubusw PSUBUSW xmm1, xmm2/m128
+enc pmullw PMULLW xmm1, xmm2/m128
+enc pmulld PMULLD xmm1, xmm2/m128
+enc pmulhw PMULHW xmm1, xmm2/m128
+enc pmulhuw PMULHUW xmm1, xmm2/m128
+enc pmulhrsw PMULHRSW xmm1, xmm2/m128
+enc pmuludq PMULUDQ xmm1, xmm2/m128
+enc pmuldq PMULDQ xmm1, xmm2/m128
+enc pmaddwd PMADDWD xmm1, xmm2/m128
+enc pavgb PAVGB xmm1, xmm2/m128
+enc pavgw PAVGW xmm1, xmm2/m128
+enc psadbw PSADBW xmm1, xmm2/m128
+enc pand PAND xmm1, xmm2/m128
+enc pandn PANDN xmm1, xmm2/m128
+enc por POR xmm1, xmm2/m128
+enc pxor PXOR xmm1, xmm2/m128
+enc pcmpeqb PCMPEQB xmm1, xmm2/m128
+enc pcmpeqw PCMPEQW xmm1, xmm2/m128
+enc pcmpeqd PCMPEQD xmm1, xmm2/m128
+enc pcmpeqq PCMPEQQ xmm1, xmm2/m128
+enc pcmpgtb PCMPGTB xmm1, xmm2/m128
+enc pcmpgtw PCMPGTW xmm1, xmm2/m128
+enc pcmpgtd PCMPGTD xmm1, xmm2/m128
+enc pcmpgtq PCMPGTQ xmm1, xmm2/m128
+enc pmaxsb PMAXSB xmm1, xmm2/m128
+enc pmaxsw PMAXSW xmm1, xmm2/m128
+enc pmaxsd PMAXSD xmm1, xmm2/m128
+enc pmaxub PMAXUB xmm1, xmm2/m128
+enc pmaxuw PMAXUW xmm1, xmm2/m128
+enc pmaxud PMAXUD xmm1, xmm2/m128
+enc pminsb PMINSB xmm1, xmm2/m128
+enc pminsw PMINSW xmm1, xmm2/m128
+enc pminsd PMINSD xmm1, xmm2/m128
+enc pminub PMINUB xmm1, xmm2/m128
+enc pminuw PMINUW xmm1, xmm2/m128
+enc pminud PMINUD xmm1, xmm2/m128
+enc pabsb PABSB xmm1, xmm2/m128
+enc pabsw PABSW xmm1, xmm2/m128
+enc pabsd PABSD xmm1, xmm2/m128
+enc psllw_i PSLLW xmm1, imm8
+enc pslld_i PSLLD xmm1, imm8
+enc psllq_i PSLLQ xmm1, imm8
+enc psrlw_i PSRLW xmm1, imm8
+enc psrld_i PSRLD xmm1, imm8
+enc psrlq_i PSRLQ xmm1, imm8
+enc psraw_i PSRAW xmm1, imm8
+enc psrad_i PSRAD xmm1, imm8
+enc pslldq PSLLDQ xmm1, imm8
+enc psrldq PSRLDQ xmm1, imm8
+enc psllw PSLLW xmm1, xmm2/m128
+enc pslld PSLLD xmm1, xmm2/m128
+enc psllq PSLLQ xmm1, xmm2/m128
+enc psrlw PSRLW xmm1, xmm2/m128
+enc psrld PSRLD xmm1, xmm2/m128
+enc psrlq PSRLQ xmm1, xmm2/m128
+enc psraw PSRAW xmm1, xmm2/m128
+enc psrad PSRAD xmm1, xmm2/m128
+enc packsswb PACKSSWB xmm1, xmm2/m128
+enc packssdw PACKSSDW xmm1, xmm2/m128
+enc packuswb PACKUSWB xmm1, xmm2/m128
+enc packusdw PACKUSDW xmm1, xmm2/m128
+enc punpcklbw PUNPCKLBW xmm1, xmm2/m128
+enc punpcklwd PUNPCKLWD xmm1, xmm2/m128
+enc punpckldq PUNPCKLDQ xmm1, xmm2/m128
+enc punpcklqdq PUNPCKLQDQ xmm1, xmm2/m128
+enc punpckhbw PUNPCKHBW xmm1, xmm2/m128
+enc punpckhwd PUNPCKHWD xmm1, xmm2/m128
+enc punpckhdq PUNPCKHDQ xmm1, xmm2/m128
+enc punpckhqdq PUNPCKHQDQ xmm1, xmm2/m128
+enc pshufb PSHUFB xmm1, xmm2/m128
+enc pshufd PSHUFD xmm1, xmm2/m128, imm8
+enc pshuflw PSHUFLW xmm1, xmm2/m128, imm8
+enc pshufhw PSHUFHW xmm1, xmm2/m128, imm8
+enc palignr PALIGNR xmm1, xmm2/m128, imm8
+enc shufps SHUFPS xmm1, xmm3/m128, imm8
+enc pblendvb PBLENDVB xmm1, xmm2/m128, <XMM0>
+enc pblendw PBLENDW xmm1, xmm2/m128, imm8
+enc pmovsxbw PMOVSXBW xmm1, xmm2/m64
+enc pmovsxwd PMOVSXWD xmm1, xmm2/m64
+enc pmovsxdq PMOVSXDQ xmm1, xmm2/m64
+enc pmovzxbw PMOVZXBW xmm1, xmm2/m64
+enc pmovzxwd PMOVZXWD xmm1, xmm2/m64
+enc pmovzxdq PMOVZXDQ xmm1, xmm2/m64
+enc pclmulqdq PCLMULQDQ xmm1, xmm2/m128, imm8
+enc addss ADDSS xmm1, xmm2/m32
+enc addsd ADDSD xmm1, xmm2/m64
+enc addps ADDPS xmm1, xmm2/m128
+enc addpd ADDPD xmm1, xmm2/m128
+enc subss SUBSS xmm1, xmm2/m32
+enc subsd SUBSD xmm1, xmm2/m64
+enc subps SUBPS xmm1, xmm2/m128
+enc subpd SUBPD xmm1, xmm2/m128
+enc mulss MULSS xmm1,xmm2/m32
+enc mulsd MULSD xmm1,xmm2/m64
+enc mulps MULPS xmm1, xmm2/m128
+enc mulpd MULPD xmm1, xmm2/m128
+enc divss DIVSS xmm1, xmm2/m32
+enc divsd DIVSD xmm1, xmm2/m64
+enc divps DIVPS xmm1, xmm2/m128
+enc divpd DIVPD xmm1, xmm2/m128
+enc sqrtss SQRTSS xmm1, xmm2/m32
+enc sqrtsd SQRTSD xmm1,xmm2/m64
+enc sqrtps SQRTPS xmm1, xmm2/m128
+enc sqrtpd SQRTPD xmm1, xmm2/m128
+enc cmpss CMPSS xmm1, xmm2/m32, imm8
+enc cmpsd CMPSD xmm1, xmm2/m64, imm8
+enc cmpps CMPPS xmm1, xmm2/m128, imm8
+enc cmppd CMPPD xmm1, xmm2/m128, imm8
+enc ucomiss UCOMISS xmm1, xmm2/m32
+enc ucomisd UCOMISD xmm1, xmm2/m64
+enc comiss COMISS xmm1, xmm2/m32
+enc comisd COMISD xmm1, xmm2/m64
+enc andps ANDPS xmm1, xmm2/m128
+enc andnps ANDNPS xmm1, xmm2/m128
+enc orps ORPS xmm1, xmm2/m128
+enc xorps XORPS xmm1, xmm2/m128
+enc cvtss2sd CVTSS2SD xmm1, xmm2/m32
+enc cvtsd2ss CVTSD2SS xmm1, xmm2/m64
+enc cvtps2pd CVTPS2PD xmm1, xmm2/m64
+enc cvtpd2ps CVTPD2PS xmm1, xmm2/m128
+enc cvtdq2ps CVTDQ2PS xmm1, xmm2/m128
+enc cvttps2dq CVTTPS2DQ xmm1, xmm2/m128
+enc cvtdq2pd CVTDQ2PD xmm1, xmm2/m64
+enc cvttpd2dq CVTTPD2DQ xmm1, xmm2/m128
+enc cvtsi2ss_32 CVTSI2SS xmm1, r/m32
+enc cvtsi2ss_64 CVTSI2SS xmm1, r/m64
+enc cvtsi2sd_32 CVTSI2SD xmm1, r32/m32
+enc cvtsi2sd_64 CVTSI2SD xmm1, r/m64
+enc cvttss2si_32 CVTTSS2SI r32, xmm1/m32
+enc cvttss2si_64 CVTTSS2SI r64, xmm1/m32
+enc cvttsd2si_32 CVTTSD2SI r32, xmm1/m64
+enc cvttsd2si_64 CVTTSD2SI r64, xmm1/m64
+enc roundss ROUNDSS xmm1, xmm2/m32, imm8
+enc roundsd ROUNDSD xmm1, xmm2/m64, imm8
+enc roundps ROUNDPS xmm1, xmm2/m128, imm8
+enc roundpd ROUNDPD xmm1, xmm2/m128, imm8
+enc ldmxcsr LDMXCSR m32
+enc stmxcsr STMXCSR m32
+enc vcvtph2ps VCVTPH2PS xmm1, xmm2/m64
+enc vcvtps2ph VCVTPS2PH xmm1/m64, xmm2, imm8
+enc insertps INSERTPS xmm1, xmm2/m32, imm8
+enc vfmadd231ss VFMADD231SS xmm1, xmm2, xmm3/m32
+enc vfmadd231sd VFMADD231SD xmm1, xmm2, xmm3/m64
+enc andpd ANDPD xmm1, xmm2/m128
+enc andnpd ANDNPD xmm1, xmm2/m128
+enc orpd ORPD xmm1, xmm2/m128
+enc maxss MAXSS xmm1, xmm2/m32
+enc maxsd MAXSD xmm1, xmm2/m64
+enc minss MINSS xmm1, xmm2/m32
+enc minsd MINSD xmm1, xmm2/m64
+enc maxps MAXPS xmm1, xmm2/m128
+enc maxpd MAXPD xmm1, xmm2/m128
+enc minps MINPS xmm1, xmm2/m128
+enc minpd MINPD xmm1, xmm2/m128
+enc vfmadd231ps VFMADD231PS xmm1, xmm2, xmm3/m128
+enc vfmadd231pd VFMADD231PD xmm1, xmm2, xmm3/m128

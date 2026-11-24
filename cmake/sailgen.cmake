@@ -8,7 +8,9 @@
 include_guard(GLOBAL)
 set(snx_sailgen_sources "${PROJECT_SOURCE_DIR}/tools/sailgen/main.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/parse.c"
                         "${PROJECT_SOURCE_DIR}/tools/sailgen/extract.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/gen.c"
-                        "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c")
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/gpu.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm.c"
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm_code.c" "${PROJECT_SOURCE_DIR}/tools/sailgen/term.c"
+                        "${PROJECT_SOURCE_DIR}/tools/sailgen/isel.c")
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
     include(ExternalProject)
@@ -44,16 +46,17 @@ endif()
 # <target> its include root
 function(snx_sailgen_a64 target)
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(bits "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h")
     set(core "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h")
     set(backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h")
     set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     add_custom_command(OUTPUT "${out}/a64_sail.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${core}" --backend "${backend}"
+        COMMAND snx-sailgen --generate "${dir}/a64.roots" --backend "${bits}" --backend "${core}" --backend "${backend}"
                 --profile "${profile}"
                 -o "${out}/a64_sail.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${core}" "${backend}" "${profile}"
+        DEPENDS snx-sailgen "${dir}/a64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${bits}" "${core}" "${backend}" "${profile}"
         COMMENT "Generating the A64 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_sail.inc")
     target_include_directories(${target} PRIVATE "${out}")
@@ -64,14 +67,15 @@ endfunction()
 # include root
 function(snx_sailgen_a32 target)
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(bits "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h")
     set(core "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h")
     set(backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm_arm.h")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     add_custom_command(OUTPUT "${out}/a32_sail.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${core}" --backend "${backend}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${bits}" --backend "${core}" --backend "${backend}"
                 --profile "${dir}/a32.profile" -o "${out}/a32_sail.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
-        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${core}"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${bits}" "${core}"
                 "${backend}"
         COMMENT "Generating the AArch32 emitters from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a32_sail.inc")

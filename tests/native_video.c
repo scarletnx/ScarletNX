@@ -6,6 +6,7 @@
    (213) and the input ring (109) */
 #include "nx/hle/services/native_video.h"
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -200,6 +201,149 @@ static void check_inputs(void) {
     assert(!c.input_count && c.input_head == 2);
 }
 
+/* the backlog behind a full ring: packets in order, the end of the stream among them, into the slots the ring frees,
+   past its first allocation; the rest dropped oldest first */
+static NativeVideoInput g_took[300];
+static int g_took_slot[300], g_ntook;
+static void took(void* user, int slot, void* payload) {
+    NativeVideoCodec* c = user;
+    assert(payload == (void*)(uintptr_t)(c->inputs[slot].timestamp + 1)); /* each payload with its own packet */
+    g_took[g_ntook] = c->inputs[slot];
+    g_took_slot[g_ntook++] = slot;
+}
+static u32 g_dropped[300], g_ndropped;
+static void dropped(void* user, void* payload) {
+    (void)user;
+    g_dropped[g_ndropped++] = (u32)(uintptr_t)payload;
+}
+static void check_backlog(void) {
+    NativeVideoCodec c = {0};
+    NativeVideoBacklog b = {0};
+    for (u32 i = 0; i < NVIDEO_INPUTS; i++) assert(nvideo_input_push(&c, 10, i, 0) == (int)i);
+    assert(nvideo_backlog_refill(&b, &c, took, &c) == 0); /* none waits */
+    /* 200 more packets, past 64 entries, the last one the end of the stream */
+    for (u32 i = 0; i < 200; i++)
+        assert(nvideo_backlog_push(&b, (void*)(uintptr_t)(100 + i + 1), i < 199 ? 1000 + i : 0, 100 + i, i == 199) == 0);
+    assert(b.count == 200 && b.bytes == 199 * 1000 + 199 * 198 / 2 && b.most == b.bytes);
+    assert(nvideo_backlog_refill(&b, &c, took, &c) == 0 && !g_ntook); /* the ring is full */
+    nvideo_input_pop(&c);
+    nvideo_input_pop(&c);
+    nvideo_input_pop(&c);
+    assert(nvideo_backlog_refill(&b, &c, took, &c) == 3 && g_ntook == 3 && b.count == 197);
+    for (int k = 0; k < 3; k++) assert(g_took[k].timestamp == 100 + (u64)k && g_took[k].size == 1000 + (u32)k && g_took_slot[k] == k);
+    assert(c.input_count == NVIDEO_INPUTS && b.bytes == b.most - (1000 + 1001 + 1002));
+    /* the ring emptied a packet at a time: every waiting one goes in order, the end of the stream last */
+    for (u32 i = 3; i < 200; i++) {
+        nvideo_input_pop(&c);
+        assert(nvideo_backlog_refill(&b, &c, took, &c) == 1);
+    }
+    assert(!b.count && !b.bytes && g_ntook == 200);
+    for (int k = 0; k < 200; k++) assert(g_took[k].timestamp == 100 + (u64)k && g_took[k].eos == (k == 199));
+    nvideo_backlog_free(&b, dropped, NULL);
+    assert(!g_ndropped && !b.e && !b.cap);
+    /* the stream's end still to come out: the newest input of the backlog, else of the ring, else the decoder's */
+    assert(nvideo_end_pending(&c, &b)); /* the ring's newest is the end that came from the backlog */
+    while (c.input_count) nvideo_input_pop(&c);
+    assert(!nvideo_end_pending(&c, &b));
+    c.eos = 1; /* draining */
+    assert(nvideo_end_pending(&c, &b));
+    c.eos = 0;
+    assert(nvideo_input_push(&c, 0, 5, 1) >= 0 && nvideo_end_pending(&c, &b));
+    assert(nvideo_input_push(&c, 9, 6, 0) >= 0 && !nvideo_end_pending(&c, &b)); /* a packet after it: a new stream */
+    assert(nvideo_backlog_push(&b, NULL, 0, 7, 1) == 0 && nvideo_end_pending(&c, &b));
+    nvideo_backlog_free(&b, dropped, NULL);
+    g_ndropped = 0;
+    while (c.input_count) nvideo_input_pop(&c);
+    /* the packet refused last and kept is the one sent again, until it is forgotten or another is kept; a fresh
+       backlog keeps none */
+    NativeVideoBacklog k = {0};
+    nvideo_backlog_forget(&k);
+    assert(!nvideo_backlog_again(&k, 0, 0, 0) && !nvideo_backlog_again(&k, 0, 0, 1));
+    nvideo_backlog_keep(&k, 1000, 33, 0);
+    assert(nvideo_backlog_again(&k, 1000, 33, 0) && !nvideo_backlog_again(&k, 1000, 34, 0));
+    assert(!nvideo_backlog_again(&k, 999, 33, 0) && !nvideo_backlog_again(&k, 1000, 33, 1));
+    nvideo_backlog_keep(&k, 0, ~0ull, 1); /* the end of the stream */
+    assert(nvideo_backlog_again(&k, 0, ~0ull, 1) && !nvideo_backlog_again(&k, 1000, 33, 0));
+    nvideo_backlog_forget(&k);
+    assert(!nvideo_backlog_again(&k, 0, ~0ull, 1));
+    nvideo_backlog_keep(&k, 5, 6, 0);
+    nvideo_backlog_free(&k, dropped, NULL); /* the memory let go: none kept after it */
+    assert(!nvideo_backlog_again(&k, 5, 6, 0));
+    /* what is left at a stop goes, oldest first */
+    for (u32 i = 0; i < 5; i++) assert(nvideo_backlog_push(&b, (void*)(uintptr_t)(7 + i), 1, i, 0) == 0);
+    nvideo_backlog_free(&b, dropped, NULL);
+    assert(g_ndropped == 5 && g_dropped[0] == 7 && g_dropped[4] == 11 && !b.count && !b.bytes && !b.most);
+}
+
+/* Submit's way with two kinds of client, as native_video.c applies it (submit below): one that drops a refused packet
+   and goes on, and one that waits and sends it again. Either way each packet reaches the decoder once, in order */
+static int submit(NativeVideoCodec* c, NativeVideoBacklog* b, u64 t, u32 eos) {
+    int way = nvideo_submit_way(c, b, eos ? 0 : 100, t, eos);
+    if (way == NVIDEO_TAKE_SAME_END || way == NVIDEO_REFUSE_AGAIN) return way;
+    nvideo_backlog_forget(b);
+    if (way == NVIDEO_TAKE) {
+        if (!eos) assert(nvideo_input_push(c, 100, t, 0) >= 0);
+        if (eos) assert(nvideo_input_push(c, 0, t, 1) >= 0);
+    } else if (way == NVIDEO_REFUSE_KEEP) {
+        if (!eos) assert(nvideo_backlog_push(b, (void*)(uintptr_t)(t + 1), 100, t, 0) == 0);
+        if (eos) assert(nvideo_backlog_push(b, NULL, 0, t, 1) == 0);
+        nvideo_backlog_keep(b, eos ? 0 : 100, t, eos);
+    }
+    return way;
+}
+static u64 g_order[64];
+static u32 g_norder;
+static void took_none(void* user, int slot, void* payload) {
+    (void)user, (void)slot, (void)payload;
+}
+/* the decoder takes the ring's oldest n, and the backlog refills it */
+static void decode(NativeVideoCodec* c, NativeVideoBacklog* b, u32 n) {
+    for (u32 i = 0; i < n && c->input_count; i++) {
+        g_order[g_norder++] = c->inputs[c->input_head].timestamp;
+        nvideo_input_pop(c);
+        nvideo_backlog_refill(b, c, took_none, NULL);
+    }
+}
+static void check_submit_ways(void) {
+    for (int resends = 0; resends < 2; resends++) {
+        NativeVideoCodec c = {0};
+        NativeVideoBacklog b = {0};
+        nvideo_backlog_forget(&b);
+        g_norder = 0;
+        u64 t = 0;
+        while (t < 16) assert(submit(&c, &b, t++, 0) == NVIDEO_TAKE);
+        assert(submit(&c, &b, 16, 0) == NVIDEO_REFUSE_KEEP);
+        if (resends) {
+            /* sent again while it waits: refused again, not kept twice */
+            assert(submit(&c, &b, 16, 0) == NVIDEO_REFUSE_AGAIN && b.count == 1);
+            decode(&c, &b, 1); /* it goes into the ring */
+            assert(!b.count && submit(&c, &b, 16, 0) == NVIDEO_TAKE_AGAIN && c.input_count == 16);
+            t = 17;
+            decode(&c, &b, 2);
+            assert(submit(&c, &b, t++, 0) == NVIDEO_TAKE);
+        } else {
+            /* dropped and gone on: the next ones are refused and kept behind it */
+            t = 17;
+            assert(submit(&c, &b, t++, 0) == NVIDEO_REFUSE_KEEP && submit(&c, &b, t++, 0) == NVIDEO_REFUSE_KEEP);
+            decode(&c, &b, 4); /* the waiting ones go in, and the ring has room again */
+            assert(!b.count && submit(&c, &b, t++, 0) == NVIDEO_TAKE);
+        }
+        /* the end of the stream, sent again and again while it is still to come out: one */
+        while (c.input_count < 16) assert(submit(&c, &b, t++, 0) == NVIDEO_TAKE);
+        assert(submit(&c, &b, ~0ull, 1) == NVIDEO_REFUSE_KEEP);
+        assert(submit(&c, &b, ~0ull, 1) == NVIDEO_REFUSE_AGAIN);
+        decode(&c, &b, 1);
+        assert(submit(&c, &b, ~0ull, 1) == NVIDEO_TAKE_AGAIN);
+        assert(submit(&c, &b, ~0ull, 1) == NVIDEO_TAKE_SAME_END);
+        decode(&c, &b, 64);
+        /* every packet once, in order, then the one end */
+        assert(g_norder == t + 1 && g_order[g_norder - 1] == ~0ull);
+        for (u32 i = 0; i + 1 < g_norder; i++) assert(g_order[i] == i);
+        nvideo_backlog_free(&b, dropped, NULL);
+        g_ndropped = 0;
+    }
+}
+
 static void check_props(void) {
     u32 props[NVIDEO_PROPS];
     for (u32 i = 0; i < NVIDEO_PROPS; i++) props[i] = ~0u;
@@ -221,6 +365,8 @@ int main(void) {
     check_pools();
     check_codec_images();
     check_inputs();
+    check_backlog();
+    check_submit_ways();
     check_props();
     puts("native_video: ok");
     return 0;

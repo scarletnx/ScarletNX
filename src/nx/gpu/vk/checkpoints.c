@@ -13,11 +13,12 @@ typedef struct {
     u32 kind, a, b, c, d;
 } VkCk;
 static struct {
-    PMutex lock;
+    PMutex lock;   /* the ring, newest and reported: producers and the report's freeze, never a callback under it */
+    PMutex report; /* the whole report: a second thread that sees the loss waits here until the first wrote it */
     VkCk* ring;
     u64 newest;
     int reported;
-} g_ck = {.lock = PMUTEX_INIT};
+} g_ck = {.lock = PMUTEX_INIT, .report = PMUTEX_INIT};
 /* The first report freezes publication while holding lock. This view then stays immutable, including while the
    Vulkan queries and log callbacks run. A producer that already left the lock may still record its marker. */
 typedef struct {
@@ -125,20 +126,30 @@ static void report_unfinished(const VkCkView* view, u64 done, u64 submitted) {
     }
 }
 void vk_ck_report(void) {
-    if (!g_vk.has_checkpoints) return;
+    static _Thread_local int t_reporting; /* a call below that reports again (a lost device's stop) returns here */
+    if (!g_vk.has_checkpoints || t_reporting) return;
+    /* report is held to the end: a second thread that sees the loss waits here for the whole report, where it
+       stopped the game while the first still wrote it (a timeline read and a mirror batch's check at once). lock is
+       not: the producers (vk_ck_) and the log and Vulkan calls below must not wait on each other */
+    t_reporting = 1;
+    pm_lock(&g_ck.report);
     pm_lock(&g_ck.lock);
     if (!g_ck.ring || g_ck.reported) {
         pm_unlock(&g_ck.lock);
+        pm_unlock(&g_ck.report);
+        t_reporting = 0;
         return;
     }
     g_ck.reported = 1;
     VkCkView view = {g_ck.ring, g_ck.newest};
     pm_unlock(&g_ck.lock);
     u64 submitted = 0, done = 0;
-    vk_submit_progress(&submitted, &done);
+    vk_submit_progress_raw(&submitted, &done);
     WARN("vulkan: the device was lost or stopped with graphics submissions done %llu of %llu\n",
          (unsigned long long)done, (unsigned long long)submitted);
     report_unfinished(&view, done, submitted);
     report_queue(&view, "graphics", g_vk.gfx);
     if (g_vk.compute != g_vk.gfx) report_queue(&view, "compute", g_vk.compute);
+    pm_unlock(&g_ck.report);
+    t_reporting = 0;
 }

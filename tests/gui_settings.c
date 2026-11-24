@@ -136,12 +136,12 @@ int main(int argc, char** argv) {
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
            !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
-    assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache limit") &&
-           !strcmp(s.values[opt + 5].key, "unit_cache_gb") && strstr(s.keys[opt + 5].about, "0 = no limit"));
-    assert(!strcmp(s.values[opt + 5].def, "0") &&
-           strstr(s.keys[opt + 5].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
-    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-cache-gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
+    assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache ceiling") &&
+           !strcmp(s.values[opt + 5].key, "unit_cache_ceil_mb") && strstr(s.keys[opt + 5].about, "0 = none held"));
+    assert(!strcmp(s.values[opt + 5].def, "512") &&
+           strstr(s.keys[opt + 5].about, "a hundredth of the machine's memory at most")); /* 512 MB */
+    assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
+           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", ""));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
@@ -673,6 +673,33 @@ int main(int argc, char** argv) {
             gui_settings_mark(&s);
             assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
             assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "2"));
+            gui_settings_free(&s);
+        }
+        /* emulated_cores's pick, renamed to emulated_cores_mode of the same 0 and 1: On and Off carried over, and the
+           row offers Auto, its default, beside them */
+        {
+            const char* cores = "Debug\temulated_cores_mode\t2\tint\t0\t2\tCores held by guest threads\t"
+                                "Emulated cores\t0=Off|1=On|2=Auto\n";
+            const char* picks = "[Debug]\nemulated_cores=1\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, cores));
+            gui_settings_mark(&s);
+            assert(!gui_settings_value(&s, "emulated_cores_mode")); /* Auto, its default: no pick */
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(old, "emulated_cores=1 is deprecated: Emulated cores is emulated_cores_mode=1 now"));
+            assert(!strcmp(gui_settings_value(&s, "emulated_cores_mode"), "1") &&
+                   gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--emulated-cores-mode=1"));
+            assert(!gui_settings_save(&s, path));
+            text = (char*)snx_read_file(path, &size);
+            assert(text && strstr(text, "\n[Debug]\nemulated_cores_mode=1\n") && !strstr(text, "emulated_cores="));
+            free(text);
+            gui_settings_free(&s);
+            picks = "[Debug]\nemulated_cores=0\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, cores));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(gui_settings_value(&s, "emulated_cores_mode"), "0"));
             gui_settings_free(&s);
         }
         assert(!snx_remove_tree(dir));

@@ -136,6 +136,11 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
                 const char* out_path);
 /* GPU mode (gpu.c): C for the roots' instructions and fusions of a GPU's ISA, apart from the CPUs' generator */
 int sg_gpu_generate(const char* roots_path, const char* const* backend_paths, int backend_count, const char* out_path);
+/* --sdm: the instruction pages of Intel's SDM Vol. 2 out of pdftotext's text of it, with the overrides (sdm.c) */
+int sg_sdm_extract(const char* text_path, const char* out_path, const char* const* override_paths,
+                   int override_count);
+/* --isel: the x86-64 back end's instruction selection, from the SDM's pages and the back end's primitives (isel.c) */
+int sg_isel(const char* pages_path, const char* ops_path, const char* out_path, const char* report_path);
 /* the output buffer, written only when it changes */
 void sg_out(const char* fmt, ...);
 int sg_flush(const char* path);

@@ -38,6 +38,7 @@ _Atomic int g_frames;
 _Atomic int g_vi_refresh_hz = 60; /* present.c's: the display at VI_REFRESH_HZ */
 void pm_init(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return 0; }
+u32 syncpt_read(u32 id) { (void)id; return 0; }
 void plat_sleep_ns(i64 ns) { (void)ns; }
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     (void)id;

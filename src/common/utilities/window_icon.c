@@ -4,9 +4,20 @@
 
 extern const unsigned char snx_window_icon_png[];
 extern const size_t snx_window_icon_png_size;
+extern const unsigned char snx_window_icon_xmas_png[];
+extern const size_t snx_window_icon_xmas_png_size;
+
+SDL_Surface* snx_window_icon_surface_for(int month) {
+    if (month == 12)
+        return SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_window_icon_xmas_png, snx_window_icon_xmas_png_size), true);
+    return SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_window_icon_png, snx_window_icon_png_size), true);
+}
 
 SDL_Surface* snx_window_icon_surface(void) {
-    return SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_window_icon_png, snx_window_icon_png_size), true);
+    SDL_Time now = 0;
+    SDL_DateTime date = {0};
+    return snx_window_icon_surface_for(SDL_GetCurrentTime(&now) && SDL_TimeToDateTime(now, &date, true) ? date.month
+                                                                                                        : 0);
 }
 
 void snx_window_icon(SDL_Window* window) {

@@ -13,7 +13,9 @@
    submission (dma_snap_*), which gpu.c's submission scan makes. Register names are maxwell_dma_regs.h's */
 #include "nx/runtime/state_io.h"
 #include "nx/gpu/maxwell/engines_int.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_dma_regs.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define DMA_MAX_BYTES (256u << 20) /* a launch past this is a bad register value */
 
@@ -145,7 +147,7 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     pm_unlock(&g_dma.lk);
     gen = gpu_mem_generation(); /* before the read: a GPU write after it shows */
     /* read once, into memory the GPU reads in place where the renderer has it: the copy reads it from there */
-    if (g_renderer_up && g_renderer->snap_alloc) data = g_renderer->snap_alloc(len, &id);
+    if (g_renderer_up && g_renderer->snap_alloc) data = gpu_renderer_now()->snap_alloc(len, &id);
     if (!data) data = (u8*)malloc((size_t)len);
     if (data && gpu_dma_sparse(&o.src, o.lines, o.line_in))
         for (u32 k = 0; k < o.lines; k++)
@@ -202,7 +204,7 @@ static u8* snap_take(u32 channel, u64 job, u32 launch, u64 src, u64 len, u64* ge
     pm_unlock(&g_dma.lk);
     return data;
 }
-void dma_snap_finish(u32 channel, u64 job_id) {
+static void dma_snap_finish_now(u32 channel, u64 job_id) {
     DmaSnapRing* q;
     if (channel >= SNAP_CHANNELS) return;
     pm_lock(&g_dma.lk);
@@ -226,9 +228,11 @@ void dma_snap_reset(u32 channel) {
    bytes. from: the source's bytes as read at submission, or NULL; id: nonzero when they are the renderer's, which the
    copy takes over (malloc's stay the caller's) */
 static void dma_copy(const DmaOp* o, u8* from, u64 id) {
+    SNX_ZONE(z, "gpu dma copy");
     DmaOp op = *o;
     u64 in_bytes = o->fill ? 0 : (u64)o->line_in * o->lines, out_bytes = (u64)o->line_out * o->lines;
     if (in_bytes > DMA_MAX_BYTES || out_bytes > DMA_MAX_BYTES) {
+        SNX_ZONE_VALUE(z, 1u); /* over the byte limit */
         WARN_LIMIT(4, "gpu: a DMA copy of %u lines of %u elements is over %u MiB: nothing is copied\n", o->lines,
                    o->width, DMA_MAX_BYTES >> 20);
         if (id) snap_release(from, id);
@@ -237,25 +241,41 @@ static void dma_copy(const DmaOp* o, u8* from, u64 id) {
     op.snap = from;
     op.snap_id = id;
     if (!g_renderer_up || !g_renderer->dma_copy) {
+        SNX_ZONE_VALUE(z, 2u); /* no renderer yet */
         WARN_LIMIT(4,
                    "gpu: a DMA copy of %u lines of %u bytes to %llx before the renderer started: nothing is copied\n",
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
         return;
     }
-    if (!g_renderer->dma_copy(&op))
+    int ok = gpu_renderer_now()->dma_copy(&op);
+    if (!ok) {
+        SNX_ZONE_VALUE(z, 3u); /* the GPU could not do it */
         WARN_LIMIT(4, "gpu: the GPU could not do a DMA copy of %u lines of %u bytes to %llx: nothing is copied\n",
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
-    if (g_renderer->rt_reload) g_renderer->rt_reload(o->dst.addr);
+    }
+    if (ok) SNX_ZONE_VALUE(z, 0u);
+    if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
 }
 /* The copy of a launch (the first half of Eden's MaxwellDMA::Launch): a linear source's submission-time bytes when
-   the GPU hasn't written the source since, else guest memory's */
-static void dma_launch_copy(GpuChannel* ch, const DmaOp* o, u32 launch) {
+   the GPU hasn't written the source since, else guest memory's. On the renderer's side, in its place in the queue
+   (gpu_queue.c), with the channel's job as the launch found it: the front end goes on without a wait. One game's
+   copies made the front end wait for every queued record about twice a frame */
+typedef struct {
+    DmaOp o; /* snap NULL */
+    u64 job;
+    u32 channel, launch;
+} DmaLaunch;
+static void dma_launch_copy_run(const void* arg, u64 bytes) {
+    DmaLaunch l;
+    (void)bytes;
+    memcpy(&l, arg, sizeof l);
+    const DmaOp* o = &l.o;
     u8* snap = NULL;
     u64 id = 0;
     if (dma_linear_source(o)) {
         u64 gen = 0, len = gpu_dma_read_bytes(&o->src, o->lines, o->line_in), low = dma_pitch_low(&o->src, o->lines),
             span = dma_pitch_span(&o->src, o->lines, o->line_in);
-        snap = snap_take(ch->id, ch->dma_job_id, launch, o->src.addr, len, &gen, &id);
+        snap = snap_take(l.channel, l.job, l.launch, o->src.addr, len, &gen, &id);
         if (snap) {
             gmem_need(low, span); /* pending GPU results over the source land, and count as writes */
             if (gpu_mem_dirty_since(gen, low, span)) {
@@ -268,16 +288,34 @@ static void dma_launch_copy(GpuChannel* ch, const DmaOp* o, u32 launch) {
     dma_copy(o, snap, id);
     if (!id) free(snap);
 }
+static void dma_launch_copy(GpuChannel* ch, const DmaOp* o, u32 launch) {
+    DmaLaunch l = {*o, ch->dma_job_id, ch->id, launch};
+    l.o.snap = NULL;
+    gq_call(dma_launch_copy_run, &l, sizeof l);
+}
+/* a job's snapshots let go, after its copies on the renderer's side */
+static void dma_snap_finish_run(const void* arg, u64 bytes) {
+    u64 c[2];
+    (void)bytes;
+    memcpy(c, arg, sizeof c);
+    dma_snap_finish_now((u32)c[0], c[1]);
+}
+void dma_snap_finish(u32 channel, u64 job_id) {
+    u64 c[2] = {channel, job_id};
+    gq_call(dma_snap_finish_run, c, sizeof c);
+}
 /* The completion semaphore after the copy (Eden's MaxwellDMA::ReleaseSemaphore): one word, the payload, or four,
    the payload, 0 and the 64-bit timestamp, written through the release path */
 static void dma_release_semaphore(const u32* r, u32 type) {
     u64 a = gpu_packed_va(r[MAXWELL_DMA_SEMAPHORE_ADDRESS_UPPER], r[MAXWELL_DMA_SEMAPHORE_ADDRESS_LOWER]);
-    u8 w[16]; /* guest memory's bytes, little-endian */
+    u8 w[8]; /* guest memory's bytes, little-endian */
     if (type != LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE && type != LAUNCH_DMA_RELEASE_FOUR_WORD_SEMAPHORE) return;
     snx_st_le32(w, r[MAXWELL_DMA_SEMAPHORE_PAYLOAD]);
     snx_st_le32(w + 4, 0);
-    if (type == LAUNCH_DMA_RELEASE_FOUR_WORD_SEMAPHORE) snx_st_le64(w + 8, gpu_ticks());
-    gpu_release_write(a, w, type == LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE ? 4 : 16);
+    if (type == LAUNCH_DMA_RELEASE_ONE_WORD_SEMAPHORE)
+        gpu_release_write(a, w, 4);
+    else
+        gpu_release_write_stamped(a, w);
 }
 /* LAUNCH_DMA (Eden's MaxwellDMA::Launch): the copy, when it has elements, then the completion semaphore */
 static void dma_launch(GpuChannel* ch, u32 v) {

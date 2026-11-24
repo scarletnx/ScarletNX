@@ -19,7 +19,8 @@
 #define OVERLAY_SLIDER_COLS 21
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
    answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again; Capture frame,
-   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's */
+   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's; Assign players, the
+   controller applet's dialog over the game paused */
 enum {
     OVERLAY_NONE,
     OVERLAY_CLOSE,
@@ -30,7 +31,8 @@ enum {
     OVERLAY_DELETE,
     OVERLAY_KEYBOARD,
     OVERLAY_TYPE,
-    OVERLAY_CAPTURE
+    OVERLAY_CAPTURE,
+    OVERLAY_CONTROLLERS
 };
 
 /* whether it is open, for the renderer's thread too */
@@ -141,21 +143,25 @@ int overlay_toasting(u64 now_ns); /* one shows: from any thread */
 /* The settings off their default that change how fast the game runs where nothing on the screen shows it, as the game
    starts (options_perf_notice): notification lines from the game's first frame for SNX_OVERLAY_SETTINGS_MS, a reminder
    that they are not the defaults. game: the game's own keys, after a gamepad; global: the launcher's for every game,
-   this run's command line's and how its code was made, after a globe; keys alone between ", ", either "" for none.
-   From any thread; nothing shows before the game's first frame, whose present gives the lines (overlay_settings_start) */
+   this run's command line's and how its code was made, after a globe; keys alone between ", ". kind: the values the
+   runtime gives this kind of game where no file nor command line gave one (options_kind_value), each "key Word", after
+   an info mark and before ", for this kind of game". Any of them "" for none. From any thread; nothing shows before the
+   game's first frame, whose present gives the lines (overlay_settings_start) */
 #define SNX_OVERLAY_SETTINGS_MS 30000
-void overlay_settings_notice(const char* game, const char* global);
+void overlay_settings_notice(const char* game, const char* global, const char* kind);
 /* 1 while a notice waits for the game's first frame: from any thread, the renderer's present, at a relaxed load */
 int overlay_settings_waiting(void);
 /* the waiting notice's lines, from now_ns, the game's first frame's time. Under ui_lock */
 void overlay_settings_start(u64 now_ns);
-/* game's and global's keys as the notice's lines, each line's icon into icon and its text, at most cols letters, into
-   text: as many keys a line as fit it, the game's lines first, OVERLAY_SETTINGS_LINES in all, one kept for global's while
-   it has keys. Keys past a list's last line end that line with "+N more", N the keys left out. How many lines. One
-   line fewer than the notifications hold, so the one a first run gives as it starts (overlay_cold_cache's) takes the
-   room left and never one of these */
+/* game's, global's and kind's keys as the notice's lines, each line's icon into icon and its text, at most cols letters,
+   into text: as many keys a line as fit it, the game's lines first, then global's, then kind's, OVERLAY_SETTINGS_LINES
+   in all, one kept for each list after while it has keys. Keys past a list's last line end that line with "+N more", N
+   the keys left out; kind's last line ends with ", for this kind of game", its keys narrowed to leave room for it. How
+   many lines. One line fewer than the notifications hold, so the one a first run gives as it starts
+   (overlay_cold_cache's) takes the room left and never one of these */
 #define OVERLAY_SETTINGS_LINES (OVERLAY_TOASTS - 1)
-int overlay_settings_lines(const char* game, const char* global, int cols, unsigned icon[OVERLAY_SETTINGS_LINES],
+int overlay_settings_lines(const char* game, const char* global, const char* kind, int cols,
+                           unsigned icon[OVERLAY_SETTINGS_LINES],
                            char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1]);
 /* A save state loading for long (state.c, past wait_screen.h's SNX_WAIT_LOADING_MS): the game under it greyed out as the
    launcher greys its screen behind a question (black at half over everything, coming in over OVERLAY_LOADING_FADE_MS

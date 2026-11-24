@@ -16,6 +16,9 @@ typedef struct {
 } SnxSplashSvg;
 extern const SnxSplashSvg snx_splash_svgs[]; /* Wimsy's own first */
 extern const int snx_splash_svg_count;
+/* the drawing the boot splash shows in month (1 to 12), the r-th of those it may show then: in December the
+   Christmas ones (a name ending in -xmas), the rest of the year the others; NULL when there is none for the month */
+const SnxSplashSvg* snx_splash_pick(int month, unsigned r);
 
 /* svg's drawing, read once to be drawn at any size; NULL when its text is not one */
 typedef struct SnxSplashDrawing SnxSplashDrawing;

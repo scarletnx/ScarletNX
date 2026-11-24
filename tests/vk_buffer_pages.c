@@ -220,7 +220,9 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) { abort(); }
 u64 vk_uma_import_part(u64 cpu, u64 len, int* held) { abort(); }
 int vk_uma_imports_dear(void) { abort(); }
 int vk_uma_pending(u64 gva, u64 len) { abort(); }
-int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) { abort(); }
+int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) { abort(); }
+void vk_uma_order_request(void) {}
+void vk_uma_ordered(void) {}
 void vk_uma_writes_abort(void) { abort(); }
 void vk_uma_writes_commit(void) { abort(); }
 void vk_unlock(void) { abort(); }

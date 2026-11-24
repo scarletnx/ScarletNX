@@ -2163,6 +2163,7 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         channel->ds.bind.cb_addr[4][2] = cbuf;
         channel->ds.bind.cb_size[4][2] = 256;
         u64 drawn = 0, loops = 0, through = 0, orders = 0, predraws = 0, read = rounds[round].other ? other : target;
+        VkDrawCounts kept[2] = {0};
         VkBuffer readback;
         u8* data = NULL;
         vk_lock();
@@ -2173,6 +2174,7 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
             /* the first draw begins a pass: each one begun after it orders what was drawn before it */
             drawn = g_vk_drawn, loops = g_vk_fb_draws, through = g_vk_rt_copies,
             orders = g_vk_fb_barriers + g_vk_passes + 1, predraws = g_vk_predraws;
+            vk_draw_counts(&kept[0]);
             for (u32 d = 0; ok && d < 2; d++) {
                 if (d && rounds[round].barrier) g_renderer->method_barrier(0);
                 if (d && rounds[round].header) { /* red read from green and green from red */
@@ -2201,6 +2203,7 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
             }
             drawn = g_vk_drawn - drawn, loops = g_vk_fb_draws - loops, through = g_vk_rt_copies - through,
             orders = g_vk_fb_barriers + g_vk_passes - orders, predraws = g_vk_predraws - predraws;
+            vk_draw_counts(&kept[1]);
             vk_render_end();
             data = ok ? vk_readback_buffer(64, &readback) : NULL;
         }
@@ -2222,6 +2225,20 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         int counted =
             drawn == 2 && loops == 2 && !through &&
             (rounds[round].interlock || (orders == rounds[round].orders && predraws == rounds[round].predraws));
+        /* two draws of one state, each drawn two times: the first one's probe keeps the state it made (neither draw of
+           the two keeps one), and the second's takes it from the table: in place where its fragment key is the first's
+           (with --vertex-input-dynamic-state=off), else making its programs again and keeping them too, the first
+           draw having written the target it samples */
+        const u64 probes_kept = kept[1].made - kept[0].made, probes_took = kept[1].table - kept[0].table;
+        if (ok && counted && rounds[round].predraws == 2 && rounds[round].swaps[0] == rounds[round].swaps[1] &&
+            (!probes_kept || probes_kept > 2 || !probes_took)) {
+            fprintf(
+                stderr,
+                "feedback intervals, %s: the two draws' probes kept %llu states (1 or 2 expected) and took %llu from "
+                "the table (1 or more expected)\n",
+                rounds[round].name, (unsigned long long)probes_kept, (unsigned long long)probes_took);
+            ok = 0;
+        }
         if (ok && !counted) {
             char also[64] = "";
             if (!rounds[round].interlock)

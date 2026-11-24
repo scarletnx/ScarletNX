@@ -597,10 +597,10 @@ int main(int argc, char** argv) {
         check(!snx_run(args, root, NULL, &text), "a build sized by unit_instructions");
         /* threads left open (Auto) say the thread they start on, on the driver's own control; threads given say
            nothing */
-        check(text && (strstr(text, "\naot_threads=0 (Auto): 1 thread") == NULL) == (b != 0),
+        check(text && (strstr(text, "\naot_threads=0 (Auto): ") == NULL) == (b != 0),
               "the line of the threads left open, and none for threads given");
-        if (text && !strstr(text, b ? "LLVM: 1 code unit and" : "code units and")) fprintf(stderr, "%s\n", text);
-        check(text && strstr(text, b ? "LLVM: 1 code unit and" : "code units and"),
+        if (text && !strstr(text, b ? ": 1 code unit and" : "code units and")) fprintf(stderr, "%s\n", text);
+        check(text && strstr(text, b ? ": 1 code unit and" : "code units and"),
               b ? "a million instructions: one code unit" : "one instruction: a code unit of each function");
         if (stats) {
             const char* line = text ? strstr(text, "IR stats code_000:") : NULL;

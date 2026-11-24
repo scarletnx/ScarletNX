@@ -27,4 +27,13 @@ enum { CONNECT_NONE, CONNECT_PAUSE, CONNECT_RESUME };
    without a player "Going on without P2"; "" for none. freed: the players no longer kept, a bit each */
 int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size_t n, unsigned* freed);
 void connect_reset(void); /* every player free, no pause */
+/* the controllers of players a and b swapped (the controller applet's dialog moved one): each identity, and whether
+   its leaving paused the game once, follow its controller. A pause still waits for the player, which the controller
+   moved in brings back */
+void connect_swap(int a, int b);
+/* the players a pause waits for, a bit each. And the pause ended without them, as + let go does */
+unsigned connect_waiting(void);
+void connect_go_on(void);
+/* a player whose controller the user disconnected on purpose: free at once, not kept, no pause for it */
+void connect_forget(int player);
 #endif

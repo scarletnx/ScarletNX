@@ -33,6 +33,17 @@ The game draws through NVN2, API version 231.16 (GPU code 201.5 to 201.11). The 
 buffers, device messages, variable rate shading and HDR window metadata. ScarletNX always takes these calls; the
 `nvn_direct` setting older versions read for that is deprecated ([Deprecations](../../user/deprecations.md)).
 
+A memory pool with storage has the storage's own address as its GPU address (`nvn_MemoryPoolInitialize`,
+`gmmu_space_alloc_at`), as the console's driver maps such a pool where the device has its second address space (read
+from one driver's code; which device flag asks for it is not known, and one game's device that relies on it has flags
+0x500 where others have 0), so `nvnMemoryPoolGetBufferAddress` answers the storage's CPU address. The runtime does it
+for every Ounce device: a game that doesn't rely on it gets one GPU address as good as another. An engine frees the storage of a pool the CPU can't access by that address, as it can't map
+it: with a GPU address of the allocator's it freed that address, and its allocator stopped on it about 16 s into the
+boot. The GPU address allocator of an Ounce program keeps the addresses below the end of the guest's address space
+for these, and gives out its own past it. A virtual pool, and a pool whose range another pool's holds (a warning),
+take the allocator's. An ended pool's range goes back at once, before its unmap: only a pool over the same storage
+takes it again, and that pool's map is queued after the unmap.
+
 The game must be compiled ahead of time (`build/scarletnx -r ...`). With the JIT alone, the dispatch slot of
 `nvnBootstrapLoader` is still empty when `nvn_loader_init` runs, because that runs before `jit_init`.
 
@@ -274,6 +285,17 @@ renderer binds an empty storage image there (`vk_null_storage`). Before, it skip
 its kart's contact shadow as a box that samples a 128x128 texture array with trilinear filtering. Layer 0 is the kart's
 footprint, drawn into level 0 from a 256x256 texture, and this program writes levels 1 to 3. Without them the box read
 zeros at the title camera's distance and drew a dark square under the kart.
+
+A memory pool that ends while results of the GPU over it are not in guest memory yet (render targets not written
+back, pending results: `Renderer.gpu_holds`) waits in `nvnMemoryPoolFinalize` until the GPU thread has made the pool's
+unmap, which lands them first (`gmmu_later_wait`, bounded at 5 s). The console's GPU wrote them into the storage as it
+ran, and a game may hand a pool's storage to other uses as soon as the pool has ended. Without the wait the unmap,
+made later on the GPU thread, landed a render target's old pixels over memory that one engine's allocator had given to
+its object hash tables in the meantime (a watchpoint on the tables' array caught the GPU thread's landing writing zeros
+there): the game looped for good in a hash chain. The same boot also stopped at a property its struct didn't have, at a
+different point from run to run, most runs at `-O2`; that is taken for the same overwrite, as it no longer happened in
+about 20 runs with the wait, but no write was caught for it. A pool with nothing of the GPU's over it ends at once, as a
+Switch device's always does: 60 of one boot's 72 pool ends waited, about 4 ms each.
 
 ## Driver offsets
 

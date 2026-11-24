@@ -273,9 +273,13 @@ void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
 }
 
 int plat_vm_commit(u8* p, u64 size) {
+    SNX_ZONE_TV(z_commit, "plat vm commit", size, "%llu KB at %p", (unsigned long long)(size >> 10), (void*)p);
     trap_forget(p, size); /* readable and writable from here: no trap's (mem.c lets go of owners first) */
     /* MEM_COMMIT charges the whole range to the commit limit at once */
-    if (!plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE)) return 0;
+    if (!plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE)) {
+        SNX_PLOT("plat vm commit KB", (double)(size >> 10));
+        return 0;
+    }
     WARN("memory: could not commit %llu KB (error %lu): out of memory or page file\n", (unsigned long long)(size >> 10),
          (unsigned long)GetLastError());
     return -1;
@@ -452,6 +456,8 @@ static void trap_wake(void) {
 static void trap_open(u64 lo, u64 hi) {
     u64 i = lo, run, k;
     int any = 0;
+    SNX_ZONE_TV(z_open, "plat trap open", hi - lo, "%llu pages: %llx..%llx", (unsigned long long)(hi - lo),
+                (unsigned long long)lo, (unsigned long long)hi);
     while (i < hi) {
         DWORD old;
         u8* a;
@@ -466,9 +472,11 @@ static void trap_open(u64 lo, u64 hi) {
             if (GetLastError() != ERROR_INVALID_ADDRESS)
                 fatal("Could not let trapped guest memory go at %p (Windows error %lu)", (void*)a,
                       (unsigned long)GetLastError());
-        } else
+        } else {
+            SNX_PLOT("plat pages opened", (double)(run - i));
             for (k = i; k < run; k++)
                 atomic_fetch_or_explicit((_Atomic u8*)(g_vm_base + (k << 12)), (u8)0, memory_order_relaxed);
+        }
         /* before the bits go: a fault that raced this finds the count moved, and goes again (trap_fault) */
         atomic_fetch_add_explicit(&g_trap_opened, 1, memory_order_seq_cst);
         for (k = i; k < run; k++)
@@ -666,16 +674,21 @@ int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
 int plat_trap_arm(u8* p, u64 size) {
     u64 lo, hi, i;
     DWORD old;
+    SNX_ZONE_TV(z_arm, "plat trap arm", size, "%llu bytes at %p", (unsigned long long)size, (void*)p);
     if (!trap_pages(p, size, &lo, &hi)) return -1;
     /* marked first: a fault on a page from the moment it is inaccessible finds it armed */
     for (i = lo; i < hi; i++)
         atomic_fetch_or_explicit(&atomic_load_explicit(&g_trap_bits, memory_order_relaxed)[i >> 6], 1ull << (i & 63),
                                  memory_order_seq_cst);
-    return VirtualProtect(p, (SIZE_T)size, PAGE_NOACCESS, &old) ? 0 : -1;
+    if (!VirtualProtect(p, (SIZE_T)size, PAGE_NOACCESS, &old)) return -1;
+    SNX_PLOT("plat pages armed", (double)(hi - lo)); /* only pages that became inaccessible */
+    return 0;
 }
 int plat_trap_fill(u8* p, const void* src, u64 size) {
     const u8* s = (const u8*)src;
     u8* end = p + size;
+    u64 done = 0;
+    SNX_ZONE_TV(z_fill, "plat trap fill", size, "%llu bytes at %p", (unsigned long long)size, (void*)p);
     /* A page at a time: there is no second view to land through, so a page is open while its bytes go in, and a thread
        that reaches it then without faulting can find it half written. Opened alone, it is open that way for one page's
        copy. Opening an inaccessible page takes no TLB shootdown, so each is a plain system call */
@@ -687,9 +700,11 @@ int plat_trap_fill(u8* p, const void* src, u64 size) {
         if (!VirtualProtect(lo, 4096, PAGE_READWRITE, &old)) return -1;
         n = (size_t)((hi < end ? hi : end) - p);
         memcpy(p, s, n);
+        done += n;
         p += n;
         s += n;
     }
+    SNX_PLOT("plat trap fill bytes", (double)done); /* one plot for the whole fill */
     return 0;
 }
 /* ReadProcessMemory on the process itself: a page it can't read fails the call rather than faulting */

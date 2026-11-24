@@ -216,6 +216,13 @@ void mem_layout32(unsigned aspace) {
    Everything here is under g_mem_lk; a change of host memory also holds the renderer's memory lock around it
    (g_gpu_mapping_begin, taken first), which may query the list itself */
 static PMutex g_mem_lk = PMUTEX_INIT;
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+[[maybe_unused]] static SnxTracyLock* mem_lock_context(void) {
+    void* named = atomic_load_explicit(&g_mem_lk.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 static u64 g_host_page = PAGE; /* plat_vm_page: set by mem_init, before other threads */
 static MemBlock* g_blk;
 static u32 g_nblk, g_capblk;
@@ -239,6 +246,7 @@ static _Thread_local struct {
 static void runs_stale_nl(void) { atomic_fetch_add_explicit(&g_unmap_gen, 1, memory_order_release); }
 static void mem_lock(void) {
     pm_lock(&g_mem_lk);
+    SNX_LOCK_MARK(mem_lock_context()); /* held here, every other thread's read or write waits */
     t_mem.held = 1;
 }
 static void mem_unlock(void) {
@@ -1538,24 +1546,23 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
         }
         at = hi;
     }
-    /* the runs of pool pages, in order */
+    /* the runs of pool pages, in order: past max they are counted, not stored, so the caller can ask again with room
+       for all of them */
+    MemPoolRun last = {0};
     for (at = a; at < end;) {
         const MemBlock* b = &g_blk[blk_index_nl(at)];
         u64 hi = blk_end(b) < end ? blk_end(b) : end, off = b->pool - 1 + (at - b->addr);
-        if (*n && runs[*n - 1].addr + runs[*n - 1].size == at && runs[*n - 1].pool + runs[*n - 1].size == off)
-            runs[*n - 1].size += hi - at;
-        else if (*n == max) {
-            r = -1;
-            goto out;
+        if (*n && last.addr + last.size == at && last.pool + last.size == off) {
+            last.size += hi - at;
+            if (*n <= max) runs[*n - 1].size = last.size;
         } else {
-            runs[*n].addr = at;
-            runs[*n].size = hi - at;
-            runs[*n].pool = off;
+            last = (MemPoolRun){.addr = at, .size = hi - at, .pool = off};
+            if (*n < max) runs[*n] = last;
             ++*n;
         }
         at = hi;
     }
-    r = 0;
+    r = *n > max ? -1 : 0;
 out:
     mem_unlock();
     return r;

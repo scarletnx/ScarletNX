@@ -1,0 +1,8 @@
+# PINSRB/PINSRD/PINSRQ—Insert Byte/Dword/Qword -- override
+# S-7: pdftotext runs the rows of PINSRD, PINSRQ and VPINSRB into one (their cells share a line of the table): the
+# rows of the legacy forms each its own, as the table prints them; the VEX and EVEX forms, which the back end
+# doesn't encode, left out.
+@opcodes
+66 0F 3A 20 /r ib | PINSRB xmm1, r32/m8, imm8 | A | Valid | Valid | SSE4_1 | Insert a byte integer value from r32/m8 into xmm1 at the destination element in xmm1 specified by imm8.
+66 0F 3A 22 /r ib | PINSRD xmm1, r/m32, imm8 | A | Valid | Valid | SSE4_1 | Insert a dword integer value from r/m32 into the xmm1 at the destination element specified by imm8.
+66 REX.W 0F 3A 22 /r ib | PINSRQ xmm1, r/m64, imm8 | A | Valid | N.E. | SSE4_1 | Insert a qword integer value from r/m64 into the xmm1 at the destination element specified by imm8.

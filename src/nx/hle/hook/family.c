@@ -8,7 +8,7 @@
 #include <string.h>
 
 /* the families whose handlers run only where the runtime has what they run on: alloc the host allocator's arena in
-   guest memory (alloc.c), and it, sync, cond_var, os_sync, os_light and os_core 64-bit games' registers and pointers;
+   guest memory (alloc.c), where the game's malloc isn't an allocator object's of its own (alloc_kept), and it, sync, cond_var, os_sync, os_light and os_core 64-bit games' registers and pointers;
    cond_var, os_sync and os_light, whose waits a save state can't hold, only with native_cond_var=1 and
    native_os_sync=1; and os_sync only where the game's SDK exports every function that writes the words it owns. The
    reason a family is off for, NULL when it may be installed */
@@ -25,6 +25,7 @@ const char* hook_family_unready(const char* family) {
     if (os && !os_sync_ready())
         return "the game's SDK doesn't export every function that writes nn::os's lock and condition variable words "
                "(InternalCriticalSectionImplByHorizon's and InternalConditionVariableImplByHorizon's)";
+    if (alloc && alloc_kept()) return alloc_kept();
     if (alloc && !alloc_ready()) return "the host allocator has no arena in guest memory this run";
 #if defined(_WIN32)
     if (!strcmp(family, "libc_str") || !strcmp(family, "libc_fmt"))

@@ -14,6 +14,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
 
@@ -89,6 +90,14 @@ static int blit_fail(const GpuBlit* b, u32 y, u32 n, const char* what, u64 bytes
 
 /* the rectangle's rows [y, y + n) as need says */
 static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
+    /* Why this blit was needed: the code is the path taken, the text names it. A source no render target drew needs
+       the buffer cache's copy; a block linear side needs the moves. */
+    static const char* const why[] = {"pitch linear rows", "block linear source rows", "block linear destination rows",
+                                      "block linear on both sides", "filtered columns between two source rows"};
+    int path = linear(b) ? 4 : b->src.bl && b->dst.bl ? 3 : b->src.bl ? 1 : b->dst.bl ? 2 : 0;
+    SNX_ZONE_TV(z_blit, "vk pres blit", path, "%s: %ux%u %u bpp fmt %x, %llu+%llu B", why[path],
+                b->x1 - b->x0, n, (unsigned)GPU_BLIT_DST_BPP(b), (unsigned)b->fmt,
+                (unsigned long long)need->sspan, (unsigned long long)need->dlen);
     u32 w = b->x1 - b->x0, bd = GPU_BLIT_DST_BPP(b), nb = w * bd;
     u32 pa = b->src.bl ? (u32)up(b->src.wb, 16) : b->src.pitch, pb = (u32)up(nb, 4), pc = (u32)up(b->dst.wb, 16);
     u32 sr0 = need->sr0, srows = need->sr1 - need->sr0;
@@ -127,22 +136,22 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
         rec_CmdCopyBuffer(cb, tb, scr, 1, &c[0]);
         if (!b->src.bl) rec_CmdCopyBuffer(cb, sb, scr, 1, &c[1]); /* pitch linear rows as they are */
     }
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     VkBlMove ms = {b->src.wb, b->src.h, b->src.bh, b->src.bd, sr0, srows, b->src.z, 1, pa};
     VkBlMove md = {b->dst.wb, b->dst.h, b->dst.bh, b->dst.bd, b->y0 + y, n, b->dst.z, 1, pc};
     if (b->src.bl) ok = vk_bl_move(cb, &ms, 0, sb, sat, scr, 0); /* sb holds its rows of blocks from sat */
     if (ok && b->dst.bl) ok = vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_c);
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     ok = ok && vk_tc_blit(cb, b->bpp, b->fmt, nb, n, scr, used, 0, pa, at_t, at_t + 4ull * w, scr, at_b, pb);
-    vk_all_barrier(cb);
+    vk_all_barrier_by(VK_BAR_BLIT, cb);
     if (ok) { /* the rectangle's bytes into the destination's rows, which go back into its layout */
         if (b->dst.bl)
             vk_copy_rows(cb, scr, at_b, pb, scr, at_c + (u64)b->x0 * bd, pc, nb, n);
         else
             vk_copy_rows(cb, scr, at_b, pb, d->buf, 0, b->dst.pitch, nb, n);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_BLIT, cb);
         if (b->dst.bl) ok = vk_bl_move(cb, &md, 1, d->buf, 0, scr, at_c);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_BLIT, cb);
     }
     if (ok) { /* those bytes are the buffer's from now on, run by run of guest memory */
         u64 off = 0, at = b->dst.addr + need->dlo;
@@ -156,6 +165,7 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
             off += k;
         }
         gpu_mem_written_by(at, dlen, GPU_WRITE_2D, 0, 0);
+        SNX_PLOT("vk pres blit bytes", (double)(sspan + dlen));
     } else
         blit_fail(b, y, n, "takes moves past the device's limits (said above) over", dlen);
     vk_own_res_unref(d);
@@ -172,6 +182,9 @@ static u64 blit_need(const void* user, u32 y, u32 n) {
 }
 static int blit_bands(const GpuBlit* b) {
     u32 rows = b->y1 - b->y0;
+    if (blit_needs(b, 0, rows).used > g_vk.alloc_cap / VK_PART_SHARE)
+        SNX_MSG("vk pres: a blit split into bands, scratch over the allocation's share",
+                sizeof("vk pres: a blit split into bands, scratch over the allocation's share") - 1);
     VkBands bands = {g_vk.alloc_cap,
                      b->dst.bl ? 8u << b->dst.bh : 1,
                      b->y0,

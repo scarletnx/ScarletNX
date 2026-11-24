@@ -1,0 +1,14 @@
+# CWD/CDQ/CQO—Convert Word to Doubleword/Convert Doubleword to Quadword -- override
+# Erratum E-17 (vibe86's docs/sdm-errata.md): the manual writes 'DX := SignExtend(AX);' (EDX and EAX, RDX and RAX)
+# meaning DX:AX := SignExtend(AX), DX taking the sign alone. Read as written it copies AX into DX, and the selection
+# took CDQ for a zero extension into EDX. Here the high half of the sign extension to twice the width, as the
+# manual means; ELSE IF's THEN, which the text leaves out, put back.
+@operation
+IF OperandSize = 16 (* CWD instruction *)
+    THEN
+        DX := (SignExtend(AX, 32))[31:16];
+    ELSE IF OperandSize = 32 (* CDQ instruction *)
+        THEN EDX := (SignExtend(EAX, 64))[63:32];
+    ELSE IF 64-Bit Mode and OperandSize = 64 (* CQO instruction*)
+        THEN RDX := (SignExtend(RAX, 128))[127:64];
+FI;

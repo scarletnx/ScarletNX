@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/runtime/main.h"
@@ -28,6 +29,7 @@
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
+#include "common/platform/time.h"
 
 int g_vk_preserve_infnan;
 int g_vk_preserve_infnan64;
@@ -37,6 +39,13 @@ VkShaderStageFlags g_vk_subgroup_stages;
 VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+static SnxTracyLock* vk_lock_context(void) {
+    void* named = atomic_load_explicit(&g_vklock.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 static _Thread_local int t_vkdepth;
 /* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
    this one's (vk_own_release_held) */
@@ -50,6 +59,46 @@ static _Atomic u32
    waits for the baton, not the lock, and only those already waiting compete */
 static _Atomic u32 g_vk_waiting; /* threads blocked in pm_lock on g_vklock */
 static _Atomic u32 g_vk_baton;   /* 1: let go to a waiter, which hasn't taken it yet */
+/* For the statistics: where the holder took the lock (the return address of its outermost vk_lock or vk_trylock),
+   and for each such place, the contended waits behind a hold from it, the GPU thread's and the others', and their
+   nanoseconds. A table that keeps the first places it sees */
+static _Atomic uintptr_t g_vk_site;
+typedef struct {
+    _Atomic uintptr_t at;
+    _Atomic u64 n[2], ns[2]; /* [1]: the GPU thread's waits */
+} LockSite;
+#define LOCK_SITES 48
+static LockSite g_lock_site[LOCK_SITES];
+static void lock_site_note(uintptr_t at, int gpu, u64 ns) {
+    for (u32 i = 0; i < LOCK_SITES; i++) {
+        uintptr_t was = atomic_load_explicit(&g_lock_site[i].at, memory_order_relaxed);
+        if (!was &&
+            !atomic_compare_exchange_strong_explicit(&g_lock_site[i].at, &was, at, memory_order_relaxed,
+                                                     memory_order_relaxed) &&
+            was != at)
+            continue;
+        if (was && was != at) continue;
+        atomic_fetch_add_explicit(&g_lock_site[i].n[gpu], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_lock_site[i].ns[gpu], ns, memory_order_relaxed);
+        return;
+    }
+}
+void vk_lock_log(void) {
+    for (u32 i = 0; i < LOCK_SITES; i++) {
+        uintptr_t at = atomic_load_explicit(&g_lock_site[i].at, memory_order_relaxed);
+        if (!at) break;
+        u64 n0 = atomic_exchange_explicit(&g_lock_site[i].n[0], 0, memory_order_relaxed),
+            n1 = atomic_exchange_explicit(&g_lock_site[i].n[1], 0, memory_order_relaxed),
+            ns0 = atomic_exchange_explicit(&g_lock_site[i].ns[0], 0, memory_order_relaxed),
+            ns1 = atomic_exchange_explicit(&g_lock_site[i].ns[1], 0, memory_order_relaxed);
+        if (!n0 && !n1) continue;
+        /* the place as an offset from vk_lock itself, which the symbols of the runtime turn into a line */
+        LOG("vulkan: vk_lock held from vk_lock%+lld: the GPU thread waited %llu times (%.3f ms), others %llu times "
+            "(%.3f ms) in the last 600 presents\n",
+            (long long)((intptr_t)at - (intptr_t)(uintptr_t)&vk_lock), (unsigned long long)n1, (double)ns1 / 1e6,
+            (unsigned long long)n0, (double)ns0 / 1e6);
+    }
+}
 static void vk_took(void) {
     atomic_store_explicit(&g_vk_owner, plat_tid(), memory_order_relaxed);
     if (atomic_load_explicit(&g_vk_baton, memory_order_relaxed)) {
@@ -59,25 +108,38 @@ static void vk_took(void) {
 }
 void vk_lock(void) {
     if (!t_vkdepth++) {
+        uintptr_t site = (uintptr_t)__builtin_return_address(0);
         int got = !atomic_load_explicit(&g_vk_baton, memory_order_acquire) && pm_trylock(&g_vklock);
         if (!got) { /* held: the GPU thread says so for the stall report */
-            /* Only a contended acquisition gets a zone. */
-            SNX_ZONE(z_wait, "vk lock wait");
+            uintptr_t holder = atomic_load_explicit(&g_vk_site, memory_order_relaxed);
+            u64 t_wait = plat_ns();
+            /* Only a contended acquisition gets a zone. The text names the holder, gated by SNX_TRACY_EMIT so
+               vk_lock_owner() is read only when a client is attached. */
+            SNX_ZONE_T(z_wait, "vk lock wait", "holder %u", vk_lock_owner());
             gpu_wait_note("vk_lock, which another thread holds", 0);
             /* the timeout only guards against a wake lost to the store's race: the baton is cleared at each take */
             while (atomic_load_explicit(&g_vk_baton, memory_order_acquire)) plat_wait_word(&g_vk_baton, 1, 1000000);
             if (!pm_trylock(&g_vklock)) {
                 atomic_fetch_add_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
                 pm_lock(&g_vklock);
+                SNX_LOCK_MARK(vk_lock_context()); /* held here, other threads waiting in pm_lock */
                 atomic_fetch_sub_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
             }
             gpu_wait_note(NULL, 0);
+            lock_site_note(holder, gpu_on_thread(), plat_ns() - t_wait);
         }
         vk_took();
+        atomic_store_explicit(&g_vk_site, site, memory_order_relaxed);
+        /* With gpu_split, the front end calls the renderer once the queue is empty (gpu_renderer_now). A guest memory
+           write in that call went to the queue, and a big one waited for the renderer thread to run the queue first,
+           with this lock held. The writes queued before it waited for this lock in gmem_before_write: one game's
+           NVN copies locked up so at random. Under the lock this thread is the renderer, and its writes go to memory */
+        gq_direct(1);
     }
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
 static void vk_let_go(void) {
+    gq_direct(0);
     atomic_store_explicit(&g_vk_owner, 0, memory_order_relaxed);
     if (atomic_load_explicit(&g_vk_waiting, memory_order_seq_cst))
         atomic_store_explicit(&g_vk_baton, 1, memory_order_release);
@@ -96,7 +158,10 @@ void vk_unlock(void) {
 }
 int vk_trylock(void) {
     if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
-    if (!t_vkdepth++) vk_took();
+    if (!t_vkdepth++) {
+        vk_took();
+        atomic_store_explicit(&g_vk_site, (uintptr_t)__builtin_return_address(0), memory_order_relaxed);
+    }
     return 1;
 }
 u32 vk_lock_owner(void) { return atomic_load_explicit(&g_vk_owner, memory_order_relaxed); }
@@ -689,7 +754,8 @@ static u32 extension_needs(const SnxVkExtensions* e, int core13, VkExtensionNeed
     return needs;
 }
 
-/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
+/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others: after
+   has_cs_warp32, which may add compute */
 static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderStageFlags stages) {
     static const struct {
         VkShaderStageFlags bit;
@@ -708,11 +774,15 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
     }
     LOG("vulkan: subgroups of %u lanes, operations %#x, stages %#x: VOTE and SHFL use them in %s programs%s\n", size,
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
-        g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
+        g_vk_subgroup_stages || !stages ? (size < 32 && (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT)
+                                               ? ", in subgroups of 32 that their pipelines ask for"
+                                               : "")
+                                        : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
         LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
             "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
-            "derivatives), and a control or compute one is not translated\n",
+            "derivatives), a compute one too where its adds, minima and maxima come to the same, and a control one or "
+            "any other compute one is not translated\n",
             without);
 }
 
@@ -791,14 +861,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                               .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
-    g_vk_subgroup_stages =
-        subgroup.subgroupSize >= 32 &&
-                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                                                 VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)) ==
-                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                     VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
-            ? subgroup.supportedStages
-            : 0;
+    const VkSubgroupFeatureFlags warp_operations =
+        VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+    const int warp_operates = (subgroup.supportedOperations & warp_operations) == warp_operations;
+    g_vk_subgroup_stages = subgroup.subgroupSize >= 32 && warp_operates ? subgroup.supportedStages : 0;
     /* a driver that lists the stage and gives wrong ballot and shuffle results there (Turnip's geometry stage, as
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
@@ -809,7 +875,6 @@ static bool choose_device(SnxVkChoice* c, void* user) {
        quadOperationsInAllStages, is about the other stages) */
     g_spirv_translate.quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                                      (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
-    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
        pipeline that lists it): pipeline.c puts the stride in the pipeline then */
@@ -947,6 +1012,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    int has_diag = 0;  /* VK_NV_device_diagnostics_config, with vk_checkpoints alone */
     int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
     /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
     int has_exec = 0;
@@ -998,6 +1064,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_nv_checkpoints =
             g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         has_fault = snx_vk_choice_has(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        /* vk_checkpoints alone, as the checkpoints: the driver keeps more of what a fault needs (shader debug info,
+           what each resource is, its own checkpoints), at a cost of speed */
+        has_diag = g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
         has_so = snx_vk_choice_has(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         has_exec = g_settings.pipeline_stats[0] &&
                    snx_vk_choice_has(c, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
@@ -1216,6 +1285,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV qdiag = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
     VkPhysicalDeviceMemoryPriorityFeaturesEXT qpriority = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
@@ -1344,6 +1415,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
+                           has_diag ? &qdiag : NULL,
                            has_pageable ? &qpriority : NULL,
                            has_pageable ? &qpageable : NULL,
                            has_exec ? &qexec : NULL,
@@ -1434,6 +1506,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_nv_diag_config = has_diag && qdiag.diagnosticsConfig;
     g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
     g_vk.has_exec_stats = has_exec && qexec.pipelineExecutableInfo;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
@@ -1473,6 +1546,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                              sizes.maxSubgroupSize >= 32 &&
                              (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
+    /* a device whose own subgroups are narrower and that lets a compute pipeline ask for 32 serves a compute program's
+       VOTE and SHFL so: compute.c asks, for a program that reads other lanes */
+    if (warp_operates && g_vk.has_cs_warp32 && (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        g_vk_subgroup_stages |= VK_SHADER_STAGE_COMPUTE_BIT;
+        g_spirv_translate.quad_compute = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0;
+    }
+    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     /* after has_cs_warp32: the compute-task path's task program needs it (mesh_choose) */
     mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
@@ -1801,6 +1881,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
+    g_vk.has_host_query_reset = q12.hostQueryReset != 0; /* stamp.c's report timestamps */
     /* the texture table of SM86 programs (table.c): one set that the renderer writes while draws that bind it are
        pending, with slots that hold nothing yet. vk_pipeline_init decides with the limits and the other caps */
     /* SM86 programs' global memory by device address (ShCaps.gbuf_address, with the texture table): the buffers its
@@ -1815,6 +1896,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
         .samplerFilterMinmax = q12.samplerFilterMinmax,
         .timelineSemaphore = VK_TRUE,
+        .hostQueryReset = q12.hostQueryReset,
         .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support ||
                                g_vk.has_copy_indirect || g_vk.has_inplace_loads || g_vk.has_gbuf_address,
         .shaderFloat16 = q12.shaderFloat16,
@@ -2098,6 +2180,20 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     }
+    /* vk_checkpoints=1 on NVIDIA: the driver keeps shader debug info and what each resource is, and sets its own
+       checkpoints, for what a lost device's fault (vk_checkpoint_dump) and the checkpoints report */
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV fdiag = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
+        .pNext = chain,
+        .diagnosticsConfig = VK_TRUE};
+    VkDeviceDiagnosticsConfigCreateInfoNV cdiag = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
+        .pNext = &fdiag,
+        .flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV |
+                 VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV |
+                 VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV};
+    if (g_vk.has_nv_diag_config && snx_vk_choice_enable(c, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME))
+        chain = &cdiag;
     /* the GPU's own memory that the driver may move to system memory when it is short, the lowest priority first */
     VkPhysicalDeviceMemoryPriorityFeaturesEXT fpriority = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
@@ -3014,6 +3110,7 @@ int vk_init(void) {
     if (cap) g_vk.api_cap = cap;
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
+    pm_lock_announce(&g_vk.sc_lock, "vk swapchain"); /* the game's threads and the GPU thread around present */
     if (g_opt_headless) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */

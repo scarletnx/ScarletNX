@@ -30,10 +30,12 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "common/platform/time.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define MIR_G      (2ull << 20)   /* a granule: memory is bound and kept up to date a granule at a time */
 #define MIR_PAGES  (MIR_G / 4096) /* its 4 KiB pages */
@@ -87,7 +89,10 @@ int vk_mirror_on(void) {
     char big[128];
     snprintf(big, sizeof big, "buffers of %llu bytes at most, where the mirror is %llu",
              (unsigned long long)g_vk.max_buffer_size, (unsigned long long)AS_SIZE);
-    const char* why = vk_uma()                           ? "memory shared with the CPU: read in place"
+    /* with unified memory guest memory is read in place, but not on a discrete GPU with host imports: there what the
+       GPU only reads is copied (uma.c's vk_uma_storage_copied), and its programs' writes across the bus cost more
+       than the mirror's harvest of the pages they wrote */
+    const char* why = vk_uma() && !vk_uma_storage_copied() ? "memory shared with the CPU: read in place"
                       : !g_vk.sparse                     ? "no sparse binding"
                       : !g_vk.feat.sparseResidencyBuffer ? "no sparse residency of buffers"
                       : g_vk.max_buffer_size < AS_SIZE && (!g_settings.gpu_mirror_past_limit || g_settings.vulkan_validation_layer) ? big
@@ -316,10 +321,18 @@ typedef struct {
     u64 base, lo; /* the granule's guest address, and the page of it the runs count from */
     Up* u;
 } Diff;
+/* For the statistics (the GPU plan's M12m), under vk_lock: diff_run's nanoseconds; the pages it compared whole (no
+   program's write pending) and those of them that changed and went whole; the pages it compared byte by byte, and
+   the bytes and runs of them that went. What the compares saved is the pages and bytes that did not go */
+typedef struct {
+    u64 ns, whole, whole_sent, bytewise, bytes_sent, runs_sent, land_pages;
+} MirDiff;
+static MirDiff g_mir_diff;
 /* the bytes of a run of written pages that differ from the shadow, those of valid pages, into the copy and the
    shadow */
 static void diff_run(void* user, u64 at, u64 n) {
     const Diff* d = user;
+    u64 t0 = plat_ns();
     for (u64 p = d->lo + (at >> 12); p < d->lo + ((at + n + 4095) >> 12); p++) {
         if (!(atomic_load_explicit(&d->r->valid[p / 64], memory_order_relaxed) >> (p % 64) & 1)) continue;
         /* read without touching a trapped page: a page written, then made GPU-owned, is copied from its owner
@@ -335,12 +348,15 @@ static void diff_run(void* user, u64 at, u64 n) {
         /* a page no program's write is pending on: whole, if anything changed, as nothing of the GPU's is there to
            keep. A page written on the CPU in scattered bytes made one region of each run, 194,545 in one copy */
         if (!pend_hit_pages(&g_mir_pend, a >> 12, a >> 12)) {
+            g_mir_diff.whole++;
             if (memcmp(page, sh, 4096)) {
                 memcpy(up_bytes(d->u, a, 4096), page, 4096);
                 memcpy(sh, page, 4096);
+                g_mir_diff.whole_sent++;
             }
             continue;
         }
+        g_mir_diff.bytewise++;
         for (u32 k = 0; k < 4096;) {
             if (now[k] == sh[k]) { /* eight at a time where they agree */
                 u64 x, y;
@@ -359,9 +375,25 @@ static void diff_run(void* user, u64 at, u64 n) {
             while (e < 4096 && now[e] != sh[e]) e++;
             memcpy(up_bytes(d->u, d->base + p * 4096 + k, e - k), now + k, e - k);
             memcpy(sh + k, now + k, e - k);
+            g_mir_diff.bytes_sent += e - k;
+            g_mir_diff.runs_sent++;
             k = e;
         }
     }
+    g_mir_diff.ns += plat_ns() - t0;
+}
+void vk_mirror_diff_log(void) {
+    vk_lock();
+    if (g_mir_diff.whole || g_mir_diff.bytewise || g_mir_diff.land_pages)
+        LOG("vulkan: the mirror's compares of CPU-written pages over the last 600 presents: %.2f ms; %llu pages "
+            "whole (%llu of them changed and sent), %llu byte by byte (%.2f MB sent in %llu runs); %llu pages landed "
+            "into it\n",
+            (double)g_mir_diff.ns / 1e6, (unsigned long long)g_mir_diff.whole,
+            (unsigned long long)g_mir_diff.whole_sent, (unsigned long long)g_mir_diff.bytewise,
+            (double)g_mir_diff.bytes_sent / 1048576.0, (unsigned long long)g_mir_diff.runs_sent,
+            (unsigned long long)g_mir_diff.land_pages);
+    g_mir_diff = (MirDiff){0};
+    vk_unlock();
 }
 
 /* the bits of word w of a granule's page mask that are pages [lo, hi) (w within them) */
@@ -752,6 +784,7 @@ u32 vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFo
 /* records into cb the harvest of ranges r (n, joined and sorted, which it copies), with entries of entry words, as a
    batch of submit's */
 static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32 n, u32 entry) {
+    SNX_ZONE(z_hv, "vk pres mirror harvest");
     MirRange* kept = malloc((size_t)n * sizeof *kept);
     if (!kept) fatal("Out of memory recording the GPU mirror's writes");
     memcpy(kept, r, (size_t)n * sizeof *kept);
@@ -764,6 +797,13 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
     u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
     if (!p || !harvest_record(cb, kept, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
+    /* The entry code says why: MIR_ENTRY_PAGE brings back only masks of pages the mirror still owns, MIR_ENTRY the
+       bytes too. Pages past the room need a pass of their own when they land, which says why they are left here. The
+       plot is the bytes of readback this harvest asks for. */
+    SNX_ZONE_VALUE(z_hv, pages);
+    SNX_ZONE_TEXT(z_hv, "entry %u, room %u, %llu pages past room: submit wrote more, own pass", entry, room,
+                  (unsigned long long)(pages > g_mir_room ? pages - g_mir_room : 0));
+    SNX_PLOT("vk pres mirror harvest bytes", (double)out_bytes(room, pages, entry));
     if (g_mir_nbatch == g_mir_capbatch) {
         u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
         MirBatch* grown = realloc(g_mir_batch, (size_t)cap * sizeof *grown);
@@ -851,6 +891,7 @@ static void land_entry(const u32* e) {
     const u8* data = (const u8*)(e + 132);
     u64 p = (cpu % MIR_G) >> 12;
     u32 any = 0;
+    g_mir_diff.land_pages++;
     for (u32 w = 0; w < 128; w++) any |= mask[w];
     if (!any) {
         gpu_mem_written_cpu(cpu, 4096);
@@ -1088,6 +1129,11 @@ void vk_mirror_landed(u64 cpu, u64 size) {
 static VkCommandPool g_mir_pool;
 static VkCommandBuffer g_mir_cb;
 static void harvest_left(const u32* left, u32 n) {
+    /* Rare: the pages past the output's room need a pass of their own, which waits for the GPU. A message names the
+       reason and a plot carries the wait's cost; no zone around a blocking wait. */
+    SNX_MSG("vk pres: mirror harvest past its room, a pass of its own",
+            sizeof("vk pres: mirror harvest past its room, a pass of its own") - 1);
+    u64 t_left = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     MirRange* r = malloc((size_t)n * sizeof *r);
     if (!r) fatal("Out of memory landing the GPU mirror's writes");
     for (u32 i = 0; i < n; i++) r[i] = (MirRange){left[i], (u64)left[i] + 1};
@@ -1154,14 +1200,45 @@ static void harvest_left(const u32* left, u32 n) {
     for (u32 i = 0; i < w[0] && i < n; i++) land_entry(w + MIR_HEAD + i * MIR_ENTRY);
     vk_devmem_buffer_destroy(out, mem);
     free(r);
+    SNX_PLOT("vk pres mirror harvest wait ms", (double)(plat_ns() - t_left) / 1e6);
+    SNX_PLOT("vk pres mirror harvest left pages", (double)n);
 }
 
+/* whether page lies in batch m's ranges, which are sorted and apart (harvest_batch) */
+static int out_page_in(const MirBatch* m, u64 page) {
+    u32 lo = 0, hi = m->n;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (page < m->r[mid].first)
+            hi = mid;
+        else if (page >= m->r[mid].end)
+            lo = mid + 1;
+        else
+            return 1;
+    }
+    return 0;
+}
+/* Whether batch m's output is one its harvest wrote (mirror_harvest.comp): n pages taken of its pages, n - room of them
+   in the list of those left when they don't fit and none when they do, each a page of its ranges. A fault of the GPU's
+   in the submission can leave the output as the staging ring had it before, other readbacks' bytes, while the driver
+   counts the submission done and says the device is lost only later: one game landed pages terabytes past guest
+   memory, and another read its list of those left past the buffer */
+static int out_sane(const MirBatch* m) {
+    const u32 n = m->out[0], left = m->out[1], take = n < m->room ? n : m->room;
+    if (n > m->pages || left != (n > m->room ? n - m->room : 0)) return 0;
+    for (u32 i = 0; i < take; i++)
+        if (!out_page_in(m, m->out[MIR_HEAD + i * m->entry])) return 0;
+    for (u32 i = 0; i < left; i++)
+        if (!out_page_in(m, m->out[MIR_HEAD + m->room * m->entry + i])) return 0;
+    return 1;
+}
 void vk_mirror_done(u64 done) {
     /* publishing a page can write a render target back, which can finish the commands and land through here again:
        a batch leaves the list before it is taken in, and a landing inside one takes none */
     static int busy;
     if (busy) return;
     busy = 1;
+    u64 t_done = snx_tracy_attached() ? plat_ns() : 0, landed = 0; /* CPU time and pages of taking the harvests in */
     for (;;) {
         u32 b = 0;
         while (b < g_mir_nbatch && g_mir_batch[b].submit > done) b++;
@@ -1171,6 +1248,14 @@ void vk_mirror_done(u64 done) {
         g_mir_nbatch--;
         if (!VK_OK(vk_devmem_invalidate(m->mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read the GPU mirror's writes");
+        if (!out_sane(m)) { /* landed, its words go to guest addresses it never had */
+            char msg[200];
+            snprintf(msg, sizeof msg,
+                     "vulkan: the GPU mirror's results of submission %llu are not what its harvest writes: the GPU "
+                     "faulted in that submission (driver reset or crash)",
+                     (unsigned long long)m->submit);
+            vk_lost_stop(msg);
+        }
         u32 n = m->out[0], take = n < m->room ? n : m->room;
         vk_result_begin();
         if (m->entry == MIR_ENTRY_PAGE)
@@ -1191,9 +1276,12 @@ void vk_mirror_done(u64 done) {
         }
         vk_result_end();
         g_mir_stats.pages += n;
+        landed += n;
         for (u32 i = 0; i < m->n; i++) mir_pend_pages(m->r[i].first, m->r[i].end - 1, -1);
         free(m->r);
     }
+    SNX_PLOT("vk pres mirror land ms", (double)(plat_ns() - t_done) / 1e6);
+    SNX_PLOT("vk pres mirror land pages", (double)landed);
     busy = 0;
 }
 
@@ -1203,6 +1291,7 @@ static int mir_pending(u64 gva, u64 len) {
 }
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
+    u64 t_need = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     vk_lock();
     /* the submits the GPU has already finished are landed first, which hands over their pages with no wait at all: a
        finish submits what is being recorded and waits for every submission the game has open, and this game's pages
@@ -1212,9 +1301,14 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     if (done) vk_land_through(done);
     /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them. The GPU
        thread may record meanwhile: what it submits after is published below, and lands at the CPU's touch */
-    if (mir_pending(gva, len)) vk_finish_letting_go();
+    if (mir_pending(gva, len)) {
+        SNX_MSG("vk pres: a CPU read of pending mirror bytes needs a finish",
+                sizeof("vk pres: a CPU read of pending mirror bytes needs a finish") - 1);
+        vk_finish_letting_go(); /* the wait is outside any zone; only its total cost is plotted */
+    }
     vk_mirror_publish();
     vk_unlock();
+    SNX_PLOT("vk pres mirror mem need ms", (double)(plat_ns() - t_need) / 1e6);
 }
 
 /* Granule g's memory given back, in the batch of sparse binds ahead of the next submission, which waits for the
@@ -1266,6 +1360,11 @@ void vk_mirror_trim(void) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage < budget / 5 * 4) return;
+    /* Rare maintenance: the device's memory is past four fifths of its budget, so idle mirror granules give their
+       memory back. The tighter cut is a short reason for the shorter idle wait. */
+    SNX_ZONE_T(z_trim, "vk pres mirror trim", "memory past four fifths of budget, idle %u%s",
+               usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE,
+               usage >= budget / 10 * 9 ? " (tight)" : "");
     const u32 idle = usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE;
     u32 done = 0;
     for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {

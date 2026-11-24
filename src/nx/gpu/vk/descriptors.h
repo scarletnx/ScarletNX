@@ -8,7 +8,10 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 /* cb_addr: the constant buffer slots that heaps take by address (vk_cb_addr_mask); descriptor buffers write them all */
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                      u32 cb_addr);
-void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets);
+/* ndyn dynamic offsets dyn of the sets' dynamic constant buffers (cb_dynamic.h), in the order of set and binding: only
+   with descriptor sets, 0 otherwise */
+void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
+                         u32 ndyn, const u32* dyn);
 /* Heap bindings invalidate legacy descriptor state across both pipeline bind points. */
 void vk_descriptors_invalidate(void);
 void vk_descriptors_reset(u32 slot);

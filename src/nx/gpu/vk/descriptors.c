@@ -11,6 +11,7 @@
 #include "nx/gpu/vk/ledger.h"
 #include "common/utilities/bits.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -203,6 +204,7 @@ static void buffer_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescri
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                      u32 cb_addr) {
     if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_write(layout, count, writes, cb_addr);
+    SNX_ZONE_V(z, "vk descriptor buffer write", count);
     u32 index = 0;
     while (index < g_descriptors.nlayouts && g_descriptors.layouts[index].layout != layout) index++;
     if (index == g_descriptors.nlayouts) fatal("vulkan: unknown graphics descriptor layout");
@@ -253,6 +255,8 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     g_descriptors.stats.arena_bytes += used;
     if (g_descriptors.stats.peak_used_bytes < g_descriptors.frame[slot].used)
         g_descriptors.stats.peak_used_bytes = g_descriptors.frame[slot].used;
+    SNX_ZONE_TEXT(z, "%u writes, %llu words into the host descriptor buffer, layout %u", count,
+                  (unsigned long long)(active >> 2), index);
     /* Constant buffers usually share one staging buffer. Its address is fixed throughout these writes, so ask the
        driver only when the buffer changes. Keep this local: a later call may use a recycled Vulkan handle. */
     VkBuffer previous_buffer = VK_NULL_HANDLE;
@@ -317,16 +321,18 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     return (VkDescriptorSet)(uintptr_t)(base + 1);
 }
 void vk_descriptors_invalidate(void) { g_descriptors.bound_cb = 0; }
-void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets) {
+void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
+                         u32 ndyn, const u32* dyn) {
     if (g_vk.has_descriptor_heaps) {
         vk_descriptors_invalidate();
         vk_descriptor_heaps_bind(cb, first, count, sets);
         return;
     }
     if (!g_vk.has_descriptor_buffers) {
-        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, sets, 0, NULL);
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, sets, ndyn, dyn);
         return;
     }
+    if (ndyn) fatal("vulkan: dynamic descriptors with descriptor buffers or heaps");
     if (count > 5) fatal("vulkan: too many graphics descriptor stages");
     u32 begun = vk_cb_begun();
     u64 binds = vk_rec_set_binds();

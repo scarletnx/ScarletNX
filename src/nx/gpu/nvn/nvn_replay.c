@@ -12,10 +12,12 @@
    work before it is replayed, and its point on the presents' own syncpoint is reached once the display shows it (the
    renderer learns when, renderer.h present_buffer's shown_syncpt) */
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_queue.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/hle/pool.h"
 #include "nx/runtime/options.h"
@@ -231,7 +233,7 @@ static void promise_snapshot(void* ctx, u32 op, u64 payload, u32 size) {
 /* a syncpoint increment once the renderer's work before it is done (gpu.c's stream_incr) */
 static void stream_incr(u32 id) {
     if (g_renderer->stream_incr)
-        g_renderer->stream_incr(id);
+        gpu_stream_incr(id);
     else
         syncpt_incr(id);
 }
@@ -285,14 +287,17 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                queue's draws, else a made-up count where it can't count; the timestamp types put 0 in the counter, as
                the game's driver writes them (a report of payload 0). One game makes each conditional clear of a target
                run once a frame that way: it sets the counter to 1, clears when it differs from the word 16 bytes on,
-               and then reports a timestamp over it */
+               and then reports a timestamp over it. A timestamp type's time is the host GPU's (vk/stamp.c): a game
+               times its frame with two of them and sizes its rendering by the span */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
-            u64 ticks = guest_gpu_ticks();
-            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address)) break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
-            snx_st_le64(v + 8, ticks);
-            gpu_release_write(r->address, v, sizeof v);
+            if (r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
+                snx_st_le64(v + 8, guest_gpu_ticks()); /* one thread's: a queued report's are read as its record runs */
+                gpu_release_stamp(r->address, v, r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
+            } else
+                gpu_release_write_stamped(r->address, v);
             break;
         }
         case OP_SIGNAL_EVENT: {
@@ -336,7 +341,9 @@ static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* s
 
 /* Replay resumes at an unmet event or captured sync wait. Waiting submissions retain flattened command records;
    direct submissions keep CALL cursors so nested recordings do not repeat earlier draws. */
-static int replay_records(NvnJob* j, NvnReplayQueue* q) {
+/* build_ns, when given, collects the time building draws and copies (op != a wait); the walk is the rest of the
+   time in this function, and run() times the land. Only a trace sets build_ns, so no clock is read without one */
+static int replay_records(NvnJob* j, NvnReplayQueue* q, u32* cmds, u32* wait_kind, u64* build_ns) {
     Replay replay_context = {.q = q};
     u64 page = ~(u64)0; /* acquire_header's page for this pass */
     while (j->handle < j->n) {
@@ -357,6 +364,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
             memcpy(&h, GP(pc), sizeof h);
             atomic_thread_fence(memory_order_acquire);
             u32 op = NVN_REC_OP(h.op);
+            (*cmds)++; /* one command record walked, for the replay zone's count */
             if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
                 fatal("nvn: invalid resumed record at %llx: op %u size %u after %u", (unsigned long long)pc, op, h.size,
                       j->cursor[level].previous);
@@ -370,13 +378,14 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                    a frame and about 2.7 ms each in one game */
                 if (!over && !j->waiting && op == OP_WAIT_SYNC && sync.syncpt && sync.syncpt == q->syncpt &&
                     g_renderer->release_value && g_renderer->method_barrier &&
-                    (i32)(g_renderer->release_value(sync.syncpt) - sync.value) >= 0) {
-                    g_renderer->method_barrier(4);
+                    (i32)(gpu_release_value(sync.syncpt) - sync.value) >= 0) {
+                    gpu_method_barrier(4);
                     over = 1;
                 }
-                if (!over && !j->waiting && g_renderer->stream_end) g_renderer->stream_end();
+                if (!over && !j->waiting && g_renderer->stream_end) gpu_stream_end();
                 if (!over) {
                     j->waiting = 1;
+                    *wait_kind = op == OP_WAIT_EVENT ? 1u : 2u; /* 1 an event, 2 a sync */
                     gpu_poll_why(op == OP_WAIT_EVENT ? GPU_POLL_EVENT : GPU_POLL_SYNC);
                     return 0;
                 }
@@ -387,10 +396,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                    far hold them, and the checks after the wait take them in. A new epoch at each wait had the write
                    tracking scan the game's memory again 31 times a frame in one game, the GPU thread a fifth of its
                    time */
-                if (g_renderer->mem_seen)
-                    g_renderer->mem_seen();
-                else if (g_renderer->mem_may_have_changed)
-                    g_renderer->mem_may_have_changed();
+                gpu_mem_seen();
             }
             j->cursor[level].previous = op;
             j->cursor[level].pc = h.op & NVN_REC_LAST ? 0 : pc + h.size;
@@ -412,8 +418,11 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 }
                 j->cursor[level].pc = j->cursor[level].piece = to;
                 j->cursor[level].previous = OP_BEGIN;
-            } else if (op != OP_WAIT_EVENT && op != OP_WAIT_SYNC)
+            } else if (op != OP_WAIT_EVENT && op != OP_WAIT_SYNC) {
+                u64 t = build_ns ? plat_ns() : 0;
                 replay(&replay_context, op, pc + 8, h.size - 8);
+                if (build_ns) *build_ns += plat_ns() - t; /* building a draw or copy, apart from the walk */
+            }
         }
         j->handle++;
     }
@@ -453,10 +462,34 @@ static int settled(void) {
             gpu_kick();
             return 0;
         }
-        if (sync.syncpt && g_renderer->release_value && (i32)(g_renderer->release_value(sync.syncpt) - sync.value) >= 0)
+        if (sync.syncpt && g_renderer->release_value && (i32)(gpu_release_value(sync.syncpt) - sync.value) >= 0)
             return 0;
     }
     return 1;
+}
+/* With gpu_split, a window present is a record: the renderer thread presents after the work queued before it, then
+   increments the syncpoint that frees the window's texture. The front end goes on to the next frame at once. A direct
+   present drained the queue first, and the renderer thread then sat idle until the front end queued the next frame */
+typedef struct {
+    NvnReplayPresent p;
+    u64 cpu;
+    u32 shown, syncpt;
+} PresentCall;
+static void present_run(const void* arg, u64 bytes) {
+    PresentCall c;
+    (void)bytes;
+    memcpy(&c, arg, sizeof c);
+    const NvnReplayPresent* p = &c.p;
+    if (c.cpu) {
+        if (g_renderer->present_hdr) g_renderer->present_hdr(&p->hdr);
+        g_renderer->present_buffer(c.cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop, p->transform,
+                                   p->released_ns, p->period_ns, c.shown);
+    } else
+        g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns, c.shown);
+    if (g_renderer->stream_incr)
+        g_renderer->stream_incr(c.syncpt);
+    else
+        syncpt_incr(c.syncpt);
 }
 static int run(void* arg) {
     NvnJob* j = (NvnJob*)arg;
@@ -464,16 +497,43 @@ static int run(void* arg) {
     switch (j->kind) {
         case JOB_SUBMIT: {
             SNX_ZONE(z_replay, "nvn replay");
-            if (g_renderer->stream_run) g_renderer->stream_run(1);
-            int done = replay_records(j, q);
+            u32 cmds = 0, wait_kind = 0;
+            int trace = snx_tracy_attached();
+            u64 build_ns = 0, walk_ns = 0, land_ns = 0, t = 0;
+            if (g_renderer->stream_run) gpu_stream_run(1);
+            if (trace) t = plat_ns();
+            int done = replay_records(j, q, &cmds, &wait_kind, trace ? &build_ns : NULL);
+            if (trace) walk_ns = plat_ns() - t - build_ns;
+            if (trace) t = plat_ns();
             effects(q);
-            if (g_renderer->stream_run) g_renderer->stream_run(0);
+            if (trace) land_ns = plat_ns() - t;
+            if (g_renderer->stream_run) gpu_stream_run(0);
+            /* The replay continues the game's submit on this thread. Name it with its queue, syncpoint and record
+               count, as the wait and present messages name theirs. No zone is added around a wait. */
+            nvn_queue_context_set("submit q%u sp%u %u records", j->queue, q->syncpt, cmds);
+            /* the zone's span is the whole replay. Its value and text say how much work it was (records and handles)
+               and which of the walk, the build or the land took most of the span, so a long zone says why it was long */
+            [[maybe_unused]] const char* dom = walk_ns >= build_ns && walk_ns >= land_ns ? "walk"
+                              : build_ns >= land_ns                     ? "build"
+                                                                        : "land";
+            SNX_ZONE_VALUE(z_replay, cmds);
+            SNX_ZONE_TEXT(z_replay, "q%u %uh %ur %s %lluus w%llu b%llu l%llu %s; %s", j->queue, j->n, cmds, dom,
+                          (unsigned long long)((walk_ns + build_ns + land_ns) / 1000),
+                          (unsigned long long)(walk_ns / 1000), (unsigned long long)(build_ns / 1000),
+                          (unsigned long long)(land_ns / 1000),
+                          done ? "done" : (wait_kind == 1 ? "event" : "sync"), nvn_queue_context());
+            SNX_PLOT("gpu nvn replay records", (double)cmds);
+            if (trace) {
+                SNX_PLOT("gpu nvn replay walk us", (double)(walk_ns / 1000));
+                SNX_PLOT("gpu nvn replay build us", (double)(build_ns / 1000));
+                SNX_PLOT("gpu nvn replay land us", (double)(land_ns / 1000));
+            }
             if (!done) return 0;
             break;
         }
         case JOB_WAIT:
             if (!sync_over(&j->wait)) {
-                if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
+                if (!j->waiting && g_renderer->stream_end) gpu_stream_end();
                 j->waiting = 1;
                 gpu_poll_why(GPU_POLL_SYNC);
                 return 0;
@@ -498,23 +558,35 @@ static int run(void* arg) {
             }
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
+            if (g_renderer_up && gq_queues()) {
+                PresentCall c = {*p, cpu, g_nvn.replay.shown, q->syncpt};
+                gq_call(present_run, &c, sizeof c);
+                g_nvn.replay.present_walked = j->present_order;
+                break;
+            }
             if (g_renderer_up && cpu) {
-                if (g_renderer->present_hdr) g_renderer->present_hdr(&p->hdr);
-                g_renderer->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
+                if (g_renderer->present_hdr) gpu_renderer_now()->present_hdr(&p->hdr);
+                gpu_renderer_now()->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
                                            p->transform, p->released_ns, p->period_ns, g_nvn.replay.shown);
             } else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
-                g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
+                gpu_renderer_now()->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
                                            g_nvn.replay.shown);
             else /* no display to reach */
                 syncpt_incr(g_nvn.replay.shown);
-            stream_incr(q->syncpt); /* shown: the window's texture comes free (nvn_WindowAcquireTexture) */
+            /* shown: the window's texture comes free (nvn_WindowAcquireTexture). The present's drain left the queue
+               empty, so the renderer's increment runs here, in the same order, without one more hand-off to its
+               thread before the game has its texture again */
+            if (g_renderer->stream_incr)
+                gpu_renderer_now()->stream_incr(q->syncpt);
+            else
+                syncpt_incr(q->syncpt);
             g_nvn.replay.present_walked = j->present_order;
             break;
         }
     }
     /* the stream stops here, as gpu.c's job_end: the renderer holds a stream's releases (its increments and writes)
        until then (release.c), and the game may now look at them */
-    if (g_renderer->stream_end) g_renderer->stream_end();
+    if (g_renderer->stream_end) gpu_stream_end();
     free(j->snapshot);
     j->snapshot = NULL;
     pm_lock(&g_nvn.replay.lock);
@@ -559,7 +631,7 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     for (i = 0; i < n; i++) j->handles[i] = gr64(handles + 8 * (u64)i);
     /* what the CPU wrote before the submission is for its work to see: the renderer's caches check guest memory
        again (gpu.c does the same before a GPFIFO job) */
-    if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+    if (g_renderer->mem_may_have_changed) gpu_renderer_now()->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
     /* Every header and nested call is still read: the guest can rewrite command memory between submissions.
        Only waits and fences affect promises, so ordinary records need no callback in the first pass, and a
@@ -637,6 +709,7 @@ void nvn_replay_finish(u32 queue) {
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);
+    SNX_ZONE_TEXT(z, "queue %u sync %u=%u", queue, id, value);
     gpu_call_poll(run, job(queue, JOB_FENCE, 0), queue - 1);
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);

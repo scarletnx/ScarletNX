@@ -54,6 +54,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* encodes' blocks on their way to the BC7 cache: in the readback ring of the frame they were recorded in, each until
    its submission is done (vk_astc_frame_done) */
@@ -166,6 +167,8 @@ typedef struct {
     u64 timed_ns, timed_texels, timed, untimed;
     u32 time_busy, time_most;
     int time_off, as_set;
+    /* uploads that recorded a strip since the last plot (vk_astc_frame_done) */
+    u64 uploads;
 } Astc;
 static Astc g_astc;
 
@@ -579,6 +582,21 @@ void vk_astc_frame_done(u64 sub) {
         memcpy(k->words, k->back, (size_t)k->n * 4);
         k->sub = 0;
     }
+    /* one point per landed submission: how many uploads recorded a strip and how many MB their results took,
+       RGBA8, BC7 or BCN. The count is of uploads that recorded a strip; a keep_only upload is counted before it
+       returns, so it is included even though it does not transcode. The zones on each strip's dispatch say the
+       block size, slice count and the strip's own cost */
+    {
+        static const char k_uploads[] = "vk mem astc uploads";
+        static const char k_mb[] = "vk mem astc MB";
+        static u64 was_uploads, was_bytes;
+        u64 bytes = g_astc.rgba8_bytes + g_astc.bc7_bytes + g_astc.bcn_bytes[0] + g_astc.bcn_bytes[1] +
+                    g_astc.bcn_bytes[2];
+        SNX_PLOT(k_uploads, (double)(g_astc.uploads - was_uploads));
+        SNX_PLOT(k_mb, (double)(bytes - was_bytes) / 1048576.0);
+        was_uploads = g_astc.uploads;
+        was_bytes = bytes;
+    }
 }
 
 /* the blocks the cache holds of key, size bytes of them, staged and copied into img by copy (its bufferOffset set
@@ -970,6 +988,9 @@ static void work_barrier(VkCommandBuffer cb, int to) {
 static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u32 w, u32 height, u32 nx, u32 n, u32 nz,
                           u32 bw, u32 bh, u32 srgb, u32 in_base, int tag) {
     const u32 cx = (w + 3) / 4, cy = (height + 3) / 4;
+    /* one strip's encode, named by the ASTC footprint and its slices, valued in bytes of BC7 (16 a 4x4 block): the
+       CPU's cost of recording it */
+    SNX_ZONE_TV(z_bc7, "vk mem astc bc7", (u64)cx * cy * nz * 16, "%ux%u, %u slices", bw, bh, nz);
     const AstcBc7Params p = {w,
                              height,
                              nx,
@@ -1017,6 +1038,10 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
 static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32 w, u32 height, u32 nx, u32 n, u32 nz,
                           u32 bw, u32 bh, u32 srgb, u32 in_base) {
     const u32 cx = (w + 3) / 4, cy = (height + 3) / 4;
+    /* the BC1, BC4 or BC5 build of the same footprint and slices, valued in bytes of the result: 8 a 4x4 BC1 or BC4
+       block, 16 a BC5 block */
+    SNX_ZONE_TV(z_bcn, "vk mem astc bcn", (u64)cx * cy * nz * (kind == 5 ? 16u : 8u), "%ux%u, %u slices", bw, bh,
+                nz);
     const AstcBc7Params p = {w,
                              height,
                              nx,
@@ -1803,6 +1828,7 @@ static int astc_upload_(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h
     /* the level from the cache, and its blocks still staged, but only to be kept: what the GPU reads their kind from
        (texture.c's kind_frame) */
     int keep_only = 0;
+    int counted = 0; /* whether this upload has recorded a strip, for the per-frame plot */
     const u64 blocks = (u64)cx * ((h + 3) / 4) * depth * 16;
     if (bc7) {
         /* the encoder's build, by the level's size and not the region's (vk_bc7_build): the fast one from
@@ -1895,6 +1921,10 @@ static int astc_upload_(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h
                            : is3d  ? z
                                    : layer,
                            input, offset, nx, n, nz);
+            if (!counted) { /* one count for an upload that records a strip */
+                g_astc.uploads++;
+                counted = 1;
+            }
             if (keep_only) continue;
             VkBuffer from = scratch_buf();
             u32 row_texels = 0, image_rows = 0;
@@ -1920,6 +1950,8 @@ static int astc_upload_(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h
                 g_astc.bcn_bytes[bcn_slot(bcn)] += (u64)cx * cy * nz * bcn_bytes;
                 g_astc.bcn_rgba8_bytes[bcn_slot(bcn)] += texels;
             } else {
+                /* the plain decode, by the strip's footprint and slices, valued in the RGBA8 bytes it writes */
+                SNX_ZONE_TV(z_dec, "vk mem astc rgba8", texels, "%ux%u, %u slices", bw, bh, nz);
                 /* Submission makes the flushed host staging writes visible. Scratch
                    reuse also needs a WAR dependency on the preceding image copy,
                    including when that belongs to an earlier frame. */

@@ -113,6 +113,8 @@ void snx_ir_diagnostics(int stats, const char* dump_pc) {
     g_ir.dump = end && end != dump_pc && !*end;
 }
 int snx_ir_volatile(void) { return g_ir.volatile_memory; }
+int snx_ir_stats_on(void) { return g_ir.stats; }
+SnxU64 snx_ir_dump_pc(void) { return g_ir.dump ? g_ir.dump_pc : 0; }
 int snx_ir_init(char* error, size_t error_size) {
     /* the asm parser for the runtime library's inline assembly (rtlib.c's divq, cpu.h's compiler barrier) */
     if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter() || LLVMInitializeNativeAsmParser()) {

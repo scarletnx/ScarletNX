@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat_apple.h"
+#include "nx/runtime/platform/tracy.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,7 +228,9 @@ static void display_thread(void* arg) {
         if (refresh && g_dc.last_ns + refresh > due) due = g_dc.last_ns + refresh;
         if (p.due > due + refresh / 4) due = p.due - refresh / 4; /* the display times can come a little early */
         if (due > now + EARLY_NS) plat_sleep_ns((i64)(due - EARLY_NS - now));
+        u64 polls = 0; /* the waits without a timeout to learn this present was displayed */
         for (;;) {
+            polls++;
             VkResult r = VK_ERROR_OUT_OF_DATE_KHR;
             u64 at = 0;
             pm_lock(&g_dc.lock);
@@ -248,15 +251,31 @@ static void display_thread(void* arg) {
             pm_unlock(&g_vk.sc_lock);
             now = plat_ns();
             if (at) { /* the display's own time */
+                SNX_PLOT("vk pres display latency ms", ms(at - p.presented_ns));
+                SNX_PLOT("vk pres display polls", (double)polls);
                 displayed(&p, at, 1);
                 break;
             }
             if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
                 /* between the last poll that said not yet and this one */
+                SNX_PLOT("vk pres display latency ms", ms(now - p.presented_ns));
+                SNX_PLOT("vk pres display polls", (double)polls);
                 displayed(&p, failed ? failed + (now - failed) / 2 : now, failed && now - failed <= 2 * POLL_NS);
                 break;
             }
             if (r != VK_TIMEOUT || now - p.presented_ns > GIVE_UP_NS) { /* gone, or not shown: let go */
+                /* what let the present go: a failed present, a failed wait, or no display from the compositor */
+                const char* why = made < 0 ? "present failed"
+                                  : r != VK_TIMEOUT ? "wait error"
+                                                    : "no display (compositor)";
+                if (snx_tracy_attached()) {
+                    char msg[128];
+                    int n = snprintf(msg, sizeof msg, "vk pres: present %llu let go, %s: wait %d, %llu ms",
+                                     (unsigned long long)p.id, why, (int)r,
+                                     (unsigned long long)((now - p.presented_ns) / 1000000));
+                    if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1));
+                }
+                SNX_PLOT("vk pres display let go", 1.0);
                 g_dc.last_game_ns = 0;
                 displayed(&(DPresent){.game = p.game, .syncpt = p.syncpt}, now, 0);
                 break;
@@ -367,12 +386,23 @@ u64 vk_display_target(u64 period_ns) {
     u64 refresh = backend_display_refresh_ns(), now = plat_ns(), due = 0;
     int pacing = atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed), late = 0;
     pm_lock(&g_dc.lock);
-    g_dc.seq++;
+    u64 seq = ++g_dc.seq;
     if (pacing >= 2 && g_vk.sc_hold && atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
-        due = due_at(g_dc.seq, period_ns, refresh, now, &late);
+        due = due_at(seq, period_ns, refresh, now, &late);
     g_dc.due_last = due;
     pm_unlock(&g_dc.lock);
-    if (late) atomic_fetch_add_explicit(&g_dc.late, 1, memory_order_relaxed);
+    if (late) {
+        /* the display's pace held this frame past its period, so the frames after it move on too */
+        if (snx_tracy_attached()) {
+            char msg[128];
+            int n = snprintf(msg, sizeof msg,
+                             "vk pres: frame %llu late, display pace: period %llu us, due %llu us, now %llu us",
+                             (unsigned long long)seq, (unsigned long long)(period_ns / 1000),
+                             (unsigned long long)(due / 1000), (unsigned long long)(now / 1000));
+            if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1));
+        }
+        atomic_fetch_add_explicit(&g_dc.late, 1, memory_order_relaxed);
+    }
     g_dc.due_next = due;
     if (!due) return 0;
     u64 mono = plat_monotonic_ns() + (due - refresh / 2 - now);
@@ -401,10 +431,17 @@ void vk_display_fifo(int fifo) { atomic_store_explicit(&g_dc.fifo, fifo, memory_
 
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     int r = 1;
+    u64 t_wait =
+        snx_tracy_attached() ? plat_ns() : 0; /* the game's pace wait; the blocking wait gets a plot, not a zone */
     if (!atomic_load_explicit(&g_dc.started, memory_order_acquire) ||
-        !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
+        !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed)) {
+        SNX_PLOT("vk pres display wait ms", (double)(plat_ns() - t_wait) / 1e6);
         return -1;
-    if (!atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)) return -1;
+    }
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)) {
+        SNX_PLOT("vk pres display wait ms", (double)(plat_ns() - t_wait) / 1e6);
+        return -1;
+    }
     *refresh_ns = backend_display_refresh_ns();
     pm_lock(&g_dc.lock);
     /* the game's frames presented, all displayed where they are held until their refresh: a frame released then has
@@ -416,11 +453,20 @@ int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     while (g_dc.handed - g_dc.done > queued) {
         u64 now = plat_ns();
         if (now >= deadline_ns) {
+            if (snx_tracy_attached()) {
+                char msg[128];
+                int n = snprintf(msg, sizeof msg,
+                                 "vk pres: pace gave up, %llu frames still on display, %llu ms past deadline",
+                                 (unsigned long long)(g_dc.handed - g_dc.done),
+                                 (unsigned long long)((now - deadline_ns) / 1000000));
+                if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1));
+            }
             r = 0;
             break;
         }
         pc_wait(&g_dc.shown, &g_dc.lock, (i64)(deadline_ns - now));
     }
     pm_unlock(&g_dc.lock);
+    SNX_PLOT("vk pres display wait ms", (double)(plat_ns() - t_wait) / 1e6);
     return r;
 }

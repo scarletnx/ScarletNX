@@ -1,0 +1,47 @@
+# DIV—Unsigned Divide -- override
+# Erratum E-1 (vibe86's): read in order, 'AL := temp; AH := AX MOD SRC;' takes the remainder of AX after the quotient
+# went into it; the remainder of the original dividend is meant. Here both of the dividend as it was, the rest of the
+# page's words kept (the range check, the 64-bit mode's test).
+@operation
+IF SRC = 0
+    THEN #DE; FI; (* Divide Error *)
+IF OperandSize = 8 (* Word/Byte Operation *)
+    THEN
+        temp := AX / SRC;
+        rem := AX MOD SRC;
+        IF temp > FFH
+             THEN #DE; (* Divide error *)
+             ELSE
+                  AL := temp;
+                  AH := rem;
+        FI;
+    ELSE IF OperandSize = 16 (* Doubleword/word operation *)
+        THEN
+             temp := DX:AX / SRC;
+             rem := DX:AX MOD SRC;
+             IF temp > FFFFH
+                  THEN #DE; (* Divide error *)
+             ELSE
+                  AX := temp;
+                  DX := rem;
+             FI;
+    ELSE IF OperandSize = 32 (* Quadword/doubleword operation *)
+        THEN
+             temp := EDX:EAX / SRC;
+             rem := EDX:EAX MOD SRC;
+             IF temp > FFFFFFFFH
+                  THEN #DE; (* Divide error *)
+             ELSE
+                  EAX := temp;
+                  EDX := rem;
+             FI;
+    ELSE (* Doublequadword/quadword operation *)
+             temp := RDX:RAX / SRC;
+             rem := RDX:RAX MOD SRC;
+             IF temp > FFFFFFFFFFFFFFFFH
+                  THEN #DE; (* Divide error *)
+             ELSE
+                  RAX := temp;
+                  RDX := rem;
+             FI;
+FI;

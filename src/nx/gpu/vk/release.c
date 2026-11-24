@@ -46,6 +46,9 @@ typedef struct {
        their counts differ, which is whether the segments [dfrom, qend) counted. The same values as pred */
     int dpred;
     u64 dfrom;
+    /* a timestamp report's timestamp (stamp.c), 0 for none: performed with the GPU thread's ticks, and given the GPU's
+       time once its submission is done (fix_through) */
+    u64 stamp;
     u64 cpu; /* the guest address of its payload, translated when it was queued, 0 when it isn't in the word index */
 } Release;
 enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
@@ -139,6 +142,115 @@ static void rix_track(Release* r, u64 seq, int delta) {
         rix_remove(g_rpg, RPG_N - 1, r->cpu & ~4095ull);
 }
 
+/* Timestamp reports (stamp.c) go when the stream lets them, as the other releases do, with the GPU thread's time:
+   waiting for their submissions held the game's fences behind them. One game makes about 2,200 of them a second, and
+   it ran at 41 frames a second where it had run at 53. Once a report's submission is done, its timestamp is written
+   again with the GPU's time, where guest memory still holds the report as it went and its mapping and GPU writers
+   haven't changed. Under vk_lock */
+#define FIX_N     4096
+#define FIX_TAG_N 256 /* lock-free filter for vk_release_stamp_sync, keyed by (cpu >> 4) */
+static struct {
+    u64 stamp, gva, cpu;
+    u8 data[16];
+} g_fix[FIX_N];
+static u64 g_fhead, g_ftail;
+static _Atomic u32 g_fix_tag[FIX_TAG_N];
+static u32 fix_tag(u64 cpu) { return (u32)((cpu >> 4) & (FIX_TAG_N - 1)); }
+static void fix_drop_slot(u64 s) {
+    if (g_fix[s].cpu) {
+        atomic_fetch_sub_explicit(&g_fix_tag[fix_tag(g_fix[s].cpu)], 1, memory_order_release);
+        g_fix[s].cpu = 0;
+    }
+    g_fix[s].gva = 0;
+}
+static void fix_add(const Release* r) {
+    const u64 cpu = r->cpu ? r->cpu : gmmu_translate(r->gva);
+    /* invalidate any older pending fixup at the same address so a matching tick cannot overwrite a newer report */
+    for (u64 i = g_ftail; i != g_fhead; i++) {
+        const u64 s = i % FIX_N;
+        if (g_fix[s].gva == r->gva || (cpu && g_fix[s].cpu == cpu)) fix_drop_slot(s);
+    }
+    if (g_fhead - g_ftail == FIX_N) {
+        fix_drop_slot(g_ftail % FIX_N);
+        g_ftail++; /* full: the oldest keeps the GPU thread's time */
+    }
+    const u64 s = g_fhead % FIX_N;
+    g_fix[s].stamp = r->stamp;
+    g_fix[s].gva = r->gva;
+    g_fix[s].cpu = cpu;
+    memcpy(g_fix[s].data, r->data, sizeof r->data);
+    if (cpu) atomic_fetch_add_explicit(&g_fix_tag[fix_tag(cpu)], 1, memory_order_release);
+    g_fhead++;
+}
+/* the reports whose submissions are done get the GPU's time, in order */
+static void fix_through(void) {
+    while (g_ftail != g_fhead) {
+        const u64 s = g_ftail % FIX_N;
+        const u64 gva = g_fix[s].gva, cpu = g_fix[s].cpu;
+        if (!gva) {
+            g_ftail++;
+            continue;
+        }
+        u64 ticks = 0;
+        const int got = vk_stamp_ticks(g_fix[s].stamp, &ticks);
+        if (got < 0) break; /* its submission isn't done, nor are the later ones' */
+        /* the slot goes, and its tag with it, only after the write: vk_release_stamp_sync's filter must not let a
+           read past while the report still holds the GPU thread's time */
+        if (got && (!cpu || gmmu_translate(gva) == cpu) && !vk_buf_pending(gva, 16) && !vk_compute_pending(gva, 16) &&
+            !vk_gfx_image_pending(gva, 16)) {
+            /* in place, a GPU write over the report that is still pending lands first: the bytes compared are then
+               the ones the write below replaces, and a newer write wins */
+            if (vk_uma_pending(gva, 16)) vk_uma_before_write(gva, 16);
+            u8 now[16] = {0};
+            gmem_read_raw(gva, now, sizeof now);
+            if (!memcmp(now, g_fix[s].data, sizeof now)) {
+                u8 t[8];
+                snx_st_le64(t, ticks);
+                vk_result_begin();
+                gmem_write_by(gva + 8, t, sizeof t, GPU_WRITE_RELEASE, 0, 0);
+                vk_result_end();
+            }
+        }
+        fix_drop_slot(s);
+        g_ftail++;
+    }
+}
+/* the reports done get the GPU's time, under vk_lock */
+static void fold_fix(void) {
+    u64 done = 0;
+    vk_submit_progress(&(u64){0}, &done);
+    vk_stamp_fold(done);
+    fix_through();
+}
+int vk_release_stamp_sync(u64 cpu, int may_wait) {
+    if (!cpu || !atomic_load_explicit(&g_fix_tag[fix_tag(cpu)], memory_order_acquire)) return 0;
+    vk_lock();
+    fix_through();
+    u64 wait = 0;
+    if (atomic_load_explicit(&g_fix_tag[fix_tag(cpu)], memory_order_relaxed))
+        for (u64 i = g_ftail; i != g_fhead; i++) {
+            const u64 s = i % FIX_N;
+            if (g_fix[s].gva && g_fix[s].cpu == cpu) {
+                u64 v = vk_stamp_submit_of(g_fix[s].stamp);
+                if (v > wait) wait = v;
+            }
+        }
+    if (wait && may_wait) {
+        vk_unlock();
+        vk_wait_submit(wait);
+        vk_lock();
+        fold_fix();
+        wait = 0;
+    }
+    vk_unlock();
+    return wait != 0;
+}
+void vk_release_stamp_reset(void) {
+    while (g_ftail != g_fhead) {
+        fix_drop_slot(g_ftail % FIX_N);
+        g_ftail++;
+    }
+}
 static void perform(Release* r) {
     if (r->samples) { /* the count, as the report's structure size says: one word, or the value and the timestamp */
         u64 v = vk_query_value(r->qch, r->qfirst, r->qend);
@@ -153,6 +265,7 @@ static void perform(Release* r) {
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */
     vk_result_end();
+    if (r->stamp) fix_add(r);
 }
 void vk_release_events(void) { syncpt_events(); }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
@@ -195,6 +308,7 @@ static void release_through(u64 gate, u64 cgate) {
         if (r.gva) perform(&r);
         wrote |= r.gva != 0;
     }
+    fix_through();
     vk_unlock();
     /* a replay's event wait may look at what they wrote, which no other wake reaches (a syncpoint kicks): once for
        them all, not for each of one game's thousands of reports */
@@ -213,10 +327,14 @@ static void release_thread(void* p) {
                                      memory_order_relaxed);
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        SNX_ZONE_TEXT(z_release, "gate %llu, compute %llu", (unsigned long long)gate, (unsigned long long)cgate);
+        SNX_ZONE_END(z_release); /* the waits below block on the GPU: their cost is in the wait plots, not this zone */
         vk_wait_submit(gate);
         vk_compute_wait(cgate);
         {
-            SNX_ZONE(z, "land and release");
+            /* the gates the release thread waited for name why these releases can go now */
+            SNX_ZONE_TV(z, "vk: land and release", gate, "through submit %llu, compute %llu",
+                        (unsigned long long)gate, (unsigned long long)cgate);
             release_through(gate, cgate);
             SNX_ZONE_END(z);
         }
@@ -255,11 +373,19 @@ static void release(Release* r) {
     if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) &&
         !atomic_load_explicit(&r->cgate, memory_order_relaxed))
         atomic_store_explicit(&r->gate, 0, memory_order_relaxed);
-    else
-        atomic_store_explicit(
-            &r->gate,
-            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit(),
-            memory_order_relaxed);
+    else {
+        int unsubmitted = vk_buf_pending_unsubmitted(), img_unsubmitted = vk_gfx_image_in_flight(1);
+        atomic_store_explicit(&r->gate, r->samples || unsubmitted || img_unsubmitted ? recording : vk_last_submit(),
+                              memory_order_relaxed);
+        /* why the release waits for the GPU instead of being performed now: what still holds it */
+        SNX_ZONE_TEXT(z, "%s, gate %llu", r->samples        ? "a samples count waits for its submit"
+                                          : unsubmitted     ? "storage results not submitted"
+                                          : img_unsubmitted ? "fragment writes in flight"
+                                          : atomic_load_explicit(&r->cgate, memory_order_relaxed)
+                                                                ? "a compute batch is pending"
+                                                                : "earlier results still pending",
+                       (unsigned long long)atomic_load_explicit(&r->gate, memory_order_relaxed));
+    }
     int freed = 0; /* the stream's hold ended for the queue: the release thread may perform the rest */
     pm_lock(&g_rlock);
     if (atomic_load_explicit(&g_rhead, memory_order_relaxed) - atomic_load_explicit(&g_rtail, memory_order_relaxed) ==
@@ -326,10 +452,24 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
    gated on the submit being recorded goes to the GPU, as the guest may look at it now */
 _Atomic u64 g_vk_texture_epoch; /* vk.h: the points that make draws' writes visible to texture reads */
 void vk_release_submit(void) {
-    SNX_ZONE(z, "vk release submit");
+    /* the stream stops at the submission's end or a wait, so its held releases go: the text says how many were queued */
+    [[maybe_unused]] u64 queued = atomic_load_explicit(&g_rhead, memory_order_relaxed) -
+                 atomic_load_explicit(&g_rtail, memory_order_relaxed);
+    SNX_ZONE_T(z, "vk release submit", "%llu queued releases go", (unsigned long long)queued);
     atomic_fetch_add_explicit(&g_vk_texture_epoch, 1,
                               memory_order_relaxed); /* the console's GPU idles its caches here */
+    /* contention on vk_lock is part of this zone's cost. The holder's thread id names the phase that had the device
+       lock (the recorder's, a landing's or a game thread's); only a trace reads the clock or formats the extra text */
+    int trace = snx_tracy_attached();
+    u32 held = trace ? vk_lock_owner() : 0;
+    u64 t = trace ? plat_ns() : 0;
     vk_lock();
+    if (trace && held) {
+        u64 us = (plat_ns() - t) / 1000;
+        SNX_ZONE_TEXT(z, "%llu queued, lock %llu us by tid %u", (unsigned long long)queued,
+                      (unsigned long long)us, held);
+        SNX_PLOT("vk submit lock wait us", (double)us);
+    }
     pm_lock(&g_rlock);
     hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
     g_rheld = atomic_load_explicit(&g_rhead,
@@ -358,6 +498,16 @@ void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 t
     r.qend = end;
     snx_st_le64(r.data + 8, ticks); /* guest bytes, as release_write's payloads are */
     release(&r);
+}
+void vk_release_stamp(u64 gva, const void* data, int top) {
+    Release r = {0};
+    r.gva = gva;
+    r.len = 16;
+    memcpy(r.data, data, 16); /* the GPU thread's ticks at data + 8, kept where the report gets no timestamp */
+    vk_lock();
+    r.stamp = vk_stamp_report(top);
+    release(&r);
+    vk_unlock();
 }
 /* the releases queued, and the submissions the oldest waits for: read unlocked, for the stall report */
 void vk_release_queued(u64* n, u64* gate, u64* cgate) {
@@ -541,6 +691,9 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
 static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n) {
     int r = 0;
     u64 sgate = 0, listed[4]; /* the submit the reports read here count up to; the queue numbers of those in counts */
+    /* the report whose gate is sgate: its counter and segment range, named in the stall message */
+    u32 stall_ch = 0;
+    u64 stall_first = 0, stall_end = 0;
     *n = 0;
     if (max > sizeof listed / sizeof *listed) max = sizeof listed / sizeof *listed;
     if (!len || vk_result_landing()) return len ? -1 : 0;
@@ -571,8 +724,12 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         if (gpu) {
             listed[*n] = i;
             counts[(*n)++] = (SamplesCount){q->qch, (u32)(q->gva - gva), bytes, q->qfirst, q->qend};
-        } else if (atomic_load_explicit(&q->gate, memory_order_relaxed) > sgate)
+        } else if (atomic_load_explicit(&q->gate, memory_order_relaxed) > sgate) {
             sgate = atomic_load_explicit(&q->gate, memory_order_relaxed);
+            stall_ch = q->qch;
+            stall_first = q->qfirst;
+            stall_end = q->qend;
+        }
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len) ||
@@ -583,6 +740,17 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
            thread performs them (and lands the results before them) while the stream goes on. Held to the stream's end,
            a game's threads waited longer for them. They stay queued until this read is done: vk_lock keeps
            release_through from taking them */
+        /* An occlusion count read has to wait for its submit: a rare decision that stalls the CPU. The wait itself is
+           never inside a zone; its cost goes in a plot and its reason in a message. */
+        if (snx_tracy_attached()) {
+            char stall_msg[128];
+            int nmsg = snprintf(stall_msg, sizeof stall_msg,
+                                "vk pres: occlusion count read of counter %u [%llu,%llu) waits for submit %llu",
+                                stall_ch, (unsigned long long)stall_first, (unsigned long long)stall_end,
+                                (unsigned long long)sgate);
+            if (nmsg > 0) SNX_MSG(stall_msg, (size_t)(nmsg < (int)sizeof stall_msg ? nmsg : (int)sizeof stall_msg - 1));
+        }
+        u64 t_stall = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
         pm_lock(&g_rlock);
         hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
         g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed);
@@ -590,6 +758,8 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         pm_unlock(&g_rlock);
         submit_through(sgate);
         vk_wait_submit(sgate);
+        SNX_PLOT("vk pres query read stalls", 1.0);
+        SNX_PLOT("vk pres query read stall ms", (double)(plat_ns() - t_stall) / 1e6);
     }
     if (r > 0) {
         pm_lock(&g_rlock);
@@ -639,7 +809,14 @@ int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u3
 void vk_release_need(u64 gva, u64 len) {
     if (len && atomic_load_explicit(&g_gpu_releases, memory_order_acquire)) release_match(gva, len, 0, 0);
 }
-void vk_release_drain(void) { release_match(0, 0, 0, 1); }
+void vk_release_drain(void) {
+    release_match(0, 0, 0, 1);
+    /* with no release queued, release_through didn't run: the reports whose submissions are done get the GPU's time
+       now, before a save state copies them or a translation changes */
+    vk_lock();
+    fold_fix();
+    vk_unlock();
+}
 void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
 /* The queued increments of syncpoint id up to the one that brings it to thresh, counted from its value now (increments
    are performed under g_rlock, so the two agree), with every release before them: performed on the waiting thread once
@@ -875,7 +1052,8 @@ void vk_render_predicate_drop(u32 pred) {
 }
 u32 vk_release_value(u32 id) {
     pm_lock(&g_rlock);
-    u32 n = syncpt_read(id) + (id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_relaxed) : 0);
+    /* acquire: a count with an increment of gpu_stream_incr's in it comes with that increment taken (gpu_release_value) */
+    u32 n = syncpt_read(id) + (id < SYNC_N ? atomic_load_explicit(&g_rincr[id], memory_order_acquire) : 0);
     pm_unlock(&g_rlock);
     return n;
 }

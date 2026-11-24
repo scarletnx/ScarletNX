@@ -7,6 +7,8 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/ini.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 
 /* the users of dir, the one playing chosen and said: snx_users_init's, on a folder given */
 static void users_init(const char* dir) {
@@ -25,6 +27,10 @@ static void users_init(const char* dir) {
     memcpy(g_host.acc.users_dir, dir, strlen(dir) + 1); /* where acc:su writes users.ini */
     /* neither the folder nor the nickname: players attach the log to public reports, and both can name them */
     LOG("acc: %d user%s, playing as user %d\n", g_user_count, g_user_count == 1 ? "" : "s", snx_users_selected_number());
+    char msg[96];
+    int n = snprintf(msg, sizeof msg, "svc users: %d users, playing as %d", g_user_count, snx_users_selected_number());
+    /* a value of sizeof msg or more means the text was cut, so send only the bytes that were written */
+    if (n > 0) SNX_MSG(msg, (size_t)n < sizeof msg ? (size_t)n : sizeof msg - 1);
     /* each user's Mii and picture not taken as users.ini says them: what it says and what is in effect */
     if (snx_users_notes()[0]) LOG("%s", snx_users_notes());
 }

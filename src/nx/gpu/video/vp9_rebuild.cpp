@@ -6,6 +6,7 @@
  */
 #include "common/utilities/bits.h"
 #include "nx/gpu/video/vp9_rebuild.h"
+#include "nx/runtime/platform/tracy.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -1207,8 +1208,13 @@ std::span<const u8> VP9::ComposeFrame(const PictureInfo& picture, const EntropyP
     Vp9FrameContainer current = GetCurrentFrame(picture, entropy, body, offsets, chroma);
     current_frame_info = current.info;
     std::vector<u8> bitstream = std::move(current.bit_stream);
+    SNX_ZONE(z_uh, "video vp9 uncompressed header");
     auto uncomp_writer = ComposeUncompressedHeader();
+    SNX_ZONE_END(z_uh);
+    SNX_ZONE(z_ch, "video vp9 compressed header");
     std::vector<u8> compressed_header = ComposeCompressedHeader();
+    SNX_ZONE_VALUE(z_ch, static_cast<u32>(compressed_header.size()));
+    SNX_ZONE_END(z_ch);
     uncomp_writer.WriteU(static_cast<s32>(compressed_header.size()), 16);
     uncomp_writer.Flush();
     std::vector<u8> uncompressed_header = uncomp_writer.GetByteArray();
@@ -1361,8 +1367,14 @@ extern "C" SnxVp9Builder* snx_vp9_new(void) { return new (std::nothrow) SnxVp9Bu
 extern "C" void snx_vp9_free(SnxVp9Builder* builder) { delete builder; }
 extern "C" int snx_vp9_compose(SnxVp9Builder* builder, const uint8_t* picture, const uint8_t* probabilities,
                                const uint8_t* body, uint32_t body_size, const uint32_t* regs, SnxVp9Frame* frame) {
-    if (!builder || !picture || !probabilities || !body || !body_size || !regs || !frame || body_size > (16u << 20))
+    /* the zone's value is the outcome: 0 rebuilt, 1 bad inputs, 2 bad frame setup, 3 compose gave no frame,
+       4 compose threw */
+    SNX_ZONE(z, "video vp9 rebuild");
+    if (!builder || !picture || !probabilities || !body || !body_size || !regs || !frame || body_size > (16u << 20)) {
+        SNX_ZONE_VALUE(z, 1); /* a small code for a frequent decision */
+        SNX_ZONE_TEXT(z, "bad inputs, %u B", body_size);
         return 0;
+    }
     SnxVp9::PictureInfo pic;
     SnxVp9::EntropyProbs probs;
     std::memcpy(&pic, picture, sizeof pic);
@@ -1372,8 +1384,11 @@ extern "C" int snx_vp9_compose(SnxVp9Builder* builder, const uint8_t* picture, c
     if (pic.bitstream_size != body_size || dims.width <= 0 || dims.width > 4096 || dims.height <= 0 ||
         dims.height > 4096 || dims.luma_pitch < dims.width || dims.chroma_pitch < dims.width ||
         pic.log2_tile_cols < SnxVp9::CalcMinLog2TileCols(dims.width) ||
-        pic.log2_tile_cols > SnxVp9::CalcMaxLog2TileCols(dims.width) || pic.log2_tile_rows > 2 || pic.tx_mode > 4)
+        pic.log2_tile_cols > SnxVp9::CalcMaxLog2TileCols(dims.width) || pic.log2_tile_rows > 2 || pic.tx_mode > 4) {
+        SNX_ZONE_VALUE(z, 2);
+        SNX_ZONE_TEXT(z, "bad frame %dx%d, %u B", dims.width, dims.height, body_size);
         return 0;
+    }
     const std::array<SnxVp9::u64, 4> offsets{
         static_cast<SnxVp9::u64>(regs[0x430 / 4 + 0]) << 8,
         static_cast<SnxVp9::u64>(regs[0x430 / 4 + 1]) << 8,
@@ -1384,7 +1399,11 @@ extern "C" int snx_vp9_compose(SnxVp9Builder* builder, const uint8_t* picture, c
         const auto packet = builder->decoder.ComposeFrame(pic, probs, std::span(body, body_size), offsets,
                                                           static_cast<SnxVp9::u64>(regs[0x474 / 4 + 3]) << 8);
         const auto& info = builder->decoder.Info();
-        if (packet.size() > INT32_MAX || info.frame_size.width <= 0 || info.frame_size.height <= 0) return 0;
+        if (packet.size() > INT32_MAX || info.frame_size.width <= 0 || info.frame_size.height <= 0) {
+            SNX_ZONE_VALUE(z, 3);
+            SNX_ZONE_TEXT(z, "compose gave no frame");
+            return 0;
+        }
         frame->data = packet.data();
         frame->size = static_cast<uint32_t>(packet.size());
         frame->width = static_cast<uint32_t>(info.frame_size.width);
@@ -1395,6 +1414,12 @@ extern "C" int snx_vp9_compose(SnxVp9Builder* builder, const uint8_t* picture, c
         frame->luma = info.frame_offsets[3];
         frame->chroma = builder->decoder.Chroma();
         frame->previous_visible = info.last_frame_shown;
+        SNX_ZONE_VALUE(z, 0);
+        SNX_ZONE_TEXT(z, "%ux%u, %u B out", frame->width, frame->height, frame->size);
         return 1;
-    } catch (...) { return 0; }
+    } catch (...) {
+        SNX_ZONE_VALUE(z, 4);
+        SNX_ZONE_TEXT(z, "compose threw");
+        return 0;
+    }
 }

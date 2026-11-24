@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/ledger.h"
 
 static const char* const k_owner[VK_OWN_N] = {
@@ -130,6 +131,7 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
                                        VkDeviceMemory* mem) {
     u64 t0 = plat_ns();
     SNX_ZONE_V(z, "driver allocation", ai->allocationSize);
+    SNX_ZONE_TEXT(z, "type %u", ai->memoryTypeIndex); /* which heap the allocator grew in */
     VkResult r = vkAllocateMemory(dev, ai, cb, mem);
     SNX_ZONE_END(z);
     driver_call(&g_ledger.allocate, r == VK_SUCCESS ? ai->allocationSize : 0, plat_ns() - t0);
@@ -225,6 +227,14 @@ void vk_ledger_log(void) {
     DriverCalls a, f;
     u64 na = driver_report(&g_ledger.allocate, &g_ledger.reported[0], &a);
     u64 nf = driver_report(&g_ledger.release, &g_ledger.reported[1], &f);
+    {
+        static const char k_calls[] = "vk mem driver allocs";
+        static const char k_mb[] = "vk mem driver MB";
+        static const char k_ms[] = "vk mem driver ms";
+        SNX_PLOT(k_calls, (double)na);
+        SNX_PLOT(k_mb, mb(atomic_load_explicit(&a.bytes, memory_order_relaxed)));
+        SNX_PLOT(k_ms, ms(atomic_load_explicit(&a.ns, memory_order_relaxed)));
+    }
     if (na || nf)
         LOG("vulkan: the driver allocated %llu blocks (%.0f MB) in %.1f ms, the longest %.1f ms, %llu of a millisecond "
             "or more, %llu (%.1f ms) inside the renderer's work; it freed %llu in %.1f ms, the longest %.1f ms, %llu "

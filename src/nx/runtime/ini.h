@@ -68,14 +68,15 @@ struct IniOpt {
     int step, shift;
     size_t size; /* INI_TEXT: var's size */
 };
-/* a section of the .ini (a group of the launcher's Settings): up to three tables, a table with a page having a page of
-   its own in the menus, listed after the section's other keys. own: the tables options.c applies itself; the others
-   are applied through backend_ini, which takes the on-screen controls' lock */
+/* a section of the .ini (a group of the launcher's Settings): up to INI_SECTION_TABLES tables, a table with a page
+   having a page of its own in the menus, listed after the section's other keys. own: the tables options.c applies
+   itself; the others are applied through backend_ini, which takes the on-screen controls' lock */
+#define INI_SECTION_TABLES 4 /* settingsgen's limit too */
 typedef struct {
     const char* name;
     int own;
-    const IniOpt* table[3];
-    const char* page[3];
+    const IniOpt* table[INI_SECTION_TABLES];
+    const char* page[INI_SECTION_TABLES];
 } IniSection;
 
 const IniOpt* ini_find(const IniOpt* table, const char* key); /* key's entry in table, or NULL */

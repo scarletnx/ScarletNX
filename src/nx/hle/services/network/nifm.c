@@ -9,6 +9,7 @@
    host's interface, the one with the default route. */
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/bits.h"
 #include "hle/services/network/nifm.swipc.inc"
 #include <stdatomic.h>
@@ -25,9 +26,12 @@ static int nn_nifm_detail_IRequest_GetRequestState(SvcObj* self, i32* state) {
     R_SUCCEED();
 }
 static int nn_nifm_detail_IRequest_GetResult(SvcObj* self) {
-    return network_online() && atomic_load_explicit(&self->u[0], memory_order_relaxed) != REQ_INVALID
-               ? 0
-               : SNX_RC_NIFM_NO_INTERNET_CONNECTION;
+    int online = network_online(), submitted = atomic_load_explicit(&self->u[0], memory_order_relaxed) != REQ_INVALID;
+    /* the state is loaded once, so the zone's reason and the answer cannot disagree when another thread submits */
+    if (!online || !submitted) {
+        SNX_ZONE_T(z_net_nifm, "hle: net nifm error", online ? "request not submitted" : "no internet connection");
+    }
+    return online && submitted ? 0 : SNX_RC_NIFM_NO_INTERNET_CONNECTION;
 }
 static int nn_nifm_detail_IRequest_GetSystemEventReadableHandles(SvcObj* self, u32* state_event, u32* other_event) {
     NifmRequest* r = self->data;
@@ -43,7 +47,10 @@ static int nn_nifm_detail_IRequest_Cancel(SvcObj* self) {
 /* the host is connected already, so it is accepted at once. Offline it is refused at once, and the state event says
    so either way, as it does when the network went down after the request was made */
 static int nn_nifm_detail_IRequest_Submit(SvcObj* self) {
-    atomic_store_explicit(&self->u[0], network_online() ? REQ_ACCEPTED : REQ_INVALID, memory_order_relaxed);
+    int online = network_online();
+    atomic_store_explicit(&self->u[0], online ? REQ_ACCEPTED : REQ_INVALID, memory_order_relaxed);
+    SNX_PLOT("net nifm online", online ? 1.0 : 0.0);
+    SNX_ZONE_T(z_net_nifm, "hle: net nifm submit", online ? "accepted" : "refused, offline");
     ev_signal(((NifmRequest*)self->data)->ev[0]);
     R_SUCCEED();
 }

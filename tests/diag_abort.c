@@ -349,6 +349,11 @@ void sync_cond_notify_one(CPU* c, u64 cv) { (void)c, (void)cv; }
 void sync_cond_notify_all(CPU* c, u64 cv) { (void)c, (void)cv; }
 void sync_cond_wait(CPU* c, u64 cv, u64 lk) { (void)c, (void)cv, (void)lk; }
 void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) { (void)c, (void)cv, (void)lk, (void)ns; }
+i32 sync_pthread_cond_wait(CPU* c, u64 cv, u64 m) { return (void)c, (void)cv, (void)m, 0; }
+i32 sync_pthread_cond_timedwait(CPU* c, u64 cv, u64 m, u64 t) { return (void)c, (void)cv, (void)m, (void)t, 0; }
+i32 sync_pthread_cond_clockwait(CPU* c, u64 cv, u64 m, i32 k, u64 t) {
+    return (void)c, (void)cv, (void)m, (void)k, (void)t, 0;
+}
 i64 sync_system_now(CPU* c) { (void)c; return 0; }
 i64 sync_steady_now(CPU* c) { (void)c; return 0; }
 void sync_sleep_for(CPU* c, u64 d) { (void)c, (void)d; }

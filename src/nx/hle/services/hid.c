@@ -15,9 +15,26 @@
 #include "nx/hle/services/hid_layout.h"
 #include "nx/hle/services/hid_motion.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/hid.swipc.inc"
 #include <stdatomic.h>
+
+/* A traced dispatch: the command's number is the zone's value, so the commands of this service rank by their time.
+   Both dispatchers share a zone name, so the text says which object answered. A depth of zero keeps the callstack
+   opt-in through the runtime's setting */
+static int hid_server_timed(SvcObj* self, IpcCtx* c) {
+    SNX_ZONE_CS(z_hid_srv, "svc hid cmd", 0);
+    SNX_ZONE_VALUE(z_hid_srv, c->cmd);
+    SNX_ZONE_TEXT(z_hid_srv, "IHidServer");
+    return nn_hid_IHidServer_dispatch(self, c);
+}
+static int hid_sys_timed(SvcObj* self, IpcCtx* c) {
+    SNX_ZONE_CS(z_hid_sys, "svc hid cmd", 0);
+    SNX_ZONE_VALUE(z_hid_sys, c->cmd);
+    SNX_ZONE_TEXT(z_hid_sys, "IHidSystemServer");
+    return nn_hid_IHidSystemServer_dispatch(self, c);
+}
 
 #define HID_LIFO_N  17 /* each LIFO's entries */
 
@@ -94,9 +111,22 @@ static void hid_sources(HidSource src[HID_ENTRIES]) {
             src[p].p = p;
         }
     }
-    if (!snx_tv_mode()) src[8].kind = SRC_HANDHELD;
+    if (hid_attached()) src[8].kind = SRC_HANDHELD;
 }
-/* the one style an Npad has: its controller's when the game supports it, else the nearest the game does */
+/* a console controller's own style, as the console shows it: a Pro Controller only as one, a pair as two Joy-Cons
+   (or two Joy-Con 2), a single as its own side. 0 when the game takes none of them: the Npad has none, as if
+   unplugged, and a game that finds no controller it takes asks the player through the controller applet */
+static u32 hid_native_style(PadKind kind, u32 ok) {
+    switch (kind) {
+    case SNX_PAD_FULL_KEY: return ok & STYLE_FULL_KEY;
+    case SNX_PAD_JOY_DUAL: return ok & STYLE_JOY_DUAL ? STYLE_JOY_DUAL : ok & STYLE_JOY_DUAL2;
+    case SNX_PAD_JOY_LEFT: return ok & STYLE_JOY_LEFT ? STYLE_JOY_LEFT : ok & STYLE_JOY_LEFT2;
+    case SNX_PAD_JOY_RIGHT: return ok & STYLE_JOY_RIGHT;
+    default: return 0;
+    }
+}
+/* the one style an Npad has: its controller's when the game supports it, else, for a generic pad, the nearest the game
+   does */
 static u32 hid_style_of(int e, const HidSource* s) {
     static const u32 prefer[4][3] = {{STYLE_FULL_KEY, STYLE_JOY_DUAL, 0},
                                      {STYLE_JOY_DUAL, STYLE_FULL_KEY, 0},
@@ -107,6 +137,8 @@ static u32 hid_style_of(int e, const HidSource* s) {
     if (!((g_hle.hid.supported_ids >> e) & 1)) return 0;
     switch (s->kind) {
     case SRC_PAD:
+        if (atomic_load_explicit(&g_host.hid.pad_native[s->p], memory_order_relaxed))
+            return hid_native_style(atomic_load_explicit(&g_hle.hid.pad[s->p].kind, memory_order_relaxed), ok);
         for (i = 0; i < 3; i++)
             if (prefer[atomic_load_explicit(&g_hle.hid.pad[s->p].kind, memory_order_relaxed)][i] & ok)
                 return prefer[atomic_load_explicit(&g_hle.hid.pad[s->p].kind, memory_order_relaxed)][i];
@@ -502,11 +534,24 @@ static const struct {
                {NMOUSE_RIGHT, NPAD_HANDHELD}};
 #define NMICE (sizeof g_nmice / sizeof *g_nmice)
 static u64 nmouse_handle(u32 i) { return 0x4e4d000000000000ull | (i + 1); }
-/* the mouse's states since the last update, to the memories the game gave. Under hid's lock */
+/* a real Joy-Con 2's motion behind an Npad's left (0) or right (1) device, X and Y, its whole counts: 0 when none */
+static void hid_pad_mouse(const HidSource* s, int dev, i32 real[HID_PADS][2][2], i32 out[2]) {
+    int p, sensor;
+    out[0] = out[1] = 0;
+    if (!hid_device(s, dev, &p, &sensor)) return;
+    out[0] = real[p][sensor][0];
+    out[1] = real[p][sensor][1];
+}
+/* the mouse's states since the last update, to the memories the game gave. Under hid's lock. The host's mouse is the
+   right Joy-Con's (the merged one's and the pointer's); a real Joy-Con 2's sensor (g_host.hid.pad_mouse) is its own
+   hand's, on the Npad its player is, and the right one of Npad No1 moves the pointer too. Their units and signs are a
+   guess: the console's own conversion is not known. The flags at 0x18 follow the sensor's surface (below) */
 static void hid_mouse_update(u64 now) {
     HidMouse* m = &g_hle.hid.mouse;
-    i32 dx, dy, wheel;
+    HidSource src[HID_ENTRIES];
+    i32 dx, dy, wheel, real[HID_PADS][2][2], pointer[2];
     u32 buttons;
+    u8 is_real[HID_PADS], surface[HID_PADS];
     pm_lock(&g_host.hid.input_lock);
     dx = (i32)m->dx;
     dy = (i32)m->dy;
@@ -515,18 +560,52 @@ static void hid_mouse_update(u64 now) {
     m->dy -= (float)dy;
     m->wheel -= (float)wheel;
     buttons = atomic_load_explicit(&m->buttons, memory_order_relaxed);
+    memcpy(is_real, g_host.hid.pad_mouse_real, sizeof is_real);
+    memcpy(surface, g_host.hid.pad_mouse_surface, sizeof surface);
+    for (int p = 0; p < HID_PADS; p++)
+        for (int k = 0; k < 4; k++) {
+            float* f = &g_host.hid.pad_mouse[p][k >> 1][k & 1];
+            real[p][k >> 1][k & 1] = !(*f > -1e6f) ? -1000000 : *f > 1e6f ? 1000000 : (i32)*f; /* a NaN too */
+            *f -= (float)real[p][k >> 1][k & 1];
+            if (!(*f > -1.0f && *f < 1.0f)) *f = 0; /* what was cut, and a NaN */
+        }
     pm_unlock(&g_host.hid.input_lock);
+    hid_sources(src);
     if (m->jcms)
         for (u32 i = 0; i < JCMS_INDEXES; i++) {
             u8 state[0x20] = {0};
+            i32 own[2];
             if (!(atomic_load_explicit(&m->jcms_on, memory_order_relaxed) >> i & 1)) continue;
+            int p, sensor;
+            u32 flags = MOUSE_CONNECTED;
+            hid_pad_mouse(&src[i >> 1], (int)(i & 1), real, own);
+            /* a real Joy-Con 2 off a surface: no motion and neither flag. The SDK copies the word as it is, and an
+               Ounce game can take bit 0 as "this Joy-Con is a mouse now": one keeps bits 0-1 per hand, enters its
+               mouse mode as soon as either hand's bit 0 is set and leaves it when neither is. Bit 1 is set only by its
+               own stand-in for a mouse while that one moves, so it is clear here too */
+            if (hid_device(&src[i >> 1], (int)(i & 1), &p, &sensor) && (is_real[p] >> sensor & 1) &&
+                !(surface[p] >> sensor & 1)) {
+                own[0] = own[1] = 0;
+                flags = 0;
+            }
             snx_st_le64(state + 8, g_hle.hid.samp);
-            snx_st_le32(state + 0x10, i & 1 ? (u32)dx : 0);
-            snx_st_le32(state + 0x14, i & 1 ? (u32)dy : 0);
-            snx_st_le32(state + 0x18, MOUSE_CONNECTED);
+            snx_st_le32(state + 0x10, (i & 1 ? (u32)dx : 0u) + (u32)own[0]);
+            snx_st_le32(state + 0x14, (i & 1 ? (u32)dy : 0u) + (u32)own[1]);
+            snx_st_le32(state + 0x18, flags);
             hid_lifo_push(GP(m->jcms + i * JCMS_ENTRY), 8 + sizeof state, state, sizeof state);
         }
     if (!m->nmouse) return;
+    hid_pad_mouse(&src[0], 1, real, pointer);
+    { /* a real Joy-Con 2 behind Npad No1's right hand clicks the pointer with R (left button) and ZR (right) */
+        int p, sensor;
+        if (hid_device(&src[0], 1, &p, &sensor) && (is_real[p] >> sensor & 1)) {
+            u64 pad = g_hle.hid.pad[p].buttons;
+            if (pad >> 7 & 1) buttons |= 1;
+            if (pad >> 9 & 1) buttons |= 2;
+        }
+    }
+    dx = (i32)((i64)dx + pointer[0]);
+    dy = (i32)((i64)dy + pointer[1]);
     m->x += dx;
     m->y += dy;
     if (m->x < 0) m->x = 0;
@@ -554,6 +633,9 @@ static int hid_mouse_memory(u32 handle, u64 size, u64 need, u32* object, u64* gu
     R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE); /* the kernel's InvalidHandle */
     LOG("hid: %s at %llx, %llu bytes\n", what, (unsigned long long)t->addr, (unsigned long long)size);
     if (size < need || t->size < need) {
+        SNX_ZONE_TV(z_hid_mem, "svc hid error", (u64)t->size, "%s memory too small: %llu for %llu", what,
+                    (unsigned long long)t->size, (unsigned long long)need);
+        SNX_ZONE_COLOR(z_hid_mem, 0xB03030); /* the failed answer is red; its value and text stay as they were */
         WARN("hid: %s's memory has %llu bytes, %llu are written\n", what, (unsigned long long)t->size,
              (unsigned long long)need);
         kobj_unref(&t->o);
@@ -575,6 +657,7 @@ int hid_mouse_mode(void) {
     return atomic_load_explicit(&g_hle.hid.mouse.jcms_on, memory_order_relaxed) && styles &&
            !(styles & ~(STYLE_JOY_DUAL2 | STYLE_JOY_LEFT2));
 }
+u32 hid_mouse_hands(void) { return atomic_load_explicit(&g_hle.hid.mouse.jcms_on, memory_order_relaxed) & 3u; }
 static int nn_hid_IHidServer_InitializeJcms(SvcObj* self, u64 aruid, u64 size, u32 tmem) {
     HidMouse* m = &g_hle.hid.mouse;
     (void)self, (void)aruid;
@@ -826,6 +909,9 @@ static int nn_hid_IHidServer_AcquireNpadStyleSetUpdateEventHandle(SvcObj* self, 
                                                                   u64 event_ptr, u32* event) {
     int e = hid_entry(id);
     (void)self, (void)aruid, (void)event_ptr;
+    if (e < 0) {
+        SNX_ZONE_T(z_hid_id, "svc hid error", "invalid Npad id %llx", (unsigned long long)id);
+    }
     R_UNLESS(e >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     *event = ev_handle(g_hle.hid.style_ev[e]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
@@ -885,6 +971,60 @@ static int hid_assign_single(int e, int keep_right) {
     }
     return -1;
 }
+int hid_attached(void) { return !snx_tv_mode() && !atomic_load_explicit(&g_host.hid.detached, memory_order_relaxed); }
+void hid_set_detached(int on) {
+    pm_lock(&g_host.hid.lock);
+    atomic_store_explicit(&g_host.hid.detached, on != 0, memory_order_relaxed);
+    hid_layout();
+    pm_unlock(&g_host.hid.lock);
+}
+/* the controller applet's dialog: the gestures that make a Joy-Con a single, two singles a pair, or a pair whole */
+int hid_dialog_split(int p, int keep_right) {
+    int d;
+    pm_lock(&g_host.hid.lock);
+    d = hid_assign_single(p, keep_right);
+    hid_layout();
+    pm_unlock(&g_host.hid.lock);
+    return d;
+}
+int hid_dialog_merge(int left, int right) {
+    int q, i, merged;
+    if (left < 0 || left >= HID_PADS || right < 0 || right >= HID_PADS || left == right) return -1;
+    pm_lock(&g_host.hid.lock);
+    for (i = 0; i < 2; i++) {
+        int p = i ? right : left;
+        g_hle.hid.merged[p] = 0;
+        g_hle.hid.split[p] = 0;
+        if ((q = hid_merged_into(p)) >= 0) g_hle.hid.merged[q] = 0;
+    }
+    merged = hid_connected(left) && hid_connected(right) && hid_single(left) && hid_single(right) &&
+             g_hle.hid.pad[left].kind == SNX_PAD_JOY_LEFT && g_hle.hid.pad[right].kind == SNX_PAD_JOY_RIGHT;
+    /* on the lower of the two players, so a pair never leaves a gap before it (hid_sources finds each side) */
+    if (merged && left < right) g_hle.hid.merged[left] = right + 1;
+    if (merged && right < left) g_hle.hid.merged[right] = left + 1;
+    hid_layout();
+    pm_unlock(&g_host.hid.lock);
+    return merged ? 0 : -1;
+}
+void hid_dialog_whole(int p) {
+    int q;
+    if (p < 0 || p >= HID_PADS) return;
+    pm_lock(&g_host.hid.lock);
+    g_hle.hid.split[p] = 0;
+    g_hle.hid.merged[p] = 0;
+    if ((q = hid_merged_into(p)) >= 0) g_hle.hid.merged[q] = 0;
+    hid_layout();
+    pm_unlock(&g_host.hid.lock);
+}
+void hid_dialog_layout(int split[HID_PADS], int keep_right[HID_PADS], int merged[HID_PADS]) {
+    pm_lock(&g_host.hid.lock);
+    for (int p = 0; p < HID_PADS; p++) {
+        split[p] = g_hle.hid.split[p];
+        keep_right[p] = g_hle.hid.keep_right[p];
+        merged[p] = g_hle.hid.merged[p];
+    }
+    pm_unlock(&g_host.hid.lock);
+}
 static int nn_hid_IHidServer_SetNpadJoyAssignmentModeSingleByDefault(SvcObj* self, nn_hid_NpadIdType id, u64 aruid) {
     (void)self, (void)aruid;
     pm_lock(&g_host.hid.lock);
@@ -933,6 +1073,10 @@ static int nn_hid_IHidServer_MergeSingleJoyAsDualJoy(SvcObj* self, nn_hid_NpadId
                                                      u64 aruid) {
     int a = hid_entry(id1), b = hid_entry(id2), i, q;
     (void)self, (void)aruid;
+    if (a < 0 || b < 0) {
+        SNX_ZONE_T(z_hid_pair, "svc hid error", "invalid merge ids %llx %llx",
+                    (unsigned long long)id1, (unsigned long long)id2);
+    }
     R_UNLESS(a >= 0 && b >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     pm_lock(&g_host.hid.lock);
     if (a < HID_PADS && b < HID_PADS && a != b) {
@@ -1079,8 +1223,8 @@ static int nn_hid_IHidServer_GetNpadCommunicationMode(SvcObj* self, nn_hid_NpadC
 }
 
 /* ============================================================ init */
-static SvcObj* new_hid(void) { return nn_hid_IHidServer_new(); }
-static SvcObj* new_hid_sys(void) { return nn_hid_IHidSystemServer_new(); }
+static SvcObj* new_hid(void) { return svcobj_new("nn::hid::IHidServer", hid_server_timed); }
+static SvcObj* new_hid_sys(void) { return svcobj_new("nn::hid::IHidSystemServer", hid_sys_timed); }
 static u32 hid_shm(u64 size, const char* name) {
     KShmem* s = kshmem_new(size, name);
     kobj_ref(&s->o); /* the service's, for as long as it runs */
@@ -1116,3 +1260,5 @@ void svc_hid_init(void) {
     nn_hid_IHidServer_register(new_hid);
     nn_hid_IHidSystemServer_register(new_hid_sys);
 }
+
+STATE_FN_TABLE(g_hid_state_fns, STATE_FN("hid", hid_server_timed), STATE_FN("hid", hid_sys_timed));

@@ -17,7 +17,8 @@
 #define NVIDEO_CODECS   8
 /* the images a codec holds: the SDK's decoder has 8 slots, and its client queue aborts past 8 */
 #define NVIDEO_IMAGES  16
-#define NVIDEO_INPUTS  16 /* the packets queued before the decoder takes them */
+#define NVIDEO_INPUTS  16 /* the packets queued before the decoder takes them; more wait in the backlog */
+#define NVIDEO_BACKLOG_BYTES ((u64)256 << 20) /* the backlog's bytes past which Submit says the queue is full */
 #define NVIDEO_OUTPUTS NVIDEO_IMAGES
 #define NVIDEO_PROPS   16 /* the words of an output's properties (213) */
 
@@ -81,6 +82,24 @@ typedef struct {
     u32 outputs[NVIDEO_OUTPUTS][NVIDEO_PROPS];
     u32 frames; /* pictures written, for the log */
 } NativeVideoCodec;
+/* The packets the input ring had no room for, oldest first, which go into it as it empties (nvideo_backlog_refill).
+   Submit still answers such a packet with the queue full, as the console's decoder does, but keeps it: one movie
+   library drops a refused packet and never sends it again, and every picture after it that refers to it decoded wrong
+   (the game takes a picture a frame it draws, and below the movie's frame rate the ring filled within seconds and about
+   half the packets of a movie were refused); another player waits and sends the same packet again, and paces its
+   reading by those refusals. A packet sent again is the one kept (nvideo_backlog_again): refused until the packets
+   before it are in the ring, then taken without being queued twice. So nothing is dropped, and below the movie's frame
+   rate it plays slower instead. payload is the caller's (native_video.c's FFmpeg packet), and a save state holds none,
+   as it holds no packet */
+typedef struct {
+    struct NativeVideoWaiting {
+        void* payload;
+        NativeVideoInput in;
+    }* e;
+    u32 head, count, cap;
+    u64 bytes, most; /* the bytes waiting, and the most there were */
+    NativeVideoInput kept; /* the packet refused last and kept, size ~0 for none */
+} NativeVideoBacklog;
 typedef struct {
     u32 obj;
     u32 encoder;
@@ -116,14 +135,24 @@ typedef struct {
     i64 black_pts;
     u32 black_due, black_end;
 } NativeVideoDecoder;
-/* the host's side, which a save state never holds: the lock over every command, and each codec's FFmpeg objects (the
-   same index as g_hle's codecs) */
+/* the host's side, which a save state never holds: the lock over every command, the decoder thread (native_video.c's
+   decoder_thread), and each codec's FFmpeg objects (the same index as g_hle's codecs) */
 typedef struct {
     PMutex lock;
+    PCond work; /* the decoder thread's: a packet, an image or a command for it, or a hold (made with the thread) */
+    PCond idle; /* the decoder thread let go of a codec (busy 0), or stopped for a hold (held) */
+    u32 busy;        /* the codec (index + 1) whose decoder and image the thread uses with the lock let go, 0 none */
+    u32 waiters;     /* commands waiting for the thread to let go of a codec: it waits for them between steps */
+    u32 running;     /* the thread was started */
+    u32 hold, held;  /* a game pause asks the thread to stop (hold), and it has (held) */
     struct {
         NativeVideoDecoder decoder;
         struct AVFrame* frame; /* a picture received and not yet written: frame->buf[0] set */
         struct AVPacket* packets[NVIDEO_INPUTS];
+        NativeVideoBacklog backlog; /* its payloads: FFmpeg packets of their own */
+        /* the packet taken from the ring that the decoder refused (it holds pictures first), sent again next */
+        struct AVPacket* sending;
+        u32 has_sending;
         u32 black_images[NVIDEO_IMAGES], nblack; /* the images the stand-in painted black already, which stay so */
     } codecs[NVIDEO_CODECS];
 } HostNativeVideo;
@@ -158,6 +187,28 @@ int nvideo_output_pop(NativeVideoCodec* c, u32 props[NVIDEO_PROPS]);
 /* the input ring: push gives the slot of a new packet, or -1 when the ring is full */
 int nvideo_input_push(NativeVideoCodec* c, u32 size, u64 timestamp, u32 eos);
 void nvideo_input_pop(NativeVideoCodec* c);
+/* a packet after the backlog's others: 0, or -1 when there is no memory for it */
+int nvideo_backlog_push(NativeVideoBacklog* b, void* payload, u32 size, u64 timestamp, u32 eos);
+/* the backlog's oldest packets into c's ring while it has room, in order, take(user, slot, payload) for each with the
+   slot nvideo_input_push gave it: how many went */
+u32 nvideo_backlog_refill(NativeVideoBacklog* b, NativeVideoCodec* c, void (*take)(void* user, int slot, void* payload),
+                          void* user);
+/* the last refused packet kept (size, timestamp, eos), which a packet sent again is (nvideo_backlog_again) until
+   another one comes; forget: none */
+void nvideo_backlog_keep(NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos);
+void nvideo_backlog_forget(NativeVideoBacklog* b);
+/* 1 when a packet of size, timestamp and eos is the one kept: the submitter sends it again */
+int nvideo_backlog_again(const NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos);
+/* What Submit does with a packet of size, timestamp and eos (NativeVideoBacklog): the ring takes it; it is the end of
+   the stream still to come out, taken as that one; it is the packet refused last, sent again, taken (it went into the
+   ring meanwhile) or refused again (packets before it still wait); or it is refused and kept */
+enum { NVIDEO_TAKE, NVIDEO_TAKE_SAME_END, NVIDEO_TAKE_AGAIN, NVIDEO_REFUSE_AGAIN, NVIDEO_REFUSE_KEEP };
+int nvideo_submit_way(const NativeVideoCodec* c, const NativeVideoBacklog* b, u32 size, u64 timestamp, u32 eos);
+/* whether the newest input is the stream's end, still to come out: the backlog's newest, else the ring's, else the
+   decoder draining to it (eos) */
+int nvideo_end_pending(const NativeVideoCodec* c, const NativeVideoBacklog* b);
+/* every packet left to drop(user, payload), oldest first, and the backlog's memory let go */
+void nvideo_backlog_free(NativeVideoBacklog* b, void (*drop)(void* user, void* payload), void* user);
 /* an output's properties: the image, the configured size, the picture's size, the colour space, the timestamp in
    nanoseconds and the end of the stream */
 void nvideo_props(u32 props[NVIDEO_PROPS], u32 image, u32 width, u32 height, u32 pic_w, u32 pic_h, u64 timestamp_us,
@@ -186,6 +237,9 @@ int nvideo_vt_send(void* h, const struct AVPacket* pkt); /* avcodec_send_packet'
 int nvideo_vt_receive(void* h, struct AVFrame* frame);   /* avcodec_receive_frame's answers */
 void nvideo_vt_flush(void* h);                           /* the next stream starts from nothing: a movie that loops */
 #endif
+/* ---- native_video.c, for a game pause (pause.c): the decoder thread stops after the picture it is on, and goes on */
+void native_video_hold(void);
+void native_video_release(void);
 /* ---- native_video.c, for gsv.c's commands */
 int native_video_service(int encoder, int enable);                            /* 901, 903, 1001, 1003 */
 int native_video_open(int encoder, u32* session);                             /* 902, 905, 1002 */

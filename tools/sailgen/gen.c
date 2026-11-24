@@ -215,7 +215,7 @@ static const char* ctype(int kind, int bt) {
     if (bt == BT_LANE && (kind == K_BOOL || kind == K_INT || kind == K_BITS || kind == K_BIT)) return "SgL";
     if (bt == BT_DYN) {
         switch (kind) {
-            case K_BOOL: return "LLVMValueRef";
+            case K_BOOL: return "SgB";
             case K_INT: return "SgI";
             case K_BITS:
             case K_BIT: return "SgD";
@@ -1469,7 +1469,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         else if (a.bt == BT_STATIC)
             *r = val_c(K_BOOL, BT_STATIC, "(!(%s))", a.c);
         else
-            *r = val_c(K_BOOL, BT_DYN, "LLVMBuildNot(SG_B, %s, \"\")", a.c);
+            *r = val_c(K_BOOL, BT_DYN, "sg_b_not(g, %s)", a.c);
         return 1;
     }
     if (!strcmp(name, "EOR")) {
@@ -1606,7 +1606,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         a = keep(need_bits(n, arg(n, 0), name));
         if (a.bt == BT_DYN) sg_fail(n, "ConditionHolds of a condition known only at run time");
         temp(t, sizeof t);
-        emit("LLVMValueRef %s = sg_condition_origin(g, %s);\n", t, a.c);
+        emit("SgB %s = sg_condition_origin(g, %s);\n", t, a.c);
         emit("if (!%s) {\n", t);
         ++g_gen.indent;
         v = inline_call(n, def, &a, 1);
@@ -1669,7 +1669,7 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
     if (!strcmp(name, "BranchTo")) { /* BranchTo(target, type, conditional): where the instruction goes, and when */
         need_args(n, 3);
         a = raise(need_bits(n, arg(n, 0), "a branch's target"), BT_DYN);
-        emit("sg_branch_to(g, %s, %s);\n", a.c, g_gen.path[0] ? g_gen.path : "NULL");
+        emit("sg_branch_to(g, %s, %s);\n", a.c, g_gen.path[0] ? g_gen.path : "0");
         *r = unit();
         return 1;
     }
@@ -1772,7 +1772,7 @@ static Val action_call(unsigned n, const char* name, int takes) {
                                  : "a value of a kind sailgen does not keep");
     at = snprintf(text, sizeof text, "sg_%s(g", name);
     if (takes & BACKEND_PATH)
-        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", g_gen.path[0] ? g_gen.path : "NULL");
+        at += snprintf(text + at, sizeof text - (size_t)at, ", %s", g_gen.path[0] ? g_gen.path : "0");
     for (i = 0; (takes & BACKEND_ARGS) && i < count; ++i) {
         Val a = eval(arg_at(n, i), 0);
         if (a.kind == K_UNIT || a.kind == K_TUPLE) sg_fail(n, "%s's argument %u is no value", name, i + 1);
@@ -1799,7 +1799,7 @@ static Val action_call(unsigned n, const char* name, int takes) {
         emit("%s %s = %s);\n", kind == K_BITS ? "SgS" : kind == K_INT ? "long long" : "int", t, text);
         return val_c(kind, BT_STATIC, "%s", t);
     }
-    emit("%s %s = %s);\n", kind == K_BITS ? "SgD" : kind == K_BOOL ? "LLVMValueRef" : "int", t, text);
+    emit("%s %s = %s);\n", kind == K_BITS ? "SgD" : kind == K_BOOL ? "SgB" : "int", t, text);
     return val_c(kind, kind == K_ENUM ? BT_STATIC : BT_DYN, "%s", t);
 }
 
@@ -1932,7 +1932,7 @@ static int backend_defines_function(const char* name) {
    what sg_NAME takes after the context: BACKEND_PATH when its next parameter is named path, BACKEND_ARGS when the call's
    arguments follow (none: they mean nothing to it); and BACKEND_STATIC when it gives a value the recompiler knows, SgS
    for bits, int for a bool or an enum, long long for an integer (AArch32's CurrentCond, an IT block's state, the
-   guest's ArchVersion), not the IR an SgD, an LLVMValueRef or an SgI is */
+   guest's ArchVersion), not the IR an SgD, an SgB or an SgI is */
 static const char* word_before(const char* s, size_t* n);
 static int backend_action(const char* name) {
     char fn[160];
@@ -2275,7 +2275,7 @@ static Val binop(unsigned n) {
         if (b.bt == BT_CONST) return b.value == is_and ? a : val_const(K_BOOL, !is_and);
         if (a.bt == BT_STATIC && b.bt == BT_STATIC)
             return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, is_and ? "&&" : "||", b.c);
-        return val_c(K_BOOL, BT_DYN, "LLVMBuild%s(SG_B, %s, %s, \"\")", is_and ? "And" : "Or", raise(a, BT_DYN).c,
+        return val_c(K_BOOL, BT_DYN, "sg_b_%s(g, %s, %s)", is_and ? "and" : "or", raise(a, BT_DYN).c,
                      raise(b, BT_DYN).c);
     }
     b = eval(N(n).b, 0);
@@ -2295,7 +2295,7 @@ static Val binop(unsigned n) {
             if (bt != BT_DYN) return val_c(K_BOOL, BT_STATIC, "(%ssg_s_eq(%s, %s))", ne ? "!" : "", a.c, b.c);
             {
                 Val e = val_c(K_BOOL, BT_DYN, "sg_d_eq(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
-                return ne ? val_c(K_BOOL, BT_DYN, "LLVMBuildNot(SG_B, %s, \"\")", e.c) : e;
+                return ne ? val_c(K_BOOL, BT_DYN, "sg_b_not(g, %s)", e.c) : e;
             }
         }
         if (a.kind == K_BITS || b.kind == K_BITS) sg_fail(n, "%s of bits and other than bits", op);
@@ -2304,8 +2304,7 @@ static Val binop(unsigned n) {
             return val_const(K_BOOL, ne); /* ranges that do not meet: never equal */
         if (bt == BT_STATIC) return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, op, b.c);
         if (a.kind == K_BOOL)
-            return val_c(K_BOOL, BT_DYN, "LLVMBuildICmp(SG_B, %s, %s, %s, \"\")", ne ? "LLVMIntNE" : "LLVMIntEQ",
-                         raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+            return val_c(K_BOOL, BT_DYN, "sg_b_eq(g, %d, %s, %s)", ne, raise(a, BT_DYN).c, raise(b, BT_DYN).c);
         if (a.kind == K_INT && b.kind == K_INT)
             return val_c(K_BOOL, BT_DYN, "sg_i_cmp(g, %d, %s, %s)", ne, raise(a, BT_DYN).c, raise(b, BT_DYN).c);
         sg_fail(n, "%s of a value known only at run time and another kind", op);
@@ -2771,7 +2770,7 @@ static Val dynamic_if(unsigned n, Val c, int tail) {
     char names_t[32][16], names_e[32][16], cond[16];
     Val then_v, else_v = unit();
     temp(cond, sizeof cond);
-    emit("LLVMValueRef %s = %s;\n", cond, c.c);
+    emit("SgB %s = %s;\n", cond, c.c);
     assigned_vars(N(n).b, vars, &count);
     assigned_vars(N(n).c, vars, &count);
     for (i = 0; i < count; ++i) var_raise(vars[i], BT_DYN);
@@ -2793,14 +2792,14 @@ static Val dynamic_if(unsigned n, Val c, int tail) {
         char saved[sizeof g_gen.path];
         int n_path;
         snprintf(saved, sizeof saved, "%s", g_gen.path);
-        n_path = saved[0] ? snprintf(g_gen.path, sizeof g_gen.path, "LLVMBuildAnd(SG_B, %s, %s, \"\")", saved, cond)
+        n_path = saved[0] ? snprintf(g_gen.path, sizeof g_gen.path, "sg_b_and(g, %s, %s)", saved, cond)
                           : snprintf(g_gen.path, sizeof g_gen.path, "%s", cond);
         if (n_path < 0 || (size_t)n_path >= sizeof g_gen.path) sg_fail(n, "run-time conditions nested too deep");
         then_v = eval(N(n).b, tail);
         if (then_v.kind != K_UNIT) then_v = keep(raise(then_v, BT_DYN));
         n_path = saved[0] ? snprintf(g_gen.path, sizeof g_gen.path,
-                                     "LLVMBuildAnd(SG_B, %s, LLVMBuildNot(SG_B, %s, \"\"), \"\")", saved, cond)
-                          : snprintf(g_gen.path, sizeof g_gen.path, "LLVMBuildNot(SG_B, %s, \"\")", cond);
+                                     "sg_b_and(g, %s, sg_b_not(g, %s))", saved, cond)
+                          : snprintf(g_gen.path, sizeof g_gen.path, "sg_b_not(g, %s)", cond);
         if (n_path < 0 || (size_t)n_path >= sizeof g_gen.path) sg_fail(n, "run-time conditions nested too deep");
         g_gen.depth = saved_depth;
         for (i = 0; i < count; ++i) {
@@ -2820,7 +2819,7 @@ static Val dynamic_if(unsigned n, Val c, int tail) {
         int kind = g_gen.vars[vars[i]].kind;
         Binding* b = var_binding(vars[i]);
         if (kind == K_BOOL)
-            emit("%s = LLVMBuildSelect(SG_B, %s, %s, %s, \"\");\n", b->val.c, cond, names_t[i], names_e[i]);
+            emit("%s = sg_b_select(g, %s, %s, %s);\n", b->val.c, cond, names_t[i], names_e[i]);
         else if (select_fn(kind))
             emit("%s = %s(g, %s, %s, %s);\n", b->val.c, select_fn(kind), cond, names_t[i], names_e[i]);
         else
@@ -2828,7 +2827,7 @@ static Val dynamic_if(unsigned n, Val c, int tail) {
     }
     if (then_v.kind == K_UNIT) return unit();
     if (then_v.kind == K_BOOL)
-        return keep(val_c(K_BOOL, BT_DYN, "LLVMBuildSelect(SG_B, %s, %s, %s, \"\")", cond, then_v.c, else_v.c));
+        return keep(val_c(K_BOOL, BT_DYN, "sg_b_select(g, %s, %s, %s)", cond, then_v.c, else_v.c));
     if (!select_fn(then_v.kind)) sg_fail(n, "an if's value of kind %d under a run-time condition", then_v.kind);
     return keep(val_c(then_v.kind, BT_DYN, "%s(g, %s, %s, %s)", select_fn(then_v.kind), cond, then_v.c, else_v.c));
 }

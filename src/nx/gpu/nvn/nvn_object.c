@@ -10,6 +10,7 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/gpu/guest_pools.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_replay.h"
@@ -310,6 +311,12 @@ u64 nvn_DeviceGetTexelFetchHandle(CPU* c, u64 d, i32 id) {
 u64 nvn_DeviceGetTimestampInNanoseconds(CPU* c, u64 d, u64 counter) {
     (void)c;
     (void)d;
+    /* a report whose submission isn't done waits for it off the guest core, as nvn_SyncWait does */
+    if (gpu_release_stamp_sync(counter, 0)) {
+        nvn_wait_begin();
+        gpu_release_stamp_sync(counter, 1);
+        nvn_wait_end();
+    }
     return snx_gpu_ns_of_ticks(NVN_OBJ(NVNcounterData, counter)->timestamp);
 }
 /* fast clear values are hints to the hardware's compression */
@@ -393,9 +400,18 @@ void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
    load, and its loading threads waited up to 1.7 s in 5 s for that lock. The game's thread also reads and writes
    through a new pool's GPU addresses at once (a program's header, its linkage table): until the map is made, the
    table answers it for those pages. The VA allocator still answers at once, and ended addresses go back to it only
-   after their unmap, so no pool gets them while they still show the old pages */
+   after their unmap, so no pool gets them while they still show the old pages.
+
+   An Ounce device shows a pool with storage at the storage's own address: its GPU address is the CPU address, as the
+   console's driver maps such a pool, so nvnMemoryPoolGetBufferAddress answers the storage. An engine frees the storage
+   of a pool the CPU can't access by that address, where it can't map it; with an address of the allocator's it freed
+   a GPU address, which its allocator stopped on. The range goes back to the allocator when the pool ends, before its
+   unmap: only a pool over the same storage takes it again, which shows the same pages, its map queued after the
+   unmap. A virtual pool, and a pool whose range another pool's holds, take the allocator's addresses */
 #define NVN_POOL_VIRTUAL 0x200u
 #define NVN_POOL_ALIGN   0x20000u /* the GPU address alignment: a big page, as compressible kinds want */
+/* a pool shown at its storage's own address: gpu == memory, which no address of the allocator's is on an Ounce */
+static int pool_own_address(const NvnPool* o) { return o->memory && o->gpu == o->memory; }
 int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     const NvnPoolBuilder* s = NVN_OBJ(NvnPoolBuilder, b);
     NvnPool o = {0};
@@ -422,7 +438,13 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
-    va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
+    va = g_ounce && o.memory && !(o.flags & NVN_POOL_VIRTUAL) ? gmmu_space_alloc_at(o.memory - lead, lead + o.size) : 0;
+    if (g_ounce && o.memory && !(o.flags & NVN_POOL_VIRTUAL) && !va)
+        WARN_LIMIT(8,
+                   "nvn: memory pool %llx: its storage %llx (%llx bytes) is in another pool's GPU range, so its GPU "
+                   "address isn't the storage's: a game that takes one for the other goes wrong there\n",
+                   (unsigned long long)p, (unsigned long long)o.memory, (unsigned long long)o.size);
+    if (!va) va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
     if (va && o.memory) gmmu_later_post(gmmu_later(GMMU_LATER_MAP, va, o.memory - lead, lead + o.size, 0));
     if (!va)
         fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
@@ -433,6 +455,20 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
          (unsigned long long)o.memory, (unsigned long long)o.size, (unsigned long long)o.gpu, o.flags);
     return 1;
 }
+/* An Ounce pool that ends while results of the GPU over it are not in guest memory yet: its unmap, queued for the GPU
+   thread, lands them, and the end waits for it. The console's GPU wrote them into the storage as it ran, and the game
+   may hand the storage to other uses as soon as the pool has ended: landed later, they wrote the GPU's old pixels over
+   memory its allocator had given to its own tables since, which then read as zeros. The wait has a bound, past which
+   it says so and goes on */
+#define POOL_END_WAIT_NS (5000ll * 1000 * 1000)
+static int pool_end_holds(const NvnPool* o, u64 gva, u64 size) {
+    return g_ounce && o->memory && g_renderer->gpu_holds && g_renderer->gpu_holds(gva, size);
+}
+static void pool_end_wait(u64 pool, u32 seq) {
+    if (!gmmu_later_wait(seq, POOL_END_WAIT_NS))
+        WARN_LIMIT(4, "nvn: memory pool %llx ended with results of the GPU over it, which hadn't landed after %u ms\n",
+                   (unsigned long long)pool, (unsigned)(POOL_END_WAIT_NS / 1000000));
+}
 void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     NvnPool* o = NVN_OBJ(NvnPool, p);
     u64 lead = o->gpu & 0xfff;
@@ -440,8 +476,16 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u32 nvmap =
         o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? atomic_exchange_explicit(&o->nvmap, 0, memory_order_acq_rel) : 0;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) { /* the handle goes after the unmap, as it went before */
+        int held = pool_end_holds(o, o->gpu - lead, lead + o->size);
         gpu_pool_remove(o->gpu);
-        gmmu_later_post(gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap));
+        u32 seq;
+        if (pool_own_address(o)) {
+            gmmu_space_give_back(o->gpu - lead, lead + o->size);
+            seq = gmmu_later(GMMU_LATER_UNMAP, o->gpu - lead, 0, lead + o->size, nvmap);
+        } else
+            seq = gmmu_later(GMMU_LATER_FREE, o->gpu - lead, 0, lead + o->size, nvmap);
+        gmmu_later_post(seq);
+        if (held) pool_end_wait(p, seq);
         nvmap = 0;
     }
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);

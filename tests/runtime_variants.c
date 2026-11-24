@@ -77,6 +77,9 @@ static void test_fn2(CPU* c, u64 entry) {
 
 /* ---- the JIT as much of it as guest_jit.c uses ---- */
 
+void snx_gdb_jit_perf_map(int on) { (void)on; }
+void snx_gdb_jit_perf_map_snapshot(void) {}
+
 static int g_jit_started, g_jit_added, g_jit_removed, g_jit_invalidated, g_jit_called;
 static u64 g_jit_fallback_pc;
 static char g_jit_opt;      /* the level jit_init gave the JIT */

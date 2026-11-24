@@ -96,6 +96,12 @@
         "repo": "harfbuzz/harfbuzz",
         "version": "15.0.0"
     },
+    "intel-sdm-vol2": {
+        "hash": "39f17472f89512683cf1fa5c04a5790e56b8ee049878741833aa671f92fb825d11e7723a3cb5fd1817c07679dbafb4aec7323006f649691203bbea7d6e4aeb56",
+        "package": "IntelSDM",
+        "url": "https://cdrdv2.intel.com/v1/dl/getContent/671110",
+        "version": "325383-093US"
+    },
     "jemalloc": {
         "artifact": "jemalloc-%VERSION%.tar.bz2",
         "hash": "a6771bdc3f066fc458d4723cee3018b445b966a96013074b6aa5ee685e9991ca8a20473ee069c9f4b5912b1ed74a705b059f5c19b4e57c3035d428f055b4d7fd",

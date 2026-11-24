@@ -386,7 +386,9 @@ static int check_uma_constants(void) {
 /* Where uma_copies copies constant buffers (vk_uma_imports_dear), their bytes are copied straight from guest memory
    into staging (render.c's cb_get), as on a GPU with memory of its own: the draw reads the 1.0 there. A draw that
    writes the page in place, recorded and not yet run, keeps the next lookup off that copy, whose bytes would be from
-   before the write: the constant buffer goes through the buffer cache, after the write, and the draw reads its 0.0 */
+   before the write: the constant buffer goes through the buffer cache, after the write, and the draw reads its 0.0.
+   On a discrete GPU with host imports (vk_uma_storage_copied) the write is a pending result of the copies' path
+   instead (buffer.c's copy_writable), with the same order */
 #define UMA_CD  (HEAP_BASE + 0x4c00000)
 #define UMA_GCD 0x4f5000000ull
 static int check_uma_constants_copied(void) {
@@ -408,11 +410,12 @@ static int check_uma_constants_copied(void) {
     const int copied = after.cb[VK_CB_COPIED] > before.cb[VK_CB_COPIED];
     /* the shader's write of zeros over c[0][0x600..0x6ff], in place and pending */
     vk_lock();
+    const int staged = vk_uma_storage_copied();
     CHECK(vk_buf_copy_writable(UMA_GCD + 0x600, 256, &w, &wo, 1));
-    const int inplace = !vk_buf_pending(UMA_GCD + 0x600, 256);
+    const int inplace = staged || !vk_buf_pending(UMA_GCD + 0x600, 256); /* staged: pending once committed, below */
     CHECK(!owned_test_fill(w, wo, 256, 0));
     vk_buf_writable_commit();
-    const int pending = vk_uma_pending(UMA_GCD + 0x644, 4);
+    const int pending = staged ? vk_buf_pending(UMA_GCD + 0x644, 4) : vk_uma_pending(UMA_GCD + 0x644, 4);
     vk_unlock();
     vk_draw_counts(&before);
     CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, red));
@@ -506,6 +509,11 @@ static int check_uma_atlas_pending(void) {
     }
     const int was = g_settings.guest_buffers_copied;
     g_settings.guest_buffers_copied = 2; /* the atlas: in place is check_uma_alias_in_place's */
+    if (vk_uma_storage_copied()) { /* a discrete GPU with host imports: there the earlier write isn't in place */
+        g_settings.guest_buffers_copied = was;
+        printf("skip: storage written by draws is kept in the GPU's memory on this device (vk_uma_storage_copied)\n");
+        return 0;
+    }
     CHECK(mem_map(UMA_AT, 0x200000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(UMA_GAT, UMA_AT, 0x200000);
     memset(GP(UMA_AT), 0x31, 0x1000);
@@ -1216,47 +1224,55 @@ static int check_uma_placed_view(void) {
    imports, so it copies where 0 would move, and 2 only moves, on a driver that imports and under auto as well; neither
    puts guest memory in place where vk_memory copies */
 static int check_uma_way(void) {
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* imported only */
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* moved only */
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB &&
-          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB &&
-          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1, 0, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
+    /* Windows' discrete GPU where the mirror can be (host_discrete): auto imports there, as vk_memory=2 does; moved only
+       and copied are as before, and without the mirror auto copies */
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 0, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 0, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 0, 0, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* Linux's dma-bufs of memfds (udmabuf): auto moves into them where imports are dear (amdgpu), else imports as before;
        imported only never moves, moved only takes them where there are no AHardwareBuffers */
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 0, 1) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, 1, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 1, VK_MEM_UMA, 0, 0, 1, 1) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 0, 1, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 1, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 0, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
     /* a discrete GPU: auto moves into dma-bufs where host imports are dear, and copies where they are not, where it has
        no udmabuf, or where uma_memory imports only; never a host pointer, which amdgpu takes again at each submission */
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 0, VK_MEM_SMALL_BAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_DMABUF);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 0, 1, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 1, VK_MEM_REBAR, 1, 0, 1, 1, 0) == VK_UMA_WITH_NONE);
     /* vk_memory's copy stays a copy */
-    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
     printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there; "
            "uma_memory=1 only imports, uma_memory=2 only moves\n");
     return 0;
@@ -1355,11 +1371,29 @@ static int check_uma_migrate(void) {
     CHECK(vk_uma_migrate(way));
     u8* result = vk_readback_buffer(768, &rb);
     CHECK(result);
+    /* the fill taken by write tracking, in an epoch of its own: from here a page reads as written only by a write */
+    int watched = 0;
+    u32 quiet = 0;
+    if (way == 2) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        watched = vk_written_since(g, 4 * window, 0) >= 0;
+        quiet = vk_ww_now();
+    }
     /* the first window moves, with its bytes; a range beside it is in the same region */
     CHECK(vk_uma_get(UMA_GM + 0x1000, 256, 1, &b, &off) && off == 0x1000);
     CHECK(vk_uma_imports(UMA_M, 4 * window) == 1 && vk_uma_imports(UMA_M + window, 3 * window) == 0);
     CHECK(uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 0);
     CHECK(vk_uma_get(UMA_GM + 0x100000, 256, 1, &b2, &off2) && b2 == b && off2 == 0x100000);
+    /* a region made is no write: marked written whole by the move, a render target drawn there before, its pixels not
+       yet in memory, read as older than memory, and a texture over it loaded memory's bytes */
+    if (watched) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x4000, 0x4000, quiet) == 0);
+    }
     /* a dma-buf region's pages are watched for writes as the rest of guest memory (the driver leaves the CPU's page
        table alone): quiet, then a CPU write found. A host-memory region's aren't (vk_written_since -1) */
     if (way == 2 && vk_written_since(g + 0x4000, 0x4000, 0) >= 0) {
@@ -1399,6 +1433,13 @@ static int check_uma_migrate(void) {
     CHECK(uma_in_buffer(g) == 0 && g[0x1000] == 0x5a && g[0x40] == uma_fill(0x40));
     vk_uma_frame();
     CHECK(vk_uma_imports(UMA_M, 4 * window) == 0);
+    /* nor is a region gone, or moved on into a bigger one: a page of the first window that no one wrote */
+    if (watched) {
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x8000, 0x1000, quiet) == 0);
+    }
     /* a range of a region the GPU owns next (a result published over it): nothing waits for the copy recorded before,
        which reads the bytes from before, and the region goes, its other pages back with their bytes */
     if (own_traps()) {

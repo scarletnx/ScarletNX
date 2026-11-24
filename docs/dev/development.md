@@ -81,7 +81,9 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   title ID, game version and GPU from the log's header, how the run ended, the game function it is pinned on (for
   `svcBreak`, the first frame past the SDK's abort), the service commands the runtime doesn't implement, warnings, the
   frames over 50 ms (how many, the slowest, and what the slowest did, from the renderer's frame lines), and a signature
-  that is the same for every log failing the same way.
+  that is the same for every log failing the same way. An iOS day log holds the launcher's starts one after another: the
+  summary is of the last one that ran a game or failed (its outcome, build and counts alone), with how many starts the
+  log has and how the earlier ones ended.
   JSON (a line a log, versioned by `schema`) or a markdown summary for an issue. Paths are shortened to `~`, and the
   crash report's code and memory dumps are left out. The launcher's Share Log puts the same summary at the top of
   `scarletnx.log`. A log is read once, a line at a time, in fixed memory: a gigabyte takes about two seconds.
@@ -249,12 +251,15 @@ own.
 The sampler, which says where the time went between the zones, waits to be asked for: `Settings > Debug > Tracy
 sampling` (`tracy_sampling`) starts it at the first connection, so a run that leaves it off pays nothing and its
 timeline reads as the instrumented zones alone (with JIT'd guest code and the drivers' own threads, the sample stacks
-read as a wall of [unknown]). It samples at 1 kHz (`TRACY_SAMPLING_HZ` changes that) and stops with the client. The
-zones take no
-callstacks of their own; the wait stacks,
-which walk the stack at every context switch, are off. Every runtime build keeps the frame pointers `-O2` drops,
-as the sampler walks them. The sampler needs the kernel's perf events (a normal user has them) while the context
-switches need the tracefs and so root.
+read as a wall of [unknown]). It samples at 1 kHz (the build-time `TRACY_SAMPLING_HZ` define changes that) and stops with the client. The
+zones written with `SNX_ZONE_CS` ask for a call stack when `tracy_zone_callstack` is set: `pipeline make compile
+callstack`, `shader translate maxwell`, `kern core switch`, `kern core handoff`, `kern mutex handoff`,
+`kern svc unknown`, `svc hid cmd`, `state memory check`, `state memory load` and `state compress`.
+The wait stacks, which walk the stack at every context switch, are a build option. The default build defines
+`TRACY_NO_WAIT_STACKS` and leaves them off. Configure with `-DSNX_TRACY_WAIT_STACKS=ON` to remove that define and build
+them in. Either `tracy_sampling` or `tracy_context_switches` starts them; the latter needs the tracefs and so root on Linux.
+A Tracy build keeps the frame pointers `-O2` drops, as the sampler walks them. The sampler needs the kernel's perf events, which
+a normal user has.
 
 - The server (the GUI, or `tracy-capture`) must be the same Tracy version as the client, 0.15.0 here.
 - The GUI's Statistics window has an *Instrumentation* and a *Sampling* button; the sampling one holds the hot
@@ -264,6 +269,11 @@ switches need the tracefs and so root.
 - Tracy keeps files open, which can pass the system limit (lower with `sudo`): raise it (`ulimit -n`) for a
   profiled run.
 - `tracy-csvexport` writes a trace out as CSV, without the GUI.
+
+The instrumentation also has `SNX_SECTION_SCOPED` for phases on Tracy's section track, `SNX_ZONE_COLOR` to color an
+open zone, `SNX_MEM_DISCARD` to mark a pool cleared as a whole and `SNX_LOCK_MARK` to put the source line on a named
+lock. Lock announcements now cover more of the runtime's mutexes and show both outcomes of a try lock.
+[Profiling](profiling.md#sections-lock-marks-and-callstacks) says what each shows and what it costs.
 
 In the launcher, `Settings > Launch > Tracy capture` turns on a capture for each Switch run. The runtime starts
 `tracy-capture` (from `Settings > Debug > Tracy capture tool` (`tracy_capture_tool`), beside the game, or on `PATH`)
@@ -279,9 +289,9 @@ own, so an earlier capture (or a GUI) on 8086 is not in the way, and the run wai
 the game: the handshake needs an answer, and a game loading a dump starves it.
 
 To capture only a later part of a run, leave that setting off and press `F10` in the game: it starts the client and
-a 60-second capture beside the game, and logs its path. Run it again after it finishes for another segment. A
-connected GUI and `tracy-capture` are both viewers of the same one-connection client, so disconnect the GUI first
-if it is open.
+a capture beside the game that runs for `tracy_capture_seconds` (60 s by default), and logs its path. Run it again
+after it finishes for another segment. A connected GUI and `tracy-capture` are both viewers of the same
+one-connection client, so disconnect the GUI first if it is open.
 
 With `--tracy`, connect the Tracy 0.15.0 GUI to `127.0.0.1:8086`, or to `tracy_port`'s port when the setting names
 one; broadcast discovery is off. `tracy-capture` records the same stream to a file without the GUI. It can start
@@ -319,14 +329,15 @@ made. The Vulkan lock records a `vk lock wait` zone only when the lock is conten
 work done under it and an uncontended acquisition adds no zone.
 
 The GPU's own track comes with it: the rendering passes of each frame are zones on the GPU's clock, named by the
-target they draw to, and each dispatch a compute batch holds. `vk_gpu_draw_profile=1` puts a zone on every draw and
+target they draw to, and each dispatch a compute batch holds. With a client attached, a zone is put on every draw and
 dispatch as well, named by pipeline, topology and count, so the pass that is unexpectedly expensive says which of its
-draws it was: a timestamp between draws leaves the queue waiting for the one before it on many devices, so it is
-off by default and capped (256 draws a frame, 128 of a batch, and the rest are counted as `gpu untimed draws`).
-Each zone is written outside the predication it draws under, whose region writes no timestamp. The GPU clock is put
+draws it was: a timestamp between draws leaves the queue waiting for the one before it on many devices, so the zones
+come only with an attached client. The pool is bounded (`GP_QUERIES` 16384 timestamps and `GP_DISP` 4096 dispatches a
+frame slot), and the log says how many passes went untimed. Each zone is written outside the predication it draws under,
+whose region writes no timestamp. The GPU clock is put
 on the CPU's timeline once a frame, so a pass that took the GPU long shows against the CPU's work that waited for it. The timestamps come from the graphics queue's, which the
 device must have; they are taken when the runtime is profiled (a GUI connected or a capture running) or when
-`SNX_VK_GPU_PROFILE=1` asks for them, which also logs what the GPU's time went to every 10 s. The binary is
+`vk_gpu_profile=1` asks for them, which also logs what the GPU's time went to every 10 s. The binary is
 not deployed beside every game the way an ordinary build is, so a game it is not run through the profiled driver for
 keeps the runtime it already had: run it through the profiled driver once, and launcher rows work from then.
 `SNX_TRACY=OFF` leaves the client out; iOS has none. The Windows-only `profile=1` sampler is separate.
@@ -345,7 +356,7 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | Why is this frame slow? | `frame ms`, `jit compile ms` and `jit miss ms` (a compile the game waited for), `pipeline make ms` and `pipeline wait ms`, `shader translate ms`, `texture uploads` (bytes) and `texture upload count`, `render targets made`, `vk finish ms`, `texture pipeline count` and `texture pipeline ms`, `shaders` |
 | Is the GPU or the CPU the bound? | the GPU track's passes and `gpu gap:` plots beside `frame ms` and the CPU's own zones |
 | Where does the GPU's time go? | the pass zones, `gpu gap: dispatches/copies/barriers/nothing`, `gpu idle: waited/frame/recording/queued`, `gpu busy` (a percentage), `gpu submissions/frame`, `copy MB`; `gpu round:` splits the CPU's waits by kind, `gpu hold:` the busy time by what it held, `gpu submit:` the submissions by reason |
-| Which draw of that pass? | `vk_gpu_draw_profile=1` adds a zone on each draw and dispatch up to its cap; the log says how many went untimed |
+| Which draw of that pass? | the GPU track's draw zones in a connected Tracy run; the log says how many passes went untimed |
 | What does the guest cost the host? | `guest cpu` and `process cpu` (of one processor), `guest threads`, `guest top thread ms`, `top svc 0/s` to `top svc 5/s` and `top hook 0/s` to `top hook 4/s` (a message names each rank) |
 | What does the game ask of the kernel? | the SVC zones with their result on error, and `svc/s`, `svc miss/s` |
 | Which IPC commands cost the most? | `ipc req/s`, `ipc handler ms`, `ipc commands`, `ipc other req/s`, and `ipc top 0 ms` to `ipc top 7 ms` (a message names each rank). The counters are kept while a profiler is attached as well as at `log=2` |
@@ -362,14 +373,43 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
 | What CPU work does a resource take? | `vk resource:` for image requirements, allocation and destruction, target setup and reload, surface reclaim, and buffer maintenance and cache build, each in ms per frame |
 | Which GPU wait held a present back? | `gpu wait: finish/recycle/submit ms` per frame |
+| Compute: why did the CPU wait for a compute batch? | the `vk compute wait` zone with `vk pipe compute wait pending ms per wait`, `vk pipe compute wait land ms per wait` and `vk pipe compute wait game ms per wait` |
+| Hooks: what does a hooked copy or a native wait cost? | the `hook mem copy` and `hook mem set` zones (the bytes and the library function in the text), `hook os sleep ms`, `hook os cs contention ms`, `hook os cv wait ms`, `hook mutex contention ms`, `hook cv wait ms`, `hook cv timed wait ms` and `hook sleep ms`. `hook os sleep skip`, `hook os cv no wait`, `hook mutex try` and `hook recursive try` mark a rare decision, and `hook os cv timeout`, `hook cv already expired`, `hook cv timed out` and `hook sleep none` a rare outcome |
+| Kernel: which core handed a thread off, and what kind of wait held it? | the `kern core handoff`, `kern core switch`, `kern core yield`, `kern mutex handoff` and `kern cv take mutex` zones (the core and the waiter in the text), `kern core wait ms`, `kern wait sleep ms`, `kern wait objects ms`, `kern wait mutex ms`, `kern wait cv ms`, `kern wait addr ms`, `kern wait pause ms` and `kern preempt late ms` |
+| SVCs: what did a memory SVC decide? | the `kern set perm`, `kern set attr`, `kern gpu attr`, `kern map memory`, `kern unmap memory`, `kern map process` and `kern unmap process` zones, with the bytes as the value and a refusal in the zone's text. `kern set heap` carries MiB, not bytes, and `kern code memory` carries the operation code, not a size |
+| NVN: which command cost the most to record, and why was a draw skipped? | the `nvn cmd copy commands`, `nvn cmd dlss`, `nvn cmd spill segment`, `nvn cmd out of memory`, `nvn cmd tex snap missing` and `nvn queue finish` zones with `gpu nvn cmd records`, `gpu nvn cmd bytes` and `gpu nvn replay records`. The `nvn draw arrays`, `nvn draw mesh`, `nvn draw elements`, `nvn clear texture`, `nvn dispatch`, `nvn draw texture`, `nvn dma copy` and `nvn buffer texture copy` zones carry the skip reason as the value, and `nvn copy record` names the kind of copy |
+| Shaders: which phase of a translation cost the time? | the `shader translate sm86` and `shader translate maxwell` zones with `shader sm86 translate us` and `shader maxwell translate us`; the `shader decode`, `shader cbuf fold`, `shader dataflow`, `shader control stack`, `shader structure`, `shader alloc` and `shader emission` zones, with `shader instructions`, `shader branches`, `shader blocks`, `shader cb fold hit`, `shader cb fold miss`, `shader flow fallback`, `shader sample-invariant` and `shader translate failures`. `shader translate maxwell` takes a call stack when `tracy_zone_callstack` is set |
+| Descriptors: what did a descriptor write do? | the `vk descriptor writes`, `vk descriptor reap`, `vk descriptor border acquire`, `vk descriptor object insert`, `vk descriptor object shared` and `vk descriptor buffer write` zones with `vk pipe desc reaped`, `vk pipe desc frame cache hit per lookup`, `vk pipe desc lasting lookup`, `vk pipe desc write words` and `vk pipe desc object found` |
+| Pipelines: which stage of a build cost the time? | the `pipeline make`, `pipeline make compile`, `pipeline make compile callstack`, `pipeline whole make`, `pipeline library make`, `pipeline optimize`, `pipeline entry lookup`, `shader cache records`, `vk pipe libraries choice` and `vk pipe stats write` zones with `vk pipe make ms`, `vk pipe make cache hit`, `vk pipe whole make ms`, `vk pipe whole cache hit`, `vk pipe lib make ms`, `vk pipe lib cache hit`, `vk pipe cached lookup ms`, `vk pipe cached hit`, `vk pipe fast link ms`, `vk pipe fast link cache hit`, `vk pipe optimize ms`, `vk pipe optimize cache hit`, `vk pipe cache read bytes`, `vk pipe shader cache hit bytes`, `vk pipe shader cache miss`, `vk pipe shader cache read bytes` and `vk pipe shader cache write bytes`. `pipeline make compile callstack` takes a call stack when `tracy_zone_callstack` is set |
+| ASTC: how many uploads were transcoded, and how much memory did the results take? | the `vk mem astc bc7`, `vk mem astc bcn` and `vk mem astc rgba8` zones (the block dimensions in the text) with `vk mem astc uploads` and `vk mem astc MB` per frame |
+| The allocator: when did a pool or a driver allocation grow? | the `vk mem block new`, `vk mem block find`, `vk mem BL scratch trim`, `vk mem budget cap`, `vk mem space take` and `vk mem space give` zones with `vk mem blocks made`, `vk mem blocks MB`, `vk mem driver allocs`, `vk mem driver MB`, `vk mem driver ms` and the `vk mem block table grown` message |
+| Save states: which stage of a save or a load cost the time? | the `state gather`, `state section read`, `state memory check`, `state memory load`, `state shmem`, `state compress`, `state save refused`, `state write refused` and `state load refused` zones with `rt state gather bytes`, `rt state save ms`, `rt state load bytes`, `rt state load check ms`, `rt state load ms`, `rt state write copied`, `rt state write file` and `rt state read copied` |
+| NCE: what did patching do, and which pattern fired or got rejected? | the `nce patch`, `nce scan`, `nce hook`, `nce hook added`, `nce hook duplicate`, `nce hook rejected`, `nce refused` and `nce net none` zones with `rt nce patch ms`, `rt nce patch sites`, and the `rt nce pat none fired` to `rt nce pat hook fired` and `rt nce pat none rejected` to `rt nce pat hook rejected` plots, one for each of the nine pattern kinds |
+| Present: which wait held a present back? | the `present schedule`, `present refresh`, `present delayed`, `present free` and `present dropped` zones and the `vk pres gpu wait`, `vk pres gpu trace` and `vk pres hdr off` zones with `rt present sleep ms`, `vk pres gpu stall ms`, `vk pres gpu stalls`, `vk pres display wait ms`, `vk pres display latency ms`, `vk pres display polls`, `vk pres display let go`, `vk pres acquire outcome`, `vk pres finish ms` and `vk pres maintenance ms` |
+| Video: what did a decode job cost, and why was a slot or job skipped? | the `video nvdec job`, `video nvdec ffmpeg`, `video nvdec rewrite bits`, `video nvdec decoder full`, `video nvdec codec change`, `video vic job`, `video vp9 uncompressed header`, `video vp9 compressed header` and `video vp9 rebuild` zones with `video vic job ms`, `video nvdec job ms`, `video host1x waits`, `video host1x queue waits`, `video pictures decoded`, `video pictures total`, `video nvdec failures`, `video vic slot skipped`, `video vic slots` and `video vic outcome` |
+| Audio: which stage of a tick or an update cost the time? | the `audio sinks`, `audio sink open`, `audio sink underrun`, `audio sink full`, `audio no sink`, `audio answer buffer small`, `audio voice inactive`, `audio out append`, `audio out no release`, `audio update failed`, `audio denoise` and `audio downmix 5.1` zones with `audio tick late us`, `audio render us`, `audio out tick us`, `audio sort us`, `audio voices us`, `audio sinks us`, `audio out releases`, `audio update in us`, `audio update dsp us`, `audio update out us`, `audio denoise us`, `audio downmix us`, `audio underruns` and `audio voice starve` |
+| Platform: what did input, the overlay and the platform's own work cost? | the `plat frontend frame`, `plat SDL event pump`, `plat gamepad scan`, `plat gamepad open`, `plat gamepad close`, `plat input record open`, `plat scripted input`, `plat connect join`, `plat connect tick`, `plat hud draw`, `plat overlay toast lay`, `plat overlay menu lay`, `plat overlay draw`, `plat vpad draw` and `plat vpad showcase draw` zones, with `plat SDL events`, `plat script held bits`, `plat hud quads`, `plat overlay quads`, `plat vpad quads` and `plat vpad showcase quads`. The platform's own work adds the `plat screenshot`, `plat log cut`, `plat page protect`, `plat ww open`, `plat trap open`, `plat trap arm`, `plat trap continue`, `plat trap fill`, `plat vm commit` and `plat profile write` zones, with `plat log cut bytes`, `plat pages protected`, `plat pages opened`, `plat pages armed`, `plat trap fill bytes`, `plat vm commit KB` and `plat profile samples` |
+| Audio: how long did opening an output sink take? | `audio sink open us` |
+| GPU: how long did a channel park, and how many methods did a job run? | `gpu park wait us`, `gpu job methods`, the `gpu engine 3d methods`, `gpu engine compute methods`, `gpu engine i2m methods`, `gpu engine 2d methods` and `gpu engine dma methods` plots, and the `gpu wait met` and `gpu wait timeout` zones |
+| Network: which call waited, how much data moved, and how long did a DNS lookup, TLS step, room join or LAN connect take? | `net accept wait ms`, `net poll wait ms`, `net select wait ms`, `net recv wait ms`, `net recv bytes`, `net send wait ms`, `net send bytes`, `net dns ms`, `net ssl poll wait ms`, `net tls handshake us`, `net tls record us`, `net room join ms`, `net ldn connect ms`, `net nifm online` |
+| nn: how much paced file I/O and codec output did a call ask for? | `nn fs pace ms`, `nn fs read bytes`, `nn fs write bytes`, `nn codec out bytes` |
+| NVN: how long did a sync or a surface acquire wait? | `nvn sync wait us`, `nvn acquire wait us` |
+| Runtime stats: how often did the guest's busiest SVC, count or hook change? | `rt gstat top change/s` |
+| SVCs: which service call waited or took time? | `svc am keyboard wait ms`, `svc ldr nro us`, `svc nvideo decode us`, `svc nvideo submit bytes`, `svc nvideo vt wait ms`, `svc vi dequeue wait ms`, `svc vi transact us` |
+| Vulkan pipelines: which draws or passes were skipped, how many commands were recorded, and how were shader objects made? | `vk pipe draw skipped`, `vk pipe pass skipped`, `vk pipe record commands`, `vk pipe shader object ms`, `vk pipe shader object from binary`, `vk pipe desc frame cache hit per lookup` |
+| Present: how many bytes moved, and what did mirroring, HDR and query reads cost? | `vk pres blit bytes`, `vk pres dma bytes`, `vk pres capture tile bytes`, `vk pres nvdec bytes`, `vk pres vic bytes`, `vk pres writeback bytes`, `vk pres hdr`, `vk pres mirror harvest bytes`, `vk pres mirror harvest left pages`, `vk pres mirror harvest wait ms`, `vk pres mirror land ms`, `vk pres mirror land pages`, `vk pres mirror mem need ms`, `vk pres query read stall ms`, `vk pres query read stalls` |
+
+Many zones carry a small code as their value and name the reason in the zone's text or in a message. A skipped draw's value says why it was skipped, a core handoff's text says which core took which waiter, and a memory SVC's text says what it refused. Group a zone by its value to rank the reasons, then read the zone's text or the message for the reason a given frame took. Some rare decisions have a zone or a message of their own, so they show as their own rows in the Statistics window rather than inside a count.
 
 The two GPU-queue idle plots are apart on purpose: `gpu thread idle` is the GPU thread's own job-queue wait, and
 `gpu idle:` are the graphics queue's execution idle, which the frame's own work and its waits between them give.
 
 ### What the profiler's client leaves out
 
-Where a thread waits stays out: the wait stacks (`TRACY_NO_WAIT_STACKS`) walk the stack at every context switch,
-and Linux gives that only to root with tracefs. A zone's own source (`TRACY_NO_CODE_TRANSFER` off) and the client's
+Where a thread waits stays out of the default build: the wait stacks walk the stack at every context switch, which
+Linux gives only to root with tracefs, and the build defines `TRACY_NO_WAIT_STACKS` to leave them off. Configure with
+`-DSNX_TRACY_WAIT_STACKS=ON` to build them in, and a run with `tracy_context_switches=1`, root and tracefs collects
+them. A zone's own source (`TRACY_NO_CODE_TRANSFER` off) and the client's
 zone verification (`TRACY_NO_VERIFY` off, so a zone begun and not ended is caught) are in the build, and both cost
 nothing until a GUI asks. A frame's picture is a readback and a downsample of the window's image, which takes
 `tracy_frame_images`' seconds.
@@ -380,7 +420,7 @@ resolve to functions, a shared library to its exported ones, and the rest (a dri
 address, which the `tracy-update` utility can resolve later. How many samples get through is the kernel's call: each
 one walks up to 127 frames, and a machine busy with a recompile drops most of them, so a trace can be coarse. Lowering
 `kernel.perf_event_max_stack` (it needs root) makes the samples smaller and more of them get through, and a longer
-run gives the statistics more to work with. `TRACY_SAMPLING_HZ` in the environment asks for another rate.
+run gives the statistics more to work with. The build-time `TRACY_SAMPLING_HZ` define sets another rate.
 
 ## Shaders
 

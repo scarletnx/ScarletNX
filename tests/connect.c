@@ -88,6 +88,30 @@ int main(void) {
     connect_leave(3, t);
     assert(connect_kept(3, t + S) && connect_join("serial:g", 0, t + S) == 0 &&
            connect_join("serial:f", 1, t + S) == 3);
+    /* the controller applet's dialog during a pause for P1: another controller moved in (a swap) brings P1 back and
+       the pause ends, the one that left is kept at the other player, which doesn't pause again. Or Go on without P1 */
+    connect_reset();
+    assert(connect_join("serial:a", 0, t) == 0 && connect_join("serial:b", 1, t) == 1);
+    connect_leave(0, t);
+    assert(tick(t + 3 * S, 1, 1, 0) == CONNECT_PAUSE && connect_waiting() == 1);
+    connect_swap(0, 1);
+    assert(tick(t + 4 * S, 0, 1, 0) == CONNECT_RESUME && !connect_waiting() && connect_kept(1, t + 4 * S));
+    assert(tick(t + 9 * S, 1, 1, 0) == CONNECT_NONE && !notice[0]);
+    assert(connect_join("serial:a", 1, t + 10 * S) == 1); /* back, at the player it was kept at */
+    connect_reset();
+    assert(connect_join("serial:a", 0, t) == 0);
+    connect_leave(0, t);
+    assert(tick(t + 3 * S, 1, 0, 0) == CONNECT_PAUSE);
+    connect_go_on();
+    assert(tick(t + 4 * S, 0, 0, 0) == CONNECT_RESUME && !strcmp(notice, "Going on without P1") && freed == 1);
+    connect_go_on(); /* no pause: nothing */
+    assert(tick(t + 5 * S, 1, 0, 0) == CONNECT_NONE);
+    /* a controller the controller applet's dialog disconnected: its player is free at once, no pause waits for it */
+    connect_reset();
+    assert(connect_join("serial:a", 0, t) == 0);
+    connect_forget(0);
+    assert(!connect_kept(0, t + S) && tick(t + 5 * S, 1, 0, 0) == CONNECT_NONE && !notice[0]);
+    assert(connect_join("serial:b", 0, t + 6 * S) == 0);
     puts("connect: players by order, kept and taken back, the pause, its notice, + to go on, and a ninth passed");
     return 0;
 }

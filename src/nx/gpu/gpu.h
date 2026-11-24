@@ -343,7 +343,10 @@ int gmem_write_cb(u64 gva, const void* src, u64 size);
    gpu_mem_written after), then the runs without them */
 void gmem_need(u64 gva, u64 size);
 void gmem_read_raw(u64 gva, void* dst, u64 size);
-void gmem_before_write(u64 gva, u64 size);
+/* whole: the caller writes every byte of [gva, gva + size), which is what lets a render target there be dropped
+   instead of written back (vk_rt_before_write). A write of the lines in a span of rows of blocks, or a change of the
+   mapping under them, writes a part of its range and gives 0 */
+void gmem_before_write(u64 gva, u64 size, int whole);
 void gmem_write_raw(u64 gva, const void* src, u64 size);
 /* a shader program: up to size bytes, stopping at the first page with no guest memory behind it, zeros after */
 void gmem_read_code(u64 gva, void* dst, u64 size);
@@ -377,11 +380,42 @@ u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log
    I2M_UPLOAD_REGS, so regs[base + UPLOAD_EXEC] is the launch), and its data words (ProcessData) */
 void i2m_launch(GpuChannel* ch, u32* regs, int base);
 void i2m_data(GpuChannel* ch, u32 v);
+/* For the statistics: the writes that the command stream makes into guest memory, by kind (an inline-to-memory
+   launch to a pitch linear or a block linear destination, NVN's uniform buffer update). Each counts its bytes, and the
+   landings of GPU-owned memory that came while it wrote (any thread's: a write over an owned or pending range lands
+   it first) with their bytes and nanoseconds */
+enum { GPU_INLINE_LINEAR, GPU_INLINE_BLOCK, GPU_INLINE_UB, GPU_INLINE_N };
+typedef struct {
+    _Atomic u64 n, bytes, forced, forced_bytes, forced_ns;
+} GpuInlineStat;
+extern GpuInlineStat g_gpu_inline[GPU_INLINE_N];
+typedef struct {
+    u64 lands, land_bytes, t0;
+} GpuInlineMark;
+GpuInlineMark gpu_inline_begin(void);
+/* For the statistics: NVN's render enable records by how they were decided (nvn_draw.c render_enable): a fixed mode,
+   a predicate the renderer knew, a predicate left to the GPU, the CPU's reads of the counts. Then the nanoseconds of
+   those reads */
+enum { GPU_RCOND_FIXED, GPU_RCOND_KNOWN, GPU_RCOND_GPU, GPU_RCOND_CPU, GPU_RCOND_N };
+extern _Atomic u64 g_gpu_rcond[GPU_RCOND_N], g_gpu_rcond_cpu_ns;
+void gpu_inline_end(int kind, u64 bytes, GpuInlineMark m);
 u32 gpu_color_bpp(u32 format); /* bytes per pixel of a color format (render targets and 2D surfaces share them) */
 void gpu_signal_point(void);   /* the GPU is about to do something the game can observe */
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is
    the bytes as guest memory gets them, so its numbers are little-endian already */
 void gpu_release_write(u64 gva, const void* data, u32 len);
+/* a 16-byte timestamp report (NVN's timestamp counter): as gpu_release_write, with the time the host GPU reached it
+   in place of the ticks at offset 8 where the renderer can time it (renderer.h release_stamp). top: TIMESTAMP_TOP */
+void gpu_release_stamp(u64 gva, const void* data, int top);
+/* a timestamp report at guest address cpu gets the GPU's time before the game reads it. may_wait 0: it does what needs
+   no wait, and returns 1 when the report still waits for its submission. may_wait 1: it waits for that submission, so
+   the caller leaves the guest core first. Returns 0 when nothing is left to do */
+int gpu_release_stamp_sync(u64 cpu, int may_wait);
+/* a release of 16 bytes: the 8 at data, then the GPU's timestamp (gpu_ticks), read where the renderer's side performs
+   the release, in its place among the draws. With gpu_split the front end is ahead of them: read as it queued the
+   release, the two timestamps a game puts around a frame's draws were the front end's few milliseconds apart whatever
+   the draws took, and a game that sizes its picture by that time drew at its largest */
+void gpu_release_write_stamped(u64 gva, const void* data);
 
 /* the engines' methods (engines.c, compute.c, fermi2d.c, dma.c): m is the method, last marks a batch's last word */
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last);
@@ -477,6 +511,9 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* the same, for a call that reads none of the front end's state (a present): it runs on the renderer's side in its
+   place in the queue (gpu_queue.c), and the GPU thread goes on without a wait */
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
 /* Cooperative calls return 0 while waiting and 1 when complete. A lane's calls stay ordered; other lanes and
    ordinary calls can run while it waits. The callback owns its resume cursor. Lane is in [0,63]. */
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane);
@@ -517,6 +554,10 @@ void gpu_poll_stats(GpuPollStats* s);
 /* the GPU thread's wall time outside its wait for work so far, in ns: replay, setup and recording, the waits inside
    them (locks, fences) included */
 u64 gpu_thread_busy_ns(void);
+/* the guest time at which the work the GPU thread runs became ready: its queueing, or the end of a wait it was held
+   for, 0 before any. A console's GPU starts work then or when the work before it ends, whichever is later, and report
+   timestamps place the host GPU's work so (vk/stamp.c). Any thread */
+u64 gpu_ready_ns(void);
 /* the CPU signals what a GPU stream may wait for (an NVN event, a syncpoint increment through nvhost-ctrl): what it
    wrote before is for the work after the wait to see (renderer.h mem_may_have_changed). Before the signal, any thread */
 void gpu_cpu_signal(void);
@@ -537,8 +578,9 @@ void gpu_report_stall(void);
 void gpu_mem_changed(u64 cpu_addr, u64 len);
 extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side of it, set when it starts */
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
-   results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
-extern void (*g_gpu_before_write)(u64 gva, u64 size);
+   results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0). whole: the caller
+   writes every byte of [gva, gva + size) (gmem_write, gmem_before_write's own argument) */
+extern void (*g_gpu_before_write)(u64 gva, u64 size, int whole);
 extern _Atomic int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* what a change of backing changes (g_gpu_mapping_begin's kind) */
 enum {

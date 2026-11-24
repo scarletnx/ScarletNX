@@ -14,6 +14,7 @@
    at 0x18 and 0x20, and the heap the SDK builds in it at 0x28, which no code reads with every user of it hooked */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 #include <string.h>
 
@@ -107,12 +108,25 @@ u32 nnngc_mask16(CPU* c, u64 self, u64 count, u64 text, u32 patterns) {
 
 /* words with none of a list's in them: a 0 for each */
 static u32 check(CPU* c, u64 self, u64 out, u64 words, u64 n, int utf16) {
-    if (!initialized(c, self)) return NGC_NOT_INITIALIZED;
-    if (!out || !words) return NGC_NULL;
-    if (n > NGC_WORDS_MAX) return NGC_SIZE;
+    SNX_ZONE_TV(z, "nn ngc check", n, "%llu words", (unsigned long long)n);
+    if (!initialized(c, self)) {
+        SNX_ZONE_TEXT(z, "not initialized");
+        return NGC_NOT_INITIALIZED;
+    }
+    if (!out || !words) {
+        SNX_ZONE_TEXT(z, "null output or words");
+        return NGC_NULL;
+    }
+    if (n > NGC_WORDS_MAX) {
+        SNX_ZONE_TEXT(z, "%llu words past limit", (unsigned long long)n);
+        return NGC_SIZE;
+    }
     for (u64 i = 0; i < n; i++) {
         u64 word = snx_ld_le64(hook_host(c, words + i * 8));
-        if (!word || !(utf16 ? utf16_ok(c, word) : utf8_ok(c, word))) return NGC_ENCODING;
+        if (!word || !(utf16 ? utf16_ok(c, word) : utf8_ok(c, word))) {
+            SNX_ZONE_TEXT(z, "word %llu not text", (unsigned long long)i);
+            return NGC_ENCODING;
+        }
     }
     for (u64 i = 0; i < n; i++) snx_st_le32(hook_host(c, out + i * 4), 0);
     return 0;

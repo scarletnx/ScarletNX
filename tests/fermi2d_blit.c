@@ -104,6 +104,8 @@ static int blit_ref(const GpuBlit* b) {
 }
 static const Renderer stand_in = {.name = "stand-in", .rt_reload = reloaded, .blit_mem = blit_ref};
 const Renderer* g_renderer = &stand_in;
+/* gpu/renderer.c's: no queue of the renderer here, so a call runs on it at once */
+const Renderer* gpu_renderer_now_at(const char* file, int line) { return (void)file, (void)line, g_renderer; }
 int g_renderer_up = 1;
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;

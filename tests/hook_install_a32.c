@@ -7,7 +7,8 @@
    hooks_off names keep their slots. A versioned hook takes the slot of a function whose module's SDK label holds
    its version, and none in a module with no label; one declared a32 for some versions is in the table for any and
    in a 32-bit program's for those, and in a game of another SDK its function keeps its own code, which
-   hook_missed_text says with the SDK. The two tables: a symbol declared again for a 32-bit program
+   hook_missed_text says with the SDK, and hook_unread_text with the SDK it was read in, the functions of each family
+   and what a player can do. The two tables: a symbol declared again for a 32-bit program
    alone has each program's handler in its table, and one only a 32-bit program has is in no other. And a handler
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
    and the adapter still returns there; and one that calls another function of the game, with its four words in r0
@@ -54,6 +55,7 @@ static const struct {
                {"now", 0x1040},
                {"save_j", 0x1050},
                {"ranged", 0x1080},
+               {"ranged_too", 0x1090},
                {"save_j", 0x2011 /* in the module with no SDK label */},
                {"answer", 0x3000 /* in no module */},
                {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
@@ -167,8 +169,8 @@ int main(void) {
        a 32-bit program alone in that program's */
     int answer = entry(&hook32_table, "answer", 0), thumb = entry(&hook32_table, "thumb_answer", 0);
     int now = entry(&hook32_table, "now", 0), off = entry(&hook32_table, "off_answer", 0);
-    char text[400];
-    assert(HOOK_COUNT == 8 && HOOK32_COUNT == 9);
+    char text[640];
+    assert(HOOK_COUNT == 9 && HOOK32_COUNT == 10);
     assert(answer >= 0 && thumb >= 0 && now >= 0 && off >= 0);
     assert(entry(&hook_table, "answer", 0) >= 0 && entry(&hook_table, "wide", 0) >= 0);
     assert(entry(&hook32_table, "wide", 0) == -1 && entry(&hook_table, "save_j", 0) == -1);
@@ -204,11 +206,15 @@ int main(void) {
     assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x10203)]);
     assert(a32_slots[20] != hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
     assert(a32_slots[32] == hook32_fn[entry(&hook32_table, "ranged", 0x10203)]);
+    assert(a32_slots[36] == hook32_fn[entry(&hook32_table, "ranged_too", 0x10203)]);
     for (unsigned i = 1; i < 0x40; i++) assert(i == 16 || thumb_slots[i] == own_block);
     /* what was left for a version: the one symbol in the module with no label, by its name, module and versions */
     hook_missed_text(text, sizeof text);
     assert(!strncmp(text, "1 of the SDK functions", 22) && strstr(text, "in this 32-bit game"));
     assert(strstr(text, "the first is save_j in main, of version unknown, declared for sdk < 2.0.0; sdk >= 2.0.0"));
+    /* every declaration holds for the module with the label, and the other module's SDK is not known to be another */
+    hook_unread_text(text, sizeof text);
+    assert(!*text);
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */
     thread.cpu.mem = mem32;
@@ -269,13 +275,23 @@ int main(void) {
     memset(&g_host.hook, 0, sizeof g_host.hook);
     strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-3_0_1-Release");
     hook_install();
-    assert(a32_slots[32] == own_block && a32_slots[0] == hook32_fn[answer]);
+    assert(a32_slots[32] == own_block && a32_slots[36] == own_block && a32_slots[0] == hook32_fn[answer]);
     assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
     hook_missed_text(text, sizeof text);
-    assert(!strncmp(text, "2 of the SDK functions", 22));
+    assert(!strncmp(text, "3 of the SDK functions", 22));
     assert(strstr(text, "the first is ranged in sdk, of version 3.0.1, declared for sdk < 2.0.0"));
     hook_missed_text(text, 30); /* cut to the buffer */
-    assert(strlen(text) == 29 && !strncmp(text, "2 of the SDK functions", 22));
+    assert(strlen(text) == 29 && !strncmp(text, "3 of the SDK functions", 22));
+    /* why, in the words the stop says it in: the SDK, where it is, the SDK read, the functions left out by family and
+       what to do; the 32-bit declarations hold for the SDK read, so a game of that SDK or an older one says nothing */
+    hook_unread_text(text, sizeof text);
+    assert(!strcmp(
+        text, "This 32-bit game's SDK is 3.0.1 (module sdk) and the runtime's declarations for a 32-bit game were "
+              "read in SDK 0.12.16 alone, so 2 of its SDK functions run their own code (marked 1, second 1), which "
+              "needs services the runtime answers only natively. A 64-bit update of the game, if it has one, "
+              "plays; for this version, an SDK of 3.0.1 has to be read (issue #2242)"));
+    hook_unread_text(text, 30); /* cut to the buffer */
+    assert(strlen(text) == 29 && !strncmp(text, "This 32-bit game's SDK is 3.0", 29));
 
     /* hooks=0 takes nothing, and leaves nothing to say */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
@@ -283,6 +299,8 @@ int main(void) {
     hook_install();
     assert(a32_slots[0] == own_block && thumb_slots[0] == own_block);
     hook_missed_text(text, sizeof text);
+    assert(!*text);
+    hook_unread_text(text, sizeof text);
     assert(!*text);
     puts("hook_install_a32: passed");
     return 0;

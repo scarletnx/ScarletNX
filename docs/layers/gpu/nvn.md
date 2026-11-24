@@ -14,6 +14,7 @@
 * [Control memory, counted as the driver writes it](#control-memory-counted-as-the-driver-writes-it)
 * [Observing NVN calls](#observing-nvn-calls)
 * [Queue and submission observations](#queue-and-submission-observations)
+* [Timestamp counter reports](#timestamp-counter-reports)
 * [Command buffer layout (two games' SDK observations)](#command-buffer-layout-two-games-sdk-observations)
 * [Other SDK object layouts](#other-sdk-object-layouts)
 * [Shader blobs](#shader-blobs)
@@ -248,6 +249,21 @@ Game A's first present issues one six-entry GPFIFO submission: two queue packets
 segments, then a 58-word queue tail that writes the window origin. The queue packets come from a separate queue-side
 backing, not from the command pool the game supplied. The recorded segments' GPU addresses follow from the command
 buffer's chunk fields (next section).
+
+## Timestamp counter reports
+
+`OP_REPORT_COUNTER` for `NVN_COUNTER_TYPE_TIMESTAMP` and `NVN_COUNTER_TYPE_TIMESTAMP_TOP` routes through
+`gpu_release_stamp` (`src/nx/gpu/vk/stamp.c` and `src/nx/gpu/vk/release.c`). The Vulkan renderer writes `TOP_OF_PIPE`
+and `ALL_COMMANDS` queries around each graphics command buffer and at each report into a 4096-entry timestamp query pool
+(requiring `hostQueryReset`; without it, reports keep the GPU thread's `guest_gpu_ticks()`).
+
+Reports are released ungated with the GPU thread's ticks so they do not stall the game's fences behind GPU completion,
+then overwritten with the folded host GPU time once their submission finishes (`fix_through`) if guest memory and its
+mapping still match. Within a present, submissions are packed back-to-back on the GPU timeline with overlapping raw
+intervals clipped so mid-frame CPU stalls do not inflate frame spans; across presents, the timeline catches up to
+`gpu_ready_ns()`. `nvnDeviceGetTimestampInNanoseconds` calls `gpu_release_stamp_sync` (with a lock-free fast path) so a
+counter read never observes an unfixed CPU replay timestamp while its submission is still in flight. When the report
+must wait for its submission, the call leaves the guest core for the wait, as `nvnSyncWait` does.
 
 ## Command buffer layout (two games' SDK observations)
 

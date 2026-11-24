@@ -260,3 +260,8 @@ uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32
     cpu->fpscr |= c.fpsr & 0x9f;
     return result;
 }
+/* snx_arm_fp for the x86-64 back end's blocks, whose cold calls take four arguments after the state: the op in desc's
+   bits 7:0, the width in 15:8, the param in 63:32 */
+uint64_t snx_arm_fp_x64(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint64_t desc) {
+    return snx_arm_fp(cpu, x, y, add, (uint32_t)desc & 255, ((uint32_t)desc >> 8) & 255, (uint32_t)(desc >> 32));
+}

@@ -24,6 +24,7 @@ static int slot_armed(u32 fd, u32 slot) {
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
+int g_ounce;            /* main.c's: a Switch program unless a check says otherwise */
 void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
 static unsigned test_checks, test_kobjs;
@@ -72,6 +73,7 @@ static u64 test_guest_ns; /* the guest clock the runtime's clock.c would answer 
 u64 guest_ns(void) { return test_guest_ns; }
 u64 guest_gpu_ticks(void) { return snx_gpu_ticks_of_ns(test_guest_ns); }
 KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
+uint32_t plat_tid(void) { return 0; }
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
@@ -210,6 +212,8 @@ static void run_held(u32 k) {
     test_held_fn[k](test_held[k]);
     test_on_gpu = 0;
 }
+/* a present goes to the renderer through the same queue: the test sees it as a call of the GPU thread */
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) { gpu_call(fn, arg, chans, nchans); }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 int gpu_release_wait(u32 id, u32 thresh, int block) {
@@ -934,6 +938,33 @@ static void test_gmmu_later(void) {
     CHECK(!gmmu_translate(g) && !gmmu_translate(g + 99 * 0x1000));
     test_hold = 0;
 }
+/* a wait for a change queued for the GPU thread (gmmu_later_wait): with no time left it says the change isn't made yet
+   (nothing here waits), and once the GPU thread has made it and those before it, it returns at once; on the GPU
+   thread it makes them itself, and the call posted for them finds nothing left */
+static void test_gmmu_later_wait(void) {
+    const u64 g = 0x7300000000ull, c = 0xB0000000ull;
+    test_hold = 1;
+    test_nheld = 0;
+    u32 a = gmmu_later(GMMU_LATER_MAP, g, c, 0x1000, 0);
+    gmmu_later_post(a);
+    u32 b = gmmu_later(GMMU_LATER_MAP, g + 0x1000, c + 0x1000, 0x1000, 0);
+    gmmu_later_post(b);
+    CHECK(!gmmu_later_wait(a, 0) && !gmmu_later_wait(b, 0));
+    run_held(0); /* a's call makes the changes up to a, not the newer b */
+    CHECK(gmmu_later_wait(a, 0) && gmmu_later_wait(a, -1) && !gmmu_later_wait(b, 0));
+    run_held(1);
+    CHECK(gmmu_later_wait(b, 0) && gmmu_later_wait(a, 0));
+    u32 u = gmmu_later(GMMU_LATER_UNMAP, g, 0, 0x2000, 0);
+    gmmu_later_post(u);
+    CHECK(!gmmu_later_wait(u, 0) && gmmu_translate(g) == c);
+    test_on_gpu = 1;
+    CHECK(gmmu_later_wait(u, -1) && g_host.nvdrv.nlater == 0);
+    test_on_gpu = 0;
+    CHECK(!gmmu_translate(g) && !gmmu_translate(g + 0x1000) && gmmu_later_wait(u, 0));
+    run_held(2);
+    CHECK(g_host.nvdrv.nlater == 0);
+    test_hold = 0;
+}
 /* gmmu_run against gmmu_translate page by page: runs longer than an entry's count, across a table's end, broken by a
    page mapped elsewhere, and what an own unmap keeps */
 static u64 run_by_pages(u64 gva, u64 max, u64* cpu) {
@@ -1133,6 +1164,41 @@ static void test_gmmu_aliases(void) {
         alias_check();
     }
 }
+/* the VA allocator started over, for an Ounce program or not (va_init sees g_ounce at its first use) */
+static void va_restart(int ounce) {
+    g_ounce = ounce;
+    g_hle.nvdrv.va_ready = 0;
+    g_hle.nvdrv.nvafree = 0;
+}
+/* An Ounce program's GPU addresses: the allocator's own start past the guest's address space, and a range at a guest
+   address (a pool at its storage's own) is taken where all of it is free, refused where any of it is taken, and
+   taken again once given back. A Switch program's free ranges start at the big-page split, so no guest address below
+   it is taken. A queued unmap drops its nvmap handle once it is made */
+static void test_gmmu_own_addresses(void) {
+    const u64 s = 0x140000000ull, n = 0x3C0000;
+    u64 addr;
+    u32 size;
+    va_restart(1);
+    u64 a = gmmu_space_alloc(0x10000, 0);
+    CHECK(a == AS_SIZE);
+    CHECK(gmmu_space_alloc_at(s, n) == s);
+    CHECK(!gmmu_space_alloc_at(s, n) && !gmmu_space_alloc_at(s + n - 0x1000, 0x2000));
+    CHECK(!gmmu_space_alloc_at(s - 0x10000, 0x20000));
+    CHECK(gmmu_space_alloc_at(s + n, 0x1000) == s + n); /* the next page */
+    CHECK(gmmu_space_alloc_at(s + n + 0x1000, 0x800) == s + n + 0x1000 && !gmmu_space_alloc_at(s + n + 0x1000, 0x10));
+    CHECK(!gmmu_space_alloc_at(s + 0x10000123, 0x1000) && !gmmu_space_alloc_at(a, 0x1000));
+    gmmu_space_give_back(s, n);
+    CHECK(gmmu_space_alloc_at(s, n) == s && !gmmu_space_alloc_at(s + 0x10000, 0x1000));
+    for (int i = 0; i < 4; i++) CHECK(gmmu_space_alloc(0x100000, 0) >= AS_SIZE);
+    va_restart(0);
+    CHECK(gmmu_space_alloc(0x10000, 0) == VA_BASE && !gmmu_space_alloc_at(s, n));
+    u32 h = nvmap_handle_new(0x4000, 0x1000);
+    CHECK(h && nvmap_get(h, &addr, &size));
+    gmmu_later_post(gmmu_later(GMMU_LATER_UNMAP, VA_BASE, 0, 0x1000, h));
+    CHECK(!nvmap_get(h, &addr, &size));
+    va_restart(0);
+}
+
 int main(void) {
     hle_init();
     g_mem = calloc(1, 0x10000);
@@ -1201,6 +1267,7 @@ int main(void) {
     test_nvmap_as();
     test_gmmu_freed();
     test_gmmu_later();
+    test_gmmu_later_wait();
     test_gmmu_runs();
     test_gmmu_aliases();
     nvdrv = new_nvdrv();
@@ -1273,6 +1340,7 @@ int main(void) {
     test_close_during_ioctl();
 
     CHECK(nv_close(ctrlgpu) == 0 && nv_close(ctrl) == 0);
+    test_gmmu_own_addresses();
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     CHECK(test_kobjs == 0 && test_locks == 0);
     svcobj_unref(nvdrv);

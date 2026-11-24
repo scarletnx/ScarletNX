@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* SetRenderEnable (3D 0x554-0x556) and its override (0x651) gate draws and clears: the 3D engine's methods run
-   against a renderer that counts what reaches it, with a few words of GPU memory the conditions read. */
+   against a renderer that counts what reaches it, with a few words of GPU memory the conditions read. NVN's render
+   enable (gpu_render_enable_nvn) is decided on the renderer's side with NVN's modes, and its samples-passed report
+   (gpu_report_samples) writes the replay's count where the renderer has none. */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
@@ -149,7 +151,10 @@ static void expect(int want, const char* what) {
     }
 }
 
+/* tests/support/gpu_front_stub.c: the renderer side's decision, applied to the draws and clears */
+extern int (*g_stub_render_state)(u32 owner, u32* pred);
 int main(void) {
+    g_stub_render_state = gpu_render_state;
     expect(1, "a fresh channel draws");
     render_enable(0, 0);
     expect(0, "FALSE skips");
@@ -217,6 +222,36 @@ int main(void) {
     expect(0, "override NEVER skips over TRUE");
     maxwell3d_method(&ch, 0x651, 0, 1);
     expect(1, "override USE goes back to TRUE");
+
+    /* NVN's render enable: modes 2 and 3 are on and off, 0 and 1 compare the counts at the address and 16 bytes on */
+    gpu_render_enable_nvn(ch.ds.owner, 3, 0);
+    expect(0, "NVN's mode 3 skips");
+    gpu_render_enable_nvn(ch.ds.owner, 2, 0);
+    expect(1, "NVN's mode 2 draws");
+    put64(32, 5);
+    put64(48, 5);
+    gpu_render_enable_nvn(ch.ds.owner, 0, VA + 32);
+    expect(1, "NVN's mode 0 draws over equal counts");
+    gpu_render_enable_nvn(ch.ds.owner, 1, VA + 32);
+    expect(0, "NVN's mode 1 skips equal counts");
+    put64(48, 6);
+    gpu_render_enable_nvn(ch.ds.owner, 0, VA + 32);
+    expect(0, "NVN's mode 0 skips counts that differ");
+    gpu_render_enable_nvn(ch.ds.owner, 1, VA + 32);
+    expect(1, "NVN's mode 1 draws over counts that differ");
+    gpu_render_enable_nvn(ch.ds.owner, 2, 0);
+    /* a samples-passed report with no count of the renderer's: the replay's value and the clock's ticks as it runs */
+    put64(32, 0);
+    put64(40, 0);
+    const u64 before = gpu_ticks();
+    gpu_report_samples(ch.ds.owner, VA + 32, 1, 1000);
+    const u64 after = gpu_ticks();
+    if (snx_ld_le64(vram + 32) != 1000 || snx_ld_le64(vram + 40) < before || snx_ld_le64(vram + 40) > after) {
+        fprintf(stderr, "FAIL: a samples-passed report wrote %llu at ticks %llu, not 1000 at ticks from %llu to %llu\n",
+                (unsigned long long)snx_ld_le64(vram + 32), (unsigned long long)snx_ld_le64(vram + 40),
+                (unsigned long long)before, (unsigned long long)after);
+        failures++;
+    }
 
     /* a report semaphore acquire (operation 1) is a wait of the stream: the address, the value, and COMPARISON
        (bit 16) GE or EQ */

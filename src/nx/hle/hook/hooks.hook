@@ -263,6 +263,12 @@ hook _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(addr cv, 
 hook _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(addr cv, addr lock, i64 ns) = sync_cond_timed_wait
 hook _ZNSt3__118condition_variableD1Ev(addr cv) = sync_drop
 hook _ZNSt3__118condition_variableD2Ev(addr cv) = sync_drop
+# the C library's waits, which libc++'s inlined timed waits call with a std::mutex's words (a steady_clock wait_for or
+# wait_until made with pthread_cond_clockwait): on a mutex of this family's the wait is the host's, as
+# condition_variable's own; on any other mutex the function's own code runs
+hook pthread_cond_wait(addr cv, addr m) -> i32 = sync_pthread_cond_wait
+hook pthread_cond_timedwait(addr cv, addr m, addr abstime) -> i32 = sync_pthread_cond_timedwait
+hook pthread_cond_clockwait(addr cv, addr m, i32 clock, addr abstime) -> i32 = sync_pthread_cond_clockwait
 
 # nn::os's sleeps, yields, locks and condition variables (os_sync.c): no SVC, and a lock's waiters wait on its word with
 # the host's futex. The SDK's own lock and condition variable types, and the InternalCriticalSection and

@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -404,8 +405,12 @@ static void lasting_reap(u64 done) {
     LastingState* L = &g_heaps.lasting;
     if (L->ended > done) {
         g_heaps.stats.lasting_reaps_skipped++;
+        SNX_ZONE_T(z, "vk descriptor reap", "skipped: the GPU has not done the last submit");
         return;
     }
+    SNX_ZONE(z, "vk descriptor reap");
+    u64 freed = g_heaps.stats.lasting_freed;
+    [[maybe_unused]] u64 looked = g_heaps.stats.lasting_reap_looked;
     g_heaps.stats.lasting_reaps++;
     for (u32* link = &L->dying; *link;) {
         Lasting* e = &L->slot[*link];
@@ -421,6 +426,12 @@ static void lasting_reap(u64 done) {
         L->free[e->kind] = s;
         g_heaps.stats.lasting_freed++;
     }
+    SNX_ZONE_TEXT(z, "done: %llu slots freed of %llu looked at",
+                  (unsigned long long)(g_heaps.stats.lasting_freed - freed),
+                  (unsigned long long)(g_heaps.stats.lasting_reap_looked - looked));
+    SNX_ZONE_VALUE(z, g_heaps.stats.lasting_freed - freed);
+    SNX_ZONE_END(z);
+    SNX_PLOT("vk pipe desc reaped", (double)(g_heaps.stats.lasting_freed - freed));
 }
 /* a free slot of kind k, 0 for none: one that no table names any more is taken back from its object */
 static u32 lasting_take(int k) {
@@ -813,12 +824,19 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
     ResourceEntry* replacement = &g_heaps.cache.resources[index + (u32)(hash >> 32) % 4];
     for (u32 i = 0; i < 4; i++) {
         ResourceEntry* e = &g_heaps.cache.resources[index + i];
-        if (!e->object) { *hit = 0; return e; }
-        if (vk_descriptor_heap_resource_equal(e, key)) { *hit = 1; return e; }
+        if (!e->object) { *hit = 0; SNX_PLOT("vk pipe desc frame cache hit per lookup", 0); return e; }
+        if (vk_descriptor_heap_resource_equal(e, key)) { *hit = 1; SNX_PLOT("vk pipe desc frame cache hit per lookup", 1); return e; }
     }
     /* Replace only CPU metadata. Its former immutable descriptor bytes remain alive in this frame. */
     *hit = 0;
+    SNX_PLOT("vk pipe desc frame cache hit per lookup", 0);
     return replacement;
+}
+/* The lasting lookup's outcome, plotted once the decision is made, not when the slot is found. draw_state_check=1
+   can find one and still make its descriptor again, so the finding alone is not the hit. */
+static inline int lasting_report(int lasting, int was_hit, int ret) {
+    if (lasting) SNX_PLOT("vk pipe desc lasting lookup", (double)was_hit);
+    return ret;
 }
 /* A buffer range's or a view's descriptor: its heap offset into *offset. The lasting part first, for a view or a named
    buffer; then the frame's cache; else it is made, into a lasting slot where one is free, else into the
@@ -880,7 +898,8 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
     if (lasting) {
         hash = vk_hash(&key, VK_DESCRIPTOR_HEAP_RESOURCE_KEY_BYTES);
         kept = lasting_find(&key, hash);
-        if (kept && !g_settings.draw_state_check) return lasting_hit(kept, is_buffer, offset);
+        if (kept && !g_settings.draw_state_check)
+            return lasting_report(lasting, 1, lasting_hit(kept, is_buffer, offset));
     }
     ResourceEntry* entry = NULL;
     if (!kept) {
@@ -890,12 +909,12 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
             *offset = entry->heap_offset;
             if (is_buffer) g_heaps.stats.buffer_hits++;
             else g_heaps.stats.image_hits++;
-            return 1;
+            return lasting_report(lasting, 0, 1); /* the frame's cache, not the lasting part */
         }
     }
     if (is_buffer) {
         if (*previous_buffer != buffer) { *previous_buffer = buffer; *previous_address = buffer_address(buffer); }
-        if (!*previous_address || start > UINT64_MAX - *previous_address) return 0;
+        if (!*previous_address || start > UINT64_MAX - *previous_address) return lasting_report(lasting, 0, 0);
         range = (VkDeviceAddressRangeEXT){*previous_address + start, size};
         if (k == HEAP_TEXEL) { texel.addressRange = range; info.data.pTexelBuffer = &texel; }
         else info.data.pAddressRange = &range;
@@ -904,7 +923,7 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
     } else {
         if (!vk_descriptor_view_info(in->imageView, &view, chain, sizeof chain)) {
             if (kept) lasting_differs(kept, k); /* a view kept that the registry no longer has */
-            return 0;
+            return lasting_report(lasting, 0, 0);
         }
         image.pView = &view; image.layout = in->imageLayout;
         info.type = k == HEAP_IMAGE ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -912,14 +931,17 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
         g_heaps.stats.image_driver_calls++;
     }
     if (!VK_OK(vkWriteResourceDescriptorsEXT(g_vk.dev, 1, &info,
-            &(VkHostAddressRangeEXT){g_heaps.scratch, (size_t)g_heaps.sizes[k]}))) return 0;
-    if (kept && lasting_same(kept, k)) return lasting_hit(kept, is_buffer, offset);
+            &(VkHostAddressRangeEXT){g_heaps.scratch, (size_t)g_heaps.sizes[k]})))
+        return lasting_report(lasting, 0, 0);
+    if (kept && lasting_same(kept, k))
+        return lasting_report(lasting, 1, lasting_hit(kept, is_buffer, offset));
     if (kept) entry = resource_entry(&key, &(int){0}); /* made again: into a slot of its own, or the frame's */
     if (lasting && lasting_place(k, &key, hash, offset)) {
         g_heaps.stats.resource_bytes += g_heaps.sizes[k];
-        return 1;
+        return lasting_report(lasting, 0, 1); /* placed now, not found */
     }
-    if (!allocate(&g_heaps.resource, slot, g_heaps.sizes[k], g_heaps.alignment[k], offset)) return 0;
+    if (!allocate(&g_heaps.resource, slot, g_heaps.sizes[k], g_heaps.alignment[k], offset))
+        return lasting_report(lasting, 0, 0);
     memcpy(g_heaps.resource.mapped + *offset, g_heaps.scratch, (size_t)g_heaps.sizes[k]);
     if (entry) {
         if (is_buffer) g_heaps.stats.buffer_evictions += entry->object != 0;
@@ -928,7 +950,7 @@ static ResourceEntry* resource_entry(const ResourceEntry* key, int* hit) {
         *entry = key;
     }
     g_heaps.stats.resource_bytes += g_heaps.sizes[k];
-    return 1;
+    return lasting_report(lasting, 0, 1);
 }
 static int sampler_descriptor(u32 slot, VkSampler sampler, u32* offset) {
     if (!sampler) return 0;
@@ -1239,6 +1261,7 @@ static int batchable_buffer(const VkWriteDescriptorSet* write) {
 }
 VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                           u32 cb_addr) {
+    SNX_ZONE(z, "vk descriptor writes");
     HeapLayout* l = find_layout(layout);
     if (!l || !g_heaps.ready || (count && !writes) || count > SNX_VKB_END) return VK_NULL_HANDLE;
     VkDeviceSize words = 1;
@@ -1301,6 +1324,11 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
     } else if (image_arrays) {
         if (!write_array_table(slot, l, table, count, writes)) return VK_NULL_HANDLE;
     } else if (!write_scalar_table(slot, l, table, count, writes)) return VK_NULL_HANDLE;
+    SNX_ZONE_TEXT(z, "%u writes into 1 set, %llu words, %u by address, %s", count, (unsigned long long)words, naddr,
+                  buffer_batches ? "buffer batches" : image_arrays ? "image arrays" : "scalars");
+    SNX_ZONE_VALUE(z, count);
+    SNX_ZONE_END(z);
+    SNX_PLOT("vk pipe desc write words", (double)words);
     g_heaps.stats.tables++;
     g_heaps.stats.table_bytes += words * 4;
     g_heaps.stats.full_layout_bytes += l->full_size;

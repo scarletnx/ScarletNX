@@ -139,6 +139,12 @@ typedef struct KTmem {
 } KTmem;
 
 void kernel_init(void);
+/* emulated_cores_mode's Auto (settings.txt) */
+#define SNX_KERNEL_CORES_AUTO 2
+/* 1 when a guest thread runs only while it holds one of the console's cores: emulated_cores_mode's On, and its Auto for
+   a program that is not an Ounce one (g_ounce), whose eight cores run best without the ordering (main.c's npdm_layout
+   names it as the game starts) */
+int kernel_emulated_cores(void);
 /* memory_fit_mode's measure, as the game starts: what the system can still give the process (available) and what the process
    holds (footprint), when measured says the system told both. The game is told no more than mem_fit_budget's */
 void mem_fit(int measured, u64 available, u64 footprint);

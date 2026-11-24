@@ -820,6 +820,12 @@ msgstr "轻触: 应用、输入、移除或保存. 返回."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Tap: search, sync, forget or change. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: use, add or remove."
 msgstr "轻触: 使用、添加或移除."
 
@@ -834,6 +840,12 @@ msgstr "轻触: 下载或重新获取."
 #, snx-keys
 msgid "Tap: apply, type, remove or save."
 msgstr "轻触: 应用、输入、移除或保存."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: search, sync, forget or change."
+msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1074,6 +1086,12 @@ msgstr "上/下: 行. Enter: 应用、输入、移除或保存. Del: 移除. ESC
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Up/Down: row. Left/Right: change. Enter: search or sync. Del: forget. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: queue."
 msgstr "上/下: 队列."
 
@@ -1276,6 +1294,12 @@ msgstr "十字键: 行. A: 下载或重新获取. B: 返回."
 #, snx-keys
 msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
 msgstr "十字键: 行. A: 应用、输入、移除或保存. X: 移除. B: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row, change. A: search or sync. X: forget. B: back."
+msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1822,6 +1846,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "XCI"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Forget"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -3844,6 +3872,206 @@ msgid "Not saved: %s could not be removed (%s)"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Not nearby"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Nearby"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Waiting to sync"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Connecting"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Ready"
+msgstr "就绪"
+
+#: src/gui/main.c
+msgid "Known"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Known, nearby"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Pro Controller 2 %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Joy-Con 2 (%s) %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ", %d.%02d V"
+msgstr ""
+
+#: src/gui/main.c
+msgid "known: a game with Joy-Con 2 on connects it as it starts, while it is awake, without pairing it, so it stays paired with its console. Enter or Del forgets it, asked first"
+msgstr ""
+
+#: src/gui/main.c
+msgid "waiting to sync, its sync button held: Enter syncs it, and a game with Joy-Con 2 on connects it from then on, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "paired with a console, which it stays paired with: hold its sync button, on its side, to sync it here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ". Serial %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid ". Signal %d dBm"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Joy-Con 2"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mouse scale"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build has no Switch runtime, whose setting it is"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d s left"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Listens 30 s for the Joy-Con 2 nearby, each shown with its state. Hold a controller's sync button, on its side, until its lights run: Enter on it syncs it. Nothing connects or pairs here"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No config folder: controllers cannot be synced here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s does not read"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Joy-Con 2 is Off: games connect no controller until it is On"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search, then hold a controller's sync button: it shows here waiting to sync"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
+msgstr "%s：%s。在此系统上，无论它设为什么，游戏运行都一样，它保持为 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not taken: %s=%s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The games read it as they start: one playing now keeps what it started with"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Search stopped"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A game is running, which connects the controllers itself: Search once it ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No search: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Searching %d s: hold a controller's sync button, then Enter on its row"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forget Pro Controller 2 %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not known: nothing to forget"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not forgotten: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forgotten: Pro Controller 2 %s. Games no longer connect it; it stays paired with its console"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forgotten: Joy-Con 2 (%s) %s. Games no longer connect it; it stays paired with its console"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Paired with a console: hold its sync button, on its side, to sync it here"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not synced: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no config folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Synced: Pro Controller 2 %s. A game with Joy-Con 2 on connects it as it starts, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Synced: Joy-Con 2 (%s) %s. A game with Joy-Con 2 on connects it as it starts, without pairing it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The search stopped: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The search ended: Search again to look for more"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "gamepad_map's \"%s\" is not a control and the button it sends (south:B)"
 msgstr "gamepad_map 的 \"%s\" 不是一个控件加它发出的按键（south:B）"
@@ -3901,11 +4129,6 @@ msgstr "非标准分辨率，实验性。"
 #, c-format
 msgid "%s is not a nickname: %s"
 msgstr "%s 不是有效的昵称：%s"
-
-#: src/gui/main.c
-#, c-format
-msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
-msgstr "%s：%s。在此系统上，无论它设为什么，游戏运行都一样，它保持为 %s"
 
 #: src/gui/main.c
 #, c-format
@@ -4802,10 +5025,6 @@ msgstr "程序异常结束（状态 %d）。"
 #, c-format
 msgid "The run ended with status %d."
 msgstr "运行结束，状态 %d。"
-
-#: src/gui/main.c
-msgid "Ready"
-msgstr "就绪"
 
 #: src/gui/main.c
 #, c-format
@@ -7178,6 +7397,18 @@ msgstr ""
 msgid "in memory while the game runs: a game's Delete Old Caches deletes the old files"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "The code units' cache"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "units/ of the cache folder, every recompile's code units"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "held in memory while ScarletNX runs: deleting the folder frees its room"
+msgstr ""
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr "仅 macOS"
@@ -7287,12 +7518,12 @@ msgid "The instructions a code unit takes, whole functions at a time, when the g
 msgstr "重新编译时一个代码单元包含的指令数，以完整函数为单位：每个单元单独编译，较小的单元一次占用更少内存，手机需要这一点（Android 的分配器在多线程下达到 90000 时会耗尽，iOS 会在达到上限时结束应用）。已编译的游戏在重新编译前保持其单元"
 
 #: src/nx/runtime/settings.txt
-msgid "Unit cache limit"
-msgstr "单元缓存上限"
+msgid "Unit cache ceiling"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
-msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
+msgid "The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 = none held. Nothing is kept on the disk"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -7449,6 +7680,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Unit cache limit"
+#~ msgstr "单元缓存上限"
+
+#~ msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+#~ msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
 
 #~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
 #~ msgstr "按其记录继续在汇总前中断的 edenprobe %s 运行：目前用例 %d 个，崩溃列表中 %d 个"

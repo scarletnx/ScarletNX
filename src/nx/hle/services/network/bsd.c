@@ -14,8 +14,25 @@
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/hle.h"
 #include "nx/memory/own.h"
+#include "nx/runtime/platform/tracy.h"
 #include "hle/services/network/bsd.swipc.inc"
+#include <stdio.h>
 #include <time.h>
+
+/* a socket command's result is a small count or a negative errno. Casting a negative one to u64 would show a huge
+   zone value, so the value carries the errno instead */
+[[maybe_unused]] static u64 net_result_value(int64_t r) { return (u64)(r < 0 ? -r : r); } /* a zone's alone */
+
+/* A guest thread held in a socket wait long enough to matter: one message names the command and the byte count. */
+static void net_blocked(const char* what, u64 ns, int64_t bytes) {
+    char msg[96];
+    int n;
+    if (!snx_tracy_attached() || ns < 1000000ull) return;
+    n = snprintf(msg, sizeof msg, "net %s blocked %llu ms, bytes %lld", what,
+                 (unsigned long long)(ns / 1000000ull), (long long)bytes);
+    /* a value of sizeof msg or more means the text was cut, so send only the bytes that were written */
+    if (n > 0) SNX_MSG(msg, (size_t)n < sizeof msg ? (size_t)n : sizeof msg - 1);
+}
 
 enum {
     BSD_F_GETFD = 1,
@@ -43,7 +60,10 @@ static int reachable(SnxSocket* s, const SnxSockAddr* a) { return snx_room_socke
 /* nifm asks often (some games every frame): the host's state is read again after two seconds. In a room the
    connection is the room's, its address and a /24, as Eden's nifm gives the room's address */
 int network_interface(SnxNetInterface* out) {
-    if (g_settings.airplane_mode) return -SNX_ENETDOWN;
+    if (g_settings.airplane_mode) {
+        SNX_ZONE_T(z_net_if, "hle: net iface", "airplane mode");
+        return -SNX_ENETDOWN;
+    }
     if (g_hle.bsd.room) {
         if (out) {
             memset(out, 0, sizeof *out);
@@ -54,7 +74,10 @@ int network_interface(SnxNetInterface* out) {
         }
         return 0;
     }
-    if (!g_settings.network) return -SNX_ENETDOWN;
+    if (!g_settings.network) {
+        SNX_ZONE_T(z_net_if, "hle: net iface", "network option off");
+        return -SNX_ENETDOWN;
+    }
     pm_lock(&g_host.bsd.iface_lk);
     time_t now = time(NULL);
     if (!g_hle.bsd.iface_when || now - g_hle.bsd.iface_when >= 2 || now < g_hle.bsd.iface_when) {
@@ -63,6 +86,9 @@ int network_interface(SnxNetInterface* out) {
     }
     if (g_hle.bsd.iface_have && out) *out = g_hle.bsd.iface;
     int r = g_hle.bsd.iface_have ? 0 : -SNX_ENETDOWN;
+    if (r) {
+        SNX_ZONE_T(z_net_if, "hle: net iface", "no host interface with a default route");
+    }
     pm_unlock(&g_host.bsd.iface_lk);
     return r;
 }
@@ -297,6 +323,10 @@ static SnxSocket* fd_get_bcast(Bsd* b, i32 fd) {
 static int reply(int64_t r, i32* ret, u32* bsd_errno) {
     *ret = r < 0 ? -1 : (i32)r;
     *bsd_errno = r < 0 ? (u32)-r : 0;
+    /* an error answer carries its errno as the zone's value; Poll's empty set and unimplemented commands answer directly with no zone */
+    if (r < 0) {
+        SNX_ZONE_V(z_net_error, "hle: net error", (u64)-r);
+    }
     R_SUCCEED();
 }
 /* and an address's or an option's length, 0 on failure */
@@ -343,11 +373,16 @@ static int nn_socket_sf_IClient_RegisterClientOunce(SvcObj* self, u64 pid, u32 v
 static int bsd_socket(Bsd* b, i32 gdom_in, i32 gtype_in, i32 proto_in, int exempt, i32* ret, u32* bsd_errno) {
     u32 gdom = (u32)gdom_in, gtype = (u32)gtype_in, proto = (u32)proto_in;
     int dom = domain_in(gdom), type = (int)(gtype & ~(u32)(BSD_SOCK_NONBLOCK | BSD_SOCK_CLOEXEC));
-    if (dom < 0) return reply(-SNX_EAFNOSUPPORT, ret, bsd_errno);
+    if (dom < 0) {
+        SNX_ZONE_T(z_net_sock, "hle: net socket error", "unsupported domain %u", gdom);
+        return reply(-SNX_EAFNOSUPPORT, ret, bsd_errno);
+    }
     /* bsd:u: no raw or seqpacket sockets, except raw ICMP (Eden) */
     if (!b->system && (type == SNX_SOCK_SEQPACKET || type == SNX_SOCK_RAW) &&
-        !(type == SNX_SOCK_RAW && dom == SNX_AF_INET && proto == SNX_IPPROTO_ICMP))
+        !(type == SNX_SOCK_RAW && dom == SNX_AF_INET && proto == SNX_IPPROTO_ICMP)) {
+        SNX_ZONE_T(z_net_sock, "hle: net socket error", "type %u refused for bsd:u", gtype);
         return reply(-SNX_EINVAL, ret, bsd_errno);
+    }
     SnxSocket* s;
     int r = g_hle.bsd.room && dom == SNX_AF_INET && type == SNX_SOCK_DGRAM && (proto == 0 || proto == SNX_IPPROTO_UDP)
                 ? snx_room_socket_open(g_hle.bsd.room, &s, dom, type, (int)proto)
@@ -377,6 +412,7 @@ static int nn_socket_sf_IClient_Select(SvcObj* self, i32 nfds, const nn_socket_s
                                        IpcBuf writefds_out, IpcBuf errorfds_out, i32* ret, u32* bsd_errno) {
     Bsd* b = self->data;
     IpcBuf in[3] = {readfds_in, writefds_in, errorfds_in}, out[3] = {readfds_out, writefds_out, errorfds_out};
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0; /* no clock read when no client can see the timing */
     if (nfds < 0 || nfds > BSD_MAX_FD) return reply(-SNX_EINVAL, ret, bsd_errno);
     SnxPollEntry e[BSD_MAX_FD * 2];
     int which[BSD_MAX_FD], owner[BSD_MAX_FD], n = 0, extra = 0;
@@ -441,6 +477,12 @@ static int nn_socket_sf_IClient_Select(SvcObj* self, i32 nfds, const nn_socket_s
             }
     }
     for (int i = 0; i < n; i++) snx_socket_unref(e[i].socket);
+    if (wait0) {
+        u64 waited = plat_ns() - wait0;
+        SNX_PLOT("net select wait ms", (double)waited / 1e6);
+        net_blocked("select", waited, 0);
+    }
+    SNX_ZONE_TV(z_net_select, "hle: net select", net_result_value(r), "%d descriptors", nfds);
     return reply(r, ret, bsd_errno);
 }
 /* the stack has no sysctl tree: every name is unsupported, with nothing in the old value */
@@ -453,6 +495,7 @@ static int nn_socket_sf_IClient_Poll(SvcObj* self, i32 nfds, i32 timeout, IpcBuf
                                      u32* bsd_errno) {
     Bsd* b = self->data;
     u64 ia = fds_in.addr, is = fds_in.size, oa = fds_out.addr, os = fds_out.size;
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0; /* no clock read when no client can see the timing */
     /* Eden: no entries is -1 with errno 0 */
     if (!nfds) {
         *ret = -1;
@@ -515,6 +558,12 @@ static int nn_socket_sf_IClient_Poll(SvcObj* self, i32 nfds, i32 timeout, IpcBuf
     }
     free(e);
     free(owner);
+    if (wait0) {
+        u64 waited = plat_ns() - wait0;
+        SNX_PLOT("net poll wait ms", (double)waited / 1e6);
+        net_blocked("poll", waited, 0);
+    }
+    SNX_ZONE_TV(z_net_poll, "hle: net poll", net_result_value(r), "%d descriptors, timeout %d", nfds, timeout);
     return reply(r, ret, bsd_errno);
 }
 /* a receive on a socket with a broadcast companion: whichever has a datagram, the socket first; a blocking one
@@ -546,7 +595,7 @@ static int64_t recv_either(SnxSocket* s, SnxSocket* c, void* data, size_t n, int
     return r;
 }
 static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, u32* addrlen) {
-    u64 a = message.addr, n = message.size;
+    u64 a = message.addr, n = message.size, wait0 = snx_tracy_attached() ? plat_ns() : 0;
     SnxSocket* s = fd_get(b, fd, NULL);
     if (!s) return -SNX_EBADF;
     SnxSocket* c = fd_get_bcast(b, fd);
@@ -580,10 +629,17 @@ static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, 
             *addrlen = 0;
     }
     snx_socket_unref(s);
+    if (wait0) {
+        u64 waited = plat_ns() - wait0;
+        SNX_PLOT("net recv wait ms", (double)waited / 1e6);
+        SNX_PLOT("net recv bytes", r > 0 ? (double)r : 0.0);
+        net_blocked("recv", waited, r > 0 ? r : 0);
+    }
+    SNX_ZONE_TV(z_net_recv, "hle: net recv", r > 0 ? (u64)r : 0, "fd %d", fd);
     return r;
 }
 static int64_t do_send(Bsd* b, IpcBuf message, i32 fd, u32 gflags, const SnxSockAddr* to) {
-    u64 a = message.addr, n = message.size;
+    u64 a = message.addr, n = message.size, wait0 = snx_tracy_attached() ? plat_ns() : 0;
     SnxSocket* s = fd_get(b, fd, NULL);
     if (!s) return -SNX_EBADF;
     int64_t r;
@@ -601,6 +657,13 @@ static int64_t do_send(Bsd* b, IpcBuf message, i32 fd, u32 gflags, const SnxSock
              (long long)r);
     }
     snx_socket_unref(s);
+    if (wait0) {
+        u64 waited = plat_ns() - wait0;
+        SNX_PLOT("net send wait ms", (double)waited / 1e6);
+        SNX_PLOT("net send bytes", r > 0 ? (double)r : (double)n);
+        net_blocked("send", waited, r > 0 ? r : (int64_t)n);
+    }
+    SNX_ZONE_TV(z_net_send, "hle: net send", (u64)n, "fd %d, %llu asked", fd, (unsigned long long)n);
     return r;
 }
 static const IpcBuf no_buffer = {0, 0, 0};
@@ -632,11 +695,18 @@ static int nn_socket_sf_IClient_SendTo(SvcObj* self, i32 fd, i32 flags, IpcBuf m
 static int nn_socket_sf_IClient_Accept(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno, u32* addrlen) {
     Bsd* b = self->data;
     BsdFd d;
+    u64 wait0 = snx_tracy_attached() ? plat_ns() : 0;
     SnxSocket* s = fd_get(b, fd, &d);
     if (!s) return reply_len(-SNX_EBADF, 0, ret, bsd_errno, addrlen);
     SnxSocket* n;
     SnxSockAddr peer;
     int r = snx_socket_accept(s, &n, &peer, snx_socket_nonblocking(s)); /* FreeBSD inherits O_NONBLOCK */
+    if (wait0) {
+        u64 waited = plat_ns() - wait0;
+        SNX_PLOT("net accept wait ms", (double)waited / 1e6);
+        net_blocked("accept", waited, 0);
+    }
+    SNX_ZONE_TV(z_net_accept, "hle: net accept", (u64)(r >= 0 ? 1 : 0), "fd %d", fd);
     snx_socket_unref(s);
     if (r) return reply_len(r, 0, ret, bsd_errno, addrlen);
     r = fd_add(b, n, d.flags & (BSD_O_NONBLOCK | BSD_O_NONBLOCK_NX), 0);

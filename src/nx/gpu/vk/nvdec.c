@@ -14,6 +14,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <libavutil/buffer.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
@@ -116,6 +117,12 @@ static void hw_end(HwPic* h) {
 }
 
 static int nvdec_write(const NvdecPic* p, HwPic* hp) {
+    /* Why this picture took its path: a Vulkan Video decode copies planes from an image, a media engine's picture is
+       staged as rows, and a pitch linear surface needs no deswizzle. */
+    SNX_ZONE_TV(z_nvdec, "vk pres nvdec", p->hw ? 1 : p->semi ? 2 : p->pitch_linear ? 3 : 0,
+                "%s", p->hw ? "vulkan video planes" : p->semi ? "media engine rows"
+                                                             : p->pitch_linear ? "pitch linear, no deswizzle"
+                                                                               : "deswizzled CPU planes");
     u32 w = p->w, h = p->h, pairs = (w + 1) / 2, cw = 2 * pairs, ch = (h + 1) / 2;
     u32 ly = (u32)up(p->pitch_y, 16), lc = (u32)up(p->pitch_c, 16); /* the deswizzled rows' pitches */
     u32 up4 = (u32)up(pairs, 4), uv_pitch = up4 * 2;                /* staged U/V rows, interleaved rows */
@@ -124,6 +131,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     /* a Vulkan Video picture's rows go after the surfaces' rows: luma w apart, then chroma cw apart */
     u64 at_hy = at_uv, at_hc = up(at_hy + (u64)w * h, 16);
     u64 used = p->hw ? at_hc + (u64)cw * ch : at_uv + (u64)uv_pitch * ch;
+    SNX_PLOT("vk pres nvdec bytes", (double)used);
     VkBlMove my = {p->pitch_y, p->surf_h, p->bh, 0, 0, h, 0, 1, ly};
     VkBlMove mc = {p->pitch_c, (p->surf_h + 1) / 2, p->bh, 0, 0, ch, 0, 1, lc};
     VkBuffer rows, scratch;
@@ -168,7 +176,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     VkOwnRes* rc = ry ? surface_load(cb, p->chroma, p->ext_c) : NULL;
     int ok = rc != NULL;
     if (ok) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         /* the surfaces as rows, and a CPU picture's NV12 chroma from U and V */
         ok = p->pitch_linear ||
              (vk_bl_move(cb, &my, 0, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 0, rc->buf, 0, scratch, at_c));
@@ -178,17 +186,17 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         }
     }
     if (ok) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         /* the picture's rows over the surfaces' (pitch linear: straight into the surfaces) */
         int pl = p->pitch_linear;
         vk_copy_rows(cb, rows, at_rows, w, pl ? ry->buf : scratch, 0, ly, w, h);
         /* a media engine picture's chroma is staged as rows (semi), the interleaved one is scratch's */
         vk_copy_rows(cb, p->semi ? rows : scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw,
                      ch);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
         if (!pl)
             ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_NVDEC, cb);
     }
     if (ok) {
         vk_own_publish(p->luma, p->ext_y, ry, 0);

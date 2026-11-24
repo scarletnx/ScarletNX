@@ -17,6 +17,7 @@
 #include <android/api-level.h>
 #endif
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
    JIT loader reads (recompiler/llvm/ir.c's host_triple). The version only names the ABI */
@@ -59,7 +60,7 @@ static void usage(void) {
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
     puts("  --KEY=VALUE            A recompile setting, KEY its key with a - for each _: --opt, --llvm-batch,\n"
-         "                         --aot-threads, --unit-cache-gb, --llvm-pass-<pass>=0 (scarletnx\n"
+         "                         --aot-threads, --unit-cache-ceil-mb, --llvm-pass-<pass>=0 (scarletnx\n"
          "                         --settings=recompile lists the keys). The key as written, the older\n"
          "                         spelling, is still read, and said once");
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
@@ -815,7 +816,7 @@ static int make_program(const MakeArgs* a, int index) {
     gen.nro_end = nros.end;
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
-        char *kept = keep_c ? snx_format("%s_build", base) : NULL, *units = NULL;
+        char* kept = keep_c ? snx_format("%s_build", base) : NULL;
         llvm.output = code;
         llvm.triple = ios ? SNX_IOS_TRIPLE : NULL;
         llvm.opt = compile.opt[0];
@@ -824,6 +825,7 @@ static int make_program(const MakeArgs* a, int index) {
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
         snx_ir_abi_contract(g_settings.abi_contract);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
+        snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
         old_branch_profile();
         snx_ir_branch_profile(g_settings.ir_branch_profile);
         llvm.tuning = snx_llvm_tuning(llvm.opt, error, sizeof error);
@@ -840,24 +842,30 @@ static int make_program(const MakeArgs* a, int index) {
         if (layout && !snx_is_file(layout)) {
             snx_error("--layout %s: no such file", layout);
             free(kept);
-            free(units);
             goto done;
         }
         if (layout) llvm.layout = read_addresses(layout, 1, &llvm.layout_count);
-        {
-            /* the user's cache folder, or a portable copy's: every game's recompile shares it */
+        { /* units/ of the cache folder, where an older version kept the code units: never read now, said with its room */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);
-            units = folder ? snx_path_join(folder, "units") : NULL;
-            free(folder);
-            if (!units) {
-                snx_error(
-                    "unit cache: HOME is not set (APPDATA on Windows), so there is no cache folder: the game is not "
-                    "recompiled");
-                free(kept);
-                goto done;
+            char* units = folder ? snx_path_join(folder, "units") : NULL;
+            if (units && snx_is_dir(units) && !compile.quiet) {
+                char** names = NULL;
+                size_t count = 0;
+                SnxU64 bytes = 0;
+                if (!snx_list_dir(units, &names, &count)) {
+                    for (size_t n = 0; n < count; ++n) {
+                        char* path = snx_path_join(units, names[n]);
+                        bytes += snx_file_size(path);
+                        free(path);
+                    }
+                    snx_free_strings(names, count);
+                }
+                printf("unit cache: %s holds %.1f MB of an older version's code units, which nothing reads now: "
+                       "deleting it frees that room\n",
+                       units, (double)bytes / 1e6);
             }
-            llvm.unit_cache = units;
-            llvm.unit_cache_limit = (SnxU64)g_settings.unit_cache_limit * 1000000000ull;
+            free(units);
+            free(folder);
         }
         i = kept && (snx_is_link(kept) || snx_mkdirs(kept));
         if (i) snx_error("cannot save the generated code in %s", kept);
@@ -871,7 +879,6 @@ static int make_program(const MakeArgs* a, int index) {
             free(folder);
         }
         free(kept);
-        free(units);
         if (i) goto done;
     }
     if (ios) { /* the iOS app is the runtime: only the code is made here */

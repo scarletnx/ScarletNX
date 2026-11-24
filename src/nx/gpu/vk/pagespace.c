@@ -63,6 +63,7 @@
 static u64 g_pages_system; /* granules that took system memory, the GPU's having none */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define PG_REGION_SHIFT 30
 #define PG_REGION       (1ull << PG_REGION_SHIFT)
@@ -136,6 +137,9 @@ typedef struct PgRegion {
 } PgRegion;
 
 enum { PG_NO_LONG, PG_NO_RUN, PG_NO_REGION, PG_NO_ALIGN, PG_NO_TRACK, PG_NO_OWNED, PG_NO_HOT, PG_NO_MEMORY, PG_NO_N };
+/* why a range could not be served, for the zone's text */
+static const char* const k_refuse[PG_NO_N] = {"too long", "not one run", "across a region", "alignment",
+                                              "no tracking", "owned pages", "changed after a read", "no memory"};
 /* why a range to be written in place was refused, beside those */
 enum { PG_WNO_ASK, PG_WNO_CPU, PG_WNO_OWNER, PG_WNO_N };
 /* a range of a region's bytes a draw or a dispatch read or wrote in place, by guest address, and which one (the count
@@ -188,7 +192,8 @@ int vk_pages_on(void) {
     g_pages.on = 0;
     if (!g_settings.buffer_pages) return 0;
     u64 space = g_vk.props.limits.sparseAddressSpaceSize;
-    const char* why = vk_uma()                                      ? "memory shared with the CPU: read in place"
+    /* the hybrid (vk_uma_storage_copied) copies what the GPU only reads, as the copies' path does: by page here */
+    const char* why = vk_uma() && !vk_uma_storage_copied()          ? "memory shared with the CPU: read in place"
                       : vk_written_since(g_mem + AS_BASE, 1, 0) < 0 ? "no write tracking"
                                                                     : NULL;
     if (why) {
@@ -225,6 +230,8 @@ int vk_pages_on(void) {
 }
 
 static int refuse(u32 why) {
+    if (why >= PG_NO_N) why = 0;
+    SNX_ZONE_T(z, "vk mem page refuse", "%s", k_refuse[why]);
     g_pages.stats.refused[why]++;
     return 0;
 }
@@ -479,7 +486,7 @@ static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
         if (!cb) {
             vk_render_end(); /* copies happen outside rendering passes */
             cb = vk_cmd();
-            vk_all_barrier(cb);
+            vk_all_barrier_by(VK_BAR_PAGESPACE, cb);
         }
         const VkBufferCopy all = {0, (u64)(old->g0 - lo) << PG_SHIFT, (u64)old->n << PG_SHIFT};
         rec_CmdCopyBuffer(cb, old->buf, made.buf, 1, &all);
@@ -489,7 +496,7 @@ static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
         g = last;
     }
     if (cb) {
-        vk_all_barrier(cb);
+        vk_all_barrier_by(VK_BAR_PAGESPACE, cb);
         made.late = sub;
         g_pages.stats.joins++;
     }
@@ -530,7 +537,7 @@ static void order_begin(void) {
     if (g_pages.order.sub == sub) return;
     g_pages.order.sub = sub;
     order_reset();
-    vk_all_barrier(vk_cmd_upload(0));
+    vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd_upload(0));
 }
 static int order_meets(const PgUse* u, u32 n, int all, u64 lo, u64 hi, u64 work) {
     if (all) return 1;
@@ -563,7 +570,7 @@ static void order_use(u64 lo, u64 hi, int write, int ordered) {
     }
     if (wait) {
         vk_render_end();
-        vk_all_barrier(vk_cmd());
+        vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd());
         order_reset();
         g_pages.stats.barriers++;
     }
@@ -1018,8 +1025,13 @@ void vk_pages_frame(void) {
    granule, which on a GPU of 2 GB held 150 to 190 MB while a racing game's textures were evicted for room every
    few frames. The bytes let go */
 u64 vk_pages_reclaim(u32 before, u64 want) {
+    SNX_ZONE(z, "vk mem pages reclaim");
     u64 freed = 0;
-    if (g_pages.on <= 0 || !g_pages.bound || g_pages.slabs) return 0;
+    if (g_pages.on <= 0 || !g_pages.bound || g_pages.slabs) {
+        SNX_ZONE_TEXT(z, "%s", "off, nothing bound or placed");
+        SNX_ZONE_VALUE(z, 0);
+        return 0;
+    }
     for (u32 rg = 0; rg < g_pages.regions && freed < want; rg++) {
         PgRegion* r = g_pages.region[rg];
         if (!r) continue;
@@ -1031,6 +1043,8 @@ u64 vk_pages_reclaim(u32 before, u64 want) {
             if (g_pages.bound < had) freed += PG_SIZE;
         }
     }
+    SNX_ZONE_TEXT(z, "%s", freed ? "idle granules unbound, memory given back" : "no granule old enough");
+    SNX_ZONE_VALUE(z, freed);
     return freed;
 }
 

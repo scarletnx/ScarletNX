@@ -567,6 +567,61 @@ def main():
         for leak in ('someone', 'f90007ff', '58cca', '00000000ca8c0500', 'ca8c0500'):
             check(leak not in out, f'{leak} copied into the summary')
 
+    # an iOS day log holds the launcher's starts one after another (gui/apple.m): the summary is of the last one that ran
+    # a game or failed, whatever the ones before it did, and lists how those ended
+    def start(pid, text):
+        return (
+            f'\n===== ScarletNX starts, pid {pid}, Sat Nov 21 12:40:55 2026\ndevice:\nsystem: iOS Version 27.2\n{text}'
+        )
+
+    def two_starts():
+        return start(100, 'FATAL: first\n') + start(200, HEADER + SVC_BREAK)
+
+    last = scan(two_starts())
+    check(last['outcome'] == 'svcBreak' and last['signature'] == r['signature'], f'last start: {last["outcome"]}')
+    check(last['starts'] == 2, f'starts: {last["starts"]}')
+    check(last['earlier_starts'] == ['fatal first'], f'earlier starts: {last["earlier_starts"]}')
+    check(
+        last['title'] == 'Some Game' and len([c for c in last['ipc'] if c['kind'] == 'undeclared']) == 1,
+        'the last start alone is counted',
+    )
+    md = run(['-', '--format', 'markdown'], two_starts().encode())
+    check('**Earlier starts:** ended `fatal first`, of 2 in this log' in md, f'markdown of two starts:\n{md}')
+
+    # the app was opened again to share the log: the last start that ran stands, the same summary
+    shared = scan(two_starts() + start(300, 'perf: 60 frames a second\n'))
+    check(
+        shared['signature'] == last['signature']
+        and shared['starts'] == 3
+        and shared['earlier_starts'] == ['fatal first'],
+        f'a start that only opened the launcher: {shared["signature"]} of {shared["starts"]}',
+    )
+    # only the launcher was opened, after a start that ran
+    check(scan(start(100, 'FATAL: a\n') + start(200, 'perf: 60\n'))['outcome'] == 'fatal', 'nothing ran after a fatal')
+
+    # the last start ended well: no failure, though an earlier one had one
+    fine = scan(start(100, 'FATAL: first\n') + start(200, HEADER))
+    check(
+        fine['outcome'] == 'no failure logged'
+        and fine['signature'] is None
+        and fine['earlier_starts'] == ['fatal first'],
+        f'a start that ended well: {fine["outcome"]}',
+    )
+    # several that ran, and more earlier starts than the summary lists: the last SNX_LOGSCAN_STARTS
+    many = scan(''.join(start(100 + i, f'FATAL: run {n}\n') for i, n in enumerate('abcdefghij')) + start(200, HEADER))
+    check(
+        many['starts'] == 11 and many['earlier_starts'] == [f'fatal run {n}' for n in 'cdefghij'],
+        f'{many["earlier_starts"]}',
+    )
+    # a log without starts says none, and a line that only looks like one starts nothing
+    check(scan(SVC_BREAK)['starts'] == 0 and scan(SVC_BREAK)['earlier_starts'] == [], 'no start lines')
+    fake = scan(HEADER + '[game] ===== ScarletNX starts, pid 7, then FATAL\nFATAL: whole\n')
+    check(fake['starts'] == 0 and fake['signature'] == 'fatal whole', f"a line of the game's: {fake['starts']}")
+    check(
+        scan(HEADER + '===== ScarletNX starts, pid , x\nFATAL: whole\n')['starts'] == 0,
+        'a start line without its pid is none',
+    )
+
     # invalid UTF-8 as U+FFFD: the JSON stays readable
     bad = scan(HEADER.encode() + b'[game] caf\xe9 \xff\n')
     check(bad['game_output'][-1] == 'caf\ufffd \ufffd', f'invalid UTF-8: {bad["game_output"]}')

@@ -1,0 +1,5 @@
+# CMC—Complement Carry Flag -- override
+# Erratum E-13 (vibe86's): the Operation is 'EFLAGS.CF[bit 0] := NOT EFLAGS.CF[bit 0];' in 093, the bit numbered in
+# words; it is CF := NOT CF (the Description's 'complements the CF flag').
+@operation
+CF := NOT CF;

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/ctrl_applet.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
@@ -102,7 +104,7 @@ static int entry_rows(int e) {
     return n;
 }
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
-enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
+enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_ASSIGN, P_BACK, P_COUNT }; /* the gamepads' */
 /* the controls page's items */
 enum {
     C_SHOW,
@@ -137,6 +139,7 @@ static const char* const PADS[P_COUNT] = {SNX_GAMEPAD_PLAYERS,
                                           "gamepad_rumble",
                                           "gamepad_background",
                                           SNX_GAMEPAD_MAP,
+                                          "Assign players",
                                           "Back"};
 /* F1's page: the runtime's keys as set (hotkeys.h; backend/sdl3.c's hotkey and menu_event) and the game's buttons on
    the keyboard (its keymap), a row each with the icon the launcher's F1 box gives what it does (src/gui/main.c's
@@ -155,7 +158,7 @@ static const struct {
             {GUI_ICON_SAVE, HOTKEY_SAVE_STATE, NULL, "save to the slot"},
             {GUI_ICON_ROTATE_CCW, HOTKEY_LOAD_STATE, NULL, "load the slot"},
             {GUI_ICON_LAYERS, HOTKEY_NEXT_SLOT, NULL, "the next slot"},
-            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy, 60 s"}, /* a build with SNX_TRACY has its key */
+            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy capture"}, /* a build with SNX_TRACY has its key */
             {GUI_ICON_PLAY, HOTKEY_PAUSE, NULL, "pause, resume"},
             {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
             {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
@@ -854,7 +857,9 @@ static int act(int i, int step) {
         page = PAGE_ASK;
         focus = 1; /* Cancel */
         top = 0;
-    } else if (page == PAGE_PADS && i == P_MAP)
+    } else if (page == PAGE_PADS && i == P_ASSIGN)
+        return OVERLAY_CONTROLLERS; /* the controller applet's dialog, the game paused */
+    else if (page == PAGE_PADS && i == P_MAP)
         map_open();
     else /* Back */
         overlay_back();
@@ -1109,7 +1114,7 @@ static struct {
     } loading;
     /* the settings' notice (overlay_settings_notice) until the game's first frame takes it, under notice_lock */
     struct {
-        char game[1024], global[1024];
+        char game[1024], global[1024], kind[256];
         _Atomic int waiting; /* given, not yet taken: the present reads it unlocked */
     } settings;
 } g_overlay
@@ -1118,11 +1123,12 @@ static struct {
 #endif
 ;
 enum { LOADING_NONE, LOADING_SHOWN, LOADING_LOADED };
-void overlay_settings_notice(const char* game, const char* global) {
+void overlay_settings_notice(const char* game, const char* global, const char* kind) {
     pm_lock(&notice_lock);
     snprintf(g_overlay.settings.game, sizeof g_overlay.settings.game, "%s", game);
     snprintf(g_overlay.settings.global, sizeof g_overlay.settings.global, "%s", global);
-    atomic_store_explicit(&g_overlay.settings.waiting, game[0] || global[0], memory_order_release);
+    snprintf(g_overlay.settings.kind, sizeof g_overlay.settings.kind, "%s", kind);
+    atomic_store_explicit(&g_overlay.settings.waiting, game[0] || global[0] || kind[0], memory_order_release);
     pm_unlock(&notice_lock);
 }
 int overlay_settings_waiting(void) { return atomic_load_explicit(&g_overlay.settings.waiting, memory_order_relaxed); }
@@ -1155,32 +1161,42 @@ static int keys_in(const char* list) {
     for (const char* next; *list; list = next, ++n) key_at(list, &next);
     return n;
 }
-int overlay_settings_lines(const char* game, const char* global, int cols, unsigned icon[OVERLAY_SETTINGS_LINES],
+int overlay_settings_lines(const char* game, const char* global, const char* kind, int cols,
+                           unsigned icon[OVERLAY_SETTINGS_LINES],
                            char text[OVERLAY_SETTINGS_LINES][OVERLAY_COLS_MAX + 1]) {
-    const char* lists[2] = {game, global};
-    const unsigned icons[2] = {GUI_ICON_GAMEPAD_2, GUI_ICON_GLOBE};
+    const char* lists[3] = {game, global, kind};
+    const unsigned icons[3] = {GUI_ICON_GAMEPAD_2, GUI_ICON_GLOBE, GUI_ICON_INFO};
+    /* what the kind's keys are, after them on its last line: no file nor command line gave them */
+    const char* const after[3] = {"", "", ", for this kind of game"};
     int n = 0;
     if (cols > OVERLAY_COLS_MAX) cols = OVERLAY_COLS_MAX;
-    for (int k = 0; k < 2; ++k) {
+    for (int k = 0; k < 3; ++k) {
         const char *at = lists[k], *last = at;
-        int room = OVERLAY_SETTINGS_LINES - n - (!k && global[0]), took = 0;
+        int later = 0, took = 0, first = n;
+        for (int j = k + 1; j < 3; ++j) later += lists[j][0] != 0; /* a line kept for each list after it */
+        int room = OVERLAY_SETTINGS_LINES - n - later, width = cols - (int)strlen(after[k]);
+        if (width < 1) width = cols; /* a line too narrow for the words after the keys: its keys, the words cut */
         for (; *at && room > 0; --room, ++n) {
             last = at;
-            took = line_keys(at, -1, cols, text[n]);
+            took = line_keys(at, -1, width, text[n]);
             icon[n] = icons[k];
             for (int i = 0; i < took; ++i) key_at(at, &at);
         }
-        if (!*at) continue;
-        /* keys left: the last line says how many, as many of its own keys left out as that takes */
-        int left = keys_in(at);
-        for (int keep = took; keep >= 0; --keep) {
-            char more[24];
-            snprintf(more, sizeof more, "+%d more", left + took - keep);
-            line_keys(last, keep, cols, text[n - 1]);
+        if (*at) { /* keys left: the last line says how many, as many of its own keys left out as that takes */
+            int left = keys_in(at);
+            for (int keep = took; keep >= 0; --keep) {
+                char more[24];
+                snprintf(more, sizeof more, "+%d more", left + took - keep);
+                line_keys(last, keep, width, text[n - 1]);
+                size_t used = strlen(text[n - 1]);
+                if (keep && used + 2 + strlen(more) > (size_t)width) continue;
+                snprintf(text[n - 1] + used, (size_t)width + 1 - used, "%s%s", used ? ", " : "", more);
+                break;
+            }
+        }
+        if (n > first && after[k][0]) {
             size_t used = strlen(text[n - 1]);
-            if (keep && used + 2 + strlen(more) > (size_t)cols) continue;
-            snprintf(text[n - 1] + used, (size_t)cols + 1 - used, "%s%s", used ? ", " : "", more);
-            break;
+            if (used < (size_t)cols) snprintf(text[n - 1] + used, (size_t)cols + 1 - used, "%s", after[k]);
         }
     }
     return n;
@@ -1191,7 +1207,8 @@ void overlay_settings_start(u64 now_ns) {
     int n = 0;
     pm_lock(&notice_lock);
     if (atomic_load_explicit(&g_overlay.settings.waiting, memory_order_acquire))
-        n = overlay_settings_lines(g_overlay.settings.game, g_overlay.settings.global, OVERLAY_COLS_MAX, icon, text);
+        n = overlay_settings_lines(g_overlay.settings.game, g_overlay.settings.global, g_overlay.settings.kind,
+                                   OVERLAY_COLS_MAX, icon, text);
     atomic_store_explicit(&g_overlay.settings.waiting, 0, memory_order_relaxed);
     pm_unlock(&notice_lock);
     for (int i = 0; i < n; ++i) {
@@ -2023,6 +2040,7 @@ static float toast_width(int i, float cw) {
 static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, int span[OVERLAY_TOASTS + 1]) {
     int px, py, s, i, right = 0;
     float cw, ch, x, y, w = 0, h;
+    SNX_ZONE_V(z_toast, "plat overlay toast lay", (u64)ntoasts);
     overlay_place(sw, sh, &px, &py, &s);
     s = stats_scale(s);
     cw = 8.0f * (float)s;
@@ -2117,6 +2135,7 @@ static int watched_same(void) {
 }
 static void menu_lay(int sw, int sh, const MenuKey* key) {
     static DialogRows rows_of; /* the renderer's */
+    SNX_ZONE_TV(z_menu, "plat overlay menu lay", (u64)key->what, "dialog %d", (int)key->what);
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     SnxUiList l = {g_menu.q, 0, MENU_QUADS};
     Dialog d;
@@ -2171,6 +2190,8 @@ static void loading_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
 }
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
+    int before = l->n; /* the list's quads before this overlay's, so the plot counts only the overlay's own */
+    SNX_ZONE(z_draw, "plat overlay draw");
     if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
         pm_lock(&notice_lock);
         if (notice[0]) overlay_toast(notice_icon, notice, now_ns);
@@ -2182,6 +2203,8 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
         map_draw(l, sw, sh);
         g_menu.laid = 0;
+        SNX_ZONE_VALUE(z_draw, 3); /* button map */
+        SNX_PLOT("plat overlay quads", (double)(l->n - before));
         return;
     }
     memset(&key, 0, sizeof key);
@@ -2190,6 +2213,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     key.what = atomic_load_explicit(&shown, memory_order_relaxed)                ? MENU_PAGE
                : atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed) ? MENU_KB
                                                                                  : MENU_NONE;
+    SNX_ZONE_VALUE(z_draw, key.what); /* 0: toasts only, 1: menu, 2: keyboard, 3: map */
     key.changes = atomic_load_explicit(&g_changes, memory_order_acquire);
     if (key.what != MENU_NONE) {
         key.hotkeys = hotkeys_version();
@@ -2201,6 +2225,12 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
     }
     if (overlay_loading_shown()) loading_draw(l, sw, sh, now_ns);
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) &&
+        ctrl_dialog_shown()) { /* the controller applet's, under the menu */
+        int px, py, scale;
+        overlay_place(sw, sh, &px, &py, &scale);
+        ctrl_dialog_draw(l, sw, sh, scale);
+    }
     toasts_drop(now_ns);
     if (ntoasts) {
         int percent = overlay_display_percent(), first = l->n, i;
@@ -2223,6 +2253,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         for (i = 0; i < ntoasts; ++i) /* as one fades: its quads the same, their alpha moving; whole, no span */
             ui_fade_set(first + g_toast.span[i], first + g_toast.span[i + 1], (unsigned)overlay_toast_alpha(i, now_ns));
     }
+    SNX_PLOT("plat overlay quads", (double)(l->n - before));
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;

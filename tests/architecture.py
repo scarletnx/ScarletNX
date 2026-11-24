@@ -282,20 +282,41 @@ def check_window_pixels(repo):
 DYNAMIC_DESCRIPTOR = re.compile(r'\bVK_DESCRIPTOR_TYPE_(UNIFORM|STORAGE)_BUFFER_DYNAMIC\b')
 
 
+# the dynamic descriptors of src/nx that follow cb_dynamic.c's vk_cb_dynamic_choose, which takes no slot on Android,
+# where Turnip runs (#2780): the type it gives a slot (cb_dynamic.h), the pool's room for them (pipeline.c) and the bind
+# that gives their offsets (render.c), as many as each has
+DYNAMIC_DESCRIPTOR_CHOSEN = {
+    'src/nx/gpu/vk/cb_dynamic.h': 1,
+    'src/nx/gpu/vk/pipeline.c': 1,
+    'src/nx/gpu/vk/render.c': 1,
+}
+# the choice's rule for Android, without which those are dynamic on Turnip too
+DYNAMIC_DESCRIPTOR_ANDROID = re.compile(
+    r'#if defined\(__ANDROID__\)\s*(?:/\*.*?\*/\s*)?if \(!off\)\s*off = "off on Android', re.S
+)
+
+
 def check_dynamic_descriptors(repo):
     """no descriptor of src/nx is a dynamic buffer: the NX runtime gives Turnip's reserved descriptor set back as a fifth
     one (gpu_driver_load.c's turnip_sets), and that set is where Turnip keeps dynamic buffers, which then read as zeros.
-    A switch's case naming the type, as a recorder copying any descriptor write does, is no use of it. What was seen,
-    beside the other drivers' quirks: docs/layers/gpu/driver-quirks.md"""
+    A switch's case naming the type, as a recorder copying any descriptor write does, is no use of it; nor are the
+    constant buffers' DYNAMIC_DESCRIPTOR_CHOSEN while cb_dynamic.c chooses none on Android. What was seen, beside the
+    other drivers' quirks: docs/layers/gpu/driver-quirks.md"""
     errors = []
+    chosen = 0
     for path in sorted((repo / 'src/nx').rglob('*')):
         if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc'}:
             continue
         source = without_comments(path.read_text(encoding='utf-8', errors='replace'))
         shown = path.relative_to(repo).as_posix()
+        allowed = DYNAMIC_DESCRIPTOR_CHOSEN.get(shown, 0)
         for match in DYNAMIC_DESCRIPTOR.finditer(source):
             line_start = source.rfind('\n', 0, match.start()) + 1
             if re.match(r'\s*case\s*$', source[line_start : match.start()]):
+                continue
+            if allowed:
+                allowed -= 1
+                chosen += 1
                 continue
             line = source.count('\n', 0, match.start()) + 1
             errors.append(
@@ -304,6 +325,13 @@ def check_dynamic_descriptors(repo):
                 'buffer and give the shader its offset (ui.c and ui.vert do it with a push constant; '
                 'docs/layers/gpu/driver-quirks.md#turnip)'
             )
+    choose = repo / 'src/nx/gpu/vk/cb_dynamic.c'
+    if chosen and not (choose.is_file() and DYNAMIC_DESCRIPTOR_ANDROID.search(choose.read_text(encoding='utf-8'))):
+        errors.append(
+            'src/nx/gpu/vk/cb_dynamic.c: vk_cb_dynamic_choose takes dynamic slots on Android: Turnip keeps dynamic '
+            "buffers in the descriptor set the runtime takes back for a fifth (gpu_driver_load.c's turnip_sets), so "
+            'they read as zeros there. Keep its #if defined(__ANDROID__) that sets off (#2780)'
+        )
     return errors
 
 

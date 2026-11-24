@@ -9,7 +9,8 @@ where from and how to update them). Strict C23 with no dependency, built and run
 
 ```sh
 sailgen --extract ROOTS -o OUT INPUT...
-sailgen --generate ROOTS --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
+sailgen --generate ROOTS --backend bits.h --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT...
+        [--overlay FILE]...
 ```
 
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
@@ -24,7 +25,8 @@ clause that is no root and stays unread); one an earlier clause covers whole and
 overlay's definitions take the place of the inputs' of the same name: a system's fixups (`nx.sail`, `arm.sail`). With
 `--profile`, a feature the profile names in none of its `feature` lines is one no guest has, and a root its `since
 VERSION ROOT...` lines name (`a32.profile`) is tried only where the back end's `sg_ArchVersion` is that version or
-later. The back end's files are copied at the top of the output in their order: `core.h`, then a machine's
+later. The back end's files are copied at the top of the output in their order: `bits.h` (the values known while it
+recompiles, which every back end shares), `core.h`, then a machine's
 (`llvm.h` for A64, which the back end's `sg_emit` wraps the dispatcher with and
 `src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16` and `sg_emit_a32`,
 which `src/common/cpu/arm/llvm_thumb.inc` includes).
@@ -98,7 +100,7 @@ in a loop from 1, or leaves the loop with an element's value rather than the vec
 as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
 emitter's (`sailgen_lanes` holds each outcome).
 
-## The back end (`core.h`, then `llvm.h` or `llvm_arm.h`)
+## The back end (`bits.h`, `core.h`, then `llvm.h` or `llvm_arm.h`)
 
 `llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared
 functions sailgen does not inline, and the bit map: a DYN bits value is, until something computes with it, which
@@ -306,3 +308,220 @@ sailgen writes is compiled with. `eval.h` runs the same Sail on values, with an 
 run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3's 256 truth tables whole, and each
 fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
 shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.
+
+## The x86-64 back end
+
+A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived when sailgen
+runs from the pseudocode of Intel's manual, so the recompiler pays for choosing instructions at build time and does
+little more than write their bytes at run time.
+
+### The SDM's pages (`--sdm`)
+
+```sh
+pdftotext -layout 325383-093US.pdf sdm.txt
+sailgen --sdm sdm.txt -o sdm.pages [--overlay OVERRIDE.sdm]...
+```
+
+The manual (Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, order number 325383) is not kept
+in the tree. `sdm.c` cuts `pdftotext -layout`'s text of it into its
+instruction pages, each the manual's opcode table, operand encoding table, Operation section and Flags Affected
+section, verbatim apart from the page furniture (running footers, form feeds) and pdftotext's column artefacts (a row
+whose operands a footnote's superscript pushed onto the line above, a footnote's mark after an operand). The format
+is vibe86's (its `tools/sdm/extract.py`, which this ports, gives the same 806 pages of 093US byte for byte), with a
+sixth column for the tables that have one: the CPUID feature flag (`BMI1`, `BMI2`, `LZCNT`). Where the manual is
+wrong, or can't be read as written, an override (a page of only the sections it replaces, `# NAME—Title` first)
+takes their place, so the extracted pages stay the manual's own words and every fix is a file that says why.
+`tests/sailgen/sdm_fixture.txt` is a page written in the manual's layout for the test, `sailgen_sdm`.
+
+### Instruction selection (`--isel`)
+
+```sh
+sailgen --isel sdm.pages --ops tools/sailgen/x64.ops -o x64_isel.inc [--report x64_isel.report]
+```
+
+The back end's primitives (`x64.ops`: `add`, `subs`, `lslv`, `clz`, `csel`... at 32 and 64 bits) are written in the
+SDM's own notation, following the Arm ARM's definitions (AddWithCarry, ShiftReg's `UInt(operand2) MOD datasize`,
+CountLeadingZeroBits), and `isel.c` reads both them and every general-purpose form of the manual (an opcode table's row
+valid in 64-bit mode, of registers, r/m used as a register and immediates) with one parser (`sdm_code.c`, the port of
+vibe86's `tools/ucc/sdm.py`) and evaluates both to terms (`term.c`). A form is selected for a primitive where some binding
+of the primitive's operands to the form's makes their terms the same: the result in the register the form writes, and
+each of Arm's flags the primitive gives one of Intel's flags or its negation. Arm's conditions (`cond` lines) are then
+matched with Intel's condition codes, whose predicates are SETcc's rows ('Set byte if above (CF=0 and ZF=0).'), on the
+flags each selected flag-setting form leaves. Nothing about any instruction is written in sailgen; what it knows is
+the notation, and these, each a sentence of the manuals:
+
+- in 64-bit mode a 32-bit register write zero extends to the whole register, an 8- or 16-bit one leaves the rest
+  (Intel Vol. 1, 3.4.1.1);
+- an immediate narrower than the operand size is sign extended to it (Vol. 2A, 2.2.1.5);
+- the flags 'set according to the result' (Vol. 1, 3.4.3.1, and Appendix A): CF where the unsigned result doesn't fit
+  the destination, OF where the signed one doesn't, SF its top bit, ZF whether it is zero, PF the parity of its low
+  byte; a Flags Affected sentence it can't read leaves the flags it names undefined, and the others too unless every
+  sentence was read (nothing is taken as unaffected that the text doesn't say is);
+- `ZeroExtend(x)` and `SignExtend(x)` extend to the operand size; a division or a product is signed where a comment on
+  its line says so (SAR's 'Signed divide, rounding toward negative infinity', IMUL's 'Signed multiplication').
+
+**Evaluation.** Each form is evaluated once, with its operands, the general-purpose registers (with their AL, AH, AX,
+EAX views), the six status flags and a cc form's condition as variables; an `IF` on a value known then (the operand
+size, the mnemonic in 'instruction is SAL or SHL', 64-bit mode) takes one branch, else both, merged by choices. A
+`WHILE (n != 0)` whose body counts n down by one and steps each other name it sets by a shift or a rotation of itself by
+one (SHL's `tempDEST := tempDEST * 2`) is that shift by n; another loop is unrolled while its condition is decided, and
+as nested choices where it is not (LZCNT's), up to 140 steps. A form whose page can't be read so (prose, memory, a
+helper the notation doesn't define) is reported with why and not selected.
+
+**Terms.** `term.c` keeps terms hash-consed in a canonical form, so two ways of writing one function are one index:
+additions, subtractions, negations and NOT are linear forms modulo 2^w; AND, OR and XOR flat and sorted; extractions
+pushed into what they extract from; integers (UInt, SInt and their sums and products) exact, with the range of their
+value, so that a comparison of one is decided by its range or written as one canonical `L >= 0`. The identity that makes
+the two manuals' flags meet is `UInt(L modulo 2^w) = L` exactly when L is in [0, 2^w) (and SInt's): Arm's AddWithCarry
+gives C as `UInt(result) != unsigned_sum`, Intel's CF is the unsigned result not fitting the destination, and both
+become one comparison of the operands, which is how the selection finds that SUBS's C is the negation of SUB's CF,
+SBCS's carry in the negation of SBB's (`CF=NOT carry`), and HI the condition code A. A pair of terms the identities miss
+compares unequal: that costs a selection, never makes a wrong one.
+
+A primitive may declare what the recompiler makes hold (`ASSUME`), so a form that faults is selected where it faults
+exactly where that fails (UDIV's DIV: the divisor 0); its outputs are compared where it holds (a choice whose
+condition it decides takes that way). Integer division is exact quotient and remainder terms with ranges, so DIV's
+'quotient doesn't fit' folds away with RDX zeroed, and a truncated signed quotient is past the signed range exactly
+for the most negative value over -1 (an identity, which IDIV's fault becomes). An input may be a function of
+another (`hi H:A`, IDIV's RDX: the high half of A's sign extension). Ranges past 128 bits are unknown and decide no
+comparison.
+
+**What it selects** (`--report` lists every candidate, and every form it couldn't read): ADD, SUB, AND, OR, XOR,
+NOT, NEG, ANDN (BIC), ADC and SBB with their flags, CMP and TEST, IMUL and MUL (MUL, UMULH and SMULH through RDX), SHL,
+SHR, SAR and ROR by an immediate and by CL (x86's count mask is Arm's `MOD datasize`), SHLX, SHRX, SARX and RORX, LZCNT
+(CLZ), TZCNT, BSWAP (REV), MOVZX and MOVSX(D), MOV of registers and immediates (a 32-bit MOV for a 64-bit constant below
+2^32: its zero extension is derived), CMOVcc (CSEL) and SETcc on a zeroed register (CSET), DIV (UDIV) with RDX zeroed and IDIV (SDIV), each with the bits of an
+input the form reads (an input the form reads only the low bits of may hold anything above them), whether its result is
+zero extended, the immediate it fits (`imm8` sign extended), the flags it writes and Arm's conditions as condition codes.
+
+**Errata.** A selection is only as right as its page: read as written, CDQ's `EDX := SignExtend(EAX)` was taken for a
+zero extension into EDX. `tools/sailgen/sdm/README.md` lists the errata, vibe86's (E-*n*, its `docs/sdm-errata.md`) and
+those found here (S-*n*: the rotate page runs RCL's, RCR's, ROL's and ROR's code one after another, its ROR loop reads
+the count's bit, a superscript is lost), and which override or reading handles each.
+
+**The output** (`x64_isel.inc`) is, for each selected form, an encoder whose constant bytes sailgen folded (prefixes,
+REX's W, the opcode, ModRM's mod and /digit; the registers' bits and the immediate are its arguments), and for each
+primitive at each width its candidates, cheapest first (no register zeroed before it, no fixed register, no result tied
+to an input, a feature the host may have first): the first whose CPUID feature the host has and whose immediate fits is
+the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--isel` when `SNX_SAIL_X64` is on, from the
+PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
+few pages in the manual's notation written for the test (`sailgen_isel`).
+
+### At run time (`x64.h`, `x64_a64.h`)
+
+```sh
+sailgen --generate a64_x64.roots --backend bits.h --backend x64.h --backend x64_a64.h --profile a64.profile \
+        -o a64_x64.inc a64.sail --overlay nx.sail
+```
+
+The same generator (`gen.c`), with the x86-64 back end at the output's top in place of LLVM's: the CONST and STATIC
+times are folded when sailgen runs and when the emitter runs as for LLVM, and what is DYN is appended to a short SSA
+of the block's x86 instructions (`SgXIns`: a selected candidate, virtual registers for its operands, an immediate),
+the assembly itself. The emitter does what costs little as it appends: constants fold, an operand that is a constant
+picks the candidate whose immediate it fits (`imm8` sign extended before `imm32`), a candidate needing a feature the
+host lacks is passed over (SHLX for SHL CL; a primitive none can make leaves the word to another back end), an input a
+form reads whole is zero extended only where its register isn't (each value knows the bits of its register above it
+that are 0: the selection said which forms leave their result so), NOT stays unmade until something reads it (a
+subtraction takes the operand it was of), and a chain of operations with constants folds into its first (`x AND k1 AND
+k2` is one AND). Flags are the instruction that made them: AddWithCarry's NZCV is that instruction read through its
+candidate's map of Arm's flags (SUBS's C is `setae`, ADDS's `setb`), an ANDS on the result of the AND that just set
+the flags is that AND (the selection lists its form for `ands` too), and ConditionHolds on them is the condition code
+the selection derived for that Arm condition on that form, while no instruction since has written the flags (before
+one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them).
+
+When the block ends, `sgx_optimize` works on the SSA as a whole, where what reads each value and each instruction's
+flags is known: a store a later one to the same place overwrites (no load of it, no call of the runtime between) is
+dropped (a flag two instructions of the block set, a register written twice), constant additions in a row whose flags
+nothing reads fold into one (`ADD #1; ADD #2; SUB #3` is nothing; an ADDS's carry is the last addition's, so not
+there), a sum of 0 is its operand where its register is as zero extended as the sum's was, what nothing reads is
+dropped, and an instruction whose result nothing reads but whose flags something does becomes its flags-only
+candidate (SUBS to the zero register: CMP). `sgx_assemble` then gives the
+virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; RBX holds the state's address), moving
+a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
+form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
+SETcc forms is the state's memory for the loads and stores of the guest's registers and flags. Where no register is
+free, the value read latest is spilled: to a free XMM register (MOVQ, as bytes) where nothing calls out before it is
+last read, since every XMM register is a caller's, else to a slot of the function's frame (`[RSP + 8k]`), once either
+way (an SSA value never changes), and reloaded where it is read; the frame's size is patched into the prologue and the epilogues once the
+function is done. The general registers are given first and RAX, RDX and RCX last, so MUL's and CL's fixed registers
+seldom hold another value. A primitive with no candidate on the host has a composition of the others where one
+is written (CLZ without LZCNT: a binary search of shifts, a test and CMOVcc).
+
+`x64_a64.h` keeps A64's state where `cpu.h`'s CPU does (`x[32]`; `n`, `z`, `cf`, `vf` each a 32-bit 0 or 1), reads
+a register once a block, stores each write at once, and writes only the ABI's own as bytes: the prologue, the call of
+the runtime's `undef` and the return of the next pc. `sg_x64_step` makes one word a function `u64 step(CPU*)`, and
+`sg_x64_block` words in a row one (up to a branch or an UNDEF), one SSA: CMP then B.HI is `cmp` then `cmova` of the
+two pcs, the condition code the selection derived for HI on CMP's flags, with no flag stored and read back between.
+`a64_x64.roots` is a64.roots' integer part whole: the data processing, the branch operands, the hints and barriers, and
+the loads and stores of the general-purpose registers. Guest memory is `CPU.mem` plus the address, a memory operand
+`[M + address + disp]` of the same MOV and MOVZX forms (a byte's and a halfword's store MOV r/m8 and r/m16, the 16-bit
+forms taking the operand-size prefix the opcode column leaves out); an x86 load is already an acquire one, a release
+store is MFENCE after it, a barrier of all accesses MFENCE and one of loads or stores alone nothing (x86's ordering,
+Vol. 3A 10.2.2). The exclusive monitor, the LSE atomics, CAS and CASP, CRC32 and CRC32C call
+`src/common/cpu/recompiler/x64/x64_helpers.c` (cpu.h's ldx, stx, ldxp, stxp and C11 atomics), which the runtime
+library links, through a relocation in an object and at its address in the test; a call spills every value to its
+home first and loads each argument from there into its register. ADCS's and SBCS's carry in is x86's CF, made by the
+flags of ADD #-1 or CMP #1 on the carry, whichever the selection gives the polarity ADC or SBB reads; UDIV and SDIV are
+DIV and IDIV of 64 bits, the divisor 1 where it is 0 or -1 under the most negative value (their selection's ASSUME);
+CLS and RBIT are compositions (CLZ of `(x XOR x << 1) OR 1`; BSWAP and three swaps of masks); NZCV read as bits
+(CCMP's choice) is four SETcc.
+
+**The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
+(again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
+run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
+UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
+sequences of two to four of the words are made one block each and run beside their LLVM
+steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+
+### AArch32 (`x64_a32.h`)
+
+```sh
+sailgen --generate a32.roots --backend bits.h --backend x64.h --backend x64_a32.h --profile a32.profile \
+        -o a32_x64.inc a32.sail arm.sail
+```
+
+The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
+`src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` and `llvm_thumb.inc` make of an A32 or
+Thumb block on the Cortex-A57 with flat memory (a 32-bit NX program's); a block with an instruction it doesn't make is
+refused and stays LLVM's. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
+does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
+overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
+into one store of CPSR at the instruction's end, and a condition read before another instruction writes the flags is
+the condition code itself (`sg_condition_origin`). An instruction's condition is a jump past it to a label, made at its
+first side effect (`sgx_a32_commit`; `sgx_flags_begin` in `sg_add_with_carry` makes it before the flags it keeps), so a
+clause that only reads and hands the word on (`sg_see`) emits nothing. Memory is `CPU.mem` plus the zero-extended
+address, each access checked first as `llvm.c`'s are: misaligned (where it must be) an ALIGNMENT exit, its last byte
+past `min(mem_size, 2^32)` a DATA_ABORT one, both with the address as the syndrome, on stubs after the block's code; a
+store's range against the exclusive reservation in one check (a cold path clears it where they overlap); STREX a LOCK
+CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (loads and stores, LDM and STM, the
+multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT, the
+coprocessor's, the ARMv6 media and DSP ones, VFP and Advanced SIMD) are written in `x64_arm.c` over the same SSA. A
+Thumb block's 16-bit instructions are the Sail's (`sg_decode_t16`), whose conditions and flags follow ITSTATE, which is
+known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `x64_thumb.inc`, or the A32
+instruction of the same meaning whose emitter reads Thumb's PC. `sg_ITSTATE` and `sg_ITSTATE_set` carry it (IT sets the
+ones after it; an SVC, a BKPT and a block that ends inside an IT block leave it in CPSR). The VFP's scalar instructions keep their values in XMM
+registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`
+takes the host's: FPSCR's rounding to nearest, no trap enabled and IXC already set (for the arithmetic), operands
+finite and normal or zero, a result normal or an exact zero the operation allows; anything else calls
+`snx_arm_fp_x64` on a cold path, which is `snx_arm_fp`. FZ on or off does not change the choice.
+
+A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 its address, CPSR.T and E clear) on a
+shared stub of the object; its end goes on to the block after it with a jump to that block's function where
+`nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
+nothing in the block can have changed them, and through them after an MSR that may set E. Each block is
+`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object, global and hidden as LLVM's are, so the two back ends' blocks call
+each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
+block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the
+x86-64 back end refused; `nx/loader/module_x64.c` writes the module's descriptor without LLVM. The recompile prints
+`x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM.
+
+**The test** (`tests/arm_x64.c`, `arm_x64`): random blocks of one to six words of 42 A32 and VFP classes made by
+both back ends and run from random states (registers in and out of memory, the flags, the monitor, FPSCR with FZ, DN,
+a rounding mode and a trap, denormals, zeros and NaNs): every register, CPSR, the exit and its syndrome, the monitor,
+FPSCR, the D registers and memory must match, and so must the words each block covers. Witnesses count the calls of
+`snx_arm_fp_x64` each VFP case makes (the hot path is taken exactly where `fp_call`'s is), the entry's checks are run
+with each of their failures, and an MSR of E is run into the next block. Thumb blocks (`--thumb N`) are made the same
+way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
+instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
+TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
+registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT.

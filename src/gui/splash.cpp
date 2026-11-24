@@ -32,6 +32,21 @@ int snx_splash_draw(const SnxSplashDrawing* drawing, int side, void* pixels, int
 
 void snx_splash_close(SnxSplashDrawing* drawing) { delete drawing; }
 
+static bool christmas(const SnxSplashSvg& svg) {
+    const size_t n = std::strlen(svg.name);
+    return n >= 5 && !std::strcmp(svg.name + n - 5, "-xmas");
+}
+
+const SnxSplashSvg* snx_splash_pick(int month, unsigned r) {
+    int count = 0;
+    for (int i = 0; i < snx_splash_svg_count; i++) count += christmas(snx_splash_svgs[i]) == (month == 12);
+    if (!count) return nullptr;
+    unsigned want = r % (unsigned)count;
+    for (int i = 0; i < snx_splash_svg_count; i++)
+        if (christmas(snx_splash_svgs[i]) == (month == 12) && !want--) return &snx_splash_svgs[i];
+    return nullptr;
+}
+
 /* the drawing named name filling a side x side surface over white, as a picture with none is shown; NULL for none */
 static plutovg_surface_t* over_white(const char* name, int side) {
     const SnxSplashSvg* svg = nullptr;

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Make the icons in dist/icons/ from dist/wimsy.svg, or check them.
+"""Make the icons in dist/icons/ from dist/wimsy.svg and the Christmas Wimsy's dist/splash/wimsy-xmas.svg, or check them.
 
     scripts/make-icons.py           render them again (needs rsvg-convert, from librsvg, and optipng)
     scripts/make-icons.py --check   check them against the SVG and the manifest (no renderer needed)
 
 dist/icons/hicolor/ holds the PNG sizes desktops look for, laid out as installed under share/icons/; wimsy.ico packs
 the Windows sizes for the executables' resources (src/common/platform/windows/runtime.rc); the 128 one is the window
-icon (cmake/window_icon.cmake). Each PNG goes through optipng, keeping it RGBA (the ICO's images must be, and a
+icon (cmake/window_icon.cmake), and wimsy-xmas's 128 the window icon in December. Each PNG goes through optipng, keeping it RGBA (the ICO's images must be, and a
 palette came out larger). MANIFEST records the SVG's and every output's SHA-256 and the tools that made them, so a
 changed SVG, or an output edited by hand, fails the check until this runs again. When the tools at hand are the
 recorded ones, --check also makes each size again and compares the bytes.
@@ -24,20 +24,22 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
-SOURCE = DIST / 'wimsy.svg'
 ICONS = DIST / 'icons'
+# each icon set: its name (the PNGs' file name) and the SVG it is drawn from; wimsy's also packs wimsy.ico
+SETS = {'wimsy': DIST / 'wimsy.svg', 'wimsy-xmas': DIST / 'splash' / 'wimsy-xmas.svg'}
+SOURCES = list(SETS.values())
 MANIFEST = ICONS / 'MANIFEST'
 SIZES = (16, 22, 24, 32, 48, 64, 128, 256)
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
-def png_path(size):
-    return ICONS / f'hicolor/{size}x{size}/apps/wimsy.png'
+def png_path(size, name='wimsy'):
+    return ICONS / f'hicolor/{size}x{size}/apps/{name}.png'
 
 
 def outputs():
-    return [png_path(size) for size in SIZES] + [ICONS / 'wimsy.ico']
+    return [png_path(size, name) for name in SETS for size in SIZES] + [ICONS / 'wimsy.ico']
 
 
 def sha256(path):
@@ -64,8 +66,8 @@ def renderer():
     return f'{draw} and {squeeze} ({" ".join(OPTIPNG[2:])})' if draw and squeeze else None
 
 
-def render(size, destination):
-    subprocess.run(['rsvg-convert', '-w', str(size), '-h', str(size), '-o', str(destination), str(SOURCE)], check=True)
+def render(size, destination, source):
+    subprocess.run(['rsvg-convert', '-w', str(size), '-h', str(size), '-o', str(destination), str(source)], check=True)
     subprocess.run(OPTIPNG + [str(destination)], check=True)
 
 
@@ -109,13 +111,15 @@ def make():
     drawn_by = renderer()
     if not drawn_by:
         sys.exit('make-icons.py: rsvg-convert (librsvg) and optipng are needed to make the icons')
-    for size in SIZES:
-        png_path(size).parent.mkdir(parents=True, exist_ok=True)
-        render(size, png_path(size))
+    for name, source in SETS.items():
+        for size in SIZES:
+            png_path(size, name).parent.mkdir(parents=True, exist_ok=True)
+            render(size, png_path(size, name), source)
     ico = make_ico([(size, png_path(size).read_bytes()) for size in ICO_SIZES])
     (ICONS / 'wimsy.ico').write_bytes(ico)
-    lines = [f'# scripts/make-icons.py drew these from wimsy.svg with {drawn_by}; run it again after changing the SVG']
-    for path in [SOURCE] + outputs():
+    lines = [f'# scripts/make-icons.py drew these from wimsy.svg and splash/wimsy-xmas.svg with {drawn_by}; run it again '
+             'after changing an SVG']
+    for path in SOURCES + outputs():
         lines.append(f'{sha256(path)}  {path.relative_to(DIST).as_posix()}')
     MANIFEST.write_text('\n'.join(lines) + '\n')
     print(f'made {len(outputs())} files in {ICONS.relative_to(ROOT)} with {drawn_by}')
@@ -131,21 +135,22 @@ def check():
     for line in lines[1:]:
         digest, name = line.split('  ', 1)
         listed[name] = digest
-    wanted = [SOURCE] + outputs()
+    wanted = SOURCES + outputs()
     if sorted(listed) != sorted(path.relative_to(DIST).as_posix() for path in wanted):
-        problems.append('the manifest does not list wimsy.svg and exactly the outputs this script makes')
+        problems.append('the manifest does not list the SVGs and exactly the outputs this script makes')
     for path in wanted:
         name = path.relative_to(DIST).as_posix()
         if not path.is_file():
             problems.append(f'{name} is missing')
         elif listed.get(name) != sha256(path):
-            what = 'the SVG changed since the icons were drawn' if path == SOURCE else 'it was changed by hand'
+            what = 'the SVG changed since the icons were drawn' if path in SOURCES else 'it was changed by hand'
             problems.append(f'{name} does not match the manifest: {what}')
-    for size in SIZES:
-        if png_path(size).is_file():
-            width, height, colour = png_size(png_path(size).read_bytes())
-            if (width, height) != (size, size) or colour != 6:
-                problems.append(f'{png_path(size).relative_to(DIST)} is {width}x{height}, colour type {colour}')
+    for name in SETS:
+        for size in SIZES:
+            if png_path(size, name).is_file():
+                width, height, colour = png_size(png_path(size, name).read_bytes())
+                if (width, height) != (size, size) or colour != 6:
+                    problems.append(f'{png_path(size, name).relative_to(DIST)} is {width}x{height}, colour type {colour}')
     if (ICONS / 'wimsy.ico').is_file():
         images = read_ico((ICONS / 'wimsy.ico').read_bytes())
         if [size for size, _ in images] != list(ICO_SIZES):
@@ -157,18 +162,19 @@ def check():
         at_hand = renderer()
         if at_hand and at_hand == drawn_by:
             with tempfile.TemporaryDirectory() as temporary:
-                for size in SIZES:
-                    drawn = Path(temporary) / f'{size}.png'
-                    render(size, drawn)
-                    if drawn.read_bytes() != png_path(size).read_bytes():
-                        problems.append(f'{size}x{size} drawn again differs from the checked-in one')
+                for name, source in SETS.items():
+                    for size in SIZES:
+                        drawn = Path(temporary) / f'{name}-{size}.png'
+                        render(size, drawn, source)
+                        if drawn.read_bytes() != png_path(size, name).read_bytes():
+                            problems.append(f'{name} {size}x{size} drawn again differs from the checked-in one')
             if not problems:
                 print(f'made every size again with {at_hand}: the same bytes')
         else:
             print(f'not made again: made with {drawn_by}, and here there is {at_hand or "no rsvg-convert or optipng"}')
     if problems:
         sys.exit('make-icons.py --check:\n  ' + '\n  '.join(problems))
-    print(f'icons checked: {len(outputs())} files match wimsy.svg and the manifest')
+    print(f'icons checked: {len(outputs())} files match the SVGs and the manifest')
 
 
 def main():

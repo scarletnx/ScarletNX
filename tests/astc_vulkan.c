@@ -185,6 +185,13 @@ void vk_gpuprof_waited(u64 value, int kind) {
     (void)value;
     (void)kind;
 }
+/* and stamp.c's report timestamps, which no report here asks for */
+void vk_stamp_cb_begin(VkCommandBuffer cb) { (void)cb; }
+void vk_stamp_cb_end(VkCommandBuffer cb, u64 value) {
+    (void)cb;
+    (void)value;
+}
+void vk_stamp_fold(u64 done) { (void)done; }
 /* and record.c's dispatches and transfers, which it would time, and the block linear moves' callers */
 void vk_gpuprof_tag(u64 key) { (void)key; }
 void vk_gpuprof_tag_at(u64 key, const void* site) { (void)key, (void)site; }
@@ -223,7 +230,7 @@ int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     return 0;
 }
 u32 vk_texture_array_elements(void) { return 0; }
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
+u32 vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     (void)array_sets;
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
     sz[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets};
@@ -231,6 +238,8 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     sz[3] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets};
     sz[4] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, sets};
     sz[5] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 2};
+    sz[6] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 0};
+    return 6;
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsEXT severity,

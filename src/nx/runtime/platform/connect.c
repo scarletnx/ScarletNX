@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/connect.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -13,17 +14,48 @@ static struct {
 } g_connect;
 
 void connect_reset(void) { memset(&g_connect, 0, sizeof g_connect); }
+void connect_swap(int a, int b) {
+    char who[64];
+    u64 left;
+    unsigned ba, bb;
+    if (a < 0 || a >= SNX_CONNECT_PLAYERS || b < 0 || b >= SNX_CONNECT_PLAYERS || a == b) return;
+    memcpy(who, g_connect.who[a], sizeof who);
+    memcpy(g_connect.who[a], g_connect.who[b], sizeof who);
+    memcpy(g_connect.who[b], who, sizeof who);
+    left = g_connect.left[a];
+    g_connect.left[a] = g_connect.left[b];
+    g_connect.left[b] = left;
+    ba = 1u << a;
+    bb = 1u << b;
+    if (!(g_connect.paused & ba) != !(g_connect.paused & bb)) g_connect.paused ^= ba | bb;
+}
+unsigned connect_waiting(void) { return g_connect.waiting; }
+void connect_forget(int p) {
+    if (p < 0 || p >= SNX_CONNECT_PLAYERS) return;
+    g_connect.who[p][0] = 0;
+    g_connect.left[p] = 0;
+    g_connect.waiting &= ~(1u << p);
+    g_connect.paused &= ~(1u << p);
+}
+void connect_go_on(void) {
+    if (g_connect.waiting) g_connect.plus = 1; /* the next tick, + not held, goes on */
+}
 int connect_kept(int p, u64 now_ns) { /* a pause waiting for it keeps it past the time */
     return p >= 0 && p < SNX_CONNECT_PLAYERS && g_connect.who[p][0] && g_connect.left[p] &&
            (now_ns - g_connect.left[p] <= SNX_CONNECT_HOLD_NS || (g_connect.waiting >> p & 1));
 }
 int connect_join(const char* who, unsigned busy, u64 now_ns) {
+    SNX_ZONE(z_join, "plat connect join");
     int p, take = -1;
     for (p = 0; p < SNX_CONNECT_PLAYERS && take < 0; ++p) /* its own player, kept for it */
         if (!(busy >> p & 1) && connect_kept(p, now_ns) && !strcmp(g_connect.who[p], who)) take = p;
     for (p = 0; p < SNX_CONNECT_PLAYERS && take < 0; ++p)
         if (!(busy >> p & 1) && !connect_kept(p, now_ns)) take = p;
-    if (take < 0) return -1;
+    if (take < 0) {
+        SNX_ZONE_TEXT(z_join, "none free");
+        return -1;
+    }
+    SNX_ZONE_TEXT(z_join, connect_kept(take, now_ns) ? "kept for it" : "free player");
     snprintf(g_connect.who[take], sizeof g_connect.who[take], "%s", who);
     g_connect.left[take] = 0;
     g_connect.paused &= ~(1u << take);
@@ -52,6 +84,7 @@ int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size
     unsigned gone = 0;
     char who[64];
     int p;
+    SNX_ZONE(z_tick, "plat connect tick");
     *freed = 0;
     if (n) notice[0] = 0;
     for (p = 0; p < SNX_CONNECT_PLAYERS; ++p) {
@@ -71,6 +104,7 @@ int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size
         if (back == g_connect.waiting) {
             g_connect.waiting = 0;
             g_connect.plus = 0;
+            SNX_ZONE_VALUE(z_tick, 1); /* all back */
             return CONNECT_RESUME;
         }
         if (plus) /* + counts once let go, so the game never sees it on resuming */
@@ -86,6 +120,7 @@ int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size
             g_connect.waiting = 0;
             g_connect.plus = 0;
             snprintf(notice, n, "Going on without %s", who);
+            SNX_ZONE_VALUE(z_tick, 2); /* went on without them */
             return CONNECT_RESUME;
         }
         names(g_connect.waiting, who, sizeof who);
@@ -93,9 +128,13 @@ int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size
             snprintf(notice, n, "%s disconnected: reconnect, or press + on another controller to go on", who);
         else
             snprintf(notice, n, "%s disconnected: reconnect to go on", who);
+        SNX_ZONE_VALUE(z_tick, 3); /* still waiting */
         return CONNECT_NONE;
     }
-    if (!gone || !running) return CONNECT_NONE;
+    if (!gone || !running) {
+        SNX_ZONE_VALUE(z_tick, 0); /* nothing to say */
+        return CONNECT_NONE;
+    }
     g_connect.waiting = gone;
     g_connect.paused |= gone; /* each leave pauses once */
     names(gone, who, sizeof who);
@@ -103,5 +142,6 @@ int connect_tick(u64 now_ns, int running, int pads, int plus, char* notice, size
              pads ? "%s disconnected: reconnect, or press + on another controller to go on"
                   : "%s disconnected: reconnect to go on",
              who);
+    SNX_ZONE_VALUE(z_tick, 4); /* the game was paused */
     return CONNECT_PAUSE;
 }

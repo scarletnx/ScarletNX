@@ -92,6 +92,36 @@ static void pictures(Uint32* p) {
     puts("pictures: a JPEG's middle square, square or round, Wimsy for none");
 }
 
+/* the splash's choice by month: in December only the Christmas drawings (a name ending in -xmas), the rest of the
+   year every other one and never those, each reached by some r */
+static void picks(void) {
+    for (int month = 1; month <= 12; month++) {
+        int seen[64] = {0}, christmas = 0;
+        for (unsigned r = 0; r < 256; r++) {
+            const SnxSplashSvg* svg = snx_splash_pick(month, r);
+            assert(svg && svg >= snx_splash_svgs && svg < snx_splash_svgs + snx_splash_svg_count);
+            const size_t n = strlen(svg->name);
+            const int xmas = n >= 5 && !strcmp(svg->name + n - 5, "-xmas");
+            if (xmas != (month == 12)) {
+                fprintf(stderr, "FAIL: month %d picks %s\n", month, svg->name);
+                exit(1);
+            }
+            seen[svg - snx_splash_svgs] = 1;
+            christmas += xmas;
+        }
+        for (int i = 0; i < snx_splash_svg_count && i < 64; i++) {
+            const size_t n = strlen(snx_splash_svgs[i].name);
+            const int xmas = n >= 5 && !strcmp(snx_splash_svgs[i].name + n - 5, "-xmas");
+            if (xmas == (month == 12) && !seen[i]) {
+                fprintf(stderr, "FAIL: month %d never picks %s\n", month, snx_splash_svgs[i].name);
+                exit(1);
+            }
+        }
+        assert(month != 12 || christmas == 256);
+    }
+    assert(!snx_splash_pick(0, 0) || snx_splash_pick(0, 0) == snx_splash_pick(1, 0)); /* no date: as January */
+}
+
 int main(void) {
     static const int sides[] = {1, 64, 240, 333, 1024};
     int i, k, x, y;
@@ -174,6 +204,7 @@ int main(void) {
         snx_splash_close(NULL);
     }
     pictures(pixels);
+    picks();
     free(pixels);
     return 0;
 }

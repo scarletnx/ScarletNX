@@ -141,6 +141,8 @@ PFN_vkGetDeviceImageMemoryRequirements vkGetDeviceImageMemoryRequirements;
 PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties;
 PFN_vkGetPhysicalDeviceImageFormatProperties vkGetPhysicalDeviceImageFormatProperties;
 void vk_all_barrier(VkCommandBuffer cb) { STUB(); }
+void vk_stamp_runtime_begin(void) {}
+void vk_stamp_runtime_end(void) {}
 void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) { STUB(); }
 int vk_astc_bc7(void) { STUB(); }
 void vk_astc_forget(const Surf* t, u32 level) { STUB(); }
@@ -230,6 +232,7 @@ int vk_written_since(const u8* host, u64 len, u32 since) { STUB(); }
 void vk_ww_cool(const u8* host, u64 len) { STUB(); }
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) { STUB(); }
 u32 vk_ww_now(void) { STUB(); }
+u32 vk_ww_epoch(void) { return 0; }
 VkFmt vk_zt_format(u32 fmt) { STUB(); }
 
 /* ------------------------------------------------ the checks */

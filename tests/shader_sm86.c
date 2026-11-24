@@ -953,6 +953,63 @@ static void test_image_kinds(const char* dir) {
     }
 }
 
+/* SUST.P, SULD.P and SUATOM of 1D buffers (dimension 1): storage texel buffers (ImageBuffer), bound at SNX_VKB_IMGBUF
+   plus their slot as a Maxwell program's buffer images are, with one integer coordinate. The store and the load share
+   the handle in c[0][0x30] and a slot; the atomic's R32ui image in c[0][0x40] is another. Before, the translator
+   refused each of them */
+static void test_buffer_images(const char* dir) {
+    u8 code[16 * 5] = {0};
+    Word x = fix(0xb9b); /* SUST.P.1D.BUFFER.RGBA [R0], R4, c[0][0x30] */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 4);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 72, 4, 0xf);
+    put(code, 0, x);
+    x = fix(0xb97); /* SULD.P.1D.BUFFER.R R8, [R0], c[0][0x30] */
+    set(&x, 16, 8, 8);
+    set(&x, 24, 8, 0);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 72, 4, 1);
+    set(&x, 81, 3, 7);
+    put(code, 1, x);
+    x = fix(0x593); /* SUATOM.1D.BUFFER.ADD R12, [R0], R4, c[0][0x40] */
+    set(&x, 16, 8, 12);
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 4);
+    set(&x, 40, 14, 0x40 / 4);
+    set(&x, 61, 3, 1);
+    set(&x, 81, 3, 7);
+    put(code, 2, x);
+    put(code, 3, exit_insn());
+    put(code, 4, bra(4, 4, 7, 0));
+    ShaderInfo si = {0};
+    si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 5 * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "buffer images: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.nimg == 2 && si.img[0].type == 1 && si.img[0].kind == 2 && si.img[0].cbuf_off == 0x30 / 4);
+    CHECK(si.img[1].type == 1 && si.img[1].kind == 1 && si.img[1].cbuf_off == 0x40 / 4);
+    int buffer_cap = 0;
+    for (size_t i = 5; i < count && spv[i] >> 16; i += spv[i] >> 16)
+        buffer_cap |= spv[i] == (2u << 16 | 17) && spv[i + 1] == 47; /* OpCapability ImageBuffer */
+    CHECK(buffer_cap);
+    /* each image's Binding: SNX_VKB_IMGBUF plus its slot */
+    u32 bindings = 0;
+    for (size_t i = 5; i < count && spv[i] >> 16; i += spv[i] >> 16)
+        if ((spv[i] & 0xffff) == 71 && spv[i] >> 16 == 4 && spv[i + 2] == 33 && spv[i + 3] >= SNX_VKB_IMGBUF &&
+            spv[i + 3] < SNX_VKB_IMGBUF + 2)
+            bindings |= 1u << (spv[i + 3] - SNX_VKB_IMGBUF);
+    CHECK(bindings == 3);
+    CHECK(keep_module(dir, "cs_buffer_images", spv, count));
+    free(spv);
+}
+
 /* A fragment program's KILL says so in has_discard, which the renderer reads before it tests depth ahead of the
    program; one without a KILL leaves it 0 */
 static void test_kill_discard(void) {
@@ -5447,6 +5504,76 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
         if ((words[i] & 0xffff) == 71 && words[i] >> 16 == 4 && words[i + 2] == 11 && words[i + 3] == builtin) return 1;
     return 0;
 }
+/* AST a[0x64], the layer: BuiltIn Layer, which a geometry program writes with the Geometry capability it has and a
+   vertex program with ShaderLayer where the device has it (g_spirv_translate.output_layer); without it a vertex
+   program's store is dropped, as the Maxwell translator drops it. writes_layer says it is written. Before, the
+   translator refused the store */
+static void test_layer_store(const char* dir) {
+    u8 code[16 * 4] = {0};
+    put(code, 0, mov_imm(1, 3));
+    put(code, 1, ast(0x64, 1, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.rt_int_mask = 3; /* a triangle's vertices */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_GS, sph, &si, &count);
+    CHECK(spv && si.writes_layer && spv_has_builtin(spv, count, 9 /* Layer */));
+    if (!spv) fprintf(stderr, "layer store: %s\n", si.first_unsupported);
+    if (spv) {
+        CHECK(keep_module(dir, "gs_layer", spv, count));
+        /* the passthrough's three vertices each carry layer 3, though each EmitVertex leaves the outputs undefined */
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        const char* why = eval_draw(spv, count, &env);
+        if (why) fprintf(stderr, "layer store: the evaluator stops at %s\n", why);
+        CHECK(!why && env.emitted == 3 && env.vertex_layer[0] == 3 && env.vertex_layer[1] == 3 &&
+              env.vertex_layer[2] == 3);
+    }
+    free(spv);
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    int had = g_spirv_translate.output_layer;
+    for (int feature = 0; feature < 2; feature++) {
+        g_spirv_translate.output_layer = feature;
+        ShaderInfo v = {0};
+        spv = sm86_to_spirv(code, 4 * 16, ST_VS, vsph, &v, &count);
+        CHECK(spv && v.writes_layer == feature && spv_has_builtin(spv, count, 9 /* Layer */) == feature &&
+              spv_declares(spv, count, 69 /* ShaderLayer */) == feature);
+        if (spv && feature) CHECK(keep_module(dir, "vs_layer", spv, count));
+        free(spv);
+    }
+    /* IPA a[0x64] in a fragment program, the layer: BuiltIn Layer with the Geometry capability, else with
+       ShaderLayer, else 0 with no input at all. Before, the translator refused it */
+    u8 fs[16 * 3] = {0};
+    put(fs, 0, fold_ipa(0, 0x64));
+    put(fs, 1, exit_insn());
+    put(fs, 2, bra(2, 2, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    const int had_geometry = g_spirv_translate.geometry;
+    for (int way = 0; way < 3; way++) { /* Geometry, ShaderLayer, neither */
+        g_spirv_translate.geometry = way == 0;
+        g_spirv_translate.output_layer = way == 1;
+        ShaderInfo f = {0};
+        spv = sm86_to_spirv(fs, 3 * 16, ST_FS, fsph, &f, &count);
+        CHECK(spv && spv_has_builtin(spv, count, 9 /* Layer */) == (way < 2) &&
+              spv_declares(spv, count, 2 /* Geometry */) == (way == 0) &&
+              spv_declares(spv, count, 69 /* ShaderLayer */) == (way == 1));
+        if (!spv) fprintf(stderr, "layer input: %s\n", f.first_unsupported);
+        static const char* const names[2] = {"fs_layer_geometry", "fs_layer_shader_layer"};
+        if (spv && way < 2) CHECK(keep_module(dir, names[way], spv, count));
+        free(spv);
+    }
+    g_spirv_translate.geometry = had_geometry;
+    g_spirv_translate.output_layer = had;
+}
 /* AST a[0x2c0] of two words, ClipDistance0 = 0.5 and ClipDistance1 = 0.25. A vertex program before the rasterizer
    writes only the planes that SetUserClipEnable enables (ShaderInfo.clip_enable's low bits) into an 8-plane
    ClipDistance output that it names in uses_clip_mask, and the other planes are 0, as the program starts them: the
@@ -6470,6 +6597,100 @@ static void test_coop_fused_only(const char* dir) {
     static const u32 insns[1][5] = {{20, COOP_LDSM | 24, 12, 255, 0x18}};
     static const u32 outs[4] = {20, 21, 22, 23};
     CHECK(coop_case(dir, "coop_fused_only", insns, 1, outs, 4));
+}
+
+/* the matrix loads of a program on the cooperative matrices of one shape, 0 when it does not translate */
+static u32 coop_loads(const u8* code, u32 n, u32 bit) {
+    int coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = bit;
+    g_spirv_translate.float16 = 1;
+    ShaderInfo si = {0};
+    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 1024;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    const u32 loads = spv ? spv_count(spv, count, 4457) : 0;
+    free(spv);
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
+    g_spirv_translate.float16 = f16_was;
+    return loads;
+}
+/* A straight-line block that stages more fragments than the cooperative matrix cache holds (COOP_FRAGS): each step
+   writes an A register, then multiplies that A with the same two Bs. The A of one step is dead at the next one's write
+   and leaves the cache as room is needed, so a step's second HMMA takes its A from the first's matrices at every step,
+   and the matrix loads grow by the same count a step, before the cache is full and after. A full cache that dropped
+   none kept the first steps' dead As, and both HMMAs of every later step staged their A */
+static u32 coop_cache_loads(u32 steps, u32 bit) {
+    u8 code[16 * 64] = {0};
+    u32 n = 0;
+    for (u32 k = 0; k < steps; k++) {
+        put(code, n++, alu(0x002, 5, 8, 0)); /* MOV R8, c[0x0][0x0] */
+        for (u32 b = 0; b < 2; b++)          /* HMMA.16816.F16 R16 or R20, R8, R12 or R14, RZ */
+            put(code, n++, hmma_insn(16 + 4 * b, 8, 12 + 2 * b, 255, 0x08));
+    }
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return coop_loads(code, n + 1, bit);
+}
+static void test_coop_cache(void) {
+    static const u32 bits[4] = {SH_COOP_16x16x16, SH_COOP_16x8x16, SH_COOP_16x8x8, SH_COOP_8x8x8};
+    for (u32 s = 0; s < 4; s++) {
+        const u32 l2 = coop_cache_loads(2, bits[s]), l3 = coop_cache_loads(3, bits[s]),
+                  l16 = coop_cache_loads(16, bits[s]);
+        if (!l2 || l16 != l3 + 13 * (l3 - l2))
+            fprintf(stderr, "matrix shape %u: %u matrix loads for 2 steps, %u for 3 and %u for 16, expected %u\n", s,
+                    l2, l3, l16, l3 + 13 * (l3 - l2));
+        CHECK(l2 && l3 > l2 && l16 == l3 + 13 * (l3 - l2));
+    }
+}
+/* Runs of 32 steps that fill the cache many times over. A step writes a register of two A tuples (R32-R39) or of two B
+   ones (R40-R43) from the lane's inputs, then multiplies an A and a B of them, .16816 (4 and 2 registers) or .1688 (2
+   and 1 of them), into one of two f32 Ds, chained or not, or of two f16 ones, with a C or none. That is 8 fragments, the
+   cache's bound, so a full one always has a dead entry for a new one, and a fragment is staged again only once one of
+   its own registers is written: one matrix load for each of them where the device's shape is 16x16x16. And the values
+   are the gathers': a fragment the cache moves, or keeps past a write, gives another's matrix or words no longer there */
+static u32 coop_rand(u32* seed, u32 n) {
+    *seed = *seed * 1664525u + 1013904223u;
+    return (*seed >> 16) % n;
+}
+static Word mov_reg(u32 d, u32 a) {
+    Word x = alu(0x002, 1, d, 255);
+    set(&x, 32, 8, a);
+    return x;
+}
+static void test_coop_cache_values(const char* dir) {
+    static const u32 outs[12] = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+    for (u32 run = 0; run < 4; run++) {
+        u8 code[16 * 128] = {0};
+        u32 n = coop_prologue(code), seed = 0x2545f491u + run, want = 0;
+        /* [A or B][its tuple][.1688 or .16816]: staged since the last write of its registers; and the f32 Ds that hold
+           a product of the run */
+        int live[2][2][2] = {0}, chain[2] = {0};
+        for (u32 k = 0; k < 12; k++) put(code, n++, mov_reg(32 + k, 8 + coop_rand(&seed, 8)));
+        for (u32 k = 0; k < 32; k++) {
+            u32 r = coop_rand(&seed, 12), of_b = r >= 8, size = of_b ? 2 : 4, at = of_b ? r - 8 : r;
+            put(code, n++, mov_reg(32 + r, 8 + coop_rand(&seed, 8)));
+            live[of_b][at / size][1] = 0;
+            if (at % size < size / 2) live[of_b][at / size][0] = 0;
+            u32 k16 = coop_rand(&seed, 2), f32 = coop_rand(&seed, 2), a = coop_rand(&seed, 2);
+            u32 b = coop_rand(&seed, 2), d = coop_rand(&seed, 2), with_c = coop_rand(&seed, 2);
+            want += !live[0][a][k16] + !live[1][b][k16];
+            live[0][a][k16] = live[1][b][k16] = 1;
+            u32 dst = f32 ? 20 + 4 * d : 28 + 2 * d, cr = 255;
+            if (with_c && !f32) cr = 14;
+            if (with_c && f32 && chain[d]) cr = dst;
+            if (f32) chain[d] = 1;
+            put(code, n++, hmma_insn(dst, 32 + 4 * a, 40 + 2 * b, cr, k16 << 3 | f32 << 4));
+        }
+        n = coop_epilogue(code, n, outs, 12);
+        char name[32];
+        snprintf(name, sizeof name, "coop_cache_values%u", run);
+        const u32 loads = coop_loads(code, n, SH_COOP_16x16x16);
+        if (loads != want) fprintf(stderr, "%s: %u matrix loads, %u fragments staged\n", name, loads, want);
+        CHECK(want > 16 && loads == want);
+        CHECK(coop_agrees(code, n, 12, dir, name));
+    }
 }
 
 /* Jumps around a fused LDSM and HMMA (fuse.c), on the evaluator's 32 lanes with the gathers, against the same program
@@ -7782,6 +8003,7 @@ int main(int argc, char** argv) {
     test_alu_group(dir);
     test_compute_forms(dir);
     test_image_kinds(dir);
+    test_buffer_images(dir);
     test_kill_discard();
     test_root_tables(dir);
     test_texel_offsets(dir);
@@ -7851,6 +8073,7 @@ int main(int argc, char** argv) {
     test_mesh_output_bytes();
     test_mesh_refused();
     test_geometry(dir);
+    test_layer_store(dir);
     test_geometry_emit(dir);
     test_geometry_adjacency();
     test_fragment_per_primitive(dir);
@@ -7867,6 +8090,8 @@ int main(int argc, char** argv) {
     test_coop_overlap(dir);
     test_coop_flow(dir);
     test_coop_fused_only(dir);
+    test_coop_cache();
+    test_coop_cache_values(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_rule();

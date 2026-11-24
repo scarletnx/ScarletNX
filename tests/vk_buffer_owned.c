@@ -61,6 +61,11 @@ void vk_all_barrier(VkCommandBuffer cb) {
     CHECK(cb == CMD);
     note('b');
 }
+/* owned.c's: the barrier counted by where it is from, which these checks count as one */
+void vk_all_barrier_by(int site, VkCommandBuffer cb) {
+    (void)site;
+    vk_all_barrier(cb);
+}
 u64 vk_compute_adds(void) { return 0; }
 /* owned.c's: the stages a buffer barrier names */
 VkPipelineStageFlags2 vk_buffer_stages(void) { return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; }
@@ -221,7 +226,9 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) { abort(); }
 u64 vk_uma_import_part(u64 cpu, u64 len, int* held) { abort(); }
 int vk_uma_imports_dear(void) { abort(); }
 int vk_uma_pending(u64 gva, u64 len) { abort(); }
-int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) { abort(); }
+int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) { abort(); }
+void vk_uma_order_request(void) {}
+void vk_uma_ordered(void) {}
 void vk_uma_writes_abort(void) { abort(); }
 void vk_uma_writes_commit(void) { abort(); }
 void vk_unlock(void) { abort(); }

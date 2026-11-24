@@ -7,7 +7,9 @@
    guest object's address, made at its first use (std::mutex's constructor is the compiler's, inlined) and let go of at
    its destructor. The guest object's own bytes go unread and unwritten: every function that reads them is hooked, and
    the others (timed_mutex's, shared_timed_mutex's and condition_variable_any's, whose templates the game's code inlines
-   over their members) are left to the game's own code.
+   over their members) are left to the game's own code. libc++'s steady_clock waits are inlined too, and call the C
+   library's pthread_cond_clockwait with the std::mutex's words, which the SDK's code reads as a mutex nobody holds and
+   aborts on: the C library's waits are hooked as well, and wait on the host where the mutex is one of the family's.
 
    A thread that waits (a lock someone holds, a condition variable, a sleep) leaves its core first, as a waiting SVC
    does (hook_wait_begin): the core's other threads run meanwhile, the holder among them.
@@ -22,6 +24,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <stdatomic.h>
 
@@ -86,12 +89,28 @@ static void drop(u64 addr) {
         }
     pm_unlock(&g_sync.lk);
 }
-/* o's mutex, waited for off the core when another thread holds it */
+/* the host object of the guest object at addr, NULL when there is none (a mutex this family never locked) */
+static SyncObj* find(u64 addr) {
+    pm_lock(&g_sync.lk);
+    SyncObj* o = g_sync.bucket[bucket_of(addr)];
+    while (o && o->addr != addr) o = o->next;
+    pm_unlock(&g_sync.lk);
+    return o;
+}
+/* o's mutex, waited for off the core when another thread holds it. The wait is never inside a zone: the thread
+   leaves the core, so its duration is wall time the guest did not spend on the CPU. It is measured and plotted after
+   the thread runs again, which says how long the contention blocked it */
 static void lock(SyncObj* o) {
     if (pm_trylock(&o->m)) return;
+#if defined(SNX_TRACY)
+    u64 waited = plat_ns(); /* a duration: the monotonic clock, not the wall clock */
+#endif
     hook_wait_begin();
     pm_lock(&o->m);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook mutex contention ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }
 
 /* ---- std::mutex */
@@ -100,8 +119,11 @@ void sync_mutex_lock(CPU* c, u64 m) {
     lock(obj(m));
 }
 int sync_mutex_try_lock(CPU* c, u64 m) {
+    int got;
     (void)c;
-    return pm_trylock(&obj(m)->m) != 0;
+    got = pm_trylock(&obj(m)->m) != 0;
+    SNX_ZONE_V(z, "hook mutex try", (u64)got); /* frequent decision: 1 acquired, 0 busy */
+    return got;
 }
 void sync_mutex_unlock(CPU* c, u64 m) {
     (void)c;
@@ -131,14 +153,18 @@ void sync_recursive_lock(CPU* c, u64 m) {
     o->depth = 1;
 }
 int sync_recursive_try_lock(CPU* c, u64 m) {
+    int got;
     (void)c;
     SyncObj* o = obj(m);
     u32 me = plat_tid();
     if (atomic_load_explicit(&o->owner, memory_order_relaxed) == me) {
         o->depth++;
+        SNX_ZONE_T(z, "hook recursive try", "reentrant"); /* rare decision */
         return 1;
     }
-    if (!pm_trylock(&o->m)) return 0;
+    got = pm_trylock(&o->m) != 0;
+    SNX_ZONE_V(z, "hook recursive try", (u64)got); /* frequent: 1 acquired, 0 busy */
+    if (!got) return 0;
     atomic_store_explicit(&o->owner, me, memory_order_relaxed);
     o->depth = 1;
     return 1;
@@ -161,21 +187,85 @@ void sync_cond_notify_all(CPU* c, u64 cv) {
     pc_broadcast(&obj(cv)->c);
 }
 void sync_cond_wait(CPU* c, u64 cv, u64 lk) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the wait-time plot reads the clock */
+#endif
     SyncObj* o = obj(cv);
     SyncObj* m = obj(snx_ld_le64(hook_host(c, lk)));
+#if defined(SNX_TRACY)
+    waited = plat_ns(); /* a duration: the monotonic clock */
+#endif
     hook_wait_begin();
     pc_wait(&o->c, &m->m, -1);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook cv wait ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }
 /* until the system_clock time point at ns nanoseconds since 1970 (system_clock::now's host clock) */
 void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the wait-time plot reads the clock */
+#endif
     SyncObj* o = obj(cv);
     SyncObj* m = obj(snx_ld_le64(hook_host(c, lk)));
+    /* the deadline is a system_clock time point and must stay on the wall clock */
     i64 left = ns - plat_unix_ns();
-    if (left <= 0) return;
+    if (left <= 0) {
+        SNX_MSG("hook cv already expired", sizeof("hook cv already expired") - 1); /* rare decision */
+        return;
+    }
+#if defined(SNX_TRACY)
+    waited = plat_ns();
+#endif
     hook_wait_begin();
     pc_wait(&o->c, &m->m, left);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook cv timed wait ms", (double)(plat_ns() - waited) / 1e6);
+#endif
+    if (snx_tracy_attached() && plat_unix_ns() >= ns)
+        SNX_MSG("hook cv timed out", sizeof("hook cv timed out") - 1); /* rare outcome */
+}
+
+/* ---- the C library's waits on a std::mutex of the family's (libc++'s inlined waits), on the host as the condition
+   variable's own: 0 when woken (or for no reason, as a condition variable may be), else ETIMEDOUT as the console's C
+   library numbers it. A wait on any other mutex runs the function's own code */
+#define GUEST_ETIMEDOUT  110
+#define GUEST_CLOCK_MONO 1
+static i32 host_wait(u64 cv, SyncObj* m, i64 left) {
+    SyncObj* o = obj(cv);
+    int out;
+    if (!left) return GUEST_ETIMEDOUT;
+    hook_wait_begin();
+    out = pc_wait(&o->c, &m->m, left);
+    hook_wait_end();
+    return out ? GUEST_ETIMEDOUT : 0;
+}
+/* the nanoseconds left until the timespec at abstime on the clock (at least 0): CLOCK_MONOTONIC's is steady_clock's,
+   the game's clock, as the SDK reads it; any other the host's real time, as system_clock's now */
+static i64 left_until(CPU* c, i32 clock, u64 abstime) {
+    const u8* t = hook_host(c, abstime);
+    i64 at = (i64)snx_ld_le64(t) * 1000000000 + (i64)snx_ld_le64(t + 8);
+    i64 left = at - (clock == GUEST_CLOCK_MONO ? (i64)guest_ns() : plat_unix_ns());
+    return left > 0 ? left : 0;
+}
+static i32 run_own(CPU* c) {
+    hook_run_original(c, c->pc);
+    return (i32)c->x[0];
+}
+i32 sync_pthread_cond_wait(CPU* c, u64 cv, u64 m) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, -1) : run_own(c);
+}
+/* a std::condition_variable has no clock attribute: the real time's, CLOCK_REALTIME */
+i32 sync_pthread_cond_timedwait(CPU* c, u64 cv, u64 m, u64 abstime) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, left_until(c, 0, abstime)) : run_own(c);
+}
+i32 sync_pthread_cond_clockwait(CPU* c, u64 cv, u64 m, i32 clock, u64 abstime) {
+    SyncObj* o = find(m);
+    return o ? host_wait(cv, o, left_until(c, clock, abstime)) : run_own(c);
 }
 
 /* ---- the clocks: system_clock's microseconds since 1970, steady_clock's nanoseconds of the game's clock */
@@ -189,9 +279,21 @@ i64 sync_steady_now(CPU* c) {
 }
 /* this_thread::sleep_for: the duration's nanoseconds at d, slept off the core */
 void sync_sleep_for(CPU* c, u64 d) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the sleep-time plot reads the clock */
+#endif
     i64 ns = (i64)snx_ld_le64(hook_host(c, d));
-    if (ns <= 0) return;
+    if (ns <= 0) {
+        SNX_MSG("hook sleep none", sizeof("hook sleep none") - 1); /* rare decision */
+        return;
+    }
+#if defined(SNX_TRACY)
+    waited = plat_ns(); /* a duration: the monotonic clock */
+#endif
     hook_wait_begin();
     plat_sleep_ns(ns);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook sleep ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }

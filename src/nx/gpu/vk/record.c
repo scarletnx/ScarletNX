@@ -40,6 +40,8 @@ static void desc_batch_flush(void);
 #define REC_CAP     (4ull << 20)
 #define REC_PUBLISH (32ull << 10)
 
+static void submit_run(const void* p); /* below: a submit packet, counted in the recording zone's text */
+
 static u8* g_ring;
 static int g_rec = -1; /* recording on the thread: 1, at once: 0, not decided yet: -1 */
 static VkCommandBuffer g_rec_cb;
@@ -122,12 +124,13 @@ static void rec_thread(void* arg) {
             atomic_store_explicit(&g_sleep, 0, memory_order_relaxed);
             pm_unlock(&g_m);
         }
-        [[maybe_unused]] u64 records = 0; /* the zone's value; only the profiler reads it */
+        u64 records = 0, submits = 0; /* the zone's value and how many submissions this batch recorded */
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
             const RecHdr* h = (const RecHdr*)(g_ring + (tail & (REC_CAP - 1)));
             const RecFn fn = h->fn;
             if (fn) {
+                if (fn == submit_run) submits++;
                 if (g_rec_kind_count) rec_kind(fn);
                 fn(h + 1);
             }
@@ -138,6 +141,13 @@ static void rec_thread(void* arg) {
             if (fn == submit_run) tail_tell(tail);
         }
         SNX_ZONE_VALUE(z_rec, records);
+        /* how many submissions the recorder got through in this batch, and how many bytes of commands are still
+           queued behind it: how much of a present's work has not reached the GPU yet */
+        SNX_ZONE_TEXT(z_rec, "%llu cmds, %llu submits, %llu B behind", (unsigned long long)records,
+                      (unsigned long long)submits,
+                      (unsigned long long)(atomic_load_explicit(&g_head, memory_order_acquire) - tail));
+        SNX_PLOT("vk pipe record commands", (double)records);
+        SNX_PLOT("vk pipe record submissions", (double)submits);
         SNX_ZONE_END(z_rec);
         tail_tell(tail);
     }
@@ -201,6 +211,9 @@ static void publish(void) {
    VK_REC_FOREVER: none): 0 when until came first. What is pending goes to the consumer first, or it would never make
    the room */
 static int room_wait(u64 more, u64 until) {
+    /* room already: the clock is read only for a wait. Read at the top for the spin's end, it was read for each
+       command, about 19,500 times a present in one game, most of the reads of the thread that records the draws */
+    if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
     const u64 spin = plat_ns() + REC_ROOM_SPIN_NS;
     for (;;) {
         if (g_pending + more - atomic_load_explicit(&g_tail, memory_order_seq_cst) <= REC_CAP) return 1;
@@ -566,6 +579,14 @@ static VkResult present_run(const Present* x) {
     VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
     vk_queue_unlock(g_vk.gfx);
     pm_unlock(&g_vk.sc_lock);
+    /* what held or failed this present: the swapchain's answer, and the refresh it was held until */
+    const char* outcome = r == VK_SUCCESS                    ? "ok"
+                          : r == VK_ERROR_OUT_OF_DATE_KHR    ? "out of date"
+                          : r == VK_ERROR_SURFACE_LOST_KHR   ? "surface lost"
+                          : r == VK_SUBOPTIMAL_KHR           ? "suboptimal"
+                                                             : "failed";
+    SNX_ZONE_TEXT(z_queue_present, "id %llu, target %llu, %s (%d)", (unsigned long long)x->id,
+                  (unsigned long long)x->target, outcome, (int)r);
     vk_display_made(x->id, r);
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     return r;
@@ -2221,13 +2242,13 @@ void vk_rec_command_report(double presents, int count) {
     };
     g_rec_kind_count = count;
     if (!g_rec_kind_total) return;
-    char line[512];
+    char line[2048];
     int at = 0;
     for (u64 i = 0; i < REC_KINDS; i++)
         for (size_t j = 0; j < sizeof names / sizeof *names; j++)
             if (g_rec_kind[i].fn == names[j].fn)
-                at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.0f",
-                               at ? "," : "", names[j].name, (double)g_rec_kind[i].n / (presents ? presents : 1.0));
+                at = snx_appendf(line, sizeof line, at, "%s %s %.0f", at ? "," : "", names[j].name,
+                                 (double)g_rec_kind[i].n / (presents ? presents : 1.0));
     LOG("vulkan: recording thread commands a present:%s\n", line);
     LOG("vulkan: recording thread merged %.0f barriers into an earlier one's call a present\n",
         (double)g_barrier_merged / (presents ? presents : 1.0));

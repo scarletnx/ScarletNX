@@ -114,5 +114,6 @@
 [[maybe_unused]] static void sg_R2PSet(SgG* g, int64_t p, int64_t flag, SgV enabled, SgV value) {
     DirectCtx* c = g->c;
     u32 v = flag ? VAR_FLAG + (u32)p : VAR_PRED + (u32)p; /* the flags z, s, c, o */
+    if (c->notes) shader_note(c->notes, v, 1);
     var_write(c, v, spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->bool_type, enabled.id, value.id, var_read(c, v)));
 }

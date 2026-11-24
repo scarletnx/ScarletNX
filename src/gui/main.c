@@ -31,6 +31,7 @@
 #include "common/utilities/font.h"
 #include "common/network/https.h"
 #include "gui/gpu_driver.h"
+#include "gui/bluetooth.h"
 #include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
 #include "gui/i18n.h"
@@ -119,7 +120,8 @@ enum {
     GUI_FORM_USERS,
     GUI_FORM_DRIVERS,   /* Settings > App > GPU Drivers, or a game's own GPU driver */
     GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
-    GUI_FORM_FETCH      /* GPU Drivers > Download Driver */
+    GUI_FORM_FETCH,     /* GPU Drivers > Download Driver */
+    GUI_FORM_BLUETOOTH  /* Controllers > Bluetooth: the Joy-Con 2 controllers (gui/bluetooth.h) */
 };
 /* Settings > User's values: who the games play as, then each user's nickname as it is typed and Mii (its place in
    the Mii database, common/utilities/mii_db.h) */
@@ -297,6 +299,13 @@ typedef struct {
 typedef struct {
     char value[GUI_DRIVER_ROWS][96];
 } GuiDriversForm;
+/* Bluetooth's rows: Joy-Con 2 and its mouse scale (the Controllers group's settings joycon2, joycon2_mouse_scale),
+   Search, then a controller each (gui/bluetooth.h's rows); each one's value */
+enum { GUI_BT_ROW_ON, GUI_BT_ROW_SCALE, GUI_BT_ROW_SEARCH, GUI_BT_ROW_FIRST };
+#define GUI_BT_ROWS (GUI_BT_ROW_FIRST + GUI_BT_MAX)
+typedef struct {
+    char value[GUI_BT_ROWS][96];
+} GuiBtForm;
 /* Freedreno Settings' values: the name and value typed, and each variable's value as its row shows it */
 #define GUI_FREEDRENO_PRESETS 16
 #define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + SNX_FREEDRENO_MAX + 4)
@@ -737,6 +746,18 @@ typedef struct App {
     char* drivers_title;
     GuiDriversForm drivers_form;
     GuiThemeKey drivers_keys[GUI_DRIVER_ROWS];
+    /* Controllers > Bluetooth: the controllers, joycon2.txt's path (NULL: no config folder), the system's scan while
+       a search goes (NULL otherwise) and its end, the rows as last shown (bt_show) */
+    GuiBt bt;
+    uint8_t bt_forget[6]; /* the controller GUI_ASK_FORGET asks about */
+    char* bt_path;
+    SnxBleScan* bt_scan;
+    Uint64 bt_until;
+    unsigned bt_shown;
+    GuiBtForm bt_form;
+    GuiThemeKey bt_keys[GUI_BT_ROWS];
+    char bt_label[GUI_BT_ROWS][64];
+    char bt_about[GUI_BT_ROWS][400];
     char drivers_label[GUI_DRIVER_ROWS][300];
     char drivers_about[GUI_DRIVER_ROWS][700];
     int drivers_base;     /* the first package's row */
@@ -1091,10 +1112,12 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove. Back.")
 #define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again. Back.")
 #define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save. Back.")
+#define SAY_BLUETOOTH SNX_TR_KEYS("Tap: search, sync, forget or change. Back.")
 #else
 #define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove.")
 #define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again.")
 #define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save.")
+#define SAY_BLUETOOTH SNX_TR_KEYS("Tap: search, sync, forget or change.")
 #endif
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
 #define SAY_QUEUE_MOVE   SNX_TR_KEYS("Tap: select.")
@@ -1144,6 +1167,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_DRIVERS          SNX_TR_KEYS("Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back.")
 #define SAY_FETCH            SNX_TR_KEYS("Up/Down: row. Enter: downloads, or fetch again. ESC: back.")
 #define SAY_FREEDRENO        SNX_TR_KEYS("Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back.")
+#define SAY_BLUETOOTH                                                                                                  \
+    SNX_TR_KEYS("Up/Down: row. Left/Right: change. Enter: search or sync. Del: forget. ESC: back.")
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
 #define SAY_QUEUE_MOVE       SNX_TR_KEYS("Up/Down: queue.")
 #define SAY_QUEUE_TAB        SNX_TR_KEYS("Tab: games.")
@@ -1184,6 +1209,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_DRIVERS          SNX_TR_KEYS("D-pad: row. A: use, add or remove. X: remove. B: back.")
 #define SAY_PAD_FETCH            SNX_TR_KEYS("D-pad: row. A: downloads, or fetch again. B: back.")
 #define SAY_PAD_FREEDRENO        SNX_TR_KEYS("D-pad: row. A: apply, type, remove or save. X: remove. B: back.")
+#define SAY_PAD_BLUETOOTH        SNX_TR_KEYS("D-pad: row, change. A: search or sync. X: forget. B: back.")
 #define SAY_PAD_TAB              SNX_TR_KEYS("LB/RB: screen.")
 #define SAY_PAD_QUEUE_MOVE       SNX_TR_KEYS("D-pad: queue.")
 #define SAY_PAD_QUEUE_TAB        SNX_TR_KEYS("RB: games.")
@@ -2860,7 +2886,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_ADDONS:
         case GUI_ASK_SAVES:
         case GUI_ASK_DELETE_OLD:
-        case GUI_ASK_PACK: return app->ask_line;
+        case GUI_ASK_PACK:
+        case GUI_ASK_FORGET: return app->ask_line;
         case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
@@ -3304,6 +3331,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Overwrite")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Import")},
                                              {SNX_TR_NOOP("NSP"), SNX_TR_NOOP("XCI")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Forget")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3333,6 +3361,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_CAUTION, /* Overwrite: users.ini, kept as users.ini.old */
                                      UI_ATTR_CAUTION, /* Import: the saves there to the trash */
                                      0,               /* XCI: a pack that changes nothing kept */
+                                     UI_ATTR_CAUTION, /* Forget: a Joy-Con 2, synced again with its sync button */
                                      0};
 typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
@@ -3404,7 +3433,11 @@ static void splash_with(App* app, const GuiTheme* t, const SnxSplashSvg* svg) {
 }
 static void splash_start(App* app) {
     const GuiTheme* t = gui_splash_theme(&app->theme, (int)SDL_rand(100));
-    if (t->splash_ms) splash_with(app, t, &snx_splash_svgs[SDL_rand(snx_splash_svg_count)]);
+    SDL_Time now = 0;
+    SDL_DateTime date = {0};
+    int month = SDL_GetCurrentTime(&now) && SDL_TimeToDateTime(now, &date, true) ? date.month : 0;
+    const SnxSplashSvg* svg = snx_splash_pick(month, (unsigned)SDL_rand(1 << 30));
+    if (t->splash_ms && svg) splash_with(app, t, svg);
 }
 static int splash_shown(App* app) {
     SDL_Rect view;
@@ -3521,6 +3554,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"open or remove", GUI_ICON_POINTER},
                  {"use, add or remove", GUI_ICON_POINTER},
                  {"apply, type, remove or save", GUI_ICON_POINTER},
+                 {"search, sync, forget or change", GUI_ICON_POINTER},
                  {"press", GUI_ICON_POINTER},
                  {"change", GUI_ICON_SLIDERS_HORIZONTAL},
                  {"step 1", GUI_ICON_SLIDERS_HORIZONTAL},
@@ -3532,6 +3566,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"save states", GUI_ICON_SAVE},
                  {"save", GUI_ICON_SAVE},
                  {"refresh", GUI_ICON_REFRESH_CW},
+                 {"search or sync", GUI_ICON_REFRESH_CW},
                  {"back", GUI_ICON_ARROW_LEFT},
                  {"exit", GUI_ICON_LOG_OUT},
                  {"abort", GUI_ICON_X},
@@ -3545,6 +3580,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"reset", GUI_ICON_ROTATE_CCW},
                  {"delete", GUI_ICON_TRASH},
                  {"remove", GUI_ICON_TRASH},
+                 {"forget", GUI_ICON_TRASH},
                  {"add", GUI_ICON_FOLDER_PLUS},
                  {"edit", GUI_ICON_PENCIL},
                  {"type", GUI_ICON_PENCIL},
@@ -3694,6 +3730,7 @@ static int screen_parts(const App* app, bool pad, const char** parts) {
                    : app->form == GUI_FORM_DRIVERS   ? SAY_PAD_DRIVERS
                    : app->form == GUI_FORM_FETCH     ? SAY_PAD_FETCH
                    : app->form == GUI_FORM_FREEDRENO ? SAY_PAD_FREEDRENO
+                   : app->form == GUI_FORM_BLUETOOTH ? SAY_PAD_BLUETOOTH
                                                      : SAY_PAD_SETTINGS;
         else
             keys = app->menu.view == GUI_LOAD_GAMES  ? SAY_PAD_GAMES
@@ -3719,6 +3756,7 @@ static int screen_parts(const App* app, bool pad, const char** parts) {
                    : app->form == GUI_FORM_DRIVERS   ? SAY_DRIVERS
                    : app->form == GUI_FORM_FETCH     ? SAY_FETCH
                    : app->form == GUI_FORM_FREEDRENO ? SAY_FREEDRENO
+                   : app->form == GUI_FORM_BLUETOOTH ? SAY_BLUETOOTH
                                                      : SAY_SETTINGS;
         else if (app->menu.view == GUI_LOAD_GAMES)
             keys = games_grid(app) ? SAY_GAMES_GRID : SAY_GAMES;
@@ -6883,6 +6921,11 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
     else if (app->form == GUI_FORM_FREEDRENO)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
+    else if (app->form == GUI_FORM_BLUETOOTH && app->page >= 0) { /* Controllers' page */
+        snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
+                 snx_tr(app->settings.keys[app->page].key));
+        for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
+    }
     else if (app->own_picks) { /* a game's own: its name, as its row says it */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s"), app->game_title);
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
@@ -11651,11 +11694,18 @@ static void open_group(App* app, int g) {
 }
 static void open_pad(App* app, int row);
 static bool pad_page(const App* app, int row);
+static bool bt_page(const App* app, int row);
+static void open_bluetooth(App* app);
 /* a page's rows (settings.h), from its row in the group; the button map's, the pad drawn */
 static void open_page(App* app, int row) {
     const GuiSetting* page = &screen_settings(app)->values[row];
     if (pad_page(app, row)) {
         open_pad(app, row);
+        return;
+    }
+    if (bt_page(app, row)) { /* Controllers' Bluetooth: its settings, the search and the controllers */
+        app->page = row;
+        open_bluetooth(app);
         return;
     }
     gui_editor_form(&app->editor, screen_settings(app)->keys + page->first, page->count, screen_settings(app)->values,
@@ -11736,6 +11786,9 @@ static void pad_close(App* app);
 /* ESC on a screen: a group's and the App's go back to the groups, the theme editor to where it was opened */
 static void device_stop(App* app);
 static void list_games(App* app);
+static void bt_search_stop(App* app);
+static void open_bluetooth(App* app);
+static void bt_forget(App* app);
 static void leave_form(App* app) {
     int form = app->form;
     device_stop(app);
@@ -11778,6 +11831,13 @@ static void leave_form(App* app) {
         open_app(app, GUI_APP_DRIVERS);
     else if (form == GUI_FORM_FREEDRENO)
         open_app(app, GUI_APP_FREEDRENO);
+    else if (form == GUI_FORM_BLUETOOTH) { /* back to its row in Controllers */
+        int row = app->page;
+        bt_search_stop(app);
+        open_group(app, app->group);
+        app->editor.row = SDL_max(row_of(app, row), 0);
+        app->editing = true;
+    }
     else if (form == GUI_FORM_THEME && app->theme_from_app) {
         app->theme_from_app = false;
         open_app(app, GUI_APP_EDITOR);
@@ -12111,11 +12171,353 @@ static int setting_row(const App* app, const char* key) {
         if (screen_settings(app)->values[i].key && !strcmp(screen_settings(app)->values[i].key, key)) return i;
     return -1;
 }
+/* ---- Controllers > Bluetooth (gui/bluetooth.h): the Joy-Con 2 controllers games connect themselves (the runtime's
+   setting joycon2, src/nx/runtime/platform/joycon2.c), as joycon2.txt of the user's config folder names them, which the
+   runtime reads as a game starts. Its rows: Joy-Con 2 and its mouse scale, Search, then a controller each. Search
+   listens GUI_BT_SEARCH_MS for the controllers nearby (the system's scan: BlueZ on Linux), never as the page opens, and
+   stops as the page is left and before a run starts, so a game's connection never waits for it. Enter on a controller
+   waiting to sync (its sync button held) syncs it, joycon2.txt gaining it; Del forgets a known one. Nothing here
+   connects, pairs or trusts a controller ---- */
+static void bt_search_stop(App* app) {
+    snx_ble_scan_close(app->bt_scan); /* its connection to the system's Bluetooth closed: its search ends with it */
+    app->bt_scan = NULL;
+    app->bt_until = 0;
+}
+/* the setting row r of the page is, -1 for none (this build lists no such setting), -2 for no setting's row */
+static int bt_setting(const App* app, int r) {
+    return r == GUI_BT_ROW_ON      ? setting_row(app, "joycon2")
+           : r == GUI_BT_ROW_SCALE ? setting_row(app, "joycon2_mouse_scale")
+                                   : -2;
+}
+/* a setting row greyed: a setting of other systems (joycon2 is Linux's), or one this build lists none of */
+static bool bt_row_off(App* app, int r) {
+    int s = bt_setting(app, r);
+    return s == -1 || (s >= 0 && (app->settings.values[s].only || app->settings.values[s].needs_build));
+}
+/* what the page shows: the rows, their states, a search's seconds left */
+static unsigned bt_signature(const App* app, Uint64 now) {
+    unsigned h = (unsigned)app->bt.count;
+    for (int i = 0; i < app->bt.count; ++i) {
+        const GuiBtDevice* d = &app->bt.dev[i];
+        h = h * 31u + d->address[4] * 257u + d->address[5];
+        h = h * 31u + (unsigned)gui_bt_state(d) * 2u + (unsigned)d->known;
+        h = h * 31u + (unsigned)d->battery_mv / 10u;
+    }
+    return h * 31u + (app->bt_scan && app->bt_until > now ? (unsigned)((app->bt_until - now) / 1000u) + 1u : 0u);
+}
+/* a controller's row r: its side and its address's last two bytes (the whole in its help, so its state fits beside),
+   its state, and what Enter and Del do with it */
+static void bt_device_row(App* app, int r, const GuiBtDevice* d) {
+    /* by state (gui/bluetooth.h's GUI_BT_*): a controller not known, then a known one */
+    static const char* const unknown[] = {SNX_TR_NOOP("Not nearby"),      SNX_TR_NOOP("Nearby"),
+                                          SNX_TR_NOOP("Waiting to sync"), SNX_TR_NOOP("Connecting"),
+                                          SNX_TR_NOOP("Ready"),           SNX_TR_NOOP("Failed")};
+    static const char* const known[] = {SNX_TR_NOOP("Known"),         SNX_TR_NOOP("Known, nearby"),
+                                        SNX_TR_NOOP("Known, nearby"), SNX_TR_NOOP("Connecting"),
+                                        SNX_TR_NOOP("Ready"),         SNX_TR_NOOP("Failed")};
+    char address[18], *value = app->bt_form.value[r], *about = app->bt_about[r];
+    int state = gui_bt_state(d);
+    size_t n, room = sizeof app->bt_about[r];
+    snx_ble_address_text(d->address, address);
+    /* its last two bytes, which tell the controllers nearby apart */
+    if (d->pro)
+        snprintf(app->bt_label[r], sizeof app->bt_label[r], snx_tr("Pro Controller 2 %s"), address + 12);
+    else
+        snprintf(app->bt_label[r], sizeof app->bt_label[r], snx_tr("Joy-Con 2 (%s) %s"), d->right ? "R" : "L",
+                 address + 12);
+    snprintf(value, sizeof app->bt_form.value[r], "%s", snx_tr(d->known ? known[state] : unknown[state]));
+    if (d->battery_mv) {
+        n = strlen(value);
+        snprintf(value + n, sizeof app->bt_form.value[r] - n, snx_tr(", %d.%02d V"), d->battery_mv / 1000,
+                 d->battery_mv % 1000 / 10);
+    }
+    n = (size_t)snprintf(about, room, "%s: ", address);
+    if (d->known)
+        n += (size_t)snprintf(about + n, room - n, "%s",
+                              snx_tr("known: a game with Joy-Con 2 on connects it as it starts, while it is awake, "
+                                     "without pairing it, so it stays paired with its console. Enter or Del forgets it, asked first"));
+    else if (state == GUI_BT_WAITING)
+        n += (size_t)snprintf(about + n, room - n, "%s",
+                              snx_tr("waiting to sync, its sync button held: Enter syncs it, and a game with Joy-Con 2 "
+                                     "on connects it from then on, without pairing it"));
+    else
+        n += (size_t)snprintf(about + n, room - n, "%s",
+                              snx_tr("paired with a console, which it stays paired with: hold its sync button, on its "
+                                     "side, to sync it here"));
+    if (d->serial[0] && n < room) n += (size_t)snprintf(about + n, room - n, snx_tr(". Serial %s"), d->serial);
+    if (d->rssi && d->heard != GUI_BT_AWAY && n < room)
+        snprintf(about + n, room - n, snx_tr(". Signal %d dBm"), d->rssi);
+    app->bt_keys[r] = page_row(app->bt_label[r], offsetof(GuiBtForm, value) + (size_t)r * sizeof app->bt_form.value[0],
+                               sizeof app->bt_form.value[0], about);
+}
+/* the page's rows: the settings', Search's, a controller's each. How many */
+static int bt_fill(App* app, Uint64 now) {
+    static const char* const labels[] = {SNX_TR_NOOP("Joy-Con 2"), SNX_TR_NOOP("Mouse scale")};
+    int r;
+    for (r = GUI_BT_ROW_ON; r <= GUI_BT_ROW_SCALE; ++r) {
+        int s = bt_setting(app, r);
+        if (s >= 0) {
+            gui_settings_shown(&app->settings, s, app->bt_form.value[r], sizeof app->bt_form.value[r]);
+            snprintf(app->bt_about[r], sizeof app->bt_about[r], "%s",
+                     app->settings.keys[s].about ? app->settings.keys[s].about : "");
+        } else {
+            snprintf(app->bt_form.value[r], sizeof app->bt_form.value[r], "%s", snx_tr("Not in this build"));
+            snprintf(app->bt_about[r], sizeof app->bt_about[r], "%s",
+                     snx_tr("This build has no Switch runtime, whose setting it is"));
+        }
+        app->bt_keys[r] = page_row(labels[r], offsetof(GuiBtForm, value) + (size_t)r * sizeof app->bt_form.value[0],
+                                   sizeof app->bt_form.value[0], app->bt_about[r]);
+    }
+    if (app->bt_scan && app->bt_until > now)
+        snprintf(app->bt_form.value[r], sizeof app->bt_form.value[r], snx_tr("%d s left"),
+                 (int)((app->bt_until - now + 999) / 1000));
+    else
+        snprintf(app->bt_form.value[r], sizeof app->bt_form.value[r], "%s", snx_tr("Off"));
+    app->bt_keys[r] =
+        page_row(SNX_TR_NOOP("Search"), offsetof(GuiBtForm, value) + (size_t)r * sizeof app->bt_form.value[0],
+                 sizeof app->bt_form.value[0],
+                 SNX_TR_NOOP("Listens 30 s for the Joy-Con 2 nearby, each shown with its state. Hold a "
+                             "controller's sync button, on its side, until its lights run: Enter on it "
+                             "syncs it. Nothing connects or pairs here"));
+    for (int i = 0; i < app->bt.count && ++r < GUI_BT_ROWS; ++i) bt_device_row(app, r, &app->bt.dev[i]);
+    return r + 1;
+}
+/* the page's rows made again, its note, focus and scroll kept */
+static void bt_show(App* app, int row) {
+    char note[sizeof app->editor.note];
+    int top = app->editor.top, n;
+    Uint64 now = now_ms(app);
+    snprintf(note, sizeof note, "%s", app->editor.note);
+    n = bt_fill(app, now);
+    gui_editor_form(&app->editor, app->bt_keys, n, &app->bt_form, NULL);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(row, 0, n - 1);
+    app->editor.top = SDL_clamp(top, 0, n - 1);
+    app->form = GUI_FORM_BLUETOOTH;
+    app->editing = true;
+    app->bt_shown = bt_signature(app, now);
+}
+static void open_bluetooth(App* app) {
+    char* dir = snx_user_dir(SNX_USER_CONFIG);
+    bool on;
+    int s = setting_row(app, "joycon2");
+    const char* value = s >= 0 ? gui_settings_value(&app->settings, "joycon2") : NULL;
+    free(app->bt_path);
+    app->bt_path = dir ? snx_path_join(dir, "joycon2.txt") : NULL; /* where the runtime looks (joycon2.c known_path) */
+    free(dir);
+    on = value ? atoi(value) != 0 : s >= 0 && app->settings.values[s].def && atoi(app->settings.values[s].def);
+    if (!app->bt_path)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("No config folder: controllers cannot be synced here"));
+    else if (gui_bt_read(&app->bt, app->bt_path) < 0)
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s does not read"), app->bt_path);
+    else if (!on)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Joy-Con 2 is Off: games connect no controller until it is On"));
+    else
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Search, then hold a controller's sync button: it shows here waiting to sync"));
+    bt_show(app, GUI_BT_ROW_SEARCH);
+}
+/* Joy-Con 2 stepped Off or On, the mouse scale 0.1 a step, kept at once as the Controllers group keeps them */
+static void bt_setting_step(App* app, int r, int step) {
+    const char* key = r == GUI_BT_ROW_ON ? "joycon2" : "joycon2_mouse_scale";
+    int s = bt_setting(app, r);
+    const char* now = s >= 0 ? gui_settings_value(&app->settings, key) : NULL;
+    const char* def = s >= 0 && app->settings.values[s].def ? app->settings.values[s].def : "";
+    char value[32], shown[GUI_SETTING_TEXT + 32];
+    if (s < 0) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("This build has no Switch runtime, whose setting it is"));
+        return;
+    }
+    if (bt_row_off(app, r)) { /* as a group's greyed row says it */
+        gui_settings_shown(&app->settings, s, shown, sizeof shown);
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("%s: %s. A game on this system runs the same whatever it says, and it stays %s"),
+                 snx_tr(app->settings.keys[s].key), snx_tr(app->settings.values[s].only), shown);
+        return;
+    }
+    if (r == GUI_BT_ROW_ON)
+        snprintf(value, sizeof value, "%d", !atoi(now ? now : def));
+    else {
+        double scale = SDL_clamp(strtod(now ? now : def, NULL) + (step < 0 ? -0.1 : 0.1), 0.1, 10.0);
+        snprintf(value, sizeof value, "%.1f", scale);
+    }
+    if (!gui_settings_set(&app->settings, key, value)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not taken: %s=%s"), key, value);
+        return;
+    }
+    app->editor.note[0] = 0;
+    write_settings(app);
+    if (r == GUI_BT_ROW_ON && !app->editor.note[0])
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("The games read it as they start: one playing now keeps what it started with"));
+}
+/* Search: the controllers nearby for GUI_BT_SEARCH_MS, or the search going on stopped */
+static void bt_search(App* app) {
+    char why[300] = "";
+    if (app->bt_scan) {
+        bt_search_stop(app);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Search stopped"));
+        return;
+    }
+    if (app->menu.running) { /* its connections would wait for the search */
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("A game is running, which connects the controllers itself: Search once it ends"));
+        return;
+    }
+    app->bt_scan = snx_ble_system_open(why, sizeof why);
+    if (app->bt_scan && snx_ble_scan_start(app->bt_scan, SNX_BLE_NINTENDO, why, sizeof why)) bt_search_stop(app);
+    if (!app->bt_scan) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("No search: %s"), why);
+        gui_log("Bluetooth: no search: %s", why);
+        return;
+    }
+    app->bt_until = now_ms(app) + GUI_BT_SEARCH_MS;
+    snprintf(app->editor.note, sizeof app->editor.note,
+             snx_tr("Searching %d s: hold a controller's sync button, then Enter on its row"), GUI_BT_SEARCH_MS / 1000);
+}
+/* Del or Enter on known controller i: its forgetting asked first (GUI_ASK_FORGET), as GPU Drivers' Remove is */
+static void bt_forget_ask(App* app, int i) {
+    char address[18];
+    const GuiBtDevice* d = &app->bt.dev[i];
+    memcpy(app->bt_forget, d->address, 6);
+    snx_ble_address_text(d->address, address);
+    if (d->pro)
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Forget Pro Controller 2 %s? Games no longer connect it; it stays paired with its console, and "
+                        "its sync button syncs it here again."),
+                 address);
+    else
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and "
+                        "its sync button syncs it here again."),
+                 d->right ? "R" : "L", address);
+    gui_confirm_open(&app->confirm, GUI_ASK_FORGET, false);
+}
+/* the forgetting taken: its lines out of joycon2.txt, the other lines kept */
+static void bt_forget(App* app) {
+    char why[300], address[18];
+    int i, right, pro;
+    for (i = 0; i < app->bt.count && memcmp(app->bt.dev[i].address, app->bt_forget, 6); ++i) {}
+    snx_ble_address_text(app->bt_forget, address);
+    right = i < app->bt.count && app->bt.dev[i].right;
+    pro = i < app->bt.count && app->bt.dev[i].pro;
+    if (i == app->bt.count || !app->bt.dev[i].known)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Not known: nothing to forget"));
+    else if (gui_bt_forget(&app->bt, i, app->bt_path, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not forgotten: %s"), why);
+        say_failure(app, app->editor.note);
+    } else if (pro)
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Forgotten: Pro Controller 2 %s. Games no longer connect it; it stays paired with its console"),
+                 address);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Forgotten: Joy-Con 2 (%s) %s. Games no longer connect it; it stays paired with its console"),
+                 right ? "R" : "L", address);
+    if (app->editing && app->form == GUI_FORM_BLUETOOTH) bt_show(app, app->editor.row);
+}
+/* Enter on controller i: synced when it waits to sync, else what to do */
+static void bt_sync(App* app, int i) {
+    char why[300], address[18], *dir;
+    GuiBtDevice d;
+    if (i < 0 || i >= app->bt.count) return;
+    d = app->bt.dev[i];
+    snx_ble_address_text(d.address, address);
+    if (d.known) { /* a tap's way to forget it too */
+        bt_forget_ask(app, i);
+        return;
+    }
+    if (d.heard != GUI_BT_WAITING) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Paired with a console: hold its sync button, on its side, to sync it here"));
+        return;
+    }
+    dir = snx_user_dir(SNX_USER_CONFIG);
+    if (dir) snx_mkdirs(dir);
+    free(dir);
+    if (!app->bt_path || gui_bt_sync(&app->bt, i, app->bt_path, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not synced: %s"),
+                 app->bt_path ? why : snx_tr("no config folder"));
+        say_failure(app, app->editor.note);
+        return;
+    }
+    if (d.pro)
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Synced: Pro Controller 2 %s. A game with Joy-Con 2 on connects it as it starts, without "
+                        "pairing it"),
+                 address);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Synced: Joy-Con 2 (%s) %s. A game with Joy-Con 2 on connects it as it starts, without pairing "
+                        "it"),
+                 d.right ? "R" : "L", address);
+}
+/* Del: a known controller forgotten, a setting back to its default */
+static void bt_delete(App* app, int r) {
+    int s = bt_setting(app, r), i = r - GUI_BT_ROW_FIRST;
+    if (s >= 0) {
+        gui_settings_reset(&app->settings, s);
+        app->editor.note[0] = 0;
+        write_settings(app);
+    } else if (i >= 0 && i < app->bt.count && !app->bt.dev[i].known)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Not known: nothing to forget"));
+    else if (i >= 0 && i < app->bt.count)
+        bt_forget_ask(app, i);
+    bt_show(app, r);
+}
+/* Enter, Left or Right on row r */
+static void bt_action(App* app, int r, int step) {
+    if (bt_setting(app, r) != -2)
+        bt_setting_step(app, r, step);
+    else if (r == GUI_BT_ROW_SEARCH && !step)
+        bt_search(app);
+    else if (r >= GUI_BT_ROW_FIRST && !step)
+        bt_sync(app, r - GUI_BT_ROW_FIRST);
+    bt_show(app, r);
+}
+/* each frame: what the search heard, its end, the controllers no longer heard, the rows when they changed. The search
+   goes with the page */
+static void bt_pump(App* app) {
+    Uint64 now = now_ms(app);
+    if (!app->editing || app->form != GUI_FORM_BLUETOOTH) {
+        if (app->bt_scan) bt_search_stop(app);
+        return;
+    }
+    if (app->bt_scan) {
+        SnxBleAdvert heard[16];
+        char why[300] = "";
+        int n;
+        while ((n = snx_ble_scan_poll(app->bt_scan, heard, 16, why, sizeof why)) > 0)
+            for (int i = 0; i < n; ++i) gui_bt_heard(&app->bt, &heard[i], now);
+        if (n < 0) {
+            bt_search_stop(app);
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("The search stopped: %s"), why);
+        } else if (now >= app->bt_until) {
+            bt_search_stop(app);
+            snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                     snx_tr("The search ended: Search again to look for more"));
+        }
+    }
+    gui_bt_tick(&app->bt, now);
+    if (!app->editor.typing && bt_signature(app, now) != app->bt_shown) bt_show(app, app->editor.row);
+}
 /* the page gamepad_map is on */
 static bool pad_page(const App* app, int row) {
     const GuiSetting* page = &screen_settings(app)->values[row];
     int map = setting_row(app, "gamepad_map");
     return map >= 0 && map >= page->first && map < page->first + page->count;
+}
+/* the page of the Joy-Con 2 settings (settings.txt's Controllers/Bluetooth), which Bluetooth's own form shows in the
+   launcher's Settings. A game's own shows its rows as its other pages, Global until picked: the form keeps the
+   launcher's settings, and the controllers synced are every game's */
+static bool bt_page(const App* app, int row) {
+    const GuiSetting* page = &screen_settings(app)->values[row];
+    int on = setting_row(app, "joycon2");
+    return !app->own_picks && on >= 0 && on >= page->first && on < page->first + page->count;
 }
 /* the pad's name, its labels and what it holds now */
 static void pad_sync(App* app) {
@@ -12710,6 +13112,10 @@ static void editor_key(App* app, GuiKey key) {
         if (what == GUI_EDITOR_ACTION && !app->editor.step) fetch_select(app, app->editor.row);
         if (what != GUI_EDITOR_LEAVE) return;
     }
+    if (app->form == GUI_FORM_BLUETOOTH) { /* Search, a controller synced, a setting stepped */
+        if (what == GUI_EDITOR_ACTION) bt_action(app, app->editor.row, app->editor.step);
+        if (what != GUI_EDITOR_LEAVE) return;
+    }
     if (app->form == GUI_FORM_DRIVERS) { /* a row used, a package's box, or Add Driver's picker */
         if (what == GUI_EDITOR_ACTION && !app->editor.step) driver_select(app, app->editor.row);
         if (what != GUI_EDITOR_LEAVE) return;
@@ -12755,6 +13161,12 @@ static void editor_input(App* app, const SDL_Event* e) {
         gui_settings_reset(screen_settings(app), setting_of(app, app->editor.row));
         app->editor.dirty = true;
         keep_settings(app);
+        return;
+    }
+    /* Bluetooth: Del forgets a known controller, a setting back to its default */
+    if (app->form == GUI_FORM_BLUETOOTH && !app->editor.typing &&
+        (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        bt_delete(app, app->editor.row);
         return;
     }
     /* GPU Drivers: Del removes a package, asked first; Freedreno Settings: a variable */
@@ -13042,6 +13454,7 @@ static bool form_row_off(App* app, const GuiEditor* e, int r) {
     if (setting >= 0)
         return screen_settings(app)->values[setting].only != NULL || screen_settings(app)->values[setting].needs_build;
     if (e->keys == app->drivers_keys) return driver_row_off(app, r);
+    if (e->keys == app->bt_keys) return bt_row_off(app, r);
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||
                (r == GUI_APP_RESET && app->settings.keys && !gui_settings_changed(&app->settings));
@@ -13068,6 +13481,7 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
                : r == GUI_APP_MOVE      ? GUI_ICON_FOLDER_INPUT
                : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW
                                         : GUI_ICON_NONE;
+    if (e->keys == app->bt_keys) return r == GUI_BT_ROW_SEARCH ? GUI_ICON_REFRESH_CW : GUI_ICON_NONE;
     if (e->keys == app->drivers_keys)
         return r == app->drivers_tail + 1 ? GUI_ICON_PACKAGE_PLUS
                : r == app->drivers_tail   ? GUI_ICON_HARD_DRIVE_DOWNLOAD
@@ -16964,6 +17378,8 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         driver_remove(app);
     else if (ask == GUI_ASK_CRASH)
         probe_clear(app);
+    else if (ask == GUI_ASK_FORGET)
+        bt_forget(app);
 }
 /* the functions an AOT pack used, from the driver's line, -1 when it printed none */
 static int aot_built(const GuiSteps* steps) {
@@ -17014,8 +17430,10 @@ static void titles_look(App* app, Uint64 now) {
     app->titles_ms = now;
     if (titles_unknown(app) < app->titles_unknown) games_relist(app);
 }
+static void bt_pump(App* app);
 static void pump(App* app) {
     hold_tick(app);
+    bt_pump(app);
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
@@ -18961,6 +19379,7 @@ static bool transition_on(const App* app, const char* file) {
     return on;
 }
 static bool run_start(App* app, const char* const* argv, char* file, bool native, bool prepared, bool recent) {
+    bt_search_stop(app); /* the game may connect a Joy-Con 2, which a search going on would hold up */
 #ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
     pad_mappings_share(app);
 #endif
@@ -21771,7 +22190,7 @@ static void ask_key(App* app, GuiKey key) {
         pack_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
-             ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)
+             ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH || ask == GUI_ASK_FORGET)
         change_answer(app, ask, second);
     else if (ask == GUI_ASK_CLOSE && second) { /* the run ends with the menu, the queue's recompile too */
         if (app->menu.running) abort_run(app);
@@ -23606,6 +24025,8 @@ static void forget(App* app) {
     SDL_DestroyWindow(app->window);
 }
 static void cleanup(App* app) {
+    bt_search_stop(app);
+    free(app->bt_path);
     forget(app);
     gui_pads_stop(&app->pads);
     /* pads_hold's, the window already gone: FreeBSD's libusb_exit may still wait out its 4 s here */

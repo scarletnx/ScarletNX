@@ -18,7 +18,13 @@
 #include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 #include <stdarg.h>
+
+/* The translation phases timed for the trace's dominant-phase detail. */
+enum { P86_DECODE, P86_DATAFLOW, P86_STRUCTURE, P86_ALLOC, P86_EMIT, P86_N };
+static const char* const sm86_phase_name[P86_N] = {"decode", "dataflow", "structure", "alloc", "emit"};
 
 #define MAX_INTERFACES 256
 
@@ -108,12 +114,13 @@ typedef struct {
     u32 tex_images[SH_MAXTEX]; /* a table slot's image table, 0 for a slot of its own variable */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
-    u32 point_coord, front_facing, primitive_id;
+    u32 point_coord, front_facing, primitive_id, layer_in;
     u32 frag_size; /* FragmentSizeNV or ShadingRateKHR (g_spirv_translate.shading_rate) */
     /* a geometry program: its input position (an array of the input primitive's vertices, as its in_attr are), its
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
        whether its SPH asks for passthrough */
     u32 position_in, primitive_id_in, primitive_id_out, viewport_mask;
+    u32 layer_out; /* the layer's output (BuiltIn Layer), made at its first store */
     /* a vertex or geometry program's ClipDistance output, 8 planes (clip_var) */
     u32 clip;
     int passthrough;
@@ -159,6 +166,7 @@ typedef struct {
     BrxTable* brx_table; /* by instruction, the jump table that brx_resolve found for its BRX */
     int brx_resolved;    /* brx_resolve has looked for the tables */
     u32 cur;         /* the instruction being written */
+    u32 nblocks, nbranches; /* the program's blocks and branches, for the trace's plots */
     /* the registers an IPA that ipa_over_w takes writes, and those a MUFU.RCP writes, a bit each, made at the first
        FMUL fmul_over_w looks at: an FMUL of two others needs no search */
     u32 over_w_ipa[8], over_w_rcp[8];
@@ -194,6 +202,8 @@ static void fail(Ctx* c, const char* fmt, ...) {
     vsnprintf(c->si->first_unsupported, sizeof c->si->first_unsupported, fmt, ap);
     va_end(ap);
     c->si->unsupported++;
+    SNX_MSG(c->si->first_unsupported, strlen(c->si->first_unsupported));
+    SNX_PLOT("shader translate failures", 1);
 }
 static void add_interface(Ctx* c, u32 id) {
     if (c->ninterfaces < MAX_INTERFACES)
@@ -1011,6 +1021,19 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
            a pixel, is what the translation gives without it. The game's driver writes no table for the index (the
            hardware's reset table), so the rate it selects is not known */
         return;
+    } else if (addr == 0x64) {
+        /* the layer: BuiltIn Layer, which a geometry program writes with the Geometry capability it has, and another
+           stage with ShaderLayer where the device has it (spirv_translate.c's rule): without it the write is dropped,
+           as there */
+        if (c->stage != ST_GS && !g_spirv_translate.output_layer) return;
+        if (!c->layer_out) {
+            if (c->stage != ST_GS) spv_emit_layer_capability(&c->e);
+            c->layer_out = spv_emit_layer_output(&c->e, c->t_i32);
+            add_interface(c, c->layer_out);
+        }
+        spv_emit_store(&c->e, c->layer_out, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, bits));
+        c->si->writes_layer = 1;
+        return;
     } else if (addr == 0x6c) {
         /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the
            Maxwell translator leaves it (spirv_translate.c declares the output only with
@@ -1076,6 +1099,7 @@ static void gs_passthrough(Ctx* c) {
         saved[a] = written ? spv_emit_load(e, c->t_v4f, out[a]) : empty;
     }
     u32 size = c->point_size ? spv_emit_load(e, c->t_f32, c->point_size) : 0;
+    u32 layer = c->layer_out ? spv_emit_load(e, c->t_i32, c->layer_out) : 0;
     /* and the clip distances, which EmitVertex leaves undefined too (emit_io.c's saved_clip for Maxwell's) */
     u32 clip_saved[8] = {0};
     for (u32 plane = 0; plane < 8 && c->clip; plane++)
@@ -1106,6 +1130,7 @@ static void gs_passthrough(Ctx* c) {
             spv_emit_store(e, out[a], value);
         }
         if (c->point_size) spv_emit_store(e, c->point_size, size);
+        if (c->layer_out) spv_emit_store(e, c->layer_out, layer);
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), clip_saved[plane]);
         spv_emit_store(e, c->primitive_id_out, id);
@@ -3656,10 +3681,12 @@ static u32 image_scalar(Ctx* c, u32 kind) { return kind == 0 ? c->t_f32 : kind =
 /* NAK's ImageDim (bits 61-63): the SPIR-V dimension, arrayed, and the integer coordinates */
 static int image_dim(u32 dim, u32* sdim, u32* array, u32* coords, u32* type) {
     /* ShaderInfo.img[].type is the code itself (0 1D, 1 1D buffer, 2 1D array, 3 2D, 4 2D array, 5 3D), which the
-       renderer reads as Maxwell's SUST dimension */
+       renderer reads as Maxwell's SUST dimension. A 1D buffer is a storage texel buffer (SPIR-V's Buffer, 5), which the
+       renderer binds at SNX_VKB_IMGBUF as for a Maxwell program */
     *type = dim;
     switch (dim) {
         case 0: *sdim = 0, *array = 0, *coords = 1; return 1;
+        case 1: *sdim = 5, *array = 0, *coords = 1; return 1;
         case 2: *sdim = 0, *array = 1, *coords = 2; return 1;
         case 3: *sdim = 1, *array = 0, *coords = 2; return 1;
         case 4: *sdim = 1, *array = 1, *coords = 3; return 1;
@@ -3698,23 +3725,27 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         si->img[slot].bl_cbuf = (u8)bank;
         si->img[slot].kind = (u8)kind;
         if (kind != 1) spv_emit_capability(&c->e, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
-        c->img[slot] =
-            spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
-                                   sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
+        c->img[slot] = spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage),
+                                              (sdim == 5 ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)slot,
+                                              sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
         add_interface(c, c->img[slot]);
     }
-    /* integer coordinates, a 1D image's as a 2D one's */
-    u32 a = sm86_field(in, 24, 8), v[4], count = 0;
-    for (u32 k = 0; k < coords; k++) {
-        if (sdim == 0 && k == 1) v[count++] = c->zero;
-        v[count++] = rd(c, a >= SM86_RZ ? a : a + k);
-    }
-    if (sdim == 0 && coords == 1) v[count++] = c->zero;
-    u32 ivec = count == 2 ? spv_emit_type_vec2(&c->e, c->t_i32) : spv_emit_type_vec3(&c->e, c->t_i32);
-    u32 uvec = count == 2 ? c->t_v2u : c->t_v3u;
-    u32 coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
+    /* integer coordinates, a 1D image's as a 2D one's, a buffer's one element index */
+    u32 a = sm86_field(in, 24, 8), v[4], count = 0, coord;
+    if (sdim == 5)
+        coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, a));
+    else {
+        for (u32 k = 0; k < coords; k++) {
+            if (sdim == 0 && k == 1) v[count++] = c->zero;
+            v[count++] = rd(c, a >= SM86_RZ ? a : a + k);
+        }
+        if (sdim == 0 && coords == 1) v[count++] = c->zero;
+        u32 ivec = count == 2 ? spv_emit_type_vec2(&c->e, c->t_i32) : spv_emit_type_vec3(&c->e, c->t_i32);
+        u32 uvec = count == 2 ? c->t_v2u : c->t_v3u;
+        coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
                                count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
                                           : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
+    }
     if (atomic) {
         /* SURED: NAK's set_atom_op at 87-89 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor) and atom type at 73-75 (0
            u32, 1 s32), the data at 32 */
@@ -3990,9 +4021,22 @@ static int coop_frag_find(Ctx* c, u32 b, u32 first, u32 n, u32 shape) {
     }
     return -1;
 }
-/* the matrices of a staged fragment kept for this block, whatever moved the slot after them */
+/* the matrices of a staged fragment kept for this block, whatever moved the slot after them. A full cache first drops
+   the fragments whose registers were written since, which no HMMA can find again (coop_gen only counts up within a
+   block): a straight-line block stages more than COOP_FRAGS of them, and without this its cache stays full of dead
+   entries after the first ones, so every HMMA after that stages both its fragments again */
 static void coop_frag_hold(Ctx* c, u32 b, u32 first, u32 n, u32 shape, const u32* mat, u32 nmat) {
-    if (c->nfrags == COOP_FRAGS) return;
+    if (c->nfrags == COOP_FRAGS) {
+        u32 keep = 0;
+        for (u32 i = 0; i < c->nfrags; i++) {
+            const CoopFrag* f = &c->coop_frags[i];
+            u32 k = 0;
+            while (k < f->n && f->gen[k] == c->coop_gen[f->first + k]) k++;
+            if (k == f->n) c->coop_frags[keep++] = *f;
+        }
+        c->nfrags = keep;
+        if (keep == COOP_FRAGS) return;
+    }
     CoopFrag* f = &c->coop_frags[c->nfrags++];
     f->b = b, f->first = first, f->n = n, f->shape = shape, f->nmat = nmat;
     for (u32 k = 0; k < n; k++) f->gen[k] = c->coop_gen[first + k];
@@ -5781,6 +5825,7 @@ static ShStructure* build_structure(Ctx* c) {
     }
     u32 nb = 0;
     for (u32 i = 0; i < n; i++) nb += leader[i];
+    c->nblocks = nb;
     /* the blocks: their starts, successors (two words each), the switches' first case (nb + 1 words) and
        terminators */
     u32* start = calloc((size_t)nb * 4 + 2, sizeof *start);
@@ -6609,21 +6654,36 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
 }
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
                        int can_flush) {
+    /* the whole SM86 translation, with the clock read only when a client can take the plot */
+    int trace = snx_tracy_enter();
+    u64 t0 = trace ? plat_ns() : 0;
+    if (trace) snx_tracy_leave();
+    u64 phase[P86_N] = {0}, h = 0, pt = 0;
     if (!code || !si || !word_count || stage < ST_VS || stage > ST_MS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
     if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
         si->unsupported = 1;
         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                  "a tessellation control program with no invocation (the passthrough takes its place)");
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         return NULL;
     }
     if (stage != ST_VS && stage != ST_GS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
         return NULL;
     }
     u32 n = bytes / 16;
+    SNX_ZONE_TV(z_snx_sm86, "shader translate sm86", n, "stage %d, %u insn", stage, n);
+    if (trace) {
+        h = snx_fnv1a(SNX_FNV_BASIS, code, bytes);
+        SNX_ZONE_TEXT(z_snx_sm86, "stage %d, %u insn, hash %016llx", stage, n, (unsigned long long)h);
+        (void)h; /* the text's arguments are dropped without a client */
+    }
     Ctx* c = calloc(1, sizeof *c);
     u64* words = malloc((size_t)n * 16);
     Sm86Insn* insn = malloc((size_t)n * sizeof *insn);
@@ -6656,6 +6716,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         else if ((sph[4] & 0xfff) > 256 || (sph[2] >> 24) > 32)
             fail(c, "%u geometry output vertices or %u invocations", sph[4] & 0xfff, sph[2] >> 24);
     }
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_decode, "shader decode");
     sm86_load(code, n, words);
     u32 top = 0;
     for (u32 i = 0; i < n; i++) {
@@ -6663,9 +6725,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             fail(c, "unknown opcode 0x%03x", (u32)(words[2 * i] & 0xfff));
         else if (!stage_ok(c, &insn[i]))
             fail(c, "%s in stage %d", sm86_ops[insn[i].op].name, stage);
+        if (!c->failed && (is_brx(insn[i].op) || insn[i].op == SM86_BRA)) c->nbranches++;
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    SNX_ZONE_END(z_snx_decode);
+    if (trace) phase[P86_DECODE] += plat_ns() - pt;
+    SNX_PLOT("shader instructions", (double)n);
+    SNX_PLOT("shader branches", (double)c->nbranches);
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_dataflow, "shader dataflow");
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;
@@ -6730,10 +6799,22 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         sm86_fuse_make(insn, n, fuse, c->failed ? 0 : kept);
     }
     if (!c->failed && !track_globals(c)) fail(c, "out of memory");
+    SNX_ZONE_END(z_snx_dataflow);
+    if (trace) phase[P86_DATAFLOW] += plat_ns() - pt;
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_structure, "shader structure");
     ShStructure* st = c->failed ? NULL : build_structure(c);
+    SNX_ZONE_TEXT(z_snx_structure, "%s", st ? "structured" : "no structure");
+    if (!st && c->si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_structure, "why: %.80s", c->si->first_unsupported);
+    SNX_ZONE_VALUE(z_snx_structure, st ? 1 : 0); /* 1 structured, 0 the dispatch loop is needed */
+    SNX_ZONE_END(z_snx_structure);
+    if (trace) phase[P86_STRUCTURE] += plat_ns() - pt;
+    SNX_PLOT("shader blocks", (double)c->nblocks);
     u32* out = NULL;
     if (!c->failed && st) {
         SpvEmitter* e = &c->e;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_alloc, "shader alloc");
         spv_emit_init(e, (size_t)n * 40 + 512);
         spv_emit_shader_capability(e);
         /* hmma_coop's matrices, which SPV_KHR_cooperative_matrix allows in a module of the Vulkan memory model only */
@@ -6843,6 +6924,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
+        SNX_ZONE_END(z_snx_alloc);
+        if (trace) phase[P86_ALLOC] += plat_ns() - pt;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_emit, "shader emission");
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;
@@ -6906,6 +6991,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 if (merge) coop_label(c, merge);
             }
         }
+        SNX_ZONE_END(z_snx_emit);
+        if (trace) phase[P86_EMIT] += plat_ns() - pt;
         if (se.open && !c->failed) {
             epilogue(c);
             coop_end(c);
@@ -6989,5 +7076,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(insn);
     free(words);
     free(c);
+    if (trace) {
+        int dom = 0;
+        for (int i = 1; i < P86_N; i++)
+            if (phase[i] > phase[dom]) dom = i;
+        SNX_ZONE_VALUE(z_snx_sm86, dom + 1); /* 1 decode, 2 dataflow, 3 structure, 4 alloc, 5 emit */
+        SNX_ZONE_TEXT(z_snx_sm86, "%u spv words, hash %016llx, %s, %s %llu us", out ? (unsigned)*word_count : 0u,
+                      (unsigned long long)h, out ? "made" : "rejected", sm86_phase_name[dom],
+                      (unsigned long long)(phase[dom] / 1000));
+        if (!out && si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_sm86, "rejected: %.80s", si->first_unsupported);
+        SNX_PLOT("shader sm86 translate us", (double)(plat_ns() - t0) / 1000.0);
+    }
     return out;
 }

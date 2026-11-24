@@ -8,11 +8,20 @@
    handed to the state under its lock, and the clock's frame of every started renderer (audio.c's audio_clock) queued
    to the host. The update's parsing, the output buffer's layout and the frame itself are audren_dsp.c's */
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/hle.h"
 #include <stdatomic.h>
+
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+[[maybe_unused]] static SnxTracyLock* audren_lock_context(void) {
+    void* named = atomic_load_explicit(&g_host.audren.lk.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 
 /* the open renderers (ARRen, services_int.h), each named by its slot in g_hle.audren.rens plus 1, with its play state
    and the parameters it reads back (nn/audio_renderer.c sets them). g_host.audren.lk guards the renderers and every
@@ -99,6 +108,7 @@ int audren_update(u32 id, u64 in, u64 in_size, u64 out, u64 out_size) {
     R_UNLESS(r, SNX_RC_AUDIO_INVALID_HANDLE);
     R_UNLESS(in && out && in_size >= 0x40, SNX_RC_AUDIO_INVALID_UPDATE_INFO); /* not even an update's header */
     pm_lock(&g_host.audren.lk);
+    SNX_LOCK_MARK(audren_lock_context()); /* held here, the audio thread's tick waits */
     rc = audren_state_update(r->s, GP(in), in_size, GP(out), out_size);
     pm_unlock(&g_host.audren.lk);
     if (rc == -41) R_THROW(SNX_RC_AUDIO_INVALID_UPDATE_INFO);
@@ -190,6 +200,7 @@ void audren_tick(void) {
     i16* stereo = g_hle.audren.stereo;
     u32 i;
     pm_lock(&g_host.audren.lk);
+    SNX_LOCK_MARK(audren_lock_context()); /* held here, the game's update and volume calls wait */
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* r = &g_hle.audren.rens[i];
         u32 bytes;
@@ -197,20 +208,43 @@ void audren_tick(void) {
         if (atomic_load_explicit(&r->state, memory_order_acquire) != SNX_AUDREN_STARTED) continue;
         if (!audren_frame(r->s, stereo)) continue;
         if (!r->out && !r->out_failed) { /* the device sink's first frame: stereo at the renderer's rate */
+#if defined(SNX_TRACY)
+            u64 t_open = plat_ns(); /* only read for the plot, so unused without a client */
+#endif
             r->out = plat_audio_open(r->s->rate, 2);
             r->out_failed = !r->out;
+#if defined(SNX_TRACY)
+            SNX_PLOT("audio sink open us", (double)((plat_ns() - t_open) / 1000));
+#endif
+            /* a rare decision: the first frame opens the sink, with the result as the reason */
+            SNX_ZONE_T(z_sink_open, "audio sink open", "%s", r->out ? "ok" : "host device failed");
             if (r->out) plat_audio_volume(r->out, g_hle.audren.gain); /* the device's volume, set before it opened */
         }
-        if (!r->out) continue;
+        if (!r->out) {
+            SNX_ZONE_T(z_no_sink, "audio no sink", "renderer %u: sink cannot open", i + 1);
+            continue;
+        }
         bytes = r->s->frame * 4;
         u32 queued = plat_audio_queued(r->out);
         /* stereo s16: the bytes the device still holds, in milliseconds of audio */
-        SNX_PLOT("audio queued ms", (double)queued / ((double)r->s->rate * 4.0) * 1000.0);
+        [[maybe_unused]] double ms = (double)queued / ((double)r->s->rate * 4.0) * 1000.0;
+        SNX_PLOT("audio queued ms", ms);
         /* nothing left on the device while the renderer is playing: the sound stopped for as long as the host took
            to give it the next frame, which a stalled run's audio shows as a click */
-        SNX_PLOT("audio underruns", r->out_started && !queued ? 1.0 : 0.0);
+        int underrun = r->out_started && !queued;
+        SNX_PLOT("audio underruns", underrun ? 1.0 : 0.0);
+        if (underrun) { /* a rare decision: the device had nothing to play at this tick, so queued is always 0 */
+            SNX_ZONE_T(z_underrun, "audio sink underrun", "renderer %u: the device was empty", i + 1);
+        }
         int cut = r->out_started ? audren_queued_frame(r, queued) : 0;
-        if (cut < 0) continue;
+        if (cut < 0) {
+            /* too much held: the frame is dropped to keep latency bounded, so the sink would need a bigger queue */
+            SNX_ZONE_T(z_sink_full, "audio sink full", "renderer %u: %.1f ms queued", i + 1, ms);
+            continue;
+        }
+        if (cut) {
+            SNX_ZONE_T(z_sink_shorten, "audio sink shorten", "renderer %u: %d frames cut", i + 1, cut);
+        }
         i16* play = stereo;
         u32 n = r->s->frame;
         if (cut) {

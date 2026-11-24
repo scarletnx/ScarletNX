@@ -99,7 +99,7 @@ void nvn_draw_free(NvnDraw* d);
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size);
 /* On the GPU thread, a samples-passed report of the queue at address ({count, ticks}), in order with its draws: 0
    when the queue's counter wasn't reset, and the caller writes a count of its own */
-int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks);
+int nvn_draw_samples(NvnDraw* d, u64 address);
 /* the device's window origin and depth mode (NVN_WINDOW_ORIGIN_MODE_*, NVN_DEPTH_MODE_*), which every queue's draws
    take from now on */
 void nvn_draw_device(u32 origin, u32 depth_mode);

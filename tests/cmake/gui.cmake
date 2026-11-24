@@ -36,6 +36,11 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-covers "${PROJECT_SOURCE_DIR}/tests/gui_covers.c")
     target_link_libraries(snx-test-gui-covers PRIVATE snx_gui_support)
     add_test(NAME gui_covers COMMAND snx-test-gui-covers)
+    # Controllers > Bluetooth's controllers (gui/bluetooth.h) and the scan's fake backend: joycon2.txt read, a
+    # controller synced and forgotten, the runtime's states; no Bluetooth
+    add_executable(snx-test-gui-bluetooth "${PROJECT_SOURCE_DIR}/tests/gui_bluetooth.c")
+    target_link_libraries(snx-test-gui-bluetooth PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_bluetooth COMMAND snx-test-gui-bluetooth)
     add_executable(snx-test-gui-recent "${PROJECT_SOURCE_DIR}/tests/gui_recent.c")
     target_link_libraries(snx-test-gui-recent PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_recent COMMAND snx-test-gui-recent)
@@ -109,7 +114,8 @@ if(BUILD_TESTING)
     if(CMAKE_CROSSCOMPILING_EMULATOR)
         set_tests_properties(gui_process_tree PROPERTIES DISABLED TRUE)
     endif()
-    add_executable(snx-test-gui-sdl "${PROJECT_SOURCE_DIR}/tests/gui_sdl.c")
+    add_executable(snx-test-gui-sdl "${PROJECT_SOURCE_DIR}/tests/gui_sdl.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     if(WIN32) # a crash there says where it was, not only ctest's SegFault
         target_sources(snx-test-gui-sdl PRIVATE "${PROJECT_SOURCE_DIR}/tests/win32_crash.c")
     endif()
@@ -149,7 +155,8 @@ if(BUILD_TESTING)
         set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 120 ENVIRONMENT "${gui_screen_env}")
     endif()
     # Saves (gui_saves_screen.c): its boxes and the picker's answers as gui_sdl's, with no picker of the desktop's
-    add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c")
+    add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     target_link_libraries(snx-test-gui-saves-screen PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE)
@@ -165,7 +172,8 @@ if(BUILD_TESTING)
         set_tests_properties(gui_saves_screen PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
-    add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")
+    add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     target_compile_definitions(snx-test-gui-setup PRIVATE SNX_GUI_THEMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/themes")
     target_link_libraries(snx-test-gui-setup PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
@@ -182,7 +190,8 @@ if(BUILD_TESTING)
         set_tests_properties(gui_setup PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
     # the pictures' colours on the real renderer (gui_pixel_order.c), which a big-endian host's byte order would swap
-    add_executable(snx-test-gui-pixel-order "${PROJECT_SOURCE_DIR}/tests/gui_pixel_order.c")
+    add_executable(snx-test-gui-pixel-order "${PROJECT_SOURCE_DIR}/tests/gui_pixel_order.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     target_link_libraries(snx-test-gui-pixel-order PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE)

@@ -21,6 +21,7 @@
 #include "nx/gpu/video/vic.h"
 #include "nx/gpu/renderer.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* A GOB, the unit of the block linear layout: 64 bytes wide and 8 rows high, stacked 1 << block_height high in a
    block (docs/layers/gpu/blocklinear.md) */
@@ -129,6 +130,7 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
     memset(o, 0, sizeof *o);
     if (!vic_slot_enable(rd64(sl, VIC_SLOT_CONFIG))) return;
     if (!is_yuv(fmt)) {
+        SNX_PLOT("video vic slot skipped", 1);
         WARN_LIMIT(4, "video: VIC slot format %#x isn't composed\n", fmt);
         return;
     }
@@ -138,7 +140,10 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
         dx0 &= ~1u;
         dy0 &= ~1u;
     }
-    if (sx1 < sx0 || sy1 < sy0 || dx1 < dx0 || dy1 < dy0 || !j->tw || !j->th) return;
+    if (sx1 < sx0 || sy1 < sy0 || dx1 < dx0 || dy1 < dy0 || !j->tw || !j->th) {
+        SNX_PLOT("video vic slot skipped", 1);
+        return;
+    }
     w = sx1 - sx0 + 1;
     h = sy1 - sy0 + 1;
     if (w != dx1 - dx0 + 1 || h != dy1 - dy0 + 1) {
@@ -149,14 +154,23 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
     }
     /* the target rectangle (inside the surface) cuts the source by as much as the destination */
     if (dx0 < j->tx0) {
-        if ((cut = j->tx0 - dx0) >= w) return;
+        if ((cut = j->tx0 - dx0) >= w) {
+            SNX_PLOT("video vic slot skipped", 1);
+            return;
+        }
         sx0 += cut, dx0 += cut, w -= cut;
     }
     if (dy0 < j->ty0) {
-        if ((cut = j->ty0 - dy0) >= h) return;
+        if ((cut = j->ty0 - dy0) >= h) {
+            SNX_PLOT("video vic slot skipped", 1);
+            return;
+        }
         sy0 += cut, dy0 += cut, h -= cut;
     }
-    if (dx0 >= j->tx0 + j->tw || dy0 >= j->ty0 + j->th || sx0 >= iw || sy0 >= ih) return;
+    if (dx0 >= j->tx0 + j->tw || dy0 >= j->ty0 + j->th || sx0 >= iw || sy0 >= ih) {
+        SNX_PLOT("video vic slot skipped", 1);
+        return;
+    }
     w = snx_min_u32(snx_min_u32(w, j->tx0 + j->tw - dx0), iw - sx0);
     h = snx_min_u32(snx_min_u32(h, j->ty0 + j->th - dy0), ih - sy0);
     if (!plane_map(&o->iy, vic_offset_address(planes[0]), row_bytes(vic_luma_width(sizes), iw, block_linear), ih,
@@ -164,6 +178,7 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
         !plane_map(&o->ic, vic_offset_address(planes[1]),
                    row_bytes(vic_chroma_width(sizes) * 2, (iw + 1) / 2 * 2, block_linear), (ih + 1) / 2,
                    block_linear, block_height)) {
+        SNX_PLOT("video vic slot skipped", 1);
         WARN_LIMIT(8, "video: VIC slot %u's surface isn't mapped, slot skipped\n", s);
         memset(o, 0, sizeof *o);
         return;
@@ -266,28 +281,58 @@ int vic_gpu_aligned(const VicJob* j) {
     return plane_aligned(&j->oy) && plane_aligned(&j->oc);
 }
 
-/* Execute: the ConfigStruct at config_struct_offset, the output surface and each slot's Current surface, composed */
+/* Execute: the ConfigStruct at config_struct_offset, the output surface and each slot's Current surface, composed.
+   The zone's value is a small code for the outcome (0 composed, 1 no config, 2 no output, 3 nothing to compose,
+   4 before the renderer, 5 the GPU refused it) and its text the short reason */
 void vic_execute(const u32* r) {
     VicJob j = {0};
     const u8* cfg = iova_ptr(vic_offset_address(r[VIC_SET_CONFIG_STRUCT_OFFSET]), VIC_CONFIG_SIZE);
     u32 s;
+    u32 nslots = 0;
     int any = 0;
+    SNX_ZONE(z, "video vic job");
     if (!cfg) {
+        SNX_ZONE_VALUE(z, 1);
+        SNX_ZONE_TEXT(z, "config unmapped");
+        SNX_PLOT("video vic outcome", 1);
         WARN_LIMIT(8, "video: VIC config isn't mapped, job skipped\n");
         return;
     }
-    if (!job_output(&j, cfg, r)) return;
+    if (!job_output(&j, cfg, r)) {
+        SNX_ZONE_VALUE(z, 2);
+        SNX_ZONE_TEXT(z, "output refused");
+        SNX_PLOT("video vic outcome", 2);
+        return;
+    }
     for (s = 0; s < VIC_SLOTS; s++) {
         slot_resolve(&j, cfg + VIC_CONFIG_SLOT_STRUCTS + VIC_SLOT_STRUCT_SIZE * s, r + vic_slot_surface(s), s);
         any |= j.slots[s].on;
+        nslots += j.slots[s].on;
     }
-    if (!any && !j.tw) return;
+    SNX_PLOT("video vic slots", (double)nslots);
+    if (!any && !j.tw) {
+        SNX_ZONE_VALUE(z, 3);
+        SNX_ZONE_TEXT(z, "nothing to compose");
+        SNX_PLOT("video vic outcome", 3);
+        return;
+    }
     /* on the GPU, whose result stays there (docs/layers/gpu/ownership.md): a job before the renderer is up has nowhere to go */
     if (!g_renderer_up || !g_renderer || !g_renderer->vic_compose) {
+        SNX_ZONE_VALUE(z, 4);
+        SNX_ZONE_TEXT(z, "before renderer, deferred");
+        SNX_PLOT("video vic outcome", 4);
         WARN_LIMIT(4, "video: a VIC job before the renderer started, skipped\n");
         return;
     }
-    if (!g_renderer->vic_compose(&j))
+    if (!g_renderer->vic_compose(&j)) {
+        SNX_ZONE_VALUE(z, 5);
+        SNX_ZONE_TEXT(z, "GPU compose failed, %u slots", nslots);
+        SNX_PLOT("video vic outcome", 5);
         WARN_LIMIT(4, "video: the GPU could not compose a VIC job of %ux%u pixels: rows of it are not composed\n", j.tw,
                    j.th);
+        return;
+    }
+    SNX_ZONE_VALUE(z, 0);
+    SNX_ZONE_TEXT(z, "composed %u slots, %ux%u", nslots, j.tw, j.th);
+    SNX_PLOT("video vic outcome", 0);
 }

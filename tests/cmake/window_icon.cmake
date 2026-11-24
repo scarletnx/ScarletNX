@@ -5,7 +5,8 @@
 if(BUILD_TESTING)
     add_executable(snx-test-window-icon "${PROJECT_SOURCE_DIR}/tests/window_icon.c")
     target_link_libraries(snx-test-window-icon PRIVATE snx_window_icon)
-    target_compile_definitions(snx-test-window-icon PRIVATE SNX_WINDOW_ICON_FILE="${snx_window_icon_png}")
+    target_compile_definitions(snx-test-window-icon PRIVATE SNX_WINDOW_ICON_FILE="${snx_window_icon_png}"
+        SNX_WINDOW_ICON_XMAS_FILE="${snx_window_icon_xmas_png}")
     target_compile_options(snx-test-window-icon PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME window_icon COMMAND snx-test-window-icon)
     set_tests_properties(window_icon PROPERTIES ENVIRONMENT "SDL_VIDEO_DRIVER=dummy")

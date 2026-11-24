@@ -185,6 +185,7 @@ typedef struct {
     /* VK_NV_device_diagnostic_checkpoints, enabled with vk_checkpoints=1 where the device has it: the draw or dispatch a
        GPU fault hangs on (record.c's vk_checkpoint_dump). has_checkpoints below is checkpoints.c's markers, on it too */
     int has_nv_checkpoints;
+    int has_nv_diag_config; /* VK_NV_device_diagnostics_config, with vk_checkpoints=1 */
     int has_fault; /* VK_EXT_device_fault: the GPU's own report of a fault, at a lost device */
     int has_coverage_to_color, has_post_depth_coverage;
     VkSampleLocationCaps sample_locations;
@@ -318,6 +319,7 @@ typedef struct {
     _Atomic int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     u32 compute_timestamp_bits; /* the compute queue family's (astc.c's stream times its encodes there) */
+    int has_host_query_reset; /* Vulkan 1.2's hostQueryReset, on: stamp.c resets its timestamps from the host */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
     /* VK_EXT_pageable_device_local_memory with VK_EXT_memory_priority: where the GPU's own memory is short, the driver
@@ -386,6 +388,7 @@ void vk_lock(void);
 void vk_unlock(void);
 int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
+void vk_lock_log(void);  /* the contended waits since the last report, by where the holder took it */
 int vk_lock_held(void);  /* this thread holds vk_lock */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
@@ -515,7 +518,7 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
 /* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) and uma_memory how (0 auto, 1 imported only, 2
    moved only) on a device of model VK_MEM_*, where guest memory can move into dma-bufs (has_dmabuf) and the driver's
    imports cost each submission (dear): VK_UMA_WITH_* */
-int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear);
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear, int host_discrete);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -523,6 +526,8 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
    every submission, and vertices, indices and constant buffers are copied instead (buffer.c) */
 int vk_uma_imports_dear(void);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+int vk_uma_storage_copied(void); /* read-only storage is copied as vertices are where imports are dear (uma.c) */
+int vk_uma_through_dmabuf(void);  /* guest memory reaches the GPU through dma-bufs (uma.c) */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
@@ -532,7 +537,12 @@ void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [g
 /* Storage and transform feedback written in place: [gva, gva + len) bound where it is for a draw or dispatch to write,
    the write pending once the draw is recorded (vk_uma_writes_commit) until its submit is done. 0 when it is copied out
    as a pending result instead (buffer.c). vk_lock held */
-int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
+/* the front end's storage barriers for the writes in place (order): one asked for, which the next write over the
+   pages read or written since gets; one recorded from all commands, which orders all of them */
+void vk_uma_order_request(void);
+void vk_uma_ordered(void);
+u64 vk_uma_barrier_count(void); /* the barriers order recorded, for the tests */
 /* why a write in place was refused, for the statistics every 600 presents: a result of the renderer pending over the
    range, bytes the GPU owns, a compute result pending, a storage image not published, a queued release (buffer.c's
    checks before vk_uma_write), and vk_uma_write's own: not one run of guest memory, the draw's table full, bytes the
@@ -786,6 +796,9 @@ void vk_finish_at(const char* file, int line);
 void vk_finish_letting_go_at(const char* file, int line);
 #define vk_finish_letting_go() vk_finish_letting_go_at(__FILE__, __LINE__)
 void vk_finishes_log(void);
+/* this thread's reason for what a finish lands (a guest write, a read of guest memory, ...), for vk_finishes_log's
+   sites: the renderer's hooks set it around the calls that land images, and surf_flush names it in its log line */
+extern _Thread_local const char* g_vk_finish_who;
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
@@ -835,6 +848,9 @@ void vk_frame_hold(u64 frame_id);
 u64 vk_last_submit(void);          /* the last submission's number, which its completion signals */
 VkSemaphore vk_gfx_timeline(void); /* the timeline those numbers are values of: another queue can wait for one */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
+void vk_submit_progress_raw(u64* submitted, u64* done); /* the same, with no stop on a lost device */
+/* a lost device's stop: the fault and checkpoint reports, then fatal(msg). One thread reports, others wait for it */
+[[noreturn]] void vk_lost_stop(const char* msg);
 void vk_wait_submit(u64 value); /* until the GPU has done that submission (any thread, without vk_lock) */
 /* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
    (cmd.c), where a wait for good froze the game */
@@ -903,9 +919,10 @@ u64 vk_memory_blocks(void);              /* the bytes of devmem.c's blocks in al
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 u32 vk_frame_cbs(void);                  /* the command buffers the slot being recorded has */
 /* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets, array_sets of them with the
-   texture arrays (gpu/vk/pipeline.c). */
-#define VK_POOL_TYPES 6 /* uniform/storage buffers, combined textures, storage images/texels, sampled images */
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
+   texture arrays (gpu/vk/pipeline.c). The count of them the pool takes: the last, the dynamic uniform buffers
+   (cb_dynamic.h), only where the layouts have some */
+#define VK_POOL_TYPES 7 /* uniform/storage buffers, combined textures, storage images/texels, sampled images, dynamic */
+u32 vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 VkDescriptorType
 vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_spirv_translate.uniform_cbufs) */
@@ -1446,7 +1463,10 @@ Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
-void vk_rt_before_write(u64 gva, u64 size);
+/* The guest (or a GPU engine's result) writes [gva, gva + size): every pending target over those bytes goes to
+   memory first, except one the write covers whole when whole says the caller writes every byte of its range. Such a
+   target's image has nothing of its own to give back, so it is dropped instead: memory is the truth (rt_cover.h) */
+void vk_rt_before_write(u64 gva, u64 size, int whole);
 void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
 /* whether a render target that is not parked covers any of guest memory [cpu, cpu + size), through any GPU address
@@ -1595,6 +1615,8 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* whether vk_rt_overlay has a render target to record over [gva, gva + size) */
 int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
+/* render targets dropped instead of written back: the guest wrote every byte of them, so memory is the truth */
+extern u64 g_vk_rt_dropped;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 /* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
@@ -1822,6 +1844,15 @@ typedef struct VkOwnRes {
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
+    u8 no_pool;  /* landed by vk_own_trim for the budget: deferred back to the heap instead of pooled */
+    u8 landed;   /* a landing copied from it (owned.c land_note), for the statistics of results let go unread */
+    /* Its bytes copied early into host-cached memory (owned.c early_copy): the copy recorded right after the writes,
+       in submission early_value, of [early_off, early_off + early_size) of buf. A landing takes them while serial is
+       still early_serial (no write since) and that submission is done. early_key is the key it was hot by */
+    VkBuffer early;
+    DevMem early_mem;
+    u8* early_ptr;
+    u64 early_off, early_size, early_serial, early_value, early_key;
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
     /* buf's device address, 0 until an indirect copy or an in-place read asks for it (owned.c res_addr) */
     VkDeviceAddress addr;
@@ -1851,7 +1882,8 @@ void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
 void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
 /* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
-   device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
+   device memory is short or the results hold more than an eighth of its budget, the largest results left alone land
+   in guest memory, a few a present (owned.c) */
 /* memory.c: size bytes of system memory in one allocation found none with room in the heap: 1 when g_vk.alloc_cap
    came down for it, and the caller asks again within the cap */
 int vk_alloc_cap_lower(u64 size);
@@ -1947,6 +1979,22 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 int vk_guest_owned_by(u64 gva, u64 size, u64 serial);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
+/* the same, counted for the statistics by the file that asks (vk_all_barrier_log) */
+enum {
+    VK_BAR_BLIT,
+    VK_BAR_BUFFER,
+    VK_BAR_COMPUTE,
+    VK_BAR_DMA,
+    VK_BAR_NVDEC,
+    VK_BAR_PAGESPACE,
+    VK_BAR_RENDER,
+    VK_BAR_SURFACE,
+    VK_BAR_TEXTURE,
+    VK_BAR_UMA,
+    VK_BAR_N
+};
+void vk_all_barrier_by(int site, VkCommandBuffer cb);
+void vk_all_barrier_log(void);
 /* The stages that read or write buffers: indirect arguments, vertex and index input, every shader, the transfers, and
    transform feedback, conditional rendering and indirect copies where the device has them. A barrier between buffers'
    writers and readers names these, not ALL_COMMANDS, which also waits for the color and depth targets' output (images
@@ -2258,6 +2306,7 @@ void* vk_nvdec_hw_device(u32 codec);
    tiles (the blocks of its lines' GOB columns) */
 int vk_dma_copy(const GpuDmaOp* o);
 void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
+void vk_dma_log(void); /* the statistics of the launches since the last report, with those apart from the one before */
 /* A transfer that may be more than one buffer can hold (cap: g_vk.alloc_cap, or less), taken in bands of lines: the
    DMA's copies, the 2D engine's blits (blit.c), VIC's jobs (vic.c). need(user, y, n): the most bytes one of the
    buffers of lines [y, y + n) takes. A band ends where its end, counted from base, is a multiple of unit (a block
@@ -2600,6 +2649,7 @@ void vk_mirror_mem_need(u64 gva, u64 len);
    their landing in guest memory */
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit);
 void vk_mirror_done(u64 done);
+void vk_mirror_diff_log(void); /* the time and the bytes of its compares of CPU-written pages, since the last */
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room);
 /* statistics: the granules with memory that no binding took in the last presents presents */
 u64 vk_mirror_idle(u32 presents);
@@ -2732,6 +2782,13 @@ void vk_release_incr(u32 id);
 /* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's counter's
    segments [first, end), once the GPU has done the submit being recorded */
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks);
+/* renderer.h release_stamp: a 16-byte timestamp report, its ticks at offset 8 from stamp.c once its submission is done
+   (top: NVN's TIMESTAMP_TOP, the time the work reached the top of the pipe) */
+void vk_release_stamp(u64 gva, const void* data, int top);
+/* renderer.h release_stamp_sync (gpu_release_stamp_sync): with no fix pending for cpu's tag, it returns at once without
+   vk_lock */
+int vk_release_stamp_sync(u64 cpu, int may_wait);
+void vk_release_stamp_reset(void); /* drop pending fixups on save-state load (vkr_reset) */
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 /* Counts the points after which a draw must see in its textures what earlier draws wrote: the guest's texture barriers
@@ -2809,6 +2866,7 @@ void vk_buf_land(void);
 void vk_buf_land_syncwait(void);
 void vk_buf_land_map(void);
 void vk_buf_frame_done(u64 frame);
+void vk_buf_frame_done_log(void); /* the time of its parts since the last report */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */
@@ -3192,6 +3250,9 @@ VkShaderModule vk_module_spv(const u32* words, size_t count);
 VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 location);
 /* pipelines of earlier runs made in the background: made so far, how many the pipeline cache had, and still to make */
 void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
+/* the pipelines made in under 5 ms, the draws' and the file's: from a cache, whatever the driver's feedback says; and
+   the draws' made as shader objects, which no pipeline cache serves */
+void vk_pipeline_fast_stats(u64* fast, u64* early_fast, u64* so);
 /* until the workers have made every queued pipeline and wait for more: none is inside the driver then. A process that
    returns from main sooner can run the driver's exit handlers under a worker's vkCreateGraphicsPipelines (any thread,
    without vk_lock) */
@@ -3582,10 +3643,16 @@ enum {
     VK_SUB_BACKGROUND,
     VK_SUB_N
 };
+/* the one name of each reason for a submission: cmd.c's zone and gpuprof.c's log use it, so a reason reads the same in
+   both */
+extern const char* const g_vk_sub_name[VK_SUB_N];
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
 extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
+/* the one name of each kind of the CPU's wait for the graphics timeline: cmd.c's zone, gpuprof.c's log and plots all
+   use it, so a kind reads the same in every report */
+extern const char* const g_vk_wait_name[VK_WAIT_N];
 /* Each dispatch recorded into the frame's command buffer, timed (record.c's rec_CmdDispatch): begin before it, 1 when
    it is timed, end after it. tag names the next one: a compute program's key, or the VK_PROF_* of one of the
    renderer's own pipelines */
@@ -3677,6 +3744,22 @@ void vk_gpuprof_fill_totals(u64* subs, u64* fill_ns);
 extern u64 g_vk_timestamps, g_vk_timestamps_read;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
+/* stamp.c: the timestamps of NVN's timestamp reports from the host GPU's busy time. A command buffer's start (vk_cmd)
+   and its end (submitted as the graphics timeline's value). A report's timestamp in the command buffer being recorded:
+   0 for none, and the report keeps the GPU thread's time. Its value in GPU ticks: 1 with it, -1 while its submission
+   isn't done, 0 when it has none. The submissions done through done fold their timestamps into values */
+void vk_stamp_cb_begin(VkCommandBuffer cb);
+void vk_stamp_cb_end(VkCommandBuffer cb, u64 value);
+u64 vk_stamp_report(int top);
+int vk_stamp_ticks(u64 n, u64* ticks);
+/* submission number on the graphics timeline that holds timestamp n (submitting the open command buffer if n is in it),
+   0 if already folded or unknown */
+u64 vk_stamp_submit_of(u64 n);
+void vk_stamp_fold(u64 done);
+/* the runtime's own GPU work recorded between these, which the reports' times leave out (stamp.c); they nest */
+void vk_stamp_runtime_begin(void);
+void vk_stamp_runtime_end(void);
+void vk_stamp_reset(void); /* clear timeline epoch on save-state load (vkr_reset) */
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
 int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */

@@ -74,12 +74,14 @@ WHOLE = [
     ('Nightly due', 'skipped'),
 ]
 # the steps of the Linux jobs: Amberlith's runs on x86-64's, after its tests, and skipped on AArch64's
-PASSED = {'Build and install into /usr': 'success', 'Test under the sanitizers': 'success', 'Run Amberlith': 'success'}
+TESTS = 'Test native tooling and indexed filesystems'
+PASSED = {'Build and install into /usr': 'success', TESTS: 'success', 'Run Amberlith': 'success'}
 ARM = {'Build and install into /usr': 'success', 'Run Amberlith': 'skipped'}
-# a run of build.yml as it is: one job for each Linux architecture, with its tests and checks
+# a run of build.yml as it is: one job for each Linux architecture, with its tests and checks, and the sanitizers'
 NOW = [
     ('Linux AppImage (x86_64)', 'success', PASSED),
     ('Linux AppImage (aarch64)', 'success', ARM),
+    ('Linux (x86_64, ASan + UBSan)', 'success'),
     ('Linux AppImage (ppc64le)', 'success'),
     ('Windows (Clang + LLVM)', 'success'),
     ('Android APK', 'success'),
@@ -258,7 +260,7 @@ with tempfile.TemporaryDirectory() as temporary:
         text.endswith(f'\n\n[{TITLE}]({RUN}): failed, see its summary\n') and 'Not built' not in text,
         text,
     )
-    tests_failed = PASSED | {'Test under the sanitizers': 'failure', 'Run Amberlith': 'skipped'}
+    tests_failed = PASSED | {TESTS: 'failure', 'Run Amberlith': 'skipped'}
     text = comment(run_jobs=jobs(('Linux AppImage (x86_64)', 'failure', tests_failed), *NOW[1:]), notice=[])
     check(
         'a test failed before Amberlith ran: the job named, Amberlith skipped',

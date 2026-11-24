@@ -7,6 +7,7 @@
 #include <string.h>
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/platform/tracy.h"
 
 #include "hle/services/sm.swipc.inc"
 
@@ -84,11 +85,16 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
     for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
         if (!strcmp(s, g_native_only[i][0])) {
-            char missed[640]; /* what the hooks did not take for the game's SDK version, which may be why */
+            char missed[640];  /* what the hooks did not take for the game's SDK version, which may be why */
+            char unread[1024]; /* a 32-bit game's SDK that no declaration was read in, which is why */
             hook_missed_text(missed, sizeof missed);
+            hook_unread_text(unread, sizeof unread);
             /* the SDK function that asked is in the calls of the thread that sent this request */
             WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
             kernel_dump_threads();
+            if (*unread)
+                fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
+                      g_native_only[i][1], unread);
             fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
                   "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
                   "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
@@ -98,6 +104,7 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
         }
     o = svc_open(s);
     if (!o) {
+        SNX_ZONE_T(z_sm, "svc sm stand-in", "no service %s, a stand-in answers", s);
         WARN("sm: %s is not implemented, its commands answer without doing anything\n", s);
         o = sm_stand_in(s);
     }
@@ -113,6 +120,7 @@ static int nn_sm_detail_IUserInterface_RegisterService(SvcObj* self, const nn_sm
     char s[9];
     (void)self, (void)port;
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
+    SNX_ZONE_T(z_sm, "svc sm error", "game register of %s refused: not allowed", s);
     WARN("sm: the game registers a service of its own, %s (%d sessions%s): NotAllowed\n", s, max_sessions,
          is_light ? ", light" : "");
     R_THROW(SNX_RC_SM_NOT_ALLOWED);

@@ -43,6 +43,9 @@ void audio_state_rebuild(void);
    one again */
 void am_keyboard_answered(u32 ticket, int cancelled, const char* text);
 void am_state_loaded(void);
+/* The controller applet's dialog (am.c, through backend_controller_show): its answer from the main thread, for the
+   dialog of ticket, continued (0) or cancelled */
+void am_controller_answered(u32 ticket, int cancelled);
 /* the TV mode changed while the game runs: am's display resolution change event, and the performance mode message */
 void am_display_mode_changed(void);
 /* A collection's program starting another (nn::oe::ExecuteProgram, am's 120), as game_ini.h's SnxNext hands it over.
@@ -67,6 +70,7 @@ extern const StateFnTable g_am_state_fns;     /* am.c */
 extern const StateFnTable g_ldr_state_fns;    /* ldr.c */
 extern const StateFnTable g_misc_state_fns;   /* misc.c */
 extern const StateFnTable g_sm_state_fns;     /* sm.c */
+extern const StateFnTable g_hid_state_fns;    /* hid.c */
 /* how many nn::settings::Language values set knows, to check the language the settings file names */
 int set_language_count(void);
 #include "common/utilities/users.h" /* SNX_USERS_MAX, the .ini's user at most */

@@ -334,7 +334,7 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
     l.at = 0;
     if (size) out[0] = 0;
     for (s = 0; s < count; s++)
-        for (t = 0; t < 3 && sections[s].table[t]; t++) {
+        for (t = 0; t < INI_SECTION_TABLES && sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = sections[s].table[t]; o->key; o++) {
                 if (o->help)
@@ -372,6 +372,7 @@ static const struct {
                       {"game_dynamic_resolution", "went with the OpenGL renderer"},
                       {"low_priority_shader_compiler", "went with the OpenGL renderer"},
                       {"forced_vsync", "now vsync"},
+                      {"tracy_perf_map", "now perf_map"},
                       {"smooth_recording", "the F7 recorder went with the OpenGL renderer"},
                       {"recording_fps", "the F7 recorder went with the OpenGL renderer"},
                       {"lsfg", "LSFG went with the OpenGL renderer"},
@@ -397,9 +398,13 @@ static const struct {
                       {"write_tracking_hot",
                        "now write_tracking_hot_pages, whose 2 is Auto (write_tracking_hot's 0, its "
                        "default) and 1 On"},
+                      {"emulated_cores", "now emulated_cores_mode, of the same 0 (Off) and 1 (On) and 2, Auto, which "
+                                         "the 1 a .ini wrote, its default, is"},
                       {"controls_opacity", "the on-screen controls are opaque"},
                       {"controls_alpha", "the on-screen controls are opaque"},
                       {"controls_skin", "the on-screen controls are white shapes, with no skin"},
+                      {"unit_cache_gb", "the code units are held in memory now, up to unit_cache_ceil_mb: "
+                                        "units/ of the cache folder is not read, and deleting it frees its room"},
                       {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
                                          "later 3, is its Automatic"},
                       {"nvn_direct", "the runtime always runs the game's NVN calls"},
@@ -432,7 +437,8 @@ const char* ini_deprecated(const char* k) {
 }
 static const struct {
     const char *key, *now;
-} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {NULL, NULL}};
+    } INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"},
+                      {"tracy_perf_map", "perf_map"}, {NULL, NULL}};
 const char* ini_renamed(const char* k) {
     int i;
     for (i = 0; INI_RENAMED[i].key; i++)

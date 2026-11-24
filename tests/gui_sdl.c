@@ -15,6 +15,7 @@ static bool more_has(const App* app, const char* key, const char* label) {
 }
 #include "support/sdl_real_pads.h"
 #include "support/crc_forge.h"
+#include "support/ble_fake_system.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #include <miniz.h> /* Share Log's zip, read back */
@@ -1193,6 +1194,153 @@ static void players_view(App* app) {
     assert(app->form == GUI_FORM_SETTINGS);
     app->player = 0;
     leave_editor(app);
+}
+static void set_env(const char* name, const char* value);
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
+static SnxBleAdvert bt_advert(uint8_t last, int right, int syncing);
+#endif
+/* the Controllers group's Bluetooth page's row (settings.txt's Controllers/Bluetooth), -1 for none */
+static int bt_page_row(const App* app) {
+    for (int r = 0; r < app->settings.count; ++r)
+        if (app->settings.values[r].kind == GUI_SETTING_PAGE && !strcmp(app->settings.keys[r].key, "Bluetooth")) return r;
+    return -1;
+}
+/* Controllers > Bluetooth opened as a player does: the Controllers group, then Enter on its Bluetooth row */
+static void open_bt(App* app) {
+    int g = 1;
+    if (app->editing) leave_editor(app);
+    open_settings(app); /* the groups of the list read */
+    while (g < app->groups && strcmp(app->group_keys[g].key, "Controllers")) ++g;
+    assert(g < app->groups && bt_page_row(app) >= 0);
+    open_group(app, g);
+    app->editing = true;
+    app->editor.row = row_of(app, bt_page_row(app));
+    assert(app->editor.row >= 0);
+    key(app, SDLK_RETURN);
+}
+/* Controllers > Bluetooth's settings on a runtime's list that has them (the Controllers/Bluetooth page's joycon2 and
+   joycon2_mouse_scale, as the Linux runtime lists them): Joy-Con 2 stepped On, back Off (its default: no pick) and On
+   then Del, the mouse scale a step up, two down and Del, each kept in the settings file at once, as the group keeps
+   them; listed as another system's, the row greyed, its Enter saying so */
+static void bluetooth_settings(App* app, const char* temporary) {
+    static const char list[] =
+        "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tSwap A/B\tSwap A/B\t0=Off|1=On\n"
+        "Controllers/Bluetooth\tjoycon2\t0\tint\t0\t1\tJoy-Con 2 over Bluetooth\tJoy-Con 2\t0=Off|1=On\t\n"
+        "Controllers/Bluetooth\tjoycon2_mouse_scale\t1\tfloat\t0.1\t10\tIts mouse sensor's scale\tJoy-Con 2 mouse scale"
+        "\t\t\n";
+    static const char elsewhere[] =
+        "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tSwap A/B\tSwap A/B\t0=Off|1=On\n"
+        "Controllers/Bluetooth\tjoycon2\t0\tint\t0\t1\tJoy-Con 2 over Bluetooth\tJoy-Con 2\t0=Off|1=On\tLinux only\n";
+    char *settings = snx_path_join(temporary, "bt settings.ini"), *settings_was = app->settings_file;
+    if (app->editing) leave_editor(app);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    app->settings_file = settings;
+    { /* a game's own Settings on the same list: its Bluetooth page opens as its other pages, on the game's rows */
+        int g = 0, page = -1;
+        assert(!gui_settings_read_game(&app->game_settings, list));
+        gui_settings_mark(&app->game_settings);
+        app->own_picks = snx_path_join(temporary, "bt game.picks");
+        settings_top(app, 0);
+        while (g < app->groups && strcmp(app->group_keys[g].key, "Controllers")) ++g;
+        for (int r = 0; r < app->game_settings.count; ++r)
+            if (app->game_settings.values[r].kind == GUI_SETTING_PAGE &&
+                !strcmp(app->game_settings.keys[r].key, "Bluetooth"))
+                page = r;
+        assert(g < app->groups && page >= 0);
+        open_group(app, g);
+        app->editing = true;
+        app->editor.row = row_of(app, page);
+        assert(app->editor.row >= 0);
+        key(app, SDLK_RETURN);
+        assert(app->form == GUI_FORM_GROUP && app->page == page &&
+               app->editor.object == (char*)app->game_settings.values && !app->bt_scan);
+        leave_editor(app);
+        game_settings_close(app);
+    }
+    open_bt(app);
+    assert(app->form == GUI_FORM_BLUETOOTH && !form_row_off(app, &app->editor, GUI_BT_ROW_ON) &&
+           !form_row_off(app, &app->editor, GUI_BT_ROW_SCALE) && strstr(app->bt_form.value[GUI_BT_ROW_ON], "Off") &&
+           strstr(app->bt_form.value[GUI_BT_ROW_SCALE], "1"));
+    app->editor.row = GUI_BT_ROW_ON;
+    key(app, SDLK_RIGHT);
+    assert(setting_is(app, "joycon2", "1") && picks_have(app, "joycon2=1\n") &&
+           strstr(app->editor.note, "The games read it as they start") &&
+           strstr(app->bt_form.value[GUI_BT_ROW_ON], "On"));
+    key(app, SDLK_RETURN); /* Off again: its default, no pick */
+    assert(setting_is(app, "joycon2", NULL) && !picks_have(app, "joycon2=") &&
+           strstr(app->bt_form.value[GUI_BT_ROW_ON], "Off"));
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_DELETE); /* On, then Del: its default */
+    assert(setting_is(app, "joycon2", NULL) && !picks_have(app, "joycon2="));
+    app->editor.row = GUI_BT_ROW_SCALE;
+    key(app, SDLK_RIGHT);
+    assert(setting_is(app, "joycon2_mouse_scale", "1.1") && picks_have(app, "joycon2_mouse_scale=1.1\n"));
+    key(app, SDLK_LEFT);
+    key(app, SDLK_LEFT);
+    assert(setting_is(app, "joycon2_mouse_scale", "0.9") && picks_have(app, "joycon2_mouse_scale=0.9\n"));
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "joycon2_mouse_scale", NULL) && !picks_have(app, "joycon2_mouse_scale="));
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
+    { /* the page as a player finds it (SNX_TEST_BT_SHOT: saved there as a PNG): Joy-Con 2 On, the mouse scale stepped,
+         a search going on, a left one known and nearby, a right one waiting to sync */
+        const char* shot = getenv("SNX_TEST_BT_SHOT");
+        char *config = snx_path_join(temporary, "bt shot config"), *folder = snx_path_join(config, "scarletnx");
+        char *known = snx_path_join(folder, "joycon2.txt"), *was = NULL;
+        SnxBleAdvert left = bt_advert(1, 0, 0), right = bt_advert(2, 1, 1);
+        if (getenv("XDG_CONFIG_HOME")) was = snx_strdup(getenv("XDG_CONFIG_HOME"));
+        set_env("XDG_CONFIG_HOME", config);
+        assert(!snx_mkdirs(folder) && !snx_write_file(known, "98:B6:00:00:00:01 L\n", 20));
+        key(app, SDLK_ESCAPE);
+        key(app, SDLK_RETURN); /* opened again: joycon2.txt read */
+        app->editor.row = GUI_BT_ROW_ON;
+        key(app, SDLK_RIGHT);
+        app->editor.row = GUI_BT_ROW_SCALE;
+        key(app, SDLK_RIGHT);
+        app->editor.row = GUI_BT_ROW_SEARCH;
+        key(app, SDLK_RETURN);
+        assert(app->bt_scan && !snx_ble_fake_hear(app->bt_scan, &left) && !snx_ble_fake_hear(app->bt_scan, &right));
+        pump(app);
+        assert(gui_editor_rows(&app->editor) == GUI_BT_ROW_FIRST + 2 &&
+               !strcmp(app->bt_form.value[3], "Known, nearby") && !strcmp(app->bt_form.value[4], "Waiting to sync"));
+        app->editor.row = 4;
+        render(app);
+        if (shot) {
+            SDL_Surface* picture = SDL_RenderReadPixels(app->renderer, NULL);
+            assert(picture && SDL_SavePNG(picture, shot));
+            SDL_DestroySurface(picture);
+        }
+        shows(app, "Known, nearby", normal);
+        key(app, SDLK_DELETE); /* the settings back to their defaults, the search stopped with the page */
+        app->editor.row = GUI_BT_ROW_ON;
+        key(app, SDLK_DELETE);
+        app->editor.row = GUI_BT_ROW_SCALE;
+        key(app, SDLK_DELETE);
+        assert(setting_is(app, "joycon2", NULL) && setting_is(app, "joycon2_mouse_scale", NULL));
+        set_env("XDG_CONFIG_HOME", was);
+        free(was);
+        free(known);
+        free(folder);
+        free(config);
+    }
+#endif
+    key(app, SDLK_ESCAPE); /* back on its row in Controllers */
+    assert(app->form == GUI_FORM_GROUP && app->editor.row == row_of(app, bt_page_row(app)) && !app->bt_scan);
+    /* another system's: greyed, Enter saying where it does something, its value left */
+    leave_editor(app);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, elsewhere));
+    gui_settings_mark(&app->settings);
+    open_bt(app);
+    app->editor.row = GUI_BT_ROW_ON;
+    key(app, SDLK_RETURN);
+    assert(form_row_off(app, &app->editor, GUI_BT_ROW_ON) && setting_is(app, "joycon2", NULL) &&
+           strstr(app->editor.note, "Linux only") && strstr(app->editor.note, "runs the same whatever it says"));
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
+    app->settings_file = settings_was;
+    free(settings);
 }
 /* A setting that does something on other systems alone (settings.txt's only, which the runtime lists last on its line
    where this system is none of them): its row greyed with where beside its value, among the group's rows and beside
@@ -3252,6 +3400,170 @@ static char* driver_zip(const char* temporary, const char* name) {
     mz_free(zip);
     return path;
 }
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
+static void left_button(App* app, int x, int y, bool down);
+/* a Joy-Con 2's advert as the fake scan hears it: 98:B6:00:00:00:<last>, right or left, waiting to sync (no console's
+   address) or paired with a console */
+static SnxBleAdvert bt_advert(uint8_t last, int right, int syncing) {
+    static const uint8_t data[16] = {0x01, 0x00, 0x03, 0x7e, 0x05, 0x67, 0x20, 0x00, 0x01, 0x80};
+    SnxBleAdvert a;
+    memset(&a, 0, sizeof a);
+    a.address[0] = 0x98;
+    a.address[1] = 0xb6;
+    a.address[5] = last;
+    a.rssi = -58;
+    a.company = SNX_BLE_NINTENDO;
+    memcpy(a.data, data, sizeof data);
+    a.data[5] = right ? 0x66 : 0x67;
+    if (!syncing) memcpy(a.data + 10, "\x11\x22\x33\x44\x55\x66", 6);
+    a.size = 16;
+    return a;
+}
+/* Controllers > Bluetooth on the fake scan (support/ble_fake_system.h), joycon2.txt in a config folder of the
+   test's own: no search as it opens; Search listening, a controller waiting to sync and one paired with its console
+   heard and drawn; the paired one refused, the waiting one synced into joycon2.txt; a click focusing a row; Enter on a
+   known one asking to forget it, Cancel keeping it; no search while a game runs; a pad's X asking to forget, Forget
+   taking it out; the search ending by itself, and with the page; a system with no scan saying why */
+static void bluetooth_page(App* app, const char* temporary) {
+    char *config = snx_path_join(temporary, "bt config"), *was = NULL, *settings = snx_path_join(temporary, "bt.ini");
+    char *folder = snx_path_join(config, "scarletnx"), *known = snx_path_join(folder, "joycon2.txt"), *text;
+    char* settings_was = app->settings_file;
+    static const char list[] =
+        "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tSwap A/B\tSwap A/B\t0=Off|1=On\n"
+        "Controllers/Bluetooth\tjoycon2\t0\tint\t0\t1\tJoy-Con 2 over Bluetooth\tJoy-Con 2\t0=Off|1=On\t\n"
+        "Controllers/Bluetooth\tjoycon2_mouse_scale\t1\tfloat\t0.1\t10\tIts mouse sensor's scale\tJoy-Con 2 mouse scale"
+        "\t\t\n";
+    SnxBleAdvert left = bt_advert(1, 0, 1), right = bt_advert(2, 1, 0);
+    Uint64 clock_was = app->clock;
+    int x, y;
+    size_t size;
+    if (getenv("XDG_CONFIG_HOME")) was = snx_strdup(getenv("XDG_CONFIG_HOME"));
+    set_env("XDG_CONFIG_HOME", config);
+    app->settings_file = settings;
+    app->clock = 1000;
+    g_ble_fake_system = NULL; /* the search and the controllers bluetooth_settings' picture left */
+    memset(&app->bt, 0, sizeof app->bt);
+    if (app->editing) leave_editor(app);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_bt(app);
+    /* its settings and Search, nothing heard: opening it searches nothing */
+    assert(app->form == GUI_FORM_BLUETOOTH && gui_editor_rows(&app->editor) == GUI_BT_ROW_FIRST &&
+           app->editor.row == GUI_BT_ROW_SEARCH && !app->bt_scan && !g_ble_fake_system);
+    assert(!strcmp(app->bt_form.value[GUI_BT_ROW_SEARCH], "Off") && strstr(app->editor.note, "Joy-Con 2 is Off"));
+    assert(app->bt_path && !strcmp(app->bt_path, known));
+    /* Search: the fake scan listening for the console maker's adverts, 30 s */
+    key(app, SDLK_RETURN);
+    assert(app->bt_scan && app->bt_scan == g_ble_fake_system && snx_ble_scan_listening(app->bt_scan) &&
+           snx_ble_fake_starts(app->bt_scan) == 1 && strstr(app->editor.note, "Searching 30 s"));
+    assert(!snx_ble_fake_hear(app->bt_scan, &left) && !snx_ble_fake_hear(app->bt_scan, &right));
+    pump(app);
+    assert(gui_editor_rows(&app->editor) == GUI_BT_ROW_FIRST + 2 && app->editor.row == GUI_BT_ROW_SEARCH);
+    assert(!strcmp(app->bt_label[3], "Joy-Con 2 (L) 00:01") && !strcmp(app->bt_form.value[3], "Waiting to sync"));
+    assert(!strcmp(app->bt_label[4], "Joy-Con 2 (R) 00:02") && !strcmp(app->bt_form.value[4], "Nearby"));
+    assert(!strncmp(app->bt_about[3], "98:B6:00:00:00:01: waiting to sync", 34) && strstr(app->bt_about[3], "-58 dBm"));
+    assert(!strcmp(app->bt_form.value[GUI_BT_ROW_SEARCH], "30 s left"));
+    render(app);
+    shows(app, "Joy-Con 2 (L) 00:01", normal);
+    shows(app, "Waiting to sync", normal); /* whole beside it */
+    { /* its place in the head's title: the Controllers group's page */
+        char title[256];
+        assert(!strcmp(screen_title(app, title, sizeof title), "SCARLETNX  /  SETTINGS  /  CONTROLLERS  /  BLUETOOTH"));
+    }
+    /* the paired one: how to sync it, nothing written */
+    app->editor.row = 4;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "Paired with a console") && !snx_path_exists(known));
+    /* the waiting one synced: joycon2.txt has it, as the runtime reads it */
+    app->editor.row = 3;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "Synced: Joy-Con 2 (L) 98:B6:00:00:00:01"));
+    text = (char*)snx_read_file(known, &size);
+    assert(text && size == 20 && !memcmp(text, "98:B6:00:00:00:01 L\n", 20));
+    free(text);
+    assert(!strcmp(app->bt_form.value[3], "Known, nearby") && app->editor.row == 3);
+    /* the mouse: a click on the right one's row takes the focus there */
+    render(app);
+    assert(find_text(app, "Joy-Con 2 (R) 00:02", normal, 1, &x, &y));
+    left_button(app, x + 2, y + 2, true);
+    left_button(app, x + 2, y + 2, false);
+    assert(app->form == GUI_FORM_BLUETOOTH && app->editor.row == 4);
+    /* Enter on the known one again (a finger's tap): its forgetting asked, Cancel keeping it */
+    app->editor.row = 3;
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FORGET && !app->confirm.selected &&
+           strstr(app->ask_line, "Forget Joy-Con 2 (L) 98:B6:00:00:00:01?"));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->bt.dev[0].known && snx_path_exists(known));
+    /* no search while a game runs: it connects the controllers itself */
+    app->menu.running = true;
+    assert(app->bt_scan);
+    bt_search(app); /* the one going on stopped first */
+    assert(!app->bt_scan && strstr(app->editor.note, "Search stopped"));
+    bt_search(app);
+    assert(!app->bt_scan && strstr(app->editor.note, "A game is running"));
+    app->menu.running = false;
+    bt_search(app);
+    assert(app->bt_scan && snx_ble_fake_starts(app->bt_scan) == 1);
+    assert(!snx_ble_fake_hear(app->bt_scan, &left) && !snx_ble_fake_hear(app->bt_scan, &right));
+    pump(app);
+    /* the page's settings, which this list has (bluetooth_settings steps them) */
+    assert(!form_row_off(app, &app->editor, GUI_BT_ROW_ON) && !form_row_off(app, &app->editor, GUI_BT_ROW_SCALE));
+    /* a pad's X on the known one, its foot saying so: Del from the pads' own keyboard (pad_menu.c), asked first; Forget
+       takes it out, a row still while it is heard */
+    app->editor.row = 3;
+    app->pad_driven = true;
+    {
+        char said[512];
+        SDL_Event e = {0};
+        assert(strstr(shown_keys(app, said, sizeof said), "X: forget."));
+        e.type = SDL_EVENT_KEY_DOWN;
+        e.key.key = SDLK_DELETE;
+        e.key.which = GUI_PAD_KEYBOARD;
+        event(app, &e);
+    }
+    app->pad_driven = false;
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FORGET);
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && strstr(app->editor.note, "Forgotten: Joy-Con 2 (L) 98:B6:00:00:00:01"));
+    text = (char*)snx_read_file(known, &size);
+    assert(text && !size);
+    free(text);
+    assert(!strcmp(app->bt_form.value[3], "Waiting to sync"));
+    /* 30 s on: the search ended by itself, the controllers no longer heard gone */
+    app->clock += GUI_BT_SEARCH_MS;
+    pump(app);
+    assert(!app->bt_scan && strstr(app->editor.note, "The search ended"));
+    assert(gui_editor_rows(&app->editor) == GUI_BT_ROW_FIRST && !strcmp(app->bt_form.value[GUI_BT_ROW_SEARCH], "Off"));
+    /* a search goes with the page */
+    app->editor.row = GUI_BT_ROW_SEARCH;
+    key(app, SDLK_RETURN);
+    assert(app->bt_scan && snx_ble_scan_listening(app->bt_scan));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP && app->editor.row == row_of(app, bt_page_row(app)) && !app->bt_scan);
+    /* no scan on this system: Search says why */
+    snprintf(g_ble_fake_absent, sizeof g_ble_fake_absent, "%s", "no Bluetooth here");
+    key(app, SDLK_RETURN);
+    app->editor.row = GUI_BT_ROW_SEARCH;
+    key(app, SDLK_RETURN);
+    assert(!app->bt_scan && !strcmp(app->editor.note, "No search: no Bluetooth here"));
+    g_ble_fake_absent[0] = 0;
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP);
+    leave_editor(app);
+    g_ble_fake_system = NULL;
+    app->clock = clock_was;
+    app->settings_file = settings_was;
+    set_env("XDG_CONFIG_HOME", was);
+    free(was);
+    free(known);
+    free(folder);
+    free(settings);
+    free(config);
+}
+#endif
 /* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
    saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
    folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
@@ -7405,6 +7717,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
+    app.editor.row = GUI_APP_THEME;
     download_driver(&app, temporary);
     run_amberlith(&app, temporary);
     app.editor.row = GUI_APP_THEME;
@@ -17203,6 +17516,10 @@ int main(int argc, char** argv) {
     }
     players_view(&app);
     volume_view(&app);
+    bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
+    bluetooth_page(&app, temporary); /* Controllers > Bluetooth on the fake scan, then back to its row */
+#endif
     only_rows(&app);
     icons_named();
     help_icons_named();

@@ -6,6 +6,7 @@ set(snx_cpu "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" arm-backend)
 file(GLOB snx_rtlib_sources CONFIGURE_DEPENDS "${snx_cpu}/*.h" "${snx_cpu}/*.c"
     "${snx_cpu}/helpers/*.c" "${snx_cpu}/helpers/*.h" "${PROJECT_SOURCE_DIR}/src/common/runtime/interface.h"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/bits.h")
 if(CMAKE_CROSSCOMPILING)
     # it runs during the build: a cross build makes it for the machine doing that, with that machine's compiler
@@ -169,3 +170,17 @@ target_link_libraries(snx_llvm PUBLIC snx_recompiler_base snx_arm_llvm ${SNX_LLV
 # the A64 emitters sailgen generates from the Sail (ir_sail.c)
 include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
 snx_sailgen_a64(snx_llvm)
+# the x86-64 back end (src/common/cpu/recompiler/x64): its functions' code without LLVM, from the A64 emitters sailgen
+# generates with its instruction selection derived from the Intel SDM (cmake/sdm.cmake); the default code generator
+# where it is built, LLVM making what it can't
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_cache.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_elf.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_arm.c")
+include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+if(SNX_X64)
+    snx_sailgen_a64_x64(snx_llvm)
+    # and the AArch32 blocks' (x64_arm.c), from the AArch32 Sail's emitters
+    snx_sailgen_a32_x64(snx_llvm)
+    target_compile_definitions(snx_llvm PRIVATE SNX_HAVE_X64=1)
+endif()

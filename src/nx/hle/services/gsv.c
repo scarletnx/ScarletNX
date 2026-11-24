@@ -9,7 +9,9 @@
 #include "nx/hle/services/gsv.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/tracy.h"
 static int gsv_user_unknown(SvcObj* self, IpcCtx* c) {
+    SNX_ZONE_TV(z_gsv_unk, "svc gsv unknown", c->cmd, "UserSession cmd %u", c->cmd);
     {
         u32 i;
         LOG("gsv: UserSession cmd %u raw size %#x, copy handles %d, buffers %d/%d/%d/%d/%d\n",
@@ -40,6 +42,7 @@ static int gsv_kuser_unknown(SvcObj* self, IpcCtx* c) {
    lets pass and one game logs as no camera device found */
 static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
     (void)self;
+    SNX_ZONE_T(z_gsv_cam, "svc gsv error", "no camera device for cmd %u", c->cmd);
     LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and no camera is plugged in\n", c->cmd, c->raw_size);
     R_THROW(SNX_RC_CAMERA_DEVICE_NOT_DETECTED);
 }
@@ -835,6 +838,7 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
             return 0;
         }
     }
+    SNX_ZONE_T(z_gsv_vi2, "svc gsv error", "no free VI2 client slot");
     R_THROW(SNX_RC_VI2_OUT_OF_RESOURCE);
 }
 static int nn_vi2_IVi2Session_UnregisterClientState(SvcObj* self, const u8* request) {

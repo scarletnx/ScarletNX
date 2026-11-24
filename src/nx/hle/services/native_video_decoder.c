@@ -14,6 +14,7 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/platform/log.h"
 #include "common/platform/thread.h"
+#include "nx/runtime/platform/tracy.h"
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/pixdesc.h>
@@ -54,6 +55,7 @@ static AVCodecContext* context_open(NativeVideoDecoder* d, const AVCodec* codec,
         av_buffer_unref(&hw);
         return NULL;
     }
+    SNX_MEM_ALLOC_D(c, sizeof *c, "video decode");
     c->thread_count = 4;
     c->thread_type = FF_THREAD_SLICE;
     if (codec->id == AV_CODEC_ID_AV1) c->flags |= AV_CODEC_FLAG_LOW_DELAY; /* dav1d's frame delay 1, for the same */
@@ -68,7 +70,10 @@ static AVCodecContext* context_open(NativeVideoDecoder* d, const AVCodec* codec,
         c->extradata_size = (int)config_size;
     }
     int cpus[256], n = plat_thread_cpus_widen(cpus, 256);
-    if (avcodec_open2(c, codec, NULL) < 0) avcodec_free_context(&c);
+    if (avcodec_open2(c, codec, NULL) < 0) {
+        SNX_MEM_FREE_D(c, "video decode");
+        avcodec_free_context(&c);
+    }
     if (n) plat_thread_cpus(cpus, n);
     return c;
 }
@@ -83,6 +88,7 @@ static int black_open(NativeVideoDecoder* d) {
         av_frame_free(&d->black);
         return 0;
     }
+    SNX_MEM_ALLOC_D(f, (size_t)f->width * (size_t)f->height * 3 / 2, "video decode");
     for (int i = 0; i < 3; i++)
         memset(f->data[i], i ? 128 : 16, (size_t)f->linesize[i] * (size_t)(i ? (f->height + 1) / 2 : f->height));
     return 1;
@@ -147,15 +153,20 @@ int nvideo_decoder_open(NativeVideoDecoder* d, u32 index, u32 mime, u32 width, u
     return av1_cpu_open(d, no_hw);
 }
 static void replay_clear(NativeVideoDecoder* d) {
-    for (u32 i = 0; i < d->nreplay; i++) av_packet_free(&d->replay[i]);
+    for (u32 i = 0; i < d->nreplay; i++) {
+        if (d->replay[i]) SNX_MEM_FREE_D(d->replay[i], "video decode");
+        av_packet_free(&d->replay[i]);
+    }
     d->nreplay = d->replayed = 0;
 }
 void nvideo_decoder_close(NativeVideoDecoder* d) {
 #if defined(__APPLE__)
     if (d->vt) nvideo_vt_close(d->vt);
 #endif
+    if (d->ctx) SNX_MEM_FREE_D(d->ctx, "video decode");
     avcodec_free_context(&d->ctx);
     replay_clear(d);
+    if (d->black) SNX_MEM_FREE_D(d->black, "video decode");
     av_frame_free(&d->black);
     *d = (NativeVideoDecoder){0};
 }
@@ -183,6 +194,7 @@ static int av1_take_over(NativeVideoDecoder* d, const char* why) {
     char line[160];
     snprintf(line, sizeof line, "%s gave the stream up after %u pictures (%s), packets kept for it: %u",
              d->way == NVIDEO_DECODER_VT ? "VideoToolbox" : "Vulkan Video", d->pictures, why, d->nreplay);
+    if (d->ctx) SNX_MEM_FREE_D(d->ctx, "video decode");
     avcodec_free_context(&d->ctx);
 #if defined(__APPLE__)
     if (d->vt) nvideo_vt_close(d->vt);
@@ -232,13 +244,22 @@ static int way_receive(NativeVideoDecoder* d, AVFrame* frame) {
 int nvideo_decoder_send(NativeVideoDecoder* d, const AVPacket* pkt) {
     AVPacket* keep;
     int r;
-    if (d->way != NVIDEO_DECODER_VULKAN && d->way != NVIDEO_DECODER_VT)
+    SNX_ZONE_V(z_nvdec, "svc nvideo decoder", (u32)d->way); /* NVIDEO_DECODER_NONE, CPU, VULKAN, BLACK or VT */
+    if (d->way != NVIDEO_DECODER_VULKAN && d->way != NVIDEO_DECODER_VT) {
+        SNX_ZONE_END(z_nvdec); /* the send can block (VT on Apple); do not charge that wait to the decoder zone */
         return d->replayed < d->nreplay ? AVERROR(EAGAIN) : way_send(d, pkt);
-    if (!pkt) return way_send(d, NULL);
+    }
+    if (!pkt) {
+        SNX_ZONE_END(z_nvdec);
+        return way_send(d, NULL);
+    }
     if (d->nreplay == NVIDEO_REPLAY) return AVERROR(EAGAIN); /* nvideo_decoder_receive hands the stream over first */
     if (!(keep = av_packet_clone(pkt))) return AVERROR(ENOMEM);
+    SNX_MEM_ALLOC_D(keep, (size_t)keep->size, "video decode");
+    SNX_ZONE_END(z_nvdec); /* end is idempotent if an earlier send already ended it */
     r = way_send(d, pkt);
     if (r == AVERROR(EAGAIN)) {
+        SNX_MEM_FREE_D(keep, "video decode");
         av_packet_free(&keep);
         return r;
     }
@@ -248,7 +269,9 @@ int nvideo_decoder_send(NativeVideoDecoder* d, const AVPacket* pkt) {
 }
 int nvideo_decoder_receive(NativeVideoDecoder* d, AVFrame* frame) {
     for (;;) {
+        u64 decode0 = snx_tracy_attached() ? plat_ns() : 0;
         int r = way_receive(d, frame);
+        if (decode0) SNX_PLOT("svc nvideo decode us", (double)(plat_ns() - decode0) / 1000.0); /* no underflow on detach */
         if (d->way == NVIDEO_DECODER_VULKAN || d->way == NVIDEO_DECODER_VT) {
             if (!r) {
                 replay_clear(d);

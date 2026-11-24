@@ -71,8 +71,8 @@ typedef struct {
 
 typedef struct {
     char* name;
-    char* table[3];
-    char* page[3];
+    char* table[4]; /* ini.h's INI_SECTION_TABLES */
+    char* page[4];
     int ntables, backend, launcher;
 } Section;
 
@@ -379,7 +379,7 @@ static void parse_section(char* rest, int line) {
         last = !*end;
         *end = 0;
         item = trim(p);
-        if (s->ntables == 3) fail(line, "a section has three tables at most");
+        if (s->ntables == 4) fail(line, "a section has four tables at most");
         slash = strchr(item, '/');
         if (slash) {
             *slash = 0;
@@ -1319,16 +1319,16 @@ static void write_sections(const char* name, int launcher) {
         outs("    {");
         out_string(s->name);
         out(", %d, {", !s->backend);
-        for (j = 0; j < 3; j++) out("%s%s", j ? ", " : "", j < s->ntables ? s->table[j] : "NULL");
+        for (j = 0; j < 4; j++) out("%s%s", j ? ", " : "", j < s->ntables ? s->table[j] : "NULL");
         outs("}, {");
-        for (j = 0; j < 3; j++) {
+        for (j = 0; j < 4; j++) {
             if (j) outs(", ");
             out_string(j < s->ntables ? s->page[j] : NULL);
         }
         outs("}},\n");
         n++;
     }
-    if (!n) outs("    {NULL, 0, {NULL, NULL, NULL}, {NULL, NULL, NULL}}\n");
+    if (!n) outs("    {NULL, 0, {NULL, NULL, NULL, NULL}, {NULL, NULL, NULL, NULL}}\n");
     outs("};\n");
     out("const int %s_count = %d;\n", name, n);
 }

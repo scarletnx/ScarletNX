@@ -364,8 +364,7 @@ Run the same command again to retry after a failure or interruption:
   using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
 - A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming this build's
   ABI skip recompilation. The stamp holds `SNX_ABI`: a game a build of another ABI made is recompiled
-  automatically, as is one with a missing or invalid stamp, and that recompile takes from the unit cache (below) every
-  code unit whose code is the same. One another build of the same ABI made keeps its code,
+  automatically, as is one with a missing or invalid stamp. One another build of the same ABI made keeps its code,
   and its `recompiled/<id>/<id>` is replaced by this build's runtime when the two differ, so a newer build's fixes reach
   it. Failed builds never publish a valid ABI checkpoint. A change to the recompiler that keeps `SNX_ABI` isn't
   seen: there `-r` recompiles. The stamp's last line says how the code was made, which no check reads: `made opt=2
@@ -490,18 +489,12 @@ Remaining examples: POSIX.
   [common options](#common-options), which the 3DS, Vita and GBA drivers take too.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
   `--chunk N` (`--unit-instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
-  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
-  `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
-  unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
-  there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
-  code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
-  how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
-  descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
-  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
-  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
-  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
-  `--unit-cache-gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
-  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
+  iOS, where a smaller unit takes less memory at once. The x86-64 back end's units are held in memory while the
+  process runs, under the SHA-256 of what each is made from, so that a unit made again in it (an NRO loaded again, the
+  launcher's next recompile) is copied rather than made: up to 1% of the machine's memory, at most
+  `--unit-cache-ceil-mb=N` (512 by default, 0 for none), the units used longest ago going first. A unit line ends in
+  `(cached)` for one taken from memory. Nothing is kept on the disk: `units/` of the cache folder, where an older
+  version kept them, is said with its size at each recompile while it is there, and deleting it frees that room.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.
@@ -670,7 +663,6 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
 | its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
 | extractions (`3ds/` for the 3DS driver) | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
-| the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/scarletnx/units/` | `cache/units/` |
 | the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
 | the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
 | the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
@@ -835,9 +827,33 @@ Keyboard and on-screen controls also drive player one.
 `gamepad_assign=1`, the default, gives the players out as a console does (after Eden's Modern Console): each controller
 that connects is the lowest player free ("P2: Xbox Wireless Controller joined"), and one that leaves keeps its player
 for 45 seconds, which it takes back when it returns while another that connects goes past it. Once a player's controller
-has been gone 3 seconds the game pauses ("P2 disconnected: reconnect, or press + on another controller to go on") until
-it returns, or until + is let go on another controller, which goes on without that player. `0` gives them out as each
-player's `gamepad_p<N>_device` names its controller, the next to connect where it names none.
+has been gone 3 seconds the game pauses until it returns, or until + is let go on another controller, which goes on
+without that player. In a window the pause shows the controllers' dialog (below) with that player's card, where A on
+another pad takes its place and *Go on without P2* goes on. `0` gives them out as each player's `gamepad_p<N>_device`
+names its controller, the next to connect where it names none.
+
+When the game asks for its controllers (the console's controller applet), a dialog over the game says what the game
+expects: how many players, how each one holds its controller (with a picture), and the game's own text and color for
+each player. A game of Joy-Con 2 alone that started their mouse sensor gets an optional panel to check the Joy-Con 2 as
+a mouse (on the table or in the air, the cursor, R and ZR): the game never says whether it uses the mouse, so the dialog
+only says "if". Each player has a card that a controller fills with the console's
+gestures, which also choose its style: SL and SR together on one Joy-Con make it a player alone, held sideways (half of
+a pair leaves the pair), L on a left Joy-Con and R on a right one held together make them one pair, and L and R
+together on a pair or any other pad make it a whole one (a pad plays as whatever style the game takes). A gesture the
+game does not take is refused with the reason in the card. A only picks the dialog's items. A console controller (a
+Pro Controller, Joy-Cons, a Joy-Con 2 or Pro Controller 2 the runtime connects, a pad in Switch mode) keeps its own
+style as on the console: a game that takes none of its styles does not see it, asks for its controllers, and the
+dialog says why that one does not fit. A generic pad and the keyboard play as whatever style the game takes. While the TV mode is off,
+player 1's card says whether it is the Joy-Cons attached to the console (the handheld controls, which the game also
+sees as player 1) or detached. A game that does not take the handheld controls, and the Joy-Con 2 mouse, need them
+detached: *Detach the Joy-Cons from the console (tabletop)* takes the handheld controls away for the session and
+leaves the TV mode and the performance mode as they are, and *Attach the Joy-Cons to the console* brings them back. A line under the cards says who is still missing, Continue goes back to the
+game once the least it needs are there, and Cancel tells the game the player backed out. With `joycon2=1` the dialog
+listens for Joy-Con 2 and Pro Controller 2 while it shows: a known one connects as soon as it is heard, a new one
+waiting to sync is connected once picked. *Disconnect P2* closes the link of a controller the runtime connected itself
+(no command goes to the controller) and leaves player 2 waiting: for a minute the controller is not connected again by
+itself, its *Connect ... again* item takes it back at once, and after that a button press connects it as before. The game's menu opens the same dialog under *Controllers > Assign players*, the game paused.
+`controller_applet=1` answers at once when the players are already there.
 `gamepad_joycon_pair=1` makes SDL combine a left and right Joy-Con. Set it to `0` to expose them separately and
 restart the game after changing it.
 
@@ -877,9 +893,10 @@ pad.
 
 F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
 back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
-F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
-(`renderdoc`, or a game RenderDoc's program started), as the game's menu's **Capture frame** is, which shows only then;
+F7 save state; F8 load state; F9 next save state slot; F10 Tracy capture for `tracy_capture_seconds` (60 s by
+default, SNX_TRACY builds); F11/Alt+Enter fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the
+next frame, with RenderDoc in the game (`renderdoc`, or a game RenderDoc's program started), as the game's menu's
+**Capture frame** is, which shows only then;
 Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape twice within 3 seconds quit, the
 first press a warning over the game; Ctrl+D the TV mode On, Off or Auto for the run, as the game's menu's **TV mode**
 is. F4, F6, F12, Ctrl+D and Pause say over the game what the press set (`FPS limit: off`, `Stats: on`), the log

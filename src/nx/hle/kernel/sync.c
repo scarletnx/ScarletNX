@@ -11,7 +11,9 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
+#include <string.h>
 
 /* The threads blocked in each kind of wait, in arrival order, linked by next_waiter. Each wakes the best priority
    first, the earliest among equals; a thread whose priority changes while it waits goes to the back, behind the
@@ -88,16 +90,39 @@ static int word_cas(_Atomic u32* p, u32* cur, u32 nv, int weak) {
 }
 
 /* ============================================================ priority inheritance */
+#if defined(SNX_TRACY)
+/* the boost staged under g_klock, named in the mutex handoff's text once the lock is let go */
+static _Thread_local u64 pi_boosted, pi_booster;
+static _Thread_local int pi_from, pi_to;
+#endif
 /* Eden's KThread::RestorePriority: t runs at the best of its base priority and the priorities of the threads waiting
    on the mutexes it holds, and a change goes on up to the owner of the mutex t waits on itself */
 static void prio_restore_nl(KThread* t) {
+    /* no zone per call: this runs on a hot path, and a change of priority is already a decision of the core switch
+       zone, which carries its value after the core lock is let go */
     while (t) {
         int p = t->base_prio;
         KThread* w;
+#if defined(SNX_TRACY)
+        KThread* booster = NULL;
+#endif
         u32* l;
         for (w = kt_at(g_hle.sync.mwait); w; w = kt_at(w->next_waiter))
-            if (w->lock_owner == kt_ix(t) && w->prio < p) p = w->prio;
+            if (w->lock_owner == kt_ix(t) && w->prio < p) {
+                p = w->prio;
+#if defined(SNX_TRACY)
+                booster = w;
+#endif
+            }
         if (p == t->prio) return;
+#if defined(SNX_TRACY)
+        if (snx_tracy_attached() && booster) {
+            pi_boosted = t->id;
+            pi_booster = booster->id;
+            pi_from = t->prio;
+            pi_to = p;
+        }
+#endif
         core_set_prio(t, p);
         /* an address waiter goes behind the waiters of its new priority: its ticket, which its bucket's wakes read */
         if (atomic_load_explicit(&t->arb_in, memory_order_acquire))
@@ -163,11 +188,17 @@ static KThread* mutex_best_nl(u64 addr) {
 /* Eden's KThread::RemoveWaiterByKey: the next owner of the mutex at addr, out of its waiters, and the waiters left
    (*more) wait for it now, so their priorities go with them. NULL when nobody waits. The console looks among the
    calling thread's waiters, the mutex's owner in a game that uses it correctly: here the waiters name their owner */
-static KThread* mutex_next_nl(u64 addr, int* more) {
+/* *why carries the handoff's value code out from under g_klock: 1 a waiter took the mutex, 2 it took it with more
+   waiters behind it, 0 nobody took it. The caller emits the zone once it has let go of the lock */
+static KThread* mutex_next_nl(u64 addr, int* more, int* why) {
     KThread* n = mutex_best_nl(addr);
     KThread* old;
     KThread* w;
+#if defined(SNX_TRACY)
+    pi_boosted = 0; /* a boost from another path is not this handoff's */
+#endif
     *more = 0;
+    *why = 0;
     if (!n) return NULL;
     old = kt_at(n->lock_owner);
     list_del(&g_hle.sync.mwait, n);
@@ -183,11 +214,26 @@ static KThread* mutex_next_nl(u64 addr, int* more) {
     if (old) prio_restore_nl(old);
     prio_restore_nl(n);
     kobj_unref(old ? &old->o : NULL);
+    *why = *more ? 2 : 1;
     handed_nl(n);
     return n;
 }
 /* the word that hands the mutex to n: its tag, with the waiters bit while others still wait */
 static u32 mutex_tag(const KThread* n, int more) { return n ? n->wait_tag | (more ? HANDLE_WAIT : 0u) : 0u; }
+/* Emit the handoff's zone and, under Tracy, the priority boost staged by mutex_next_nl. The callers call this once
+   they let go of g_klock, so no text is formatted under the lock. 0: nobody took the mutex, nothing to emit */
+static void mutex_handoff_flush(int why) {
+    if (!why) return;
+    SNX_ZONE_CS(z_mnext, "kern mutex handoff", 4);
+    SNX_ZONE_VALUE(z_mnext, (u64)why);
+#if defined(SNX_TRACY)
+    if (pi_boosted) {
+        SNX_ZONE_TEXT(z_mnext, "thread %llu prio %d -> %d by wait of thread %llu", (unsigned long long)pi_boosted,
+                      pi_from, pi_to, (unsigned long long)pi_booster);
+        pi_boosted = 0;
+    }
+#endif
+}
 
 /* ============================================================ mutexes */
 /* svcArbitrateLock (Eden's KConditionVariable::WaitForAddress): the game found the mutex held, set the waiters bit, and
@@ -224,29 +270,34 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
    which gets it */
 u32 svc_arbitrate_unlock(u64 addr) {
     KThread* n;
-    int more;
+    int more, why = 0;
     u32 r;
     R_TRY(check_word(addr));
     r = check_mapped(addr, 4);
     pm_lock(&g_host.kernel.klock);
-    n = mutex_next_nl(addr, &more);
+    n = mutex_next_nl(addr, &more, &why);
     /* the next owner has the mutex whether the word can be written or not, as on the console */
     if (!r) word_store(uword(addr), mutex_tag(n, more));
     if (n) wake(n, 0);
     klock_unlock();
+    mutex_handoff_flush(why);
     if (!r) futex_wake(addr);
     return r;
 }
 
 /* ============================================================ condition variables */
-/* Eden's KConditionVariable::SignalImpl: a signaled waiter takes its mutex if it is free, or waits for its owner */
-static void cv_take_mutex_nl(KThread* w) {
+/* Eden's KConditionVariable::SignalImpl: a signaled waiter takes its mutex if it is free, or waits for its owner. The
+   small code is 1 the mutex's page went, 2 it was free and handed to the thread, 3 the thread waits for its owner,
+   4 the mutex names no thread. The caller emits the zone with it once it has let go of the lock: no text is formatted
+   under the kernel lock */
+static int cv_take_mutex_nl(KThread* w) {
     _Atomic u32* p;
     u32 old, nv;
     KObj* o;
+    int code;
     if (check_mapped(w->wait_addr, 4)) { /* its mutex's page went while it waited */
         wake(w, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
-        return;
+        return 1;
     }
     p = uword(w->wait_addr);
     old = word_load(p);
@@ -256,14 +307,18 @@ static void cv_take_mutex_nl(KThread* w) {
     if (!old) {
         handed_nl(w);
         wake(w, 0);
-        return;
+        return 2;
     }
     o = h_get_nl(old & ~HANDLE_WAIT);
     if (o && o->type == KO_THREAD) {
         mutex_wait_nl((KThread*)o, w);
         *mwait_how(w) = MWAIT_SIGNALED;
-    } else
-        wake(w, SNX_RC_SVC_INVALID_STATE); /* the mutex names no thread */
+        code = 3;
+    } else {
+        wake(w, SNX_RC_SVC_INVALID_STATE);
+        code = 4;
+    }
+    return code;
 }
 /* the end of a condition variable's wait, woken or timed out (woke 0): timed out waiting for the signal, or after it
    for the mutex, the game takes the mutex itself */
@@ -281,7 +336,7 @@ static u32 cv_finish_nl(KThread* t, int woke) {
    before the mutex changes hands, so the thread that takes the mutex sees it and signals */
 u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     KThread* n;
-    int more, key_mapped;
+    int more, key_mapped, why = 0;
     u32 r;
     R_TRY(check_word(maddr));
     key &= ~3ull;
@@ -291,17 +346,19 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     key_mapped = mem_user_mapped(key, 4);
     r = check_mapped(maddr, 4);
     pm_lock(&g_host.kernel.klock);
-    n = mutex_next_nl(maddr, &more);
+    n = mutex_next_nl(maddr, &more, &why);
     if (key_mapped) word_store(uword(key), 1u);
     if (!r) word_store(uword(maddr), mutex_tag(n, more));
     if (n) wake(n, 0);
     if (!r) futex_wake(maddr);
     if (r) {
         klock_unlock();
+        mutex_handoff_flush(why);
         return r;
     }
     if (!timeout) {
         klock_unlock();
+        mutex_handoff_flush(why);
         R_THROW(SNX_RC_SVC_TIMED_OUT);
     }
     t->woken = 0;
@@ -313,6 +370,7 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     list_add(wait_list(t), t);
     r = cv_finish_nl(t, sleep_nl(t, timeout));
     klock_unlock();
+    mutex_handoff_flush(why);
     return r;
 }
 /* svcSignalProcessWideKey (Eden's KConditionVariable::Signal): wakes count waiters (all of them when count <= 0), and
@@ -321,7 +379,7 @@ u32 svc_signal_cv(u64 key, i32 count) {
     KThread* w;
     u32* l;
     i32 n = 0;
-    int key_mapped;
+    int key_mapped, cvm_code = 0;
     key &= ~3ull;
     key_mapped = key <= AS_SIZE - 4 && mem_user_mapped(key, 4); /* the console clears the mark where it can */
     l = wait_list_for(3, key);
@@ -329,11 +387,14 @@ u32 svc_signal_cv(u64 key, i32 count) {
     while ((count <= 0 || n < count) && (w = list_best(*l, 1, key)) != NULL) {
         list_del(l, w);
         w->wait_kind = 0;
-        cv_take_mutex_nl(w);
+        cvm_code = cv_take_mutex_nl(w);
         n++;
     }
     if (!list_best(*l, 1, key) && key_mapped) word_store(uword(key), 0u);
     klock_unlock();
+    if (cvm_code) {
+        SNX_ZONE_V(z_cvt, "kern cv take mutex", (u64)cvm_code);
+    }
     R_SUCCEED();
 }
 

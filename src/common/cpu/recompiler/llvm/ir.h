@@ -139,7 +139,7 @@ typedef struct SnxIrTuning {
     const char* clean;
     void (*builder)(LLVMPassBuilderOptionsRef options);
     void (*machine)(LLVMTargetMachineRef machine);
-    /* every value the three above are made from, as text: what the unit cache keys objects with (unit_cache.c) */
+    /* every value the three above are made from, as text, a line each */
     const char* text;
 } SnxIrTuning;
 
@@ -270,6 +270,9 @@ int snx_ir_fpsr_exact(void);
 /* the settings ir_stats (each code unit's static IR counts in a recompile's log) and ir_dump_pc (hex: the function
    there printed, its IR before and after the promotion), for the SnxIr made after */
 void snx_ir_diagnostics(int stats, const char* dump_pc);
+int snx_ir_stats_on(void); /* the setting ir_stats is on: the recompile reports each unit's IR (LLVM's alone) */
+/* the function ir_dump_pc names, 0 for none: LLVM makes it, whose IR is printed, and the x86-64 back end not */
+SnxU64 snx_ir_dump_pc(void);
 /* Whether the guest's loads and stores are volatile (the setting volatile_memory, off by default): on, LLVM keeps
    each where the guest has it (ir_state.c's ir_rd). Once per process, before any module is made; the caches' keys
    carry it */
@@ -299,7 +302,7 @@ void snx_ir_stale_checks(SnxIr* ir);
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size);
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
-   unit cache's key holds it (unit_cache.c), so a change there that changes the object of the same IR bumps it */
+   JIT cache's key holds it (jit_cache.c), so a change there that changes the object of the same IR bumps it */
 #define SNX_IR_OBJECT_VERSION 5
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the

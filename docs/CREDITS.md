@@ -117,6 +117,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/loader/loader.c` (the defaults for a program without an NPDM) | Eden and yuzu (`file_sys/program_metadata.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/common/utilities/patches.c` (IPS, IPS32 and IPSwitch patches: their formats, which patch a module takes, where they write) | Eden (`file_sys/ips_layer.cpp`, its IPSwitch reading by lizzie, and `file_sys/patch_manager.cpp`) | GPL-3.0-or-later |
 | `src/nx/hle/kernel/`, `src/nx/hle/svc/`, `src/nx/memory/`, `src/nx/hle/services/`, `src/nx/hle/filesystem/` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/runtime/platform/ctrl_request.c` (the controller applet's argument layouts: its private argument, the 4 and 8 player arguments, the result) | yuzu (`core/hle/service/am/frontend/applet_controller.h`, as Sudachi carries it) | GPL-2.0-or-later |
 | `src/nx/hle/services/nvdrv.c`, `nvdrv.h` and the `nvdrv_*.h` headers (the nvhost devices' commands and argument layouts, the ioctl encoding, the GMMU and VA layout, the syncpoint manager) | Eden and yuzu (`core/hle/service/nvdrv/`: `nvdata.h`, `core/syncpoint_manager.h`, `devices/nvmap`, `nvhost_as_gpu`, `nvhost_ctrl`, `nvhost_ctrl_gpu`, `nvhost_gpu`; `video_core/memory_manager.h`), with Skyline's parts as Eden carries them | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/hle/svc/hos.svc` (the SVC declarations and type sizes) and `tools/svcgen/svcgen.c` (their parsing and register allocation) | Eden and yuzu (`tools/svc_generator.py`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/hle/services/misc.c` (the six default Miis, from Eden's `mii/types/raw_data.cpp`, and StoreData's checksums, from Ryubing's `Mii/Helper.cs` and `Mii/Types/StoreData.cs`) | Ryujinx (the defaults as Eden carries them) | MIT ([text](../dist/licenses/Ryujinx/LICENSE.txt)) |
@@ -156,6 +157,8 @@ and package manifest: `share/licenses/`. Component license files contain the ful
 Wimsy, the mascot and the runtime's icon ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
 The splash's Fuddles ([SVG metadata](../dist/splash/wimsy-fuddles.svg)): Wimsy with Fuddles' tails, circuits and
 colours, by AO55 after Liz's Wimsy, GPL-3.0-or-later.
+The splash's Christmas Wimsy ([SVG metadata](../dist/splash/wimsy-xmas.svg)), drawn in December only: Liz's Wimsy
+in candy cane, as she asked, red wings with white dots and a striped head and leaves, by AO55, GPL-3.0-or-later.
 
 The 3DS UDS command layouts and encrypted beacon framing in `src/3ds/services/uds.c`
 are adapted from Azahar's `nwm_uds.cpp` and `uds_beacon.cpp` at

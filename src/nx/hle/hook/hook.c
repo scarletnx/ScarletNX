@@ -24,6 +24,8 @@
 
 /* a site for every hook of either table, so that no family is left half native (hook.h) */
 typedef char hook_sites_hold_the_tables[HOOK_COUNT <= HOOK_SITES && HOOK32_COUNT <= HOOK_SITES ? 1 : -1];
+/* a count for every family of either table (HostHook.unread) */
+typedef char hook_family_slots_hold_the_tables[HOOK_FAMILIES <= HOOK_FAMILY_SLOTS ? 1 : -1];
 /* an index slot for every site twice over, each holding a site + 1 */
 typedef char hook_index_holds_the_sites[(1u << HOOK_INDEX_BITS) >= 2 * HOOK_SITES && HOOK_SITES < 65535 ? 1 : -1];
 
@@ -112,6 +114,43 @@ void hook_missed_text(char* out, size_t n) {
              "version %s, declared for %s",
              (unsigned)h->missed, g_arm_mod ? "32-bit" : "64-bit", t->symbol[h->missed_entry],
              (g_arm_mod ? g_arm_mod->mods : g_mod->mods)[h->missed_module].name, version, ranges);
+}
+
+/* in a 32-bit game, a function of family with declarations for a 32-bit game and none for its module's SDK (sdk, 0
+   when the module has no SDK label): counted, and the first kept, for hook_unread_text */
+static void unread_note(u32 family, u32 module, u32 sdk) {
+    HostHook* h = &g_host.hook;
+    if (!sdk) return;
+    h->unread[family]++;
+    if (h->unread_total++) return;
+    h->unread_module = module;
+    h->unread_sdk = sdk;
+}
+
+void hook_unread_text(char* out, size_t n) {
+    const HostHook* h = &g_host.hook;
+    char sdk[32], read[32], families[384];
+    size_t used = 0;
+    u32 i;
+    if (n) out[0] = 0;
+    if (!g_arm_mod || !h->unread_total) return;
+    families[0] = 0;
+    for (i = 0; i < HOOK_FAMILIES && i < HOOK_FAMILY_SLOTS; i++) {
+        int wrote;
+        if (!h->unread[i]) continue;
+        wrote = snprintf(families + used, sizeof families - used, "%s%s %u", used ? ", " : "", hook_family_name[i],
+                         (unsigned)h->unread[i]);
+        if (wrote < 0 || (size_t)wrote >= sizeof families - used) break; /* cut: the log has every function */
+        used += (size_t)wrote;
+    }
+    hook_version_text(sdk, sizeof sdk, HOOK_SDK, h->unread_sdk);
+    hook_version_text(read, sizeof read, HOOK_SDK, HOOK_A32_READ_SDK);
+    snprintf(out, n,
+             "This 32-bit game's SDK is %s (module %s) and the runtime's declarations for a 32-bit game were read in "
+             "SDK %s alone, so %u of its SDK functions run their own code (%s), which needs services the runtime "
+             "answers only natively. A 64-bit update of the game, if it has one, plays; for this version, an SDK of "
+             "%s has to be read (issue #2242)",
+             sdk, g_arm_mod->mods[h->unread_module].name, read, (unsigned)h->unread_total, families, sdk);
 }
 
 /* the index slot where the search for addr starts: its hash, Fibonacci's of the address in instructions */
@@ -386,6 +425,7 @@ static void install_a32(void) {
             char text[32];
             missed[first] = 1;
             missed_note(first, m, versions[hook32_key[first]]);
+            if (hook32_key[first] == HOOK_SDK) unread_note(hook32_family[first], (u32)m, versions[HOOK_SDK]);
             hook_version_text(text, sizeof text, hook32_key[first], versions[hook32_key[first]]);
             LOG("hooks: %s in %s isn't hooked: no declaration for a 32-bit game holds for its version (%s)\n", name,
                 mods[m].name, text);
@@ -426,6 +466,8 @@ void hook_install(void) {
     unsigned char said[HOOK_COUNT + 1] = {0};   /* the entries whose versions the log gave */
     unsigned char missed[HOOK_COUNT + 1] = {0}; /* the symbols (by their first entry) the log said had none */
     g_host.hook.missed = 0;
+    memset(g_host.hook.unread, 0, sizeof g_host.hook.unread);
+    g_host.hook.unread_total = 0;
     if (!g_settings.native_hooks) {
         LOG("hooks: off (hooks=0), every exported function runs its own code\n");
         return;

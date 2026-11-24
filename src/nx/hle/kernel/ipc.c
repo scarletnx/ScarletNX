@@ -568,7 +568,7 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     /* A trace attached wants the same per-command counters as a verbose log. Without either, nothing pays for them. */
     int timed = g_settings.log_level >= 2 || snx_tracy_attached();
     u64 t0 = timed ? plat_ns() : 0;
-    SNX_ZONE_TV(z_ipc, "ipc", c->cmd, "%s cmd %u", o->name, c->cmd);
+    SNX_ZONE_TV(z_ipc, "hle: ipc", c->cmd, "%s cmd %u", o->name, c->cmd);
     ipc_in(c, 0, &in[0], 4);
     ipc_in(c, 4, &in[1], 4);
     snx_le32_array(in, 2);
@@ -584,7 +584,7 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
 }
 /* a request sf answers without the service: a refusal, or a control request */
 static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* what) {
-    SNX_ZONE_TV(z_answer, "ipc answer", rc, "%s %s %x", name, what, rc);
+    SNX_ZONE_TV(z_answer, "hle: ipc answer", rc, "%s %s %x", name, what, rc);
     c->rc = rc;
     ring_set(seq, IPC_REC_ANSWERED, name, c->type, c->cmd, NULL, rc, what);
     if (rc && strcmp(what, "control")) WARN_LIMIT(16, "ipc: %s: a request refused (%x)\n", name, rc);
@@ -596,7 +596,7 @@ static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* wha
 static u32 control(IpcCtx* c, KSession* s) {
     Domain* d = atomic_load_explicit(&s->domain, memory_order_acquire);
     u32 id = 0;
-    SNX_ZONE(z_control, "ipc control");
+    SNX_ZONE_TV(z_control, "hle: ipc control", c->cmd, "%s cmd %u", s->obj ? s->obj->name : "session", c->cmd);
     switch (c->cmd) {
         case 0:
             if (!d) {
@@ -681,12 +681,14 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
     u32 rc = 0;
     if (t && s) t->req_session = kobj_id(&s->o);
     if (!s) {
+        SNX_MSG("kern ipc: the handle is not a session", sizeof("kern ipc: the handle is not a session") - 1);
         ring_set(seq, IPC_REC_NOT_SESSION, NULL, 0, handle, NULL, SNX_RC_SVC_INVALID_HANDLE, NULL);
         WARN_LIMIT(8, "ipc: a request on handle %x, which isn't a session: InvalidHandle\n", handle);
         return SNX_RC_SVC_INVALID_HANDLE;
     }
     name = s->obj ? s->obj->name : "session";
     if (atomic_load_explicit(&s->closed, memory_order_acquire)) {
+        SNX_MSG("kern ipc: the session is closed", sizeof("kern ipc: the session is closed") - 1);
         ring_set(seq, IPC_REC_SESSION_CLOSED, name, 0, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         kobj_unref(&s->o);
         return SNX_RC_SVC_SESSION_CLOSED;
@@ -696,6 +698,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
     c.msg_size = msg_size;
     c.sess = s;
     if (parse_hipc(&c, &h)) {
+        SNX_MSG("kern ipc: the kernel refused the request", sizeof("kern ipc: the kernel refused the request") - 1);
         ring_set(seq, IPC_REC_KERNEL_REFUSED, name, c.type, 0, NULL, c.kernel_rc, NULL);
         WARN_LIMIT(8, "ipc: %s: the kernel refuses a request (%x): %s\n", name, c.kernel_rc,
                    kernel_refusal(c.kernel_rc));
