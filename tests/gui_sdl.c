@@ -1054,7 +1054,9 @@ static void microphone_words(App* app) {
     assert(g < app->groups);
     /* the dummy driver has one recording device, of a name SDL gives it: it is the row's word, after its own two */
     assert(SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE) &&
-           SDL_InitSubSystem(SDL_INIT_AUDIO) && (ids = SDL_GetAudioRecordingDevices(&count)) && count == 1);
+           SDL_InitSubSystem(SDL_INIT_AUDIO));
+    ids = SDL_GetAudioRecordingDevices(&count);
+    assert(ids && count == 1);
     names[0] = SDL_GetAudioDeviceName(ids[0]);
     assert(names[0] && *names[0]);
     app->editor.row = g;
