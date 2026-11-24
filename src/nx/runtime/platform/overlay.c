@@ -488,11 +488,9 @@ static int section_step(const IniOpt* o, int step) {
     row_now(o, now, sizeof now);
     if (o->type == INI_INT)
         snprintf(to, sizeof to, "%d", ini_step(o, atoi(now), step));
-    else if (o->type == INI_FLOAT) {
-        double unit = o->hi - o->lo > 2 ? 0.25 : 0.05, v = strtod(now, NULL);
-        v = (double)(long long)((v + step * unit) / unit + (step > 0 ? 0.5 : -0.5)) * unit;
-        snprintf(to, sizeof to, "%g", v < o->lo ? o->lo : v > o->hi ? o->hi : v);
-    } else if (!text_step(o, now, step, to, sizeof to))
+    else if (o->type == INI_FLOAT)
+        snprintf(to, sizeof to, "%g", ini_float_step(strtod(now, NULL), o->lo, o->hi, step));
+    else if (!text_step(o, now, step, to, sizeof to))
         return OVERLAY_NONE;
     ini_set_apply(o->key, to);
     return OVERLAY_NONE;
