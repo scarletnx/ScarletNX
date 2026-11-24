@@ -194,5 +194,7 @@ snx_sailgen_a64_arm64(snx_llvm)
 snx_sailgen_a32_arm64(snx_llvm)
 # the riscv64 back end (src/common/cpu/recompiler/rv64): the same functions in RV64, from the emitters sailgen
 # generates with its RISC layer over LLVM's RISC-V records (checked in: tools/sailgen/td); built on every host
-target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_codegen.c")
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_arm.c")
 snx_sailgen_a64_risc(snx_llvm rv64)
+snx_sailgen_a32_risc(snx_llvm rv64)

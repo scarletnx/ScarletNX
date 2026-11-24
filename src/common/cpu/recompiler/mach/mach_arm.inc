@@ -906,7 +906,7 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
                                                                : vbits(g, v->m, width);
     /* the destination, which the multiply-accumulates add to, and which fp_call hands the helper for every operation
        (the fused ones read it there) */
-    SgD zv = v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
+    SgD zv = hot && v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
              : hot                                 ? sgx_const(outwidth, 0)
                                                    : vbits(g, v->d, outwidth);
     SgD r;
