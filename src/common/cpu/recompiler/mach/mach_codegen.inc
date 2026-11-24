@@ -1952,7 +1952,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.nv = 1;
     u.g->x.nb = 1;
     for (i = first; i < last; ++i) {
-        size_t before = u.b.n;
+        size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
         if (options->llvm_at && codegen->functions[i].start == options->llvm_at) {
             if (options->jit) break; /* made[] stays 0: LLVM's, for the IR it prints */
             continue;
@@ -1963,7 +1963,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         }
         made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
         if (u.b.n > u.b.cap) {
-            /* past the buffer: grown, and made again */
+            /* past the buffer: grown, and made again, its symbol and relocations too */
+            for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);
+            for (; u.nsyms > syms; --u.nsyms) free(u.syms[u.nsyms - 1].name);
             u.b.n = before;
             u.b.cap *= 4;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
