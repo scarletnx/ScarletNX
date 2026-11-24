@@ -4,13 +4,17 @@
    ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which
    LLVM 22's -O2 makes otherwise in one case (VRSHL's witness, below): the same words consumed, and the same results
    from the same random states.
-     snx-test-arm-x64 [--blocks N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--dump]
+     snx-test-arm-x64 [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]...
+         [--halves HEX[,HEX]...] [--dump]
    Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
    release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED, ARMv6's and ARMv7's DSP and media
    instructions, VFP and Advanced SIMD: its data processing, its element and structure loads and stores, the lane moves
    and the crypto rounds), under AL half of the time and any
-   condition otherwise: one word alone, or two to six in a row (the block ending where one ends it). Both back ends make
+   condition otherwise: one word alone, or two to six in a row (the block ending where one ends it). Thumb blocks (--thumb
+   N of them) are halfwords drawn the same way: T16 ones of every form, T32 ones of every family, and one in four starts
+   with an IT, the instructions of its block after it, from CPSR.T set and ITSTATE clear; the block compiler of
+   llvm_thumb.inc is the reference there. Both back ends make
    it, x64_arm.c's ELF object and LLVM's are loaded by the code loader, and each block runs from --states random states
    (registers into 64 KiB of guest memory of random bytes or anywhere, NZCV, Q and GE random, the exclusive monitor
    armed or not on a register's address with the value there or another): the registers, CPSR, the exit and its
@@ -36,16 +40,20 @@ typedef uint64_t u64;
 #define MEM_SIZE  0x10000u
 #define CHUNK     256
 #define MAX_WORDS 6
+#define MAX_HALF  16 /* halfwords of a Thumb block */
 
 static struct {
-    unsigned states, blocks, features;
+    unsigned states, blocks, thumb, features;
     int pool;
     u64 seed;
     size_t failures, refused, ran, compared, words, consumed_words;
     uint32_t only[64];
     size_t nonly;
+    uint16_t halves[MAX_HALF]; /* --halves: one Thumb block */
+    size_t nhalves;
     char why[200];
     size_t kinds[64], refusals[64];
+    size_t shapes[32], t16; /* the Thumb instructions drawn, by the decoder's shape; the 16-bit ones apart */
     size_t exits[16];   /* the runs' exits, LLVM's: how many ran through and how many stopped, and at what */
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
     const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
@@ -314,9 +322,126 @@ static SnxCodeLoader* new_loader(char* error, size_t size) {
 }
 typedef struct {
     uint32_t words[MAX_WORDS];
+    uint16_t half[MAX_HALF];
+    int thumb; /* a Thumb block: half, n halfwords; else words, n of them */
     size_t n, consumed;
     int made; /* the x86-64 back end made it */
 } Block;
+/* the block's code, as the two back ends take it: the host is little-endian, as guest memory */
+static const unsigned char* code_of(const Block* b) {
+    return b->thumb ? (const unsigned char*)b->half : (const unsigned char*)b->words;
+}
+
+/* ---- Thumb ---- */
+
+/* classes of T16 halfwords that random ones rarely are: their fixed bits and how often they are drawn */
+typedef struct {
+    uint16_t mask, value;
+    int weight;
+} Half;
+static const Half t16_classes[] = {
+    {0xE000, 0x0000, 4}, {0xF800, 0x1800, 2}, {0xE000, 0x2000, 3}, {0xFC00, 0x4000, 4}, {0xFC00, 0x4400, 3},
+    {0xF800, 0x4800, 1}, {0xF000, 0x5000, 3}, {0xE000, 0x6000, 3}, {0xF000, 0x8000, 2}, {0xF000, 0x9000, 2},
+    {0xF000, 0xA000, 2}, {0xFF00, 0xB000, 1}, {0xF500, 0xB100, 2}, {0xFE00, 0xB400, 2}, {0xFE00, 0xBC00, 2},
+    {0xFF00, 0xB200, 1}, {0xFF00, 0xBA00, 1}, {0xFF00, 0xBE00, 1}, {0xFFE0, 0xBF00, 1}, {0xF800, 0xC000, 2},
+    {0xF800, 0xC800, 2}, {0xFF00, 0xDF00, 1}, {0xF000, 0xD000, 2}, {0xF800, 0xE000, 1},
+};
+/* families of T32 instructions: the fixed bits of their halfwords, how often they are drawn */
+typedef struct {
+    uint16_t mask1, value1, mask2, value2;
+    int weight;
+} Pair;
+static const Pair t32_classes[] = {
+    {0xFE00, 0xF800, 0x0000, 0x0000, 4}, /* loads and stores of a single register, PLD, PLI */
+    {0xFE00, 0xE800, 0x0000, 0x0000, 4}, /* LDM, STM, LDRD, STRD, the exclusives, TBB, TBH */
+    {0xFE00, 0xEA00, 0x8000, 0x0000, 4}, /* data processing with a shifted register */
+    {0xFA00, 0xF000, 0x8000, 0x0000, 4}, /* data processing with a modified immediate */
+    {0xFA00, 0xF200, 0x8000, 0x0000, 3}, /* MOVW, MOVT, ADDW, SUBW, SBFX, UBFX, BFI, SSAT, USAT */
+    {0xF800, 0xF000, 0x8000, 0x8000, 2}, /* branches and control */
+    {0xFF00, 0xFA00, 0x0000, 0x0000, 4}, /* register shifts, extends, parallel, DSP, the multiplies' neighbours */
+    {0xFF80, 0xFB00, 0x0000, 0x0000, 2}, /* multiplies */
+    {0xFF80, 0xFB80, 0x0000, 0x0000, 2}, /* long multiplies and divides */
+    {0xEC00, 0xEC00, 0x0000, 0x0000, 4}, /* the coprocessors, VFP and Advanced SIMD */
+    {0xFF10, 0xF900, 0x0000, 0x0000, 1}, /* Advanced SIMD loads and stores (VLD, VST) */
+    {0xFFF0, 0xFB00, 0x00F0, 0x0000, 2}, /* MUL, MLA */
+    {0xFFF0, 0xFB00, 0x00F0, 0x0010, 1}, /* MLS */
+    {0xFFF0, 0xF340, 0x8020, 0x0000, 1}, /* SBFX */
+    {0xFFF0, 0xF3C0, 0x8020, 0x0000, 1}, /* UBFX */
+    {0xFFF0, 0xF360, 0x8020, 0x0000, 1}, /* BFI, BFC */
+    {0xFFF0, 0xE8D0, 0xFFE0, 0xF000, 2}, /* TBB, TBH */
+    {0xFE50, 0xE840, 0x0000, 0x0000, 2}, /* LDRD, STRD (and the exclusives' space) */
+    {0xFFF0, 0xE850, 0x0F00, 0x0F00, 1}, /* LDREX (T1) */
+    {0xFFF0, 0xE840, 0x0000, 0x0000, 1}, /* STREX (T1) */
+};
+static uint16_t t16_word(void) {
+    if (rnd() & 1) {
+        uint16_t h;
+        do h = (uint16_t)rnd();
+        while ((h >> 11) >= 0x1D);
+        return h;
+    }
+    int total = 0, r;
+    for (size_t k = 0; k < sizeof t16_classes / sizeof *t16_classes; ++k) total += t16_classes[k].weight;
+    r = (int)(rnd() % (u64)total);
+    for (size_t k = 0;; ++k) {
+        r -= t16_classes[k].weight;
+        if (r < 0) return (uint16_t)(((uint16_t)rnd() & ~t16_classes[k].mask) | t16_classes[k].value);
+    }
+}
+/* a T32 instruction's two halfwords, of any family; one in three any word of the space, defined or not, else one the
+   decoder has */
+static void t32_pair(uint16_t* a, uint16_t* b) {
+    int total = 0, anything = rnd() % 3 == 0;
+    for (size_t k = 0; k < sizeof t32_classes / sizeof *t32_classes; ++k) total += t32_classes[k].weight;
+    for (int tries = 0; tries < 10000; ++tries) {
+        int r = (int)(rnd() % (u64)total);
+        size_t k = 0;
+        while ((r -= t32_classes[k].weight) >= 0) ++k;
+        const Pair* c = &t32_classes[k];
+        uint16_t x = (uint16_t)(((uint16_t)rnd() & ~c->mask1) | c->value1);
+        uint16_t y = (uint16_t)(((uint16_t)rnd() & ~c->mask2) | c->value2);
+        SnxThumb t;
+        if ((x >> 11) < 0x1D) continue;
+        if (!anything && !snx_thumb_decode(x, y, &t)) continue;
+        *a = x;
+        *b = y;
+        return;
+    }
+    fprintf(stderr, "FAIL: no T32 word found\n");
+    exit(1);
+}
+/* the instructions of a Thumb block counted by their shape (the 16-bit ones apart: the Sail's) */
+static void count_shapes(const Block* b) {
+    for (size_t k = 0; k < b->n; ++k) {
+        SnxThumb t;
+        unsigned hw1 = b->half[k], hw2 = k + 1 < b->n ? b->half[k + 1] : 0;
+        if ((hw1 >> 11) < 0x1D) {
+            ++g_test.t16;
+            continue;
+        }
+        (void)snx_thumb_decode((uint16_t)hw1, (uint16_t)hw2, &t);
+        ++g_test.shapes[t.shape & 31];
+        ++k;
+    }
+}
+/* a Thumb block: one to five instructions, one time in four an IT first whose block they are, else with one among them */
+static void random_thumb(Block* b) {
+    unsigned n = rnd() % 3 == 0 ? 1 : 2 + (unsigned)(rnd() % 4), k = 0;
+    b->thumb = 1;
+    b->n = 0;
+    if (rnd() % 4 == 0) {
+        b->half[b->n++] = (uint16_t)(0xBF00u | (unsigned)(rnd() % 15) << 4 | (1u + (unsigned)(rnd() % 15)));
+        n = 1 + (unsigned)(rnd() % 4);
+    }
+    for (; k < n; ++k) {
+        if (rnd() % 3 == 0) {
+            t32_pair(&b->half[b->n], &b->half[b->n + 1]);
+            b->n += 2;
+        } else {
+            b->half[b->n++] = t16_word();
+        }
+    }
+}
 
 /* the object loaded, each block's function in addr (those the x86-64 back end made alone, for its object) */
 static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const char* what, const Block* blocks,
@@ -351,7 +476,8 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
 static void block_text(const Block* b, char* out, size_t size) {
     size_t at = 0;
     for (size_t i = 0; i < b->n && at < size; ++i)
-        at += (size_t)snprintf(out + at, size - at, "%s%08x", i ? " " : "", b->words[i]);
+        at += (size_t)snprintf(out + at, size - at, "%s%0*x", i ? " " : "", b->thumb ? 4 : 8,
+                               b->thumb ? b->half[i] : b->words[i]);
 }
 
 /* the chunk's blocks made by both, loaded and run */
@@ -378,7 +504,8 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
         char name[16];
         size_t lc = 0, xc = 0;
         snprintf(name, sizeof name, "B_%zu", i);
-        if (!snx_arm_llvm_block(module, name, b->words, b->n, PC, &lc)) {
+        if (!(b->thumb ? snx_thumb_llvm_block(module, name, b->half, b->n, PC, &lc)
+                       : snx_arm_llvm_block(module, name, b->words, b->n, PC, &lc))) {
             block_text(b, text, sizeof text);
             fprintf(stderr, "FAIL: [%s]: LLVM refused it\n", text);
             ++g_test.failures;
@@ -386,10 +513,10 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             break;
         }
         b->consumed = lc;
-        b->made = snx_x64_arm_block(x64, name, (const unsigned char*)b->words, b->n, PC, &xc, NULL, NULL); /* the host's
-                                                                                                         words: LE */
+        b->made = b->thumb ? snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL)
+                           : snx_x64_arm_block(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL);
         if (!b->made) {
-            SnxA32Kind k = snx_a32_decode(b->words[0]);
+            SnxA32Kind k = b->thumb ? SNX_A32_UNDEFINED : snx_a32_decode(b->words[0]);
             block_text(b, text, sizeof text);
             ++g_test.refused;
             ++g_test.refusals[k & 63];
@@ -404,8 +531,10 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             ++g_test.failures;
             b->made = 0;
         }
-        g_test.words += b->n;
-        g_test.consumed_words += lc;
+        if (!b->thumb) {
+            g_test.words += b->n;
+            g_test.consumed_words += lc;
+        }
     }
     if (!rc && g_test.ll) { /* --ll FILE: the first chunk's LLVM module before any pass, for opt and llc */
         char* message = NULL;
@@ -447,6 +576,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             for (int side = 0; side < 2; ++side) {
                 g_test.seed = seed;
                 start(&s[side], k);
+                if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
                 run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
             }
             ++g_test.ran;
@@ -464,6 +594,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
                 if (g_test.dump) { /* --dump: the state the runs started from, to rebuild the case by hand */
                     g_test.seed = seed;
                     start(&s[0], k);
+                    if (b->thumb) s[0].cpu.cpsr |= SNX_ARM_T;
                     fprintf(stderr, "  start: fpscr %08x cpsr %08x\n", s[0].cpu.fpscr, s[0].cpu.cpsr);
                     for (unsigned r = 0; r < 16; ++r)
                         fprintf(stderr, "  r%u %08x%s", r, s[0].cpu.r[r], r % 8 == 7 ? "\n" : "");
@@ -664,9 +795,9 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
 
 /* ---- an MSR that may set CPSR.E: its block ends there, and the next is entered through its checks (llvm.c's
    block_begin), which stop on E with that block's first word; the entry past them (X) would run it as little-endian */
-static size_t endian_next(void* user, uint32_t pc, uint32_t word, uint32_t keys[2]) {
-    (void)user, (void)word;
-    if (pc != PC) return 0;
+static size_t endian_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
+    (void)user, (void)units, (void)count;
+    if (key != PC) return 0;
     keys[0] = PC + 4;
     return 1;
 }
@@ -775,11 +906,150 @@ static int run_vrshl_witness(SnxX64Arm* x64) {
     return 0;
 }
 
+/* ---- Thumb's witnesses: the entry's checks (thumb_block's), and the accesses the block compilers don't agree on
+   without care ---- */
+
+typedef struct {
+    const char* what;
+    uint16_t half[6];
+    size_t n;
+    uint32_t r0, r1, cpsr, r15;
+    /* CPSR_SET: CPSR is cpsr; R15_SET: R15 is r15; REGS_SET: R0 and R1 are r0 and r1; else as start makes them, CPSR
+       with T set */
+    int set;
+    int exit; /* the exit wanted, ANY: the two runs are only compared, from 16 states */
+} ThumbCase;
+#define CPSR_SET 1
+#define R15_SET  2
+#define REGS_SET 4
+#define ANY      (-1)
+/* CPSR's bits in these: T 0x20, E 0x200, ITSTATE's 0x0600FC00; the mode 0x10 */
+static const ThumbCase thumb_cases[] = {
+    /* the entry: R15 not the block's address, T clear, ITSTATE, E, and their combinations (R15 first, then T, ITSTATE,
+       E) */
+    {"the entry, as it should be", {0xBF00}, 1, 0, 0, 0, 0, 0, SNX_ARM_OK},
+    {"the entry with R15 elsewhere", {0xBF00}, 1, 0, 0, 0, PC + 2, R15_SET, SNX_ARM_BAD_ENTRY},
+    {"the entry with T clear", {0xBF00}, 1, 0, 0, 0x10, 0, CPSR_SET, SNX_ARM_BAD_ENTRY},
+    {"the entry with ITSTATE in CPSR", {0xBF00}, 1, 0, 0, 0x430, 0, CPSR_SET, SNX_ARM_IT_ENTRY},
+    {"the entry with ITSTATE's low bits", {0xBF00}, 1, 0, 0, 0x06000030, 0, CPSR_SET, SNX_ARM_IT_ENTRY},
+    {"the entry with E set", {0xBF00}, 1, 0, 0, 0x230, 0, CPSR_SET, SNX_ARM_ENDIAN_UNSUPPORTED},
+    {"the entry with T clear, ITSTATE and E", {0xBF00}, 1, 0, 0, 0x610, 0, CPSR_SET, SNX_ARM_BAD_ENTRY},
+    {"the entry with ITSTATE and E", {0xBF00}, 1, 0, 0, 0x8230, 0, CPSR_SET, SNX_ARM_IT_ENTRY},
+    {"the entry, R15 elsewhere and T clear", {0xBF00}, 1, 0, 0, 0x10, PC + 2, CPSR_SET | R15_SET, SNX_ARM_BAD_ENTRY},
+    /* TBB [R0, R1] and TBH [R0, R1, LSL #1] whose table entry is past memory: a data abort, as a load's */
+    {"TBB of a byte at the memory's last one", {0xE8D0, 0xF001}, 2, MEM_SIZE - 1, 0, 0, 0, REGS_SET, SNX_ARM_OK},
+    {"TBB past memory", {0xE8D0, 0xF001}, 2, MEM_SIZE, 0, 0, 0, REGS_SET, SNX_ARM_DATA_ABORT},
+    {"TBH past memory", {0xE8D0, 0xF011}, 2, MEM_SIZE - 2, 1, 0, 0, REGS_SET, SNX_ARM_DATA_ABORT},
+    /* the compares without a result (Rd 15), and the reserved ones, whose flags are the subtraction's and the addition's */
+    {"TST.W R0, R1", {0xEA10, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    {"TEQ.W R0, R1", {0xEA90, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    {"CMN.W R0, R1", {0xEB10, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    {"CMP.W R0, R1", {0xEBB0, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    {"ADCS.W of Rd 15", {0xEB50, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    {"SBCS.W of Rd 15", {0xEB70, 0x0F01}, 2, 0, 0, 0, 0, 0, ANY},
+    /* a logical operation's carry: LSL #0 leaves C, RRX takes it */
+    {"ANDS.W R0, R0, R1", {0xEA10, 0x0001}, 2, 0, 0, 0, 0, 0, ANY},
+    {"BICS.W R0, R0, R1", {0xEA30, 0x0001}, 2, 0, 0, 0, 0, 0, ANY},
+    {"MOVS.W R0, R1", {0xEA5F, 0x0001}, 2, 0, 0, 0, 0, 0, ANY},
+    {"ORNS.W R0, R0, R1", {0xEA70, 0x0001}, 2, 0, 0, 0, 0, 0, ANY},
+    {"EORS.W R0, R0, R1", {0xEA90, 0x0001}, 2, 0, 0, 0, 0, 0, ANY},
+    {"RRXS.W R0, R1", {0xEA5F, 0x0031}, 2, 0, 0, 0, 0, 0, ANY},
+    {"MOVS.W R0, #0x80000000, its carry the modified immediate's", {0xF05F, 0x4000}, 2, 0, 0, 0, 0, 0, ANY},
+    /* a register's shift by a multiple of 256: an amount of 0 leaves the value and C */
+    {"LSLS.W R0, R0, R1 by 0x100", {0xFA10, 0xF001}, 2, 0x80000001, 0x100, 0, 0, REGS_SET, ANY},
+    {"LSRS.W R0, R0, R1 by 0x100", {0xFA30, 0xF001}, 2, 0x80000001, 0x100, 0, 0, REGS_SET, ANY},
+    {"ASRS.W R0, R0, R1 by 0x100", {0xFA50, 0xF001}, 2, 0x80000001, 0x100, 0, 0, REGS_SET, ANY},
+    {"RORS.W R0, R0, R1 by 0x100", {0xFA70, 0xF001}, 2, 0x80000001, 0x100, 0, 0, REGS_SET, ANY},
+    /* Align(PC, 4) read by an A32 instruction's twin, at an address 2 mod 4 */
+    {"NOP; VLDR D0, [PC, #4]", {0xBF00, 0xED9F, 0x0B01}, 3, 0, 0, 0, 0, 0, SNX_ARM_OK},
+    /* a doubleword's second register, any in Thumb: STREXD stores what LDREXD read, where Rt2 is not Rt + 1 */
+    {"LDREXD and STREXD of R0 and R3", {0xE8D1, 0x037F, 0xE8C1, 0x0372}, 4, 0, 0x100, 0, 0, REGS_SET, SNX_ARM_OK},
+    /* an UNDEFINED word under an IT condition that always holds (the AL block's 1111): the block goes on past it */
+    {"IT AL of an UNDEFINED word, then a POP", {0xBFED, 0x49E9, 0xEB92, 0x2741, 0xBD1B}, 5, 0, 0, 0, 0, 0, ANY},
+};
+static int run_thumb_witnesses(SnxIr* ir, SnxX64Arm* x64) {
+    size_t count = sizeof thumb_cases / sizeof *thumb_cases, failures = 0;
+    Block* blocks = (Block*)calloc(count, sizeof *blocks);
+    LLVMModuleRef module = LLVMModuleCreateWithNameInContext("thumb witnesses", ir->ctx);
+    SnxCodeLoader *lloader = NULL, *xloader = NULL;
+    unsigned char *lobj = NULL, *xobj = NULL;
+    size_t lsize = 0, xsize = 0;
+    SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
+    RunState* s = (RunState*)malloc(2 * sizeof *s);
+    char error[512];
+    if (!blocks || !laddr || !xaddr || !s) {
+        fprintf(stderr, "FAIL: out of memory for the %zu Thumb witnesses\n", count);
+        free(blocks), free(laddr), free(xaddr), free(s);
+        LLVMDisposeModule(module);
+        return 1;
+    }
+    LLVMSetTarget(module, LLVMGetTarget(ir->mod));
+    LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
+    for (size_t i = 0; i < count; ++i) {
+        Block* b = &blocks[i];
+        size_t consumed, xconsumed;
+        char name[16];
+        b->thumb = 1;
+        b->n = thumb_cases[i].n;
+        memcpy(b->half, thumb_cases[i].half, sizeof thumb_cases[i].half);
+        snprintf(name, sizeof name, "B_%zu", i);
+        if (!snx_thumb_llvm_block(module, name, b->half, b->n, PC, &consumed) ||
+            !(b->made = snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xconsumed, NULL, NULL))) {
+            fprintf(stderr, "FAIL: the Thumb witness %s: a back end refused it: %s\n", thumb_cases[i].what,
+                    snx_x64_arm_why(x64));
+            return 1;
+        }
+        if (consumed != xconsumed) {
+            fprintf(stderr, "FAIL: the Thumb witness %s: LLVM's block takes %zu halfwords, the x86-64 back end's %zu\n",
+                    thumb_cases[i].what, consumed, xconsumed);
+            ++failures;
+        }
+    }
+    if (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
+        snx_x64_arm_object(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
+        !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
+        load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)) {
+        fprintf(stderr, "FAIL: the Thumb witnesses' objects: %s\n", error);
+        return 1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const ThumbCase* w = &thumb_cases[i];
+        for (unsigned k = 0; k < (w->exit == ANY ? 16u : 1u); ++k) {
+            u64 seed = g_test.seed;
+            for (int side = 0; side < 2; ++side) {
+                g_test.seed = seed;
+                start(&s[side], w->exit == ANY ? k : 1);
+                s[side].cpu.cpsr = w->set & CPSR_SET ? w->cpsr : s[side].cpu.cpsr | SNX_ARM_T;
+                if (w->set & R15_SET) s[side].cpu.r[15] = w->r15;
+                if (w->set & REGS_SET) s[side].cpu.r[0] = w->r0, s[side].cpu.r[1] = w->r1;
+                run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
+            }
+            const char* why = differs(&s[0], &s[1]);
+            if (*why || (w->exit != ANY && s[0].cpu.exit != (uint32_t)w->exit)) {
+                fprintf(stderr, "FAIL: the Thumb witness %s, state %u: %s (LLVM's exit %u, wanted %d)\n", w->what, k,
+                        why, s[0].cpu.exit, w->exit);
+                ++failures;
+                break;
+            }
+        }
+    }
+    printf("%zu Thumb witnesses (the entry's checks, TBB and TBH past memory, the compares and the carries): %zu "
+           "failures\n",
+           count, failures);
+    g_test.failures += failures;
+    free(s), free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
+    snx_code_loader_free(lloader);
+    snx_code_loader_free(xloader);
+    LLVMDisposeModule(module);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir = NULL;
     g_test.states = 16;
     g_test.blocks = 6000;
+    g_test.thumb = 4000;
     g_test.features = ~0u;
     g_test.seed = 0xa32;
     for (int i = 1; i < argc; ++i) {
@@ -787,6 +1057,8 @@ int main(int argc, char** argv) {
             g_test.states = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--blocks") && i + 1 < argc)
             g_test.blocks = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--thumb") && i + 1 < argc)
+            g_test.thumb = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--pool") && i + 1 < argc)
             g_test.pool = (int)strtol(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--features") && i + 1 < argc)
@@ -801,10 +1073,18 @@ int main(int argc, char** argv) {
             g_test.dump = 1;
         else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64)
             g_test.only[g_test.nonly++] = (uint32_t)strtoul(argv[++i], NULL, 16);
-        else
+        else if (!strcmp(argv[i], "--halves") && i + 1 < argc) {
+            char* at = argv[++i];
+            while (g_test.nhalves < MAX_HALF) {
+                g_test.halves[g_test.nhalves++] = (uint16_t)strtoul(at, &at, 16);
+                if (*at != ',') break;
+                ++at;
+            }
+        } else
             return fprintf(stderr,
-                           "usage: snx-test-arm-x64 [--blocks N] [--states N] [--pool N] [--features MASK] [--seed N] "
-                           "[--object FILE] [--word HEX]...\n%s is not one of these\n",
+                           "usage: snx-test-arm-x64 [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] "
+                           "[--seed N] [--object FILE] [--word HEX]... [--halves HEX[,HEX]...]\n%s is not one of "
+                           "these\n",
                            argv[i]),
                    2;
     }
@@ -824,10 +1104,18 @@ int main(int argc, char** argv) {
     }
     snx_x64_arm_limit(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
-    if (!g_test.nonly && run_witnesses(ir, x64)) ++g_test.failures;
-    if (!g_test.nonly && run_endian_chain(x64)) ++g_test.failures;
-    if (!g_test.nonly && run_vrshl_witness(x64)) ++g_test.failures;
-    if (g_test.nonly) {
+    if (!g_test.nonly && !g_test.nhalves && run_witnesses(ir, x64)) ++g_test.failures;
+    if (!g_test.nonly && !g_test.nhalves && run_endian_chain(x64)) ++g_test.failures;
+    if (!g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
+    if (!g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
+    if (g_test.nhalves) {
+        blocks[0].thumb = 1;
+        blocks[0].n = g_test.nhalves;
+        memcpy(blocks[0].half, g_test.halves, sizeof blocks[0].half);
+        g_test.nonly = 1; /* each state printed */
+        run_chunk(ir, x64, blocks, 1);
+        done = 1;
+    } else if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
             blocks[i].words[0] = g_test.only[i];
             blocks[i].n = 1;
@@ -839,6 +1127,7 @@ int main(int argc, char** argv) {
         size_t count = g_test.blocks - done < CHUNK ? g_test.blocks - done : CHUNK;
         for (size_t i = 0; i < count; ++i) {
             Block* b = &blocks[i];
+            *b = (Block){0};
             /* one word alone a third of the time, else two to six */
             b->n = rnd() % 3 == 0 ? 1 : 2 + (size_t)(rnd() % (MAX_WORDS - 1));
             for (size_t k = 0; k < b->n; ++k) {
@@ -849,6 +1138,27 @@ int main(int argc, char** argv) {
         }
         if (run_chunk(ir, x64, blocks, count)) break;
         done += count;
+    }
+    size_t thumb_done = 0;
+    while (!g_test.nonly && !g_test.nhalves && thumb_done < g_test.thumb) {
+        size_t count = g_test.thumb - thumb_done < CHUNK ? g_test.thumb - thumb_done : CHUNK;
+        for (size_t i = 0; i < count; ++i) {
+            blocks[i] = (Block){0};
+            random_thumb(&blocks[i]);
+            count_shapes(&blocks[i]);
+        }
+        if (run_chunk(ir, x64, blocks, count)) break;
+        thumb_done += count;
+    }
+    if (thumb_done) {
+        static const char* const names[32] = {
+            [TH_UNDEF] = "undefined", [TH_LOAD] = "LDR",          [TH_STORE] = "STR",    [TH_BRANCH] = "branch",
+            [TH_MUL] = "MUL",         [TH_BITFIELD] = "bitfield", [TH_WIMM] = "MOVW",    [TH_WDATA] = "data",
+            [TH_TABLE] = "TBB",       [TH_HINT] = "hint",         [TH_A32] = "A32 twin", [TH_DUAL] = "LDRD"};
+        printf("%zu Thumb blocks of %zu 16-bit instructions and, by the decoder's shape,", thumb_done, g_test.t16);
+        for (size_t k = 0; k < 32; ++k)
+            if (g_test.shapes[k] && names[k]) printf(" %s %zu", names[k], g_test.shapes[k]);
+        printf("\n");
     }
     printf("%zu blocks of %zu words (%zu in the blocks LLVM made of them), %zu compared from %u states each: %zu runs, "
            "%zu refused by the x86-64 back end\n",

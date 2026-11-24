@@ -481,9 +481,9 @@ sailgen --generate a32.roots --backend bits.h --backend x64.h --backend x64_a32.
 ```
 
 The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
-`src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` makes of an A32 block on the Cortex-A57
-with flat memory (a 32-bit NX program's) and leaves the rest to it: Thumb, Advanced SIMD, the ARMv6 media,
-saturating and DSP multiply instructions, the TLS register's reads, half-precision conversions. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
+`src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` and `llvm_thumb.inc` make of an A32 or
+Thumb block on the Cortex-A57 with flat memory (a 32-bit NX program's); a block with an instruction it doesn't make is
+refused and stays LLVM's. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
 does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
 overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
 into one store of CPSR at the instruction's end, and a condition read before another instruction writes the flags is
@@ -494,8 +494,12 @@ address, each access checked first as `llvm.c`'s are: misaligned (where it must 
 past `min(mem_size, 2^32)` a DATA_ABORT one, both with the address as the syndrome, on stubs after the block's code; a
 store's range against the exclusive reservation in one check (a cold path clears it where they overlap); STREX a LOCK
 CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (loads and stores, LDM and STM, the
-multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT,
-the coprocessor's) are written in `x64_arm.c` over the same SSA. The VFP's scalar instructions keep their values in XMM
+multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT, the
+coprocessor's, the ARMv6 media and DSP ones, VFP and Advanced SIMD) are written in `x64_arm.c` over the same SSA. A
+Thumb block's 16-bit instructions are the Sail's (`sg_decode_t16`), whose conditions and flags follow ITSTATE, which is
+known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `x64_thumb.inc`, or the A32
+instruction of the same meaning whose emitter reads Thumb's PC. `sg_ITSTATE` and `sg_ITSTATE_set` carry it (IT sets the
+ones after it; an SVC, a BKPT and a block that ends inside an IT block leave it in CPSR). The VFP's scalar instructions keep their values in XMM
 registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`
 takes the host's: FPSCR's rounding to nearest, no trap enabled and IXC already set (for the arithmetic), operands
 finite and normal or zero, a result normal or an exact zero the operation allows; anything else calls
@@ -516,5 +520,8 @@ both back ends and run from random states (registers in and out of memory, the f
 a rounding mode and a trap, denormals, zeros and NaNs): every register, CPSR, the exit and its syndrome, the monitor,
 FPSCR, the D registers and memory must match, and so must the words each block covers. Witnesses count the calls of
 `snx_arm_fp_x64` each VFP case makes (the hot path is taken exactly where `fp_call`'s is), the entry's checks are run
-with each of their failures, and an MSR of E is run into the next block. `arm_x64_spill` does it with three host
+with each of their failures, and an MSR of E is run into the next block. Thumb blocks (`--thumb N`) are made the same
+way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
+instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
+TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
 registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT.
