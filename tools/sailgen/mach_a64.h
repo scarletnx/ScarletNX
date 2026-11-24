@@ -736,7 +736,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     SgXAsm a;
     SgXIns* r;
     size_t i;
-    int pool = g->x.pool;
+    int pool = g->x.pool, xpool = g->x.xpool;
     SnxU64 (*resolve)(const char*) = g->resolve;
     memset(g, 0, sizeof *g);
     g->resolve = resolve;
@@ -748,6 +748,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     g->x.nv = 1;   /* 0 is none */
     g->x.nb = 1;
     g->x.pool = pool;
+    g->x.xpool = xpool;
     for (i = 0; i < *count; ++i) {
         g->word = words[i];
         g->pc = pc + 4 * i;

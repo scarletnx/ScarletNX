@@ -32,6 +32,7 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
 }
 
 void snx_x64_set_pool(int registers) { g_ctx.x.pool = registers; }
+void snx_x64_set_xpool(int registers) { g_ctx.x.xpool = registers; }
 int snx_x64_pool(void) { return g_ctx.x.pool; }
 
 /* the helpers the code calls (x64_helpers.c, linked in), by name */

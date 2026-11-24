@@ -8,8 +8,9 @@
    flags, the next pc and the runtime's UNDEF must match. Then sequences of two to four of those words (--sequences N)
    become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
    a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
-     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
-   --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too)
+     snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose] [--dump WORD...]
+   --pool N gives the back end N host registers of its nine, so it spills, --xmm N of its sixteen vector ones (ctest
+   runs it with 3 and 6 too)
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "llvm_steps.h"
@@ -567,7 +568,7 @@ static size_t check_fp_guards(void) {
    between them ends what lived in registers and a guest's flags live on the host's: the block's state after it is its
    words' one by one */
 static size_t check_fp_rows(void) {
-    enum { WORDS = 8, STATES = 800 };
+    enum { WORDS = 12, STATES = 800 };
     static const struct {
         const char* text;
         u32 words[WORDS];
@@ -578,6 +579,12 @@ static size_t check_fp_rows(void) {
          {0x1E220820u, 0xB82600A7u, 0x1F021C26u, 0xB82600A7u, 0x1E61C062u, 0x1E221820u, 0x1E202008u}},
         {"the guest's flags across",
          {0x1E220820u, 0xEB090107u, 0x1E250883u, 0x9A8CB16Au, 0x1E6F29CDu, 0x9A8C816Du, 0x1E2E2000u, 0x9A8CA16Eu}},
+        {"guest values taking every register",
+         {0x8B030041u, 0x8B060024u, 0x8B010087u, 0x1E27C020u, 0x8B0400E8u, 0x8B010109u, 0x1E67C043u, 0x8B07012Au,
+          0x1E38000Bu, 0x8B08014Cu, 0x1E274085u}},
+        {"more vector values than a small pool",
+         {0x1E220820u, 0x1E650883u, 0x1E6808E7u, 0x1E2B090Au, 0x1F021C26u, 0x1E223843u, 0x1E6A48C9u, 0x1E224841u,
+          0x1E6828C5u, 0x1E202928u, 0x1E28082Bu, 0x1E2A6821u}},
         {"each kind", {0x1E222020u, 0x1E224823u, 0x1E380020u, 0x1E6540A4u, 0x1E22C066u, 0x1E21C067u, 0x1E665888u}},
     };
     static const u64 values[] = {0,
@@ -680,6 +687,8 @@ static int run(int argc, char** argv) {
             samples = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--pool") && i + 1 < (unsigned)argc)
             snx_x64_set_pool(atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--xmm") && i + 1 < (unsigned)argc)
+            snx_x64_set_xpool(atoi(argv[++i]));
         else if (!strcmp(argv[i], "--sequences") && i + 1 < (unsigned)argc)
             sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))
