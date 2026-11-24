@@ -6585,6 +6585,37 @@ static void compute_lone_lane_refusals(void) {
     half = cs_spirv(&kept, 32, 0, &info, &words);
     check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "a predicate an R2P may have kept is refused");
     free(half);
+    /* a lane's register written under a predicate and under its complement, then read: none of the lane's is left, unless
+       the predicate was written between the two */
+    for (u32 between = 0; between < 2; between++) {
+        CsCode both = base[0];
+        cs_insert(&both, 1, p1);
+        cs_put(&both, cs_if(cs_mov32(14, 1), 1));
+        if (between) cs_put(&both, cs_iseq(1, 8, 255));
+        cs_put(&both, cs_if(cs_mov32(14, 2), 9));
+        cs_put(&both, cs_sts(14, 2, CS_OUT));
+        half = cs_spirv(&both, 32, 0, &info, &words);
+        if (between)
+            check_refused(half, &info,
+                          "subgroup ballot/shuffle unavailable: ", "a lane's register some lanes may keep is refused");
+        else
+            check_translated(half, &info, "a lane's register written under both of a predicate is translated");
+        free(half);
+    }
+    /* a write under a predicate is what a lane under it reads, not one under its complement, and one under !PT no one's */
+    for (u32 k = 0; k < 3; k++) {
+        CsCode lanes = base[0];
+        cs_insert(&lanes, 1, p1);
+        cs_put(&lanes, cs_if(cs_mov32(14, 1), k == 2 ? 15 : 1));
+        cs_put(&lanes, cs_if(cs_sts(14, 2, CS_OUT), k ? 9 : 1));
+        half = cs_spirv(&lanes, 32, 0, &info, &words);
+        if (k)
+            check_refused(half, &info, "subgroup ballot/shuffle unavailable: ",
+                          "a lane's register that the reading lanes keep is refused");
+        else
+            check_translated(half, &info, "a lane's register written for the lanes that read it is translated");
+        free(half);
+    }
     /* a return, whose way the check does not follow */
     CsCode call = {0};
     cs_put(&call, CS_NOP);
