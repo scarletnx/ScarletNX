@@ -30,6 +30,7 @@ static struct {
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
 void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial)) { g.vk.ring.retire = retire; }
+void vita_vk_on_submit(void (*submit)(void)) { g.vk.ring.close = submit; }
 uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties) {
     return snx_vk_memory_type(&g.vk.memory_properties, bits, properties);
 }

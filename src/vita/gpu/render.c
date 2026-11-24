@@ -210,6 +210,7 @@ static void once(struct VitaRender* r, unsigned bit, const char* format, ...) {
     va_end(list);
 }
 static void retire(unsigned slot, uint64_t serial);
+static void submitting(void);
 static void rendering_pause(VkCommandBuffer cb);
 static void rendering_resume(struct VitaRender* r, VkCommandBuffer cb);
 static bool color_copy(struct VitaRender* r, VkCommandBuffer cb, const Surface* s, const Import* m, VkDeviceSize at,
@@ -784,6 +785,7 @@ bool vita_render_init(VitaProcess* p) {
     p->gxm->render = r;
     g_retiring = r;
     vita_vk_on_retire(retire);
+    if (!v->host_import) vita_vk_on_submit(submitting);
     if (!ok) {
         printf("gxm: cannot set up the renderer: scenes are not drawn\n");
         vita_render_free(p);
@@ -795,6 +797,10 @@ static void retire(unsigned slot, uint64_t serial) {
     if (!g_retiring) return;
     mirror_drain(g_retiring, serial, IMPORTS);
     g_retiring->staging[slot].used = 0, g_retiring->linear[slot].used = 0;
+}
+/* the GPU reads memory when its work runs: the copies take what the CPU wrote since the work was recorded */
+static void submitting(void) {
+    for (unsigned i = 0; g_retiring && i < IMPORTS; ++i) mirror_sync(g_retiring, &g_retiring->imports[i]);
 }
 void vita_render_shader_free(VitaProcess* p, void* shader) {
     struct VitaRender* r = render_of(p);
@@ -809,6 +815,7 @@ void vita_render_free(VitaProcess* p) {
     VkDevice d = r->vk->device;
     vkDeviceWaitIdle(d);
     vita_vk_on_retire(NULL);
+    vita_vk_on_submit(NULL);
     g_retiring = NULL;
     for (unsigned i = 0; i < GXM_PROGRAMS; ++i) {
         vita_render_shader_free(p, p->gxm->vertex[i].shader);
