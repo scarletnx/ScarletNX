@@ -2569,6 +2569,9 @@ u32 vk_buf_own_got(u64* id);
 /* whether entry i still has the buffer of its own numbered id: then the entry is used in this present, as a lookup
    would use it (the own buffers least used go first, vk_buf_reclaim) */
 int vk_buf_own_holds(u32 i, u64 id);
+/* a count that grows at each end of a token (an own buffer dropped, an entry freed), under the share lock: a token
+   that held when the count was n holds while it is n. Read with no lock (render.c's memos) */
+u64 vk_buf_own_drops(void);
 u32 vk_buf_map_gen(void); /* moves at each change of the GPU's or guest memory's mappings (vk_buf_mapping_changed) */
 /* a dispatch's read-only storage buffer: no delayed content checks, and in place where it can be, as a constant buffer */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off);

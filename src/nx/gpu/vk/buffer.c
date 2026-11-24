@@ -144,7 +144,15 @@ static u32 vb_new(u64 start, u32 len) {
     g_vblive++;
     return idx;
 }
+/* the own buffers dropped and the entries freed, each an end of the tokens that name them (vk_buf_own_drops) */
+static alignas(64) _Atomic u64 g_own_drops;
+static void own_dropped(void) {
+    atomic_store_explicit(&g_own_drops, atomic_load_explicit(&g_own_drops, memory_order_relaxed) + 1,
+                          memory_order_release);
+}
+u64 vk_buf_own_drops(void) { return atomic_load_explicit(&g_own_drops, memory_order_acquire); }
 static void vb_free(u32 idx) {
+    own_dropped();
     vb_index_remove(g_vb[idx].start, (u32)g_vb[idx].len);
     g_vb[idx].len = 0; /* free: the sweep skips it */
     g_vb[idx].own_next = g_vbfree;
@@ -3721,6 +3729,7 @@ int vk_buf_own_holds(u32 i, u64 id) {
 static void drop_own(u32 i) {
     Vb* e = &g_vb[i];
     if (e->own) {
+        own_dropped();
         vk_defer_buffer(e->buf, e->mem);
         own_unlink(i);
         g_buffer.n--;

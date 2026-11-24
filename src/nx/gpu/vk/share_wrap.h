@@ -856,21 +856,12 @@ static inline int sh_vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     vk_share_unlock();
     return r;
 }
-static inline void sh_vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access) {
-    if (!vk_share_on()) {
-        vk_surf_use(cb, s, layout, stage, access);
-        return;
-    }
-    vk_share_lock_at(113);
-    vk_surf_use(cb, s, layout, stage, access);
-    vk_share_unlock();
-}
 static inline void sh_vk_surf_view_reset(void) {
     if (!vk_share_on()) {
         vk_surf_view_reset();
         return;
     }
-    vk_share_lock_at(114);
+    vk_share_lock_at(113);
     vk_surf_view_reset();
     vk_share_unlock();
 }
@@ -879,139 +870,139 @@ static inline void sh_vk_surf_wrote(Surf* s) {
         vk_surf_wrote(s);
         return;
     }
-    vk_share_lock_at(115);
+    vk_share_lock_at(114);
     vk_surf_wrote(s);
     vk_share_unlock();
 }
 static inline VkDescriptorSet sh_vk_table_set(void) {
     if (!vk_share_on()) return vk_table_set();
-    vk_share_lock_at(116);
+    vk_share_lock_at(115);
     VkDescriptorSet const r = vk_table_set();
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n, u32* words) {
     if (!vk_share_on()) return vk_table_words(views, layouts, samplers, n, words);
-    vk_share_lock_at(117);
+    vk_share_lock_at(116);
     int const r = vk_table_words(views, layouts, samplers, n, words);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkBuffer in, u64 in_at, u64 in_size, VkBuffer out, u64 out_at, u64 out_size) {
     if (!vk_share_on()) return vk_tc_index(cb, mode, remap, restart, n, in, in_at, in_size, out, out_at, out_size);
-    vk_share_lock_at(118);
+    vk_share_lock_at(117);
     int const r = vk_tc_index(cb, mode, remap, restart, n, in, in_at, in_size, out, out_at, out_size);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_tc_restride(VkCommandBuffer cb, u32 in_stride, u32 out_stride, u32 nv, VkBuffer in, u64 in_at, u64 len, VkBuffer out, u64 out_at) {
     if (!vk_share_on()) return vk_tc_restride(cb, in_stride, out_stride, nv, in, in_at, len, out, out_at);
-    vk_share_lock_at(119);
+    vk_share_lock_at(118);
     int const r = vk_tc_restride(cb, in_stride, out_stride, nv, in, in_at, len, out, out_at);
     vk_share_unlock();
     return r;
 }
 static inline VkSh* sh_vk_tess_passthrough(u32 vertices, const VkSh* vertex, const VkSh* evaluation) {
     if (!vk_share_on()) return vk_tess_passthrough(vertices, vertex, evaluation);
-    vk_share_lock_at(120);
+    vk_share_lock_at(119);
     VkSh* const r = vk_tess_passthrough(vertices, vertex, evaluation);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_tex_from_tic(const u32* tic) {
     if (!vk_share_on()) return vk_tex_from_tic(tic);
-    vk_share_lock_at(121);
+    vk_share_lock_at(120);
     Surf* const r = vk_tex_from_tic(tic);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_tex_from_tic_guest(const u32* tic, int raw) {
     if (!vk_share_on()) return vk_tex_from_tic_guest(tic, raw);
-    vk_share_lock_at(122);
+    vk_share_lock_at(121);
     Surf* const r = vk_tex_from_tic_guest(tic, raw);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_tex_from_tic_raw(const u32* tic) {
     if (!vk_share_on()) return vk_tex_from_tic_raw(tic);
-    vk_share_lock_at(123);
+    vk_share_lock_at(122);
     Surf* const r = vk_tex_from_tic_raw(tic);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_tex_from_tic_storage(const u32* tic) {
     if (!vk_share_on()) return vk_tex_from_tic_storage(tic);
-    vk_share_lock_at(124);
+    vk_share_lock_at(123);
     Surf* const r = vk_tex_from_tic_storage(tic);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     if (!vk_share_on()) return vk_tex_is_copy_of(t, rt);
-    vk_share_lock_at(125);
+    vk_share_lock_at(124);
     int const r = vk_tex_is_copy_of(t, rt);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_tex_recheck(Surf* t) {
     if (!vk_share_on()) return vk_tex_recheck(t);
-    vk_share_lock_at(126);
+    vk_share_lock_at(125);
     Surf* const r = vk_tex_recheck(t);
     vk_share_unlock();
     return r;
 }
 static inline VkImageView sh_vk_tex_storage_view(Surf* s, VkImageViewType type) {
     if (!vk_share_on()) return vk_tex_storage_view(s, type);
-    vk_share_lock_at(127);
+    vk_share_lock_at(126);
     VkImageView const r = vk_tex_storage_view(s, type);
     vk_share_unlock();
     return r;
 }
 static inline VkImageView sh_vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil) {
     if (!vk_share_on()) return vk_tex_view(s, type, srgb, map, stencil);
-    vk_share_lock_at(128);
+    vk_share_lock_at(127);
     VkImageView const r = vk_tex_view(s, type, srgb, map, stencil);
     vk_share_unlock();
     return r;
 }
 static inline VkFormat sh_vk_tex_view_format(const Surf* s, int srgb) {
     if (!vk_share_on()) return vk_tex_view_format(s, srgb);
-    vk_share_lock_at(129);
+    vk_share_lock_at(128);
     VkFormat const r = vk_tex_view_format(s, srgb);
     vk_share_unlock();
     return r;
 }
 static inline const char* sh_vk_tex_view_refusal(const Surf* s, VkImageViewType type) {
     if (!vk_share_on()) return vk_tex_view_refusal(s, type);
-    vk_share_lock_at(130);
+    vk_share_lock_at(129);
     const char* const r = vk_tex_view_refusal(s, type);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_tic_names_none(const u32* tic) {
     if (!vk_share_on()) return vk_tic_names_none(tic);
-    vk_share_lock_at(131);
+    vk_share_lock_at(130);
     int const r = vk_tic_names_none(tic);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_uma_pending(u64 gva, u64 len) {
     if (!vk_share_on()) return vk_uma_pending(gva, len);
-    vk_share_lock_at(132);
+    vk_share_lock_at(131);
     int const r = vk_uma_pending(gva, len);
     vk_share_unlock();
     return r;
 }
 static inline VkSh* sh_vk_varying_geometry(const VkSh* vertex, u32 per_vertex, u32 slot) {
     if (!vk_share_on()) return vk_varying_geometry(vertex, per_vertex, slot);
-    vk_share_lock_at(133);
+    vk_share_lock_at(132);
     VkSh* const r = vk_varying_geometry(vertex, per_vertex, slot);
     vk_share_unlock();
     return r;
 }
 static inline const char* sh_vk_view_type_name(VkImageViewType type) {
     if (!vk_share_on()) return vk_view_type_name(type);
-    vk_share_lock_at(134);
+    vk_share_lock_at(133);
     const char* const r = vk_view_type_name(type);
     vk_share_unlock();
     return r;
@@ -1021,7 +1012,7 @@ static inline void sh_vk_vrs_draw(VkCommandBuffer cb, u32 id) {
         vk_vrs_draw(cb, id);
         return;
     }
-    vk_share_lock_at(135);
+    vk_share_lock_at(134);
     vk_vrs_draw(cb, id);
     vk_share_unlock();
 }
@@ -1030,40 +1021,40 @@ static inline void sh_vk_vrs_keep(VkCommandBuffer cb) {
         vk_vrs_keep(cb);
         return;
     }
-    vk_share_lock_at(136);
+    vk_share_lock_at(135);
     vk_vrs_keep(cb);
     vk_share_unlock();
 }
 static inline int sh_vk_written_since(const u8* host, u64 len, u32 since) {
     if (!vk_share_on()) return vk_written_since(host, len, since);
-    vk_share_lock_at(137);
+    vk_share_lock_at(136);
     int const r = vk_written_since(host, len, since);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride) {
     if (!vk_share_on()) return vk_xfb_control_buffer(counters, counter_offset, control, what, stride);
-    vk_share_lock_at(138);
+    vk_share_lock_at(137);
     int const r = vk_xfb_control_buffer(counters, counter_offset, control, what, stride);
     vk_share_unlock();
     return r;
 }
 static inline int sh_vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset) {
     if (!vk_share_on()) return vk_xfb_indirect(control, arguments, offset);
-    vk_share_lock_at(139);
+    vk_share_lock_at(138);
     int const r = vk_xfb_indirect(control, arguments, offset);
     vk_share_unlock();
     return r;
 }
 static inline Surf* sh_vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size, u32 msaa) {
     if (!vk_share_on()) return vk_zt_array(gva, w, h, fmt, tile, layers, layer_size, msaa);
-    vk_share_lock_at(140);
+    vk_share_lock_at(139);
     Surf* const r = vk_zt_array(gva, w, h, fmt, tile, layers, layer_size, msaa);
     vk_share_unlock();
     return r;
 }
 /* the wrapped functions by their number in vk_share_lock_at, for the stats line */
-static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_buf_copy", "vk_buf_copy_writable", "vk_buf_copy_writable_word", "vk_buf_draw_has_alias", "vk_buf_draw_prepare", "vk_buf_get_at", "vk_buf_get_input", "vk_buf_get_storage", "vk_buf_get_uniform_at", "vk_buf_get_window", "vk_buf_get_window_input", "vk_buf_mem_need", "vk_buf_own_got", "vk_buf_own_holds", "vk_buf_owned", "vk_buf_pending", "vk_buffer_address", "vk_buffer_create", "vk_buffer_image", "vk_capture_clear", "vk_capture_get", "vk_capture_get_mixed_targets", "vk_capture_mixed_resolve", "vk_capture_mixed_source", "vk_capture_resolve", "vk_compute_gpu_src", "vk_compute_mem_need", "vk_compute_pending", "vk_conservative_dilation", "vk_defer_buffer", "vk_defer_buffer_view", "vk_depth_shadow_aliases", "vk_depth_shadow_cancel", "vk_depth_shadow_finish", "vk_depth_shadow_prepare", "vk_depth_shadow_range_aliases", "vk_depth_shadow_reserve", "vk_descriptor_heaps_get_stats", "vk_descriptor_heaps_invalidate", "vk_descriptor_heaps_pipeline_state", "vk_descriptors_bind", "vk_descriptors_bind_compute", "vk_descriptors_write", "vk_draw_texture_fragment", "vk_draw_texture_vertex", "vk_format_minmax_filter", "vk_frame_check", "vk_gfx_image_after", "vk_gfx_image_pending", "vk_gfx_image_pending_besides", "vk_gfx_image_record", "vk_gfx_image_unrecorded", "vk_gpuprof_op_begin", "vk_gpuprof_op_end", "vk_gpuprof_pass_begin", "vk_gpuprof_pass_end", "vk_host_shader", "vk_indirect_quads", "vk_mem_track", "vk_mirror_holds", "vk_mirror_pending", "vk_module_spv", "vk_module_spv_location", "vk_null_buffer_image", "vk_null_header_first", "vk_null_storage", "vk_null_view", "vk_own_res_unref", "vk_pages_read", "vk_pipe_unwritten_targets", "vk_pipeline_get", "vk_pipeline_get_deferred", "vk_pipeline_layout", "vk_pipeline_now", "vk_pipeline_ready", "vk_playout_compute", "vk_pointer_windows", "vk_predraw_drawn", "vk_predraw_fragment", "vk_predraw_next", "vk_predraw_pass_begin", "vk_predraw_reserve", "vk_predraw_view", "vk_query_pass_end", "vk_rec_new_set", "vk_rt_array", "vk_rt_attachment", "vk_rt_copy_drawn", "vk_rt_drawn", "vk_rt_drawn_full", "vk_rt_find", "vk_rt_note_read", "vk_rt_save", "vk_rt_snapshot", "vk_sampler", "vk_shader_cb_hold", "vk_shader_chosen", "vk_shader_fold_top", "vk_shader_get", "vk_shader_get_ex", "vk_shader_mesh", "vk_stage", "vk_stage_output", "vk_stage_upload", "vk_submits", "vk_surf_batch_begin", "vk_surf_batch_end", "vk_surf_can_writeback", "vk_surf_epoch_at", "vk_surf_guest_size", "vk_surf_keep_begin", "vk_surf_use", "vk_surf_view_reset", "vk_surf_wrote", "vk_table_set", "vk_table_words", "vk_tc_index", "vk_tc_restride", "vk_tess_passthrough", "vk_tex_from_tic", "vk_tex_from_tic_guest", "vk_tex_from_tic_raw", "vk_tex_from_tic_storage", "vk_tex_is_copy_of", "vk_tex_recheck", "vk_tex_storage_view", "vk_tex_view", "vk_tex_view_format", "vk_tex_view_refusal", "vk_tic_names_none", "vk_uma_pending", "vk_varying_geometry", "vk_view_type_name", "vk_vrs_draw", "vk_vrs_keep", "vk_written_since", "vk_xfb_control_buffer", "vk_xfb_indirect", "vk_zt_array"};
+static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_buf_copy", "vk_buf_copy_writable", "vk_buf_copy_writable_word", "vk_buf_draw_has_alias", "vk_buf_draw_prepare", "vk_buf_get_at", "vk_buf_get_input", "vk_buf_get_storage", "vk_buf_get_uniform_at", "vk_buf_get_window", "vk_buf_get_window_input", "vk_buf_mem_need", "vk_buf_own_got", "vk_buf_own_holds", "vk_buf_owned", "vk_buf_pending", "vk_buffer_address", "vk_buffer_create", "vk_buffer_image", "vk_capture_clear", "vk_capture_get", "vk_capture_get_mixed_targets", "vk_capture_mixed_resolve", "vk_capture_mixed_source", "vk_capture_resolve", "vk_compute_gpu_src", "vk_compute_mem_need", "vk_compute_pending", "vk_conservative_dilation", "vk_defer_buffer", "vk_defer_buffer_view", "vk_depth_shadow_aliases", "vk_depth_shadow_cancel", "vk_depth_shadow_finish", "vk_depth_shadow_prepare", "vk_depth_shadow_range_aliases", "vk_depth_shadow_reserve", "vk_descriptor_heaps_get_stats", "vk_descriptor_heaps_invalidate", "vk_descriptor_heaps_pipeline_state", "vk_descriptors_bind", "vk_descriptors_bind_compute", "vk_descriptors_write", "vk_draw_texture_fragment", "vk_draw_texture_vertex", "vk_format_minmax_filter", "vk_frame_check", "vk_gfx_image_after", "vk_gfx_image_pending", "vk_gfx_image_pending_besides", "vk_gfx_image_record", "vk_gfx_image_unrecorded", "vk_gpuprof_op_begin", "vk_gpuprof_op_end", "vk_gpuprof_pass_begin", "vk_gpuprof_pass_end", "vk_host_shader", "vk_indirect_quads", "vk_mem_track", "vk_mirror_holds", "vk_mirror_pending", "vk_module_spv", "vk_module_spv_location", "vk_null_buffer_image", "vk_null_header_first", "vk_null_storage", "vk_null_view", "vk_own_res_unref", "vk_pages_read", "vk_pipe_unwritten_targets", "vk_pipeline_get", "vk_pipeline_get_deferred", "vk_pipeline_layout", "vk_pipeline_now", "vk_pipeline_ready", "vk_playout_compute", "vk_pointer_windows", "vk_predraw_drawn", "vk_predraw_fragment", "vk_predraw_next", "vk_predraw_pass_begin", "vk_predraw_reserve", "vk_predraw_view", "vk_query_pass_end", "vk_rec_new_set", "vk_rt_array", "vk_rt_attachment", "vk_rt_copy_drawn", "vk_rt_drawn", "vk_rt_drawn_full", "vk_rt_find", "vk_rt_note_read", "vk_rt_save", "vk_rt_snapshot", "vk_sampler", "vk_shader_cb_hold", "vk_shader_chosen", "vk_shader_fold_top", "vk_shader_get", "vk_shader_get_ex", "vk_shader_mesh", "vk_stage", "vk_stage_output", "vk_stage_upload", "vk_submits", "vk_surf_batch_begin", "vk_surf_batch_end", "vk_surf_can_writeback", "vk_surf_epoch_at", "vk_surf_guest_size", "vk_surf_keep_begin", "vk_surf_view_reset", "vk_surf_wrote", "vk_table_set", "vk_table_words", "vk_tc_index", "vk_tc_restride", "vk_tess_passthrough", "vk_tex_from_tic", "vk_tex_from_tic_guest", "vk_tex_from_tic_raw", "vk_tex_from_tic_storage", "vk_tex_is_copy_of", "vk_tex_recheck", "vk_tex_storage_view", "vk_tex_view", "vk_tex_view_format", "vk_tex_view_refusal", "vk_tic_names_none", "vk_uma_pending", "vk_varying_geometry", "vk_view_type_name", "vk_vrs_draw", "vk_vrs_keep", "vk_written_since", "vk_xfb_control_buffer", "vk_xfb_indirect", "vk_zt_array"};
 #define vk_all_barrier_by sh_vk_all_barrier_by
 #define vk_astc_bcn sh_vk_astc_bcn
 #define vk_buf_copy sh_vk_buf_copy
@@ -1177,7 +1168,6 @@ static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_b
 #define vk_surf_epoch_at sh_vk_surf_epoch_at
 #define vk_surf_guest_size sh_vk_surf_guest_size
 #define vk_surf_keep_begin sh_vk_surf_keep_begin
-#define vk_surf_use sh_vk_surf_use
 #define vk_surf_view_reset sh_vk_surf_view_reset
 #define vk_surf_wrote sh_vk_surf_wrote
 #define vk_table_set sh_vk_table_set

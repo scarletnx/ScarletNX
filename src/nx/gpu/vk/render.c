@@ -3050,6 +3050,7 @@ typedef struct {
     u64 at;   /* CB_FRAME: vk_frame_id() then; CB_OWN: the own buffer's number (vk_buf_own_got) */
     u32 sz, epoch;
     u32 life, own; /* CB_*, and with CB_OWN the buffer cache's entry */
+    u64 drops, touched; /* CB_OWN: vk_buf_own_drops() when the token last held, and the present it was touched in */
     VkBuffer buf;
     u64 off;
     const u8* in; /* or the inline block staged, of generation gen */
@@ -3082,13 +3083,25 @@ static void cb_life(CbEntry* e, u32 life) {
     e->own = 0;
     if (e->life == CB_FRAME) e->at = vk_frame_id();
     if (e->life == CB_OWN && !(e->own = vk_buf_own_got(&e->at))) e->life = CB_SUBMIT;
+    e->drops = vk_buf_own_drops();
+    e->touched = g_vk_present;
 }
 /* whether what e binds still lives (cb_life). The entries kept past their submission are counted */
-static int cb_lives(const CbEntry* e) {
+/* An own buffer's token is asked of the buffer cache (with a take of the share lock, draw_batches=2) once a present,
+   which keeps the buffer recent there (touch), and when a token anywhere ended since it last held */
+static int own_holds(CbEntry* e) {
+    if (e->drops == vk_buf_own_drops() && e->touched == g_vk_present) return 1;
+    const u64 drops = vk_buf_own_drops();
+    if (!vk_buf_own_holds(e->own, e->at)) return 0;
+    e->drops = drops;
+    e->touched = g_vk_present;
+    return 1;
+}
+static int cb_lives(CbEntry* e) {
     u64 sub = vk_submit_number();
     int lives = e->life == CB_SUBMIT  ? e->made == sub
                 : e->life == CB_FRAME ? e->at == vk_frame_id()
-                                      : vk_buf_own_holds(e->own, e->at);
+                                      : own_holds(e);
     if (lives && e->made != sub) g_stats.n.cb[VK_CB_PAST_SUBMIT]++;
     return lives;
 }
@@ -3129,7 +3142,7 @@ static void cb_check(const CbEntry* e, u64 a, const u8* in, u32 n) {
 }
 /* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no result added
    since (none can cover it, and only a write of its memory leaves the copy stale) */
-static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
+static int cb_kept(CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
     return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
            !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
 }

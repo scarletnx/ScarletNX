@@ -403,6 +403,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
             stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             access = VK_ACCESS_2_MEMORY_READ_BIT;
         }
+        /* the share lock (draw_batches=2) only for the first look at s: the rest is this thread's view */
         int i = sv_find(s);
         if (i < 0) {
             if (t_sv.n == SURF_VIEWS) { /* the view is full: the list's uses go first, the view starts again */
@@ -411,9 +412,11 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
             }
             i = (int)t_sv.n++;
             t_sv.v[i].s = s;
+            vk_share_lock();
             t_sv.v[i].layout = s->layout;
             t_sv.v[i].stage = s->stage;
             t_sv.v[i].access = s->access;
+            vk_share_unlock();
         }
         const int same = t_sv.v[i].layout == layout && !surf_access_writes(access) &&
                          !surf_access_writes(t_sv.v[i].access);
@@ -431,7 +434,9 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         vk_rec_defer(surf_use_splice, &u, sizeof u);
         return;
     }
+    vk_share_lock();
     surf_use_now(cb, s, layout, stage, access, 1);
+    vk_share_unlock();
 }
 static void surf_use_now(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                          VkAccessFlags2 access, int pass_ends) {
