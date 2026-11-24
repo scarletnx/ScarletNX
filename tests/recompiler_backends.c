@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64)
+#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64)
 #define SNX_TEST_NATIVE 1
 #include "support/host_unicorn.h"
 #include "common/cpu/recompiler/codegen.h"
@@ -37,6 +37,12 @@
 #define NATIVE_MIN_MADE 90 /* percent of the functions the back end must make */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_arm64_object(cg, 0, (cg)->function_count, options, SNX_ARM64_F_ALL, made, object, size, error, sizeof error)
+#elif defined(SNX_TEST_MIPS64)
+#include "common/cpu/recompiler/mips64/mips64_codegen.h"
+#define NATIVE_UC HOSTUC_MIPS64EL
+#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
+    snx_mips64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_PPC64)
 #include "common/cpu/recompiler/ppc64/ppc64_codegen.h"
 #define NATIVE_UC HOSTUC_PPC64LE

@@ -199,17 +199,20 @@ static inline int rk_patch(SgXBuf* b, size_t at, size_t to) {
 }
 static inline void rk_call_reg(SgXBuf* b, int r) { rv_w(b, sge_rv64_jalr(RV_RA, (SnxU32)r, 0)); }
 static inline void rk_ret(SgXBuf* b) { rv_w(b, sge_rv64_jalr(RV_ZERO, RV_RA, 0)); }
-/* a call by the object's relocation (R_RISCV_CALL_PLT: AUIPC and JALR of ra, the relocation at the AUIPC) */
-#define RK_CALL_LIT_AT 0 /* the relocation's place in rk_call_reloc's and rk_tail_reloc's sequences */
-#define RK_TAIL_LIT_AT 0
-static inline void rk_call_reloc(SgXBuf* b) {
+/* a call by the object's relocation (R_RISCV_CALL_PLT: AUIPC and JALR of ra, the relocation at the AUIPC, the place
+   this gives) */
+static inline size_t rk_call_reloc(SgXBuf* b) {
+    size_t at = b->n;
     rv_w(b, sge_rv64_auipc(RV_RA, 0));
     rv_w(b, sge_rv64_jalr(RV_RA, RV_RA, 0));
+    return at;
 }
 /* a tail call by the object's relocation (R_RISCV_CALL_PLT of AUIPC t6 and JALR x0) */
-static inline void rk_tail_reloc(SgXBuf* b) {
+static inline size_t rk_tail_reloc(SgXBuf* b) {
+    size_t at = b->n;
     rv_w(b, sge_rv64_auipc(RK_SA, 0));
     rv_w(b, sge_rv64_jalr(RV_ZERO, RK_SA, 0));
+    return at;
 }
 static inline void rk_jump_reg(SgXBuf* b, int r) { rv_w(b, sge_rv64_jalr(RV_ZERO, (SnxU32)r, 0)); }
 /* a call's or tail call's AUIPC and JALR at at made to reach to (within 2 GiB): 0, -1 out of reach */
@@ -261,8 +264,8 @@ static inline void rk_fn_epilogue(SgXBuf* b, int pinned) {
     rv_w(b, sge_rv64_ld(RV_RA, RV_SP, 104));
     rv_w(b, sge_rv64_addi(RV_SP, RV_SP, 112));
 }
-static inline int rk_fn_patch_frame(SgXBuf* b, size_t at, long long size) {
-    long long lo = (long long)((SnxU64)size << 52) >> 52;
+static inline int rk_fn_patch_frame(SgXBuf* b, size_t at, long long slots) {
+    long long size = (slots + 15) & ~15ll, lo = (long long)((SnxU64)size << 52) >> 52;
     if (size >= (1ll << 31) - 0x800) return 0;
     if (at + 8 > b->cap) return 1;
     rv_word_put(b, at, sge_rv64_lui(RK_SA, (SnxU32)(((size + 0x800) >> 12) & 0xfffff)));

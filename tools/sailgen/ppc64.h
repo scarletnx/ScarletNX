@@ -296,22 +296,23 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
     ppc_w(b, sge_ppc64_mflr((SnxU32)d));
     return at;
 }
-/* a call by the object's relocation: the callee's absolute address in the code (R_PPC64_ADDR64, RK_CALL_LIT_AT bytes
-   into the sequence), loaded into r12 and called through CTR; no veneer, which would want a TOC in r2. A tail call
-   keeps LR, the caller's, in RK_S1 around the BL that finds the address */
-#define RK_CALL_LIT_AT 4
-#define RK_TAIL_LIT_AT 8
-static inline void rk_call_reloc(SgXBuf* b) {
-    rk_literal(b, RK_SA);
+/* a call by the object's relocation: the callee's absolute address in the code (R_PPC64_ADDR64: the place this
+   gives), loaded into r12 and called through CTR; no veneer, which would want a TOC in r2. A tail call keeps LR, the
+   caller's, in RK_S1 around the BL that finds the address */
+static inline size_t rk_call_reloc(SgXBuf* b) {
+    size_t at = rk_literal(b, RK_SA);
     rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
     rk_call_reg(b, RK_SA);
+    return at;
 }
-static inline void rk_tail_reloc(SgXBuf* b) {
+static inline size_t rk_tail_reloc(SgXBuf* b) {
+    size_t at;
     ppc_w(b, sge_ppc64_mflr(RK_S1));
-    rk_literal(b, RK_SA);
+    at = rk_literal(b, RK_SA);
     ppc_w(b, sge_ppc64_mtlr(RK_S1));
     rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
     rk_jump_reg(b, RK_SA);
+    return at;
 }
 /* an absolute call's address resolved here: its literal made the target's (the unit's own: a relocation it stays) */
 static inline int rk_patch_call(SgXBuf* b, size_t at, size_t to) {

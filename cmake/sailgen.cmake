@@ -150,10 +150,10 @@ endfunction()
 # and have a guest part of their own only where it exists
 function(snx_sailgen_machine_backends machine guest out args)
     set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
-    set(risc rv64 ppc64)
+    set(risc rv64 ppc64 mips64)
     if(machine IN_LIST risc)
         set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/risc.h" "${back}/mach.h"
-                  "${back}/${machine}_asm.h" "${back}/risc_asm.h" "${back}/mach_${guest}.h" "${back}/risc_${guest}.h")
+                  "${back}/risc_asm.h" "${back}/mach_${guest}.h" "${back}/risc_${guest}.h")
         if(EXISTS "${back}/${machine}_${guest}.h")
             list(APPEND files "${back}/${machine}_${guest}.h")
         endif()

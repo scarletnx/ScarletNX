@@ -37,7 +37,18 @@ static const Arch g_arch[] = {
                         0x4E800020u, /* blr */
                         {UC_PPC_REG_3, UC_PPC_REG_4, UC_PPC_REG_5, UC_PPC_REG_6, UC_PPC_REG_7, UC_PPC_REG_8},
                         {UC_PPC_REG_3, UC_PPC_REG_4}, UC_PPC_REG_1, UC_PPC_REG_LR, UC_PPC_REG_PC},
+    [HOSTUC_MIPS64EL] = {"mips64el", UC_ARCH_MIPS, UC_MODE_MIPS64 | UC_MODE_LITTLE_ENDIAN, UC_CPU_MIPS64_MIPS64R2_GENERIC,
+                         EM_MIPS, 0x03E00008u, /* jr ra (its delay slot the next word's: the page's words alternate) */
+                         {UC_MIPS_REG_4, UC_MIPS_REG_5, UC_MIPS_REG_6, UC_MIPS_REG_7, UC_MIPS_REG_8, UC_MIPS_REG_9},
+                         {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC},
 };
+/* MIPS's virtual TLB: every address its own */
+static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
+    (void)uc, (void)type, (void)user;
+    r->paddr = vaddr;
+    r->perms = UC_PROT_ALL;
+    return true;
+}
 
 typedef struct {
     char* name;
@@ -129,6 +140,12 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     u->cap = code_cap;
     u->trap = u->code + code_cap;
     for (k = 0; k < PAGE / 4; ++k) memcpy(u->trap + 4 * k, &u->a->ret, 4);
+    if (arch == HOSTUC_MIPS64EL) {
+        uc_hook tlb;
+        for (k = 1; k < PAGE / 4; k += 2) memset(u->trap + 4 * k, 0, 4); /* each jr's delay slot a nop */
+        uc_ctl_tlb_mode(u->uc, UC_TLB_VIRTUAL);
+        uc_hook_add(u->uc, &tlb, UC_HOOK_TLB_FILL, (void*)identity, NULL, 1, 0);
+    }
     if (uc_hook_add(u->uc, &hook, UC_HOOK_CODE, (void*)on_trap, u, (uint64_t)(uintptr_t)u->trap,
                     (uint64_t)(uintptr_t)u->trap + PAGE - 1) != UC_ERR_OK) {
         hostuc_free(u);
@@ -238,8 +255,8 @@ int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error
         if (sh[k].sh_type != SHT_RELA || !at[target]) continue;
         rela = (const Elf64_Rela*)(const void*)(object + sh[k].sh_offset);
         for (r = 0; r < sh[k].sh_size / sizeof *rela; ++r) {
-            const Elf64_Sym* s = &syms[ELF64_R_SYM(rela[r].r_info)];
-            unsigned type = (unsigned)ELF64_R_TYPE(rela[r].r_info);
+            const Elf64_Sym* s = &syms[snx_elf_symbol(u->a->em, rela[r].r_info)];
+            unsigned type = snx_elf_type(u->a->em, rela[r].r_info);
             uint64_t S, P = at[target] + rela[r].r_offset;
             int e;
             if (ELF64_ST_TYPE(s->st_info) == STT_SECTION) S = at[s->st_shndx];
@@ -273,6 +290,7 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     uc_reg_write(u->uc, u->a->sp, &sp);
     uc_reg_write(u->uc, u->a->lr, &lr);
     if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
+    if (u->a->arch == UC_ARCH_MIPS) uc_reg_write(u->uc, UC_MIPS_REG_25, &fn); /* t9: an n64 PIC callee's */
     e = uc_emu_start(u->uc, fn, lr, 0, 1u << 22);
     if (e != UC_ERR_OK) {
         uint64_t pc;

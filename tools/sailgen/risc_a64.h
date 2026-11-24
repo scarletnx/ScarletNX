@@ -284,8 +284,8 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
                 rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, i->disp);
                 rk_call_reg(b, RK_SA);
             } else if (a->reloc) {
-                a->reloc(a->machine, b->n + RK_CALL_LIT_AT, i->sym, 0);
-                rk_call_reloc(b);
+                size_t lit = rk_call_reloc(b);
+                a->reloc(a->machine, lit, i->sym, 0);
             } else {
                 SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
                 if (!to) sg_fail("a helper nothing resolves", 0, 0);

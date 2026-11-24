@@ -14,6 +14,8 @@
 #else
 #include <elf.h>
 #endif
+/* elf_object.c's: r_info of a symbol and a type, MIPS64's n64 layout on EM_MIPS (its header clashes with this one's) */
+Elf64_Xword snx_elf_info(unsigned machine, size_t symbol, unsigned type);
 
 typedef struct {
     unsigned char* p;
@@ -239,7 +241,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
     for (i = 0; i < o->nrels; ++i) {
         Elf64_Rela r;
         r.r_offset = o->rels[i].offset;
-        r.r_info = ELF64_R_INFO(undef_index[i], o->rels[i].type);
+        r.r_info = snx_elf_info(o->machine, undef_index[i], o->rels[i].type);
         r.r_addend = o->rels[i].addend;
         put(&rela[o->rels[i].section], &r, sizeof r);
     }
