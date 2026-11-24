@@ -9,9 +9,8 @@
    compiler's type and functions (MG_ARM, MG_ARM_NEXT, MG_ARM_API(name)), whether it is this host's (MG_ARM_AVAILABLE),
    whether it makes code here (MG_ARM_MAKES: arm64's anywhere, for its tests) and for what features (MG_ARM_FEATURES),
    its object's machine (MG_ARM_EM) and call relocation (MG_ARM_CALL_RELOC), whether its loads need a barrier to be
-   acquires (MG_ARM_LOAD_FENCE), whether the VFP's arithmetic has a hot path of its own (MG_ARM_FP_HOT), and, where its
-   glue takes Thumb blocks (the prologue's and the entry exit's checks, as SgCtx.thumb says), the function that makes
-   one (MG_ARM_THUMB_BLOCK).
+   acquires (MG_ARM_LOAD_FENCE) and whether the VFP's arithmetic has a hot path of its own (MG_ARM_FP_HOT). The glue's
+   prologue and entry exit check what SgCtx.thumb says: an A32 block's state, or a Thumb one's.
 
    Each word is sailgen's emitter of the AArch32 Sail where its clauses take it (the data processing and branches),
    else one written here over the same SSA region, as llvm.c's emitters are written over LLVM's builder (the loads
@@ -1912,9 +1911,7 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
         if (g->skip >= 0) bind_skip(c, 1);
     }
 }
-#ifdef MG_ARM_THUMB_BLOCK
 #include "common/cpu/recompiler/mach/mach_thumb.inc"
-#endif
 
 /* checked memory's entry (llvm.c's memory_entry): the state the bus's, of this ABI */
 static void checked_entry(SgCtx* g) {
@@ -1993,11 +1990,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     g->e_written = 0;
     mg_prologue(c, pc, &bad);
     if (sgx_a32_checked(g)) checked_entry(g);
-#ifdef MG_ARM_THUMB_BLOCK
     units = thumb ? thumb_code(c, code, count, pc, &itstate) : arm_code(c, code, count, pc);
-#else
-    units = arm_code(c, code, count, pc);
-#endif
     *consumed = units;
     SnxU32 nexts[2];
     size_t nnext = succ ? succ(user, pc | (SnxU32)thumb, units, count, nexts) : 0;
@@ -2047,11 +2040,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     }
     sgx_a32_stubs(g, b);
     cold_ways(c);
-#ifdef MG_ARM_THUMB_BLOCK
     if (!sgx_a32_hosted(g)) mg_entry_exit(c, pc, thumb ? half_at(code, 0) : word_at(code, 0), bad);
-#else
-    if (!sgx_a32_hosted(g)) mg_entry_exit(c, pc, word_at(code, 0), bad);
-#endif
     sgx_a32_bind(g, b, g->ret);
     mg_return(c);
     sgx_cold_emit(&c->a);
@@ -2150,12 +2139,10 @@ int MG_ARM_API(block)(MG_ARM* c, const char* name, const unsigned char* code, si
                       size_t* consumed, MG_ARM_NEXT next, void* user) {
     return make(c, name, code, count, pc, 0, consumed, next, user);
 }
-#ifdef MG_ARM_THUMB_BLOCK
-int MG_ARM_THUMB_BLOCK(MG_ARM* c, const char* name, const unsigned char* code, size_t count, SnxU32 pc,
-                       size_t* consumed, MG_ARM_NEXT next, void* user) {
+int MG_ARM_API(thumb_block)(MG_ARM* c, const char* name, const unsigned char* code, size_t count, SnxU32 pc,
+                            size_t* consumed, MG_ARM_NEXT next, void* user) {
     return make(c, name, code, count, pc, 1, consumed, next, user);
 }
-#endif
 
 static int by_address(const void* a, const void* b) {
     const Made *x = (const Made*)a, *y = (const Made*)b;

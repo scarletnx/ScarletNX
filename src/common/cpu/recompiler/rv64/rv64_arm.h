@@ -4,8 +4,8 @@
    any of its profiles and memory modes (snx_arm_llvm_block_ex, the options' below), made without LLVM in the riscv64
    host's own code: mach/mach_arm.inc and mach/risc_arm.inc over sailgen's riscv64 emitters of the AArch32 Sail
    (a32_rv64.inc), each block a function void name(SnxArmCPU*) of an ELF RISC-V object, global and hidden as LLVM's
-   blocks are. It builds on any host (its code is riscv64's: a test runs it under Unicorn). A block with an
-   instruction it doesn't make (a Thumb block's) is refused: LLVM makes it */
+   blocks are. It builds on any host (its code is riscv64's: a test runs it under Unicorn). A block with an instruction it
+   doesn't make is refused: LLVM makes it */
 #ifndef SNX_RECOMPILER_RV64_ARM_H
 #define SNX_RECOMPILER_RV64_ARM_H
 
@@ -34,6 +34,10 @@ int snx_rv64_arm_options(SnxRv64Arm* c, const SnxArmCodegenOptions* options);
    kept; snx_rv64_arm_why says what) */
 int snx_rv64_arm_block(SnxRv64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                       size_t* consumed, SnxRv64ArmNext next, void* user);
+/* the Thumb block at pc (halfword aligned), its code little-endian halfwords, as snx_rv64_arm_block (name NULL:
+   T_<pc>), *consumed the halfwords it covers */
+int snx_rv64_arm_thumb_block(SnxRv64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                             size_t* consumed, SnxRv64ArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_rv64_arm_why(const SnxRv64Arm* c);
 /* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.

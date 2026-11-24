@@ -164,8 +164,7 @@ static int modes_test(void) {
         {"a9 checked", SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_CHECKED, 0},
         {"arm11 checked", SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED, 0},
     };
-    /* Thumb blocks are the x86-64 back end's alone */
-    int native = snx_native_arm_available(), native_thumb = native && !strcmp(snx_native_name(), "x86-64");
+    int native = snx_native_arm_available();
     int failures = 0;
     for (size_t m = 0; m < sizeof modes / sizeof *modes; ++m)
         for (int t = 0; t < 2; ++t) {
@@ -209,7 +208,7 @@ static int modes_test(void) {
                     product, s.cpu.r[15], s.hooked, s.accessed, s.trace[0], s.trace[1]);
                 ++failures;
             }
-            if (refused != ((t ? native_thumb : native) ? 0u : 1u)) {
+            if (refused != (native ? 0u : 1u)) {
                 fprintf(stderr, "FAIL: %s %s: %zu blocks asked of LLVM: %s\n", modes[m].name, t ? "Thumb" : "A32",
                         refused, why);
                 ++failures;

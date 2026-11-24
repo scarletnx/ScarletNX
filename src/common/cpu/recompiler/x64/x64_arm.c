@@ -36,7 +36,6 @@
 #define MG_ARM_CALL_RELOC R_X86_64_PLT32
 #define MG_ARM_LOAD_FENCE 0 /* an x86 load is an acquire one */
 #define MG_ARM_FP_HOT 1
-#define MG_ARM_THUMB_BLOCK snx_x64_thumb_block
 #include <elf.h>
 
 #if defined(__clang__)
@@ -326,8 +325,8 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
     *consumed = 0;
     return 0;
 }
-int snx_x64_thumb_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
-                        size_t* consumed, SnxX64ArmNext next, void* user) {
+int snx_x64_arm_thumb_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                            size_t* consumed, SnxX64ArmNext next, void* user) {
     return snx_x64_arm_block(c, name, code, count, pc, consumed, next, user);
 }
 const char* snx_x64_arm_why(const SnxX64Arm* c) {

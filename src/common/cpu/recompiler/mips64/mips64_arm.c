@@ -36,6 +36,7 @@ enum { MIPS_EM = 8, MIPS_R_PC32 = 248 };
 #define MG_ARM_R_TAIL      MIPS_R_PC32
 #define MG_ARM_R_LITERAL   MIPS_R_PC32
 #define MG_ARM_ENTRY_EXIT  "snx_mips_a32_entry_exit"
+#define MG_ARM_THUMB_ENTRY "snx_mips_thumb_entry"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a SYNC after it */
 #define MG_ARM_FP_HOT      0
 
@@ -65,6 +66,10 @@ int snx_mips64_arm_block(SnxMips64Arm* c, const char* name, const unsigned char*
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
     *consumed = 0;
     return 0;
+}
+int snx_mips64_arm_thumb_block(SnxMips64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                               size_t* consumed, SnxMips64ArmNext next, void* user) {
+    return snx_mips64_arm_block(c, name, code, count, pc, consumed, next, user);
 }
 const char* snx_mips64_arm_why(const SnxMips64Arm* c) {
     (void)c;

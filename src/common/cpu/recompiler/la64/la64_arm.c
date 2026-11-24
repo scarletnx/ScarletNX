@@ -30,6 +30,7 @@ enum { LA_EM = 258, LA_R_64_PCREL = 109, LA_R_CALL36 = 110 };
 #define MG_ARM_R_TAIL      LA_R_CALL36
 #define MG_ARM_R_LITERAL   LA_R_64_PCREL
 #define MG_ARM_ENTRY_EXIT  "snx_la64_a32_entry_exit"
+#define MG_ARM_THUMB_ENTRY "snx_la64_thumb_entry"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a DBAR after it */
 #define MG_ARM_FP_HOT      0
 
@@ -59,6 +60,10 @@ int snx_la64_arm_block(SnxLa64Arm* c, const char* name, const unsigned char* cod
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
     *consumed = 0;
     return 0;
+}
+int snx_la64_arm_thumb_block(SnxLa64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                             size_t* consumed, SnxLa64ArmNext next, void* user) {
+    return snx_la64_arm_block(c, name, code, count, pc, consumed, next, user);
 }
 const char* snx_la64_arm_why(const SnxLa64Arm* c) {
     (void)c;

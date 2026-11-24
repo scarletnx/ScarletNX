@@ -90,7 +90,6 @@ struct SnxNativeArm {
     SnxPpc64beArm* ppc64be;
     SnxMips64beArm* mips64be;
     SnxS390xArm* s390x;
-    const char* why; /* the last block's refusal where it was here, NULL for the machine's own */
 };
 int snx_native_arm_available(void) {
     return snx_x64_arm_available() || snx_arm64_arm_available() || snx_rv64_arm_available() ||
@@ -151,7 +150,6 @@ int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options)
 }
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user) {
-    c->why = NULL;
     return c->x64     ? snx_x64_arm_block(c->x64, name, code, count, pc, consumed, next, user)
            : c->arm64 ? snx_arm64_arm_block(c->arm64, name, code, count, pc, consumed, next, user)
            : c->rv64  ? snx_rv64_arm_block(c->rv64, name, code, count, pc, consumed, next, user)
@@ -164,14 +162,17 @@ int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char*
 }
 int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                            size_t* consumed, SnxNativeArmNext next, void* user) {
-    c->why = NULL;
-    if (c->x64) return snx_x64_thumb_block(c->x64, name, code, count, pc, consumed, next, user);
-    c->why = "a Thumb block, which this host's back end doesn't make";
-    *consumed = 0;
-    return 0;
+    return c->x64        ? snx_x64_arm_thumb_block(c->x64, name, code, count, pc, consumed, next, user)
+           : c->arm64    ? snx_arm64_arm_thumb_block(c->arm64, name, code, count, pc, consumed, next, user)
+           : c->rv64     ? snx_rv64_arm_thumb_block(c->rv64, name, code, count, pc, consumed, next, user)
+           : c->ppc64    ? snx_ppc64_arm_thumb_block(c->ppc64, name, code, count, pc, consumed, next, user)
+           : c->mips64   ? snx_mips64_arm_thumb_block(c->mips64, name, code, count, pc, consumed, next, user)
+           : c->la64     ? snx_la64_arm_thumb_block(c->la64, name, code, count, pc, consumed, next, user)
+           : c->ppc64be  ? snx_ppc64be_arm_thumb_block(c->ppc64be, name, code, count, pc, consumed, next, user)
+           : c->mips64be ? snx_mips64be_arm_thumb_block(c->mips64be, name, code, count, pc, consumed, next, user)
+                         : snx_s390x_arm_thumb_block(c->s390x, name, code, count, pc, consumed, next, user);
 }
 const char* snx_native_arm_why(const SnxNativeArm* c) {
-    if (c->why) return c->why;
     return c->x64     ? snx_x64_arm_why(c->x64)
            : c->arm64 ? snx_arm64_arm_why(c->arm64)
            : c->rv64  ? snx_rv64_arm_why(c->rv64)

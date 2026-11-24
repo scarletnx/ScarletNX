@@ -9,6 +9,7 @@
 #define snx_mips64_arm_free snx_mips64be_arm_free
 #define snx_mips64_arm_options   snx_mips64be_arm_options
 #define snx_mips64_arm_block snx_mips64be_arm_block
+#define snx_mips64_arm_thumb_block snx_mips64be_arm_thumb_block
 #define snx_mips64_arm_why snx_mips64be_arm_why
 #define snx_mips64_arm_object snx_mips64be_arm_object
 #define snx_mips64_arm_limit snx_mips64be_arm_limit
