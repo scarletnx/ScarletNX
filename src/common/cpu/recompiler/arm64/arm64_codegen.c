@@ -54,6 +54,7 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_NPINS 9
 #define MG_NPINS_FIXED 9
 #define MG_PIN_RESERVED(h) 0
+#define MG_BOUND 1
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
@@ -204,6 +205,29 @@ static void stale_test(Unit* u, size_t index) {
     w32(u, sge_a64_ldrb_imm_immediate_unsigned(SGA_X16, SGA_X16, 0));
     w32(u, sge_a64_subs_addsub_imm(SGA_ZR, SGA_X16, 0, 0, 0));
 }
+/* what a bound PLT stub's slot is compared with (mach_codegen.inc's MG_BOUND): the flags are no guest's here, as its
+   registers and flags are in the state (and the pins) */
+static void mg_if_stale(Unit* u, size_t index, int label) {
+    stale_test(u, index);
+    jcc(u, 1, label); /* B.NE */
+}
+static void mg_if_x_not(Unit* u, unsigned r, SnxU64 value, int label) {
+    int p = u->pinned ? u->pin[r] : -1;
+    movi(u, SGA_X16, value);
+    if (p < 0) {
+        state_ldst(u, 1, 8, SGA_X17, offsetof(CPU, x) + 8 * (size_t)r);
+        p = SGA_X17;
+    }
+    w32(u, sge_a64_subs_addsub_shift(SGA_ZR, (SnxU32)p, 0, SGA_X16, 0, 1)); /* CMP Xp, X16 */
+    jcc(u, 1, label);
+}
+static void mg_if_pc_not(Unit* u, SnxU64 value, int label) {
+    movi(u, SGA_X16, value);
+    state_ldst(u, 1, 8, SGA_X17, offsetof(CPU, pc));
+    w32(u, sge_a64_subs_addsub_shift(SGA_ZR, SGA_X17, 0, SGA_X16, 0, 1));
+    jcc(u, 1, label);
+}
+static void mg_target_pc(Unit* u) { state_ldst(u, 1, 8, 1, offsetof(CPU, pc)); }
 /* if (c->pc != next) return: the callee changed the code it returns to, or left for another pc */
 static void check_return(Unit* u, SnxU64 next) {
     int stay = new_label(u), go = new_label(u);

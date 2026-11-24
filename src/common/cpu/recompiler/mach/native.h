@@ -18,7 +18,7 @@ typedef struct {
     void* direct_user;
     /* the function the BR at address reaches once the program's linker has bound it, 0 for none, with *guard set when
        its slot may hold another (SnxIr.bound): a BL or B to such a PLT stub calls that function in the stub's place,
-       on the machine that compares the slot (MG_BOUND: x86-64) */
+       on the machines that compare the slot (MG_BOUND: x86-64 and arm64) */
     SnxU64 (*bound)(void* user, SnxU64 address, int* guard);
     void* bound_user;
     /* a function left to LLVM, 0 for none: the one whose IR the setting ir_dump_pc prints */
