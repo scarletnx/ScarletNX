@@ -90,11 +90,41 @@ save under 1% of it there. Most of `stage_set_` is the constant buffer lookups o
 
 **7. Bindless textures.** A Maxwell or SM86 shader reads a texture handle from a constant buffer and indexes the
 texture and sampler pools. Let the translated shader index a descriptor heap that mirrors those pools and lasts
-across draws, so that the renderer writes no descriptor set for each stage of each draw. This removes most of
-`stage_set` and `tex_resolve`. `descriptors.c` already writes the pool registrations of NVN into indexed descriptor
-memory. The risk is in what `tex_resolve` picks for each handle: render targets, scaled targets and converted formats.
-A heap entry must change when its surface changes. This gives the most and risks the most, so it comes after items
-1 to 6.
+across draws, so that the renderer resolves no texture handle for each stage of each draw. The risk is in what
+`tex_resolve` picks for each handle: render targets, scaled targets and converted formats. A heap entry must change
+when its surface changes. This gives the most and risks the most, so it comes after items 1 to 6.
+
+The design of 2026-11-23 builds on the texture table (`vk/table.c`), a heap of views and samplers that lasts across
+frames, with update-after-bind. An Ounce game's race already reads its SM86 textures through it ("SM86 textures
+through the texture table, one word a texture"), so what each draw still pays is the resolve that finds those words:
+`fs_key`'s `tex_resolve` (5.9% of the GPU thread) and the texture part of `stage_set_`. The constant buffers that
+`stage_set_` binds (`cb_get` 5.7%, `cb_window_place` 1.9%) stay, so the gain is about 10% of the GPU thread, not
+most of `stage_set_`. (`descriptors.c` does not write the pool registrations of NVN into descriptor memory: only its
+comment said so.)
+
+1. A pool map in front of the heap: a heap slot for each TIC index and a sampler slot for each TSC index, in pages
+   that a change copies, in an arena for each frame slot that resets at its fence. The translated shader reads the
+   handle from its constant buffer as now, takes the TIC and TSC indices, checks them against the pools' limits from
+   push constants, and reads the map. The record has a view for each class the TIC type allows, a view of a scaled
+   target at the guest's size, and flags (integer, unnormalized, scaled) that replace `fs_key`'s texture bits with
+   uniform branches.
+2. For each draw the CPU reads the handle words and tests a valid bit for each slot. Events clear the bits: a write
+   to the pools' headers (the write tracking, then a compare as `tex_memo_unwritten` makes), a new surface at an
+   address (`surf_changed`), a new draw to a target a record crops, a new scale, an image swapped (`tex_image_swap`:
+   texconv, ASTC to BC7) and a view destroyed. The next draw that names a cleared index resolves it once, the old way.
+3. An upload changes no view. The textures of the live records are checked against the write tracking at each new
+   epoch, and the GPU-side writes through item 3's generations for each address, not at each draw.
+4. No draw names its textures, so the barriers move to the writers: each surface a pass, copy, upload or storage
+   write changes gets one barrier, batched at the next pass's start, with unified image layouts. A draw that samples
+   a target bound to it (feedback, read-only depth) takes the path of each draw, as do indexed tables, memory handles
+   and the depth compare of a colour texture.
+
+The steps, each one landed and measured alone, behind a setting that is off until the race and a Maxwell game run
+clean with it: the measure, item 3, the pool map in a shadow mode that `draw_state_check` compares with the full
+resolve, the barriers at the writers, the SM86 translator, the renderer's skip for plain slots, the Maxwell
+translator, the indexed tables, then the setting on. Each has its test in `tests/`: a header written between two
+draws, a target redrawn under a crop, an ASTC texture swapped to BC7, integer and signed formats through one slot
+under GPU-assisted validation, a feedback draw, and the shader corpus under `spirv-val`.
 
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
