@@ -323,6 +323,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    vk_surf_written_flush(cb, rt, n, zt); /* the barriers at the writer, outside the pass (writer_barriers) */
     for (u32 i = 0; i < n; i++)
         if (rt[i]) snx_vk_redraw_seen(&rt[i]->redraw, g_vk_present);
     if (zt) snx_vk_redraw_seen(&zt->redraw, g_vk_present);
@@ -438,6 +439,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
         g_rp.layers == layers)
         return 1;
     vk_render_end();
+    vk_surf_written_flush(vk_cmd(), NULL, 0, NULL); /* the barriers at the writer, outside the pass */
     async_tell(0); /* no attachment: what its draws keep is only what they store, which no target tells */
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
     vk_predraw_pass_begin(vk_cmd());
@@ -1595,6 +1597,18 @@ void vk_render_stats_log(void) {
     memo_miss_log(presents);
     fs_count_log(n, w, presents);
     vk_pool_map_log(presents);
+    if (g_settings.writer_barriers && g_vk.has_unified_layouts) {
+        static VkWriterCounts was;
+        VkWriterCounts c;
+        vk_surf_writer_counts(&c);
+        LOG("vulkan: barriers at the writer, a present: %.1f surfaces in %.1f batches; of today's %.1f reader barriers "
+            "after a write, %.1f covered by a batch, earlier or at the next pass, %.1f in compute alone; %.1f writes not "
+            "listed (the list full)\n",
+            (double)(c.batched - was.batched) / (double)presents, (double)(c.batches - was.batches) / (double)presents,
+            (double)(c.readers - was.readers) / (double)presents, (double)(c.covered - was.covered) / (double)presents,
+            (double)(c.compute - was.compute) / (double)presents, (double)(c.full - was.full) / (double)presents);
+        was = c;
+    }
     LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
         "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
         "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "

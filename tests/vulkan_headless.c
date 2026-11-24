@@ -8756,6 +8756,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_half_rounding();
         else if (!strcmp(name, "cross_stage_alias"))
             result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "writer_storage"))
+            result = check_writer_storage();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
         else if (!strcmp(name, "compute_lone_lane"))
