@@ -72,15 +72,18 @@ typedef struct SnxArmRt {
     void (*coproc)(SnxArmCPU* cpu, uint32_t word);
 } SnxArmRt;
 
-/* the runtime library's side (rt_helpers.c, in snx_arm_rt and every 32-bit game module) */
-void snx_arm_undefined(SnxArmCPU* cpu, uint32_t word, uint32_t reason);
-void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word);
+/* the runtime library's side (rt_helpers.c, in snx_arm_rt and every 32-bit game module), which generated code calls:
+   arguments of 64 bits, the numbers in their low 32, as riscv64's, mips64's and loongarch64's ABIs extend a narrower
+   one with its sign and a function compiled there may compare the whole register: the code passes a word with zeros
+   above */
+void snx_arm_undefined(SnxArmCPU* cpu, uint64_t word, uint64_t reason);
+void snx_arm_coproc(SnxArmCPU* cpu, uint64_t word);
 /* the coprocessor registers the architecture gives user mode with no system to ask: TPIDRURW (read and write) and
    TPIDRURO (read) from the cpu's fields; any other is SNX_ARM_UNDEFINED. A backend can end with it */
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
 /* The ARM7TDMI's C after a multiply that sets the flags, word the instruction (a Thumb MULS's halfword when thumb), its
    operands still in r[]: the carry out of its Booth multiplier, which the other profiles leave as it was */
-void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb);
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t word, uint64_t thumb);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 
