@@ -1409,6 +1409,11 @@ static bool deswizzle(struct VitaRender* r, VkCommandBuffer cb, VkBuffer source,
     *out = ring, *out_offset = at;
     return true;
 }
+/* the words a swizzled or tiled 32-bit color surface's memory takes: a tiled one's whole tiles */
+static uint32_t laid_out_words(const Surface* s) {
+    return s->type == GXM_COLOR_SURFACE_TILED ? (((s->width + 31) >> 5) * ((s->height + 31) >> 5)) << 10
+                                              : s->width * s->height;
+}
 /* A swizzled or tiled 32-bit color surface's memory into its image, or its image into the memory (store): rows in the
    slot's ring between them, made from the memory or laid out into it by swizzle.comp. A game renders one and reads it
    as a swizzled texture (one draws its character's pencil sketch so). False without room, or past the import */
@@ -1433,9 +1438,9 @@ static bool laid_out_copy(struct VitaRender* r, VkCommandBuffer cb, const Surfac
     uint32_t words = s->width * s->height, wl = 0, k = 0, smaller = s->width < s->height ? s->width : s->height;
     while ((1u << wl) < s->width) ++wl;
     while ((1u << k) < smaller) ++k;
-    /* the memory's words from an aligned base: a tiled surface's whole tiles */
-    uint32_t span = tiled ? (((s->width + 31) >> 5) * ((s->height + 31) >> 5)) << 10 : words;
-    VkDeviceSize rows, align = storage_align(r), base = at / align * align, size = at - base + (VkDeviceSize)span * 4;
+    /* the memory's words from an aligned base */
+    VkDeviceSize rows, align = storage_align(r), base = at / align * align;
+    VkDeviceSize size = at - base + (VkDeviceSize)laid_out_words(s) * 4;
     if ((at & 3) || base + size > m->size || !linear_room(r, (VkDeviceSize)words * 4, &rows)) {
         r->linear[slot].used = used;
         return false;
@@ -1516,8 +1521,11 @@ static void color_written(struct VitaRender* r, const Import* m, const Surface* 
     VkFormat vk;
     unsigned bytes;
     if (!color_format(s->format, &vk, &bytes)) return;
-    uint32_t stride = s->stride * bytes;
-    mirror_written(r, m, s->address, color_laid_out(s, bytes) ? stride : s->width * bytes, stride, s->height);
+    uint32_t stride = s->stride * bytes, whole = laid_out_words(s) * 4;
+    if (color_laid_out(s, bytes))
+        mirror_written(r, m, s->address, whole, whole, 1);
+    else
+        mirror_written(r, m, s->address, s->width * bytes, stride, s->height);
 }
 /* A YUV420 texture (format base 0x90000000 P2, 0x91000000 P3; its swizzle YUV or YVU, CSC0 or CSC1) at offset in the
    imported buffer, its Y rows stride bytes and its chroma after them, made R8G8B8A8 rows on the GPU (yuv.comp) in the
