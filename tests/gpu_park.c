@@ -989,6 +989,14 @@ int main(int argc, char** argv) {
     took = wait_marks(1);
     expect(marks() == 1 && took >= 900000000ull && warned == 1, "a wait nothing ends times out after 1 s and warns");
 
+    /* gmem_code_cut: the GPU's bytes land where the program may reach them, and where the CPU's bytes hold none of
+       it: a compute window's code starts at 80, after its zero bytes, and one copied on the GPU reads none */
+    expect(gmem_code_cut(0, 80, 80 + 0x1b00), "a window with no program in the CPU's bytes lands");
+    expect(gmem_code_cut(0, 0, 0x20000), "a graphics window the GPU holds from its first byte lands");
+    expect(gmem_code_cut(0x3f8, 0x400, 0x1000), "a program whose scan ends next to the GPU's bytes lands");
+    expect(!gmem_code_cut(0x200, 0x400, 0x1000), "a program that ends before the GPU's bytes doesn't land them");
+    expect(!gmem_code_cut(0, 0x1000, 0x1000), "nothing lands where the CPU read the whole window");
+
     if (!failures) printf("gpu_park: ok\n");
     return failures != 0;
 }

@@ -387,7 +387,9 @@ void gmem_read_code(u64 gva, void* dst, u64 size);
 u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size);
 /* whether a program shader_hash measured len bytes long in a buffer whose bytes from cpu on gmem_read_code_cpu made
    zero may go on into them (size: the buffer's): the scan ends at a zero word, which a control word can precede, so
-   one starting within two words of the end may be a zero of ours. Then gmem_read_code reads it with them landed */
+   one starting within two words of the end may be a zero of ours. No program in the CPU's bytes (len 0) is in the
+   GPU's: one game copies its programs into their pool on the GPU, and a compute window, whose 80 zero bytes come
+   before the code, read none of them, so its dispatches were skipped. Then gmem_read_code reads it with them landed */
 int gmem_code_cut(u64 len, u64 cpu, u64 size);
 /* the host address of [gva, gva + size) when it is contiguous in guest memory, after landing pending results over
    it; NULL otherwise */
