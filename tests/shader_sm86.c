@@ -7995,6 +7995,7 @@ int main(int argc, char** argv) {
     test_coop_cache_values(dir);
     test_lone_lanes(dir);
     test_lone_lanes_refused();
+    test_lone_length();
     test_lone_stages();
     test_warp_matrix_flush(dir);
     test_hmma_way();

@@ -15,27 +15,67 @@
 #include <string.h>
 
 /* the notes' variables of this translator (warp_notes.h), then of the pseudo program's */
-#define UREGS_AT 256u
-#define NOVAR    0xffffffffu
+#define UREGS_AT  256u
+#define NOVAR     0xffffffffu
 /* the longest run a branch is turned into guards for */
-#define RUN_MAX  96u
+#define RUN_MAX   96u
+/* the runs of MATCH a program may have */
+#define MATCH_MAX 16u
+/* the longest program: its pseudo one has DIRECT_WORDS_MAX words */
+#define INSNS_MAX 12280u
+
+/* instruction i's place in the pseudo program: a Maxwell one has a word of scheduling before every three, the first at
+   10 */
+static u32 place(u32 i) { return 11 + i + i / 3; }
+static_assert(11 + (INSNS_MAX - 1) + (INSNS_MAX - 1) / 3 + 1 == DIRECT_WORDS_MAX);
 
 typedef struct {
     const Sm86Insn* in;
-    u32 n;
-    u32 reg[UREGS_AT +
-            64]; /* a register's number, uniform ones from UREGS_AT, as the pseudo program's: NOVAR for none */
+    u32 n, total; /* its instructions, and the pseudo program's words */
+    /* a register's number, uniform ones from UREGS_AT, as the pseudo program's: NOVAR for none */
+    u32 reg[UREGS_AT + 64];
     u32 regs;
     u8 pred[14]; /* the predicates, then the uniform ones: 0 to 6, 0xff for none */
     u32 preds;
-    u32* at;      /* each instruction's index in the pseudo program */
-    u32 total;    /* its instructions */
-    u8* run_pred; /* the predicate whose branch is turned into this instruction's guard, 0xff for none */
+    /* by instruction */
+    u8* targeted; /* a branch's target */
+    u8* run_pred; /* the predicate whose branch is turned into its guard, 0xff for none */
     u8* run_not;  /* it is the predicate's false */
     u8* idle;     /* the branch turned into guards */
-    u32* note_at; /* the notes of each instruction: by first, into note */
-    u32* note;    /* the variable << 1 | 1 for a write */
+    u32* note_at; /* its notes: the first one's place in note, and one more for the end of the last one's */
+    u32* next;    /* where its next one goes as they are indexed */
+    u32* note;    /* a note: the variable << 1 | 1 for a write */
+    /* by the pseudo program's word: what it is for warp_idioms.c (ShFlow, ShLanePlan) */
+    u64* insn;
+    Op* ops;
+    const Op** op;
+    u32* where;
+    u8 *same, *own, *leave;
 } Lone;
+
+/* the tables, one block carved by what they hold: NULL without memory */
+static void* tables(Lone* l, u32 notes) {
+    const size_t words = l->total, insns = (size_t)l->n + 1;
+    u8* mem = calloc(1, words * (sizeof(u64) + sizeof(Op) + sizeof(Op*) + sizeof(u32) + 3) +
+                            insns * (2 * sizeof(u32) + 4) + ((size_t)notes + 1) * sizeof(u32));
+    if (!mem) return NULL;
+    l->insn = (u64*)(void*)mem;
+    l->ops = (Op*)(void*)(l->insn + words);
+    l->op = (const Op**)(void*)(l->ops + words);
+    l->where = (u32*)(void*)(l->op + words);
+    l->note_at = l->where + words;
+    l->next = l->note_at + insns;
+    l->note = l->next + insns;
+    l->same = (u8*)(l->note + notes + 1);
+    l->own = l->same + words;
+    l->leave = l->own + words;
+    l->targeted = l->leave + words;
+    l->run_pred = l->targeted + insns;
+    l->run_not = l->run_pred + insns;
+    l->idle = l->run_not + insns;
+    memset(l->run_pred, 0xff, l->n);
+    return mem;
+}
 
 static int grow_reg(Lone* l, u32 var) {
     if (l->reg[var] != NOVAR) return 1;
@@ -241,29 +281,20 @@ static int pseudo(const Lone* l, u32 i, u64* w) {
         default: return O_MOV_R;
     }
 }
-/* the atomics' opcodes that warp_idioms.c's rules are written on */
 static int is_flow_86(const Sm86Insn* in) {
     return in->op == SM86_BRA || in->op == SM86_BRX || in->op == SM86_BRXU || in->op == SM86_UBRA ||
            in->op == SM86_EXIT || in->op == SM86_CALL || in->op == SM86_RET || in->op == SM86_KILL;
 }
 
-/* the notes of each instruction, in order: note from note_at[i] to note_at[i + 1], what of it is in the note's bits 0-9 */
-static int index_notes(Lone* l, const ShNotes* notes) {
-    u32* next = calloc(l->n + 1, sizeof *next);
-    l->note_at = calloc(l->n + 2, sizeof *l->note_at);
-    l->note = malloc((notes->n + 1) * sizeof *l->note);
-    if (next && l->note_at && l->note) {
-        for (u32 q = 0; q < notes->n; q++)
-            if (notes->word[q] >> 10 && notes->word[q] >> 10 <= l->n) l->note_at[notes->word[q] >> 10]++;
-        for (u32 i = 0; i < l->n; i++) l->note_at[i + 1] += l->note_at[i], next[i] = l->note_at[i];
-        for (u32 q = 0; q < notes->n; q++) {
-            const u32 i = (notes->word[q] >> 10) - 1;
-            if (notes->word[q] >> 10 && i < l->n) l->note[next[i]++] = notes->word[q] & 0x3ffu;
-        }
+/* the notes of each instruction, in order: note from note_at[i] to note_at[i + 1] */
+static void index_notes(Lone* l, const ShNotes* notes) {
+    for (u32 q = 0; q < notes->n; q++)
+        if (notes->word[q] >> 10 && notes->word[q] >> 10 <= l->n) l->note_at[notes->word[q] >> 10]++;
+    for (u32 i = 0; i < l->n; i++) l->note_at[i + 1] += l->note_at[i], l->next[i] = l->note_at[i];
+    for (u32 q = 0; q < notes->n; q++) {
+        const u32 i = (notes->word[q] >> 10) - 1;
+        if (notes->word[q] >> 10 && i < l->n) l->note[l->next[i]++] = notes->word[q] & 0x3ffu;
     }
-    const int good = next && l->note_at && l->note;
-    free(next);
-    return good;
 }
 static int remap(Lone* l, const ShNotes* notes) {
     for (u32 v = 0; v < UREGS_AT + 64; v++) l->reg[v] = NOVAR;
@@ -303,29 +334,28 @@ static int guard_bits(const Lone* l, u32 i, u64* bits) {
     return 1;
 }
 
-/* whether instruction t is a branch's target, and the run of instructions from i + 1 up to it is no one else's */
-static int no_target_between(const Lone* l, const u8* targeted, u32 from, u32 to) {
+static void find_targets(Lone* l) {
+    for (u32 i = 0; i < l->n; i++)
+        if (l->in[i].op == SM86_BRA || l->in[i].op == SM86_UBRA) {
+            const u32 t = sm86_branch_target(&l->in[i], i);
+            if (t <= l->n) l->targeted[t] = 1;
+        }
+}
+static int no_target_between(const Lone* l, u32 from, u32 to) {
     for (u32 j = from; j < to; j++)
-        if (targeted[j]) return 0;
+        if (l->targeted[j]) return 0;
     return 1;
 }
 /* a forward branch over a straight run of instructions as a guard of each. The branch of i, taken where its predicate
    holds, skips them, so they run where it does not; only a run of instructions that run whatever their own guards are
    (none) and no flow, whose first is entered by falling into it */
 static void runs(Lone* l) {
-    u8* targeted = calloc(l->n + 1, 1);
-    if (!targeted) return;
-    for (u32 i = 0; i < l->n; i++)
-        if (l->in[i].op == SM86_BRA || l->in[i].op == SM86_UBRA) {
-            const u32 t = sm86_branch_target(&l->in[i], i);
-            if (t <= l->n) targeted[t] = 1;
-        }
     for (u32 i = l->n; i-- > 0;) {
         const Sm86Insn* in = &l->in[i];
         if (in->op != SM86_BRA || in->pred == SM86_PT || sm86_field(in, 87, 3) != SM86_PT || sm86_field(in, 90, 1))
             continue;
         const u32 t = sm86_branch_target(in, i);
-        if (t <= i + 1 || t > l->n || t - i > RUN_MAX || !no_target_between(l, targeted, i + 1, t)) continue;
+        if (t <= i + 1 || t > l->n || t - i > RUN_MAX || !no_target_between(l, i + 1, t)) continue;
         int straight = 1;
         for (u32 j = i + 1; j < t && straight; j++)
             straight = !is_flow_86(&l->in[j]) && l->in[j].pred == SM86_PT && l->run_pred[j] == 0xff;
@@ -333,7 +363,6 @@ static void runs(Lone* l) {
         for (u32 j = i + 1; j < t; j++) l->run_pred[j] = in->pred, l->run_not[j] = !in->pred_not;
         l->idle[i] = 1;
     }
-    free(targeted);
 }
 
 /* whether instruction i, in this program, writes variable v (the notes' number) */
@@ -343,9 +372,9 @@ static int writes_var(const Lone* l, u32 i, u32 v) {
     return 0;
 }
 /* whether the program counter goes from instruction i to i + 1 only: no branch, no target in between */
-static int straight(const Lone* l, const u8* targeted, u32 from, u32 to) {
+static int straight(const Lone* l, u32 from, u32 to) {
     for (u32 j = from; j < to; j++)
-        if (is_flow_86(&l->in[j]) || (j > from && targeted[j])) return 0;
+        if (is_flow_86(&l->in[j]) || (j > from && l->targeted[j])) return 0;
     return 1;
 }
 /* MOV Rd, 1 or IMAD Rd, RZ, RZ, 1, whatever its guard: the value of a constant 1 */
@@ -374,16 +403,9 @@ static int same_place(const Sm86Insn* x, const Sm86Insn* y) {
 
 /* MATCH.ALL of an address pair, the atomics of each lane's own where the addresses differ, and the run that the lanes
    take where they do not (warp_idioms.c's matches): the plan's tables, in this pseudo program's indexes */
-static void match_runs(Lone* l, u8* same, u8* own, u8* leave, ShMatchRun* run, u32* runs) {
-    u8* targeted = calloc(l->n + 1, 1);
+static void match_runs(Lone* l, ShMatchRun* run, u32* runs) {
     *runs = 0;
-    if (!targeted) return;
-    for (u32 i = 0; i < l->n; i++)
-        if (l->in[i].op == SM86_BRA || l->in[i].op == SM86_UBRA) {
-            const u32 t = sm86_branch_target(&l->in[i], i);
-            if (t <= l->n) targeted[t] = 1;
-        }
-    for (u32 i = 0; i < l->n && *runs < 16; i++) {
+    for (u32 i = 0; i < l->n && *runs < MATCH_MAX; i++) {
         const Sm86Insn* m = &l->in[i];
         const u32 address = sm86_field(m, 24, 8), p = sm86_field(m, 81, 3);
         if (m->op != SM86_MATCH || m->pred != SM86_PT || p == SM86_PT || address + 1 >= SM86_RZ) continue;
@@ -393,11 +415,11 @@ static void match_runs(Lone* l, u8* same, u8* own, u8* leave, ShMatchRun* run, u
                !writes_var(l, j, address) && !writes_var(l, j, address + 1))
             j++;
         if (j >= l->n || !add_32(&l->in[j], &data, &result) || l->in[j].pred != p || !l->in[j].pred_not ||
-            sm86_field(&l->in[j], 24, 8) != address || data == SM86_RZ || !straight(l, targeted, i, j + 1))
+            sm86_field(&l->in[j], 24, 8) != address || data == SM86_RZ || !straight(l, i, j + 1))
             continue;
         /* it adds 1 */
         u32 one = j;
-        while (one > 0 && !is_flow_86(&l->in[one - 1]) && !targeted[one - 1] && j - one < 64 &&
+        while (one > 0 && !is_flow_86(&l->in[one - 1]) && !l->targeted[one - 1] && j - one < 64 &&
                !writes_var(l, one - 1, data))
             one--;
         if (one == 0 || is_flow_86(&l->in[one - 1]) || j - one >= 64 || !writes_var(l, one - 1, data) ||
@@ -413,23 +435,22 @@ static void match_runs(Lone* l, u8* same, u8* own, u8* leave, ShMatchRun* run, u
         u32 end;
         if (go->op == SM86_BRA) {
             end = sm86_branch_target(go, at);
-            if (end <= at + 1 || end > l->n || !straight(l, targeted, at + 1, end)) continue;
+            if (end <= at + 1 || end >= l->n || !straight(l, at + 1, end)) continue;
         } else {
             end = at + 1;
-            while (end < l->n && !is_flow_86(&l->in[end]) && (end == at + 1 || !targeted[end])) end++;
+            while (end < l->n && !is_flow_86(&l->in[end]) && (end == at + 1 || !l->targeted[end])) end++;
             if (end >= l->n || l->in[end].op != SM86_EXIT || !sm86_always(&l->in[end]) || l->idle[end]) continue;
         }
         ShMatchRun* r = &run[(*runs)++];
-        r->from = l->at[at + 1], r->to = l->at[end];
+        r->from = place(at + 1), r->to = place(end);
         r->own_dst = result >= SM86_RZ ? NOVAR : variable(l, result);
-        own[l->at[j]] = 1, leave[l->at[at]] = 1;
+        l->own[place(j)] = 1, l->leave[place(at)] = 1;
         for (u32 x = at + 1; x < end; x++) {
             u32 d, rr;
             if (writes_var(l, x, address) || writes_var(l, x, address + 1)) break;
-            if (add_32(&l->in[x], &d, &rr) && same_place(&l->in[x], &l->in[j])) same[l->at[x]] = 1;
+            if (add_32(&l->in[x], &d, &rr) && same_place(&l->in[x], &l->in[j])) l->same[place(x)] = 1;
         }
     }
-    free(targeted);
 }
 
 /* the pseudo program's notes, their instruction the pseudo program's, its run's predicate read too */
@@ -438,59 +459,40 @@ static int pseudo_notes(Lone* l, const ShNotes* notes, ShNotes* out) {
         const u32 i = (notes->word[q] >> 10) - 1, v = notes->word[q] >> 1 & 0x1ffu, write = notes->word[q] & 1;
         if (notes->word[q] >> 10 == 0 || i >= l->n) continue;
         if (l->idle[i]) continue; /* the branch its run's predicate is: nothing else */
-        out->at = l->at[i];
+        out->at = place(i);
         shader_note(out, variable(l, v), write);
-        /* a run's instructions read its predicate where they read nothing of it: once, with the first note */
     }
     for (u32 i = 0; i < l->n; i++)
         if (l->run_pred[i] != 0xff) {
-            out->at = l->at[i];
+            out->at = place(i);
             shader_note(out, VAR_PRED + l->pred[l->run_pred[i]], 0);
         }
     return !out->full;
 }
 
 int sm86_lone_gives(const Sm86Insn* in, u32 n, const ShNotes* notes, const ShaderInfo* si, char* why, size_t size) {
-    Lone l = {.in = in, .n = n};
+    Lone l = {.in = in, .n = n, .total = n ? place(n - 1) + 1 : 11};
     ShNotes out = {0};
-    int good = 0;
-    const Op** op = NULL;
-    Op* ops = NULL;
-    u64* insn = NULL;
-    u32* where = NULL;
-    u8 *same = NULL, *own = NULL, *leave = NULL;
-    ShMatchRun run[16];
+    ShMatchRun run[MATCH_MAX];
     u32 nruns = 0;
-    snprintf(why, size, "subgroup ballot/shuffle unavailable: out of memory");
-    l.run_pred = calloc(n + 1, 1);
-    l.run_not = calloc(n + 1, 1);
-    l.idle = calloc(n + 1, 1);
-    l.at = calloc(n + 1, sizeof *l.at);
-    if (l.run_pred) memset(l.run_pred, 0xff, n);
-    u32 k = 11;
-    for (u32 i = 0; l.at && i < n; i++) {
-        if ((k - 10) % 4 == 0) k++;
-        l.at[i] = k++;
+    int good = 0;
+    if (n > INSNS_MAX) {
+        snprintf(why, size, "subgroup ballot/shuffle unavailable: %u instructions, at most %u", n, INSNS_MAX);
+        return 0;
     }
-    l.total = k;
-    if (!l.run_pred || !l.run_not || !l.idle || !l.at || notes->full || l.total > DIRECT_WORDS_MAX) goto done;
-    if (!index_notes(&l, notes)) goto done;
+    snprintf(why, size, "subgroup ballot/shuffle unavailable: out of memory");
+    void* mem = notes->full ? NULL : tables(&l, notes->n);
+    if (!mem) return 0;
+    index_notes(&l, notes);
+    find_targets(&l);
     if (!remap(&l, notes)) {
         snprintf(why, size, "subgroup ballot/shuffle unavailable: too many registers");
         goto done;
     }
     runs(&l);
-    insn = calloc(l.total + 1, sizeof *insn);
-    ops = calloc(l.total + 1, sizeof *ops);
-    op = calloc(l.total + 1, sizeof *op);
-    where = calloc(l.total + 1, sizeof *where);
-    same = calloc(l.total + 1, 1);
-    own = calloc(l.total + 1, 1);
-    leave = calloc(l.total + 1, 1);
-    if (!insn || !ops || !op || !where || !same || !own || !leave) goto done;
-    match_runs(&l, same, own, leave, run, &nruns);
+    match_runs(&l, run, &nruns);
     for (u32 i = 0; i < n; i++) {
-        const u32 j = l.at[i];
+        const u32 j = place(i);
         u64 w = 0, bits;
         int id = pseudo(&l, i, &w);
         if (l.idle[i]) id = O_NOP, w = 0x70000ull;
@@ -507,35 +509,24 @@ int sm86_lone_gives(const Sm86Insn* in, u32 n, const ShNotes* notes, const Shade
                          sm86_ops[in[i].op].name, i * 16);
                 goto done;
             }
-            const u32 to = t == n ? l.total : l.at[t];
+            const u32 to = t == n ? l.total : place(t);
             if (sm86_field(&in[i], 87, 3) != SM86_PT || sm86_field(&in[i], 90, 1)) id = O_BRX; /* two predicates */
             w |= (u64)((u32)((int)(to - j - 1) * 8) & 0xffffffu) << 20;
             if (t == n) id = O_BRX;
         }
         if (id == O_EXIT && (sm86_field(&in[i], 87, 3) != SM86_PT || sm86_field(&in[i], 90, 1))) id = O_BRX;
-        ops[j] = (Op){id, sm86_ops[in[i].op].name};
-        op[j] = &ops[j];
-        insn[j] = w;
-        where[j] = i * 16;
+        l.ops[j] = (Op){id, sm86_ops[in[i].op].name};
+        l.op[j] = &l.ops[j];
+        l.insn[j] = w;
+        l.where[j] = i * 16;
     }
     if (!pseudo_notes(&l, notes, &out)) goto done;
-    const ShFlow flow = {.insn = insn, .n = l.total, .op = op};
-    const ShLanePlan plan = {.where = where, .same = same, .own = own, .leave = leave, .run = run, .runs = nruns};
+    const ShFlow flow = {.insn = l.insn, .n = l.total, .op = l.op};
+    const ShLanePlan plan = {
+        .where = l.where, .same = l.same, .own = l.own, .leave = l.leave, .run = run, .runs = nruns};
     good = shader_lone_lane_gives_pseudo(&flow, &out, si, &plan, why, size);
 done:
     free(out.word);
-    free(l.run_pred);
-    free(l.run_not);
-    free(l.idle);
-    free(l.at);
-    free(insn);
-    free(ops);
-    free(op);
-    free(where);
-    free(same);
-    free(own);
-    free(leave);
-    free(l.note_at);
-    free(l.note);
+    free(mem);
     return good;
 }
