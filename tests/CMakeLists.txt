@@ -3638,6 +3638,14 @@ if(NOT WIN32)
             add_test(NAME sail_${m} COMMAND snx-test-sail-${m})
             add_test(NAME sail_${m}_spill COMMAND snx-test-sail-${m} --pool 3 --states 32)
             set_tests_properties(sail_${m} sail_${m}_spill PROPERTIES TIMEOUT 900)
+            if(NOT m STREQUAL "arm64")
+                # the Advanced SIMD a machine without vector registers makes of its integers' exact values: the back end
+                # must make words of each op
+                add_test(NAME sail_${m}_integers COMMAND snx-test-sail-${m} --states 16 --ops SQADD_v UQSUB_s SUQADD_v
+                         SQABS_v SQRSHL_v UQSHL_s SRSHL_v SQSHLU_vi SQRSHRUN_v SQXTN_v SQDMULH_v SQDMULL_v SQRDMULH_vi
+                         SABA_v URHADD_v RADDHN SSHR_v UMAX_v)
+                set_tests_properties(sail_${m}_integers PROPERTIES TIMEOUT 900)
+            endif()
         endforeach()
     endif()
     include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")

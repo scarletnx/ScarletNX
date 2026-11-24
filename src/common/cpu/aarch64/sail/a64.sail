@@ -46751,23 +46751,6 @@ enum GCSInstruction = {
   GCSInstType_POPX
 }
 
-bitfield FPSR_Type : bits(64) =
-  {
-    N : 31..31,
-    Z : 30..30,
-    C : 29..29,
-    V : 28..28,
-    QC : 27..27,
-    IDC : 7..7,
-    IXC : 4..4,
-    UFC : 3..3,
-    OFC : 2..2,
-    DZC : 1..1,
-    IOC : 0..0
-  }
-
-register FPSR : FPSR_Type
-
 enum TMFailure = {
   TMFailure_CNCL,
   TMFailure_DBG,
@@ -50223,18 +50206,6 @@ function HaltingAllowed () = {
     }
 }
 
-val RShr : forall ('round : Bool) 'shift 'value_name.
-  (int('value_name), int('shift), bool('round)) -> int
-
-function RShr (value_name, shift, round) = {
-    assert(shift > 0);
-    if round then {
-        return(((value_name + (1 << (shift - 1))) >> shift))
-    } else {
-        return((value_name >> shift))
-    }
-}
-
 val EffectiveSCR_EL3_NSE : unit -> bits(1)
 
 function EffectiveSCR_EL3_NSE () = {
@@ -52820,59 +52791,12 @@ function UnsignedRSqrtEstimate operand = {
 val SignedSatQ : forall 'N 'i, 0 <= 'N - 1.
   (int('i), int('N)) -> (bits('N), bool)
 
-function SignedSatQ (i, N) = {
-    result : int = undefined;
-    saturated : bool = undefined;
-    if i > pow2(N - 1) - 1 then {
-        result = pow2(N - 1) - 1;
-        saturated = true
-    } else if i < negate(2 ^ (N - 1)) then {
-        result = negate(2 ^ (N - 1));
-        saturated = true
-    } else {
-        result = i;
-        saturated = false
-    };
-    let 'result = result;
-    return((result[N - 1 .. 0], saturated))
-}
-
 val UnsignedSatQ : forall 'N 'i, 0 <= 'N - 1.
   (int('i), int('N)) -> (bits('N), bool)
-
-function UnsignedSatQ (i, N) = {
-    result : int = undefined;
-    saturated : bool = undefined;
-    if i > pow2(N) - 1 then {
-        result = pow2(N) - 1;
-        saturated = true
-    } else if i < 0 then {
-        result = 0;
-        saturated = true
-    } else {
-        result = i;
-        saturated = false
-    };
-    let 'result = result;
-    return((result[N - 1 .. 0], saturated))
-}
 
 val SatQ : forall 'N 'i ('is_unsigned : Bool),
   'N >= 0.
   (int('i), int('N), bool('is_unsigned)) -> (bits('N), bool)
-
-function SatQ (i, N, is_unsigned) = {
-    result : bits('N) = undefined;
-    sat : bool = undefined;
-    (result, sat) = if is_unsigned then {
-        assert(constraint(0 <= 'N - 1));
-        UnsignedSatQ(i, N)
-    } else {
-        assert(constraint(0 <= 'N - 1));
-        SignedSatQ(i, N)
-    };
-    return((result, sat))
-}
 
 val AdvSIMDExpandImm : (bits(1), bits(4), bits(8)) -> bits(64)
 

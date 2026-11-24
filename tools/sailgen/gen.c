@@ -336,6 +336,7 @@ static Val keep(Val v) {
     return v;
 }
 
+static int backend_defines_function(const char* name);
 /* the value at time bt (BT_DYN from STATIC or CONST) */
 static Val raise(Val v, int bt) {
     if (v.bt == BT_LANE && bt != BT_LANE) { /* a lane's value where one value is wanted */
@@ -964,7 +965,6 @@ static void bind_widths(unsigned def, const Val* args, unsigned count) {
    block's). Such an if's branch sets state, which a select can't give, so where the back end defines sg_when the rest
    of the instruction runs under the condition instead: sg_when(g, c) branches past the instruction's IR where c fails,
    as the AArch32 block compilers always ran a conditional instruction. Any other body is walked as it is */
-static int backend_defines_function(const char* name);
 static Val decode_body(unsigned def) {
     unsigned body = g_parse.defs[def].body, item, rest;
     Val c;
@@ -1196,6 +1196,9 @@ static Val halves_call(unsigned n, unsigned def, Val* args, unsigned count, cons
 }
 
 /* ---- builtins: Sail's library and the shared functions sailgen lowers itself (README.md, "Builtins") ---- */
+
+/* does the back end keep integers known only when the guest runs exactly (mach.h's SgXInt)? */
+static int exact_ints(void) { return backend_defines_function("sg_i_shr"); }
 
 /* a width known here over the 64 bits a value known when it recompiles keeps (SgS): such bits (a SIMD&FP register's
    Zeros(128)) are a map of constant bits instead, which costs no IR */
@@ -1642,11 +1645,24 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         }
         return 1;
     }
+    if (!strcmp(name, "Abs") && exact_ints()) {
+        need_args(n, 1);
+        a = arg(n, 0);
+        if (a.kind != K_INT) return 0;
+        *r = val_c(K_INT, BT_DYN, "sg_i_abs(g, %s)", raise(a, BT_DYN).c);
+        return 1;
+    }
     if (!strcmp(name, "Min") || !strcmp(name, "Max")) {
         int min = name[1] == 'i';
         need_args(n, 2);
-        a = need_static_int(n, arg(n, 0), name);
-        b = need_static_int(n, arg(n, 1), name);
+        a = arg(n, 0);
+        b = arg(n, 1);
+        if (a.kind == K_INT && b.kind == K_INT && top_bt(a.bt, b.bt) == BT_DYN && exact_ints()) {
+            *r = val_c(K_INT, BT_DYN, "sg_i_minmax(g, %s, %s, %d)", raise(a, BT_DYN).c, raise(b, BT_DYN).c, min);
+            return 1;
+        }
+        a = need_static_int(n, a, name);
+        b = need_static_int(n, b, name);
         if (a.bt == BT_CONST && b.bt == BT_CONST)
             *r = val_const(K_INT, (a.value < b.value) == min ? a.value : b.value);
         else
@@ -1655,7 +1671,12 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
     }
     if (!strcmp(name, "negate")) {
         need_args(n, 1);
-        a = need_static_int(n, arg(n, 0), name);
+        a = arg(n, 0);
+        if (a.kind == K_INT && a.bt == BT_DYN && exact_ints()) {
+            *r = val_c(K_INT, BT_DYN, "sg_i_neg(g, %s)", a.c);
+            return 1;
+        }
+        a = need_static_int(n, a, name);
         *r = a.bt == BT_CONST ? val_const(K_INT, -a.value) : val_c(K_INT, BT_STATIC, "(-(%s))", a.c);
         return 1;
     }
@@ -1718,8 +1739,9 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
     return 0;
 }
 
-/* the parts of a tuple a lowered function gives, as its val spells it ((bits('N), bits(1))): how many, each bits */
-static unsigned tuple_parts(unsigned n, unsigned val) {
+/* the parts of a tuple a lowered function gives, as its val spells it ((bits('N), bool)): how many, and whether each is
+   bits (K_BITS) or a bool (K_BOOL) */
+static unsigned tuple_parts(unsigned n, unsigned val, int* kinds) {
     const SgDef* d = &g_parse.defs[val];
     const char *text = g_parse.files[d->source].text, *s = text + d->text_start, *e = text + d->text_end, *arrow = NULL;
     unsigned parts = 1;
@@ -1741,8 +1763,10 @@ static unsigned tuple_parts(unsigned n, unsigned val) {
             if (*s == '(') ++depth;
             if (depth != 1) continue;
             while (t < e && isspace((unsigned char)*t)) ++t;
-            if (strncmp(t, "bit", 3)) sg_fail(n, "%s's result has a part other than bits", sg_str(d->name));
+            if (strncmp(t, "bit", 3) && strncmp(t, "bool", 4))
+                sg_fail(n, "%s's result has a part other than bits or a bool", sg_str(d->name));
             parts += *s == ',';
+            if (parts <= 4) kinds[parts - 1] = t[1] == 'o' ? K_BOOL : K_BITS;
         } else if (*s == ')' && --depth == 0)
             break;
     }
@@ -1763,12 +1787,13 @@ static Val action_call(unsigned n, const char* name, int takes) {
     int kind = val ? (int)g_parse.defs[val].ret_kind : K_UNIT, at;
     char text[1024], t[16];
     Val outs[4];
+    int kinds[4] = {0};
     if (g_gen.dynamic_branch && !(takes & BACKEND_STATIC) && (!(takes & BACKEND_PATH) || g_gen.halves))
         sg_fail(n, "%s, the back end's action, %s", name, stateless());
     if (g_gen.in_helper) sg_fail(n, "%s, the back end's action, in a function of what the recompiler knows", name);
     if (g_gen.lane) lane_refuse("the back end's action in an element loop, which lanes run once");
     if (kind == K_BIT) kind = K_BITS;
-    if (kind == K_TUPLE) parts = tuple_parts(n, val);
+    if (kind == K_TUPLE) parts = tuple_parts(n, val, kinds);
     if (kind != K_UNIT && kind != K_NONE && kind != K_BITS && kind != K_BOOL && kind != K_ENUM && kind != K_TUPLE &&
         !(kind == K_INT && (takes & BACKEND_STATIC)))
         sg_fail(n, "%s gives %s: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits", name,
@@ -1788,8 +1813,8 @@ static Val action_call(unsigned n, const char* name, int takes) {
     }
     for (i = 0; i < parts; ++i) {
         temp(t, sizeof t);
-        emit("SgD %s;\n", t);
-        outs[i] = val_c(K_BITS, BT_DYN, "%s", t);
+        emit("%s %s;\n", ctype(kinds[i], BT_DYN), t);
+        outs[i] = val_c(kinds[i], BT_DYN, "%s", t);
         at += snprintf(text + at, sizeof text - (size_t)at, ", &%s", t);
         if (at >= (int)sizeof text) sg_fail(n, "%s's arguments over %zu characters", name, sizeof text);
     }
@@ -2347,6 +2372,12 @@ static Val binop(unsigned n) {
             return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", add ? "add" : "sub", raise(a, BT_DYN).c,
                          raise(b, BT_DYN).c);
         }
+        /* one known only at run time */
+        if (a.kind == K_BITS && b.kind == K_INT && !mul && b.bt == BT_DYN && exact_ints()) {
+            a = keep(raise(a, BT_DYN));
+            return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, sg_i_slice(g, %s, (long long)(%s).w - 1, 0))",
+                         add ? "add" : "sub", a.c, b.c, a.c);
+        }
         if (a.kind == K_BITS && b.kind == K_INT && !mul) { /* bits + integer: the integer's bits of that width */
             Val k = need_static_int(n, b, "the integer added to bits");
             if (a.bt != BT_DYN)
@@ -2369,6 +2400,15 @@ static Val binop(unsigned n) {
         int left = op[0] == '<';
         if (a.bt != BT_DYN) return val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", left ? "lsl" : "lsr", a.c, k.c);
         return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", left ? "lsl" : "lsr", a.c, k.c);
+    }
+    if ((!strcmp(op, "<<") || !strcmp(op, ">>")) && a.kind == K_INT && b.kind == K_INT && exact_ints() &&
+        (bt == BT_DYN || op[0] == '>')) {
+        /* an integer known only when the guest runs (or shifted by one), exactly: by an amount known when it
+           recompiles, or one from 0 to 255 (a floor, >>'s) */
+        const char* f = op[0] == '<' ? "shl" : "shr";
+        a = raise(a, BT_DYN);
+        if (b.bt != BT_DYN) return val_c(K_INT, BT_DYN, "sg_i_%s(g, %s, %s)", f, a.c, b.c);
+        return val_c(K_INT, BT_DYN, "sg_i_%s_dyn(g, %s, %s)", f, a.c, b.c);
     }
     if (!strcmp(op, "<<") || !strcmp(op, "^")) { /* integers: a * 2^b, 2^b */
         need_static_int(n, a, op);
@@ -2626,6 +2666,17 @@ static void assign(unsigned target, Val v) {
         for (i = 0; i < count; ++i) args[i] = keep(eval(arg_at(t, i), 0));
         args[count++] = keep(v);
         (void)inline_call(t, def, args, count);
+        return;
+    }
+    if (N(t).kind == N_INDEX && (reg = register_def(N(t).a)) != 0 && reg_kind(reg) != K_VECTOR &&
+        N(N(t).b).kind == N_ID && !lookup(name_of(N(t).b))) {
+        /* FPSR[QC] = v, a bit field of a register of bits: the back end's, under the run-time condition the code walked
+           is under (its path) */
+        char fn[160], field[160];
+        snprintf(fn, sizeof fn, "%s", reg_access(t, reg, "field_write"));
+        snprintf(field, sizeof field, "%s", reg_field(t, reg, name_of(N(t).b)));
+        v = raise(need_bits(t, v, "a register's field"), BT_DYN);
+        emit("%s(g, %s, %s, %s);\n", fn, g_gen.path[0] ? g_gen.path : "0", field, v.c);
         return;
     }
     if (N(t).kind == N_INDEX && (reg = register_def(N(t).a)) != 0) { /* GPR[n] = v */

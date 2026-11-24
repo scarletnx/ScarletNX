@@ -43,6 +43,7 @@ struct SgCtx {
     int base_seen[4]; /* a few recent values of sgx_base's, each checked against what made it */
     unsigned base_next;
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
+    SgB qc; /* when the instruction so far sets FPSR.QC (sg_FPSR_field_write), 0 for not: stored with its V register */
     SnxU64 (*resolve)(const char* sym); /* a helper's address, where the code calls it absolutely (a test's) */
     int start;       /* the instructions before this word's */
 };
@@ -347,10 +348,40 @@ static inline SgD sg__V_read_bits(SgCtx* g, long long n, long long hi, long long
     if (!g->vx[n]) g->vx[n] = sgx_vins(x, SGX_VF_LD16, 0, 0, NULL, 0, 1, SGX_VM_STATE, 0, 0, sgx_vd_offset(n, 0), 0, 0);
     return sg_d_slice(g, sgx_xval(128, g->vx[n]), hi, lo);
 }
+/* FPSR[QC] = 1 under path (0: always), a saturating instruction's, once for each element: the condition of them all is
+   kept, and FPSR's bit set where it holds as the instruction writes its register (sgx_qc) */
+enum { SG_FPSR_QC = 27 };
+static inline void sg_FPSR_field_write(SgCtx* g, SgB path, int field, SgD v) {
+    if (field != SG_FPSR_QC || !sgx_is_const(&v) || v.k != 1)
+        sg_fail("FPSR's field written other than QC set", field, v.w);
+    path = path ? path : sg_bool(g, 1);
+    g->qc = g->qc ? sg_b_or(g, g->qc, path) : path;
+}
+static inline void sgx_qc(SgCtx* g) {
+    SgX* x = sgx(g);
+    SgXIns* i;
+    SgD bit;
+    int r;
+    if (!g->qc) return;
+    bit = sg_d_lsl(g, sg_d_zext(g, sgx_bool_bits(x, g->qc), 32), SG_FPSR_QC);
+    g->qc = 0;
+    i = sgx_append(x, SGX_K_LOAD);
+    i->w = 32;
+    i->disp = (int)offsetof(CPU, fpsr);
+    i->def = sgx_vreg(x, x->n - 1, 32);
+    bit = sg_d_or(g, sgx_val(32, i->def), bit);
+    r = sgx_reg(x, &bit);
+    i = sgx_append(x, SGX_K_STORE);
+    i->w = 32;
+    i->in[0] = r;
+    i->disp = (int)offsetof(CPU, fpsr);
+}
+
 /* _V[n] = v, all 128 bits: a vector value by a 16-byte store, general-purpose doublewords by two */
 static inline void sg__V_write(SgCtx* g, long long n, SgD v) {
     SgX* x = sgx(g);
     SgD lo, hi;
+    sgx_qc(g);
     if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
     if (v.w != 128 || v.wide || v.inv || v.nzcv) sg_fail("a SIMD&FP register written from other than 128 bits", v.w, 128);
     if (sgx_vpinned(g, n)) {
@@ -423,7 +454,6 @@ static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64
 static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
     return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
 }
-
 /* ---- the floating point of a machine that has no inline code of its own for it (SGX_FP_HELPERS: arm64.h's,
    risc.h's): the exact helpers' for every operation, x64_helpers.c's snx_x64_fp_* (cpu.h's soft float, which raises
    FPSR's flags as FPProcessException does) ---- */
@@ -727,9 +757,10 @@ static inline void sgx_epilogue(SgXAsm* a);
 
 /* words in a row as one function, u64 block(CPU*) returning the next pc, their instructions one SSA: a register read
    once, flags one instruction left read by the next as a condition code (CMP then B.cond is CMP and CMOVcc), the stores
-   a later one overwrites dropped. Every word but the last runs on to the next: a branch or an UNDEF ends the block
-   (the words after it are left out: count is how many it took). Its size in code, 0 when a word isn't taken, needs a
-   primitive this host has no form of, or the code needs more than cap bytes */
+   a later one overwrites dropped. Every word but the last runs on to the next: a branch, an UNDEF or an instruction
+   that leaves the next too little of the block's room ends it (the words after it are left out: count is how many it
+   took). Its size in code, 0 when a word isn't taken, needs a primitive this host has no form of, or the code needs
+   more than cap bytes */
 static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 pc, SnxU64 features,
                            unsigned host_features, unsigned char* code, size_t cap) {
     SgXBuf b;
@@ -750,6 +781,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     g->x.pool = pool;
     g->x.xpool = xpool;
     for (i = 0; i < *count; ++i) {
+        if (i && (g->x.n > SGX_MAXI / 4 || g->x.nv > SGX_MAXV / 4 || g->x.nb > SGX_MAXB / 4)) break;
         g->word = words[i];
         g->pc = pc + 4 * i;
         g->start = g->x.n;

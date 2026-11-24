@@ -12,7 +12,10 @@
    (the code, the CPU structure, guest memory) is mapped into it at the same addresses, so the code and this
    process's C share every pointer, and a call out (a helper by its name, the runtime's RtAPI functions) goes to a page
    of traps whose hook calls the native function with the registers' arguments.
-     snx-test-sail-MACH [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
+     snx-test-sail-MACH [--states N] [--samples N] [--sequences N] [--pool N] [--target NAME] [--verbose] [--ops OP...]
+                        [--dump WORD...]
+   --target: the guest's features, ounce (the default) or max
+   --ops: the words of these ops of the decoder alone, and no sequences
    --dump prints the words' block as hex bytes for a disassembler (llvm-mc --disassemble -triple=MACH) */
 #include "sail_mach_emit.h"
 #include "support/host_unicorn.h"
@@ -28,8 +31,7 @@
 #include <string.h>
 #include <sys/mman.h>
 
-#define TARGET SNX_A64_TARGET_OUNCE
-#define CODE_MAX 4096
+#define CODE_MAX (64u << 10) /* --dump's */
 #define MEMORY_SIZE    (4u << 20)
 #define MEMORY_ZERO    (2u << 20)
 #define MEMORY_TOUCHED 0x14000u
@@ -38,6 +40,7 @@
 
 static struct {
     u64 seed;
+    u64 target; /* the guest's features: --target's, the Ounce's unless it names another */
     unsigned undef;
     int verbose;
     sigjmp_buf jump;
@@ -84,7 +87,7 @@ static int fp_differs(const CPU* a, const CPU* b) {
 
 static const char* op_name(u32 word) {
     SnxA64Insn insn;
-    return snx_a64_decode_word(word, TARGET, &insn) != SNX_A64_OP_UNDEF ? snx_a64_op_text(insn.op) : NULL;
+    return snx_a64_decode_word(word, g_test.target, &insn) != SNX_A64_OP_UNDEF ? snx_a64_op_text(insn.op) : NULL;
 }
 
 static void on_abort(int signal_number) {
@@ -186,7 +189,7 @@ static int is_ldst(u32 word) {
 static void ldst_start(CPU* c, u32 word, unsigned s) {
     SnxA64Insn insn;
     u64 address;
-    snx_a64_decode_word(word, TARGET, &insn);
+    snx_a64_decode_word(word, g_test.target, &insn);
     c->x[31] = 0x1000 + (rnd() & 0xff0);
     c->x[insn.args.rn] = 0x1000 + (rnd() & 0xff0);
     c->x[insn.args.rm] = 0x1000 + (rnd() & 0xff0);
@@ -241,7 +244,8 @@ static void start_state(CPU* start, unsigned s, RtAPI* rt) {
 }
 
 int main(int argc, char** argv) {
-    unsigned states = 64, samples = 3, sequences = 2000, i, k;
+    unsigned states = 64, samples = 3, sequences = 2000, i, k, nops = 0;
+    char** ops = NULL;
     u32 *rows = NULL, *words;
     size_t count, n = 0, failures = 0, unmade = 0, compared = 0, bytes = 0;
     unsigned char* code;
@@ -252,6 +256,7 @@ int main(int argc, char** argv) {
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     struct sigaction sa;
     snx_mach_set_resolve(resolve);
+    g_test.target = SNX_A64_TARGET_OUNCE;
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--samples") && i + 1 < (unsigned)argc)
@@ -264,18 +269,29 @@ int main(int argc, char** argv) {
             g_test.verbose = 1;
         else if (!strcmp(argv[i], "--trace"))
             g_test.verbose = 2;
-        else if (!strcmp(argv[i], "--dump") && i + 1 < (unsigned)argc) {
-            unsigned char buf[CODE_MAX];
+        else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
+            const char* name = argv[++i];
+            if (strcmp(name, "ounce") && strcmp(name, "max")) {
+                fprintf(stderr, "--target %s: the targets are ounce and max\n", name);
+                return 2;
+            }
+            g_test.target = !strcmp(name, "max") ? snx_a64_features(SNX_A64_TARGET_MAX) : SNX_A64_TARGET_OUNCE;
+        } else if (!strcmp(argv[i], "--ops") && i + 1 < (unsigned)argc) {
+            ops = argv + i + 1;
+            while (i + 1 < (unsigned)argc && argv[i + 1][0] != '-') ++i, ++nops;
+            sequences = 0;
+        } else if (!strcmp(argv[i], "--dump") && i + 1 < (unsigned)argc) {
+            static unsigned char buf[CODE_MAX];
             u32 ws[16];
             size_t nw = 0, got, b;
             while (i + 1 < (unsigned)argc && nw < 16) ws[nw++] = (u32)strtoul(argv[++i], NULL, 16);
-            got = snx_mach_block(ws, &nw, 0x1000, TARGET, HOST, buf, sizeof buf);
+            got = snx_mach_block(ws, &nw, 0x1000, g_test.target, HOST, buf, sizeof buf);
             for (b = 0; b < got; ++b) printf("0x%02x%c", buf[b], b + 1 < got ? ' ' : '\n');
             if (!got) printf("(not made)\n");
             return 0;
         } else {
             fprintf(stderr, "usage: snx-test-sail-%s [--states N] [--samples N] [--sequences N] [--pool N] "
-                            "[--verbose] [--dump WORD...]\n",
+                            "[--target NAME] [--verbose] [--ops OP...] [--dump WORD...]\n",
                     hostuc_name(SAIL_MACH_UC));
             return 2;
         }
@@ -305,6 +321,8 @@ int main(int argc, char** argv) {
         const char* name = op_name(rows[i]);
         unsigned f;
         if (!name) continue;
+        for (k = 0; k < nops && strcmp(name, ops[k]); ++k) {}
+        if (nops && k == nops) continue;
         for (f = 0; f < 8; ++f) {
             u32 w = rows[i];
             size_t got = 0;
@@ -315,7 +333,7 @@ int main(int argc, char** argv) {
             g_test.jumping = 1;
             if (sigsetjmp(g_test.jump, 1)) failed = 1;
             else
-                got = snx_mach_step(w, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
+                got = snx_mach_step(w, 0x1000, g_test.target, HOST, code + code_at, code_cap - code_at);
             g_test.jumping = 0;
             if (failed) {
                 ++unmade;
@@ -332,11 +350,17 @@ int main(int argc, char** argv) {
         }
     }
     free(rows);
+    for (k = 0; k < nops; ++k) {
+        for (i = 0; i < n && strcmp(op_name(words[i]), ops[k]); ++i) {}
+        if (i < n) continue;
+        ++failures;
+        fprintf(stderr, "FAIL: --ops: the %s back end makes no word of %s\n", hostuc_name(SAIL_MACH_UC), ops[k]);
+    }
     if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
         fprintf(stderr, "FAIL: %s\n", error);
         return 1;
     }
-    for (i = 0; i < n; ++i) llvm_steps_add(&set, words[i], 0x1000, TARGET);
+    for (i = 0; i < n; ++i) llvm_steps_add(&set, words[i], 0x1000, g_test.target);
     if (llvm_steps_load(&set, error, sizeof error)) {
         fprintf(stderr, "FAIL: %s\n", error);
         return 1;
@@ -400,7 +424,7 @@ int main(int argc, char** argv) {
             g_test.jumping = 1;
             if (sigsetjmp(g_test.jump, 1)) failed = 1;
             else
-                got = snx_mach_block(sq->w, &sq->count, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
+                got = snx_mach_block(sq->w, &sq->count, 0x1000, g_test.target, HOST, code + code_at, code_cap - code_at);
             g_test.jumping = 0;
             if (failed) {
                 ++failures;
@@ -422,7 +446,7 @@ int main(int argc, char** argv) {
         for (q = 0; q < nseq; ++q) {
             size_t j;
             seq[q].first = steps;
-            for (j = 0; j < seq[q].count; ++j, ++steps) llvm_steps_add(&set, seq[q].w[j], 0x1000 + 4 * j, TARGET);
+            for (j = 0; j < seq[q].count; ++j, ++steps) llvm_steps_add(&set, seq[q].w[j], 0x1000 + 4 * j, g_test.target);
         }
         if (llvm_steps_load(&set, error, sizeof error)) {
             fprintf(stderr, "FAIL: %s\n", error);

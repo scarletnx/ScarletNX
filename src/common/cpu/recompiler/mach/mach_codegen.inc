@@ -926,6 +926,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     g->taken = 0;
     g->exclusive_count = g->exclusive_next = 0;
     g->status = 0;
+    g->qc = 0;
     switch (insn.flow) {
     case SNX_A64_FLOW_UNDEF:
     undef:
@@ -951,6 +952,11 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             int v = vec(u, &insn, word);
             if (v < 0) goto undef;
             if (v) break;
+        }
+        if ((word >> 25 & 7) == 7 && (x->n > SGX_MAXI / 4 || x->nv > SGX_MAXV / 4 || x->nb > SGX_MAXB / 4)) {
+            /* an Advanced SIMD instruction by its elements may take most of a region: it begins one */
+            flush_to(u, address);
+            g->start = x->n;
         }
         if (!sg_decode(g) || x->unmade) return 0;
         if (g->undefined) {
