@@ -431,6 +431,9 @@ if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on Co
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
+# and so are the translator's compile flags, where they aren't a normal build's
+include("${PROJECT_SOURCE_DIR}/cmake/shader_flags.cmake")
+snx_shader_flags_of(gpu/vk/pipeline.c)
 # the game's menu in YoRHa's colours, from src/gui/themes/yorha/theme.ini (cmake/gui_themes.cmake), and the shader
 # loading screen's when the launcher's theme can't be read
 target_include_directories(snx_platform PRIVATE "${PROJECT_BINARY_DIR}/generated")

@@ -2909,6 +2909,10 @@ add_test(NAME cpmutil_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_D
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
 # where a package comes from by CPMUtil's options and the CPM.cmake ones they replace (cmake/packages.cmake)
+# the translator's compile flags in the shader files' key (cmake/shader_flags.cmake): none for a normal build's, a
+# stamp for each other set
+add_test(NAME shader_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         -P "${CMAKE_CURRENT_SOURCE_DIR}/shader_flags_test.cmake")
 add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-options-test" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_options_test.cmake")
