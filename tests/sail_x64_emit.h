@@ -27,6 +27,8 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
                      unsigned char* code, size_t cap);
 /* the host registers the back end may give values (0: all nine; fewer makes it spill, for the test of spilling) */
 void snx_x64_set_pool(int registers);
+/* the pool snx_x64_set_pool set last, 0 for every register */
+int snx_x64_pool(void);
 /* the SSA instructions the last step appended, dropped ones counted */
 unsigned snx_x64_instructions(void);
 /* the calls of the floating-point helpers the code made so far */
