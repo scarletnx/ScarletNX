@@ -696,11 +696,11 @@ cannot be read is named and the others still listed.
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); where no package loads the row is
   greyed, saying what the device lacks, unless the game is set to a package, to take that pick back. Freedreno
   Settings with none of its own takes the launcher's. **Settings** opens the Settings of that game alone, Back from
-  its groups to the box: a group a section of the runtime's (none of the launcher's own, nor of another console's),
-  each row **Global** and the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in
-  the game's own picks (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the
-  launcher's; Del puts a row back to Global, the file going with its last pick, and **Reset to Global**, the last
-  group, every row, asked first with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
+  its groups to the box: a group a section of the runtime's (none of the launcher's own, nor the 3DS's), each row
+  **Global** and the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in the game's
+  own picks (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the launcher's; Del puts
+  a row back to Global, the file going with its last pick, and **Reset to Global**, the last group, every row, asked
+  first with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
   icon after its name in Games and Recent Games, and the side panel lists them (*Own settings: volume=40,
   gpu_driver=Turnip_v32*). A collection's game ([Usage](usage.md#collections)) has a
   **Play Program N** row for

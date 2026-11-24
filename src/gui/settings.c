@@ -97,16 +97,6 @@ static int has_mark(const char* column, const char* mark) {
         if ((c == column || c[-1] == ' ') && (!c[n] || c[n] == ' ')) return 1;
     return 0;
 }
-/* whether a game of console (GUI_GAME_*) has key of its own: a 3DS game its driver's few (snx_ctr_game_setting), a
-   Switch game every setting but another console's driver's */
-static int game_takes(int console, const char* key) {
-    static const char* const others[] = {"ctr_", "vita_", "linux_", "android_", "nds_"};
-    size_t i;
-    if (console == GUI_GAME_3DS) return snx_ctr_game_setting(key);
-    for (i = 0; i < sizeof others / sizeof *others; ++i)
-        if (!strncmp(key, others[i], strlen(others[i]))) return 0;
-    return 1;
-}
 /* the rows of the runtime's list; with game, a game's own, of that console (gui_settings_read_console) */
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
@@ -157,7 +147,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         field[0] = line;
         while (f < 12 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue; /* not a setting: another line the runtime printed */
-        if (game && !game_takes(game, field[1])) continue;
+        if (game == GUI_GAME_3DS && !snx_ctr_game_setting(field[1])) continue;
         for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */

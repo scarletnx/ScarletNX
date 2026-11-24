@@ -9336,6 +9336,8 @@ static void settings_groups(App* app) {
         char* about = g >= 0 ? app->group_about[g] : NULL;
         size_t n = about ? strlen(about) : 0;
         if (strchr(s->keys[r].section, '/')) continue; /* a page's: its row in the group opens it */
+        /* a Switch game's runs read none of the 3DS's: kept in its picks as they are, off its screen */
+        if (app->own_picks && s->game == GUI_GAME_SWITCH && !strcmp(s->keys[r].section, "3DS")) continue;
         /* past the most groups the rest go in the last one: every row is still reached */
         if (g < 0 || (g == 0 && !app->own_picks) ||
             (strcmp(s->keys[r].section, s->keys[app->group_first[g]].section) &&
