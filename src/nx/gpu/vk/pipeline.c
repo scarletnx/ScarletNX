@@ -25,6 +25,9 @@
 #include "nx/gpu/vk/capture.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pipeline_file.h"
+#ifndef SNX_SHADER_FLAGS
+#error "SNX_SHADER_FLAGS, the translator's compile flags for the shader files' key, comes from cmake/shader_flags.cmake"
+#endif
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/pipeline_stats.h"
@@ -3652,12 +3655,13 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
    the PF_SOURCE and PF_PIPE records depend on (pf_open): the device; the features and limits the translator,
    vk_shader_get and pipe_create consult; the sizes of what those records hold whole. Then the rest, which only the
    SPIR-V and ShaderInfo of the PF_SHADER records depend on: the build (commit, compiler, host), and for a tree with
-   changes or a build outside git, which have one commit for every build of them, the runtime's own file; the driver.
-   The guest part's length goes in *guest */
+   changes or a build outside git, which have one commit for every build of them, the runtime's own file, and for a
+   build whose translator is compiled with other flags than a normal one's, those; the driver. The guest part's length
+   goes in *guest */
 static void pf_key(char* out, size_t n, size_t* guest) {
     const VkPhysicalDeviceProperties* d = &g_vk.props;
     const char* commit = snx_build_commit();
-    char words[64] = "", uuid[33];
+    char words[64], uuid[33];
     /* 0 no texture arrays, 1 arrays of SNX_TEX_ARRAY (every file's word before arrays came smaller), else 1 and the
        elements */
     u32 arrays = !g_spirv_translate.texture_arrays              ? 0u
@@ -3716,13 +3720,14 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */
     size_t ncaps = sizeof caps / sizeof *caps - !g_vk.vertex_input_dynamic;
+    pf_build_words(words, sizeof words, commit, SNX_SHADER_FLAGS, NULL);
     /* a tree with changes, or a build outside git, builds under one commit name: the runtime's own bytes tell those
        builds apart. Not its modification time, which a copy of the same runtime (each game has one) changes */
     if (pf_build_unnamed(commit)) {
         char* self = snx_executable("scarletnx");
         PFileMap m;
         if (self && !plat_file_map(&m, self) && m.data) {
-            pf_build_words(words, sizeof words, commit, &m);
+            pf_build_words(words, sizeof words, commit, SNX_SHADER_FLAGS, &m);
             plat_file_unmap(&m);
         } else {
             WARN("vulkan: this build's commit is %s and its program (%s) can't be read: its shader cache is one with "
