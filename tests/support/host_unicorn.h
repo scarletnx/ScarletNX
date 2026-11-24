@@ -14,7 +14,8 @@
    in 64-bit, hypervisor and little-endian mode (MSR), which Unicorn 2.1.4 needs patching for (its PPC64 models and
    MSR's HV): hostuc_new gives NULL where the MSR it set doesn't hold. MIPS64 runs as MIPS64R2 with Unicorn's virtual
    TLB, every address its own (the kernel's segments would want them under 2 GiB). Unicorn has no LoongArch: its
-   code runs in la64_interp.c's interpreter, on the same memory and the same traps */
+   code runs in la64_interp.c's interpreter, on the same memory and the same traps. s390x runs as a z196 in 64-bit
+   addressing mode (the PSW's EA and BA); a native function's sixth argument is the ABI's stack slot (160(r15)) */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
@@ -27,7 +28,8 @@ typedef enum {
     HOSTUC_MIPS64EL,
     HOSTUC_LA64,
     HOSTUC_PPC64, /* big-endian, ELFv2 */
-    HOSTUC_MIPS64 /* big-endian */
+    HOSTUC_MIPS64, /* big-endian */
+    HOSTUC_S390X
 } HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */

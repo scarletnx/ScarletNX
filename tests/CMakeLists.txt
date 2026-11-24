@@ -3487,7 +3487,7 @@ if(NOT WIN32)
         # machine, Unicorn's architecture (host_unicorn.h), the machine's features the code may use
         # (a big-endian host's, ppc64be and mips64be: its machine's emitters with RK_BIG_ENDIAN)
         foreach(mach arm64:HOSTUC_ARM64:3 rv64:HOSTUC_RV64:0 ppc64:HOSTUC_PPC64LE:0 mips64:HOSTUC_MIPS64EL:0
-                     la64:HOSTUC_LA64:0 ppc64be:HOSTUC_PPC64:0 mips64be:HOSTUC_MIPS64:0)
+                     la64:HOSTUC_LA64:0 ppc64be:HOSTUC_PPC64:0 mips64be:HOSTUC_MIPS64:0 s390x:HOSTUC_S390X:0)
             string(REPLACE ":" ";" parts "${mach}")
             list(GET parts 0 m)
             list(GET parts 1 uc)
@@ -3944,7 +3944,7 @@ add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backend
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
-    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be)
+    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c support/la64_interp.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
@@ -3959,7 +3959,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
-    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be)
+    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-arm-${m} arm_x64.c support/host_unicorn.c support/la64_interp.c)
         snx_test_target(snx-test-arm-${m} gnu23)

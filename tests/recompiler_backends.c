@@ -28,7 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 #if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||          \
-    defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE)
+    defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X)
 #define SNX_TEST_NATIVE 1
 #include "support/host_unicorn.h"
 #define SNX_TEST_SWAP_CPU 1
@@ -52,6 +52,12 @@
 #define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_ppc64be_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
+#elif defined(SNX_TEST_S390X)
+#include "common/cpu/recompiler/s390x/s390x_codegen.h"
+#define NATIVE_UC HOSTUC_S390X
+#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
+    snx_s390x_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_MIPS64BE)
 #include "common/cpu/recompiler/mips64/mips64be_codegen.h"
 #define NATIVE_UC HOSTUC_MIPS64
