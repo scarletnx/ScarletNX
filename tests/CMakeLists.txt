@@ -3963,7 +3963,8 @@ foreach(family IN ITEMS
         "bits;NOT_v;EXT_d;CLZ_v;CLS_v;SRI_v;SRI_s;SLI_v;SLI_s"
         "sums;UADDLV;SADDLV;UADDLP_v;SADDLP_v;UADALP_v;SADALP_v;UADDL_v;SADDL_v;USUBL_v;SSUBL_v;USUBW;SSUBW;UHSUB_v;SHSUB_v"
         "shifts;SRSHR_v;URSHR_v;SRSRA_v;URSRA_v;SRSHR_s;URSHR_s;SRSRA_s;URSRA_s;RSHRN_v"
-        "differences;UABD_v;SABD_v;UABA_v;SABA_v;UABDL_v;SABDL_v;UABAL_v;SABAL_v")
+        "differences;UABD_v;SABD_v;UABA_v;SABA_v;UABDL_v;SABDL_v;UABAL_v;SABAL_v"
+        "doublewords;ADD_s;SUB_s;CMEQ_s;CMGT_s;CMGE_s;CMHI_s;CMHS_s;CMTST_s")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
     set_tests_properties(recompiler_backends_${name} PROPERTIES TIMEOUT 600)

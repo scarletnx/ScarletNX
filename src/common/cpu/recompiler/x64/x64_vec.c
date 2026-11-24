@@ -1534,6 +1534,30 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         }
         vwrite(g, rd, vclz(g, size, a), q);
         return 1;
+    /* doublewords, scalars */
+    case SNX_A64_OP_ADD_s:
+    case SNX_A64_OP_SUB_s:
+    case SNX_A64_OP_CMEQ_s:
+    case SNX_A64_OP_CMGT_s:
+    case SNX_A64_OP_CMGE_s:
+    case SNX_A64_OP_CMHI_s:
+    case SNX_A64_OP_CMHS_s:
+    case SNX_A64_OP_CMTST_s:
+        if (size != 3) return -1;
+        a = vread(g, rn);
+        b = vread(g, rm);
+        switch (insn->op) {
+        case SNX_A64_OP_ADD_s: r = vadd(g, 3, a, b); break;
+        case SNX_A64_OP_SUB_s: r = vsub(g, 3, a, b); break;
+        case SNX_A64_OP_CMEQ_s: r = veq(g, 3, a, b); break;
+        case SNX_A64_OP_CMGT_s: r = vgt(g, 3, a, b, 0); break;
+        case SNX_A64_OP_CMHI_s: r = vgt(g, 3, a, b, 1); break;
+        case SNX_A64_OP_CMGE_s: r = vnot(g, vgt(g, 3, b, a, 0)); break;
+        case SNX_A64_OP_CMHS_s: r = vnot(g, vgt(g, 3, b, a, 1)); break;
+        default: r = vnot(g, veq(g, 3, vand(g, a, b), vzero(g))); break;
+        }
+        vwrite(g, rd, r, 0);
+        return 1;
     default: return 0;
     }
 }
