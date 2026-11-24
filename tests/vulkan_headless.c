@@ -8797,7 +8797,9 @@ static int run_headless(int argc, char** argv) {
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "rt_stride"))
-            result = check_rt_stride() || check_rt_stride_apart();
+            result = check_rt_stride() || check_rt_stride_apart() || check_rt_stride_written();
+        else if (!strcmp(name, "rt_stride_written"))
+            result = check_rt_stride_written();
         else if (!strcmp(name, "cube_take_frames"))
             result = check_cube_take_frames();
         else if (!strcmp(name, "texture_quiet"))
@@ -9320,6 +9322,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_rt_aside());
     CHECK(!check_rt_stride());
     CHECK(!check_rt_stride_apart());
+    CHECK(!check_rt_stride_written());
     CHECK(!check_so_note());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());

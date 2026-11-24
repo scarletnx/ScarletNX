@@ -187,3 +187,62 @@ static int check_rt_stride_apart(void) {
          "shapes stay targets of their own");
     return 0;
 }
+
+/* The CPU writes the target's memory after the draw. Memory is newer than the target then, as a texture over it
+   takes memory's bytes: a target named by the copy must not go on with the draw's, whether it held the address or was
+   parked. A 2D copy's new target loaded them */
+static int rstw_case(int park, u32 at) {
+    const u64 gva = RSTS_GVA + 0x180000 + at;
+    vk_lock();
+    Surf* d = rstr_target(gva, RSTR_FMT, RSTR_STRIDE);
+    CHECK(d);
+    rstr_clear(d, RSTR_RED);
+    if (park) CHECK(rstr_other(gva) != d && (d->gva >> 63));
+    vk_finish();
+    vk_unlock();
+    memset(GP(RSTS_CPU + 0x180000 + at), 0x55, 0x10000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    Surf* back = vk_rt(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
+    CHECK(back);
+    vk_unlock();
+    const u32 got = ct_texel(back, 0, 0);
+    if (got != 0x55555555u)
+        fprintf(stderr,
+                "the CPU wrote 55555555 over a 64x64 target the draw left red, %s, and a 2D copy named it in a smaller "
+                "stride: a texel reads %08x\n",
+                park ? "parked" : "holding the address", got);
+    return got != 0x55555555u;
+}
+/* Parked, and the target of another format class that holds the address is the newer one: it takes that one's pixels,
+   and memory, which nothing wrote, is not loaded over them */
+static int rstw_newer(void) {
+    const u64 gva = RSTS_GVA + 0x1c0000;
+    vk_lock();
+    Surf* d = rstr_target(gva, RSTR_FMT, RSTR_STRIDE);
+    CHECK(d);
+    rstr_clear(d, RSTR_RED);
+    Surf* newer = rstr_target(gva, RSTR_FMT_ALT, RSTR_STRIDE);
+    CHECK(newer && newer != d && (d->gva >> 63));
+    rstr_clear(newer, RSTR_GREEN);
+    Surf* back = vk_rt(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
+    CHECK(back == d);
+    vk_unlock();
+    const u32 got = ct_texel(back, 0, 0);
+    if (got != RSTR_GREEN)
+        fprintf(stderr,
+                "the 64x64 target of format %x, parked under a newer one of format %x that the draw left green, was "
+                "named in a smaller stride: a texel reads %08x, not %08x\n",
+                RSTR_FMT, RSTR_FMT_ALT, got, RSTR_GREEN);
+    return got != RSTR_GREEN;
+}
+static int check_rt_stride_written(void) {
+    CHECK(mem_map(RSTS_CPU, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(RSTS_GVA, RSTS_CPU, 0x200000);
+    const int bad = rstw_case(0, 0) + rstw_case(1, 0x20000) + rstw_newer();
+    CHECK(mem_unmap(RSTS_CPU, 0x200000) == 0);
+    if (bad) return 1;
+    puts("a target named in a smaller stride after the CPU wrote its memory: memory's bytes, holding it or parked, and "
+         "the pixels of a newer one of another format class over it");
+    return 0;
+}

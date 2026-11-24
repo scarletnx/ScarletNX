@@ -2407,6 +2407,18 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
     to->draw_hash = from->draw_hash;
     return 1;
 }
+/* The target named again by a path that may know less of its layer's stride than the one that drew it (a 2D copy knows
+   none): the greater stays, which is the game's */
+static void rt_stride_keep(Surf* s, u64 layer_size) {
+    if (s->layer_size < layer_size) s->layer_size = layer_size;
+}
+/* Newer guest memory at this address takes precedence, as it does where a texture takes a target's draw
+   (vk_rt_drawn_fresh, tex_take_drawn): where the CPU wrote the target's memory since it was drawn, the target is loaded
+   again from it. A depth target holds nothing a load takes, and one never drawn has no baseline to tell by */
+static void rt_stride_written(Surf* s) {
+    if (!s->f.depth && s->draw_wseen && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && !vk_rt_drawn_fresh(s))
+        vk_rt_reload(s->gva);
+}
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume, u32 msaa);
 /* a render target's lookup or creation as a profiler zone (SNX_TRACY builds) */
@@ -2449,8 +2461,9 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
             if (s->gva == gva && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl && s->bh == bh &&
                 s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa) {
-                if (s->layer_size < layer_size) s->layer_size = layer_size;
+                rt_stride_keep(s, layer_size);
                 vk_rt_note_read(s);
+                rt_stride_written(s);
                 return s;
             }
     /* another size, format or layout at this address: park the current one, reuse a parked one that fits */
@@ -2469,12 +2482,13 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
        it makes a second target at the address, where its pixels arrive that no draw and no texture looks at, and the
        draw's target stays parked with the pixels it had (a minimap's terrain, every frame). Of those parked, the one
        with the greatest stride, so that naming it with a smaller one never lowers what the game laid out */
+    int padding = 0; /* the parked one was found by its padding alone */
     if (!parked && layers == 1 && !volume)
         for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
             if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl &&
                 s->bh == bh && s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa &&
                 (!parked || s->layer_size > parked->layer_size))
-                parked = s;
+                parked = s, padding = 1;
     for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt) {
             rt_pages(s, -1);
@@ -2493,8 +2507,8 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         rt_pages(parked, 1);
         vk_rt_note_read(parked);
         /* named with more padding than it was parked with: it keeps the greater, as the one holding the address does */
-        if (parked->layer_size < layer_size) parked->layer_size = layer_size;
-        rt_take_pixels(parked, cur, cur_fresh);
+        rt_stride_keep(parked, layer_size);
+        if (!rt_take_pixels(parked, cur, cur_fresh) && padding) rt_stride_written(parked);
         return parked;
     }
     VkFmt f = depth ? vk_zt_format(fmt) : vk_rt_format(fmt);
