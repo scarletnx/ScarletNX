@@ -1168,6 +1168,29 @@ static void test_self_settings(void) {
     CHECK(nn_am_service_ISelfController_IsAutoSleepDisabled(NULL, &disabled) == 0 && disabled == 0);
 }
 
+/* ISelfController 19, SetAlbumImageOrientation, is declared: it answers success with nothing, and no "[undeclared]"
+   line (stub_ok here fails the test), for any u32, which it leaves as the game sent it. A request without one is
+   InvalidCmifRequest */
+static void test_album_image_orientation(void) {
+    static const u32 orientations[] = {0, 1, 2, 3, 0xFFFFFFFFu};
+    SvcObj* self = nn_am_service_ISelfController_new();
+    for (size_t i = 0; i < sizeof orientations / sizeof *orientations; i++) {
+        u8 raw[4];
+        IpcCtx c = {0};
+        snx_st_le32(raw, orientations[i]);
+        c.cmd = 19;
+        c.raw = raw;
+        c.raw_size = sizeof raw;
+        CHECK(self->dispatch(self, &c) == 0);
+        CHECK(c.out_size == 0 && c.nout_objs == 0 && c.nout_copy == 0 && c.nout_move == 0);
+        CHECK(snx_ld_le32(raw) == orientations[i]);
+    }
+    IpcCtx none = {0};
+    none.cmd = 19;
+    CHECK(self->dispatch(self, &none) == RC(11, 420));
+    svcobj_unref(self);
+}
+
 /* the values these AM commands answer, rather than the zeros an unimplemented command leaves */
 static void test_am_command_replies(void) {
     i32 hdcp = 0;
@@ -1250,6 +1273,7 @@ int main(void) {
     test_display_mode_changed();
     test_state_getter();
     test_self_settings();
+    test_album_image_orientation();
     CHECK(test_kobjs == 0);
     printf("am_service: %u checks passed\n", test_checks);
     return 0;
