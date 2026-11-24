@@ -42,6 +42,7 @@
 #include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/addr_gens.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/varying_geometry.h"
 #include "nx/gpu/vk/quad_indices.h"
@@ -1708,6 +1709,12 @@ void vk_render_stats_log(void) {
             k[VK_SLOT_QUERY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
             p[VK_POOL_TSC_CHANGED]);
     }
+    LOG("vulkan: texture memo checks a present: headers after an epoch %.1f kept by their generations, %.1f checked; "
+        "results added %.1f kept by the generations, %.1f checked\n",
+        (double)(n->gens[VK_GENS_HEADERS_KEPT] - w->gens[VK_GENS_HEADERS_KEPT]) / (double)presents,
+        (double)(n->gens[VK_GENS_HEADERS_CHECKED] - w->gens[VK_GENS_HEADERS_CHECKED]) / (double)presents,
+        (double)(n->gens[VK_GENS_RESULTS_KEPT] - w->gens[VK_GENS_RESULTS_KEPT]) / (double)presents,
+        (double)(n->gens[VK_GENS_RESULTS_CHECKED] - w->gens[VK_GENS_RESULTS_CHECKED]) / (double)presents);
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present, %.3f ms a "
         "present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents,
@@ -1748,6 +1755,12 @@ typedef struct {
     u64 t_gva; /* t's address when kept: its bucket of the surface table tells whether t is still there */
     u32 handle, surf_epoch, ww_epoch;
     u32 wseen; /* vk_ww_now() before the headers were read */
+    /* The generations by address (addr_gens.h) of what the memo read, when its last check passed: cgen of its headers
+       by guest address (the CPU's writes), pgen of its headers and its texture by GPU address (the results). Each
+       stands only with its _ok: 0 when the way is kept (its first check after that goes the full way), and where the
+       generations tell nothing */
+    u32 cgen, pgen;
+    u8 cgen_ok, pgen_ok;
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
@@ -1799,11 +1812,26 @@ static struct {
    epoch and the baseline brought up to now. In one game's street the epoch dropped 39% of the lookups */
 static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32 now) {
     if (m->ww_epoch == epoch) return 1;
+    const u8 *tic_host = gmem_host(tic_at, 32), *tsc_host = gmem_host(tsc_at, 32);
+    /* The headers' generations by guest address, read once their pages' scans are taken in for this epoch and before
+       the stamps and the headers are read: the sum of the last check that passed is no stamp on their pages since,
+       a write elsewhere in the pool or in memory included. Not the sum a way is kept with (cgen_ok): its first check
+       goes the full way */
+    u32 g_tic = 0, g_tsc = 0;
+    const int gens = vk_ww_take(tic_host, 32) == 0 && vk_ww_take(tsc_host, 32) == 0 && vk_ww_gen(tic_host, 32, &g_tic) &&
+                     vk_ww_gen(tsc_host, 32, &g_tsc);
+    if (gens && m->cgen_ok && g_tic + g_tsc == m->cgen) {
+        g_stats.n.gens[VK_GENS_HEADERS_KEPT]++;
+        m->ww_epoch = epoch;
+        m->wseen = now;
+        return 1;
+    }
+    g_stats.n.gens[VK_GENS_HEADERS_CHECKED]++;
     /* A written page holds 128 headers: the game writes a few of its pool's every frame, and in one battle that dropped
        about 340 lookups a frame whose own headers were as kept. Where the tracking saw a write, the headers' 64 bytes
        are compared with m's */
-    const int tic_written = vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0,
-              tsc_written = vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0;
+    const int tic_written = vk_written_since(tic_host, 32, m->wseen) != 0,
+              tsc_written = vk_written_since(tsc_host, 32, m->wseen) != 0;
     if (tic_written || tsc_written) {
         u32 tic[8], tsc[8];
         vk_gmem_words(tic_at, tic, 8);
@@ -1817,6 +1845,8 @@ static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32
     }
     m->ww_epoch = epoch;
     m->wseen = now;
+    m->cgen = g_tic + g_tsc;
+    m->cgen_ok = (u8)gens;
     return 1;
 }
 /* The results added since m was kept, when any was added anywhere: what m read is its two headers and its texture's
@@ -1826,10 +1856,26 @@ static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32
 static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
     if (m->adds == adds) return 1;
     const u64 size = vk_surf_guest_size(m->t);
+    /* The generations by GPU address of the headers and the texture, read before the pages the results cover: the sum
+       of the last check that found none pending there is no result added or taken away over them since, so still none
+       (a result added elsewhere moves only the count). Not with results past the tables (overflow, which pend_hit reads
+       as over every page), nor the sum a way is kept with (pgen_ok): its first check goes the full way */
+    u32 g_tic = 0, g_tsc = 0, g_tex = 0;
+    const int gens = !g_pend_any.overflow && addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
+                     addr_gens_read(ADDR_GENS_GPU, tsc_at, 32, &g_tsc) &&
+                     addr_gens_read(ADDR_GENS_GPU, m->t->gva, size, &g_tex);
+    if (gens && m->pgen_ok && g_tic + g_tsc + g_tex == m->pgen) {
+        g_stats.n.gens[VK_GENS_RESULTS_KEPT]++;
+        m->adds = adds;
+        return 1;
+    }
+    g_stats.n.gens[VK_GENS_RESULTS_CHECKED]++;
     if (pend_hit(&g_pend_any, tic_at, 32) || pend_hit(&g_pend_any, tsc_at, 32) ||
         pend_hit(&g_pend_any, m->t->gva, size))
         return 0;
     m->adds = adds;
+    m->pgen = g_tic + g_tsc + g_tex;
+    m->pgen_ok = (u8)gens;
     return 1;
 }
 /* a storage image other than m's texture itself pending over its memory. Asked of each texture of each draw while one
@@ -1995,6 +2041,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
         m->ww_epoch = epoch;
         m->wseen = now;
+        m->cgen_ok = m->pgen_ok = 0; /* the first check after goes the full way, and takes the generations */
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;

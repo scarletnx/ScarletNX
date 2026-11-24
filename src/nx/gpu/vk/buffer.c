@@ -29,6 +29,7 @@
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/addr_gens.h"
 
 typedef struct {
     u64 start, len, hash, shash;
@@ -1945,6 +1946,7 @@ void vk_ww_dirty_clear(u64 cpu, u64 len) {
 static void ww_mark(u8* p, u64 n) {
     u64 o = (u64)(p - g_mem);
     if (o >= AS_SIZE || !n) return;
+    u64 bumped = 0; /* the granules of the generations by address done (addr_gens.h), past the stamps */
     for (u64 pg = o >> 12, e = (o + n - 1) >> 12; pg <= e && pg < (AS_SIZE >> 12); pg++) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12);
         if (!g_wleaf[l]) {
@@ -1961,6 +1963,14 @@ static void ww_mark(u8* p, u64 n) {
         } else /* no table: the stamp below stands for the whole leaf */
             ww_dirty_set(l << (WW_LEAF_SHIFT - 12), (l + 1) << (WW_LEAF_SHIFT - 12));
         g_wleaf_max[l] = g_wclock;
+        /* after the stamp. Without a table the stamp stands for the whole leaf, and so does the bump */
+        const u64 at = g_wleaf[l] ? pg << 12 : l << WW_LEAF_SHIFT, len = g_wleaf[l] ? 0x1000 : 1ull << WW_LEAF_SHIFT;
+        if (at + len > bumped) {
+            const u64 from = at > bumped ? at : bumped, to = (at + len + (1ull << ADDR_GENS_SHIFT) - 1) &
+                                                             ~((1ull << ADDR_GENS_SHIFT) - 1);
+            addr_gens_bump(ADDR_GENS_CPU, from, to - from);
+            bumped = to;
+        }
     }
 }
 /* a range of guest memory [a, e) */
@@ -1976,6 +1986,7 @@ static void ww_mark_pages(u64 o, u64 e) {
         if (!g_wleaf[l] && pg == l * lp && end == lend) {
             g_wleaf_max[l] = g_wclock;
             ww_dirty_set(pg, end);
+            addr_gens_bump(ADDR_GENS_CPU, pg << 12, (end - pg) << 12); /* after the stamp, as ww_mark bumps */
         } else
             ww_mark(GP(pg << 12), (end - pg) << 12);
         pg = end;
@@ -2569,6 +2580,10 @@ int vk_ww_take(const u8* host, u64 len) {
     return ww_take(host, len);
 }
 u32 vk_ww_now(void) { return g_wclock; }
+int vk_ww_gen(const u8* host, u64 len, u32* gen) {
+    if (!host || host < g_mem) return 0;
+    return addr_gens_read(ADDR_GENS_CPU, (u64)(host - g_mem), len, gen);
+}
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;
     u32 e = atomic_load_explicit(&g_ww_epoch, memory_order_relaxed);
