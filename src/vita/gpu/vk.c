@@ -13,6 +13,9 @@
 static struct {
     VitaVk vk;
     bool up;
+    /* the device is chosen among those that import guest memory, then (copies) among all, which work on copies of it;
+       skipped: a GPU was passed over for it, which is taken before a CPU that imports */
+    bool copies, skipped;
     /* the presenter's copy of the framebuffer, which the window's rendering samples */
     VkImage frame;
     VkDeviceMemory frame_memory;
@@ -47,6 +50,13 @@ static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
     VkPhysicalDevice phys = c->phys;
     v->host_import = snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool cpu = c->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    if (!g.copies && (!v->host_import || (cpu && g.skipped))) {
+        if (!cpu) g.skipped = true;
+        return snx_vk_choice_refuse(c, v->host_import ? "is a CPU, after a GPU that can work on copies"
+                                                      : "has no VK_EXT_external_memory_host to import the guest's "
+                                                        "memory");
+    }
     if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
@@ -167,7 +177,13 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                                   .needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need)};
     snx_vk_device_settings(&request, settings);
     SnxVkDevice device;
-    if (!snx_vk_device_make(&request, &device, error, error_size)) {
+    g.copies = g.skipped = false;
+    bool device_made = snx_vk_device_make(&request, &device, error, error_size);
+    if (!device_made && device.passed_over) {
+        g.copies = true;
+        device_made = snx_vk_device_make(&request, &device, error, error_size);
+    }
+    if (!device_made) {
         /* a package whose driver lists no device at all: its name and this device's GPU, not the generic line. A device
            it lists and the renderer refuses has its reason in error already */
         char said[512];
