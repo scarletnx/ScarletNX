@@ -445,6 +445,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
         PASS_REGULAR_EXPRESSION "PASS headless Vulkan in place, publish_notraps"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # what the probe finds on this host as one without traps (vk_uma_watch_probe): whether write tracking can watch a
+    # host pointer's import, with the host's own tracking and with page protection
+    add_test(NAME vulkan_headless_notraps_watch COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watch_protection COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    set_tests_properties(vulkan_headless_notraps_watch vulkan_headless_notraps_watch_protection PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_ONLY=watch_probe"
+        PASS_REGULAR_EXPRESSION "watch probe: scanned"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the same where the host tracks no writes either: an import takes no page from write tracking there, and the
     # publish makes it
     add_test(NAME vulkan_headless_notraps_untracked COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=2)

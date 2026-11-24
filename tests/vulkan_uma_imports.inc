@@ -878,6 +878,67 @@ static int check_uma_publish_open(void) {
     return 0;
 }
 
+/* The probe's verdict (vk_uma_watch_verdict): write tracking can watch a host pointer's import only where the host
+   showed everything, each thing missing has a reason of its own, and the first one missing is the one said */
+static int check_uma_watch_verdict(void) {
+    const VkUmaWatch good = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 6}, none = {.ran = 1}, saved = *vk_uma_watch();
+    const char* why[sizeof good];
+    static_assert(sizeof good == 11, "a byte for each thing the probe looks at, and its count of looks");
+    CHECK(!vk_uma_watch_verdict(&good));
+    for (u32 k = 0; k < sizeof good; k++) {
+        VkUmaWatch w = good;
+        memcpy((u8*)&w + k, &(u8){0}, 1);
+        why[k] = vk_uma_watch_verdict(&w);
+        if (!why[k]) fprintf(stderr, "watch verdict: without its item %u the import is still taken as watched\n", k);
+        CHECK(why[k]);
+        for (u32 j = 0; j < k; j++) CHECK(strcmp(why[j], why[k]));
+    }
+    CHECK(vk_uma_watch_verdict(&none) == why[1]); /* the first thing missing */
+    vk_uma_watch_set(&good);
+    int on = vk_uma_watched();
+    VkUmaWatch last = good;
+    last.cpu_found2 = 0;
+    vk_uma_watch_set(&last);
+    int off = vk_uma_watched();
+    vk_uma_watch_set(&saved);
+    CHECK(on && !off && vk_uma_watched() == !vk_uma_watch_verdict(&saved));
+    printf("watch verdict: an import is watched only where the host showed it all, each thing missing has a reason\n");
+    return 0;
+}
+/* What the probe found on this host (vk_uma_watch_probe, at the renderer's start): it runs where its answer is used, a
+   host without traps that imports host pointers and tracks writes, and its verdict is the state the publish reads.
+   On lavapipe the import is the pointer itself and the copies are the CPU's own writes, so everything holds but the
+   two quiets after a copy: the GPU's writes read as the game's, and no import is watched */
+static int check_uma_watch_probe(void) {
+    const VkUmaWatch* w = vk_uma_watch();
+    vk_lock();
+    const int tracks = vk_ww_tracks();
+    vk_unlock();
+    if (getenv("SNX_TEST_UMA_WATCHED")) {
+        printf("skip: SNX_TEST_UMA_WATCHED set the host's answer\n");
+        return 0;
+    }
+    if (!vk_uma() || vk_uma_through_dmabuf() || own_traps() || !tracks) {
+        CHECK(!w->ran && !vk_uma_watched());
+        printf("skip: the probe runs on a host without traps that imports host pointers and tracks writes\n");
+        return 0;
+    }
+    const char* why = vk_uma_watch_verdict(w);
+    printf("watch probe: scanned %d, imported %d, import quiet %d, GPU copy landed %d, quiet %d, CPU write found %d, "
+           "second copy read it %d, quiet %d, CPU write found %d: %s%s\n",
+           w->scanned, w->imported, w->import_quiet, w->gpu_landed, w->gpu_quiet, w->cpu_found, w->gpu_reads,
+           w->gpu_quiet2, w->cpu_found2, why ? "not watched, " : "watched", why ? why : "");
+    CHECK(w->ran && vk_uma_watched() == !why);
+    if (g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE) {
+        const VkUmaWatch lavapipe = {1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 6};
+        CHECK(!memcmp(w, &lavapipe, sizeof lavapipe));
+    }
+    /* amdgpu takes a user pointer's pages again for each submission (uma.c): the import and the copies read as writes
+       where the kernel tracks them, and it refuses pages that page protection holds */
+    if (g_vk.driver_id == VK_DRIVER_ID_MESA_RADV) CHECK(why && (!w->imported || (!w->import_quiet && !w->gpu_quiet2)));
+    return 0;
+}
+
 /* A host without traps has nothing to own a publish with: the span over memory no import held fell through to
    own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. Where an import takes no
    page from write tracking (uma_publish_imports) the publish asks bind for it, which makes it, so the copy is recorded

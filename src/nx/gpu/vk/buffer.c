@@ -2574,6 +2574,23 @@ int vk_ww_take(const u8* host, u64 len) {
     return ww_take(host, len);
 }
 int vk_ww_tracks(void) { return ww_on() && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire); }
+/* vk_ww_scan_now's: whether its scan reported a page (under vk_lock, the pages' leaves claimed) */
+static int g_wscan_now;
+static void ww_note_now(u8* p, u64 n) {
+    (void)p;
+    g_wscan_now |= n != 0;
+}
+int vk_ww_scan_now(u64 cpu, u64 n) {
+    const u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + n + page - 1) & ~(page - 1);
+    if (!n || cpu >= AS_SIZE || n > AS_SIZE - cpu || hi > AS_SIZE || !vk_ww_tracks()) return -1;
+    for (u64 l = lo >> WW_LEAF_SHIFT; l <= (hi - 1) >> WW_LEAF_SHIFT; l++)
+        while (!ww_claim(l)) plat_yield();
+    g_wscan_now = 0;
+    const int r = plat_ww_scan(GP(lo), hi - lo, ww_note_now);
+    for (u64 l = lo >> WW_LEAF_SHIFT; l <= (hi - 1) >> WW_LEAF_SHIFT; l++)
+        atomic_store_explicit(&g_wleaf_busy[l], 0, memory_order_release);
+    return r < 0 ? -1 : g_wscan_now;
+}
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;

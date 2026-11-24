@@ -8558,6 +8558,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(!hidden);
     }
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    /* the host taken as one whose probe passed (vk_uma_watch_probe), which no driver here is: the checks of what a
+       publish does with a watched import run all the same */
+    if (getenv("SNX_TEST_UMA_WATCHED")) vk_uma_watch_set(&(VkUmaWatch){1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 6});
     CHECK(!check_vk12_way());
     if (pipeline_probe) {
         int result = probe_pipeline_compile(pipeline_probe, pipeline_probe_disable);
@@ -9043,6 +9046,8 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
         if (!strcmp(name, "publish_open") && ++ran) CHECK(!check_uma_publish_open());
+        if (!strcmp(name, "watch_verdict") && ++ran) CHECK(!check_uma_watch_verdict());
+        if (!strcmp(name, "watch_probe") && ++ran) CHECK(!check_uma_watch_probe());
         if (!strcmp(name, "publish_notraps") && ++ran) CHECK(!check_uma_publish_notraps());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
@@ -9098,6 +9103,8 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_publish());
         CHECK(!check_uma_nvdec());
         CHECK(!check_uma_publish_open());
+        CHECK(!check_uma_watch_verdict());
+        CHECK(!check_uma_watch_probe());
         CHECK(!check_uma_publish_notraps());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_dispatch_open());
@@ -9379,6 +9386,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_publish());
     CHECK(!check_uma_nvdec());
     CHECK(!check_uma_publish_open());
+    CHECK(!check_uma_watch_verdict());
+    CHECK(!check_uma_watch_probe());
     CHECK(!check_uma_publish_notraps());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_dispatch_open());

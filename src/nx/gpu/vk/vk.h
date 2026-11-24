@@ -528,6 +528,31 @@ int vk_uma_imports_dear(void);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 int vk_uma_storage_copied(void); /* read-only storage is copied as vertices are where imports are dear (uma.c) */
 int vk_uma_through_dmabuf(void);  /* guest memory reaches the GPU through dma-bufs (uma.c) */
+/* What the host showed of a host pointer's import over pages write tracking watches (vk_uma_watch_probe), each 1 as
+   an import the scans may go on watching needs it. Two tests: the CPU's writes on imported pages are still found
+   (scanned, imported, import_quiet, cpu_found, cpu_found2), and the GPU's are in guest memory and taken for none of
+   the CPU's (gpu_landed, gpu_quiet, gpu_reads, gpu_quiet2) */
+typedef struct {
+    u8 ran;          /* the probe ran: a host without traps that imports host pointers and tracks writes */
+    u8 scanned;      /* the scan answers for the probe's pages */
+    u8 imported;     /* the driver took pages a scan had just protected */
+    u8 import_quiet; /* and the import read as no write */
+    u8 gpu_landed;   /* a copy on the GPU into the import is in guest memory once its submission is done */
+    u8 gpu_quiet;    /* and read as no write of the CPU's */
+    u8 cpu_found;    /* the CPU's write after that submission is found */
+    u8 gpu_reads;    /* and a second submission's copy reads it */
+    u8 gpu_quiet2;   /* which read as no write either: the submission left the pages watched */
+    u8 cpu_found2;   /* the CPU's write after the second submission is found */
+    u8 looks;        /* the scans it asked for all that: six */
+} VkUmaWatch;
+/* NULL when w says write tracking can watch such an import, else the first thing that says it can't */
+const char* vk_uma_watch_verdict(const VkUmaWatch* w);
+/* the probe, once the renderer is up (renderer.c's vkr_start): its answer said in the log, whichever it is */
+void vk_uma_watch_probe(void);
+int vk_uma_watched(void); /* the probe ran and passed: a host pointer's import stays under the scans here */
+/* tests: what the probe found, and the host taken as one that showed w */
+const VkUmaWatch* vk_uma_watch(void);
+void vk_uma_watch_set(const VkUmaWatch* w);
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
@@ -2872,6 +2897,10 @@ void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
 /* whether write tracking watches guest memory here (vk_written_since can tell, where no import holds the pages): 0
    on a host that tracks no writes, with write_tracking=2 or once it failed. Under vk_lock */
 int vk_ww_tracks(void);
+/* The pages of guest memory [cpu, cpu + n) scanned now, whatever their leaves' epoch: 1 when the scan reports one
+   written since the scan before, 0 when none, -1 where write tracking can't tell. What it reports is dropped, so only
+   for pages no cache reads (uma.c's probe). Under vk_lock */
+int vk_ww_scan_now(u64 cpu, u64 n);
 /* a landing with no owner (a host without traps): n bytes of a GPU result written at guest cpu, which write tracking
    takes as the GPU's: what the CPU wrote on the pages before and since counts, the landing's own bytes don't. Under
    vk_lock */

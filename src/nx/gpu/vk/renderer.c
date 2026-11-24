@@ -251,6 +251,7 @@ static int vkr_start(void) {
         for (int i = 0; i < VK_FRAMES; i++)
             if (!VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired[i]))) return 0;
     g_renderer_up = 1; /* a renderer is active */
+    vk_uma_watch_probe();
     return 1;
 }
 
