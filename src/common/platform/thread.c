@@ -78,10 +78,10 @@ static int pm_slot_take(void) {
     unsigned n = atomic_fetch_add_explicit(&g_pm_nwait, 1, memory_order_relaxed);
     return n < PM_WAITS ? (int)n : PM_WAITS;
 }
-/* the calling thread ends: its slot is another's to take */
-static void pm_slot_end(void) {
-    int i = t_pm.slot;
-    t_pm.slot = -1;
+/* a thread ended: its slot i is another's to take. The slot is the key's value, as the thread-locals may be gone by now
+   (Darwin frees them first): t_pm is then a new one, and has none */
+static void pm_slot_end(int i) {
+    if (t_pm.slot == i) t_pm.slot = -1;
     if (i < 0 || i >= PM_WAITS) return;
     atomic_store_explicit(&g_pm_wait[i].m, NULL, memory_order_release);
     atomic_fetch_or_explicit(&g_pm_free[i / 64], (uint64_t)1 << (i % 64), memory_order_release);
@@ -93,7 +93,7 @@ static struct {
     DWORD key;
 } g_pm_key = {INIT_ONCE_STATIC_INIT, FLS_OUT_OF_INDEXES};
 static void WINAPI pm_key_end(void* p) {
-    if (p) pm_slot_end();
+    if (p) pm_slot_end((int)(intptr_t)p - 1);
 }
 static BOOL CALLBACK pm_key_make(PINIT_ONCE once, void* param, void** ctx) {
     (void)once;
@@ -109,7 +109,7 @@ static BOOL CALLBACK pm_key_make(PINIT_ONCE once, void* param, void** ctx) {
 }
 static void pm_slot_watch(void) {
     InitOnceExecuteOnce(&g_pm_key.once, pm_key_make, NULL, NULL);
-    if (g_pm_key.key != FLS_OUT_OF_INDEXES) (void)FlsSetValue(g_pm_key.key, &t_pm);
+    if (g_pm_key.key != FLS_OUT_OF_INDEXES) (void)FlsSetValue(g_pm_key.key, (void*)(intptr_t)(t_pm.slot + 1));
 }
 #else
 static struct {
@@ -117,10 +117,7 @@ static struct {
     pthread_key_t key;
     int error;
 } g_pm_key = {.once = PTHREAD_ONCE_INIT};
-static void pm_key_end(void* p) {
-    (void)p;
-    pm_slot_end();
-}
+static void pm_key_end(void* p) { pm_slot_end((int)(intptr_t)p - 1); }
 static void pm_key_make(void) {
     g_pm_key.error = pthread_key_create(&g_pm_key.key, pm_key_end);
     if (g_pm_key.error)
@@ -131,7 +128,7 @@ static void pm_key_make(void) {
 }
 static void pm_slot_watch(void) {
     pthread_once(&g_pm_key.once, pm_key_make);
-    if (!g_pm_key.error) (void)pthread_setspecific(g_pm_key.key, &t_pm);
+    if (!g_pm_key.error) (void)pthread_setspecific(g_pm_key.key, (void*)(intptr_t)(t_pm.slot + 1));
 }
 #endif
 void pm_wait_note(const void* m, const void* at, int cond) {
