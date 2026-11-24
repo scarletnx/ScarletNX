@@ -42,8 +42,9 @@
 #                         there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
-#     steps V V...        an int's values the menus offer, in order (ini.h's IniOpt steps): its words name each
-#                         (Auto|# MB), a value between two is still read, and the launcher keeps it, shown as itself
+#     steps V V...        an int's values the menus offer, in order (ini.h's IniOpt steps), a range as A..B/S: its words
+#                         name each (Auto|# MB), a value between two is still read, and the launcher keeps it, shown as
+#                         itself
 #     open                a text whose words are its common values, not every one (ini.h's INI_OPEN): the launcher
 #                         keeps a value none of them is, shown as itself
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
@@ -135,6 +136,8 @@ setting Save state slots
     key state_slots
     int 1 32
     default 10
+    words #
+    slider
     help The save state slots the menu's Save states page lists and F9 steps through. A state is the whole game at
     help one moment, kept in states/ in the game's folder. The game's own save files are never part of one
 setting Save state backup
@@ -411,6 +414,9 @@ setting Upscaler sharpness
     key upscaler_sharpness
     int 0 100
     default 75
+    words #%
+    step 5
+    slider
     help How sharp AMD FSR 1, NVIDIA NIS and Qualcomm SGSR draw the frame's edges: 0 the softest, 100 the sharpest
 setting Anti-aliasing
     key anti_aliasing
@@ -438,7 +444,9 @@ setting HDR paper white
     int 0 480
     default 0
     startup
+    words Reference|# nits
     step 10
+    steps 0..480/10
     help With Game HDR output: the light of white a game is told to draw its SDR parts at, which the menu and the
     help on-screen controls are drawn at too, in nits. 0 = BT.2408's reference white of 203 nits
 setting HDR peak
@@ -447,7 +455,9 @@ setting HDR peak
     int 400 4000
     default 1000
     startup
+    words # nits
     step 100
+    steps 400..4000/100
     help With Game HDR output: the brightest light a game is told the display shows, in nits, which it tone maps its
     help frames for: the display's own peak, 1000 for most TVs
 setting Vulkan Video decode
