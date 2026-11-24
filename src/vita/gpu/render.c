@@ -33,7 +33,6 @@
 #define PIPELINES 256u
 #define STAGING   (4u << 20)
 #define LINEAR    (16u << 20) /* a slot's room for textures' rows made linear on the GPU */
-#define WRITEBACKS 256u       /* the GPU's writes to copied guest memory waiting for their submission */
 #define MIRROR_STEP 4096u     /* the grain a copy is checked and brought up to date at */
 
 typedef struct {
@@ -41,15 +40,16 @@ typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;
     /* where the device cannot import host memory the buffer is a host visible copy of the range instead. mirror is
-       its mapping (NULL when the range is imported in place), host the range in guest memory, since and epoch the
-       watch generation and epoch the copy matches */
-    unsigned char *mirror, *host;
+       its mapping (NULL when the range is imported in place), since and epoch the watch generation and epoch the copy
+       matches */
+    unsigned char* mirror;
     uint64_t since, epoch;
 } Import;
-/* a range of a copy the GPU writes, stored to guest memory once the submission holding the write is done */
+/* rows bytes of a copy the GPU writes, stride apart, stored to guest memory once the submission holding the write is
+   done: the bytes between the rows are the game's, which may write them meanwhile */
 typedef struct {
-    const Import* import;
-    uint32_t address, size;
+    uint32_t import; /* imports' */
+    uint32_t address, row, stride, rows;
     uint64_t serial;
 } Writeback;
 typedef struct {
@@ -132,9 +132,10 @@ typedef struct {
 } Bound;
 struct VitaRender {
     VitaVk* vk;
+    unsigned char* mem; /* the guest's memory */
     Import imports[IMPORTS];
-    Writeback writeback[WRITEBACKS];
-    unsigned writebacks;
+    Writeback* writeback; /* the GPU's writes to copied guest memory waiting for their submission */
+    unsigned writebacks, writeback_room;
     Surface surfaces[SURFACES];
     Texture textures[TEXTURES];
     Pipeline pipelines[PIPELINES];
@@ -212,14 +213,19 @@ static void rendering_pause(VkCommandBuffer cb);
 static void rendering_resume(struct VitaRender* r, VkCommandBuffer cb);
 static bool color_copy(struct VitaRender* r, VkCommandBuffer cb, const Surface* s, const Import* m, VkDeviceSize at,
                        bool store);
+static void color_written(struct VitaRender* r, const Import* m, const Surface* s);
 static struct VitaRender* g_retiring; /* the renderer whose staging the device's retire frees */
 
 /* ---- guest memory as buffers ---- */
+static uint32_t import_index(const struct VitaRender* r, const Import* m) { return (uint32_t)(m - r->imports); }
+/* the bytes from a write's first to its last, the ones between its rows with them */
+static uint64_t writeback_span(const Writeback* w) { return (uint64_t)(w->rows - 1) * w->stride + w->row; }
 static bool mirror_pending(const struct VitaRender* r, const Import* m, uint32_t at, uint32_t size) {
+    uint32_t import = import_index(r, m);
     uint64_t begin = (uint64_t)m->address + at, end = begin + size;
     for (unsigned i = 0; i < r->writebacks; ++i) {
         const Writeback* w = &r->writeback[i];
-        if (w->import == m && w->address < end && (uint64_t)w->address + w->size > begin) return true;
+        if (w->import == import && w->address < end && w->address + writeback_span(w) > begin) return true;
     }
     return false;
 }
@@ -240,57 +246,65 @@ static void mirror_sync(struct VitaRender* r, Import* m) {
         if (!length) continue;
         /* protected before it is read, so a write after that faults and counts */
         vita_watch_protect(m->address + start, length);
-        memcpy(m->mirror + start, m->host + start, length);
+        memcpy(m->mirror + start, r->mem + m->address + start, length);
         length = 0;
     }
     m->since = now;
     m->epoch = vita_watch_active() ? now : UINT64_MAX;
 }
-/* the GPU wrote [address, address + size) of the copy. Its submission is the open recording's, which is the next one */
-static void mirror_written(struct VitaRender* r, const Import* m, uint32_t address, uint32_t size) {
-    if (!m || !m->mirror || !size) return;
+/* the GPU writes rows of row bytes of the copy, stride apart, from address on. Its submission is the open recording's,
+   which is the next one */
+static void mirror_written(struct VitaRender* r, const Import* m, uint32_t address, uint32_t row, uint32_t stride,
+                           uint32_t rows) {
+    if (!m || !m->mirror || !row || !rows) return;
+    if ((uint64_t)(address - m->address) + (uint64_t)(rows - 1) * stride + row > m->size) {
+        once_value(r, 24, address,
+                   "the GPU's write at 0x%08" PRIx32 " ends past its memory: it is not stored to guest memory",
+                   address);
+        return;
+    }
+    if (rows == 1 || stride == row) row *= rows, stride = row, rows = 1;
+    uint32_t import = import_index(r, m);
     uint64_t serial = r->vk->ring.submitted + 1;
     for (unsigned i = 0; i < r->writebacks; ++i) {
         Writeback* w = &r->writeback[i];
-        uint32_t end = w->address + w->size;
-        if (w->import != m || w->serial != serial || address > end || w->address > address + size) continue;
-        w->address = address < w->address ? address : w->address;
-        w->size = (address + size > end ? address + size : end) - w->address;
+        if (w->import != import || w->serial != serial) continue;
+        if (w->address == address && w->row == row && w->stride == stride && w->rows == rows) return;
+        uint64_t end = (uint64_t)address + row, w_end = (uint64_t)w->address + w->row;
+        if (rows != 1 || w->rows != 1 || address > w_end || w->address > end) continue;
+        w->address = address < w->address ? address : w->address; /* one range with the one it touches */
+        w->row = w->stride = (uint32_t)((end > w_end ? end : w_end) - w->address);
         return;
     }
-    if (r->writebacks == WRITEBACKS) vita_vk_wait(r->vk->ring.submitted);
-    if (r->writebacks == WRITEBACKS) {
-        /* every one belongs to the open recording, so the nearest of the same copy takes this too */
-        once(r, 23, "too many GPU writes to copied guest memory in one submission, they are stored in larger ranges");
-        for (unsigned i = 0; i < r->writebacks; ++i) {
-            Writeback* w = &r->writeback[i];
-            if (w->import != m) continue;
-            uint32_t end = w->address + w->size;
-            w->address = address < w->address ? address : w->address;
-            w->size = (address + size > end ? address + size : end) - w->address;
-            w->serial = serial > w->serial ? serial : w->serial;
+    if (r->writebacks == r->writeback_room) {
+        unsigned room = r->writeback_room ? r->writeback_room * 2 : 64;
+        Writeback* grown = realloc(r->writeback, room * sizeof *grown);
+        if (!grown) {
+            once_value(r, 23, address,
+                       "out of memory: the GPU's write at 0x%08" PRIx32 " is not stored to guest memory", address);
             return;
         }
-        return;
+        r->writeback = grown, r->writeback_room = room;
     }
-    r->writeback[r->writebacks++] = (Writeback){m, address, size, serial};
+    r->writeback[r->writebacks++] = (Writeback){import, address, row, stride, rows, serial};
 }
-/* the writes of submissions up to done (of one copy, or all) stored to guest memory */
-static void mirror_drain(struct VitaRender* r, uint64_t done, const Import* only) {
+/* the writes of submissions up to done (of one import's copy, or of all for IMPORTS) stored to guest memory */
+static void mirror_drain(struct VitaRender* r, uint64_t done, uint32_t only) {
     unsigned kept = 0;
     for (unsigned i = 0; i < r->writebacks; ++i) {
         Writeback w = r->writeback[i];
-        if (w.serial > done || (only && w.import != only)) {
+        if (w.serial > done || (only != IMPORTS && w.import != only)) {
             r->writeback[kept++] = w;
             continue;
         }
-        const unsigned char* from = w.import->mirror + (w.address - w.import->address);
-        if (!vita_watch_store(w.address, from, w.size))
-            memcpy(w.import->host + (w.address - w.import->address), from, w.size);
+        const Import* m = &r->imports[w.import];
+        const unsigned char* from = m->mirror + (w.address - m->address);
+        if (vita_watch_store(w.address, from, w.row, w.stride, w.rows)) continue;
+        for (size_t y = 0; y < w.rows; ++y) memcpy(r->mem + w.address + y * w.stride, from + y * w.stride, w.row);
     }
     r->writebacks = kept;
 }
-static bool mirror_range(struct VitaRender* r, VitaProcess* p, uint32_t address, uint32_t size, Import* out) {
+static bool mirror_range(struct VitaRender* r, uint32_t address, uint32_t size, Import* out) {
     VitaVk* v = r->vk;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size,
@@ -298,7 +312,7 @@ static bool mirror_range(struct VitaRender* r, VitaProcess* p, uint32_t address,
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    Import m = {.address = address, .size = size, .host = vita_ptr(p, address), .epoch = UINT64_MAX};
+    Import m = {.address = address, .size = size, .epoch = UINT64_MAX};
     if (vkCreateBuffer(v->device, &bi, NULL, &m.buffer) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(v->device, m.buffer, &req);
@@ -321,13 +335,13 @@ static bool mirror_range(struct VitaRender* r, VitaProcess* p, uint32_t address,
         return false;
     }
     m.mirror = map;
-    mirror_sync(r, &m);
     *out = m;
+    mirror_sync(r, out);
     return true;
 }
 static bool import_range(struct VitaRender* r, VitaProcess* p, uint32_t address, uint32_t size, Import* out) {
     VitaVk* v = r->vk;
-    if (!v->host_import) return mirror_range(r, p, address, size, out);
+    if (!v->host_import) return mirror_range(r, address, size, out);
     VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                                  .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -376,7 +390,7 @@ void vita_render_map(VitaProcess* p, uint32_t address, uint32_t size) {
         }
 }
 static void import_free(struct VitaRender* r, Import* m) {
-    mirror_drain(r, UINT64_MAX, m); /* the GPU is idle here */
+    mirror_drain(r, UINT64_MAX, import_index(r, m)); /* the GPU is idle here */
     vkDestroyBuffer(r->vk->device, m->buffer, NULL);
     vkFreeMemory(r->vk->device, m->memory, NULL);
     *m = (Import){0};
@@ -575,6 +589,7 @@ bool vita_render_init(VitaProcess* p) {
     struct VitaRender* r = calloc(1, sizeof *r);
     if (!r) return false;
     r->vk = v;
+    r->mem = p->mem;
     VkDescriptorSetLayoutBinding bindings[3 + USSE_TEXTURES];
     for (unsigned i = 0; i < 2; ++i)
         bindings[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
@@ -677,7 +692,7 @@ bool vita_render_init(VitaProcess* p) {
 }
 static void retire(unsigned slot, uint64_t serial) {
     if (!g_retiring) return;
-    mirror_drain(g_retiring, serial, NULL);
+    mirror_drain(g_retiring, serial, IMPORTS);
     g_retiring->staging[slot].used = 0, g_retiring->linear[slot].used = 0;
 }
 void vita_render_shader_free(VitaProcess* p, void* shader) {
@@ -740,6 +755,7 @@ void vita_render_free(VitaProcess* p) {
     }
     if (r->layout) vkDestroyPipelineLayout(d, r->layout, NULL);
     if (r->set_layout) vkDestroyDescriptorSetLayout(d, r->set_layout, NULL);
+    free(r->writeback);
     free(r);
     p->gxm->render = NULL;
 }
@@ -893,7 +909,7 @@ uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c) {
         r->color->synced = m && color_copy(r, cb, r->color, m, at, true);
         if (r->color->synced) {
             /* the store is the memory's newest write, which the textures on it and the other surfaces take */
-            mirror_written(r, m, r->color->address, color_bytes(c));
+            color_written(r, m, r->color);
             vita_watch_written(r->color->address, color_bytes(c));
             r->color->since = vita_watch_protect(r->color->address, color_bytes(c));
         }
@@ -920,9 +936,9 @@ uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c) {
                                        .imageExtent = {d->width * fx, d->height * fy, 1}};
             vkCmdCopyImageToBuffer(cb, sampled ? d->samples : d->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    dm->buffer, 1, &store);
-            uint32_t depth_bytes = (c->depth.control >> GXM_DEPTH_STRIDE_SHIFT) * 2 * d->height * fy;
-            mirror_written(r, dm, c->depth.depth, depth_bytes);
-            vita_watch_written(c->depth.depth, depth_bytes);
+            uint32_t depth_stride = (c->depth.control >> GXM_DEPTH_STRIDE_SHIFT) * 2;
+            mirror_written(r, dm, c->depth.depth, d->width * fx * 2, depth_stride, d->height * fy);
+            vita_watch_written(c->depth.depth, depth_stride * d->height * fy);
         }
         memory_barrier(cb);
         r->rendering = false;
@@ -1342,6 +1358,12 @@ static bool laid_out_copy(struct VitaRender* r, VkCommandBuffer cb, const Surfac
     r->linear[slot].used = used;
     return ok;
 }
+/* whether a color surface's memory is laid out by swizzle.comp: 32-bit pixels in tiles, or in Morton order on sides
+   that are powers of two */
+static bool color_laid_out(const Surface* s, unsigned bytes) {
+    bool pow2 = !(s->width & (s->width - 1)) && !(s->height & (s->height - 1));
+    return bytes == 4 && (s->type == GXM_COLOR_SURFACE_TILED || (s->type != GXM_COLOR_SURFACE_LINEAR && pow2));
+}
 /* A color surface's memory (at in m) into its image (in TRANSFER_DST), or the image (in TRANSFER_SRC) into its memory
    (store). A swizzled or tiled one is laid out on the GPU (laid_out_copy). A 24-bit surface goes through R8G8B8A8 rows in the slot's ring, made from its memory or made its memory by
    rgb24.comp, which keeps the bytes of the rows' padding. False when the ring has no room for them */
@@ -1354,8 +1376,7 @@ static bool color_copy(struct VitaRender* r, VkCommandBuffer cb, const Surface* 
        read from it (the image's barrier orders only the image's accesses for the validation layer) */
     if (store) memory_barrier(cb);
     if (s->type != GXM_COLOR_SURFACE_LINEAR) {
-        bool pow2 = !(s->width & (s->width - 1)) && !(s->height & (s->height - 1)); /* a swizzle's sides */
-        if (bytes == 4 && (s->type == GXM_COLOR_SURFACE_TILED || pow2)) return laid_out_copy(r, cb, s, m, at, store);
+        if (color_laid_out(s, bytes)) return laid_out_copy(r, cb, s, m, at, store);
         once_value(r, 22, ((uint64_t)s->type << 32) | bytes,
                    "a color surface of type 0x%08" PRIx32 " and %u-byte pixels is drawn as rows", s->type, bytes);
     }
@@ -1398,6 +1419,14 @@ static bool color_copy(struct VitaRender* r, VkCommandBuffer cb, const Surface* 
     }
     r->linear[slot].used = used;
     return ok;
+}
+/* a color surface's store (color_copy) recorded: its rows, or its whole memory where they are not rows */
+static void color_written(struct VitaRender* r, const Import* m, const Surface* s) {
+    VkFormat vk;
+    unsigned bytes;
+    if (!color_format(s->format, &vk, &bytes)) return;
+    uint32_t stride = s->stride * bytes;
+    mirror_written(r, m, s->address, color_laid_out(s, bytes) ? stride : s->width * bytes, stride, s->height);
 }
 /* A YUV420 texture (format base 0x90000000 P2, 0x91000000 P3; its swizzle YUV or YVU, CSC0 or CSC1) at offset in the
    imported buffer, its Y rows stride bytes and its chroma after them, made R8G8B8A8 rows on the GPU (yuv.comp) in the
@@ -1535,10 +1564,10 @@ static void color_write_back(struct VitaRender* r, VitaProcess* p, VkCommandBuff
                           : NULL;
     if (!m) return;
     barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, s->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    color_copy(r, cb, s, m, at, true);
+    bool stored = color_copy(r, cb, s, m, at, true);
     barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->layout);
     memory_barrier(cb);
-    mirror_written(r, m, s->address, s->stride * bytes * s->height);
+    if (stored) color_written(r, m, s);
     vita_watch_written(s->address, s->stride * bytes * s->height); /* the scene's later stores write it again */
 }
 bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, uint32_t bytes_per_pixel,
@@ -1617,7 +1646,7 @@ bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, 
         }
     }
     memory_barrier(cb);
-    mirror_written(r, dst, (uint32_t)dst_begin, (uint32_t)dst_span);
+    mirror_written(r, dst, (uint32_t)dst_begin, (uint32_t)row_bytes, (uint32_t)dst_stride, height);
     vita_watch_written((uint32_t)dst_begin, (uint32_t)dst_span);
     if (rendering) rendering_resume(r, cb);
     return true;
@@ -2138,7 +2167,7 @@ bool vita_render_picture(VitaProcess* p, uint32_t address, uint32_t pitch, uint3
                             pixel_type == 0x20, pixel_type == 0x20};
     if (r->rendering) rendering_pause(cb);
     bool ok = compute(r, cb, r->picture, r->staging[slot].buffer, from, m->buffer, at, total, &params, sizeof params, words);
-    mirror_written(r, m, address, total);
+    if (ok) mirror_written(r, m, address, total, total, 1);
     vita_watch_written(address, total);
     if (r->rendering) rendering_resume(r, cb);
     return ok;
