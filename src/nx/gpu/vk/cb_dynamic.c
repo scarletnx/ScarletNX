@@ -63,6 +63,13 @@ void vk_cb_dynamic_choose(const char* cache_dir) {
                       : g_vk.has_descriptor_buffers        ? "off: descriptor buffers hold the sets"
                       : g_vk.has_descriptor_heap_support   ? "off: descriptor heaps can hold the sets"
                                                            : NULL;
+#if defined(__ANDROID__)
+    /* Turnip keeps dynamic buffers in the descriptor set the runtime takes back for a fifth (gpu_driver_load.c's
+       turnip_sets), where they read as zeros: none on Android until that is checked on the phones (#2780) */
+    if (!off)
+        off = "off on Android, where vk_dynamic_cbufs=1 is not taken: Turnip keeps dynamic buffers in the descriptor "
+              "set the runtime takes back for a fifth (#2780)";
+#endif
     g_cb_dynamic.counting = !off;
     if (off) {
         LOG("vulkan: dynamic constant buffers %s, the device's limit %u\n", off, limit);

@@ -276,6 +276,28 @@ class ArchitectureTests(unittest.TestCase):
         pool = 'VkDescriptorPoolSize s = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3};\n'
         self.assertEqual(len(self.dynamic_errors({'src/nx/gpu/vk/a.c': pool})), 1)
 
+    def test_the_constant_buffers_chosen_off_on_android_pass(self):
+        android = (
+            '    const char* off = NULL;\n#if defined(__ANDROID__)\n    /* Turnip */\n    if (!off)\n'
+            '        off = "off on Android, where vk_dynamic_cbufs=1 is not taken";\n#endif\n'
+        )
+        chosen = {
+            'src/nx/gpu/vk/cb_dynamic.h': 'return d ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : t;\n',
+            'src/nx/gpu/vk/pipeline.c': 'sz[k] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3};\n',
+            'src/nx/gpu/vk/render.c': 'if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {\n}\n',
+        }
+        self.assertEqual(self.dynamic_errors({**chosen, 'src/nx/gpu/vk/cb_dynamic.c': android}), [])
+        # without the Android rule, the choice is dynamic on Turnip too
+        errors = self.dynamic_errors({**chosen, 'src/nx/gpu/vk/cb_dynamic.c': '    const char* off = NULL;\n'})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('vk_cb_dynamic_choose takes dynamic slots on Android', errors[0])
+        # a second use in one of those files is no part of the choice
+        extra = {**chosen, 'src/nx/gpu/vk/cb_dynamic.c': android}
+        extra['src/nx/gpu/vk/render.c'] += 'b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;\n'
+        errors = self.dynamic_errors(extra)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('src/nx/gpu/vk/render.c:3: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC', errors[0])
+
     def test_a_recorders_case_and_a_comment_pass(self):
         files = {
             'src/nx/gpu/vk/record.c': 'switch (t) {\n    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:\n'
