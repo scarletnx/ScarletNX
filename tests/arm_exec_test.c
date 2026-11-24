@@ -2,7 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* Shared AArch32 executor: runs A32 blocks and checks the DRY SVC surface
    zero-extends r0-r7 from 32-bit to 64-bit for the common HLE handler. */
+#include "common/cpu/arm/checked.h"
+#include "common/cpu/arm/codegen.h"
 #include "common/cpu/arm/exec.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -102,6 +105,117 @@ static int forget_test(void) {
         }
     }
     snx_arm_exec_free(exec);
+    return failures;
+}
+
+/* Each profile and memory mode the executor compiles for, by the host's own back end where it has one: a store, a load
+   of it back, a multiply that sets the flags and an SVC, in A32 and in Thumb, through what the mode reaches memory by
+   (the bus hook, the checked callback), with the ARM7TDMI's trace */
+typedef struct {
+    union {
+        SnxArmCPU cpu;
+        SnxArmCheckedCPU checked;
+    };
+    uint32_t trace[16], skipped[1];
+    uint32_t hook; /* the hook's word at 0x04000100 */
+    unsigned hooked, accessed;
+    unsigned char mem[0x3000];
+} ModeState;
+static uint32_t mode_io(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value) {
+    ModeState* s = (ModeState*)cpu;
+    if (address != 0x04000100u) return 0;
+    ++s->hooked;
+    if (size_write & 0x100) s->hook = value;
+    return size_write & 0x100 ? 0 : s->hook;
+}
+static uint32_t mode_access(void* context, uint32_t operation, uint32_t address, uint32_t size, void* bytes) {
+    ModeState* s = (ModeState*)context;
+    if (address > sizeof s->mem - size) return 1;
+    ++s->accessed;
+    if ((operation & 3) == SNX_ARM_ACCESS_WRITE)
+        memcpy(s->mem + address, bytes, size);
+    else
+        memcpy(bytes, s->mem + address, size);
+    return 0;
+}
+/* generated code has no type signature before its entry, which the function sanitizer's check would read (exec.c's) */
+[[clang::no_sanitize("function")]] static void run_mode(SnxArmBlock block, SnxArmCPU* cpu) { block(cpu); }
+static int modes_test(void) {
+    static const uint32_t arm[] = {0xE5810000, 0xE5912000, 0xE0130290, 0xEF000000}; /* str r0, [r1]; ldr r2, [r1];
+                                                                                       muls r3, r0, r2; svc #0 */
+    static const uint16_t thumb[] = {0x6008, 0x680A, 0x4342,
+                                     0xDF00}; /* str r0, [r1]; ldr r2, [r1]; muls r2, r0; svc #0 */
+    static const struct {
+        const char* name;
+        SnxArmProfile profile;
+        SnxArmMemoryMode memory;
+        int trace;
+    } modes[] = {
+        {"a57 flat", SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 0},
+        {"a9 flat", SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_FLAT, 0},
+        {"arm11 flat", SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_FLAT, 0},
+        {"arm946e", SNX_ARM_PROFILE_ARM946E, SNX_ARM_MEMORY_FLAT, 0},
+        {"arm7tdmi", SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 0},
+        {"arm7tdmi traced", SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1},
+        {"a57 hosted", SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_HOSTED, 0},
+        {"a9 hosted", SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0},
+        {"arm11 hosted", SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_HOSTED, 0},
+        {"a57 checked", SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_CHECKED, 0},
+        {"a9 checked", SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_CHECKED, 0},
+        {"arm11 checked", SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED, 0},
+    };
+    /* Thumb blocks are the x86-64 back end's alone */
+    int native = snx_native_arm_available(), native_thumb = native && !strcmp(snx_native_name(), "x86-64");
+    int failures = 0;
+    for (size_t m = 0; m < sizeof modes / sizeof *modes; ++m)
+        for (int t = 0; t < 2; ++t) {
+            int bus = modes[m].profile == SNX_ARM_PROFILE_ARM946E || modes[m].profile == SNX_ARM_PROFILE_ARM7TDMI;
+            int checked = modes[m].memory == SNX_ARM_MEMORY_CHECKED;
+            SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, modes[m].profile, modes[m].memory, 0, 0};
+            if (modes[m].trace)
+                options.trace = offsetof(ModeState, trace), options.skipped = offsetof(ModeState, skipped);
+            SnxArmExec* exec = snx_arm_exec_new(NULL, 0);
+            if (!exec) return failures + 1;
+            size_t consumed = 0, count = t ? sizeof thumb / sizeof *thumb : sizeof arm / sizeof *arm;
+            SnxArmBlock block = snx_arm_exec_compile_ex(exec, t ? (const void*)thumb : (const void*)arm, count, 0x1000,
+                                                        t, &options, &consumed);
+            const char* why = "";
+            size_t refused = snx_arm_exec_refused(exec, &why);
+            ModeState s = {0};
+            for (size_t i = 0; i < count; ++i) /* the code in guest memory, which a checked block fetches */
+                for (unsigned k = 0; k < (t ? 2u : 4u); ++k)
+                    s.mem[0x1000 + i * (t ? 2 : 4) + k] = (unsigned char)((t ? thumb[i] : arm[i]) >> 8 * k);
+            s.cpu.mem = s.mem;
+            s.cpu.mem_size = bus ? 1ull << 32 : sizeof s.mem; /* the hook's address is in range */
+            s.cpu.cpsr = t ? 0x30 : 0x10;
+            s.cpu.r[0] = 0x80000003u;
+            s.cpu.r[1] = bus ? 0x04000100u : 0x2000u;
+            s.cpu.r[15] = 0x1000;
+            if (bus) s.cpu.io = mode_io;
+            s.checked.abi = SNX_ARM_CHECKED_ABI;
+            s.checked.context = &s;
+            s.checked.access = mode_access;
+            if (block) run_mode(block, &s.cpu);
+            uint32_t product = t ? s.cpu.r[2] : s.cpu.r[3], end = 0x1000 + (uint32_t)count * (t ? 2 : 4);
+            uint32_t traced = modes[m].trace ? 0x04000100u : 0;
+            if (!block || consumed != count || s.cpu.exit != SNX_ARM_SVC || product != 0x80000003u * 0x80000003u ||
+                s.cpu.r[15] != end || s.hooked != (bus ? 2u : 0) || s.accessed != (checked ? 6u : 0) ||
+                s.trace[0] != traced || s.trace[1] != traced) {
+                fprintf(
+                    stderr,
+                    "FAIL: %s %s: %s, consumed %zu of %zu, exit %u, product %08x, R15 %08x, hooked %u, accessed %u, "
+                    "trace %08x %08x\n",
+                    modes[m].name, t ? "Thumb" : "A32", block ? "ran" : "not compiled", consumed, count, s.cpu.exit,
+                    product, s.cpu.r[15], s.hooked, s.accessed, s.trace[0], s.trace[1]);
+                ++failures;
+            }
+            if (refused != ((t ? native_thumb : native) ? 0u : 1u)) {
+                fprintf(stderr, "FAIL: %s %s: %zu blocks asked of LLVM: %s\n", modes[m].name, t ? "Thumb" : "A32",
+                        refused, why);
+                ++failures;
+            }
+            snx_arm_exec_free(exec);
+        }
     return failures;
 }
 
@@ -208,6 +322,7 @@ int main(void) {
         failures++;
     }
     failures += forget_test();
+    failures += modes_test();
     if (!failures) puts("A32 executor and DRY zero-extending SVC passed");
     return failures ? 1 : 0;
 }
