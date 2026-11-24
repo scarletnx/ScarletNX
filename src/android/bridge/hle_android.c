@@ -141,10 +141,9 @@ static void looper_put(Looper* l) {
     if (l->epoll >= 0) host_close(l->epoll);
     free(l);
 }
-void hle_android_thread_end(void) {
-    Looper* l = t_looper;
-    t_looper = NULL;
-    looper_put(l);
+static void looper_end(void* what) {
+    if (t_looper == what) t_looper = NULL;
+    looper_put(what);
 }
 static void looper_prepare(CPU* c, void* data) {
     (void)data;
@@ -153,7 +152,7 @@ static void looper_prepare(CPU* c, void* data) {
         if (t_looper) {
             t_looper->epoll = host_epoll_create(true);
             atomic_store_explicit(&t_looper->refs, 1, memory_order_relaxed);
-            bridge_thread_has_state();
+            bridge_thread_keep(looper_end, t_looper);
         }
     }
     X(0) = (uint64_t)(uintptr_t)t_looper;

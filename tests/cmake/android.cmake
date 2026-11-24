@@ -114,6 +114,20 @@ if(BUILD_TESTING)
         target_compile_options(snx-test-android-thread-end PRIVATE -Wall -Wextra -Werror -UNDEBUG)
         add_test(NAME android_thread_end COMMAND snx-test-android-thread-end)
         set_tests_properties(android_thread_end PROPERTIES TIMEOUT 60)
+        add_executable(snx-test-android-thread-state "${PROJECT_SOURCE_DIR}/tests/android_thread_state.c")
+        target_include_directories(snx-test-android-thread-state PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_include_directories(snx-test-android-thread-state SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                                   "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+        if(APPLE)
+            target_link_libraries(snx-test-android-thread-state PRIVATE snx_android_program snx_android_bridge)
+        else()
+            target_link_libraries(snx-test-android-thread-state PRIVATE
+                                  "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        endif()
+        set_target_properties(snx-test-android-thread-state PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-thread-state PRIVATE -UNDEBUG)
+        add_test(NAME android_thread_state COMMAND snx-test-android-thread-state)
+        set_tests_properties(android_thread_state PROPERTIES TIMEOUT 60)
         add_executable(snx-test-android-arm32-threads "${PROJECT_SOURCE_DIR}/tests/android_arm32_threads.c")
         target_include_directories(snx-test-android-arm32-threads PRIVATE "${PROJECT_SOURCE_DIR}/src")
         target_include_directories(snx-test-android-arm32-threads SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
@@ -250,6 +264,6 @@ if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
                       snx-test-android-linker-lock snx-test-android-linker-hash
                       snx-test-android-gles1-samplers snx-test-android-arsc-style
                       snx-test-android-arm32-jni-copy
-                      snx-test-android-thread-end snx-test-android-arm32-threads)
+                      snx-test-android-thread-end snx-test-android-thread-state snx-test-android-arm32-threads)
     snx_sanitizer_path()
 endif()
