@@ -184,7 +184,8 @@ def main():
         run(["-L", root, *jit, "--linux-host-page=12288"], {}, 2, refused)
         run(["-L", root, *jit, "--linux-host-page=0"], {}, 42)  # the host's, as no --host-page is
         run(["-L", root, *jit, "--linux-strace=2"], {}, 2, "linux_strace=2 is not a whole number from 0 to 1")
-        run(["-L", root, *jit, "--linux-jit-opt=9"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z")
+        run(["-L", root, *jit, "--linux-jit-opt=9"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 9")
+        run(["-L", root, *jit, "--jit-opt=12"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 12")
         run(["-L", root, *jit, "--linux-nosuch=1"], {}, 2, "unknown option --linux-nosuch=1")
         run(["-L", root, *jit, "--linux_strace=1"], {}, 42, "--linux_strace is the old spelling of --linux-strace")
         # the recompile's options every driver shares (common/utilities/cli.h): -O is the JIT's level, --jit-cache

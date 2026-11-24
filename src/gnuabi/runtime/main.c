@@ -374,16 +374,19 @@ int snx_gnuabi_main(int argc, char** argv) {
         }
     }
     process = calloc(1, sizeof *process);
-    if (!process) return 2;
     char error[1024] = {0};
-    if (gnu_jit_init(&process->jit, cache, error, sizeof error)) {
-        fprintf(stderr, "scarletnx-gnuabi: %s\n", error);
+    if (!process || gnu_jit_init(&process->jit, cache, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-gnuabi: %s\n", process ? error : "out of memory");
+        options_free(changes, change_count, sysroot);
+        free(cache);
         return 2;
     }
     process->jit.verbose = verbose;
     snx_recompiler_set_verbose(process->jit.recompiler, verbose);
     if (snx_recompiler_set_optimization(process->jit.recompiler, opt[0]) || opt[1]) {
-        fprintf(stderr, "scarletnx-gnuabi: --jit-opt takes 0, 1, 2, 3, s or z\n");
+        fprintf(stderr, "scarletnx-gnuabi: --jit-opt takes 0, 1, 2, 3, s or z, not %s\n", opt);
+        options_free(changes, change_count, sysroot);
+        free(cache);
         return 2;
     }
     char** env = isolated ? NULL : environment(changes, change_count);
