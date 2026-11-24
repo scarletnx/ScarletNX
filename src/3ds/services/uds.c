@@ -67,23 +67,15 @@ void snx_ctr_uds_settings(const char* data) {
     free(settings);
     free(config);
     char* users = snx_users_dir(data);
-    char why[256];
+    char why[512];
     if (users && !snx_users_choose(users, uid, uid[0] ? NULL : old, &was, why, sizeof why)) {
         const SnxUser* user = snx_users_selected();
         if (user) snprintf(g_uds.nickname, sizeof g_uds.nickname, "%.20s", user->nickname);
     }
-    char* online = users ? snx_path_join(users, "online.ini") : NULL;
-    text = online ? (char*)snx_read_file(online, &size) : NULL;
-    if (text) {
-        SnxIni ini;
-        char *key, *value;
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value))
-            if (!ini.section[0] && !strcmp(key, "room_password") && strlen(value) < sizeof g_uds.password)
-                snprintf(g_uds.password, sizeof g_uds.password, "%s", value);
+    if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, why, sizeof why)) {
+        snx_error("3ds uds: the Eden room's password: %s: this run joins with none", why);
+        g_uds.password[0] = 0;
     }
-    free(text);
-    free(online);
     free(users);
 }
 enum { MSG_BEACON = 1, MSG_JOIN, MSG_SYNC, MSG_DATA, MSG_LEAVE, MSG_CLOSE, MSG_PING, MSG_PONG };

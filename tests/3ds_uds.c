@@ -6,6 +6,7 @@
 #include "3ds/audio/dsp.h"
 #include "common/network/net_room.h"
 #include "common/utilities/common.h"
+#include "common/utilities/users.h"
 #include "common/network/net_internal.h"
 #include "fake_room.h"
 #include "snx_settings.h"
@@ -416,9 +417,9 @@ static void join_failures(void) {
 static char* data_folder(const char* password) {
     char *root = snx_temp_dir("."), *app = root ? snx_path_join(root, ".scarletnx") : NULL;
     char *users = app ? snx_path_join(app, "users") : NULL, *online = users ? snx_path_join(users, "online.ini") : NULL;
-    char line[300];
-    int n = snprintf(line, sizeof line, "room_password=%s\n", password);
-    assert(online && !snx_mkdirs(users) && (!*password || !snx_write_file(online, line, (size_t)n)));
+    char why[512];
+    assert(online && !snx_mkdirs(users) &&
+           (!*password || !snx_users_room_password_set(users, password, why, sizeof why)));
     snx_ctr_uds_settings(app);
     free(online);
     free(users);
@@ -429,6 +430,27 @@ static char g_said[2048]; /* snx_error's lines */
 static void said(const char* line) {
     size_t n = strlen(g_said);
     snprintf(g_said + n, sizeof g_said - n, "%s\n", line);
+}
+/* online.ini as other users may read it: said with how to put it right, and the run joins with no password */
+static void password_others_read(void) {
+#ifndef _WIN32
+    char *root = data_folder("s3cret"), *app = snx_path_join(root, ".scarletnx");
+    char *users = snx_path_join(app, "users"), *online = snx_path_join(users, "online.ini");
+    assert(!chmod(online, 0644));
+    g_said[0] = 0;
+    snx_error_sink(said);
+    snx_ctr_uds_settings(app);
+    snx_error_sink(NULL);
+    assert(strstr(g_said, "3ds uds: the Eden room's password: ") && strstr(g_said, "chmod 600 it") &&
+           strstr(g_said, ": this run joins with none"));
+    assert(!strstr(g_said, "s3cret"));
+    g_said[0] = 0;
+    assert(!snx_remove_tree(root));
+    free(online);
+    free(users);
+    free(app);
+    free(root);
+#endif
 }
 /* The variables an older version read for the room, its password and the nickname (docs/user/deprecations.md): still read
    over the settings, each said once a run with what the run takes */
@@ -733,6 +755,7 @@ int main(int argc, char** argv) {
     if (room) {
         fake_room_stop(room);
         join_failures();
+        password_others_read();
         old_variables();
     }
     assert(!snx_remove_tree(data));
