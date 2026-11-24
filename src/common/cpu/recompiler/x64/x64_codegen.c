@@ -44,7 +44,9 @@
 
 /* a word the emitters can't make (bits.h's sg_fail) takes the function back to LLVM */
 static _Thread_local jmp_buf* g_fail;
+static _Thread_local const char* g_why; /* what it was */
 #define SG_FAIL_JUMP g_fail
+#define SG_FAIL_NOTE(what, a, b) (g_why = (what), (void)(a), (void)(b))
 #define SGX_FN 1
 
 typedef struct SgXAsm SgXAsm;

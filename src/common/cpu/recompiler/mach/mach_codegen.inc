@@ -1062,9 +1062,9 @@ static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     return 1;
 }
 
-/* u->f can't be made, for its instruction u->at (its count: for no instruction's): said, once a function, with what it
-   becomes */
-static void no_code(Unit* u) {
+/* u->f can't be made, for its instruction u->at (its count: for no instruction's), or for what failed there (why, else
+   NULL): said, once a function, with what it becomes */
+static void no_code(Unit* u, const char* why) {
     const SnxFunction* f = u->f;
     const char* becomes =
         u->options->alone ? "it raises an undefined instruction where it runs" : "LLVM makes the function";
@@ -1080,6 +1080,12 @@ static void no_code(Unit* u) {
     address = snx_function_address(f, u->at);
     (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
     snx_a64_decode_word(word, u->codegen->features, &insn);
+    if (why) {
+        snx_error("native back end: the function at 0x%llx: %s, at or before %s (%08x) at 0x%llx: %s",
+                  (unsigned long long)f->start, why, snx_a64_op_text(insn.op), (unsigned)word,
+                  (unsigned long long)address, becomes);
+        return;
+    }
     SnxU64 past = insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE;
     snx_error("native back end: the function at 0x%llx: %s (%08x) at 0x%llx %s%s, which it has no code for (the "
               "guest's target is %s): %s",
@@ -1803,6 +1809,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->a.slots_max = 0;
     u->nstubs = 0;
     g_fail = &jb;
+    g_why = NULL;
     if (setjmp(jb)) {
         ok = 0;
         goto out;
@@ -2172,13 +2179,19 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             continue;
         }
         if (!made[i - first]) {
-            if (!u.nnone) no_code(&u);
+            if (!u.nnone) no_code(&u, g_why);
             if (options->alone && u.at < codegen->functions[i].count) {
-                /* made again, that instruction undefined */
-                u.none = (SnxU64*)grow(u.none, &u.cap_none, u.nnone + 1, sizeof *u.none);
-                u.none[u.nnone++] = snx_function_address(&codegen->functions[i], u.at);
-                --i;
-                continue;
+                SnxU64 address = snx_function_address(&codegen->functions[i], u.at);
+                if (!u.nnone || u.none[u.nnone - 1] != address) {
+                    /* made again, that instruction undefined */
+                    u.none = (SnxU64*)grow(u.none, &u.cap_none, u.nnone + 1, sizeof *u.none);
+                    u.none[u.nnone++] = address;
+                    --i;
+                    continue;
+                }
+                /* it was already: what fails there is no instruction's */
+                snx_error("native back end: the function at 0x%llx is not made",
+                          (unsigned long long)codegen->functions[i].start);
             }
         }
         u.nnone = 0;
