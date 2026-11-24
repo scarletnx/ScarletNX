@@ -9,6 +9,7 @@
 * [The work](#the-work)
   * [What the items are worth after item 8, on the desktop](#what-the-items-are-worth-after-item-8-on-the-desktop)
 * [The course load](#the-course-load)
+* [A target refused whole for a write over part of it](#a-target-refused-whole-for-a-write-over-part-of-it)
 * [Memory on the GPU](#memory-on-the-gpu)
 * [Out of scope](#out-of-scope)
 
@@ -229,6 +230,22 @@ have no key, because their pages are GPU-owned (`astc_content`). A key from the 
 the persistent cache serve the next load of the same course. `vk_tex_dma_rows` could also take copies into any layer
 and level of a texture that needs no conversion, which would leave out the owner and the piece load for the third
 array. Neither changes the frame rate, only the time to load.
+
+## A target refused whole for a write over part of it
+
+In the race of an Ounce game, textures load about 15 MB of pieces in each present, and no DMA copy causes them. Most
+are the 3072x3072 D16 shadow array of 3 layers. Its first 128 KB are shared with a storage image that a compute
+program writes after the shadow draw. The write makes the layer-0 target stale as a whole (`vk_rt_drawn_fresh_in`
+asks one generation, `draw_gw`, over the target's span), so the texture loads 15 MB of that layer from memory. That
+in turn needs the target published there first.
+
+A take of the target with those pages loaded from memory over it was tried, and it was slower (64 fps against 82). To
+load the pages, the runtime publishes the target, and the publish stamps the whole span as written after the draw.
+So the next lookup found the whole layer stale, and took and loaded it again, about 350 times a present. Keeping a
+target fresh past its own publish does not help here, because the compute write made it stale before the publish.
+
+The fix needs the freshness of a target by range: which runs of its memory changed since its draw, and which of
+those its own publish wrote. Then a take can copy the target and load only the runs that something else wrote.
 
 ## Memory on the GPU
 
