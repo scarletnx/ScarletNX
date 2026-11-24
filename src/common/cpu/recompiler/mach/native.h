@@ -6,6 +6,7 @@
 #define SNX_RECOMPILER_NATIVE_H
 #include "common/cpu/recompiler/codegen.h"
 #include <stddef.h>
+#include <stdint.h>
 typedef struct {
     /* a JIT unit: every function a local symbol, and table_name an array of their addresses in codegen's order, its
        one global (jit_service.c's emit_unit); else the AOT module's F_<address>, global and hidden */
@@ -41,4 +42,21 @@ int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxN
 int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
                              unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
                              size_t error_size);
+
+/* the host's back end's AArch32 blocks (x64/x64_arm.h's or arm64/arm64_arm.h's, whose functions these are): a compiler
+   of its own for one thread, NULL where the host has none or out of memory */
+typedef struct SnxNativeArm SnxNativeArm;
+typedef size_t (*SnxNativeArmNext)(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]);
+int snx_native_arm_available(void);
+SnxNativeArm* snx_native_arm_new(void);
+void snx_native_arm_free(SnxNativeArm* c);
+int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                         size_t* consumed, SnxNativeArmNext next, void* user);
+/* the Thumb block at pc, where the host's back end makes them (x86-64's); refused elsewhere */
+int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                           size_t* consumed, SnxNativeArmNext next, void* user);
+const char* snx_native_arm_why(const SnxNativeArm* c);
+int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks);
+int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from);
+int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
 #endif
