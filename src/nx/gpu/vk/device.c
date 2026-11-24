@@ -157,15 +157,20 @@ void vk_share_fn_times(u32 fn, u64* takes, u64* wait) {
     g_share_fn_read[fn][1] = now[1];
 }
 void vk_share_lock(void) {
-    if (t_share_depth++) return;
+    if (t_share_depth++) { /* held already: a call inside a group isn't a take of its own */
+        t_share_fn = SHARE_FNS;
+        return;
+    }
     if (!atomic_load_explicit(&g_vk_share_on, memory_order_acquire)) return;
-    const u64 t0 = __builtin_readcyclecounter();
+    /* the times only where draw_timing is on: two clock reads at each take were a cost of their own */
+    const int timed = g_settings.draw_timing;
+    const u64 t0 = timed ? __builtin_readcyclecounter() : 0;
     int waited = 0;
     while (atomic_exchange_explicit(&g_share_taken, 1, memory_order_acquire)) {
         waited = 1;
         while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) __builtin_ia32_pause();
     }
-    t_share_at = __builtin_readcyclecounter();
+    t_share_at = timed ? __builtin_readcyclecounter() : 0;
     typeof(g_share_stats[0])* const st = &g_share_stats[vk_render_slot() != 0];
     if (t_share_fn < SHARE_FNS) {
         share_add(&st->fn[t_share_fn][0], 1);
@@ -181,7 +186,8 @@ void vk_share_unlock(void) {
     if (--t_share_depth) return;
     if (!t_share_held) return;
     t_share_held = 0;
-    share_add(&g_share_stats[vk_render_slot() != 0].c[SH_HOLD], __builtin_readcyclecounter() - t_share_at);
+    if (t_share_at)
+        share_add(&g_share_stats[vk_render_slot() != 0].c[SH_HOLD], __builtin_readcyclecounter() - t_share_at);
     atomic_store_explicit(&g_share_taken, 0, memory_order_release);
 }
 void vk_share_times(u32 side, u64* takes, u64* waited, u64* wait, u64* hold) {

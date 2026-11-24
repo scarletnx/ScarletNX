@@ -175,15 +175,17 @@ u64 gpu_draw_marks_take(u64 sums[DM_N]) {
 const void* gpu_ds_running(void) { return g_ds_running; }
 /* the renderer's side: the record into its copy, then the renderer's call */
 static void ds_run(const void* arg, u64 bytes) {
-    memset(g_draw_marks, 0, sizeof g_draw_marks);
-    g_draw_marks[DM_START] = __builtin_readcyclecounter();
+    if (g_settings.draw_timing) {
+        memset(g_draw_marks, 0, sizeof g_draw_marks);
+        g_draw_marks[DM_START] = __builtin_readcyclecounter();
+    }
     DsRecord r;
     memcpy(&r, arg, sizeof r);
     DsState* c = &g_ds_copy[r.slot].copy;
     DrawOwner* own = &g_ds_copy[r.slot].own;
     if (r.fresh) *own = (DrawOwner){0};
     const u8* p = ds_apply(c, &r, (const u8*)arg + sizeof r);
-    g_draw_marks[DM_APPLIED] = __builtin_readcyclecounter();
+    if (g_settings.draw_timing) g_draw_marks[DM_APPLIED] = __builtin_readcyclecounter();
     /* a render enable of the 3D engine is decided on this side (maxwell/engines.c): its draws and clears are skipped
        while it turns them off, and they take its predicate */
     u32 pred = r.pred;
@@ -211,10 +213,10 @@ static void ds_run(const void* arg, u64 bytes) {
             /* the words after the groups: their offset is a multiple of 4, which a u32 needs */
             if (dc.indexed == 3) dc.inline_indices = r.indices ? (const u32*)(const void*)p : NULL;
             g_ds_running = arg;
-            g_draw_marks[DM_CALL] = __builtin_readcyclecounter();
+            g_draw_marks[DM_CALL] = DRAW_MARK();
             g_renderer->draw(c, &dc, own);
             g_ds_running = NULL;
-            {
+            if (g_settings.draw_timing) {
                 const u64 end = __builtin_readcyclecounter();
                 int all = 1;
                 for (int k = 0; k < DM_N; k++) all &= g_draw_marks[k] != 0;
