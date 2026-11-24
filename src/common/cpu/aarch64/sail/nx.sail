@@ -300,6 +300,20 @@ function CheckFPAdvSIMDEnabled64 () = ()
 val IsMerging : bits(64) -> bool
 function IsMerging fpcr = false
 
+// FPSR as the CPU keeps it (cpu.h's CPU.fpsr): the back end sets its cumulative flags, QC among them
+register FPSR : bits(64)
+
+// A rounded shift right by one more than the rounding's place, the same number: (v + 2^(n - 1)) >> n, a floor, is
+// ((v >> (n - 1)) + 1) >> 1, whose sum needs one bit more than v however far the shift goes
+val RShr : forall ('round : Bool) 'shift 'value_name. (int('value_name), int('shift), bool('round)) -> int
+function RShr (value_name, shift, round) = {
+    if round then {
+        return(((value_name >> (shift - 1)) + 1) >> 1)
+    } else {
+        return((value_name >> shift))
+    }
+}
+
 // The A64 instructions run in AArch64 alone: a 32-bit game's code goes through the A32 recompiler
 val UsingAArch32 : unit -> bool
 function UsingAArch32 () = false

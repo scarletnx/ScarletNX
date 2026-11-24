@@ -100,6 +100,15 @@ in a loop from 1, or leaves the loop with an element's value rather than the vec
 as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
 emitter's (`sailgen_lanes` holds each outcome).
 
+On a back end without lanes (a machine's, below) every element loop is the loop it is, and so are the shapes that only
+run element by element: an integer of the guest's shifted by an amount it or the recompiler knows, negated, made its
+magnitude, or the smaller or larger of two, bits plus such an integer, `BitCount` of bits of the guest's, an element
+whose number only the guest knows (TBL's), and the two names of `(y @ x) = v` set at once. A function that calls itself
+on each half of its bits and joins them otherwise than by `+` (the floating-point reductions) is the C loop that joins
+each two elements next to each other until one is left, as its calls would. A bit field of a register of bits set
+(`FPSR[QC] = 0b1`) is the back end's `sg_REG_field_write(g, path, SG_REG_FIELD, value)`, under the run-time condition
+the code is under.
+
 ## The back end (`bits.h`, `core.h`, then `llvm.h` or `llvm_arm.h`)
 
 `llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared
@@ -135,7 +144,8 @@ call under one of a function that takes none stops sailgen), then the call's arg
 (bits as the back end's maps whatever their time, the rest as they come). Its result is its `val`'s: none, bits or a
 bool (nx.sail's guest memory: `GuestMemRead`, the exclusives', the atomics'), an enum known when it recompiles
 (`FPRoundingMode`'s is the back end's own "the mode FPCR holds when the guest runs") or a tuple of bits, its parts
-through pointers after the arguments. `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait hint, `Hint_WFE`
+through pointers after the arguments (bits, or a bool). `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait
+hint, `Hint_WFE`
 the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
 (`ClearExclusiveLocal`), each with why, and those that do nothing here (`Hint_WFI`, `SynchronizeErrors`, `Hint_DGH`).
@@ -519,6 +529,14 @@ run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: e
 UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+
+**Integers** known only when the guest runs (`SgI`: `UInt`, `SInt` and what comes of them) are 64-bit values, what their
+low bits' readers want; what needs more (a saturation of a sum of two 64-bit elements, a shift right) reads the exact
+integer beside (`SgXInt`): the operation it is of others, with how many bits hold it, and its doublewords in two's
+complement each made where something reads it, the carry, the borrow and the high half of a product among them. What no
+word asks of them is refused: `UInt` and `SInt` of more than 64 bits, the bits past the 64th, a comparison past 64 bits,
+a sum past 128, a product of other than two signed doublewords, a shift right by the guest's amount of more than one
+doubleword. `SatQ` is one comparison and a choice where the integer fits 64 bits.
 
 ### The arm64 back end (`arm64.h`, `arm64_asm.h`, `arm64_a64.h`)
 
