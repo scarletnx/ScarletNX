@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 the arm64
-   back end's (arm64/arm64_arm.c, run under Unicorn: snx-test-arm-arm64, without the hot paths' witnesses, the chain
-   and Thumb), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit
-   program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in one case (VRSHL's witness,
-   below): the same words consumed, and the same results from the same random states.
+/* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 or
+   SNX_TEST_RV64 the arm64 or riscv64 back end's (run under Unicorn: snx-test-arm-arm64, -rv64, without the hot paths'
+   witnesses, the chain and Thumb), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
+   module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in
+   one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]...
          [--halves HEX[,HEX]...] [--dump]
    Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
@@ -28,11 +28,21 @@
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #if defined(SNX_TEST_ARM64)
+#define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
 #include "support/host_unicorn.h"
 typedef SnxArm64Arm Back;
 #define back_(name) snx_arm64_arm_##name
 #define BACK_NAME   "arm64"
+#define BACK_UC     HOSTUC_ARM64
+#elif defined(SNX_TEST_RV64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/rv64/rv64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxRv64Arm Back;
+#define back_(name) snx_rv64_arm_##name
+#define BACK_NAME   "riscv64"
+#define BACK_UC     HOSTUC_RV64
 #else
 #include "common/cpu/recompiler/x64/x64_arm.h"
 typedef SnxX64Arm Back;
@@ -487,8 +497,8 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
     return rc;
 }
 
-#if defined(SNX_TEST_ARM64)
-/* the arm64 object loaded into Unicorn, the helpers its blocks call its traps: each block's function in addr */
+#if defined(SNX_TEST_NATIVE)
+/* the native object loaded into Unicorn, the helpers its blocks call its traps: each block's function in addr */
 static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* blocks, size_t count, SnxU64* addr) {
     char error[512] = "";
     if (!hostuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
@@ -496,7 +506,7 @@ static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* 
         !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
         !hostuc_native(uc, "snx_arm_crypto", (void*)snx_arm_crypto) ||
         hostuc_load(uc, object, size, error, sizeof error)) {
-        fprintf(stderr, "FAIL: the arm64 object: %s\n", error);
+        fprintf(stderr, "FAIL: the " BACK_NAME " object: %s\n", error);
         return 1;
     }
     for (size_t i = 0; i < count; ++i) {
@@ -504,7 +514,7 @@ static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* 
         if (!blocks[i].made) continue;
         snprintf(name, sizeof name, "B_%zu", i);
         if (!(addr[i] = hostuc_symbol(uc, name))) {
-            fprintf(stderr, "FAIL: the arm64 object has no %s\n", name);
+            fprintf(stderr, "FAIL: the " BACK_NAME " object has no %s\n", name);
             return 1;
         }
     }
@@ -527,9 +537,9 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     size_t lsize = 0, xsize = 0, made = 0;
     SnxU64 *laddr = calloc(count + 1, sizeof *laddr), *xaddr = calloc(count + 1, sizeof *xaddr);
     char error[512], text[100];
-#if defined(SNX_TEST_ARM64)
-    /* the arm64 code's world: the states in memory Unicorn maps at their own addresses */
-    HostUc* uc = hostuc_new(HOSTUC_ARM64, 16u << 20);
+#if defined(SNX_TEST_NATIVE)
+    /* the native code's world: the states in memory Unicorn maps at their own addresses */
+    HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
     RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
 #else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
@@ -538,7 +548,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     if (!laddr || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
         free(laddr), free(xaddr);
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
         if (uc) hostuc_free(uc);
 #else
         free(s);
@@ -563,7 +573,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
             break;
         }
         b->consumed = lc;
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
         b->made = back_(block)(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL);
 #else
         b->made = b->thumb ? snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xc, NULL, NULL)
@@ -616,7 +626,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
         ++g_test.failures;
         rc = -1;
     }
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
     if (!rc && (load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
                 (made && load_uc(uc, xobj, xsize, blocks, count, xaddr)))) {
 #else
@@ -637,7 +647,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 g_test.seed = seed;
                 start(&s[side], k);
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
                 if (side) {
                     if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
                     continue;
@@ -673,7 +683,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
             }
         }
     }
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
     hostuc_free(uc);
 #else
     free(s);
@@ -688,7 +698,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     return rc;
 }
 
-#if !defined(SNX_TEST_ARM64)
+#if !defined(SNX_TEST_NATIVE)
 /* ---- the VFP's hot paths, witnessed: each word with its operands and FPSCR, and how many times its x86-64 block calls
    snx_arm_fp_x64 (0: the hot path made the result), its results LLVM's ---- */
 
@@ -1121,7 +1131,7 @@ int main(int argc, char** argv) {
     SnxIr* ir = NULL;
     g_test.states = 16;
     g_test.blocks = 6000;
-#if !defined(SNX_TEST_ARM64)
+#if !defined(SNX_TEST_NATIVE)
     g_test.thumb = 4000;
 #endif
     g_test.features = ~0u;
@@ -1168,17 +1178,18 @@ int main(int argc, char** argv) {
                            argv[i]),
                    2;
     }
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
     {
-        HostUc* probe = hostuc_new(HOSTUC_ARM64, 1u << 16);
+        HostUc* probe = hostuc_new(BACK_UC, 1u << 16);
         if (!probe) {
-            printf("SKIP: no Unicorn AArch64\n");
+            printf("SKIP: no Unicorn " BACK_NAME "\n");
             return 77;
         }
         hostuc_free(probe);
     }
     if (g_test.thumb || g_test.nhalves)
-        return fprintf(stderr, "FAIL: --thumb %u, --halves of %zu: the arm64 back end makes no Thumb blocks yet\n",
+        return fprintf(stderr,
+                       "FAIL: --thumb %u, --halves of %zu: the " BACK_NAME " back end makes no Thumb blocks yet\n",
                        g_test.thumb, g_test.nhalves),
                2;
 #else
@@ -1197,7 +1208,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FAIL: out of memory for the " BACK_NAME " back end's compiler or the blocks\n");
         return 1;
     }
-#if defined(SNX_TEST_ARM64)
+#if defined(SNX_TEST_NATIVE)
     back_(limit)(x64, g_test.pool, ~0u);
     size_t done = 0;
 #else
