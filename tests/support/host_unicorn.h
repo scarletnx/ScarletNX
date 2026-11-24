@@ -52,6 +52,9 @@ uint64_t hostuc_code(HostUc* u, const void* bytes, size_t size);
 void hostuc_changed(HostUc* u, const void* p, size_t size);
 /* an ELF relocatable object of the architecture loaded into the region: 0, -1 with why in error */
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
+/* name defined at address for the objects loaded after (data of the test's an object names), as their own symbols
+   are; 0, -1 out of memory */
+int hostuc_define(HostUc* u, const char* name, uint64_t address);
 /* the loaded objects' symbol's address, 0 for none */
 uint64_t hostuc_symbol(HostUc* u, const char* name);
 /* 1 for a big-endian architecture */
