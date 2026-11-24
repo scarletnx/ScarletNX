@@ -22,6 +22,7 @@
 #include "common/runtime/interface.h"
 #include "common/utilities/bits.h"
 #include <setjmp.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
 #include <elf.h>
@@ -2186,12 +2187,19 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
 }
 
 static unsigned host_features(void);
+/* the host's features the back end goes without (snx_x64_without) */
+static struct {
+    _Atomic unsigned without;
+} g_x64_codegen;
 /* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT */
 #define X64_BASELINE (SGX_F_SSE3 | SGX_F_SSSE3 | SGX_F_SSE41 | SGX_F_SSE42 | SGX_F_PCLMUL | SGX_F_POPCNT)
 int snx_x64_available(void) {
     return (host_features() & X64_BASELINE) == X64_BASELINE;
 }
 unsigned snx_x64_features(void) { return host_features(); }
+void snx_x64_without(unsigned features) {
+    atomic_store_explicit(&g_x64_codegen.without, features & ~(unsigned)X64_BASELINE, memory_order_relaxed);
+}
 
 /* CPUID's BMI1, BMI2 and LZCNT (ABM) */
 static unsigned host_features(void) {
@@ -2219,7 +2227,7 @@ static unsigned host_features(void) {
             if (c & (1u << 29)) f |= SGX_F_F16C;
         }
     }
-    return f;
+    return f & ~atomic_load_explicit(&g_x64_codegen.without, memory_order_relaxed);
 }
 
 int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options, unsigned char* made,
@@ -2365,6 +2373,7 @@ void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, co
 #else
 int snx_x64_available(void) { return 0; }
 unsigned snx_x64_features(void) { return 0; }
+void snx_x64_without(unsigned features) { (void)features; }
 /* no x86-64 back end in this build */
 int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options, unsigned char* made,
                    unsigned char** object, size_t* size, char* error, size_t error_size) {

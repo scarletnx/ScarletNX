@@ -8,9 +8,12 @@
    each function runs from the same random state in both, and every register, the flags, FPCR, FPSR, TPIDR_EL0 and the
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
-     snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--verbose] [--words HEX...]
+     snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--verbose] [--words HEX...]
+   --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
+   F16C 0x100, BMI1, BMI2 and LZCNT 7), as on a host that lacks them
    On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so */
 #include "common/cpu/recompiler/snx_recompiler.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
@@ -354,6 +357,8 @@ int main(int argc, char** argv) {
             states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--seed") && i + 1 < (unsigned)argc)
             seed = strtoull(argv[++i], NULL, 0) | 1;
+        else if (!strcmp(argv[i], "--without") && i + 1 < (unsigned)argc)
+            snx_x64_without((unsigned)strtoul(argv[++i], NULL, 0));
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
         else if (!strcmp(argv[i], "--words")) {
