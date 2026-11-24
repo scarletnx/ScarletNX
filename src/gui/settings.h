@@ -96,6 +96,10 @@ int gui_settings_changed(const GuiSettings* settings);
 int gui_settings_slide(GuiSettings* settings, int row, int step);
 int gui_settings_slide_to(GuiSettings* settings, int row, int at);
 int gui_settings_knob(const GuiSettings* settings, int row);
+/* a number's typed row (GuiThemeKey's numeric) a step down (-1) or up (1) from its value, else its default: a whole
+   number's by 1, a float's by a quarter, or a twentieth where its range is 2 or less, as the game's menu steps it, onto
+   that step's grid and stopping at its ends. 1 when it changed, 0 at an end or on another row */
+int gui_settings_step_number(GuiSettings* settings, int row, int step);
 /* an All's row stepped (-1 or 1, 0 for a select) with every row it steps: 1, else 0 */
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */

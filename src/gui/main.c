@@ -13002,6 +13002,23 @@ static void warn_tick(App* app) {
     app->warn_key[0] = 0;
     app->editor.note[0] = 0;
 }
+/* row of the Settings just set: a resolution scale past 4x, under 0.5x or no whole number warned of */
+static void resolution_check(App* app, int row) {
+    const char* setting = row >= 0 && row < screen_settings(app)->count ? screen_settings(app)->values[row].key : NULL;
+    const char* chosen;
+    double value;
+    int whole;
+    if (!setting || strcmp(setting, "resolution")) return;
+    chosen = gui_settings_value(screen_settings(app), "resolution");
+    value = chosen ? strtod(chosen, NULL) : 0;
+    whole = value == (double)(long long)value;
+    if (value > 4.0)
+        resolution_warn(app, 0, !whole);
+    else if (value < 0.5)
+        resolution_warn(app, 1, !whole);
+    else if (!whole) /* any scale in the range that is no whole number */
+        resolution_warn(app, 2, 1);
+}
 static void typed_keyboard(App* app);
 static bool form_row_off(App* app, const GuiEditor* e, int r);
 static void editor_key(App* app, GuiKey key) {
@@ -13060,24 +13077,30 @@ static void editor_key(App* app, GuiKey key) {
                  snx_tr(screen_settings(app)->keys[row].key), value);
         return;
     }
+    /* a number's row: Left/Right step it, a whole number by 1 and a float as the game's menu does, to its ends; Enter
+       still types one */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing && (key == GUI_LEFT || key == GUI_RIGHT) &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        screen_settings(app)->keys[setting_of(app, app->editor.row)].numeric) {
+        int row = setting_of(app, app->editor.row);
+        char value[64];
+        app->editor.note[0] = 0;
+        if (gui_settings_step_number(screen_settings(app), row, key == GUI_LEFT ? -1 : 1)) {
+            app->editor.dirty = true;
+            keep_settings(app);
+            resolution_check(app, row);
+            return;
+        }
+        setting_shown(app, row, value, sizeof value);
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 key == GUI_LEFT ? snx_tr("%s: %s is its lowest") : snx_tr("%s: %s is its highest"),
+                 snx_tr(screen_settings(app)->keys[row].key), value);
+        return;
+    }
     what = gui_editor_key(&app->editor, key);
     if (key == GUI_SELECT && was_typing && !app->editor.typing && app->form == GUI_FORM_GROUP &&
-        app->editor.object == (char*)screen_settings(app)->values) {
-        int row = setting_of(app, app->editor.row);
-        const char* setting =
-            row >= 0 && row < screen_settings(app)->count ? screen_settings(app)->values[row].key : NULL;
-        if (setting && !strcmp(setting, "resolution")) {
-            const char* chosen = gui_settings_value(screen_settings(app), "resolution");
-            double value = chosen ? strtod(chosen, NULL) : 0;
-            int whole = value == (double)(long long)value;
-            if (value > 4.0)
-                resolution_warn(app, 0, !whole);
-            else if (value < 0.5)
-                resolution_warn(app, 1, !whole);
-            else if (!whole) /* any scale in the range that is no whole number */
-                resolution_warn(app, 2, 1);
-        }
-    }
+        app->editor.object == (char*)screen_settings(app)->values)
+        resolution_check(app, setting_of(app, app->editor.row));
     if (what == GUI_EDITOR_ACTION && app->form == GUI_FORM_SETTINGS && !app->editor.step) {
         open_group(app, app->editor.row);
         return;

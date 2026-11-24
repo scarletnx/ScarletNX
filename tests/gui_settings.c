@@ -1176,6 +1176,30 @@ int main(int argc, char** argv) {
         free(path);
         free(dir);
     }
+    /* a number's typed row stepped as the game's menu steps it: a float by a quarter, or a twentieth within a range of
+       2, onto that grid, a whole number by 1, from the default where nothing is typed, stopping at the ends */
+    {
+        static const char numbers[] = "Graphics\tresolution\t1\tfloat\t0.25\t16\tScale\tResolution scale\t\n"
+                                      "Graphics\tsharp\t0\tfloat\t0\t1\tSharpening\tFSR sharpness\t\n"
+                                      "Debug\tcount\t5\tint\t0\t99999\tCount\tA count\t\n"
+                                      "Debug\tname\t\ttext\t0\t0\tA name\tName\t\n";
+        int r, f, c;
+        assert(!gui_settings_read(&s, numbers));
+        r = at(&s, "resolution");
+        f = at(&s, "sharp");
+        c = at(&s, "count");
+        assert(gui_settings_step_number(&s, r, 1) && !strcmp(gui_settings_value(&s, "resolution"), "1.25"));
+        assert(gui_settings_set(&s, "resolution", "1.3") && gui_settings_step_number(&s, r, -1) &&
+               !strcmp(gui_settings_value(&s, "resolution"), "1.25")); /* onto the quarters' grid */
+        assert(gui_settings_set(&s, "resolution", "0.25") && !gui_settings_step_number(&s, r, -1));
+        assert(gui_settings_set(&s, "resolution", "16") && !gui_settings_step_number(&s, r, 1));
+        assert(!gui_settings_step_number(&s, f, -1) && gui_settings_step_number(&s, f, 1) &&
+               !strcmp(gui_settings_value(&s, "sharp"), "0.05"));
+        assert(gui_settings_step_number(&s, c, -1) && !strcmp(gui_settings_value(&s, "count"), "4"));
+        assert(gui_settings_options(&s, 0, NULL, options) == 4 && !strcmp(options[0], "--resolution=16"));
+        assert(!gui_settings_step_number(&s, at(&s, "name"), 1)); /* a text is no number */
+        gui_settings_free(&s);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }
