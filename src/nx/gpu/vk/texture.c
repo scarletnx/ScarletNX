@@ -3727,6 +3727,14 @@ static void later_exact(Surf* t, void* ctx) {
     took->textures++;
     took->bytes += t->bytes;
 }
+static void astc_bc7_held(Surf* t, void* ctx) {
+    if (t->f.conv == VKC_ASTC && is_bc7(t->f.vk)) *(u64*)ctx += t->bytes;
+}
+u64 vk_tex_astc_bc7_bytes(void) {
+    u64 bytes = 0;
+    vk_surf_textures(astc_bc7_held, &bytes);
+    return bytes;
+}
 void vk_tex_later_exact(u32* textures, u64* bytes) {
     LaterExact took = {0, 0};
     vk_surf_textures(later_exact, &took);
