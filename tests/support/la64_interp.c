@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* LoongArch64's instructions the loongarch64 back end writes, interpreted (la64_interp.h) */
 #include "support/la64_interp.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +12,12 @@
 
 static int64_t sext(uint64_t v, unsigned bits) { return (int64_t)(v << (64 - bits)) >> (64 - bits); }
 static uint64_t s32(uint64_t v) { return (uint64_t)(int64_t)(int32_t)(uint32_t)v; }
+static uint64_t mulh_u(uint64_t j, uint64_t k) {
+    uint64_t hi;
+    snx_mul_wide(j, k, &hi);
+    return hi;
+}
+static uint64_t mulh_s(uint64_t j, uint64_t k) { return mulh_u(j, k) - (j >> 63 ? k : 0) - (k >> 63 ? j : 0); }
 
 /* the fields: the manual's names and places */
 #define RD(w) ((w) & 31)
@@ -159,8 +166,8 @@ int la64_run(La64* c, uint64_t limit) {
             case SGD_LA64_SRAI_W: v = s32((uint32_t)((int32_t)j >> UI5(w))); break;
             case SGD_LA64_MUL_D: v = j * k; break;
             case SGD_LA64_MUL_W: v = s32(j * k); break;
-            case SGD_LA64_MULH_D: v = (uint64_t)(((__int128)(int64_t)j * (int64_t)k) >> 64); break;
-            case SGD_LA64_MULH_DU: v = (uint64_t)(((unsigned __int128)j * k) >> 64); break;
+            case SGD_LA64_MULH_D: v = mulh_s(j, k); break;
+            case SGD_LA64_MULH_DU: v = mulh_u(j, k); break;
             /* a quotient by zero, or of the most negative by -1, is UNPREDICTABLE (no trap): the code mustn't ask */
             case SGD_LA64_DIV_D:
                 if (!k || ((int64_t)j == INT64_MIN && (int64_t)k == -1)) {

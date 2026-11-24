@@ -4,6 +4,7 @@
 #include "support/host_unicorn.h"
 #include "support/la64_interp.h"
 #include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,7 +98,7 @@ int hostuc_big(HostUcArch arch) { return g_arch[arch].big; }
 void hostuc_swapper(HostUc* u, void (*fn)(void* user), void* user) { u->swap = fn, u->swap_user = user; }
 /* a word in the architecture's order */
 static void put_word(const Arch* a, unsigned char* p, uint32_t w) {
-    if (a->big) w = __builtin_bswap32(w);
+    if (a->big) w = snx_bswap32(w);
     memcpy(p, &w, 4);
 }
 
@@ -141,7 +142,7 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
             uint64_t sp;
             uc_reg_read(uc, u->a->sp, &sp);
             memcpy(&a[i], (const void*)(uintptr_t)(sp + 160), 8);
-            if (u->a->big) a[i] = __builtin_bswap64(a[i]);
+            if (u->a->big) a[i] = snx_bswap64(a[i]);
         }
     swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
@@ -414,10 +415,10 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
                                      (size_t)(at[target] + sh[target].sh_size - P), type, S, rela[r].r_addend, P, 0, 0);
                 if (n == 8) {
                     uint64_t v;
-                    memcpy(&v, (void*)(uintptr_t)P, 8), v = __builtin_bswap64(v), memcpy((void*)(uintptr_t)P, &v, 8);
+                    memcpy(&v, (void*)(uintptr_t)P, 8), v = snx_bswap64(v), memcpy((void*)(uintptr_t)P, &v, 8);
                 } else {
                     uint32_t v;
-                    memcpy(&v, (void*)(uintptr_t)P, 4), v = __builtin_bswap32(v), memcpy((void*)(uintptr_t)P, &v, 4);
+                    memcpy(&v, (void*)(uintptr_t)P, 4), v = snx_bswap32(v), memcpy((void*)(uintptr_t)P, &v, 4);
                 }
             } else
                 e = snx_elf_relocate(u->a->em, (unsigned char*)(uintptr_t)P,

@@ -5,6 +5,7 @@
    memory's order on either host, so they stay as they are; guest memory is little-endian on both */
 #ifndef SNX_TEST_SWAP_STATE_H
 #define SNX_TEST_SWAP_STATE_H
+#include "common/utilities/bits.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -12,13 +13,13 @@
 static inline void snx_test_sw32(void* p) {
     uint32_t v;
     memcpy(&v, p, 4);
-    v = __builtin_bswap32(v);
+    v = snx_bswap32(v);
     memcpy(p, &v, 4);
 }
 static inline void snx_test_sw64(void* p) {
     uint64_t v;
     memcpy(&v, p, 8);
-    v = __builtin_bswap64(v);
+    v = snx_bswap64(v);
     memcpy(p, &v, 8);
 }
 /* n doublewords (pointers, a table of addresses) */
