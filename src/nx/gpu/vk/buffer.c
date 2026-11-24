@@ -2568,6 +2568,10 @@ int vk_ww_take(const u8* host, u64 len) {
     }
     return ww_take(host, len);
 }
+int vk_ww_tracks(void) {
+    if (g_ww < 0) (void)ww_take(g_mem + AS_BASE, 1); /* asked for the first time: the host's tracking is tried */
+    return g_ww > 0 && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire);
+}
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;

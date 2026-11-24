@@ -361,7 +361,9 @@ What the GPU writes goes there too:
   holds already is copied there on the GPU in stream order (`vk_uma_publish`, from `vk_own_publish`), a write in place
   like the shaders': not GPU-owned, no page trapped, and the import stays. Elsewhere it is published GPU-owned, as
   without UMA: an import made for the result would take its pages from write tracking, and a sparse texture a copy
-  feeds would then load again whole instead of the pages written.
+  feeds would then load again whole instead of the pages written. A host without traps has no owner to give the span:
+  there the publish makes the import where it takes no page from write tracking (a dma-buf region, whose pages stay
+  watched, or a host that tracks no writes), and lands the result at once everywhere else.
 
 Guest memory is imported with `VK_EXT_external_memory_host` in pieces. An import covers the 2 MiB windows that a range
 touches, clipped to mapped guest memory. Imports never overlap: a range across two imports makes one import of their

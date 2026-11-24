@@ -20,6 +20,14 @@ static int uma_skip(void) {
                                    : "no traps (memory_traps): a publish lands at once");
     return 1;
 }
+/* whether a publish over memory no import holds makes one here (vk_uma_publish): on a host without traps, where the
+   import takes no page from write tracking */
+static int uma_publish_imports(void) {
+    vk_lock();
+    int makes = !own_traps() && (vk_uma_through_dmabuf() || !vk_ww_tracks());
+    vk_unlock();
+    return makes;
+}
 /* a GPU result of size bytes of value, its writes recorded */
 static VkOwnRes* uma_owner(u64 size, u8 value) {
     VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
@@ -662,7 +670,7 @@ static int check_uma_feedback(void) {
 /* An engine's result (the copy engine's here) over memory the GPU reads in place, which an import holds, is published
    in place: copied there on the GPU in stream order, not GPU-owned or trapped, the import kept, and a CPU read after it
    waits for the submit. Over memory no import holds it stays GPU-owned where the host traps, and no import is made
-   for it (one would take its pages from write tracking) */
+   for it where one would take its pages from write tracking (uma_publish_imports) */
 #define UMA_P  (HEAP_BASE + 0x3600000)
 #define UMA_GP 0x4de000000ull
 #define UMA_N  (HEAP_BASE + 0x3c00000) /* no import over it */
@@ -710,17 +718,19 @@ static int check_uma_publish(void) {
     CHECK(GP(UMA_P)[0x100] == 0xa1 && GP(UMA_P)[0x1ff] == 0xa1 && GP(UMA_P)[0x200] == 0xa0);
     CHECK(GP(UMA_N)[0x100] == 0xa1 && GP(UMA_N)[0x1ff] == 0xa1 && GP(UMA_N)[0x200] == 0xa0);
     CHECK(mem_unmap(UMA_P, 0x200000) == 0 && mem_unmap(UMA_N, 0x200000) == 0);
-    if (!held || owned || !imported || landed || owned_n != own_traps() || imported_n)
+    const int makes = uma_publish_imports();
+    if (!held || owned || !imported || landed || owned_n != own_traps() || imported_n != makes)
         fprintf(
             stderr,
             "publish: over an import (held %d): owned %d, imported %d, %llu landings; elsewhere: owned %d, imported "
             "%d\n",
             held, owned, imported, (unsigned long long)landed, owned_n, imported_n);
     CHECK(held && !owned && imported && !landed);
-    CHECK(owned_n == own_traps() && !imported_n);
+    CHECK(owned_n == own_traps() && imported_n == makes);
     printf("in place: an engine's result over an import copied there on the GPU, nothing GPU-owned; elsewhere owned "
-           "(traps %s), no import made for it\n",
-           own_traps() ? "on" : "off");
+           "(traps %s), %s\n",
+           own_traps() ? "on" : "off",
+           makes ? "an import made for it, which takes no page from write tracking" : "no import made for it");
     return 0;
 }
 
@@ -806,15 +816,17 @@ static int check_uma_nvdec(void) {
 }
 
 /* A host without traps has nothing to own a publish with: the span over memory no import held fell through to
-   own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. The publish now asks bind
-   for the import, which makes it, so the copy is recorded on the GPU like the one over an import and the CPU's read
-   waits in vk_uma_mem_need. Nothing is GPU-owned and nothing lands */
+   own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. Where an import takes no
+   page from write tracking (uma_publish_imports) the publish asks bind for it, which makes it, so the copy is recorded
+   on the GPU like the one over an import and the CPU's read waits in vk_uma_mem_need: nothing is GPU-owned and nothing
+   lands. Everywhere else it lands as before, with no import: the bytes are in memory when the copy returns */
 #define UMA_NT  (HEAP_BASE + 0x3e00000) /* no import over it, and no trap to own it with */
 #define UMA_GNT 0x4e6000000ull
 static int check_uma_publish_notraps(void) {
     const u64 src = 0x4e7000000ull, src_cpu = HEAP_BASE + 0x730000; /* in the first heap mapping */
     u8 bytes[256];
     if (vk_uma() && !own_traps()) {
+        const int makes = uma_publish_imports();
         CHECK(mem_map(UMA_NT, 0x200000, MS_NORMAL, PERM_RW) == 0);
         gmmu_map(UMA_GNT, UMA_NT, 0x200000);
         gmmu_map(src, src_cpu, 0x10000);
@@ -825,6 +837,7 @@ static int check_uma_publish_notraps(void) {
         int owned = own_lookup(UMA_NT + 0x100, 256, NULL, 0) != 0;
         u32 imported = vk_uma_imports(UMA_NT, 0x200000);
         u64 added = vk_uma_writes() - adds, waited = vk_uma_out_waits() - waits;
+        int there = GP(UMA_NT)[0x100] == 0xa2 && GP(UMA_NT)[0x1ff] == 0xa2; /* a landing's, before any wait */
         CHECK(!gmem_read(UMA_GNT + 0x100, bytes, sizeof bytes));
         for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa2);
         vk_lock();
@@ -832,13 +845,22 @@ static int check_uma_publish_notraps(void) {
         vk_unlock();
         CHECK(GP(UMA_NT)[0x100] == 0xa2 && GP(UMA_NT)[0x1ff] == 0xa2 && GP(UMA_NT)[0x200] == 0xa0);
         CHECK(mem_unmap(UMA_NT, 0x200000) == 0);
-        if (!imported || owned || !added || waited)
-            fprintf(stderr, "publish without traps: imports %u, owned %d, %llu in-place writes, %llu waits\n",
-                    imported, owned, (unsigned long long)added, (unsigned long long)waited);
-        CHECK(imported && !owned && added && !waited);
-        printf("no traps: a publish over memory no import held makes its import and copies there on the GPU (%u "
-               "imports, %llu in-place writes, %llu waits)\n",
-               imported, (unsigned long long)added, (unsigned long long)waited);
+        if (makes ? !imported || owned || !added || waited : imported || owned || added || !there)
+            fprintf(stderr,
+                    "publish without traps, where an import %s: imports %u, owned %d, %llu in-place writes, %llu "
+                    "waits, the bytes in memory at once %d\n",
+                    makes ? "takes no page from write tracking" : "would take its pages from write tracking", imported,
+                    owned, (unsigned long long)added, (unsigned long long)waited, there);
+        if (makes) {
+            CHECK(imported && !owned && added && !waited);
+            printf("no traps: a publish over memory no import held makes its import and copies there on the GPU (%u "
+                   "imports, %llu in-place writes, %llu waits)\n",
+                   imported, (unsigned long long)added, (unsigned long long)waited);
+        } else {
+            CHECK(!imported && !owned && !added && there);
+            printf("no traps: a publish over memory no import held lands at once where an import would take its pages "
+                   "from write tracking (no import, no in-place write)\n");
+        }
         return 0;
     }
     printf("skip: %s\n", !vk_uma() ? "guest memory is copied on this device (vk_memory)"

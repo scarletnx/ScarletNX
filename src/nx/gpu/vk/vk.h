@@ -2869,6 +2869,9 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+/* whether write tracking watches guest memory here (vk_written_since can tell, where no import holds the pages): 0
+   on a host that tracks no writes, with write_tracking=2 or once it failed. Under vk_lock */
+int vk_ww_tracks(void);
 /* a landing with no owner (a host without traps): n bytes of a GPU result written at guest cpu, which write tracking
    takes as the GPU's: what the CPU wrote on the pages before and since counts, the landing's own bytes don't. Under
    vk_lock */

@@ -3532,6 +3532,15 @@ static int sparse_volume(const SvCase* c) {
     o.dst = pitch_side(c->gva + sv_offset(240, 10, 6), 0);
     CHECK(g_renderer->dma_copy(&o));
     failed |= sv_way(c, "a DMA copy into a tile", t, tic, 8192); /* the page's block */
+    /* and again, into another page of the tile: what the first copy left behind (an import, an owner) costs no more */
+    o.src = pitch_side(src + 0x380, 0);
+    o.dst = pitch_side(c->gva + sv_offset(240, 10, 9), 0);
+    CHECK(sv_offset(240, 10, 9) / SV_TILE == 2);
+    CHECK(g_renderer->dma_copy(&o));
+    failed |= sv_way(c, "a second DMA copy into the tile", t, tic, 8192);
+    /* and the CPU's write after them */
+    memcpy(GP(c->cpu + sv_offset(576, 3, 5)), cpu_bytes, 8);
+    failed |= sv_way(c, "the CPU writing a tile after the copies", t, tic, 2 * 8192);
     return failed;
 }
 static int check_sparse_volume(void) {
@@ -8799,6 +8808,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_quiet_other();
         else if (!strcmp(name, "texture_quiet_alias"))
             result = check_texture_quiet_alias();
+        else if (!strcmp(name, "sparse_volume"))
+            result = check_sparse_volume();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "cube_take_frames"))

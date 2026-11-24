@@ -75,7 +75,10 @@
      (the GPU reads it in place) is copied there on the GPU, in stream order, a write in place like the shaders'
      (vk_uma_publish): not GPU-owned or trapped, and the import stays. Elsewhere it is published GPU-owned as without
      UMA: an import made for it would take its pages from write tracking, and a sparse texture a copy feeds would load
-     again whole instead of the pages written (Liz, #1079).
+     again whole instead of the pages written (Liz, #1079). A host without traps has no owner to give the span: the
+     publish makes the import there where it takes no page from write tracking (a dma-buf region's pages stay
+     watched, and a host that tracks no writes has none to lose), and lands the result at once everywhere else, told
+     to write tracking as the GPU's write (vk_ww_land).
    - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
@@ -2071,12 +2074,17 @@ int vk_uma_none_why(u64 cpu, u64 len) {
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
-    /* bind, which asks imp_get for the import and makes it when there is none: asked for one first (vk_uma_held),
-       this could never make the first one, and answered 0 for every span that had none, which the caller then
-       landed as a readback of its own with a wait for the queue. 0 stands for no import to be had.
+    /* The import that holds the range, or one made for it (bind) where that takes no page from write tracking: a
+       dma-buf region, whose pages the scans watch as before (Imp.tracked), or a host that tracks no writes. Anywhere
+       else a new import's pages leave the scans (vk_uma_import_in), and every cache over its windows that asked
+       write tracking compares contents from then on: a sparse volume a copy fed loaded all its 1.7 MB again for 64
+       bytes copied into one tile, where it loads the tile's 8 KiB block (Liz, #1079). 0 there: the caller owns the
+       span, or lands it on a host without traps (owned.c's own_publish).
        An open rendering pass takes it too: the copy is recorded outside one, and ending the pass for it broke the pass
        a frame's draws share, a samples report after every draw ending it once each */
-    if (!vk_uma() || vk_render_open() || !bind(cpu, len, 1, &ib, &io)) return 0;
+    if (!vk_uma() || vk_render_open() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && vk_ww_tracks()) ||
+        !bind(cpu, len, 1, &ib, &io))
+        return 0;
     /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
     SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");
     SNX_ZONE_VALUE(z, len);
