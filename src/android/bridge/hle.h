@@ -38,6 +38,8 @@ extern const HleSymbol hle_sles[];
 extern const HleSymbol hle_media[];
 extern const HleSymbol hle_android[];
 extern const HleSymbol hle_egl[];
+/* the calling thread's looper gone, as the thread ends (bridge_thread_end) */
+void hle_android_thread_end(void);
 extern const HleSymbol hle_gles[]; /* hle_gles.c: GLES 1.1 over Vulkan */
 /* GLES 2 and 3 over Vulkan (gles2.h): the state, the objects, the programs and the draws. The names that GLES 1.1 has
    too call the current context's */

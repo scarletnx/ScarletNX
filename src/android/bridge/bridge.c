@@ -3,7 +3,9 @@
 /* The native bridge's core (bridge.h). The JIT follows the GNU ABI runtime's (src/gnuabi/runtime/jit.c), with a lock:
    guest threads are host threads here, and one compiles at a time while the others that miss wait for it */
 #include "android/bridge/bridge.h"
+#include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "android/bridge/jni.h"
 #include "android/bridge/hle_signal.h"
 #include "android/bridge/host.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
@@ -75,7 +77,13 @@ static struct {
     char* keep_ir;     /* bridge_set_keep_ir's folder, NULL for none */
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
-} b = {.lock = PTHREAD_MUTEX_INITIALIZER};
+    /* the end of a thread that has state: a key's destructor, which a thread of any library's runs */
+    pthread_once_t end_once;
+    pthread_key_t end_key;
+    int end_error;         /* pthread_key_create's */
+    void (*ends[4])(void); /* bridge_on_thread_end's, added under lock */
+    _Atomic size_t end_count;
+} b = {.lock = PTHREAD_MUTEX_INITIALIZER, .end_once = PTHREAD_ONCE_INIT};
 
 /* the state of a host thread that runs guest code */
 typedef struct {
@@ -381,6 +389,7 @@ CPU* bridge_cpu(void) {
     c->x[31] = ((uint64_t)(uintptr_t)t->stack + STACK_SIZE) & ~(uint64_t)15;
     t_thread = t;
     signals_thread_start(&t->signals, c);
+    bridge_thread_has_state();
     return c;
 }
 
@@ -390,7 +399,43 @@ void bridge_stack(uint64_t* base, size_t* size) {
     *size = STACK_SIZE;
 }
 
+static void end_state(void* p) {
+    (void)p;
+    bridge_thread_end();
+}
+static void make_end_key(void) {
+    b.end_error = pthread_key_create(&b.end_key, end_state);
+    if (b.end_error)
+        fprintf(stderr,
+                "scarletnx-android: no pthread key for the threads' end (%s): the state of a thread that the "
+                "guest did not make stays after it\n",
+                strerror(b.end_error));
+}
+void bridge_thread_has_state(void) {
+    pthread_once(&b.end_once, make_end_key);
+    if (b.end_error) return;
+    int r = pthread_setspecific(b.end_key, &b);
+    if (r)
+        fprintf(stderr, "scarletnx-android: the end of thread %u is not noted (%s): its state stays after it\n",
+                (unsigned)plat_tid(), strerror(r));
+}
+void bridge_on_thread_end(void (*fn)(void)) {
+    pthread_mutex_lock(&b.lock);
+    size_t n = atomic_load_explicit(&b.end_count, memory_order_relaxed);
+    if (n == sizeof b.ends / sizeof *b.ends) {
+        fprintf(stderr, "scarletnx-android: no room for a thread's end: %zu are taken\n", n);
+        abort();
+    }
+    b.ends[n] = fn;
+    atomic_store_explicit(&b.end_count, n + 1, memory_order_release);
+    pthread_mutex_unlock(&b.lock);
+}
+
 void bridge_thread_end(void) {
+    size_t ends = atomic_load_explicit(&b.end_count, memory_order_acquire);
+    for (size_t i = 0; i < ends; ++i) b.ends[i]();
+    hle_android_thread_end();
+    jni_thread_end();
     Thread* t = t_thread;
     if (!t) return;
     signals_thread_end(&t->signals);
