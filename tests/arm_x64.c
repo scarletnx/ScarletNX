@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c) against the AArch32 block compiler's LLVM
-   ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with): the same words consumed, and the
-   same results from the same random states.
-     snx-test-arm-x64 [--blocks N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]...
+   ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, not
+   what LLVM's optimizer makes of it: the same words consumed, and the same results from the same random states.
+     snx-test-arm-x64 [--blocks N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--dump]
    Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
    release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED), under AL half of the time and any
@@ -13,7 +13,8 @@
    armed or not on a register's address with the value there or another): the registers, CPSR, the exit and its
    syndrome, the monitor, the TLS registers, the VFP registers and FPSCR, and guest memory must match. --pool N keeps
    the x86 values in N host registers, so they spill; --features takes the host's BMI1 (1), BMI2 (2) and LZCNT (4) out
-   where not in MASK; --word runs the words given, one block each, and says what each state did */
+   where not in MASK; --word runs the words given, one block each, and says what each state did; --dump prints a
+   failing state's start */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
@@ -43,6 +44,7 @@ static struct {
     size_t kinds[64], refusals[64];
     size_t exits[16];   /* the runs' exits, LLVM's: how many ran through and how many stopped, and at what */
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
+    int dump;           /* --dump: a failing state's start printed */
     /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
     size_t fp_calls[256], fp_hot_calls;
 } g_test;
@@ -173,6 +175,12 @@ typedef struct {
 } RunState;
 
 /* a random state of the kth kind */
+/* A block is generated code, with no type signature before its entry, which the function sanitizer's check of an
+   indirect call reads: the 8 bytes before the callee, below the code loader's arena for its first one. So the call is
+   unchecked, as exec.c's run_block */
+[[clang::no_sanitize("function")]] static void run_block(SnxU64 addr, SnxArmCPU* cpu) {
+    ((SnxArmBlock)(uintptr_t)addr)(cpu);
+}
 static void start(RunState* s, unsigned k) {
     SnxArmCPU* cpu = &s->cpu;
     *cpu = (SnxArmCPU){0};
@@ -401,7 +409,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
         g_test.words += b->n;
         g_test.consumed_words += lc;
     }
-    if (!rc && (snx_ir_module_object(ir, module, '2', &lobj, &lsize, error, sizeof error) ||
+    if (!rc && (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
                 snx_x64_arm_object(x64, &xobj, &xsize, NULL))) {
         fprintf(stderr, "FAIL: an object: %s\n", error);
         ++g_test.failures;
@@ -434,7 +442,7 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             for (int side = 0; side < 2; ++side) {
                 g_test.seed = seed;
                 start(&s[side], k);
-                ((SnxArmBlock)(uintptr_t)(side ? xaddr[i] : laddr[i]))(&s[side].cpu);
+                run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
             }
             ++g_test.ran;
             ++g_test.exits[s[0].cpu.exit & 15];
@@ -448,6 +456,16 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
             if (*why) {
                 block_text(b, text, sizeof text);
                 fprintf(stderr, "FAIL: [%s] state %u: %s\n", text, k, why);
+                if (g_test.dump) { /* --dump: the state the runs started from, to rebuild the case by hand */
+                    g_test.seed = seed;
+                    start(&s[0], k);
+                    fprintf(stderr, "  start: fpscr %08x cpsr %08x\n", s[0].cpu.fpscr, s[0].cpu.cpsr);
+                    for (unsigned r = 0; r < 16; ++r)
+                        fprintf(stderr, "  r%u %08x%s", r, s[0].cpu.r[r], r % 8 == 7 ? "\n" : "");
+                    for (unsigned d = 0; d < 32; ++d)
+                        fprintf(stderr, "  d%u %016llx%s", d, (unsigned long long)s[0].cpu.d[d],
+                                d % 4 == 3 ? "\n" : "");
+                }
                 ++g_test.failures;
                 break;
             }
@@ -557,7 +575,7 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             return 1;
         }
     }
-    if (snx_ir_module_object(ir, module, '2', &lobj, &lsize, error, sizeof error) ||
+    if (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
         snx_x64_arm_object(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
         !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
         load(xloader, xobj, xsize, "x86-64", blocks, count, 1, xaddr)) {
@@ -579,7 +597,7 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             s[side].cpu.d[2] = w->d2;
             if (w->r1) s[side].cpu.r[1] = w->r1;
             for (unsigned k = 0; k < 256; ++k) before += side ? g_test.fp_calls[k] : 0;
-            ((SnxArmBlock)(uintptr_t)(side ? xaddr[i] : laddr[i]))(&s[side].cpu);
+            run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
             for (unsigned k = 0; k < 256; ++k) after += side ? g_test.fp_calls[k] : 0;
         }
         why = differs(&s[0], &s[1]);
@@ -605,7 +623,7 @@ static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
             if (e == 0) s[side].cpu.r[15] = PC + 4;
             if (e & 1 && e) s[side].cpu.cpsr |= SNX_ARM_T;
             if (e >= 2) s[side].cpu.cpsr |= SNX_ARM_E;
-            ((SnxArmBlock)(uintptr_t)(side ? xaddr[0] : laddr[0]))(&s[side].cpu);
+            run_block(side ? xaddr[0] : laddr[0], &s[side].cpu);
         }
         why = differs(&s[0], &s[1]);
         if (*why || s[0].cpu.exit == SNX_ARM_OK) {
@@ -661,7 +679,7 @@ static int run_endian_chain(SnxX64Arm* x64) {
         s->cpu.cpsr = 0x10u;
         s->cpu.r[0] = e ? SNX_ARM_E : 0;
         s->cpu.r[1] = 0;
-        ((SnxArmBlock)(uintptr_t)addr)(&s->cpu);
+        run_block(addr, &s->cpu);
         /* E set: the MOV's block stops at its entry, R15 its address; clear: the MOV runs, R15 past it */
         uint32_t exit = e ? SNX_ARM_ENDIAN_UNSUPPORTED : SNX_ARM_OK, r1 = e ? 0 : 1, r15 = e ? PC + 4 : PC + 8;
         if (s->cpu.exit != exit || (e && s->cpu.syndrome != mov[0]) || s->cpu.r[1] != r1 || s->cpu.r[15] != r15) {
@@ -701,6 +719,8 @@ int main(int argc, char** argv) {
             g_test.seed = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--object") && i + 1 < argc)
             g_test.object = argv[++i];
+        else if (!strcmp(argv[i], "--dump"))
+            g_test.dump = 1;
         else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64)
             g_test.only[g_test.nonly++] = (uint32_t)strtoul(argv[++i], NULL, 16);
         else
