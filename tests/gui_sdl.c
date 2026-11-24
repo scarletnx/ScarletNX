@@ -4760,10 +4760,12 @@ static void paths_asked(App* app, const char* temporary) {
     static const char list[] = "Debug\tshader_corpus\t\ttext\t0\t0\tKeeps\tShader corpus\t\t\t\tfolder\n"
                                "Debug\tir_branch_profile\t\ttext\t0\t0\tCounts\tIR branch profile\t\t\t\tfile\n"
                                "Debug\tpipeline_stats\t\ttext\t0\t0\tStats\tPipeline stats\t\t\t\tsave\n"
+                               "Debug\tjava_home\t\ttext\t0\t0\tJDK\tJava home\t=The build's\t\t\topen folder\n"
                                "Debug\tother\t\ttext\t0\t0\tOther\tOther\n";
     char *root = snx_path_join(temporary, "paths"), *bin = snx_path_join(root, "bin");
     char *zenity = snx_path_join(bin, "zenity"), *asked = snx_path_join(root, "asked.txt");
     char *cancel = snx_path_join(root, "cancel"), *folder = snx_path_join(root, "a folder");
+    char* broken = snx_path_join(root, "broken");
     char *file = snx_path_join(root, "in.txt"), *out = snx_path_join(root, "out.csv");
     char *was = getenv("PATH") ? snx_strdup(getenv("PATH")) : NULL, *script, *path, *text, want[2048], longer[700];
     size_t size;
@@ -4773,12 +4775,13 @@ static void paths_asked(App* app, const char* temporary) {
                         "[ \"$1\" = --version ] && { echo 3.44.0; exit 0; }\n"
                         "printf '%%s\\n' \"$@\" > '%s'\n"
                         "[ -e '%s' ] && exit 1\n"
+                        "[ -e '%s' ] && exit 2\n"
                         "for a in \"$@\"; do\n"
                         "  [ \"$a\" = --directory ] && { echo '%s'; exit 0; }\n"
                         "  [ \"$a\" = --save ] && { echo '%s'; exit 0; }\n"
                         "done\n"
                         "echo '%s'\n",
-                        asked, cancel, folder, out, file);
+                        asked, cancel, broken, folder, out, file);
     assert(!snx_mkdirs(bin) && !snx_mkdirs(folder) && !snx_write_file(file, "x", 1) &&
            !snx_write_file(zenity, script, strlen(script)) && !snx_make_executable(zenity));
     path = snx_format("%s:%s", bin, was ? was : "/usr/bin:/bin");
@@ -4869,17 +4872,37 @@ static void paths_asked(App* app, const char* temporary) {
                                  "was open") &&
            !strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
     app->message[0] = 0;
-    /* a picker that cannot open: said, with why; Enter types the path from then on, as it says */
-    assert(SDL_SetHintWithPriority(SDL_HINT_FILE_DIALOG_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE));
+    /* a picker that cannot open (zenity's status is neither a choice's, 0, nor a cancel's, 1): said, with why; Enter
+       types the path from then on, as it says */
+    assert(!snx_write_file(broken, "", 0));
     app->editor.note[0] = 0;
     key(app, SDLK_RETURN);
     note_waited(app);
     assert(strstr(app->editor.note, "Shader corpus: the picker could not open: ") &&
-           strstr(app->editor.note, ". Enter now types the path") && app->path_typed);
-    app->message[0] = 0;
+           strstr(app->editor.note, "exit code 2. Enter on its row now types it") && app->path_typed);
+    /* and in the box every failure of the system's has, with the row's name: Enter is its OK, then types */
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->editor.note));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && !app->editor.typing);
     key(app, SDLK_RETURN);
     assert(app->editor.typing && !strcmp(app->editor.text, "/tmp/dropped"));
     key(app, SDLK_ESCAPE);
+    /* a list of paths (Java home's): Enter steps its words, so it names the paste that still gives it one */
+    app->path_typed = false;
+    app->editor.row = row_of(app, setting_row(app, "java_home"));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(strstr(app->editor.note, "Java home: the picker could not open: ") &&
+           strstr(app->editor.note, "exit code 2. Ctrl+V pastes its path"));
+    if (app->confirm.shown) key(app, SDLK_RETURN);
+    assert(SDL_SetClipboardText("/opt/a jdk"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_V;
+    e.key.mod = SDL_KMOD_LCTRL;
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "java_home"), "/opt/a jdk"));
     app->path_typed = false;
     settings_forget(app);
     leave_editor(app);
@@ -4892,6 +4915,7 @@ static void paths_asked(App* app, const char* temporary) {
     free(out);
     free(file);
     free(folder);
+    free(broken);
     free(cancel);
     free(asked);
     free(zenity);

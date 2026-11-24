@@ -11925,13 +11925,17 @@ static void path_say(App* app, const char* label, const char* what) {
     else
         snprintf(app->message, sizeof app->message, "%s: %s", label, what);
 }
-/* row's picker could not open: why, and what Enter does now */
+/* row's picker could not open: why, and how its path is given from now on. A text's row is typed; a list's (Java
+   home's) goes on stepping its words with Enter, so it takes a paste */
 static void path_failed(App* app, int row, const char* why) {
-    char said[sizeof app->editor.note - 64];
+    const GuiThemeKey* k = &screen_settings(app)->keys[row];
+    char said[sizeof app->editor.note - 64], line[sizeof app->editor.note];
     app->path_typed = true;
-    snprintf(said, sizeof said, snx_tr("the picker could not open: %s. Enter now types the path"), why);
-    path_say(app, snx_tr(screen_settings(app)->keys[row].key), said);
-    say_failure(app, said);
+    snprintf(said, sizeof said, snx_tr("the picker could not open: %s. %s"), why,
+             k->type == GUI_KEY_WORD ? snx_tr("Ctrl+V pastes its path") : snx_tr("Enter on its row now types it"));
+    path_say(app, snx_tr(k->key), said);
+    snprintf(line, sizeof line, "%s: %s", snx_tr(k->key), said);
+    say_failure(app, line);
 }
 /* path given to row (picked, pasted or dropped), kept as the other settings are; one that does not fit is refused,
    the row keeping what it has */
