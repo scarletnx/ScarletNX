@@ -77,10 +77,11 @@ val KindOf : int -> int
 /* value v's component i (an f32, a u32 or an i32, as its kind), and x made it */
 val At : (int, int) -> bits(32)
 val Put : (int, int, bits(32)) -> unit
-/* value v made n components of kind, x appended to it, its kind made another (its components left as they are),
+/* value v made n components of kind, x appended to it, its first n components alone kept, its kind made another (its components left as they are),
    and value w made as v is */
 val Reset : (int, int, int) -> unit
 val Push : (int, bits(32)) -> unit
+val SetCount : (int, int) -> unit
 val SetKind : (int, int) -> unit
 val CopyValue : (int, int) -> unit
 /* value v's components made floats from type's integers, and integers of type from floats, scaled to type's range
@@ -158,3 +159,12 @@ function Popcount4(m : int) -> int = MOD(m, 2) + MOD(DIV(m, 2), 2) + MOD(DIV(m, 
 /* the f32 1.0 and 0.0 */
 function One() -> bits(32) = FConst(0x3f800000)
 function Zero() -> bits(32) = FConst(0x00000000)
+
+/* a rotate left of a word (bits 16: of its low half) by n, of the u32s (usse.c's rotate_left) */
+function RotateLeft(x : bits(32), by : bits(32), bits : int) -> bits(32) = {
+    let n = AndT(by, UConst(bits - 1));
+    let left = ShlT(x, n);
+    let right = ShrT(x, ISubT(UConst(bits), n));
+    let r = if IEqT(n, UConst(0)) then x else OrT(left, right);
+    if bits == 16 then AndT(r, UConst(65535)) else r
+}

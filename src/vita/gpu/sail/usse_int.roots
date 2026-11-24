@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE's integer and 8-bit color instructions (usse_int.sail), which were usse.c's vbw, sop2, sop2m, i16mad,
+# i32mad and i32mad2
+op VBW U_VBW
+op SOP2 U_SOP2
+op SOP2M U_SOP2M
+op I16MAD U_I16MAD
+op I32MAD U_I32MAD
+op I32MAD2 U_I32MAD2

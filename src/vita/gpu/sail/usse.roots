@@ -7,3 +7,5 @@ prefix sgu
 static Field Form Failed Fragment Secondary BankOf NumOf TypeOf ChannelOf WriteMask Rep Count KindOf
 include usse_data.roots
 include usse_float.roots
+include usse_int.roots
+include usse_test.roots
