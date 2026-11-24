@@ -28,17 +28,16 @@ static const uint32_t g_sha256_k[64] = {
 static uint32_t rotr(uint32_t x, unsigned n) { return x >> n | x << (32 - n); }
 
 static void sha256_block(Sha256* s, const unsigned char* p) {
-    uint32_t w[64], a, b, c, d, e, f, g, h;
-    unsigned i;
-    for (i = 0; i < 16; ++i)
+    uint32_t w[64];
+    for (unsigned i = 0; i < 16; ++i)
         w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
-    for (i = 16; i < 64; ++i) {
+    for (unsigned i = 16; i < 64; ++i) {
         uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ w[i - 15] >> 3;
         uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ w[i - 2] >> 10;
         w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
-    a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
-    for (i = 0; i < 64; ++i) {
+    uint32_t a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
+    for (unsigned i = 0; i < 64; ++i) {
         uint32_t t1 = h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + g_sha256_k[i] + w[i];
         uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
         h = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
@@ -72,12 +71,11 @@ static void sha256_put(void* user, const void* data, size_t size) {
 static void sha256_end(Sha256* s, unsigned char out[32]) {
     uint64_t bits = s->length * 8;
     unsigned char pad = 0x80, zero = 0, length[8];
-    unsigned i;
     sha256_put(s, &pad, 1);
     while (s->used != 56) sha256_put(s, &zero, 1);
-    for (i = 0; i < 8; ++i) length[i] = (unsigned char)(bits >> (56 - 8 * i));
+    for (unsigned i = 0; i < 8; ++i) length[i] = (unsigned char)(bits >> (56 - 8 * i));
     sha256_put(s, length, 8);
-    for (i = 0; i < 32; ++i) out[i] = (unsigned char)(s->h[i / 4] >> (24 - 8 * (i % 4)));
+    for (unsigned i = 0; i < 32; ++i) out[i] = (unsigned char)(s->h[i / 4] >> (24 - 8 * (i % 4)));
 }
 
 void snx_x64_cache_sha256(const void* data, size_t size, unsigned char out[32]) {
@@ -92,11 +90,9 @@ void snx_x64_cache_sha256(const void* data, size_t size, unsigned char out[32]) 
 
 typedef struct {
     unsigned char key[32];
-    SnxU64 used;  /* the tick of its last use: the smallest leaves first */
-    size_t count; /* the unit's functions, made's bytes */
-    unsigned char* made;
-    unsigned char* object;
-    size_t size;
+    SnxU64 used;          /* the tick of its last use: the smallest leaves first */
+    size_t count, size;   /* the unit's functions (made's bytes), and its object's bytes */
+    unsigned char* bytes; /* made, then the object */
 } Entry;
 
 static struct {
@@ -106,7 +102,7 @@ static struct {
     size_t count, capacity;
     size_t hits, misses, evicted, too_large;
     int said_memory, said_large;
-} g_x64_cache = {PTHREAD_MUTEX_INITIALIZER, SNX_X64_CACHE_CEILING_DEFAULT, 0, 0, 0, NULL, 0, 0, 0, 0, 0, 0, 0, 0};
+} g_x64_cache = {.lock = PTHREAD_MUTEX_INITIALIZER, .ceiling = SNX_X64_CACHE_CEILING_DEFAULT};
 
 void snx_x64_cache_ceiling(SnxU64 bytes) {
     pthread_mutex_lock(&g_x64_cache.lock);
@@ -132,34 +128,27 @@ static SnxU64 limit_locked(void) {
     return memory / 100 < g_x64_cache.ceiling ? memory / 100 : g_x64_cache.ceiling;
 }
 SnxU64 snx_x64_cache_limit(void) {
-    SnxU64 limit;
     pthread_mutex_lock(&g_x64_cache.lock);
-    limit = limit_locked();
+    SnxU64 limit = limit_locked();
     pthread_mutex_unlock(&g_x64_cache.lock);
     return limit;
-}
-
-static void entry_free(Entry* e) {
-    free(e->made);
-    free(e->object);
 }
 
 /* the units used longest ago let go until need more bytes fit under limit */
 static void room_locked(SnxU64 need, SnxU64 limit) {
     while (g_x64_cache.count && g_x64_cache.bytes + need > limit) {
-        size_t i, oldest = 0;
-        for (i = 1; i < g_x64_cache.count; ++i)
+        size_t oldest = 0;
+        for (size_t i = 1; i < g_x64_cache.count; ++i)
             if (g_x64_cache.entries[i].used < g_x64_cache.entries[oldest].used) oldest = i;
         g_x64_cache.bytes -= g_x64_cache.entries[oldest].size + g_x64_cache.entries[oldest].count;
-        entry_free(&g_x64_cache.entries[oldest]);
+        free(g_x64_cache.entries[oldest].bytes);
         g_x64_cache.entries[oldest] = g_x64_cache.entries[--g_x64_cache.count];
         ++g_x64_cache.evicted;
     }
 }
 
 static Entry* find_locked(const unsigned char key[32]) {
-    size_t i;
-    for (i = 0; i < g_x64_cache.count; ++i)
+    for (size_t i = 0; i < g_x64_cache.count; ++i)
         if (!memcmp(g_x64_cache.entries[i].key, key, 32)) return &g_x64_cache.entries[i];
     return NULL;
 }
@@ -169,27 +158,22 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
                           size_t error_size) {
     static const char tag[] = "snx-x64-unit";
     size_t count = last - first;
-    unsigned char key[32];
-    SnxU64 limit, need;
-    Sha256 s;
-    Entry* e;
-    int rc;
     *reused = 0;
-    pthread_mutex_lock(&g_x64_cache.lock);
-    limit = limit_locked();
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    SnxU64 limit = snx_x64_cache_limit();
     if (!limit) return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
+    Sha256 s;
     sha256_init(&s);
     sha256_put(&s, tag, sizeof tag);
     snx_x64_unit_facts(codegen, first, last, options, sha256_put, &s);
+    unsigned char key[32];
     sha256_end(&s, key);
     pthread_mutex_lock(&g_x64_cache.lock);
-    e = find_locked(key);
+    Entry* e = find_locked(key);
     if (e && e->count == count) {
-        memcpy(made, e->made, count);
+        memcpy(made, e->bytes, count);
         *size = e->size;
         *object = e->size ? (unsigned char*)snx_alloc(e->size) : NULL;
-        if (e->size) memcpy(*object, e->object, e->size);
+        if (e->size) memcpy(*object, e->bytes + count, e->size);
         e->used = ++g_x64_cache.tick;
         ++g_x64_cache.hits;
         pthread_mutex_unlock(&g_x64_cache.lock);
@@ -198,9 +182,9 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
     }
     ++g_x64_cache.misses;
     pthread_mutex_unlock(&g_x64_cache.lock);
-    rc = snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
+    int rc = snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
     if (rc) return rc;
-    need = (SnxU64)*size + count;
+    SnxU64 need = (SnxU64)*size + count;
     pthread_mutex_lock(&g_x64_cache.lock);
     limit = limit_locked();
     if (need > limit) {
@@ -221,11 +205,10 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
         memcpy(e->key, key, 32);
         e->used = ++g_x64_cache.tick;
         e->count = count;
-        e->made = (unsigned char*)snx_alloc(count ? count : 1);
-        memcpy(e->made, made, count);
         e->size = *size;
-        e->object = *size ? (unsigned char*)snx_alloc(*size) : NULL;
-        if (*size) memcpy(e->object, *object, *size);
+        e->bytes = (unsigned char*)snx_alloc(count + *size ? count + *size : 1);
+        memcpy(e->bytes, made, count);
+        if (*size) memcpy(e->bytes + count, *object, *size);
         g_x64_cache.bytes += need;
     }
     pthread_mutex_unlock(&g_x64_cache.lock);
@@ -245,9 +228,8 @@ void snx_x64_cache_stats(SnxX64CacheStats* stats) {
 }
 
 void snx_x64_cache_clear(void) {
-    size_t i;
     pthread_mutex_lock(&g_x64_cache.lock);
-    for (i = 0; i < g_x64_cache.count; ++i) entry_free(&g_x64_cache.entries[i]);
+    for (size_t i = 0; i < g_x64_cache.count; ++i) free(g_x64_cache.entries[i].bytes);
     g_x64_cache.count = 0;
     g_x64_cache.bytes = 0;
     g_x64_cache.hits = g_x64_cache.misses = g_x64_cache.evicted = g_x64_cache.too_large = 0;
@@ -266,6 +248,6 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
     *reused = 0;
     return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
 }
-void snx_x64_cache_stats(SnxX64CacheStats* stats) { memset(stats, 0, sizeof *stats); }
+void snx_x64_cache_stats(SnxX64CacheStats* stats) { *stats = (SnxX64CacheStats){0}; }
 void snx_x64_cache_clear(void) {}
 #endif
