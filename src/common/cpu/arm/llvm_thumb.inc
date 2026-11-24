@@ -285,6 +285,7 @@ static void thumb_mul(ArmIR* a, const SnxThumb* t) {
 /* TBB reads the byte at Rn + Rm, TBH the halfword at Rn + Rm * 2 */
 static void thumb_table(ArmIR* a, const SnxThumb* t) {
     LLVMValueRef base = add(a, treg(a, t->rn), t->op ? shl(a, treg(a, t->rm), 1) : treg(a, t->rm));
+    transfer_begin(a, base, t->op ? 2 : 1, 1, 0, 0);
     LLVMValueRef index = t->op ? readmem(a, base, 2, 0) : readmem(a, base, 1, 0);
     LLVMValueRef target = add(a, shl(a, index, 1), tpcbase(a));
     setreg(a, 15, target);
