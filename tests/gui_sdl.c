@@ -4651,6 +4651,161 @@ static void message_waited(App* app) {
         SDL_Delay(5);
     }
 }
+/* note_waited: the answer's, up to 5 s */
+static void note_waited(App* app) {
+    SDL_Event e;
+    Uint64 until = SDL_GetTicks() + 5000;
+    while (!app->editor.note[0] && SDL_GetTicks() < until) {
+        while (SDL_PollEvent(&e)) event(app, &e);
+        SDL_Delay(5);
+    }
+}
+/* a path setting's row: Enter opens the system's picker (the test's zenity) over the value it has, a folder's, a file's
+   or a save dialog's, its answer kept as a pick; none picked, or a picker that cannot open, is said and the value
+   stays; Ctrl+V and a drop give a path; too long a one is refused with the value kept; after a picker that could not open,
+   Enter types it */
+static void paths_asked(App* app, const char* temporary) {
+    static const char list[] = "Debug\tshader_corpus\t\ttext\t0\t0\tKeeps\tShader corpus\t\t\t\tfolder\n"
+                               "Debug\tir_branch_profile\t\ttext\t0\t0\tCounts\tIR branch profile\t\t\t\tfile\n"
+                               "Debug\tpipeline_stats\t\ttext\t0\t0\tStats\tPipeline stats\t\t\t\tsave\n"
+                               "Debug\tother\t\ttext\t0\t0\tOther\tOther\n";
+    char *root = snx_path_join(temporary, "paths"), *bin = snx_path_join(root, "bin");
+    char *zenity = snx_path_join(bin, "zenity"), *asked = snx_path_join(root, "asked.txt");
+    char *cancel = snx_path_join(root, "cancel"), *folder = snx_path_join(root, "a folder");
+    char *file = snx_path_join(root, "in.txt"), *out = snx_path_join(root, "out.csv");
+    char *was = getenv("PATH") ? snx_strdup(getenv("PATH")) : NULL, *script, *path, *text, want[2048], longer[700];
+    size_t size;
+    SDL_Event e;
+    int g, shader, branch, stats;
+    script = snx_format("#!/bin/sh\n"
+                        "[ \"$1\" = --version ] && { echo 3.44.0; exit 0; }\n"
+                        "printf '%%s\\n' \"$@\" > '%s'\n"
+                        "[ -e '%s' ] && exit 1\n"
+                        "for a in \"$@\"; do\n"
+                        "  [ \"$a\" = --directory ] && { echo '%s'; exit 0; }\n"
+                        "  [ \"$a\" = --save ] && { echo '%s'; exit 0; }\n"
+                        "done\n"
+                        "echo '%s'\n",
+                        asked, cancel, folder, out, file);
+    assert(!snx_mkdirs(bin) && !snx_mkdirs(folder) && !snx_write_file(file, "x", 1) &&
+           !snx_write_file(zenity, script, strlen(script)) && !snx_make_executable(zenity));
+    path = snx_format("%s:%s", bin, was ? was : "/usr/bin:/bin");
+    assert(!SDL_setenv_unsafe("PATH", path, 1) &&
+           SDL_SetHintWithPriority(SDL_HINT_FILE_DIALOG_DRIVER, "zenity", SDL_HINT_OVERRIDE));
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Debug"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    shader = row_of(app, setting_row(app, "shader_corpus"));
+    branch = row_of(app, setting_row(app, "ir_branch_profile"));
+    stats = row_of(app, setting_row(app, "pipeline_stats"));
+    app->editor.row = shader;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    snprintf(want, sizeof want, "Shader corpus: %s", folder);
+    assert(!strcmp(app->editor.note, want) && !app->editor.typing &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), folder) && picks_have(app, "shader_corpus="));
+    text = (char*)snx_read_file(asked, &size);
+    assert(text && strstr(text, "--file-selection\n") && strstr(text, "--directory\n"));
+    free(text);
+    app->editor.row = branch;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(gui_settings_value(&app->settings, "ir_branch_profile"), file));
+    app->editor.row = stats;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(gui_settings_value(&app->settings, "pipeline_stats"), out));
+    text = (char*)snx_read_file(asked, &size); /* a save dialog, asked for the value it has or the key in Documents */
+    assert(text && strstr(text, "--save\n"));
+    free(text);
+    /* cancelled: said, the value as it was */
+    assert(!snx_write_file(cancel, "", 0));
+    app->editor.row = shader;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(app->editor.note, "Shader corpus: No folder was picked.") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), folder));
+    app->editor.row = branch;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(app->editor.note, "IR branch profile: No file was picked.") && !snx_remove_tree(cancel));
+    /* Del takes it off, Ctrl+V gives the one pasted, a drop another; a text that is no path row's is typed as before */
+    app->editor.row = shader;
+    key(app, SDLK_DELETE);
+    assert(!gui_settings_value(&app->settings, "shader_corpus"));
+    assert(SDL_SetClipboardText("  '/tmp/a pasted folder'\n"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_V;
+    e.key.mod = SDL_KMOD_LCTRL;
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/a pasted folder") &&
+           !strcmp(app->editor.note, "Shader corpus: /tmp/a pasted folder"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_DROP_FILE;
+    e.drop.data = "/tmp/dropped";
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    app->editor.row = row_of(app, setting_row(app, "other")); /* a text of its own: typed, no picker */
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing);
+    key(app, SDLK_ESCAPE);
+    /* too long: refused, both the value given and the one kept named */
+    app->editor.row = shader;
+    memset(longer, 'x', sizeof longer - 1);
+    longer[0] = '/';
+    longer[sizeof longer - 1] = 0;
+    path_take(app, setting_row(app, "shader_corpus"), longer);
+    assert(strstr(app->editor.note, "Shader corpus: takes a path of up to 511 bytes, not /xxxx") &&
+           strstr(app->editor.note, ": it keeps /tmp/dropped") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    /* the settings it was opened for are closed: not taken, said with both */
+    free(app->path_own);
+    app->path_own = snx_strdup("/some/game.ini");
+    snprintf(app->path_key, sizeof app->path_key, "shader_corpus");
+    path_answer(app, "/tmp/late", NULL, false);
+    assert(!strcmp(app->message, "shader_corpus not changed to /tmp/late: its settings were closed while the picker "
+                                 "was open") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    app->message[0] = 0;
+    /* a picker that cannot open: said, with why; Enter types the path from then on, as it says */
+    assert(SDL_SetHintWithPriority(SDL_HINT_FILE_DIALOG_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(strstr(app->editor.note, "Shader corpus: the picker could not open: ") &&
+           strstr(app->editor.note, ". Enter now types the path") && app->path_typed);
+    app->message[0] = 0;
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !strcmp(app->editor.text, "/tmp/dropped"));
+    key(app, SDLK_ESCAPE);
+    app->path_typed = false;
+    settings_forget(app);
+    leave_editor(app);
+    SDL_ResetHint(SDL_HINT_FILE_DIALOG_DRIVER);
+    assert(was ? !SDL_setenv_unsafe("PATH", was, 1) : !SDL_unsetenv_unsafe("PATH"));
+    assert(!snx_remove_tree(root));
+    free(path);
+    free(script);
+    free(was);
+    free(out);
+    free(file);
+    free(folder);
+    free(cancel);
+    free(asked);
+    free(zenity);
+    free(bin);
+    free(root);
+}
 /* the system's pickers the box's Add rows open, as SDL runs zenity (one of the test's own on PATH, which says what it
    was asked and answers a folder or a file): Add Mod the folder picker, Add Cheats the file picker for a .txt, each
    answer from SDL's thread added to the box. Off, the menu's own pickers go back to none */
@@ -17873,6 +18028,7 @@ int main(int argc, char** argv) {
     play_asked_said(&app, temporary);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);
+    paths_asked(&app, temporary);
 #endif
     e.type = SDL_EVENT_QUIT;
     event(&app, &e);

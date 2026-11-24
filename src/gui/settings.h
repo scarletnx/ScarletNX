@@ -33,6 +33,7 @@ typedef struct {
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
     int needs_build;      /* the build this row needs, which this one has none of: shown, picked by nothing */
+    int path; /* a text that is a path (ini.h's INI_PATH): 'd' a folder's, 'f' a file's, 's' one to write's */
     int slider;           /* a plain word row on a slider (ini.h's INI_SLIDER): stepped to its ends, never round */
     /* a word row's value that is none of its words, kept in text and shown as itself as a word after its others: that
        word's index, 0 for none. Only a slider's row and an open one have such a value (the runtime's list's open:

@@ -22,7 +22,7 @@ typedef struct {
     char id[64];
     int row, top; /* the focused row, and the first one shown */
     bool typing;  /* a value being typed for the focused row, in text */
-    char text[80];
+    char text[512];      /* a path's room, as a text setting's (settings.h's GUI_SETTING_TEXT) */
     bool dirty, leaving; /* changed since it was saved; ESC pressed once over changes */
     int preview;         /* GUI_SCREEN_MENU or GUI_SCREEN_COMPILING */
     char note[1024];     /* what the last key did, when it did not do what it was asked: Folders' F5 names each of

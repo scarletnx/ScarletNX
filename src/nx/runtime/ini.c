@@ -364,6 +364,19 @@ static const char* repeated_help(const IniOpt* table, const IniOpt* o) {
     }
     return "";
 }
+/* a row's marks (ini.h's INI_SLIDER, INI_OPEN, INI_BOXES, INI_PATH), a space between two, into out; empty for none */
+static void list_marks(const IniOpt* o, char* out, size_t size) {
+    const char* path = (o->flags & INI_PATH) == INI_PATH_FOLDER ? "folder"
+                       : (o->flags & INI_PATH) == INI_PATH_FILE ? "file"
+                       : (o->flags & INI_PATH) == INI_PATH_SAVE ? "save"
+                                                                : NULL;
+    const char* marks[] = {o->flags & INI_SLIDER ? "slider" : NULL, (o->flags & INI_OPEN) || o->steps ? "open" : NULL,
+                           o->flags & INI_BOXES ? "boxes" : NULL, path};
+    size_t n = 0;
+    out[0] = 0;
+    for (size_t i = 0; i < sizeof marks / sizeof *marks; ++i)
+        if (marks[i] && n < size) n += (size_t)snprintf(out + n, size - n, "%s%s", n ? " " : "", marks[i]);
+}
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size) {
     static const char* const types[] = {"int", "float", "text"};
     Listing l;
@@ -392,12 +405,11 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                int open = (o->flags & INI_OPEN) || o->steps, boxes = (o->flags & INI_BOXES) != 0;
-                if ((o->flags & (INI_NEEDS_BUILD | INI_SLIDER)) || open || boxes)
+                char marks[64];
+                list_marks(o, marks, sizeof marks);
+                if ((o->flags & INI_NEEDS_BUILD) || marks[0])
                     put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
-                if ((o->flags & INI_SLIDER) || open || boxes)
-                    put(&l, "\t%s%s%s%s", o->flags & INI_SLIDER ? "slider" : "",
-                        (o->flags & INI_SLIDER) && open ? " " : "", open ? "open" : "", boxes ? "boxes" : "");
+                if (marks[0]) put(&l, "\t%s", marks);
                 put(&l, "\n");
             }
         }

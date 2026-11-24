@@ -306,7 +306,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
   number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
-  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting's words are
+  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting that is a path
+  (a shader corpus's folder, a branch profile's file, a stats file to write) is picked: Enter opens the system's
+  folder, file or save dialog over the path it has, Ctrl+V and a drop give it a path too, Del takes it off; on iOS, and
+  after a dialog that could not open (said), Enter types it. A setting's words are
   its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
   `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
   that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),

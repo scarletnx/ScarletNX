@@ -36,6 +36,12 @@ enum {
    (the bans, the hook families, the Vulkan commands) or from the row's own words. The launcher gives a box an item; the
    game's menu only reads the value */
 #define INI_BOXES       64
+/* a text that is a path (settings.txt's path): the launcher's Settings pick it with the system's dialog, a folder's, a
+   file's that is read, or a save dialog's for one that is written */
+#define INI_PATH_FOLDER (1 << 12)
+#define INI_PATH_FILE   (2 << 12)
+#define INI_PATH_SAVE   (3 << 12)
+#define INI_PATH        (3 << 12)
 
 /* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
    feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
@@ -148,7 +154,7 @@ int ini_step(const IniOpt* o, int v, int dir);
    ini_only's words (empty where the setting does something on this system), needs-build for an INI_NEEDS_BUILD row
    and its marks, a space between two, for the rest (an empty column before them where the row needs nothing):
    slider for an INI_SLIDER row, open for an INI_OPEN one or one with steps, boxes for an INI_BOXES one, whose values
-   are its items value=Label~About, tabs between. Into out,
+   are its items value=Label~About, and folder, file or save for an INI_PATH_ one, tabs between. Into out,
    NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 

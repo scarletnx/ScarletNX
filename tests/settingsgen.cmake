@@ -111,6 +111,19 @@ setting Driver
     text 16
     once
     perf
+setting Corpus
+    key corpus
+    text 16
+    path folder
+setting Profile
+    key profile
+    text 16
+    path file
+    startup
+setting Stats
+    key stats
+    text 16
+    path save
 setting ${long_name}
     key long
     text 4
@@ -187,7 +200,11 @@ foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS
             "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,"
             # a perf row's (ini.h's INI_PERF), after startup's; a once text's with no default in its row
             "{\"speed\", \"1\", NULL, INI_INT, INI_STARTUP | INI_PERF, &g_settings.speed,"
-            "{\"driver\", NULL, NULL, INI_TEXT, INI_PERF, g_settings.driver,")
+            "{\"driver\", NULL, NULL, INI_TEXT, INI_PERF, g_settings.driver,"
+            # a path's (ini.h's INI_PATH): a folder's, a file's, one to write
+            "{\"corpus\", \"\", NULL, INI_TEXT, INI_PATH_FOLDER, g_settings.corpus,"
+            "{\"profile\", \"\", NULL, INI_TEXT, INI_STARTUP | INI_PATH_FILE, g_settings.profile,"
+            "{\"stats\", \"\", NULL, INI_TEXT, INI_PATH_SAVE, g_settings.stats,")
     string(FIND "${text}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
@@ -375,6 +392,9 @@ endif()
 foreach(bad "table g_t_ini\nsetting Dashed\n    key a-b\n    int 0 1\n    default 0\n|refused.txt:2: Dashed's key a-b has a -: a key is letters, digits and _ (a command line gives it with - for each _ too)"
             "table g_t_ini\nsetting Stray\n    key a<N>\n    int 0 1\n    default 0\n|refused.txt:2: Stray's key a<N> has a <: a key is letters, digits and _ (a command line gives it with - for each _ too)"
             "list sides a-b=A\ntable g_t_ini\nsetting Side\n    key side_<ID>\n    int 0 1\n    default 0\n    each sides\n|settingsgen: list sides: its id a-b has a -, which its settings' keys would have: an id is letters, digits and _"
+            # path on a row that is no path: an int's, and a kind no picker has
+            "table g_t_ini\nsetting Number\n    key number\n    int 0 1\n    default 0\n    path file\n|refused.txt:2: Number: path takes a text, not boxes"
+            "table g_t_ini\nsetting Odd\n    key odd\n    text 8\n    default a\n    path banana\n|refused.txt:6: path banana: a path is a folder, a file, or save (a file to write)"
             # perf on a row the game never reads, or on a once row whose off-default nothing can tell
             "table g_l_ini launcher\nsetting Shown\n    key shown\n    int 0 1\n    default 0\n    perf\n|refused.txt:2: Shown: perf takes a game's or the recompile's setting: a launcher table's never reaches the game"
             "table g_t_ini\nsetting Every\n    key every\n    int 0 9\n    default 0\n    once\n    perf\n|refused.txt:2: Every: perf takes a once setting only as a text whose default is empty")
