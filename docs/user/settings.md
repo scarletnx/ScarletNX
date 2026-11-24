@@ -536,7 +536,10 @@ window, and the start says which run.
 
 ## Vita driver
 
-`scarletnx-vita --key=value` ([PS Vita](../platforms/vita/README.md)), in no section of the game's `.ini`.
+`scarletnx-vita --key=value` ([PS Vita](../platforms/vita/README.md)). The launcher's Settings show them on the Vita
+group's Debug page and pass each one picked to a Vita game's run; the lockstep rows are greyed in a build without
+`-DSNX_VITA_LOCKSTEP=ON`. `vita_script`, `vita_press_len` and `vita_shot_every` are a run's own, given on the command
+line and on no page.
 
 | Key | Default | Effect |
 | --- | --- | --- |

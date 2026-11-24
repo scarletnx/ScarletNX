@@ -648,26 +648,27 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     argv[0] = s->values[i].option;
     return 1;
 }
-/* argv's --key=value of each setting picked; with ctr, the 3DS driver's only: its tables' (keys that start with ctr_)
-   and the Switch's it takes too. A Switch run's, the game's .ini at game_ini (NULL: none), are the launcher's picks for
-   every game, said by --launcher-picks=1, under the game's own picks, which the runtime reads; the recompile, which
-   reads none, gets the game's own of its settings (given) */
-static size_t picked_options(GuiSettings* s, const char** argv, int ctr, const char* game_ini) {
-    char* picks = !ctr && game_ini ? snx_game_picks(game_ini) : NULL;
+/* argv's --key=value of each setting picked; with a driver's prefix, that driver's only: its tables' (keys that start
+   with ctr_ or vita_), and for the 3DS the Switch's it takes too. A Switch run's (prefix NULL), the game's .ini at
+   game_ini (NULL: none), are the launcher's picks for every game, said by --launcher-picks=1, under the game's own
+   picks, which the runtime reads; the recompile, which reads none, gets the game's own of its settings (given) */
+static size_t picked_options(GuiSettings* s, const char** argv, const char* prefix, const char* game_ini) {
+    char* picks = !prefix && game_ini ? snx_game_picks(game_ini) : NULL;
+    int ctr = prefix && !strcmp(prefix, "ctr_");
     size_t n = 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
         const char* key = s->values[i].key;
         const char* value;
-        if (!key || (ctr && strncmp(key, "ctr_", 4) && !snx_ctr_shared_setting(key))) continue;
-        if ((value = ctr ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
+        if (!key || (prefix && strncmp(key, prefix, strlen(prefix)) && !(ctr && snx_ctr_shared_setting(key)))) continue;
+        if ((value = prefix ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
     }
-    if (n && !ctr) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    if (n && !prefix) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
     free(picks);
     return n;
 }
 size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, const char** argv) {
-    size_t n = picked_options(s, argv, 0, game_ini);
+    size_t n = picked_options(s, argv, NULL, game_ini);
     if (launch && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     if (launch && gui_settings_extract(s)) argv[n++] = gui_settings_extract(s);
     if (launch && own_on(s, "gdbstub")) {
@@ -676,4 +677,5 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, co
     }
     return n;
 }
-size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, 1, NULL); }
+size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "ctr_", NULL); }
+size_t gui_settings_vita_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "vita_", NULL); }

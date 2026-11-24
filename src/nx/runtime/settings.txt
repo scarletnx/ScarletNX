@@ -2408,10 +2408,12 @@ setting CTR script
     help buttons in hex as hid:USER's pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
     help 100 R, 200 L, 400 X, 800 Y), each held for press_len ms
 
-# ---- the Vita driver's (scarletnx-vita --key=value), in no section of the game's .ini ----
+# ---- the Vita driver's debug settings (scarletnx-vita --key=value), the Vita section's Debug page: the launcher
+# passes each one picked to a Vita game's run ----
 
 table g_vita_debug_ini
 setting Vita import trace
+    label Import trace
     key vita_hle_trace
     int 0 2
     default 0
@@ -2419,6 +2421,7 @@ setting Vita import trace
     help 1 = logs each call of an imported function the runtime doesn't implement, 2 = every call, with its
     help thread, r0 to r3 and its result
 setting Vita run-time compile trace
+    label Run-time compile trace
     key vita_jit_trace
     int 0 1
     default 0
@@ -2426,17 +2429,44 @@ setting Vita run-time compile trace
     help 1 = logs each block the Vita runtime compiles while the game runs (the game's module lacked it), Thumb ones
     help with the pc's low bit set as the hints file writes them
 setting Vita GXM trace
+    label GXM trace
     key vita_gxm_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each scene, draw and display queue entry the Vita game makes through sceGxm
 setting Vita shader corpus
+    label Shader corpus
     key vita_shader_corpus
     text 1024
     default ""
     help A folder the Vita runtime writes each GXP program it translates to, with what it was translated for, as
     help <hash>.gxp: tools/snx_vita_usse.c translates such a folder again (the game's own code: keep it local)
+# the backend checked against Unicorn, in a build configured with -DSNX_VITA_LOCKSTEP=ON alone (src/vita/CMakeLists.txt)
+needs vita_lockstep
+setting Vita lockstep
+    label Lockstep
+    key vita_lockstep
+    int -1 INT_MAX
+    default -1
+    words Off|#
+    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
+    help the first difference in registers, flags or written memory stops the run with both states (docs/platforms/vita/README.md).
+    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
+setting Vita lockstep steps
+    label Lockstep steps
+    key vita_lockstep_steps
+    int 0 INT_MAX
+    default 0
+    words No limit|#
+    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
+    help 0 = no limit
+end
+
+# ---- a Vita run's scripted input (scarletnx-vita --key=value), in no section: a run's own, as the unattended runs'
+# are, never written back nor listed ----
+
+table g_vita_run_ini
 setting Vita script
     key vita_script
     text 4096
@@ -2456,21 +2486,6 @@ setting Vita screenshot interval
     default 0
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
-setting Vita lockstep
-    key vita_lockstep
-    int -1 INT_MAX
-    default -1
-    words Off|#
-    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
-    help the first difference in registers, flags or written memory stops the run with both states (docs/platforms/vita/README.md).
-    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
-setting Vita lockstep steps
-    key vita_lockstep_steps
-    int 0 INT_MAX
-    default 0
-    words No limit|#
-    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
-    help 0 = no limit
 
 # ---- the Vulkan extensions ----
 
@@ -2578,6 +2593,7 @@ section Display: g_display_ini
 section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section Audio: g_audio_ini
 section 3DS: g_ctr_display_ini, g_ctr_debug_ini/Debug
+section Vita: g_vita_debug_ini/Debug
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player, g_joycon2_ini/Bluetooth    backend

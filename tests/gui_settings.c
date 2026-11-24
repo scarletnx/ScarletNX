@@ -1079,6 +1079,22 @@ int main(int argc, char** argv) {
         assert(!strcmp(options[13], "--volume=50"));
         gui_settings_free(&s);
     }
+    /* a Vita game's run gets its Debug page's picks alone (keys that start with vita_): none of the Switch's or the
+       3DS's, which its driver refuses */
+    {
+        static const char vita[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                                   "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t"
+                                   "0=Off|1=Missing|2=All\n"
+                                   "Vita/Debug\tvita_gxm_trace\t0\tint\t0\t1\tScenes\tGXM trace\t0=Off|1=On\n";
+        assert(!gui_settings_read(&s, vita));
+        assert(!gui_settings_vita_options(&s, options) && gui_settings_set(&s, "fullscreen", "1") &&
+               gui_settings_set(&s, "ctr_hooks", "0") && !gui_settings_vita_options(&s, options));
+        assert(gui_settings_set(&s, "vita_hle_trace", "2") && gui_settings_vita_options(&s, options) == 1 &&
+               !strcmp(options[0], "--vita-hle-trace=2"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
+        gui_settings_free(&s);
+    }
     /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its
        ends, set to the step nearest a place along it; the same words without the mark are no slider, nor are they
        where the default is no step (its row's first word the .ini's) */

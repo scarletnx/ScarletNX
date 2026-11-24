@@ -120,6 +120,32 @@ string(FIND "${list}" "\tctr_script\t" at)
 if(NOT at LESS 0)
     message(FATAL_ERROR "scarletnx --settings lists ctr_script, a 3DS run's scripted input")
 endif()
+# the Vita driver's, on the Vita group's Debug page (the launcher passes each one picked to a Vita game's run); the
+# lockstep rows only a build configured with -DSNX_VITA_LOCKSTEP=ON has, greyed in any other; its scripted input and the
+# press and screenshot rows that go with it, a run's own, on no page
+foreach(row "\nVita/Debug\tvita_hle_trace\t0\tint\t0\t2\t" "\tImport trace\t0=Off|1=Missing|2=All\t\n"
+            "\nVita/Debug\tvita_gxm_trace\t0\tint\t0\t1\t")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
+foreach(key vita_script vita_press_len vita_shot_every)
+    string(FIND "${list}" "\t${key}\t" at)
+    if(NOT at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings lists ${key}, a Vita run's own")
+    endif()
+endforeach()
+foreach(key vita_lockstep vita_lockstep_steps)
+    if(NOT list MATCHES "\nVita/Debug\t${key}\t")
+        message(FATAL_ERROR "scarletnx --settings has no Vita/Debug row ${key}")
+    endif()
+    if(SNX_VITA_LOCKSTEP AND key IN_LIST needed)
+        message(FATAL_ERROR "scarletnx --settings: ${key} says it needs a build this one has")
+    elseif(NOT SNX_VITA_LOCKSTEP AND NOT key IN_LIST needed)
+        message(FATAL_ERROR "scarletnx --settings: ${key} does not say that a build without lockstep has none of it")
+    endif()
+endforeach()
 # a game's HDR output, off until asked for, and the paper white and the peak it is told: the launcher's Settings and
 # a game's menu show them (gpu/vk/hdr_swapchain.c, hle/services/gsv.c)
 foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\t\n"
