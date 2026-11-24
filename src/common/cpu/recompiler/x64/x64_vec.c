@@ -749,6 +749,7 @@ static int shift_imm(SnxU32 word, unsigned* size, unsigned* left, unsigned* righ
 
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
+    if (insn->feature & SNX_A64_FEAT_FP16) return 0; /* half-precision lanes: the LLVM back end's */
     {
         int f = vec_fp(u, insn, word);
         if (f) return f;

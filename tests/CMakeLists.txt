@@ -3894,6 +3894,9 @@ target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
+# half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
+add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words
+         0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
          d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61)
