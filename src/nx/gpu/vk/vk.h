@@ -2974,6 +2974,10 @@ extern VkShaderStageFlags g_vk_subgroup_stages;
    inside its quad, where g_vk_subgroup_stages has not the stage. And the lanes of the device's subgroups */
 extern VkShaderStageFlags g_vk_quad_stages;
 extern u32 g_vk_subgroup_lanes;
+/* what a log line says after a refusal for a warp's other lanes, the lanes of the device's subgroups beside the 32 that a
+   warp has, into out, which it returns: nothing after another refusal. The reason itself is kept in the corpus and has a
+   fixed length (ShaderInfo.first_unsupported) */
+const char* vk_lane_note(char out[32], const ShaderInfo* si);
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */

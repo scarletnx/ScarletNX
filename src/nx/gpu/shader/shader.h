@@ -170,7 +170,7 @@ typedef struct {
        (the memory mapped from the pointer on, as a bare address's) */
     u32 table_reach;
     int unsupported;            /* instructions or forms translation refused */
-    char first_unsupported[160]; /* the longest: a lone lane's refusal with the device's lanes (147 bytes) */
+    char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
     /* the shared memory lives in global buffer slot SH_SHARED_SPILL, not the workgroup's own: set by vk/compute.c where a

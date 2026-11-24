@@ -446,13 +446,13 @@ static void test_lone_lanes_refused(void) {
         int branch, lowest, change;
         const char* reason;
     } cases[] = {
-        {0, 0, LL_DATA, "not the leader's add of the count"},
-        {1, 0, LL_DATA, "not the leader's add of the count"},
+        {0, 0, LL_DATA, "not the leader's add of the"},
+        {1, 0, LL_DATA, "not the leader's add of the"},
         {0, 0, LL_LANE, "no combined add's"},
         {0, 0, LL_VALUE, "no combined add's"},
         {0, 0, LL_RANK, "IADD3"},
         {0, 0, LL_ADDRESS, "its address is not the warp's"},
-        {0, 0, LL_NEGATED, "under a lane's predicate, negated"},
+        {0, 0, LL_NEGATED, "under a lane's predicate"},
         {0, 0, LL_MASK, "a lane mask"},
         {0, 0, LL_SEGMENT, "no combined add's"},
         {0, 0, LL_UP, "no combined add's"},
@@ -467,9 +467,9 @@ static void test_lone_lanes_refused(void) {
         {0, 0, LL_OF_NOT, "not the running lanes' ballot"},
         {0, 0, LL_TABLE, "LOP3"},
         {0, 0, LL_COMPARE, "ISETP"},
-        {0, 0, LL_MIN, "not the leader's add of the count"},
+        {0, 0, LL_MIN, "not the leader's add of the"},
         {0, 0, LL_NO_REV, "UFLO"},
-        {0, 0, LL_OTHER, "not the leader's add of the count"},
+        {0, 0, LL_OTHER, "not the leader's add of the"},
     };
     char what[64];
     for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {

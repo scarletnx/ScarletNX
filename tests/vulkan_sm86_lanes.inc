@@ -46,13 +46,17 @@ static int check_sm86_lanes(void) {
     CHECK(spv);
     free(spv);
     spv = sm86_lanes_module(reduction, 1, without, &count, &si);
-    char lanes[32];
+    char lanes[32], note[32];
     snprintf(lanes, sizeof lanes, " (%u lanes of 32)", g_vk_subgroup_lanes);
     const int said =
-        !spv && si.unsupported && strstr(si.first_unsupported, "REDUX at 0") && strstr(si.first_unsupported, lanes);
+        !spv && si.unsupported && strstr(si.first_unsupported, "REDUX at 0") && !strcmp(vk_lane_note(note, &si), lanes);
     if (!said)
-        fprintf(stderr, "sm86 lanes: a reduction without a warp: %s\n", spv ? "translated" : si.first_unsupported);
+        fprintf(stderr, "sm86 lanes: a reduction without a warp: %s%s\n", spv ? "translated" : si.first_unsupported,
+                note);
     CHECK(said);
+    ShaderInfo other = {0};
+    snprintf(other.first_unsupported, sizeof other.first_unsupported, "missing exit");
+    CHECK(!*vk_lane_note((char[32]){0}, &other));
     printf(
         "PASS sm86 lanes: a ballot is translated with and without compute subgroups, a reduction refused without: %s\n",
         si.first_unsupported);
