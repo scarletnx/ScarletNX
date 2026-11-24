@@ -121,6 +121,9 @@ static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixe
 #define SGX_F_GPR (SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT)
 /* the flag a carry in is (ADC's CF: flag_of's index), and whether the division is Arm's (0: DIV and IDIV fault where
    Arm's give 0 and the dividend, and mach.h keeps them from those divisors) */
+/* the state's address (RBX, the callee's), and a call's arguments after the state's (RDI) */
+#define SGX_BASE 3
+static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
 #define SGX_CARRY 0
 #define SGX_DIV_ARM 0
 /* the vector forms mach.h's front makes values with: a 16-byte load (of the pool) and store (of the state), a vector

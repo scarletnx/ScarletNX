@@ -95,8 +95,11 @@ endfunction()
 # own (tools/sailgen/README.md): MACHINE x64's, as paths in out, and the --backend arguments that name them in args
 function(snx_sailgen_machine_backends machine guest out args)
     set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
-    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h"
-              "${back}/${machine}_${guest}.h")
+    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h")
+    if(EXISTS "${back}/mach_${guest}.h")
+        list(APPEND files "${back}/mach_${guest}.h")
+    endif()
+    list(APPEND files "${back}/${machine}_${guest}.h")
     set(list "")
     foreach(file IN LISTS files)
         list(APPEND list --backend "${file}")
