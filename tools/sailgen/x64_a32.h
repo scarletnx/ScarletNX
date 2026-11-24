@@ -44,7 +44,8 @@ struct SgCtx {
     SnxU32 word;
     SnxU64 pc; /* the instruction's address (gen.c's g->pc) */
     SnxU32 next;
-    int iset; /* SelectInstrSet's, 0 for the block's (A32) */
+    int thumb; /* the block is Thumb: 1 where its instructions read Thumb's PC (the A32 twins of T32's among them) */
+    int iset;  /* SelectInstrSet's, 0 for the block's */
     int branched, undefined;
     SgD target;    /* BranchTo's, 32 bits */
     int gpr[15];   /* the region's value of each register, 0 for none */
@@ -77,6 +78,14 @@ struct SgCtx {
     int nmonitors, cap_monitors;
     int ret;       /* the block's return: the epilogue and RET, bound at its end */
     int e_written; /* an MSR of the block may have set CPSR.E, which the next block's checked entry looks at */
+    /* a Thumb block's: ITSTATE before the instruction and after it (an SVC's or BKPT's, left in CPSR: sg_exception), and
+       the one an IT set for the instructions after it */
+    unsigned itstate, it_after, it_next;
+    int it_set;
+    /* a Thumb-2 exclusive's: its second register + 1 (a doubleword's, 0 for the one after the first), and what it adds
+       to its base register */
+    unsigned pair;
+    SnxU32 offset;
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
@@ -143,20 +152,27 @@ static inline long long sg_ArchVersion(SgCtx* g) {
     (void)g;
     return 8;
 }
-/* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): A32 until the instruction selects the other */
-static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : 1; }
+/* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): the block's until the instruction selects the other */
+static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->thumb ? 2 : 1; }
 static inline void sg_SetInstrSet(SgCtx* g, int iset) { g->iset = iset; }
-/* ITSTATE: no A32 instruction is in an IT block */
-static inline SgS sg_ITSTATE(SgCtx* g) {
-    (void)g;
-    return sg_s(0, 8);
-}
+/* ITSTATE before the instruction (0 in an A32 block, or where no IT block is open) */
+static inline SgS sg_ITSTATE(SgCtx* g) { return sg_s(g->itstate, 8); }
+/* IT's new ITSTATE, which the block compiler takes for the instructions after it: known when it recompiles */
 static inline void sg_ITSTATE_set(SgCtx* g, SgD v) {
-    (void)v;
-    sg_fail("an IT instruction in an A32 block", (long long)g->word, 0);
+    if (!g->thumb || !sgx_is_const(&v)) sg_fail("an ITSTATE known only at run time", (long long)g->word, g->thumb);
+    g->it_set = 1;
+    g->it_next = (unsigned)v.k;
 }
-/* CurrentCond: an A32 word's condition */
-static inline SgS sg_AArch32_CurrentCond(SgCtx* g) { return sg_s(g->word >> 28, 4); }
+/* CurrentCond (the Arm ARM's shared AArch32.CurrentCond): an A32 word's condition; in Thumb the T1 and T3 B<c>'s own,
+   else the IT block's while one is open, else AL */
+static inline SgS sg_AArch32_CurrentCond(SgCtx* g) {
+    if (!g->thumb) return sg_s(g->word >> 28, 4);
+    if (g->word < 0x10000 && (g->word & 0xF000) == 0xD000 && ((g->word >> 9) & 7) != 7) /* T1: 1101 cccc, not 111x */
+        return sg_s(g->word >> 8, 4);
+    if (g->word >= 0x10000 && (g->word & 0xF800D000u) == 0xF0008000u && ((g->word >> 23) & 7) != 7) /* T3 */
+        return sg_s(g->word >> 22, 4);
+    return sg_s(g->itstate & 15 ? g->itstate >> 4 : 14, 4);
+}
 /* ConditionHolds(cond) on the flags NZCV was last written from, while the x86 flags are still them: the condition code
    the selection gave Arm's cond on that form's flags. 0 otherwise: the Sail then reads PSTATE */
 static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
@@ -243,8 +259,9 @@ static inline unsigned sg_pstate_bit(long long field) {
 static inline SgD sg_PSTATE_read(SgCtx* g, long long field) {
     unsigned bit = sg_pstate_bit(field);
     if (g->pending >> field & 1) return g->field[field];
-    /* T and E: clear, the block's entry checked them, until an instruction of the block writes them */
-    if (field == SG_PSTATE_T || field == SG_PSTATE_E) return sgx_const(1, 0);
+    /* T and E: as the block's entry checked them (a Thumb block's T set), until an instruction of the block writes them */
+    if (field == SG_PSTATE_T) return sgx_const(1, (SnxU64)g->thumb);
+    if (field == SG_PSTATE_E) return sgx_const(1, 0);
     return sg_d_slice(g, sgx_a32_cpsr(g), bit, bit);
 }
 /* PSTATE's fields first to first + count - 1 = v, v's top bit the first, kept for sg_flags_flush. NZCV from AddWithCarry
@@ -269,8 +286,9 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
         return;
     }
     if (v.nzcv) sgx_reg(x, &v);
-    if (first == SG_PSTATE_T && count == 1 && !(g->pending >> SG_PSTATE_T & 1) && sgx_is_const(&v) && !(v.k & 1))
-        return; /* A32 (BL's SelectInstrSet): CPSR keeps it */
+    if (first == SG_PSTATE_T && count == 1 && !(g->pending >> SG_PSTATE_T & 1) && sgx_is_const(&v) &&
+        (v.k & 1) == (SnxU64)g->thumb)
+        return; /* the block's own instruction set (BL's SelectInstrSet): CPSR keeps it */
     for (long long f = 0; f < count; ++f) {
         (void)sg_pstate_bit(first + f);
         g->field[first + f] = sg_d_slice(g, v, count - 1 - f, count - 1 - f);
@@ -393,11 +411,19 @@ static inline void sg_undefined(SgCtx* g) {
     sgx_a32_machine(g, SGX_A32_UNDEF_END, 1)->imm = g->next;
     g->undefined = 1;
 }
-/* SVC and BKPT: R15 past the instruction and the exit, the immediate its syndrome (llvm_arm.h's sg_exception) */
+/* a Thumb ITSTATE in CPSR: [1:0] in bits 26:25, [7:2] in 15:10 (SG_IT_BITS) */
+#define SG_IT_BITS 0x0600FC00u
+static inline SnxU32 sg_it_bits(unsigned itstate) { return (SnxU32)((itstate & 3u) << 25 | (itstate >> 2) << 10); }
+/* SVC and BKPT: R15 past the instruction and the exit, the immediate its syndrome (llvm_arm.h's sg_exception); in Thumb
+   an IT block's ITSTATE after it left in CPSR */
 static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
     sgx_a32_commit(g);
     sg_flags_flush(g);
     sgx_a32_pc(g, sgx_const(32, g->next));
+    if (g->it_after) { /* Thumb: the ITSTATE after it in CPSR's IT bits (llvm_thumb.inc's it_leave) */
+        SgD c = sg_d_or(g, sgx_a32_cpsr(g), sgx_const(32, sg_it_bits(g->it_after)));
+        g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
+    }
     sgx_a32_put(g, offsetof(SnxArmCPU, syndrome), 32, sg_d_zext(g, imm, 32));
     sgx_a32_put(g, offsetof(SnxArmCPU, exit), 32, sgx_const(32, code));
     sgx_a32_machine(g, SGX_A32_JMP, 0)->disp = g->ret;
