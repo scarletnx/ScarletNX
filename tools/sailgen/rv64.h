@@ -57,7 +57,7 @@ static inline void rk_li(SgXBuf* b, int d, SnxU64 k) {
             rv_w(b, sge_rv64_addi((SnxU32)d, RV_ZERO, rv_i12(lo)));
         return;
     }
-    hi = (v - lo) >> 12;
+    hi = (long long)((SnxU64)v - (SnxU64)lo) >> 12; /* a v near INT64_MAX wraps where lo is below 0 */
     sh = 12 + (unsigned)__builtin_ctzll((SnxU64)hi);
     hi >>= sh - 12;
     rk_li(b, d, (SnxU64)hi);
