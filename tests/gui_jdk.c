@@ -72,6 +72,9 @@ int main(void) {
     list[0] = none;
     found = gui_jdks(list, &n);
     assert(!n && !found);
+    assert(!snx_mkdirs(none)); /* a root there and empty, as a system's /opt can be */
+    found = gui_jdks(list, &n);
+    assert(!n && !found);
 #ifndef _WIN32 /* a link to a JDK listed already: not twice (Debian's java-21-openjdk-amd64 beside its linked name) */
     {
         char* link = snx_path_join(root2, "link");
