@@ -974,12 +974,90 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     return 1;
 }
 
+/* the cryptographic extensions' instructions: the host's AES-NI and SHA-NI where it has them, else the portable helpers
+   (SHA-1 always: SHA1RNDS4 adds the round's constant, which Vm already holds here); 0 for the rest */
+static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
+    int aes = (X->features & SGX_F_AES) != 0, sha = (X->features & SGX_F_SHA) != 0, r, a, b, c = 0;
+    SnxU32 op;
+    switch (insn->op) {
+    case SNX_A64_OP_AESE:
+    case SNX_A64_OP_AESD:
+        a = vread(g, rd);
+        b = vread(g, rn);
+        if (aes) { /* the last round with a zero key: SubBytes and ShiftRows alone */
+            r = op2(g, insn->op == SNX_A64_OP_AESD ? &sgx_v_aesdeclast : &sgx_v_aesenclast, vxor(g, a, b), vzero(g));
+            break;
+        }
+        op = insn->op == SNX_A64_OP_AESD ? 0x21 : 0x20;
+        goto call;
+    case SNX_A64_OP_AESMC:
+    case SNX_A64_OP_AESIMC:
+        a = vread(g, rn);
+        b = 0;
+        if (aes) { /* MixColumns: a full round after an inverse last one, both with a zero key */
+            r = insn->op == SNX_A64_OP_AESIMC ? sgx_v1(X, &sgx_v_aesimc, a, 0)
+                                              : op2(g, &sgx_v_aesenc, op2(g, &sgx_v_aesdeclast, a, vzero(g)), vzero(g));
+            break;
+        }
+        op = insn->op == SNX_A64_OP_AESIMC ? 0x23 : 0x22;
+        goto call;
+    case SNX_A64_OP_SHA1C: op = 0; goto three;
+    case SNX_A64_OP_SHA1P: op = 1; goto three;
+    case SNX_A64_OP_SHA1M: op = 2; goto three;
+    case SNX_A64_OP_SHA1SU0: op = 3; goto three;
+    case SNX_A64_OP_SHA1H: op = 0x10; goto two;
+    case SNX_A64_OP_SHA1SU1: op = 0x11; goto two;
+    case SNX_A64_OP_SHA256H:
+    case SNX_A64_OP_SHA256H2:
+        op = insn->op == SNX_A64_OP_SHA256H ? 4 : 5;
+        if (!sha) goto three;
+        { /* two rounds twice on the state's halves in SHA-NI's order, the result's back in the guest's (dynarmic's) */
+            int part1 = op == 4, m = vread(g, rm), in[4] = {0, 0, 0, 0}, first, second, r1, r2;
+            a = vread(g, part1 ? rn : rd);
+            b = vread(g, part1 ? rd : rn);
+            first = sgx_v2(X, &sgx_v_shufps, a, b, 0xBB);
+            second = sgx_v2(X, &sgx_v_shufps, a, b, 0x11);
+            in[0] = first, in[1] = second, in[2] = m;
+            r1 = sgx_vins(X, &sgx_v_sha256rnds2, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+            in[0] = second, in[1] = r1, in[2] = sgx_v1(X, &sgx_v_pshufd, m, 0xEE);
+            r2 = sgx_vins(X, &sgx_v_sha256rnds2, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+            r = sgx_v2(X, &sgx_v_shufps, r2, r1, part1 ? 0xBB : 0x11);
+        }
+        break;
+    case SNX_A64_OP_SHA256SU0:
+        op = 0x12;
+        if (!sha) goto two;
+        r = op2(g, &sgx_v_sha256msg1, vread(g, rd), vread(g, rn));
+        break;
+    case SNX_A64_OP_SHA256SU1:
+        op = 6;
+        if (!sha) goto three;
+        a = vread(g, rm);
+        r = vadd(g, 2, vread(g, rd), sgx_v2(X, &sgx_v_palignr, a, vread(g, rn), 4));
+        r = op2(g, &sgx_v_sha256msg2, r, a);
+        break;
+    default: return 0;
+    three: c = vread(g, rm);
+    two:
+        a = vread(g, rd);
+        b = vread(g, rn);
+    call:
+        r = sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_crypto", a, b, c, op);
+        break;
+    }
+    vwrite(g, rd, r, 1);
+    return 1;
+}
+
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
     if (insn->feature & SNX_A64_FEAT_FP16) return 0; /* half-precision lanes: the LLVM back end's */
     {
         int f = vec_fp(u, insn, word);
         if (!f) f = vec_fp_more(u, insn, word);
+        if (!f) f = vec_crypto(u, insn, word);
         if (f) return f;
     }
     unsigned q = word >> 30 & 1, uns = word >> 29 & 1, size = word >> 22 & 3;
@@ -1611,6 +1689,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             vwrite_narrow(g, rd, r, q);
         return 1;
     }
+    case SNX_A64_OP_PMULL_p64: /* PMULL, PMULL2 of a doubleword (q: the upper ones): the 128-bit carryless product */
+        vwrite(g, rd, sgx_v2(X, &sgx_v_pclmulqdq, vread(g, rn), vread(g, rm), q ? 0x11 : 0x00), 1);
+        return 1;
     default: return 0;
     }
 }

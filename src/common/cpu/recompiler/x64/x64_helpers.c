@@ -22,6 +22,7 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
 extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
@@ -166,6 +167,25 @@ void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void*
         (void)b;
     }
     memcpy(out, r, 16);
+}
+
+/* the cryptographic instructions where the host has none for them: out from Vd's, Vn's and Vm's values (x, y, z); op
+   v_sha1's or v_sha256's, or from 0x20 AESE, AESD (x with the key y), AESMC, AESIMC (of x) */
+void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op) {
+    CPU s; /* the three registers alone */
+    (void)c;
+    memcpy(&s.v[0], x, 16);
+    memcpy(&s.v[1], y, 16);
+    memcpy(&s.v[2], z, 16);
+    if (op >= 0x22)
+        v_aesmc(&s.v[0], &s.v[0], (int)op - 0x22);
+    else if (op >= 0x20)
+        v_aes(&s.v[0], &s.v[1], (int)op - 0x20);
+    else if (op == 0x12 || (op >= 4 && op <= 6))
+        v_sha256(&s, op, 0, 1, 2);
+    else
+        v_sha1(&s, op, 0, 1, 2);
+    memcpy(out, &s.v[0], 16);
 }
 
 /* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's
