@@ -7,8 +7,14 @@
    to (on a mov's copy of the block), is found; its own body, the same code in another delete or in the family's other
    functions, loads spread wider than a copy's, a delete that forwards to another function, and code outside every
    module are not, nor is a copied delete without the lookup: one that asks the thread's heap, one that indexes its
-   table by the size, one on a table at a link-time address that loads one global. The verdict is read once a module
-   and said once, naming the delete that does the lookup, its first load, the count and the first copy */
+   table by the size, one on a table at a link-time address that loads one global. A module whose operator new takes
+   its block from an allocator object and whose delete asks a function given the block for the object it frees through
+   (a heap manager's, of one game) keeps its own new too, the object a call's result or a load through a pointer the
+   code picks; a delete whose call was not given the block (a thread's current heap, whose x0 still has the block of
+   the delete itself, one whose x1 was loaded over it, and one that frees another call's object) and a delete beside a
+   new that calls nothing through an object do not.
+   The verdict is read once a module and said once, naming the delete that does the lookup, its first load, the count
+   and the first copy, or the new and the delete of the heap manager */
 #include "nx/hle/hook/hook.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
@@ -23,7 +29,7 @@ int alloc_new_shape(u64 addr);
 
 #define MOD    0x8000u /* each case's module: its code, then its globals at GLOBAL */
 #define GLOBAL 0x7000u /* the delete's table (base, size, table) and the default allocator at +0x20 */
-#define CASES  11
+#define CASES  18
 
 static struct {
     u8 guest[CASES * MOD];
@@ -60,7 +66,7 @@ void logf_(int level, const char* format, ...) {
     va_start(args, format);
     vsnprintf(g_test.log, sizeof g_test.log, format, args);
     va_end(args);
-    if (strstr(g_test.log, "copies the code")) g_test.said++;
+    if (strstr(g_test.log, "copies the code") || strstr(g_test.log, "asks which heap")) g_test.said++;
 }
 void fatal(const char* format, ...) { /* alloc.c's table of blocks full, which no case here reaches */
     (void)format;
@@ -158,6 +164,64 @@ static u64 new_at(u64 entry, u64 g) {
     put(0xD61F0100u); /* br x8 */
     return g_test.at - entry;
 }
+/* operator new of a heap manager, through its current heap's table: a call to get gives the heap */
+static u64 heap_new_at(u64 entry, u64 get) {
+    g_test.at = entry;
+    mov(19, 0);
+    bl(get);
+    cbz(0, g_test.at + 16);
+    ldr(8, 0, 0);
+    mov(1, 19);
+    ldr(3, 8, 0x30);
+    put(0xD61F0060u); /* br x3 */
+    return g_test.at - entry;
+}
+/* the same of another game: the heap is one of two pointers a csel picks from, and x0 the one it loads (a thread's
+   own block's, else the manager's), so that no call gives the object */
+static u64 heap_new_csel_at(u64 entry, u64 g, u64 thread) {
+    g_test.at = entry;
+    mov(19, 0);
+    adrp(8, g + 0x40);
+    ldr(8, 8, (u32)((g + 0x40) & 0xFFF));
+    ldr(20, 8, 0);
+    bl(thread);
+    put(0x91022008u); /* add x8, x0, #136 */
+    put(0x91002289u); /* add x9, x20, #8 */
+    put(0xF100001Fu); /* cmp x0, #0 */
+    put(0x9A880128u); /* csel x8, x9, x8, eq */
+    ldr(0, 8, 0);
+    cbz(0, g_test.at + 20);
+    ldr(8, 0, 0);
+    mov(1, 19);
+    ldr(3, 8, 0x30);
+    put(0xD61F0060u); /* br x3 */
+    put(RET);
+    return g_test.at - entry;
+}
+/* a heap manager's operator delete, which asks find for the heap that contains the block and frees it through the
+   heap's table (slot 7). kind: 0 the manager in x0 and the block in x1; 1 the block left in x0 by the delete's own
+   argument, at a call to a function that takes none; 2 x1 loaded over the block before the call; 3 the object's table
+   of another call's result, which was not given the block; 4 the object's function called with the block in x0, and so
+   on no object (a table of functions) */
+static u64 heap_delete_at(u64 entry, u64 g, u64 find, u64 other, int kind) {
+    g_test.at = entry;
+    mov(19, 0);
+    if (kind != 1) {
+        adrp(8, g + 0x40);
+        ldr(0, 8, (u32)((g + 0x40) & 0xFFF));
+        mov(1, 19);
+    }
+    if (kind == 2) ldr(1, 8, 0x48);
+    bl(find);
+    if (kind == 3) bl(other);
+    cbz(0, g_test.at + 20);
+    ldr(8, 0, 0);
+    ldr(2, 8, 0x38);
+    mov(kind == 4 ? 0 : 1, 19);
+    put(0xD61F0040u); /* br x2 */
+    put(RET);
+    return g_test.at - entry;
+}
 /* the delete and operator new every case has, the new at base + 0x200: its address */
 static u64 pair(u64 base, u64 g, u32 p) {
     u64 sz = delete_at(base + 0x100, g, p);
@@ -183,10 +247,24 @@ static void said(const char* m, const char* name, u64 del, u64 first, u64 copy) 
     }
 }
 
+/* the line alloc_new_shape said last: module m's operator new name at new_addr, its delete at del asking a heap */
+static void said_heap(const char* m, const char* name, u64 new_addr, u64 del) {
+    char want[512];
+    snprintf(want, sizeof want,
+             "hooks: %s takes the block of its %s at %llx from an allocator object through its table, and its operator "
+             "delete at %llx asks which heap a block is in: its operator new keeps its own code",
+             m, name, (unsigned long long)new_addr, (unsigned long long)del);
+    if (strncmp(g_test.log, want, strlen(want))) {
+        fprintf(stderr, "said:  %swanted: %s\n", g_test.log, want);
+        abort();
+    }
+}
+
 int main(void) {
     u64 base[CASES], g[CASES], n[CASES], sz;
-    static const char* const names[CASES] = {"plain", "inlined", "clone",  "family", "spread", "forwards",
-                                             "heap",  "sized",   "static", "named",  "twice"};
+    static const char* const names[CASES] = {"plain", "inlined",  "clone",  "family", "spread", "forwards",
+                                             "heap",  "sized",    "static", "named",  "twice",  "manager",
+                                             "fresh", "leftover", "reload", "other",  "chosen"};
     for (int k = 0; k < CASES; k++) {
         base[k] = (u64)k * MOD, g[k] = base[k] + GLOBAL;
         g_test.info[k] =
@@ -268,6 +346,36 @@ int main(void) {
     sym(base[10] + 0x280, sz, "_Znam");
     inlined(base[10] + 0x1000, g[10], 0);
 
+    /* 11: the heap manager's new and delete of one game: the delete asks which heap has the block */
+    /* 12: the same delete, beside a new that calls nothing through an object */
+    /* 13: the block only left in x0 by the delete's own argument, at a call to the thread's heap */
+    /* 14: x1 loaded over the block before the call; 15: the object from a call not given the block */
+    /* 16: 11's delete, beside a new whose heap the code picks and no call gives */
+    /* 17: the object's function called with the block where the object would be */
+    for (int k = 11; k < 18; k++) {
+        u64 find = base[k] + 0x700, other = base[k] + 0x800, malloc_at = base[k] + 0x900;
+        sz = heap_delete_at(base[k] + 0x100, g[k], find, other,
+                            k == 13   ? 1
+                            : k == 14 ? 2
+                            : k == 15 ? 3
+                            : k == 17 ? 4
+                                      : 0);
+        sym(base[k] + 0x100, sz, "_ZdlPv");
+        n[k] = base[k] + 0x200;
+        if (k == 12) {
+            g_test.at = n[k];
+            b(malloc_at);
+            sz = 4;
+        } else if (k == 16)
+            sz = heap_new_csel_at(n[k], g[k], other);
+        else
+            sz = heap_new_at(n[k], find);
+        sym(n[k], sz, "_Znwm");
+        g_test.at = find, put(RET);
+        g_test.at = other, put(RET);
+        g_test.at = malloc_at, put(RET);
+    }
+
     assert(alloc_new_shape(n[0]) && !g_test.said);
     assert(!alloc_new_shape(n[1]) && g_test.said == 1);
     said(names[1], "_ZdlPv", base[1] + 0x100, g[1] + 0x10, base[1] + 0x1000 + 0x2C); /* the inlined copy's 3rd load */
@@ -283,7 +391,15 @@ int main(void) {
     said(names[9], "_ZdlPv", base[9] + 0x400, g[9] + 0x10, base[9] + 0x1000 + 0x2C);
     assert(!alloc_new_shape(n[10]) && !alloc_new_shape(base[10] + 0x280) && !alloc_new_shape(n[10]) &&
            g_test.said == 4);
-    assert(alloc_new_shape(sizeof g_test.guest + 0x100) && g_test.said == 4); /* in no module */
+    assert(!alloc_new_shape(n[11]) && g_test.said == 5);
+    said_heap(names[11], "_Znwm", n[11], base[11] + 0x100);
+    assert(!alloc_new_shape(n[11]) && g_test.said == 5); /* the verdict read once */
+    assert(alloc_new_shape(n[12]) && alloc_new_shape(n[13]) && g_test.said == 5);
+    assert(alloc_new_shape(n[14]) && alloc_new_shape(n[15]) && g_test.said == 5);
+    assert(!alloc_new_shape(n[16]) && g_test.said == 6);
+    said_heap(names[16], "_Znwm", n[16], base[16] + 0x100);
+    assert(alloc_new_shape(n[17]) && g_test.said == 6);
+    assert(alloc_new_shape(sizeof g_test.guest + 0x100) && g_test.said == 6); /* in no module */
     puts("PASS operator new's check: a delete that looks the block's allocator up by its address, copied inline or to "
          "a function no symbol names, keeps the module's new its own; its own body, the family's functions, wide "
          "loads, a forwarder, a heap's delete, a lookup by the size and one on a link-time table do not; said once");
