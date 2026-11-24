@@ -293,10 +293,23 @@ levels with hard blocks no faster.
 
 | Value | Name | Held as |
 | --- | --- | --- |
-| `0` | Auto, the default | Exact while the heap images go to has room, BC7 from its caches' first trim, Exact again once the room is back (below); an Ounce game's, BC7 at load |
+| `0` | Auto, the default | Exact while the heap images go to has room, BC7 from its caches' first trim, Exact again once the room is back (below) |
 | `1` | Exact | RGBA8, as the game's blocks decode, four bytes a texel |
 | `2` | BC7 | RGBA8 at once, then BC7 made between frames, a byte a texel |
 | `3` | BC7 at load | BC7 as each texture loads, with no RGBA8 image before it |
+
+Auto held an Ounce game's textures as BC7 at load until 2026-11-23, as feat/ounce did. In one Ounce game's race on an
+RX 9070 XT (14.4 GB budget), BC7 at load made 54 frames of 50 ms or more where Exact made 7, the worst 196 ms against
+114 ms. Its encoder's pace waited for the GPU in the draws that loaded new parts of the track (45 to 134 ms each), and
+the GPU thread took 12.3 ms a present against 10.2 ms. Both kept the heap within its budget, and BC7 at load had its
+caches give back textures they took again within 60 presents about five times as often. So Auto follows the room for
+an Ounce game too.
+
+Under a 6 GB budget (`vk_budget_mb=6000`) the same race then turned Auto from Exact to BC7 and back 58 to 75 times
+in 330 s, and textures flickered: the room that BC7 itself made was more than the band, so Auto turned Exact, and the
+track's next loads filled the caches again. Auto turns Exact again only where the room is also more than its ASTC
+textures held as BC7 would take more as RGBA8, three times their bytes (`snx_astc_auto_room`). It then turned once in
+each run, the race had 7 and 17 frames of 50 ms or more, and BC7 at load lost the device in both of its runs there.
 
 Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a 5.7 GB budget and were
 evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
@@ -368,7 +381,7 @@ linear layout (or pitch rows), the layout's padding left out, which stops at the
 (`snx_astc_level_kind` in `tests/support/astc_kind_ref.h`, then the same over the levels). The CPU made that walk as
 each texture was made, and in one game's race, which loads new parts of the track as it goes, it took 58 to 78% of the
 GPU thread in the bursts of new textures, 21% of it over 15 s. Now a new texture goes up at once as Auto holds one of
-unknown kind (BC7 at load for an Ounce game, else Exact or BC7 between frames by the room), and its upload keeps its
+unknown kind (Exact or BC7 between frames by the room), and its upload keeps its
 ASTC blocks on the GPU beside its image (`vk_astc_keep`, also for a level the BC7 cache gives, whose blocks are staged
 only to be kept). `astc_kind.comp` (its body `astc_kind.glsl`, `snx_astc_block_read` in the part of GLSL that is also
 C++) reads them, a dispatch a level of every layer, an invocation a block, and leaves four words a level of each layer:
@@ -694,8 +707,8 @@ blocks each, 447 megatexels with their mips. Its blocks are the encoder's worst 
 and the fast build took a Radeon 890M 92 ms a strip of two layers: the frame took 10.1 seconds. (In one submission it
 had reset the GPU, amdgpu's job timeout being 2 seconds: the upload's wait once 256 thousand blocks are queued, above,
 keeps every submission well under that.) The rules above count one layer (1.9 megatexels), and the levels were past
-what the cache took, so every run paid it again. A level held as BC7 at load (`astc_mode=3`, or Auto for an Ounce
-game: one made BC7 between frames goes up as RGBA8 first, above) of the very large size or more, every layer of a 2D
+what the cache took, so every run paid it again. A level held as BC7 at load (`astc_mode=3`: one made BC7 between
+frames goes up as RGBA8 first, above) of the very large size or more, every layer of a 2D
 array and every slice of a 3D level counted, now goes another way. The size starts at `astc_quick_mtexels`
 megatexels (8 by default: a 4096x2048 level, or two layers of 2048x2048) and then follows the encoder's speed here
 ([The size from the encoder's time](#the-size-from-the-encoders-time)):

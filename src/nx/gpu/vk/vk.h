@@ -2441,6 +2441,9 @@ void vk_tex_later_forget(Surf* s);
    encoder as ones held as BC7 do (Liz's choice, of keeping every Exact texture's blocks or of leaving them RGBA8); the
    others stay Exact. How many go, and the bytes of their RGBA8 images */
 void vk_tex_later_exact(u32* textures, u64* bytes);
+/* the bytes of the ASTC textures held as BC7 images now (astc_mode's Auto: what it needs room for to turn Exact
+   again, snx_astc_auto_room). A walk over the textures, under vk_lock */
+u64 vk_tex_astc_bc7_bytes(void);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
    given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,
    the bytes their RGBA8 images take, textures held Exact for their writes */
