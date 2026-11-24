@@ -3529,7 +3529,7 @@ if(NOT WIN32)
         snx_decodetree_a64(snx-test-sail-x64)
         snx_sailgen_a64_x64(snx-test-sail-x64)
         add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
-        add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool 3 --states 32)
+        add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool 3 --xmm 6 --states 32)
         set_tests_properties(sail_x64 sail_x64_spill PROPERTIES TIMEOUT 600)
         # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
         # same results from random states, the A32 instructions it makes alone and in rows; again with three host

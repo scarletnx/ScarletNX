@@ -175,6 +175,7 @@ typedef struct {
     int unmade;    /* a primitive had no candidate this host can run */
     int pool;      /* the host registers values may be in: the first pool of sgx_pool's (0: all; fewer, for tests of
                       spilling) */
+    int xpool;     /* and the vector registers: the first xpool (0: all) */
     SnxU64 end_dead; /* the guest's state nothing reads past the region's end (sgx_dead_words' mask), for the store
                         pass; 0 for none known */
     SnxU32 end_vdead; /* and its V registers */
@@ -2531,6 +2532,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
     int i, k;
     SgXBuf* b = a->b;
     a->x = x;
+    if (x->xpool) a->xreserved |= ~0u << x->xpool;
     memset(a->owner, 0, sizeof a->owner);
     memset(a->xowner, 0, sizeof a->xowner);
     a->slots = 0;
