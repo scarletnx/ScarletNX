@@ -631,6 +631,7 @@ Surf* vk_rt_find(u64 gva) {
     return NULL;
 }
 void vk_rt_note_read(Surf* s) { (void)s; }
+void vk_pool_map_swapped(const Surf* t) { (void)t; }
 u64 vk_sample_hash(u64 gva, u64 len) {
     (void)gva;
     return len;

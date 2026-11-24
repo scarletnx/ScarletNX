@@ -25,6 +25,7 @@
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/tex_report.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
@@ -582,6 +583,7 @@ static int rt_move(VkCommandBuffer cb, Surf* s, const DevMemWant* want, u64* byt
     s->att = s->att_linear = VK_NULL_HANDLE;
     s->img = img;
     s->mem = mem;
+    vk_pool_map_swapped(s);
     vk_surf_bytes(s, info.size);
     s->layout = copied ? VK_LAYOUT(TRANSFER_DST_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED;
     s->stage = copied ? VK_PIPELINE_STAGE_2_COPY_BIT : 0;
@@ -887,6 +889,7 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+u32 vk_surf_gen_now(void) { return g_surf_gen; }
 /* What a texture takes from the drawn targets over it (texture.c tex_take_drawn) changes only with the targets in its
    range and their pixels, so a texture that had nothing left to take is passed over while this count hasn't moved. It
    moves when a target enters the list of drawn targets or leaves it, is parked or taken out of parking, and when one

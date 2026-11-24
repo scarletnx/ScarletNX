@@ -41,6 +41,7 @@
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/addr_gens.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/varying_geometry.h"
 #include "nx/gpu/vk/quad_indices.h"
@@ -1506,6 +1507,7 @@ void vk_render_stats_log(void) {
     if (!presents) presents = 1;
     memo_miss_log(presents);
     fs_count_log(n, w, presents);
+    vk_pool_map_log(presents);
     LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
         "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
         "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "
@@ -1950,6 +1952,24 @@ static TexOver tex_over_of(const TexRes* x) {
 /* the target still holds the pixels the texture was kept over */
 static int tex_over_holds(const TexOver* o) {
     return o->rt->wgen == o->wgen && o->rt->layout != VK_IMAGE_LAYOUT_UNDEFINED;
+}
+/* A slot's resolve x of handle, for the pool map in shadow mode (pool_map.h, pool_map_shadow): view the one bound of
+   x's own texture, or none, as the slot reads it (want, num). A record may hold what the memo keeps: a texture, a
+   target, or one over a target with that target as the memo kept it */
+static void pool_shadow(const DsState* ds, u32 handle, const TexRes* x, VkImageView view, VkImageViewType want,
+                        int num) {
+    const TexMemo* m =
+        x->memo ? &g_tex_memo.set[(x->memo - 1) / TEX_MEMO_WAYS][(x->memo - 1) % TEX_MEMO_WAYS] : NULL;
+    const TexOver over = tex_over_of(x);
+    const PoolSlot slot = {.t = x->t,
+                           .tic = x->tic,
+                           .tsc = x->tsc,
+                           .over = over.rt,
+                           .over_wgen = over.wgen,
+                           .keepable = m && x->t && m->t == x->t && (!m->over || over.rt),
+                           .view = view,
+                           .view_kind = (u32)want | (u32)num << 8};
+    vk_pool_map_slot(ds->bind.tex_pool, ds->bind.tex_max, ds->bind.smp_pool, ds->bind.smp_max, handle, &slot);
 }
 /* The memo's last answers by handle, with what every check of a memo hit reads, taken before the lookup: while none
    of those moved, the same way is found again and each of its checks says the same (the surface table's epoch moves
@@ -4231,6 +4251,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                   : ((s->si.tex_sint_mask >> i) & 1)               ? 2
                                                                    : 1;
         VkImageView view = VK_NULL_HANDLE;
+        int own_view = 0; /* view is one tex_bind_view made of the resolve's texture (pool_shadow) */
         VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && ds->dyn.stencil_test &&
@@ -4287,8 +4308,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                 if (texels) g_vk_rt_copies++;
             } else
                 LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
-        } else
+        } else {
             view = tex_bind_view(x, t, want, num);
+            own_view = t == x->t; /* the resolve's own texture, nothing put in its place */
+        }
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
@@ -4333,6 +4356,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                     st->shadow ? "a depth of 1.0 to compare" : "zeros");
         }
         if (!view) return VK_NULL_HANDLE;
+        if (g_settings.pool_map_shadow && !predrawn) pool_shadow(ds, handle, x, own_view ? view : VK_NULL_HANDLE, want, num);
         VkSampler smp = tex_bind_sampler(x, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
         if (table) {
