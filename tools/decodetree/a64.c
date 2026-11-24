@@ -1164,6 +1164,12 @@ static void write_decoder(const char* path) {
     out("typedef struct {\n    uint16_t start;\n    uint8_t count, lo, bits;\n} SnxA64Bucket;\n\n");
     out("static const char* const snx_a64_op_names[SNX_A64_OP_COUNT] = {\n    \"UNDEF\",\n"
         "#define SNX_A64_OP_NAME(name) #name,\n    SNX_A64_OPS(SNX_A64_OP_NAME)\n#undef SNX_A64_OP_NAME\n};\n\n");
+    out("/* the features' names, by their bits */\nstatic const char* const snx_a64_feature_names[%d] = {\n", g.nfeats);
+    for (i = 0; i < g.nfeats; i++) out("    \"%s\",\n", g.feats[i]);
+    out("};\n/* and the targets', with what each has */\nstatic const struct {\n    const char* name;\n"
+        "    uint64_t feature;\n} snx_a64_target_names[%d] = {\n", g.ntargets);
+    for (i = 0; i < g.ntargets; i++) out("    {\"%s\", 0x%llxull},\n", g.targets[i].name, g.targets[i].feats);
+    out("};\n\n");
     out("/* the rows, in the .decode files' order: mask, value, the features always needed, op, body, flow, nop */\n"
         "static const SnxA64Row snx_a64_rows[%d] = {\n",
         g.nrows);
@@ -1225,6 +1231,17 @@ static void write_decoder(const char* path) {
         "    }\n    memset(insn, 0, sizeof *insn);\n    return SNX_A64_OP_UNDEF;\n}\n\n");
     out("static inline const char* snx_a64_op_name(SnxA64Op op) {\n"
         "    return (unsigned)op < SNX_A64_OP_COUNT ? snx_a64_op_names[op] : \"?\";\n}\n\n");
+    out("/* the name of a set's first feature, \"?\" of none's */\n"
+        "static inline const char* snx_a64_feature_name(uint64_t features) {\n"
+        "    unsigned i;\n    for (i = 0; i < %du; ++i)\n"
+        "        if (features >> i & 1) return snx_a64_feature_names[i];\n    return \"?\";\n}\n\n",
+        g.nfeats);
+    out("/* the name of the target with these features, \"?\" where none has them */\n"
+        "static inline const char* snx_a64_target_name(uint64_t features) {\n"
+        "    unsigned i;\n    for (i = 0; i < %du; ++i)\n"
+        "        if (features == snx_a64_target_names[i].feature) return snx_a64_target_names[i].name;\n"
+        "    return \"?\";\n}\n\n",
+        g.ntargets);
     hash = fnv1a(g.obuf, g.olen);
     out("/* FNV-1a of everything above: names this decoder in caches of code it decoded */\n"
         "#define SNX_A64_DECODE_HASH 0x%016llxull\n",

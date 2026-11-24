@@ -80,6 +80,10 @@ typedef struct {
     signed char vpin[32]; /* each V register's vector register, -1 for none */
     signed char mempin;   /* the guest memory's base's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
+    size_t at;    /* the index of the function's instruction being made, its count past them */
+    /* the addresses of the function's instructions there is no code for (options.alone), undefined where they run */
+    SnxU64* none;
+    size_t nnone, cap_none;
     int dispatch, d_label, mismatch_label;
     int nstubs, cap_stubs;
     struct Stub {
@@ -912,6 +916,32 @@ static int call_or_stub(Unit* u, SnxU64 target, int tail) {
 }
 #endif
 
+/* u->f can't be made, for its instruction u->at (its count: for no instruction's): said, once a function, with what it
+   becomes */
+static void no_code(Unit* u) {
+    const SnxFunction* f = u->f;
+    const char* becomes =
+        u->options->alone ? "it raises an undefined instruction where it runs" : "LLVM makes the function";
+    SnxU64 address;
+    SnxU32 word = 0;
+    SnxA64Insn insn;
+    if (u->options->refused) ++*u->options->refused;
+    if (u->at >= f->count) {
+        snx_error("native back end: the function at 0x%llx is longer than its branches reach%s",
+                  (unsigned long long)f->start, u->options->alone ? "" : ": LLVM makes the function");
+        return;
+    }
+    address = snx_function_address(f, u->at);
+    (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
+    snx_a64_decode_word(word, u->codegen->features, &insn);
+    SnxU64 past = insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE;
+    snx_error("native back end: the function at 0x%llx: %s (%08x) at 0x%llx %s%s, which it has no code for (the "
+              "guest's target is %s): %s",
+              (unsigned long long)f->start, snx_a64_op_text(insn.op), (unsigned)word, (unsigned long long)address,
+              past ? "needs " : "is one", past ? snx_a64_feature_text(past) : "",
+              snx_a64_target_text(u->codegen->features), becomes);
+}
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -931,6 +961,10 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     g->exclusive_count = g->exclusive_next = 0;
     g->status = 0;
     g->qc = 0;
+    for (size_t k = 0; k < u->nnone; ++k)
+        if (u->none[k] == address) goto undef;
+    for (size_t k = 0; k < u->options->without_count; ++k)
+        if (u->options->without[k] == word) return 0;
     switch (insn.flow) {
     case SNX_A64_FLOW_UNDEF:
     undef:
@@ -939,7 +973,6 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         leave(u);
         return 1;
     case SNX_A64_FLOW_PLAIN:
-        if (insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE) goto undef;
         if (insn.op == SNX_A64_OP_SYS) {
             int k = sys(u, word);
             if (k < 0) goto undef;
@@ -1609,6 +1642,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     char sym[40];
     u->f = f;
     u->index = index;
+    u->at = f->count;
     u->nframe = 0;
     u->a.cold.n = 0;
     u->a.ncjumps = u->a.nccalls = 0;
@@ -1657,6 +1691,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
                 bind(u, lab0 + (int)vi);
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
+            u->at = vi;
             if (!instruction(u, vi, address, word)) {
                 ok = 0;
                 goto out;
@@ -1664,6 +1699,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         }
     }
     flush(u);
+    u->at = f->count;
     leave(u); /* off the end */
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
@@ -1982,6 +2018,17 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             --i;
             continue;
         }
+        if (!made[i - first]) {
+            if (!u.nnone) no_code(&u);
+            if (options->alone && u.at < codegen->functions[i].count) {
+                /* made again, that instruction undefined */
+                u.none = (SnxU64*)grow(u.none, &u.cap_none, u.nnone + 1, sizeof *u.none);
+                u.none[u.nnone++] = snx_function_address(&codegen->functions[i], u.at);
+                --i;
+                continue;
+            }
+        }
+        u.nnone = 0;
         count += made[i - first];
         if (options->jit && !made[i - first]) break;
     }
@@ -1992,6 +2039,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
+    free(u.none);
     free(u.live_buf), free(u.exits_buf), free(u.vlive_buf);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);

@@ -6,6 +6,7 @@
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
 #include "android/bridge/host.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include "gnuabi/kernel/kernel.h"
@@ -171,8 +172,10 @@ static void miss(CPU* c, u64 pc) {
 static void undef(CPU* c, u64 pc, u32 word) {
     c->pc = pc;
     if (signals_fault(c, SNX_SIGILL, SNX_ILL_ILLOPC, pc)) return;
-    fprintf(stderr, "scarletnx-android: undefined instruction 0x%08x at 0x%llx\n", (unsigned)word,
-            (unsigned long long)pc);
+    char what[64];
+    snx_a64_word_text(word, what, sizeof what);
+    fprintf(stderr, "scarletnx-android: undefined instruction 0x%08x at 0x%llx: %s\n", (unsigned)word,
+            (unsigned long long)pc, what);
     abort();
 }
 static void guest_brk(CPU* c, u64 pc, u32 imm) {

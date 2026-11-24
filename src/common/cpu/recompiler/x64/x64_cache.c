@@ -157,7 +157,9 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
                           unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
                           size_t error_size) {
     static const char tag[] = "snx-x64-unit";
-    size_t count = last - first;
+    size_t count = last - first, refused = 0;
+    SnxX64Options counting = *options; /* the unit's functions with an instruction the back end has no code for */
+    counting.refused = &refused;
     *reused = 0;
     SnxU64 limit = snx_x64_cache_limit();
     if (!limit) return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
@@ -182,8 +184,9 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
     }
     ++g_x64_cache.misses;
     pthread_mutex_unlock(&g_x64_cache.lock);
-    int rc = snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
-    if (rc) return rc;
+    int rc = snx_x64_object(codegen, first, last, &counting, made, object, size, error, error_size);
+    if (options->refused) *options->refused += refused;
+    if (rc || refused) return rc; /* not kept: what it has no code for is said again the next time */
     SnxU64 need = (SnxU64)*size + count;
     pthread_mutex_lock(&g_x64_cache.lock);
     limit = limit_locked();

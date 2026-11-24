@@ -38,6 +38,7 @@ typedef struct {
        there is none */
     unsigned char* x64;
     size_t x64_size, x64_made;
+    size_t x64_refused; /* of the others, those with an instruction it has no code for */
     int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
 } Unit;
 
@@ -243,6 +244,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         SnxNativeOptions options = {0};
         options.stale = 1;
         options.llvm_at = snx_ir_dump_pc();
+        options.refused = &u->x64_refused;
         if (q->bound_count) {
             options.bound = bound_at;
             options.bound_user = q;
@@ -940,6 +942,13 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
         goto done;
+    }
+    {
+        size_t refused = 0;
+        for (i = 0; i < q.count; ++i) refused += q.units[i].x64_refused;
+        if (refused)
+            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: LLVM made them",
+                      (unsigned long)refused, (unsigned long)codegen.function_count);
     }
     if (q.x64 && !options->quiet) {
         size_t made = 0;
