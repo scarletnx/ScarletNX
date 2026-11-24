@@ -3962,6 +3962,10 @@ add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backend
 set(snx_br_pins d2800070 1e210800 1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1
     d61f03c0)
 add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends --words ${snx_br_pins})
+# words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
+add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
+         FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
+set_tests_properties(recompiler_backends_lanes PROPERTIES TIMEOUT 600)
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
