@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
+#include "vita/gpu/render.h"
 #include "vita/hle/hle.h"
 #include "vita/loader/vpk.h"
 #include "common/utilities/common.h"
@@ -129,6 +130,7 @@ void vita_free(VitaProcess* p, uint32_t address) {
     for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
         VitaAllocation* a = &p->allocations[i];
         if (!a->size || a->address != address) continue;
+        vita_render_freed(p, a->address, a->size);
         decommit(p, a->address, a->size);
         VitaRegion* r = address >= p->cdram.base && address < p->cdram.end ? &p->cdram : &p->user;
         if (address < r->next) r->next = address;

@@ -489,14 +489,24 @@ static void import_free(struct VitaRender* r, Import* m) {
 /* The scene being drawn may read the memory in the work recorded so far, not submitted until it ends: a movie player
    unmaps and frees its frames from one thread while another draws the last one. That work runs now, while the memory
    is there, and the scene goes on after it, before the buffer it reads goes */
-void vita_render_unmap(VitaProcess* p, uint32_t address) {
-    struct VitaRender* r = render_of(p);
-    if (!r) return;
+static void settle(VitaProcess* p, struct VitaRender* r) {
     bool rendering = r->rendering;
     if (rendering) rendering_pause(vita_vk_commands());
     vita_vk_submit();
     vita_render_idle(p, true);
     if (rendering) rendering_resume(r, vita_vk_commands());
+}
+void vita_render_freed(VitaProcess* p, uint32_t address, uint32_t size) {
+    struct VitaRender* r = render_of(p);
+    Import* m = r && !r->vk->host_import ? import_of(r, address, size) : NULL;
+    if (!m) return;
+    settle(p, r);
+    import_free(r, m);
+}
+void vita_render_unmap(VitaProcess* p, uint32_t address) {
+    struct VitaRender* r = render_of(p);
+    if (!r) return;
+    settle(p, r);
     for (unsigned i = 0; i < IMPORTS; ++i) {
         Import* m = &r->imports[i];
         if (!m->size) continue;
