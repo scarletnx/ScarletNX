@@ -2010,7 +2010,7 @@ void nvn_CommandBufferBindDepthStencilState(CPU* c, u64 cb, u64 st) { bind_state
 static u32 even_words(u32 n) { return n + (n & 1); }
 void nvn_CommandBufferBindVertexAttribState(CPU* c, u64 cb, i32 n, u64 st) {
     NvnPBindVAttr* r;
-    if (n < 0 || n > 16) {
+    if (n < 0 || n > NVN_VATTRS) {
         LOG_LIMIT(4, "nvn: nvnCommandBufferBindVertexAttribState of %d attributes\n", n);
         return;
     }

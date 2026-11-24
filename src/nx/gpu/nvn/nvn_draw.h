@@ -40,7 +40,7 @@ struct NvnDraw {
     float vp[16][4], depth[16][2]; /* x, y, w, h and near/far for each viewport */
     i32 scissor[16][4];
     u8 swizzle[16][4]; /* XOR the identity, as recorded */
-    u32 attr[16], nattr;
+    u32 attr[NVN_VATTRS], nattr;
     NvnVertexStream stream[16];
     u32 nstream;
     NVNbufferRange vbuf[16];

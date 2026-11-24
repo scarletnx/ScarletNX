@@ -663,9 +663,12 @@ typedef struct {
     i32 kind;
     u8 bytes[0x18];
 } NvnPBindState;
+/* the vertex attributes a bind takes: a Switch device's 16, an Ounce device's 32 (one game binds 17, which the
+   renderer's vertex input has room for, DS_ATTRS) */
+#define NVN_VATTRS 32
 typedef struct {
     i32 first, count;
-    u32 st[16];
+    u32 st[NVN_VATTRS];
 } NvnPBindVAttr; /* recorded with count entries */
 typedef struct {
     i32 first, count;

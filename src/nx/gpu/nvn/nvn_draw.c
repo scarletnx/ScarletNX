@@ -1669,7 +1669,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_BIND_STATE: bind_state(d, payload); return 1;
         case OP_BIND_VATTR: {
             const NvnPBindVAttr* r = NVN_OBJ(const NvnPBindVAttr, payload);
-            u32 count = r->count > 0 && r->count <= 16 ? (u32)r->count : 0;
+            u32 count = r->count > 0 && r->count <= NVN_VATTRS ? (u32)r->count : 0;
             int changed = replace_bytes(d->attr, r->st, sizeof d->attr[0] * count);
             if (d->nattr != count || changed) d->dirty |= D_VFORMAT;
             d->nattr = count;
