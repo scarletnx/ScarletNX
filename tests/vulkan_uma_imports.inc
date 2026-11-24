@@ -1710,6 +1710,91 @@ static int check_uma_region_merge(void) {
            "first\n");
     return 0;
 }
+/* A region goes whole when any page of it is trapped or changes, its other pages moving back with the bytes its buffer
+   holds then: the writes in place pending anywhere in it land first, not only those over the pages that change. A
+   game's cube of render targets lay over the edge of two regions: at a release each target a region held was
+   published there in place, the one over the edge was trapped, both regions went before the submit ran, and the
+   cube loaded the bytes from before its targets from memory */
+#define UMA_RT  (HEAP_BASE + 0x26800000)
+#define UMA_GRT 0x4fa000000ull
+static int check_uma_region_trap(void) {
+    const u64 window = 0x200000;
+    VkBuffer b;
+    u64 bo;
+#if defined(__ANDROID__)
+    printf("skip: the migrate way runs here as the device chose it (vk_memory), not from this check\n");
+    return 0;
+#endif
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int way = uma_imports_shared() ? 1 : vk_uma_can_dmabuf() ? 2 : 0;
+    if (!way) {
+        printf("skip: the driver imports no buffer's pages as host memory or as a dma-buf, which the migrate way "
+               "needs here\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_RT, 3 * window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GRT, UMA_RT, 3 * window);
+    u8* g = GP(UMA_RT);
+    memset(g, 0x91, 0x1000);
+    memset(g + window - 0x1000, 0x91, 0x4000);
+    memset(g + 2 * window, 0x91, 0x4000);
+    vk_lock();
+    CHECK(vk_uma_migrate(way));
+    /* a region of each of two windows, and an engine's result published in place in each, pending */
+    CHECK(vk_buf_get_input(UMA_GRT + 0x100, 256, 4, &b, &bo));
+    CHECK(vk_buf_get_input(UMA_GRT + window + 0x2100, 256, 4, &b, &bo));
+    int regions = vk_uma_imports(UMA_RT, 2 * window) == 2 && uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 1;
+    VkOwnRes *first = uma_owner(256, 0x96), *second = uma_owner(256, 0x97), *edge = uma_owner(256, 0x42);
+    CHECK(first && second && edge);
+    vk_own_publish(UMA_RT + 0x100, 256, first, 0);
+    vk_own_publish(UMA_RT + window + 0x2100, 256, second, 0);
+    int pending = vk_uma_pending_cpu(UMA_RT + 0x100, 256) && vk_uma_pending_cpu(UMA_RT + window + 0x2100, 256);
+    /* a result over the edge between them, which no one region holds: GPU-owned, a trap on a page of each. What asks
+       about the regions next (a release's next target) lets them go, before the submit */
+    vk_own_publish(UMA_RT + window - 0x80, 256, edge, 0);
+    int gone = !own_traps() || (!vk_uma_held(UMA_RT + 0x100, 256) && !vk_uma_held(UMA_RT + window + 0x2100, 256));
+    vk_finish();
+    vk_unlock();
+    CHECK(!uma_landed(UMA_RT + window - 0x80, 256, 0x42));
+    CHECK(g[0x100] == 0x96 && g[0x1ff] == 0x96 && g[0xff] == 0x91 && g[0x200] == 0x91);
+    CHECK(g[window + 0x2100] == 0x97 && g[window + 0x21ff] == 0x97 && g[window + 0x20ff] == 0x91);
+    vk_own_res_unref(first);
+    vk_own_res_unref(second);
+    vk_own_res_unref(edge);
+    /* a result pending in a third window's region, another page of which a view then takes (mem_alias_begin moves it
+       into the pool) */
+    u8* g3 = g + 2 * window;
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GRT + 2 * window + 0x100, 256, 4, &b, &bo));
+    int region3 = vk_uma_imports(UMA_RT + 2 * window, window) == 1 && uma_in_buffer(g3) == 1;
+    VkOwnRes* third = uma_owner(256, 0x98);
+    CHECK(third);
+    vk_own_publish(UMA_RT + 2 * window + 0x100, 256, third, 0);
+    int pending3 = vk_uma_pending_cpu(UMA_RT + 2 * window + 0x100, 256);
+    vk_unlock();
+    CHECK(mem_alias_begin(UMA_RT + 2 * window + 0x3000, 0x1000) == 0);
+    CHECK(g3[0x100] == 0x98 && g3[0x1ff] == 0x98 && g3[0xff] == 0x91 && g3[0x200] == 0x91);
+    mem_alias_end(UMA_RT + 2 * window + 0x3000, 0x1000);
+    vk_own_res_unref(third);
+    vk_lock();
+    CHECK(vk_uma_migrate(0));
+    vk_finish();
+    vk_unlock();
+    CHECK(g[0x100] == 0x96 && g[window + 0x2100] == 0x97 && g3[0x100] == 0x98);
+    CHECK(mem_unmap(UMA_RT, 3 * window) == 0);
+    if (!regions || !pending || !gone || !region3 || !pending3)
+        fprintf(stderr,
+                "region trap: two regions %d with a result pending in each %d, gone at the trap %d, a third %d with "
+                "one %d\n",
+                regions, pending, gone, region3, pending3);
+    CHECK(regions && pending && gone && region3 && pending3);
+    printf("in place, the migrate way: a trap or a view on a page of a region lands the writes in place pending in "
+           "the rest of it first\n");
+    return 0;
+}
 
 /* A logged result the in-place path refuses, its range an import's in part and an owner's in part (buffer.c's
    back_record): written back on the GPU after its writer, the bytes its log gives and no others, into the import's
