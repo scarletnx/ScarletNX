@@ -466,6 +466,9 @@ void gpu_mem_remapped(u64 gva, u64 size);
 void gpu_mem_written_cpu(u64 cpu, u64 size);
 /* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
+/* fn(gva, n) for each run of GPU addresses a GPU-side write above stamps (its own range and the other GPU addresses of
+   its guest memory), once the write's generation is published: gpu_mem_dirty_since sees it before fn is called */
+void gpu_set_gva_watch(void (*fn)(u64 gva, u64 n));
 u64 gpu_mem_generation(void);   /* the last generation fully published */
 /* [gva, gva + size) watched from now: a GPU-side write on a page of its 2 MiB granules moves
    gpu_mem_granules_generation. 0 where it can't be (gpu_page_check=1, or past the GPU's addresses) */

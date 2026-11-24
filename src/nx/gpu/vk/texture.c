@@ -4746,6 +4746,7 @@ static int copied_into(const Surf* s, const Surf* t) {
     return 0;
 }
 static void mark_copied(Surf* s, Surf* t) {
+    t->takes++;
     tex_drawn(t, 1);
     vk_tex_took(t);
     if (s->copied[0].t != t) s->copied[1] = s->copied[0];

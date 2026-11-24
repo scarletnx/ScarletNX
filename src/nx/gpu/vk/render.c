@@ -1605,6 +1605,7 @@ void vk_render_stats_log(void) {
     memo_miss_log(presents);
     fs_count_log(n, w, presents);
     vk_pool_map_log(presents);
+    vk_tex_events_log(presents);
     vk_pool_gpu_log(presents);
     if ((g_settings.writer_barriers || g_spirv_translate.pool_map) && g_vk.has_unified_layouts) {
         static VkWriterCounts was;
@@ -1787,6 +1788,10 @@ typedef struct {
        generations tell nothing */
     u32 cgen, pgen;
     u8 cgen_ok, pgen_ok;
+    /* tex_events_shadow: the generations by address of the texture's memory (tex_texel_gens) when it was last checked,
+       and whether they told anything */
+    u32 tgen;
+    u8 tgen_ok;
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
@@ -1914,6 +1919,100 @@ static int tex_memo_image_pending(TexMemo* m) {
     m->img_adds = adds;
     return 0;
 }
+/* Item 7b's events in shadow (tex_events_shadow): each kept texture's check is judged by the generations by address of
+   the writes over its memory. A claim is that they did not move since its last check, so its texels are current. The
+   check runs as before, and the counts say which claims it contradicted (it loaded pieces, took a drawn target, or
+   gave another texture) */
+static struct {
+    int watching;
+    u64 claims, claims_wrong, unclaimed_changed, unclaimed_same, untold;
+    u64 was[5];
+    /* why the generations told nothing: no host run, too many granules, a change taken in, no CPU gens, a first check */
+    u64 why[5], why_was[5];
+} g_tex_ev;
+static void tex_events_gva(u64 gva, u64 n) { addr_gens_bump(ADDR_GENS_WRITE, gva, n); }
+/* the sum of the generations of t's memory: the GPU side's writes, draws and surfaces there (ADDR_GENS_WRITE), the
+   results pending (ADDR_GENS_GPU) and the CPU's writes taken in (ADDR_GENS_CPU). 0 where they tell nothing (memory in
+   more than one run, more granules than a read adds up, or the write tracking can't say) */
+static int tex_texel_gens(const Surf* t, u32* g) {
+    const u64 size = t->size; /* every level and layer, as tex_check reads them (rt_bytes is level 0's alone) */
+    u32 a = 0, b = 0, c = 0;
+    int why =
+        !addr_gens_read(ADDR_GENS_WRITE, t->gva, size, &a) || !addr_gens_read(ADDR_GENS_GPU, t->gva, size, &b) ? 1 : -1;
+    /* the CPU's, run by run of the guest memory behind it (a page with none: its mapping's change is a write above) */
+    for (u64 o = 0; why < 0 && o < size;) {
+        u64 cpu = 0, n = gmmu_run(t->gva + o, size - o, &cpu);
+        if (!n) {
+            o += 0x1000 - ((t->gva + o) & 0xFFF);
+            continue;
+        }
+        const u8* host = gmem_host(t->gva + o, n);
+        u32 run = 0;
+        why = !host ? 0 : vk_ww_take(host, n) != 0 ? 2 : !vk_ww_gen(host, n, &run) ? 3 : -1;
+        c += run;
+        o += n;
+    }
+    if (why >= 0) {
+        g_tex_ev.why[why]++;
+        return 0;
+    }
+    *g = a + b + c;
+    return 1;
+}
+/* m's texture checked again (vk_tex_recheck), judged with the setting on */
+static Surf* tex_recheck_judged(TexMemo* m) {
+    if (!g_settings.texture_events_shadow) return vk_tex_recheck(m->t);
+    if (!g_tex_ev.watching) {
+        gpu_set_gva_watch(tex_events_gva);
+        g_tex_ev.watching = 1;
+    }
+    u32 g = 0;
+    const int ok = tex_texel_gens(m->t, &g), claim = ok && m->tgen_ok && g == m->tgen;
+    Surf* before = m->t;
+    const u32 wgen = before->wgen, takes = before->takes;
+    Surf* t = vk_tex_recheck(m->t);
+    const int changed = t != before || (t && (t->wgen != wgen || t->takes != takes));
+    if (!ok || !m->tgen_ok) {
+        g_tex_ev.untold++;
+        if (ok) g_tex_ev.why[4]++;
+    } else if (claim && changed) {
+        g_tex_ev.claims_wrong++;
+        if (g_settings.draw_state_check)
+            WARN_LIMIT(16,
+                       "vulkan: tex_events_shadow: the %ux%ux%u texture at %llx changed (%s) where no event over its "
+                       "memory moved\n",
+                       before->w, before->h, before->layers, (unsigned long long)before->gva,
+                       t != before              ? "another texture"
+                       : t && t->takes != takes ? "a drawn target taken"
+                                                : "loaded again");
+    } else if (claim)
+        g_tex_ev.claims++;
+    else if (changed)
+        g_tex_ev.unclaimed_changed++;
+    else
+        g_tex_ev.unclaimed_same++;
+    m->tgen = g; /* read before the check: a write during it moves them again */
+    m->tgen_ok = (u8)ok;
+    return t;
+}
+void vk_tex_events_log(u64 presents) {
+    if (!g_settings.texture_events_shadow || !presents) return;
+    const u64 now[5] = {g_tex_ev.claims, g_tex_ev.claims_wrong, g_tex_ev.unclaimed_changed, g_tex_ev.unclaimed_same,
+                        g_tex_ev.untold};
+    const double p = (double)presents;
+    LOG("vulkan: texture events (shadow), a present: %.1f kept textures claimed current, %.2f of them changed by their "
+        "check (missed events); not claimed: %.1f changed, %.1f the same (needless); %.1f with no generations to tell\n",
+        (double)(now[0] - g_tex_ev.was[0]) / p, (double)(now[1] - g_tex_ev.was[1]) / p,
+        (double)(now[2] - g_tex_ev.was[2]) / p, (double)(now[3] - g_tex_ev.was[3]) / p,
+        (double)(now[4] - g_tex_ev.was[4]) / p);
+    memcpy(g_tex_ev.was, now, sizeof now);
+    LOG("vulkan: texture events (shadow), why nothing told, a present: %.1f no single host run, %.1f too many granules, "
+        "%.1f the write tracking took a change in, %.1f no CPU generations, %.1f their first check\n",
+        (double)(g_tex_ev.why[0] - g_tex_ev.why_was[0]) / p, (double)(g_tex_ev.why[1] - g_tex_ev.why_was[1]) / p,
+        (double)(g_tex_ev.why[2] - g_tex_ev.why_was[2]) / p, (double)(g_tex_ev.why[3] - g_tex_ev.why_was[3]) / p,
+        (double)(g_tex_ev.why[4] - g_tex_ev.why_was[4]) / p);
+    memcpy(g_tex_ev.why_was, g_tex_ev.why, sizeof g_tex_ev.why);
+}
 /* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, 4 and 3 the same of
    a texture over a target (TexMemo.over), -1 none but its headers as memory has them, 0 none */
 static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
@@ -1990,7 +2089,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
         if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
-        x->t = m->copy ? m->t : vk_tex_recheck(m->t);
+        x->t = m->copy ? m->t : tex_recheck_judged(m);
         if (g_settings.draw_state_check) { /* resolved again in full, and that one taken */
             u32 tic[8];
             const u32 crop_gen = m->copy ? m->t->crop_gen : 0;
@@ -2030,7 +2129,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             x->memo = 0;
             miss = MEMO_UNDEFINED;
         } else {
-            x->t = vk_tex_recheck(m->t);
+            x->t = tex_recheck_judged(m);
             if (!x->t) {
                 m->t = NULL;
                 x->memo = 0;
@@ -2067,7 +2166,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
         m->ww_epoch = epoch;
         m->wseen = now;
-        m->cgen_ok = m->pgen_ok = 0; /* the first check after goes the full way, and takes the generations */
+        m->cgen_ok = m->pgen_ok = m->tgen_ok =
+            0; /* the first check after goes the full way, and takes the generations */
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;

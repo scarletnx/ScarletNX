@@ -128,6 +128,27 @@ static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, *(const u
 /* the renderer's watch on GPU-side writes (gpu_set_write_watch): any thread, under g_wlk */
 static void (*_Atomic g_wwatch)(u64 cpu, u64 n);
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { atomic_store_explicit(&g_wwatch, fn, memory_order_release); }
+/* the renderer's watch by GPU address (gpu_set_gva_watch), called after publish under g_wlk */
+static void (*_Atomic g_gwatch)(u64 gva, u64 n);
+void gpu_set_gva_watch(void (*fn)(u64 gva, u64 n)) { atomic_store_explicit(&g_gwatch, fn, memory_order_release); }
+typedef void (*GvaWatch)(u64 gva, u64 n);
+static void gwatch_alias(void* ctx, u64 gva, u64 n) { (*(const GvaWatch*)ctx)(gva, n); }
+static int gwatch_run(u64 cpu, u64 n, void* ctx) {
+    gmmu_aliases(cpu, n, gwatch_alias, ctx);
+    return 0;
+}
+/* [gva, gva + size) of a published write to the watch, with the other GPU addresses of its guest memory (all of them
+   but gva itself too: gmmu_aliases names each). cpu_only: a write by guest address alone, [cpu, cpu + size) */
+static void gwatch(u64 gva, u64 size, int cpu_only) {
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (!fn) return;
+    if (cpu_only) {
+        gmmu_aliases(gva, size, gwatch_alias, &fn);
+        return;
+    }
+    fn(gva, size);
+    guest_runs(gva, size, gwatch_run, &fn);
+}
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
     void (*watch)(u64, u64) = atomic_load_explicit(&g_wwatch, memory_order_acquire);
@@ -187,6 +208,7 @@ void gpu_mem_written_cb(u64 gva, u64 size) {
     cb_box(gva, size);
     guest_runs(gva, size, stamp_run_cb, &gen);
     publish(gen, GPU_WRITE_CB);
+    gwatch(gva, size, 0);
     pm_unlock(&g_wlk);
 }
 static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
@@ -200,6 +222,7 @@ static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
     atomic_store_explicit(&g_wformat[gen % WKINDS], format, memory_order_relaxed);
     atomic_store_explicit(&g_wsurface[gen % WKINDS], surface, memory_order_relaxed);
     publish(gen, kind);
+    gwatch(gva, size, 0);
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written(u64 gva, u64 size) { written(gva, size, GPU_WRITE_ENGINE, 0, 0); }
@@ -218,6 +241,8 @@ void gpu_mem_remapped(u64 gva, u64 size) {
     stamp_gpu(gva, size, gen);
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_REMAP);
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (fn) fn(gva, size); /* the pages that show other memory now, alone */
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written_shader(u64 gva, u64 size) { written(gva, size, GPU_WRITE_SHADER, 0, 0); }
@@ -229,6 +254,7 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     stamp_cpu(cpu, size, gen);
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_RESULT);
+    gwatch(cpu, size, 1);
     pm_unlock(&g_wlk);
 }
 u64 gpu_mem_generation(void) { return atomic_load_explicit(&g_wgen, memory_order_acquire); }
@@ -290,6 +316,8 @@ void gpu_mem_written_all(void) {
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     g_whits_over = 1; /* every page, the watched ones too */
     publish(gen, GPU_WRITE_ALL);
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (fn) fn(0, ~0ull); /* every GPU address */
     pm_unlock(&g_wlk);
 }
 typedef struct {
