@@ -3952,8 +3952,9 @@ target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
+set(snx_half_words 0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
 add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words
-         0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
+         ${snx_half_words})
 # a loop that keeps its vector registers in host ones, left by a BR (its target in the link register): the registers
 # stored on the way to the dispatch
 set(snx_br_pins d2800070 1e210800 1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1
@@ -3975,6 +3976,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         snx_decodetree_a64(snx-test-recompiler-${m})
         add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m})
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
+        add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
+                 ${snx_half_words})
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
