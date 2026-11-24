@@ -137,6 +137,9 @@ enum {
     SGX_K_PSET        /* the host register imm = in[0] */
 };
 
+/* a machine instruction's inputs at most (CASP's six): its fixed registers, the loops that place them and the
+   registers an encoding reads are this long */
+#define SGX_MACHINE_IN 6
 typedef struct {
     unsigned char kind, cc, w, dead;
     unsigned char op; /* SGX_K_MACHINE's kind of instruction */
@@ -152,8 +155,7 @@ typedef struct {
     int flags_from; /* the instruction whose flags a SETCC, STORE_FLAG or cc form reads */
     const SgXSel* fsel; /* whose map of Arm's flags its flags follow (sel's, or the ANDS candidate of its AND) */
     const SgXSel* alt;  /* the same flags without the result (CMP for SUBS), for a result nothing reads */
-    signed char fixed[6]; /* the machine's instructions (six inputs at most: CASP's): the host register in[k] must be
-                             in, -1 any */
+    signed char fixed[SGX_MACHINE_IN]; /* the machine's instructions: the host register in[k] must be in, -1 any */
     unsigned char side;   /* a selected form that changes memory (a guest store): kept though nothing reads it */
     unsigned char calls;  /* the machine's: it calls out (the caller-saved registers are spilled around it) */
     unsigned char cadd; /* an addition of the constant cadd_k to in[0] (its flags or not): what sgx_optimize folds
@@ -2857,7 +2859,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         a->next_call[i] = !x->ins[i].dead && (x->ins[i].calls || x->ins[i].kind == SGX_K_MACHINE) ? i : a->next_call[i + 1];
     for (i = 0; i < x->n; ++i) {
         SgXIns* s = &x->ins[i];
-        unsigned char r[5] = {0, 0, 0, 0, 0};
+        unsigned char r[SGX_MACHINE_IN] = {0};
         if (s->dead) continue;
         switch (s->kind) {
         case SGX_K_SEL: sgx_assemble_sel(a, i); break;
@@ -2963,7 +2965,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                     if (a->owner[k] > 0) sgx_spill(a, k);
                 for (k = 0; k < 16; ++k) /* every XMM register is caller-saved: what is read after, in its slot */
                     sgx_xspill(a, k, i);
-                for (k = 0; k < 6; ++k)
+                for (k = 0; k < SGX_MACHINE_IN; ++k)
                     if (s->in[k]) {
                         SgXV* vv = &x->v[s->in[k]];
                         int fr = s->fixed[k] >= 0 ? s->fixed[k] : sgx_arg_free(a, held);
@@ -2988,7 +2990,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                 }
                 break;
             }
-            for (k = 0; k < 6; ++k)
+            for (k = 0; k < SGX_MACHINE_IN; ++k)
                 if (s->in[k] && s->fixed[k] >= 0) {
                     int fr = s->fixed[k];
                     int v = s->in[k], from = sgx_in_reg(a, v, i, held | (1u << fr));
