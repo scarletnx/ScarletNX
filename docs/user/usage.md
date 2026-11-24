@@ -364,8 +364,7 @@ Run the same command again to retry after a failure or interruption:
   using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
 - A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming this build's
   ABI skip recompilation. The stamp holds `SNX_ABI`: a game a build of another ABI made is recompiled
-  automatically, as is one with a missing or invalid stamp, and that recompile takes from the unit cache (below) every
-  code unit whose code is the same. One another build of the same ABI made keeps its code,
+  automatically, as is one with a missing or invalid stamp. One another build of the same ABI made keeps its code,
   and its `recompiled/<id>/<id>` is replaced by this build's runtime when the two differ, so a newer build's fixes reach
   it. Failed builds never publish a valid ABI checkpoint. A change to the recompiler that keeps `SNX_ABI` isn't
   seen: there `-r` recompiles. The stamp's last line says how the code was made, which no check reads: `made opt=2
@@ -490,18 +489,12 @@ Remaining examples: POSIX.
   [common options](#common-options), which the 3DS, Vita and GBA drivers take too.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
   `--chunk N` (`--unit-instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
-  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
-  `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
-  unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
-  there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
-  code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
-  how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
-  descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
-  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
-  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
-  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
-  `--unit-cache-gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
-  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
+  iOS, where a smaller unit takes less memory at once. The x86-64 back end's units are held in memory while the
+  process runs, under the SHA-256 of what each is made from, so that a unit made again in it (an NRO loaded again, the
+  launcher's next recompile) is copied rather than made: up to 1% of the machine's memory, at most
+  `--unit-cache-ceil-mb=N` (512 by default, 0 for none), the units used longest ago going first. A unit line ends in
+  `(cached)` for one taken from memory. Nothing is kept on the disk: `units/` of the cache folder, where an older
+  version kept them, is said with its size at each recompile while it is there, and deleting it frees that room.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.
@@ -670,7 +663,6 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
 | its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
 | extractions (`3ds/` for the 3DS driver) | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
-| the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/scarletnx/units/` | `cache/units/` |
 | the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
 | the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
 | the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |

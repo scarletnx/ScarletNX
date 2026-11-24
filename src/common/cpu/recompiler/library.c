@@ -22,7 +22,7 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
-#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
 #include "common/platform/time.h"
@@ -695,7 +695,9 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
             snprintf(error, error_size, "out of memory");
             return -1;
         }
-        if (snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error, error_size)) {
+        int reused = 0;
+        if (snx_x64_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &reused, error,
+                                  error_size)) {
             free(made);
             return -1;
         }

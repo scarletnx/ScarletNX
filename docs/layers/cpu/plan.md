@@ -177,8 +177,9 @@ new `LC_AOT_METADATA` load command (number `0xcacaca01`). The x86-64 system libr
 `aot_shared_cache`, about 2.4 GB in Champollion's analysis, mapped into every process.
 
 **ScarletNX now.** The launcher's **Load Switch NSP/XCI/NRO** extracts and recompiles a game before its first run, and
-the driver recompiles a game whose `<id>.abi` stamp is stale when it is played. The unit cache
-(`src/nx/loader/unit_cache.c`) keys each unit's object on its IR, which is close to Rosetta's content key. The module
+the driver recompiles a game whose `<id>.abi` stamp is stale when it is played. The x86-64 back end's units are held
+in memory while the process runs, under the SHA-256 of what each is made from (`src/common/cpu/recompiler/x64/x64_cache.c`),
+close to Rosetta's content key; nothing is kept on the disk. The module
 records each executable's build ID and segment layout, and the runtime refuses an executable that changed
 (`snx_module_mods` in `src/nx/loader/module_llvm.c`, `src/nx/runtime/loader.c`). Discovery
 (`src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`) starts from the dynamic symbols, the addends of
@@ -243,10 +244,10 @@ devirtualization or permission to bypass hooks. Extracted RTTI records stay loca
 
 #### A3 Stable units
 
-- **Now.** A new function shifts the boundaries of later units, so a recompile that only adds hints can miss in the
-  unit cache for many units. Each unit is optimized independently, emitted as a machine-code object by
+- **Now.** A new function shifts the boundaries of later units, so a recompile that only adds hints makes many
+  units again. Each unit is optimized independently, emitted as a machine-code object by
   `snx_ir_object` (`src/common/cpu/recompiler/llvm/ir.c`), and linked with the other objects in `module_llvm.c`.
-  `unit_cache.c` hashes bitcode but retains native objects. The current final link does not perform LLVM LTO.
+  The current final link does not perform LLVM LTO.
 - **Change.** Partition units by fixed address ranges within each executable, so a new function changes only its own
   source unit. Measure the effect of the new boundaries on inlining and constant propagation, since moving callers
   and callees apart can lose optimizations that the old unit happened to allow. D1 builds on this.
@@ -256,7 +257,7 @@ devirtualization or permission to bypass hooks. Extracted RTTI records stay loca
   flag to the existing object linker cannot recover discarded IR. ThinLTO needs a summary/import stage and backend
   cache keys that include imported definitions and optimization settings. A changed callee can legitimately rebuild
   other optimization units. See [LLVM's ThinLTO design](https://llvm.org/docs/ThinLTO.html).
-- **Where.** `module_llvm.c`, `unit_cache.c`, `ir.c`, and a new IR link/import stage if justified.
+- **Where.** `module_llvm.c`, `x64_cache.c`, `ir.c`, and a new IR link/import stage if justified.
 - **ABI.** None if the generated-code contract stays the same. Version the cache format and invalidate affected keys.
 - **Proof.** Measure rebuild scope, time, peak memory and execution speed. Include callers and callees across a unit
   boundary, and change a callee to confirm that imported copies are invalidated. Claim local rebuilds only for

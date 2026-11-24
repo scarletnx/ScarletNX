@@ -13,9 +13,8 @@
 #include "nx/loader/module_abi.h"
 #include "nx/loader/hook_routes.h"
 #include "common/utilities/bits.h"
-#include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 #include "nx/loader/module_x64.h"
 #include "snx_settings.h"
 #include "common/platform/file.h"
@@ -33,16 +32,12 @@ typedef struct {
     size_t first, last; /* functions */
     unsigned char* object;
     size_t size;
-    int reused; /* the object came from the unit cache */
     SnxIrStats stats;
     /* the x86-64 back end's object of the functions it made (x64_codegen.h); LLVM's (object) has the rest, NULL when
        there is none */
     unsigned char* x64;
     size_t x64_size, x64_made;
-    int x64_reused; /* the x86-64 back end's object and which functions it made came from the unit cache */
-    /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
-       until then). Empty for one in memory */
-    char key[65];
+    int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
 } Unit;
 
 #define NO_RANK ((size_t)-1)
@@ -56,7 +51,6 @@ typedef struct {
     size_t bound_count;
     SnxU64* imports;
     size_t import_count;
-    SnxUnitCache* cache; /* NULL: every unit compiled */
     Unit* units;
     size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
@@ -100,25 +94,12 @@ static int save_ir(SnxIr* ir, const char* dir, const char* name, char* error, si
     return rc;
 }
 
-/* The pack's write (snx_objects_pack_write) of inputs, units[0] the first-th of them: each unit's object read back
-   from the unit cache when it is there, freed once written */
+/* The pack's write (snx_objects_pack_write) of inputs, units[0] the first-th of them: each unit's object freed once
+   written */
 typedef struct {
     Unit* units;
     size_t first, count;
-    const SnxUnitCache* cache;
 } PackUnits;
-static unsigned char* read_unit(void* arg, size_t index, size_t* size, char* why, size_t why_size) {
-    const PackUnits* p = (const PackUnits*)arg;
-    unsigned char* object;
-    char reason[640];
-    if (index < p->first || index - p->first >= p->count || !p->units[index - p->first].key[0]) {
-        snprintf(why, why_size, "input %zu is no unit the unit cache holds", index);
-        return NULL;
-    }
-    object = snx_unit_cache_read(p->cache, p->units[index - p->first].key, size, reason, sizeof reason);
-    if (!object) snprintf(why, why_size, "code_%03zu: %s", index - p->first, reason);
-    return object;
-}
 static void written_unit(void* arg, size_t index) {
     PackUnits* p = (PackUnits*)arg;
     if (index < p->first || index - p->first >= p->count) return;
@@ -270,21 +251,19 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             options.direct_user = q;
         }
         made = (unsigned char*)snx_alloc(u->last - u->first);
-        rc = q->cache ? snx_unit_cache_x64(q->cache, q->codegen, u->first, u->last, &options, name, made, &u->x64,
-                                           &u->x64_size, &u->x64_reused, error, error_size)
-                      : snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error,
-                                       error_size);
+        rc = snx_x64_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &u->reused,
+                                   error, error_size);
         if (rc) {
             free(made);
             return -1;
         }
         for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
         if (u->x64_made == u->last - u->first) {
-            u->reused = u->x64_reused;
             free(made);
             return 0;
         }
     }
+    u->reused = 0; /* LLVM makes the rest of the unit */
     ir = new_ir(q->build, name, error, error_size);
     if (!ir) {
         free(made);
@@ -315,19 +294,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     free(made);
     u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
-    if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, q->build->triple ? u->key : NULL,
-                                   error, error_size);
-    else if (!rc)
-        rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
+    if (!rc) rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
-    if (q->x64 && !u->x64_reused) u->reused = 0; /* reused: every part of the unit from the cache */
-    /* a pack is written a record at a time: an object the cache holds is read back then, not kept in memory with every
-       other unit's until the last is compiled */
-    if (!rc && u->key[0]) {
-        free(u->object);
-        u->object = NULL;
-    }
     return rc;
 }
 
@@ -858,24 +826,11 @@ static const char* base_name(const char* path) {
     return name;
 }
 
-/* the unit cache's line, then the folder held to its limit */
-static void report_units(const Queue* q, const SnxLlvmBuild* build, int quiet) {
-    SnxU64 bytes = 0;
-    size_t i, reused = 0;
-    for (i = 0; i < q->count; ++i)
-        if (q->units[i].reused) {
-            ++reused;
-            bytes += q->units[i].size + q->units[i].x64_size;
-        }
-    snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q->count, bytes, quiet);
-}
-
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
     SnxCodegen codegen;
     Queue q;
     SnxIr* ir = NULL;
     SnxJitCache* cache = NULL;
-    SnxUnitCache* unit_cache = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
     unsigned char *module_object = NULL, *rtlib_object = NULL;
@@ -970,21 +925,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             printf("layout: %lu functions first, in the order of %lu addresses\n", (unsigned long)placed,
                    (unsigned long)build->layout_count);
     }
-    if (build->unit_cache) {
-        char llvm[128];
-        SnxUnitIdentity identity;
-        snx_unit_cache_llvm(llvm, sizeof llvm);
-        identity.llvm = llvm;
-        identity.opt = build->opt;
-        identity.tuning = build->tuning ? build->tuning->text : NULL;
-        unit_cache = snx_unit_cache_open(build->unit_cache, &identity, error, sizeof error);
-        if (!unit_cache) {
-            snx_error("unit cache: %s", error);
-            goto done;
-        }
-        if (build->unit_cache_disk) snx_unit_cache_disk(unit_cache, build->unit_cache_disk);
-        q.cache = unit_cache;
-    }
     if (!options->quiet)
         printf("%s: %lu code unit%s and the module descriptor\n", q.x64 ? "x86-64 back end (LLVM where it can't)" : "LLVM",
                (unsigned long)q.count, q.count == 1 ? "" : "s");
@@ -1011,8 +951,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     start = snx_seconds();
     x64_only = q.x64 && !cache_count;
     for (i = 0; x64_only && i < q.count; ++i)
-        if (q.units[i].object || q.units[i].key[0] || q.units[i].x64_made != q.units[i].last - q.units[i].first)
-            x64_only = 0;
+        if (q.units[i].object || q.units[i].x64_made != q.units[i].last - q.units[i].first) x64_only = 0;
     if (x64_only) {
         if (snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, &module_object, &module_size,
                                &entry_count, error, sizeof(error))) {
@@ -1089,7 +1028,7 @@ descriptor_done:
     inputs[n].size = module_size;
     inputs[n++].name = "module";
     for (i = 0; i < q.count; ++i) {
-        if (q.units[i].object || q.units[i].key[0] || !q.units[i].x64) {
+        if (q.units[i].object || !q.units[i].x64) {
             inputs[n].data = q.units[i].object;
             inputs[n].size = q.units[i].size;
             inputs[n++].name = "code chunk";
@@ -1121,10 +1060,8 @@ descriptor_done:
         pack.units = q.units;
         pack.first = n - q.count - cache_count;
         pack.count = q.count;
-        pack.cache = unit_cache;
         snx_codegen_free(&codegen);
-        if (snx_objects_pack_write(inputs, n, tmp, &linked.size, read_unit, written_unit, &pack, error,
-                                   sizeof(error))) {
+        if (snx_objects_pack_write(inputs, n, tmp, &linked.size, NULL, written_unit, &pack, error, sizeof(error))) {
             snx_error("packing failed: %s", error);
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
@@ -1152,7 +1089,6 @@ descriptor_done:
         printf("%s module: %.1f MB, %lu entries\n", x64_only ? "x86-64" : "LLVM", (double)linked.size / 1000000.0,
                (unsigned long)entry_count);
     }
-    if (unit_cache) report_units(&q, build, options->quiet);
     rc = 0;
 done:
     for (i = 0; i < q.count; ++i) {
@@ -1169,7 +1105,6 @@ done:
     free(tmp);
     snx_ir_free(ir);
     snx_jit_cache_close(cache);
-    snx_unit_cache_close(unit_cache);
     snx_codegen_free(&codegen);
     return rc;
 }

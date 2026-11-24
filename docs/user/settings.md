@@ -549,7 +549,7 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `aot_threads` | `0` | The threads compiling the game's code when it is recompiled (`--jobs`): `0` (Auto) starts on 1 and opens one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the computer's cores with a quarter left free (`aot_threads_most`); `N` is that many, whatever the memory |
 | `aot_threads_most` | `0` | The most threads `aot_threads`' Auto opens: `0` (Auto) the computer's cores with a quarter left free; `N` that many at most, whatever the cores. Only Auto takes it: beside `aot_threads=N` the recompile runs on `N`, and says so |
 | `unit_instructions` | `90000` (Android `20000`, iOS `20000`) | The instructions a code unit takes, whole functions at a time, when the game is recompiled (`--chunk`). Each is compiled on its own, and a smaller one takes less memory at once, which a phone needs |
-| `unit_cache_gb` | `0` | The most the cache of compiled code units may hold, in GB (`units/` of the cache folder): past it the units reused longest ago are removed. `0` is no limit. The cache always leaves a tenth of its disk free, at most 10 GB |
+| `unit_cache_ceil_mb` | `512` | The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take 1% of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. `0` holds none. Nothing is kept on the disk |
 
 ### LLVM Internals
 

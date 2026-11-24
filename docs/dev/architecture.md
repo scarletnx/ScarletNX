@@ -256,11 +256,8 @@ The module's `snx_routes()` table (`SnxRoutes`, with its own `SNX_ROUTES_VERSION
 ([Hooks](../platforms/nx/hooks.md#how-a-call-reaches-a-hook)). A module without it sends the calls to every function it exports through
 their slots, which every hook also works with.
 
-A bump costs little. The recompile it starts takes each code unit's object from the unit cache
-(`src/nx/loader/unit_cache.c`), which keys it on the unit's IR, not on `SNX_ABI`: a bump that leaves the IR alone
-reuses every unit, and one that changes it (a field moved) compiles them again, as it must. For a game of 255 units
-that recompile takes 24 to 28 s, against 740 s with an empty cache. `SNX_IR_OBJECT_VERSION` (`ir.h`) rises when
-`snx_ir_module_object` makes another object from the same IR.
+A bump costs a recompile, which the x86-64 back end makes in seconds where it is built. `SNX_IR_OBJECT_VERSION`
+(`ir.h`) rises when `snx_ir_module_object` makes another object from the same IR.
 
 `ctest -R module_contract` (`tests/module_contract.c`) holds the contract's layout as it was at the last bump: each
 field's offset and size, the structs' sizes and the numbers above. A change to any of them fails it, naming the field,

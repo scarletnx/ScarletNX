@@ -12,7 +12,6 @@
 #include "common/cpu/recompiler/auto_workers.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/unit_cache.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/x64/x64_arm.h"
@@ -566,7 +565,6 @@ typedef struct {
     size_t first, last;
     unsigned char* object;
     size_t size;
-    int reused; /* the object came from the unit cache */
 } Unit;
 
 typedef struct {
@@ -576,7 +574,6 @@ typedef struct {
     const Block* all; /* every block of the module, the x86-64 back end's too: what a block may go on to */
     size_t nall;
     const SnxLlvmBuild* build;
-    SnxUnitCache* cache; /* the units' objects kept between recompiles (NULL: none), an interrupted one's too */
     Unit* units;
     size_t count, next, done;
     /* for the control of threads left open (auto_workers.h): the units under way, and the bytes of code the finished
@@ -744,10 +741,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         return -1;
     }
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
-    if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, error, error_size);
-    else if (!rc)
-        rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
+    if (!rc) rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
     return rc;
 }
@@ -785,7 +779,7 @@ static void worker(Queue* q) {
         }
         if (label) {
             sprintf(name, "code_%03lu", (unsigned long)i);
-            snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
+            snx_report_unit(q->done, q->count + 1, name, label, 0, seconds); /* + the descriptor */
         }
         unlock(q);
         free(label);
@@ -1046,21 +1040,6 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     q.all = d.blocks;
     q.nall = d.count;
     q.build = build;
-    /* the unit cache, as module_llvm.c's: a unit compiled before is taken from it, a recompile cut short's too */
-    if (build->unit_cache) {
-        char llvm[128];
-        SnxUnitIdentity identity;
-        snx_unit_cache_llvm(llvm, sizeof llvm);
-        identity.llvm = llvm;
-        identity.opt = build->opt;
-        identity.tuning = build->tuning ? build->tuning->text : NULL;
-        q.cache = snx_unit_cache_open(build->unit_cache, &identity, error, sizeof error);
-        if (!q.cache) {
-            snx_error("unit cache: %s", error);
-            goto done;
-        }
-        if (build->unit_cache_disk) snx_unit_cache_disk(q.cache, build->unit_cache_disk);
-    }
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
     /* LLVM's few units the x86-64 back end left are small: their threads all at once, not opened one a second while the
@@ -1136,17 +1115,6 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     if (!options->quiet)
         printf("%s module: %.1f MB, %lu AArch32 blocks\n", x64_object ? "x86-64 and LLVM" : "LLVM",
                (double)linked.size / 1000000.0, (unsigned long)d.count);
-    if (q.cache) {
-        SnxU64 bytes = 0;
-        size_t reused = 0;
-        for (i = 0; i < q.count; ++i)
-            if (q.units[i].reused) {
-                ++reused;
-                bytes += q.units[i].size;
-            }
-        snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q.count, bytes,
-                              options->quiet);
-    }
     rc = 0;
 done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
@@ -1163,6 +1131,5 @@ done:
     free(d.set);
     free(d.work);
     snx_ir_free(ir);
-    snx_unit_cache_close(q.cache);
     return rc;
 }

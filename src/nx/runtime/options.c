@@ -1123,6 +1123,16 @@ static void bc7_cache_gb_old(void) {
              old);
 }
 
+/* unit_cache_gb, deprecated with the units' folder: its value bounds nothing, and the line says what does */
+static void unit_cache_gb_old(void) {
+    const char* old = ini_deprecated_value("unit_cache_gb");
+    if (old)
+        WARN("settings: unit_cache_gb=%s, deprecated, bounds nothing: the code units are not kept on the disk now, "
+             "and are held in memory while ScarletNX runs, up to 1%% of the machine's memory and at most "
+             "unit_cache_ceil_mb (docs/user/deprecations.md)\n",
+             old);
+}
+
 int options_vk_descriptors_old(const char* old, int given) {
     char* end;
     long v = strtol(old, &end, 10);
@@ -1455,6 +1465,7 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     bc7_cache_gb_old();
+    unit_cache_gb_old();
     compress_shader_cache_old();
     vk_descriptors_old();
     write_tracking_hot_old();

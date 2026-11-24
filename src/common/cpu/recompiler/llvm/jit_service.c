@@ -5,7 +5,7 @@
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/llvm/jit_service.h"
-#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
@@ -503,8 +503,9 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
         if (made) {
             codegen->hook_direct_calls = 0;
             codegen->direct_svc = s->config.direct_svc;
-            int rc = snx_x64_object(codegen, 0, codegen->function_count, &options, made, object, size, error,
-                                    error_size);
+            int reused = 0;
+            int rc = snx_x64_cached_object(codegen, 0, codegen->function_count, &options, made, object, size, &reused,
+                                           error, error_size);
             free(made);
             if (rc) return -1;
             if (*object) return 0;

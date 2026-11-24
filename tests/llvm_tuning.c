@@ -96,7 +96,7 @@ static void size_levels(void) {
     }
 }
 
-/* the tuning's text, which the unit cache keys objects with (nx/loader/unit_cache.c): the pipeline that runs and every
+/* the tuning's text: the pipeline that runs and every
    LLVM Internals value, so an option set changes it */
 static void tuning_text(void) {
     const IniOpt* threshold = ini_find(g_llvm_ini, "llvm_inliner_threshold");
@@ -120,7 +120,7 @@ static void tuning_text(void) {
 
 /* llvm_batch: full runs the level's own pipeline, ipo SNX_IR_IPO_PASSES in its place, a pipeline LLVM runs; either
    way each function's cleanup as it is emitted is SNX_IR_CLEAN_PASSES, and a pass turned off is cut out of both. The
-   tuning's text, which keys the unit cache, differs: an ipo unit is never a full one */
+   tuning's text differs: an ipo unit is never a full one */
 static void batch(void) {
     const IniOpt* option = ini_find(g_recompile_ini, "llvm_batch");
     const IniOpt* instcombine = ini_find(g_llvm_ini, "llvm_pass_instcombine");

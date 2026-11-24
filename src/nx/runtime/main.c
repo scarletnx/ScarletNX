@@ -6,6 +6,7 @@
 #include "nx/runtime/main.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/program_start.h"
 #include "common/utilities/cli.h"
@@ -1593,6 +1594,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
     snx_ir_abi_contract(g_settings.abi_contract);
     snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
+    snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */

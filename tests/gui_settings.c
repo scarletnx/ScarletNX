@@ -136,12 +136,12 @@ int main(int argc, char** argv) {
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
            !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
-    assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache limit") &&
-           !strcmp(s.values[opt + 5].key, "unit_cache_gb") && strstr(s.keys[opt + 5].about, "0 = no limit"));
-    assert(!strcmp(s.values[opt + 5].def, "0") &&
-           strstr(s.keys[opt + 5].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
-    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-cache-gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
+    assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache ceiling") &&
+           !strcmp(s.values[opt + 5].key, "unit_cache_ceil_mb") && strstr(s.keys[opt + 5].about, "0 = none held"));
+    assert(!strcmp(s.values[opt + 5].def, "512") &&
+           strstr(s.keys[opt + 5].about, "a hundredth of the machine's memory at most")); /* 512 MB */
+    assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
+           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", ""));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&

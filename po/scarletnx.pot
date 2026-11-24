@@ -7503,11 +7503,11 @@ msgid "The instructions a code unit takes, whole functions at a time, when the g
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Unit cache limit"
+msgid "Unit cache ceiling"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgid "The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 = none held. Nothing is kept on the disk"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
