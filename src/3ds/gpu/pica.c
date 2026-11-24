@@ -75,7 +75,7 @@ void snx_ctr_pica_init(SnxCtrPica* p) {
     p->regs[SNX_PICA_IRQ_MASK] = 0xfffffff0u;
     /* older libctru did not set it up; hardware has it from earlier software */
     p->regs[SNX_PICA_IRQ_COMPARE] = 0x12345678u;
-    /* "Tales of Abyss expects this register to have the following default values": GS max input index 1, VS mode */
+    /* one game expects these values of the register (Azahar): GS max input index 1, VS mode */
     p->regs[SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG] = 1u | (0xa0u << 24);
     p->immediate_reset = true;
 }

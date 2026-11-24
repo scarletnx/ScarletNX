@@ -48,7 +48,7 @@
 
 /* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
    program at its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past
-   the largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without
+   the largest program's end (one game has one of 70,728 bytes, an Ounce game one of 149,120), without
    going on into the next program. Another Ounce game has fragment programs longer than 512 KiB, whose calls go
    to functions past 41,000 instructions: in a window of that size they had no end, and its shader pass left 13 of
    them untranslated. The SM86 reader takes the whole window for each program it looks up (vk_shader_read_code), and

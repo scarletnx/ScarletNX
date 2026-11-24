@@ -105,7 +105,7 @@ static u32 later_drain(void) {
 
 /* The fatal path of a lost device runs on the recording thread: record.c's submit_run calls fatal(), whose window
    release asks the ring to drain (vk_rec_sync). A wait there waits for the thread that runs it, so the process spun at
-   full speed instead of showing the error (Super Mario Bros. Wonder on MoltenVK). A call that the recording thread
+   full speed instead of showing the error (a game on MoltenVK). A call that the recording thread
    makes into the ring must return at once, and the packet after it must still run */
 static void recorder_self_sync(void* arg) {
     vk_rec_sync();

@@ -741,8 +741,8 @@ static void context_frame(void* ctx, TrapWaitCtx* w);
 
 /* A wait while *w is v, and the wake of every waiter on w: a futex on Linux, _umtx_op's private word waits on FreeBSD
    (both system calls, safe in a signal handler), else a yield. With the yield on FreeBSD the trap thread spun while
-   nothing was posted, and each thread waiting in a trap too: in Mario Kart World's race the trap thread held 44 to 87%
-   of a core of six doing nothing */
+   nothing was posted, and each thread waiting in a trap too: in a racing game's race the trap thread held 44 to 87% of
+   a core of six doing nothing */
 static void trap_futex_wait(_Atomic u32* w, u32 v) {
 #if defined(__linux__)
     syscall(SYS_futex, w, FUTEX_WAIT_PRIVATE, v, NULL, NULL, 0);

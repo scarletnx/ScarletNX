@@ -36,12 +36,12 @@ BLOCKED_HOST("nintendo.ch")
 BLOCKED_HOST("nintendo.se")
 BLOCKED_HOST("nintendoswitch.com.cn")
 BLOCKED_HOST("nintendoswitch.com")
-BLOCKED_HOST("phoenix-api.wbagora.com") /* Hogwarts Legacy */
+BLOCKED_HOST("phoenix-api.wbagora.com") /* one game's */
 BLOCKED_HOST("battle.net")
-BLOCKED_HOST("microsoft.com") /* Minecraft Dungeons and others */
+BLOCKED_HOST("microsoft.com") /* a game's and others' */
 BLOCKED_HOST("mojang.com")
 BLOCKED_HOST("xboxlive.com")
-BLOCKED_HOST("api.epicgames.dev") /* Marvel Cosmic Invasion */
+BLOCKED_HOST("api.epicgames.dev") /* one game's */
 BLOCKED_HOST("minecraftservices.com")
-BLOCKED_HOST("508223012e5a5ff19f30a391b2bdadc0.my.2k.com") /* Civilization V */
+BLOCKED_HOST("508223012e5a5ff19f30a391b2bdadc0.my.2k.com") /* one game's */
 #undef BLOCKED_HOST

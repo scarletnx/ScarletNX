@@ -71,7 +71,7 @@ interface nn::visrv::sf::IManagerDisplayService {
     [2300] AcquireLayerTexturePresentingEvent(u64 layer_id) -> handle<copy, event> event;
     [2302] GetDisplayHotplugEvent(u64 display_id) -> handle<copy, event> event;
     [2303] GetDisplayModeChangedEvent(u64 display_id) -> handle<copy, event> event;
-    # Minecraft asks this at boot. The runtime has one layer and always presents it, so hiding or showing a layer
+    # One game asks this at boot. The runtime has one layer and always presents it, so hiding or showing a layer
     # changes nothing here; Eden's order is the visibility then the layer (vi/manager_display_service.cpp)
     @stub [6002] SetLayerVisibility(u8 visible, u64 layer_id);
 }

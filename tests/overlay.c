@@ -2460,7 +2460,7 @@ int main(void) {
         float top, row_h;
         int total, i, close_band = -1, share_band = -1;
         unsigned plain, focused;
-        SnxOverlayError panel = panel_of("ENDER MAGNOLIA", "vulkan: the GPU device was lost (driver reset or crash)",
+        SnxOverlayError panel = panel_of("FIXTURE TITLES", "vulkan: the GPU device was lost (driver reset or crash)",
                                          "Share Log sends the game's log, which has what ran last.", NULL, NULL);
         list.n = 0;
         overlay_error_draw(&list, SW, SH, &panel);
@@ -2473,7 +2473,7 @@ int main(void) {
                qv(&list.q[0]).rgba >> 24 == 0xFFu);
         assert(top >= 0 && top + qv(&list.q[0]).h <= (float)SH && qv(&list.q[1]).y == top && qv(&list.q[1]).h == row_h);
         py = (int)top;
-        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "ENDER MAGNOLIA"));
+        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "FIXTURE TITLES"));
         assert(
             text_at(1, 3, "vulkan: the GPU device was lost (driver reset or crash)")); /* one row, as wide as it is */
         i = glyph_at(1, 3, 'v');

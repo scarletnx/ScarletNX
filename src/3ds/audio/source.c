@@ -351,7 +351,7 @@ static void parse_config(DspSourceState* s, SnxCtrMemory* memory, DspSourceConfi
             s->current_buffer_mono_or_stereo = s->mono_or_stereo;
             s->current_buffer_format = s->format;
             s->current_buffer_is_looping = (config->flags2 >> 1) & 1;
-            /* a length shorter than what was played (Tomodachi Life skipping dialog) restarts the buffer */
+            /* a length shorter than what was played (a game skipping dialog) restarts the buffer */
             if (current_size(s) < s->current_sample_number)
                 s->current_sample_number = 0;
             else
@@ -360,7 +360,7 @@ static void parse_config(DspSourceState* s, SnxCtrMemory* memory, DspSourceConfi
     }
     if (dirty & DSP_EMBEDDED_BUFFER_DIRTY) {
         uint32_t length = dsp32(config->length);
-        /* an underflowed length (Luigi's Mansion: Dark Moon) is skipped rather than allocated */
+        /* an underflowed length, which one game sends, is skipped rather than allocated */
         if ((int32_t)length >= 0)
             (void)queue_push(s, (DspQueued){.physical_address = dsp32(config->physical_address),
                                             .length = length,

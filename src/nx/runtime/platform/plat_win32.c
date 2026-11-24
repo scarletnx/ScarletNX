@@ -152,7 +152,7 @@ void plat_exit_now(int code) {
 
 /* ================================================================ the guest's address space */
 /* The reservation carries a write watch, which plat_ww_scan reads unless write_tracking=2: without it the caches hash
-   guest memory to find changes (a third of Super Mario Odyssey's GPU thread). The watch is chosen as the reservation
+   guest memory to find changes (a third of one game's GPU thread). The watch is chosen as the reservation
    is made, before the settings are read */
 static u8* g_ww_base;
 static u64 g_ww_size;

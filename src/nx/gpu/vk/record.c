@@ -115,8 +115,8 @@ static void rec_thread(void* arg) {
     for (;;) {
         u64 head = atomic_load_explicit(&g_head, memory_order_acquire);
         /* nothing more yet: sleep until the producer publishes (REC_PUBLISH). It spun 4000 pauses first, which with
-           a publish every 4 KiB kept it from sleeping at all: a host core spent on waiting (0.8 of one in Tears of
-           the Kingdom, 0.26 with this) */
+           a publish every 4 KiB kept it from sleeping at all: a host core spent on waiting (0.8 of one in an open
+           world game, 0.26 with this) */
         if (head == tail) {
             pm_lock(&g_m);
             atomic_store_explicit(&g_sleep, 1, memory_order_seq_cst);
