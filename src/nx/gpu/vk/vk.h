@@ -3482,6 +3482,30 @@ enum {
     VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
     VK_FS_N
 };
+/* The measure of bindless textures (docs/dev/draw-cost.md, item 7). A stage's texture slots by where the program
+   takes the handle (render.c stage_set_): one constant buffer word, two words ORed (bl2), an indexed table, guest
+   memory (an Ounce's), or one word for a raw load or a multisample fetch (other). Then the slots that a pool map
+   would leave to each draw's own path: a target the draw renders to, sampled in a feedback loop, through a copy, or as
+   its read-only depth; and the fragment key's color depth compares, min or max reductions in the program and query
+   hints (fs_key). Then the TIC indices that the draws named, each counted once a present */
+enum {
+    VK_SLOT_PLAIN,
+    VK_SLOT_BL2,
+    VK_SLOT_INDEXED,
+    VK_SLOT_MEMORY,
+    VK_SLOT_OTHER,
+    VK_SLOT_FEEDBACK,
+    VK_SLOT_TARGET_COPY,
+    VK_SLOT_DEPTH_RO,
+    VK_SLOT_DC_COLOR,
+    VK_SLOT_MINMAX,
+    VK_SLOT_QUERY,
+    VK_SLOT_TICS,
+    VK_SLOT_N
+};
+/* The headers that the texture memo checked again after a write tracking epoch (render.c tex_memo_unwritten): those
+   on a page that the CPU wrote, and of those, the ones whose bytes changed, by pool */
+enum { VK_POOL_TIC_WRITTEN, VK_POOL_TSC_WRITTEN, VK_POOL_TIC_CHANGED, VK_POOL_TSC_CHANGED, VK_POOL_N };
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
@@ -3497,6 +3521,7 @@ typedef struct {
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
+    u64 slot[VK_SLOT_N], pool[VK_POOL_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end

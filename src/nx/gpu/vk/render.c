@@ -1451,7 +1451,12 @@ static struct {
     u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
+    /* by TIC index, the present (tic_stamp) that a draw last named it in: VK_SLOT_TICS counts each index once a
+       present, with no walk */
+    u16 tic_seen[1u << 20];
 } g_stats;
+/* a present's stamp in g_stats.tic_seen: never 0, the stamp of an index that no draw named */
+static u16 tic_stamp(void) { return (u16)(g_vk_present % 65535u + 1u); }
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
 /* for the statistics (the GPU plan's M12m): the nanoseconds of those copies, timed one in CB_TIME_EVERY and taken as
@@ -1689,6 +1694,20 @@ void vk_render_stats_log(void) {
         (double)(n->top[VK_TOP_SCANNED] - w->top[VK_TOP_SCANNED]) / (double)presents,
         (double)(n->top_indices - w->top_indices) / (double)presents,
         (double)(n->top[VK_TOP_UNKNOWN] - w->top[VK_TOP_UNKNOWN]) / (double)presents);
+    {
+        /* the measure of bindless textures (docs/dev/draw-cost.md, item 7), a present */
+        double k[VK_SLOT_N], p[VK_POOL_N];
+        for (int i = 0; i < VK_SLOT_N; i++) k[i] = (double)(n->slot[i] - w->slot[i]) / (double)presents;
+        for (int i = 0; i < VK_POOL_N; i++) p[i] = (double)(n->pool[i] - w->pool[i]) / (double)presents;
+        LOG("vulkan: texture slots a present by handle: %.1f plain, %.1f bl2, %.1f indexed, %.1f memory, %.1f other; "
+            "%.1f TIC indices named; for a draw's own path %.1f feedback, %.1f a copy of a bound target, %.1f read-only "
+            "depth, %.1f color depth compares, %.1f min or max reductions, %.1f query hints; pool headers on pages the "
+            "CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f changed)\n",
+            k[VK_SLOT_PLAIN], k[VK_SLOT_BL2], k[VK_SLOT_INDEXED], k[VK_SLOT_MEMORY], k[VK_SLOT_OTHER], k[VK_SLOT_TICS],
+            k[VK_SLOT_FEEDBACK], k[VK_SLOT_TARGET_COPY], k[VK_SLOT_DEPTH_RO], k[VK_SLOT_DC_COLOR], k[VK_SLOT_MINMAX],
+            k[VK_SLOT_QUERY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
+            p[VK_POOL_TSC_CHANGED]);
+    }
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present, %.3f ms a "
         "present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents,
@@ -1783,12 +1802,18 @@ static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32
     /* A written page holds 128 headers: the game writes a few of its pool's every frame, and in one battle that dropped
        about 340 lookups a frame whose own headers were as kept. Where the tracking saw a write, the headers' 64 bytes
        are compared with m's */
-    if (vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0 ||
-        vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0) {
+    const int tic_written = vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0,
+              tsc_written = vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0;
+    if (tic_written || tsc_written) {
         u32 tic[8], tsc[8];
         vk_gmem_words(tic_at, tic, 8);
         vk_gmem_words(tsc_at, tsc, 8);
-        if (memcmp(tic, m->tic, sizeof tic) || memcmp(tsc, m->tsc, sizeof tsc)) return 0;
+        const int tic_changed = memcmp(tic, m->tic, sizeof tic) != 0, tsc_changed = memcmp(tsc, m->tsc, sizeof tsc) != 0;
+        g_stats.n.pool[VK_POOL_TIC_WRITTEN] += (u64)tic_written;
+        g_stats.n.pool[VK_POOL_TSC_WRITTEN] += (u64)tsc_written;
+        g_stats.n.pool[VK_POOL_TIC_CHANGED] += (u64)(tic_written && tic_changed);
+        g_stats.n.pool[VK_POOL_TSC_CHANGED] += (u64)(tsc_written && tsc_changed);
+        if (tic_changed || tsc_changed) return 0;
     }
     m->ww_epoch = epoch;
     m->wseen = now;
@@ -4282,6 +4307,11 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
+        g_stats.n.slot[st->flags & SNX_TEX_INDEXED  ? VK_SLOT_INDEXED
+                       : st->flags & SNX_TEX_MEMORY ? VK_SLOT_MEMORY
+                       : st->bindless && st->bl2    ? VK_SLOT_BL2
+                       : st->flags & 3              ? VK_SLOT_OTHER
+                                                    : VK_SLOT_PLAIN]++;
         if (st->flags & SNX_TEX_INDEXED) {
             int table = 0;
             while (table < table_count && !shader_same_indexed_table(st, &s->si.tex[table_first[table]])) table++;
@@ -4322,6 +4352,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                      : res && res[i].have ? res[i].handle
                      : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
+        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_stats.tic_seen[handle & 0xFFFFFu] != tic_stamp()) {
+            g_stats.tic_seen[handle & 0xFFFFFu] = tic_stamp();
+            g_stats.n.slot[VK_SLOT_TICS]++;
+        }
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = predrawn ? &g_predraw.tex[predraw_k] : res ? &res[i] : NULL;
@@ -4395,6 +4429,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
         }
+        g_stats.n.slot[VK_SLOT_FEEDBACK] += slots != 0;
         if (slots && predrawn) {
             /* the save draw copies the target's texels as they are, through a view of the format its save attachment
                is written in and none of the header's swizzle or sRGB reading: the guest's draw reads the save
@@ -4413,6 +4448,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
                copy. A slot the program reads no texel of asks only the size or the levels, which the copy answers
                as it is: nothing is copied into it */
+            g_stats.n.slot[VK_SLOT_TARGET_COPY]++;
             int texels = !(s->si.tex_unread_mask >> i & 1);
             Surf* snap = vk_rt_snapshot(t, texels);
             if (snap != t) {
@@ -4430,6 +4466,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (own_size(sampled, rt, zt, n)) scaled[1] |= 1ull << i;
         }
         if (view && depth_ro) {
+            g_stats.n.slot[VK_SLOT_DEPTH_RO]++;
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         } else if (view && slots)
@@ -6836,6 +6873,10 @@ retry:
             fk = (FsKey){.tm = num != 0, .ts = num == 2, .rm = sh.rt_int, .rs = sh.rt_sint};
         } else {
             fs_key(ds, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+            /* the fragment key's slots that a pool map would leave to the draw's own path (VK_SLOT_DC_COLOR) */
+            g_stats.n.slot[VK_SLOT_DC_COLOR] += snx_popcount64(fk.dm);
+            g_stats.n.slot[VK_SLOT_MINMAX] += snx_popcount64(fk.minmax & ((1u << SH_MINMAX_SLOTS) - 1u));
+            for (int i = 0; fk.queried && i < SH_MAXTEX; i++) g_stats.n.slot[VK_SLOT_QUERY] += fk.query[i] != 0;
             u32 varying = capture ? 0 : draw_varying(ds, &sh, 1);
             if ((varying & 3) == SH_VARYING_BARYCENTRIC) {
                 varying_vs = vs_position_copy(ds, sh.vs, SH_VARYING_SLOT(varying));
