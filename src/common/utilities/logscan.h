@@ -28,9 +28,11 @@
 #define SNX_LOGSCAN_OUTPUT   10
 #define SNX_LOGSCAN_TAIL     15
 #define SNX_LOGSCAN_SLOW     5    /* the slowest frames whose lines the summary quotes */
+#define SNX_LOGSCAN_STARTS   8    /* the earlier starts' endings of a log with several that the summary lists */
 #define SNX_LOGSCAN_RAW      1024 /* what is kept of a line for the last lines, before it is cut to SNX_LOGSCAN_LINE */
 
-/* how the run ended, the first failure marker in the log */
+/* how the run ended, the first failure marker in the log: in the last start's lines, where the log holds several starts
+   (an iOS day log, "===== ScarletNX starts, pid N") and one after the last one only opened the launcher */
 enum {
     SNX_LOG_NONE,
     SNX_LOG_CRASH,
@@ -151,6 +153,13 @@ typedef struct SnxLogScan {
     struct SnxLogScan* run; /* the last run's scan while the game log after it is read, malloc'd; its texts stay in
                                the pool */
     unsigned long seen;     /* lines read */
+    /* A log of several starts of the launcher (gui/apple.m's day log): how many lines said one began, the last start
+       that ran a game or failed while the one after it is read, malloc'd with a pool of its own, and how the starts
+       before the one this summary is of ended, the last SNX_LOGSCAN_STARTS of them */
+    unsigned long starts;
+    struct SnxLogScan* earlier;
+    char ended[SNX_LOGSCAN_STARTS][SNX_LOGSCAN_LINE];
+    int nended;
     /* the newest lines as read, rings by seen and output_seen, made texts of the summary at the end */
     char tail_raw[SNX_LOGSCAN_TAIL][SNX_LOGSCAN_RAW];
     unsigned tail_len[SNX_LOGSCAN_TAIL];
