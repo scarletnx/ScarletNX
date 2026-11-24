@@ -2359,7 +2359,7 @@ setting CTR model
     help The console a 3DS game runs on. Auto = the one it was played on before, which its .ini records (model=), and
     help for its first run a New 3DS where the game is New 3DS exclusive or asks for the New 3DS's 178 MiB memory
     help mode, else an Old 3DS. Old 3DS and New 3DS = that console, as --model old or new. Any other value stops the
-    help game, saying so
+    help game, saying so. A game's own Settings pick it for that game alone, over this
 setting CTR screen layout
     key ctr_screen_layout
     label Screen layout

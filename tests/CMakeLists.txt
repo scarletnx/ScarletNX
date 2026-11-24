@@ -741,6 +741,10 @@ if(TARGET snx_ctr_board)
             add_test(NAME 3ds_addons COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_addons.py"
                 "${SNX_CTR_PROGRAM}")
             set_tests_properties(3ds_addons PROPERTIES TIMEOUT 300)
+            # a game's console: the command line's, its own Settings', the launcher's, the one its .ini records
+            add_test(NAME 3ds_console COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_console.py"
+                "${SNX_CTR_PROGRAM}")
+            set_tests_properties(3ds_console PROPERTIES TIMEOUT 600)
             add_test(NAME 3ds_container COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_container.py"
                 "${SNX_CTR_PROGRAM}" $<TARGET_FILE:snx-test-3ds-container>)
             # a cartridge image or a bare NCCH against its extraction, and the update partition played as the update
