@@ -126,6 +126,15 @@ translator, the indexed tables, then the setting on. Each has its test in `tests
 draws, a target redrawn under a crop, an ASTC texture swapped to BC7, integer and signed formats through one slot
 under GPU-assisted validation, a feedback draw, and the shader corpus under `spirv-val`.
 
+Steps 1 to 6 are in, behind `pool_map_shadow`, `writer_barriers` and `pool_map`, all off. On the desktop the race
+found every texture slot plain, about 1,300 TIC indices resolved about ten times each a present, and no record the
+full resolve contradicted. Where guest memory is shared with the CPU, the map needs a storage buffer in place of
+device addresses, and a draw that skips the resolve needs each record's own check of the writes since: the branch
+`bindless-uma` has both. There it took 57% of the slots with no resolve and made the race slower. An A/B/B/A with a
+pipeline cache warmed for each side gave 75.5 and 82.0 fps off and 64.1 and 69.4 on, about 2 ms more of the GPU
+thread a present. The map's own work for each draw (its pages, and the checks by address after each submission and
+dispatch moves the stamps) costs more than the resolves it skips. The item waits for a profile of that branch.
+
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
 thread, its largest phase. 18.1% came from one path: the import branch of `rt_watch` publishes every target drawn
