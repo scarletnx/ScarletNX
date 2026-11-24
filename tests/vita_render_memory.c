@@ -1,0 +1,251 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* Guest memory as the Vita's renderer (gpu/render.c) has the GPU read and write it, on a device that imports it
+   (VK_EXT_external_memory_host) and on the same device without the extension (vk_ext_external_memory_host=off), where
+   the GPU works on copies: each check holds on both, the import being what a copy stands for. No game and no shader
+   program is needed: the GPU's work is sceGxm's transfers, scenes that load a color surface and store it, and decoded
+   pictures. A name runs that check alone, and "import" or "copy" before it that device alone. Skips (77) without a
+   Vulkan device */
+#include "vita/gpu/gxm.h"
+#include "vita/gpu/render.h"
+#include "vita/gpu/vk.h"
+#include "vita/runtime/process.h"
+#include "vita/runtime/watch.h"
+#include "common/platform/vm.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+#define BLOCK 0x40000u /* a memory block of the checks, as the console gives CDRAM's */
+#define PAGE  0x1000u
+
+static struct {
+    const char* check;
+    const char* device;
+    unsigned failures;
+} g_test;
+#define CHECK(c, ...)                                                                                                  \
+    do {                                                                                                               \
+        if (!(c)) {                                                                                                    \
+            ++g_test.failures;                                                                                         \
+            fprintf(stderr, "FAIL %s (%s) line %d: ", g_test.check, g_test.device, __LINE__);                          \
+            fprintf(stderr, __VA_ARGS__);                                                                              \
+            fputc('\n', stderr);                                                                                       \
+        }                                                                                                              \
+    } while (0)
+
+#ifndef _WIN32
+static void on_fault(int signal, siginfo_t* info, void* context) {
+    (void)context;
+    if (vita_watch_fault((uintptr_t)info->si_addr)) return;
+    static const char said[] = "a fault the watch does not know\n";
+    if (write(2, said, sizeof said - 1) < 0) _exit(3);
+    _exit(signal);
+}
+static void on_alarm(int signal) {
+    (void)signal;
+    static const char said[] = "a check hangs\n";
+    if (write(2, said, sizeof said - 1) < 0) _exit(3);
+    _exit(2);
+}
+#endif
+
+/* a process with its memory, its sceGxm state and the renderer, and nothing else of a game's */
+static VitaProcess* process_make(void) {
+    VitaProcess* p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->user = (VitaRegion){VITA_USER_BASE, VITA_USER_END, VITA_USER_BASE};
+    p->cdram = (VitaRegion){VITA_CDRAM_BASE, VITA_CDRAM_END, VITA_CDRAM_BASE};
+    p->mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
+    if (plat_mem_page() > PAGE) p->page_refs = calloc(VITA_SPACE / plat_mem_page(), sizeof *p->page_refs);
+    p->gxm = calloc(1, sizeof *p->gxm);
+    if (!p->mem || !p->gxm || (plat_mem_page() > PAGE && !p->page_refs) || !vita_watch_init(p) || !vita_render_init(p))
+        return NULL;
+    return p;
+}
+static void process_free(VitaProcess* p) {
+    vita_render_free(p);
+    vita_watch_free();
+    plat_mem_release(p->mem, VITA_SPACE + 0x10000);
+    free(p->page_refs);
+    free(p->gxm);
+    free(p);
+}
+static uint32_t block_make(VitaProcess* p, uint32_t size, bool mapped) {
+    uint32_t at = vita_alloc(p, &p->cdram, size, BLOCK);
+    if (at && mapped) vita_render_map(p, at, size);
+    return at;
+}
+/* the byte a pattern has at i: none repeats within a page, and two patterns differ everywhere */
+static unsigned char pattern(unsigned which, uint32_t i) { return (unsigned char)(which * 0x35u + i * 7u + (i >> 8)); }
+static void fill(VitaProcess* p, uint32_t at, uint32_t size, unsigned which) {
+    unsigned char* to = vita_ptr(p, at);
+    for (uint32_t i = 0; i < size; ++i) to[i] = pattern(which, i);
+}
+/* the bytes of [at, at + size) that are not the pattern's from its byte first on */
+static uint32_t wrong_from(VitaProcess* p, uint32_t at, uint32_t size, unsigned which, uint32_t first) {
+    const unsigned char* got = vita_ptr(p, at);
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < size; ++i) n += got[i] != pattern(which, first + i);
+    return n;
+}
+static uint32_t wrong(VitaProcess* p, uint32_t at, uint32_t size, unsigned which) {
+    return wrong_from(p, at, size, which, 0);
+}
+/* size bytes copied by the GPU, as a transfer of one row */
+static bool copy(VitaProcess* p, uint32_t from, uint32_t to, uint32_t size) {
+    return vita_render_transfer_copy(p, size / 4, 1, 4, from, 0, 0, (int32_t)size, to, 0, 0, (int32_t)size);
+}
+/* sceGxmFinish: what is recorded submitted and done */
+static void finish(VitaProcess* p) { vita_render_wait(p, vita_render_finish(p)); }
+
+/* what the CPU wrote is what the GPU reads, what the GPU wrote what the CPU reads, again after each changes */
+static void check_round_trip(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    for (unsigned n = 1; n < 4; ++n) {
+        fill(p, a + n * 0x100, 0x3000, n);
+        CHECK(copy(p, a + n * 0x100, b + 0x2000, 0x3000), "the transfer is refused");
+        finish(p);
+        CHECK(!wrong(p, b + 0x2000, 0x3000, n), "pass %u: %u bytes of the GPU's copy are wrong", n,
+              (unsigned)wrong(p, b + 0x2000, 0x3000, n));
+        /* the GPU's copy read by the GPU, the CPU's write over a part of it */
+        fill(p, b + 0x2800, 0x400, n + 8);
+        CHECK(copy(p, b + 0x2000, a + 0x10000, 0x3000), "the transfer back is refused");
+        finish(p);
+        uint32_t bad = wrong(p, a + 0x10000, 0x800, n) + wrong(p, a + 0x10800, 0x400, n + 8) +
+                       wrong_from(p, a + 0x10c00, 0x2400, n, 0xc00);
+        CHECK(!bad, "pass %u: %u bytes of the copy back are wrong", n, (unsigned)bad);
+    }
+}
+/* a chain of copies in one recording, each reading what the one before it wrote */
+static void check_chain(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x2000, 1);
+    CHECK(copy(p, a, b, 0x2000) && copy(p, b, a + 0x8000, 0x2000) && copy(p, a + 0x8000, b + 0x9100, 0x2000),
+          "a transfer is refused");
+    finish(p);
+    CHECK(!wrong(p, b, 0x2000, 1) && !wrong(p, a + 0x8000, 0x2000, 1) && !wrong(p, b + 0x9100, 0x2000, 1),
+          "the chain's bytes are wrong: %u, %u, %u", (unsigned)wrong(p, b, 0x2000, 1),
+          (unsigned)wrong(p, a + 0x8000, 0x2000, 1), (unsigned)wrong(p, b + 0x9100, 0x2000, 1));
+}
+/* two submissions: the first's writes are in guest memory once it is done, the second's once the second is */
+static void check_serials(VitaProcess* p) {
+    uint32_t size = 4 * BLOCK, a = block_make(p, size, true), b = block_make(p, size, true);
+    fill(p, a, size, 1);
+    CHECK(copy(p, a, b, 0x1000), "the transfer is refused");
+    uint64_t first = vita_render_finish(p);
+    bool ok = true;
+    for (unsigned i = 0; i < 64 && ok; ++i) ok = copy(p, a + 0x1000, b + 0x1000, size - 0x1000);
+    vita_render_wait(p, first); /* the second's work recorded and not submitted */
+    CHECK(!wrong(p, b, 0x1000, 1), "%u bytes of the first submission are wrong", (unsigned)wrong(p, b, 0x1000, 1));
+    uint64_t second = vita_render_finish(p);
+    CHECK(ok && second > first, "the second submission is not made");
+    vita_render_wait(p, second);
+    CHECK(!wrong(p, b, size, 1), "%u bytes of both submissions are wrong", (unsigned)wrong(p, b, size, 1));
+}
+/* a block unmapped with a transfer into it recorded: its bytes are in guest memory, and the CPU's after it are the
+   GPU's once the block is mapped again */
+static void check_unmap(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x2000, 1);
+    CHECK(copy(p, a, b + 0x800, 0x2000), "the transfer is refused");
+    vita_render_unmap(p, b);
+    CHECK(!wrong(p, b + 0x800, 0x2000, 1), "%u bytes are not in guest memory once the block is unmapped",
+          (unsigned)wrong(p, b + 0x800, 0x2000, 1));
+    fill(p, b + 0x800, 0x2000, 2);
+    vita_render_map(p, b, BLOCK);
+    CHECK(copy(p, b + 0x800, a + 0x8000, 0x2000), "the transfer back is refused");
+    finish(p);
+    CHECK(!wrong(p, a + 0x8000, 0x2000, 2), "%u bytes written while the block was unmapped are old",
+          (unsigned)wrong(p, a + 0x8000, 0x2000, 2));
+}
+/* a decoded picture, whole and in its place */
+static void check_picture(VitaProcess* p) {
+    uint32_t b = block_make(p, BLOCK, false), size = 32 * 16 * 3 / 2;
+    unsigned char luma[32 * 16], u[16 * 8], v[16 * 8];
+    for (unsigned i = 0; i < sizeof luma; ++i) luma[i] = pattern(1, i);
+    for (unsigned i = 0; i < sizeof u; ++i) u[i] = pattern(2, i), v[i] = pattern(3, i);
+    fill(p, b, 0x2000, 4);
+    CHECK(vita_render_picture(p, b + 0x400, 32, 0x10, 32, 16, (const uint8_t* const[3]){luma, u, v},
+                              (const int[3]){32, 16, 16}),
+          "the picture is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 0x400, sizeof luma, 1) && !wrong(p, b + 0x400 + sizeof luma, sizeof u, 2) &&
+              !wrong(p, b + 0x400 + sizeof luma + sizeof u, sizeof v, 3),
+          "the picture's planes are wrong");
+    CHECK(!wrong(p, b, 0x400, 4) && !wrong_from(p, b + 0x400 + size, 0x1000, 4, 0x400 + size),
+          "the bytes around the picture are wrong");
+}
+
+static const struct {
+    const char* name;
+    void (*run)(VitaProcess* p);
+    bool copy_only; /* what the import leaves to its driver */
+} checks[] = {
+    {"round_trip", check_round_trip, false},
+    {"chain", check_chain, false},
+    {"serials", check_serials, false},
+    {"unmap", check_unmap, false},
+    {"picture", check_picture, false},
+};
+
+int main(int argc, char** argv) {
+#ifndef _WIN32
+    struct sigaction action = {.sa_sigaction = on_fault, .sa_flags = SA_SIGINFO | SA_NODEFER};
+    sigaction(SIGSEGV, &action, NULL);
+    sigaction(SIGBUS, &action, NULL); /* macOS's, for a page whose protection refuses the write */
+    signal(SIGALRM, on_alarm);
+#endif
+    const char* devices[2] = {"import", "copy"};
+    const char* only_device =
+        argc > 1 && (!strcmp(argv[1], devices[0]) || !strcmp(argv[1], devices[1])) ? argv[1] : NULL;
+    const char* only = argc > (only_device ? 2 : 1) ? argv[only_device ? 2 : 1] : NULL;
+    unsigned ran = 0;
+    for (unsigned d = 0; d < 2; ++d) {
+        if (only_device && strcmp(only_device, devices[d])) continue;
+        char why[512];
+        ini_read(ini_find(g_vk_extensions_ini, "vk_ext_external_memory_host"), d ? "off" : "auto");
+        if (!vita_vk_init(NULL, why, sizeof why)) {
+            printf("SKIP no Vulkan device (%s)\n", why);
+            return 77;
+        }
+        g_test.device = devices[d];
+        bool imports = vita_vk()->host_import;
+        if (d && imports) {
+            fprintf(stderr, "FAIL the device imports guest memory with vk_ext_external_memory_host=off\n");
+            return 1;
+        }
+        for (unsigned i = 0; i < sizeof checks / sizeof *checks && (d || imports); ++i) {
+            if ((only && strcmp(only, checks[i].name)) || (!d && checks[i].copy_only)) continue;
+            g_test.check = checks[i].name;
+            unsigned before = g_test.failures;
+#ifndef _WIN32
+            alarm(60);
+#endif
+            VitaProcess* p = process_make();
+            if (!p) {
+                fprintf(stderr, "FAIL %s (%s): the renderer is not made\n", g_test.check, g_test.device);
+                return 1;
+            }
+            checks[i].run(p);
+            process_free(p);
+            ++ran;
+            printf("%s %s (%s)\n", g_test.failures == before ? "ok" : "FAIL", g_test.check, g_test.device);
+            fflush(stdout);
+        }
+        if (!d && !imports) printf("the device does not import guest memory: the copies alone are checked\n");
+        vita_vk_free();
+    }
+    if (!ran) {
+        fprintf(stderr, "FAIL no check is named %s\n", only ? only : "");
+        return 1;
+    }
+    printf("%s: %u checks, %u failures\n", g_test.failures ? "FAIL" : "PASS", ran, g_test.failures);
+    return g_test.failures ? 1 : 0;
+}

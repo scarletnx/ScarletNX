@@ -4200,6 +4200,12 @@ if(TARGET snx_vita_program)
         add_test(NAME vita_vk_device COMMAND snx-test-vita-vk-device)
         set_tests_properties(vita_vk_device PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
+    # guest memory as the GPU reads and writes it, imported and, with VK_EXT_external_memory_host off, copied
+    add_executable(snx-test-vita-render-memory vita_render_memory.c)
+    snx_test_target(snx-test-vita-render-memory gnu23)
+    target_link_libraries(snx-test-vita-render-memory PRIVATE snx_vita_program)
+    add_test(NAME vita_render_memory COMMAND snx-test-vita-render-memory)
+    set_tests_properties(vita_render_memory PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the window's Esc, asked twice, as SDL sends it: no device or window
     add_executable(snx-test-vita-quit-key vita_quit_key.c)
     snx_test_target(snx-test-vita-quit-key gnu23)
