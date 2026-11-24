@@ -48,6 +48,14 @@ function AArch64_ESBOperation () = ()
 val HaveGCS : unit -> bool
 function HaveGCS () = false
 
+// No Scalable Matrix Extension: the NX's Cortex-A57 has none (FEAT_SME is Armv9.2's), so it is never in streaming mode
+// and the SIMD&FP loads and stores take the plain path
+val HaveSME : unit -> bool
+function HaveSME () = false
+
+val InStreamingMode : unit -> bool
+function InStreamingMode () = false
+
 // No branch target identification: Horizon maps no guarded page, so no instruction checks the branch type that led to
 // it (BTypeNext, which the back end keeps nowhere)
 let InGuardedPage : bool = false
@@ -186,6 +194,15 @@ function ConstrainUnpredictable which = Constraint_NONE
 // An UNKNOWN value is zero, as sailgen starts an undefined local (the LSE atomics' compare value, which only CAS uses)
 val __UNKNOWN_bits : forall 'n, 'n >= 0. int('n) -> bits('n)
 function __UNKNOWN_bits n = Zeros(n)
+
+// and so is an UNKNOWN integer (LD1R's, LD2's... unused element count of a form that has none)
+val __UNKNOWN_integer : unit -> int
+function __UNKNOWN_integer () = 0
+
+// An implementation-defined choice the Cortex-A57 has no part in (the streaming mode's tag checks, an EL it doesn't
+// run): the plain one
+val __IMPDEF_boolean : string -> bool
+function __IMPDEF_boolean s = false
 
 // Guest memory is ScarletNX's own: the host's bytes at CPU.mem plus the address, read and written as the host does
 // (llvm.h). An acquire load and a release store are sequentially consistent host atomics, which order both ways, so

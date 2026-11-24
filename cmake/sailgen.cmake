@@ -206,7 +206,7 @@ function(snx_sailgen_a32_arm64 target)
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
-# snx_sailgen_a64_risc(<target> <machine>): generates a64_<machine>.inc (the A64 emitters of a64_x64.roots with a RISC
+# snx_sailgen_a64_risc(<target> <machine>): generates a64_<machine>.inc (the A64 emitters of a64_risc.roots with a RISC
 # machine's back end at its top: snx_sailgen_machine_backends' files, over its encoders from LLVM's TableGen records,
 # tools/sailgen/td/<machine>_enc.inc) into the build folder, and gives <target> its include roots. It builds on any
 # host: the code it writes is the machine's
@@ -217,9 +217,9 @@ function(snx_sailgen_a64_risc target machine)
     snx_sailgen_machine_backends(${machine} a64 files args)
     add_custom_command(OUTPUT "${out}/a64_${machine}.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" ${args} --profile "${profile}"
+        COMMAND snx-sailgen --generate "${dir}/a64_risc.roots" ${args} --profile "${profile}"
                 -o "${out}/a64_${machine}.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+        DEPENDS snx-sailgen "${dir}/a64_risc.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
                 "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
         COMMENT "Generating the A64 emitters' ${machine} code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_${machine}.inc")
