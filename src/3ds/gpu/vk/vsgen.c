@@ -39,7 +39,7 @@ typedef struct {
 typedef struct Gen Gen;
 typedef struct {
     Gen* g;
-    uint32_t offset;
+    uint32_t offset, word;
     Step step;
 } Decode;
 typedef Decode DisasContext;
@@ -50,7 +50,7 @@ typedef Decode DisasContext;
 #include "decode-pica.inc"
 #pragma GCC diagnostic pop
 static Step step_of(uint32_t instr) {
-    Decode c = {NULL, 0, {STEP_UNKNOWN, 0, 0}};
+    Decode c = {NULL, 0, instr, {STEP_UNKNOWN, 0, 0}};
     decode_pica(&c, instr);
     return c.step;
 }
@@ -266,24 +266,7 @@ static void store(Gen* g, uint32_t pointer, uint32_t value) { SPV_VOID(g->s, SPV
 static uint32_t extract(Gen* g, uint32_t type, uint32_t composite, uint32_t index) {
     return SPV(g->s, SPV_OP_COMPOSITE_EXTRACT, type, composite, index);
 }
-static uint32_t splat4(Gen* g, uint32_t type, uint32_t v) {
-    return SPV(g->s, SPV_OP_COMPOSITE_CONSTRUCT, type, v, v, v, v);
-}
 static uint32_t private_vec4(Gen* g) { return spv_emit_variable(g->s, SPV_STORAGE_PRIVATE, g->t_vec4); }
-/* uniforms.f[index], uniforms.i[index] and uniforms.b */
-static uint32_t uniform_f(Gen* g, uint32_t index) {
-    uint32_t pointer = spv_emit_type_pointer(g->s, SPV_STORAGE_UNIFORM, g->t_vec4);
-    return load(g, g->t_vec4, SPV(g->s, SPV_OP_ACCESS_CHAIN, pointer, g->pica, sconst(g, 2), index));
-}
-static uint32_t uniform_i(Gen* g, unsigned index) {
-    uint32_t pointer = spv_emit_type_pointer(g->s, SPV_STORAGE_UNIFORM, g->t_uvec4);
-    uint32_t element = SPV(g->s, SPV_OP_ACCESS_CHAIN, pointer, g->pica, sconst(g, 1), sconst(g, (int32_t)index));
-    return load(g, g->t_uvec4, element);
-}
-static uint32_t uniform_b(Gen* g) {
-    uint32_t pointer = spv_emit_type_pointer(g->s, SPV_STORAGE_UNIFORM, g->t_uint);
-    return load(g, g->t_uint, SPV(g->s, SPV_OP_ACCESS_CHAIN, pointer, g->pica, sconst(g, 0)));
-}
 
 /* structured control flow: a branch closing the block being written (when it is open), a block placed after it
    (falling into it from an open block, as the GLSL's code fell through), a return */
@@ -337,76 +320,6 @@ static void call_sub(Gen* g, const Sub* s) {
         place(g, merge);
     }
 }
-static uint32_t cc_bit(Gen* g, unsigned i, bool set) {
-    uint32_t v = load(g, g->t_bool, g->cc[i]);
-    return set ? v : SPV(g->s, SPV_OP_LOGICAL_NOT, g->t_bool, v);
-}
-static uint32_t condition(Gen* g, const arg_cond* x) {
-    if (x->cond == 2) return cc_bit(g, 0, x->refx);
-    if (x->cond == 3) return cc_bit(g, 1, x->refy);
-    uint32_t a = cc_bit(g, 0, x->refx), b = cc_bit(g, 1, x->refy);
-    return SPV(g->s, x->cond == 0 ? SPV_OP_LOGICAL_OR : SPV_OP_LOGICAL_AND, g->t_bool, a, b); /* any, all */
-}
-static uint32_t uniform_bool(Gen* g, uint32_t index, bool invert) {
-    uint32_t masked = SPV(g->s, SPV_OP_BITWISE_AND, g->t_uint, uniform_b(g), uconst(g, 1u << index));
-    return SPV(g->s, invert ? SPV_OP_I_EQUAL : SPV_OP_I_NOT_EQUAL, g->t_bool, masked, uconst(g, 0));
-}
-/* get_offset_register: uniforms.f[(base + offset) & 0x7f] with an offset outside -128..127 taken as 0, and 1.0 past
-   the 96 registers (the load clamped to them and the result selected, which keeps it in bounds) */
-static uint32_t offset_register(Gen* g, unsigned base, uint32_t offset) {
-    uint32_t low = SPV(g->s, SPV_OP_S_GREATER_THAN_EQUAL, g->t_bool, offset, sconst(g, -128));
-    uint32_t high = SPV(g->s, SPV_OP_S_LESS_THAN_EQUAL, g->t_bool, offset, sconst(g, 127));
-    uint32_t fixed = SPV(g->s, SPV_OP_SELECT, g->t_int, SPV(g->s, SPV_OP_LOGICAL_AND, g->t_bool, low, high), offset,
-                         sconst(g, 0));
-    uint32_t sum = SPV(g->s, SPV_OP_I_ADD, g->t_int, sconst(g, (int32_t)base), fixed);
-    uint32_t wrapped = SPV(g->s, SPV_OP_BITWISE_AND, g->t_int, sum, sconst(g, 0x7f));
-    uint32_t index = SPV(g->s, SPV_OP_BITCAST, g->t_uint, wrapped);
-    uint32_t inside = SPV(g->s, SPV_OP_U_LESS_THAN, g->t_bool, index, uconst(g, 96));
-    uint32_t v = uniform_f(g, SPV_EXT(g->s, g->t_uint, SPV_GLSL_U_MIN, index, uconst(g, 95)));
-    return SPV(g->s, SPV_OP_SELECT, g->t_vec4, splat4(g, g->t_bool4, inside), v, vec4_const(g, 1, 1, 1, 1));
-}
-static uint32_t temporary(Gen* g, unsigned i) {
-    if (!g->tmp[i]) g->tmp[i] = private_vec4(g);
-    return g->tmp[i];
-}
-/* a source register (0x00-0x0f inputs, 0x10-0x1f temporaries, 0x20-0x7f float uniforms) with its swizzle */
-static uint32_t source(Gen* g, unsigned reg, unsigned address, uint32_t pattern, unsigned n) {
-    static const unsigned select_at[3] = {5, 14, 23}, negate_at[3] = {4, 13, 22};
-    uint32_t v;
-    if (reg < 0x10) {
-        if (!g->in_reg[reg]) g->in_reg[reg] = private_vec4(g);
-        v = load(g, g->t_vec4, g->in_reg[reg]);
-    } else if (reg < 0x20)
-        v = load(g, g->t_vec4, temporary(g, reg - 0x10));
-    else if (address)
-        v = offset_register(g, reg - 0x20, load(g, g->t_int, g->addr[address - 1]));
-    else
-        v = uniform_f(g, sconst(g, (int32_t)(reg - 0x20)));
-    unsigned sel[4];
-    for (unsigned i = 0; i < 4; ++i) sel[i] = snx_bits(pattern, select_at[n - 1] + (3 - i) * 2, 2);
-    if (sel[0] != 0 || sel[1] != 1 || sel[2] != 2 || sel[3] != 3)
-        v = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec4, v, v, sel[0], sel[1], sel[2], sel[3]);
-    if (snx_bits(pattern, negate_at[n - 1], 1)) v = SPV(g->s, SPV_OP_F_NEGATE, g->t_vec4, v);
-    return v;
-}
-/* the destination register's variable, 0 for an output the mask leaves out */
-static uint32_t destination(Gen* g, unsigned reg) {
-    if (reg < 0x10) return g->config->output_map[reg] < g->config->num_outputs ? g->out[g->config->output_map[reg]] : 0;
-    if (reg < 0x20) return temporary(g, reg - 0x10);
-    return 0;
-}
-/* SetDest: the enabled components of the destination get the value's same components, a scalar spread over them */
-static void set_dest(Gen* g, uint32_t pattern, uint32_t var, uint32_t value, bool scalar) {
-    unsigned mask = pattern & 0xf;
-    if (!var || !mask) return;
-    if (scalar) value = splat4(g, g->t_vec4, value);
-    if (mask != 0xf) {
-        uint32_t old = load(g, g->t_vec4, var), c[4];
-        for (unsigned i = 0; i < 4; ++i) c[i] = pattern & (8u >> i) ? 4 + i : i;
-        value = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec4, old, value, c[0], c[1], c[2], c[3]);
-    }
-    store(g, var, value);
-}
 /* where the range goes on after the instruction at offset, what compile_instr returns */
 static uint32_t next_offset(Gen* g, uint32_t offset) {
     Step st = step_of(g->setup->code[offset]);
@@ -435,270 +348,54 @@ static uint32_t next_offset(Gen* g, uint32_t offset) {
     }
 }
 
-/* ---- the trans_ functions of pica.decode's patterns. Each gives the instruction's step, then, when the context has a
-   Gen, compiles it ---- */
-static bool emits(Decode* c, StepKind kind, uint32_t dest, uint32_t num) {
+/* ---- the instructions: what each computes is pica.sail's (sailgen --gpu), its back end sail/pica_spirv.h, the
+   generated pica_sail.inc's sgp_emit running the root of an opcode (one per pattern of pica.decode) ---- */
+#define PICA_OPS(X)                                                                                                    \
+    X(ADD) X(DP3) X(DP4) X(DPH) X(DST) X(EX2) X(LG2) X(LITP) X(MUL) X(SGE) X(SLT) X(FLR) X(MAX) X(MIN) X(RCP) X(RSQ)    \
+    X(MOVA) X(MOV) X(DPHI) X(DSTI) X(SGEI) X(SLTI) X(BREAK) X(NOP) X(END) X(BREAKC) X(CALL) X(CALLC) X(CALLU) X(IFU)   \
+    X(IFC) X(LOOP) X(EMIT) X(SETEMIT) X(JMPC) X(JMPU) X(CMP) X(MADI) X(MAD)
+#define PICA_OP(NAME) P_##NAME,
+enum { PICA_OPS(PICA_OP) };
+#undef PICA_OP
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#include "pica_sail.inc"
+#pragma GCC diagnostic pop
+
+/* the trans_ functions of pica.decode's patterns. Each gives the instruction's step, then, when the context has a
+   Gen, compiles it */
+static bool emits(Decode* c, StepKind kind, uint32_t dest, uint32_t num, int op) {
     c->step = (Step){kind, dest, num};
-    return c->g != NULL;
-}
-
-/* an arithmetic instruction's sources, swizzled (inverted: the I forms, whose address register offsets src2), and its
-   destination's variable */
-typedef struct {
-    uint32_t pattern, a, b, d;
-} Operands;
-static Operands operands(Gen* g, const arg_arith* x, bool inverted) {
-    Operands o;
-    o.pattern = g->setup->swizzle[x->desc];
-    o.a = source(g, x->src1, inverted ? 0 : x->addr, o.pattern, 1);
-    o.b = source(g, x->src2, inverted ? x->addr : 0, o.pattern, 2);
-    o.d = destination(g, x->dest);
-    return o;
-}
-/* an arithmetic instruction that sets the destination to value, a scalar spread over the enabled components or a
-   vec4, of o's sources */
-#define SET(NAME, INVERTED, SCALAR, value)                                                                             \
-    static bool trans_##NAME(Decode* c, arg_##NAME* x) {                                                               \
-        if (!emits(c, STEP_NEXT, 0, 0)) return true;                                                                   \
-        Gen* g = c->g;                                                                                                 \
-        Operands o = operands(g, x, INVERTED);                                                                         \
-        set_dest(g, o.pattern, o.d, value, SCALAR);                                                                    \
-        return true;                                                                                                   \
+    if (c->g) {
+        SgG g;
+        sgp_begin(&g, c->g, c->offset, c->word);
+        sgp_emit(&g, op);
     }
-SET(ADD, false, false, SPV(g->s, SPV_OP_F_ADD, g->t_vec4, o.a, o.b))
-SET(MUL, false, false, SPV(g->s, SPV_OP_F_MUL, g->t_vec4, o.a, o.b))
-SET(FLR, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_FLOOR, o.a))
-SET(MAX, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_F_MAX, o.a, o.b))
-SET(MIN, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_F_MIN, o.a, o.b))
-SET(MOV, false, false, o.a)
-SET(EX2, false, true, SPV_EXT(g->s, g->t_float, SPV_GLSL_EXP2, extract(g, g->t_float, o.a, 0)))
-SET(LG2, false, true, SPV_EXT(g->s, g->t_float, SPV_GLSL_LOG2, extract(g, g->t_float, o.a, 0)))
-
-static bool trans_DP3(Decode* c, arg_DP3* x) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    Operands o = operands(g, x, false);
-    uint32_t a3 = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, o.a, o.a, 0, 1, 2);
-    uint32_t b3 = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, o.b, o.b, 0, 1, 2);
-    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_DOT, g->t_float, a3, b3), true);
     return true;
 }
-/* DP4, and DPH and DPHI (homogeneous): Azahar without sanitize_mul dots the sources as they are; DPH's w of 1.0 is
-   the hardware's */
-static bool dot4(Decode* c, const arg_arith* x, bool inverted, bool homogeneous) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    Operands o = operands(g, x, inverted);
-    uint32_t a = o.a;
-    if (homogeneous) a = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec4, a, vec4_const(g, 0, 0, 0, 1), 0, 1, 2, 7);
-    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_DOT, g->t_float, a, o.b), true);
-    return true;
-}
-static bool trans_DP4(Decode* c, arg_DP4* x) { return dot4(c, x, false, false); }
-static bool trans_DPH(Decode* c, arg_DPH* x) { return dot4(c, x, false, true); }
-static bool trans_DPHI(Decode* c, arg_DPHI* x) { return dot4(c, x, true, true); }
-
-/* RCP and RSQ: Azahar without sanitize_mul: a zero operand (RSQ: one not above zero) leaves the destination alone,
-   which avoids NaN; a NaN one passes RCP's != as it did in GLSL */
-static bool reciprocal(Decode* c, const arg_arith* x, bool square_root) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    SpvEmitter* s = g->s;
-    Operands o = operands(g, x, false);
-    uint32_t f = g->t_float, v = extract(g, f, o.a, 0);
-    uint32_t ok = !square_root ? SPV(s, SPV_OP_F_UNORD_NOT_EQUAL, g->t_bool, v, fconst(g, 0))
-                               : SPV(s, SPV_OP_F_ORD_GREATER_THAN, g->t_bool, v, fconst(g, 0));
-    uint32_t merge = if_begin(g, ok);
-    uint32_t value = !square_root ? SPV(s, SPV_OP_F_DIV, f, fconst(g, 1), v) : SPV_EXT(s, f, SPV_GLSL_INVERSE_SQRT, v);
-    set_dest(g, o.pattern, o.d, value, true);
-    place(g, merge);
-    return true;
-}
-static bool trans_RCP(Decode* c, arg_RCP* x) { return reciprocal(c, x, false); }
-static bool trans_RSQ(Decode* c, arg_RSQ* x) { return reciprocal(c, x, true); }
-
-/* address_registers.xy = ivec2(a), each enabled one of x and y */
-static bool trans_MOVA(Decode* c, arg_MOVA* x) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    Operands o = operands(g, x, false);
-    for (unsigned i = 0; i < 2; ++i)
-        if (o.pattern & (8u >> i))
-            store(g, g->addr[i], SPV(g->s, SPV_OP_CONVERT_F_TO_S, g->t_int, extract(g, g->t_float, o.a, i)));
-    return true;
-}
-
-/* SGE, SLT and their I forms: 1.0 where the comparison holds, else 0.0 */
-static bool set_compare(Decode* c, const arg_arith* x, bool inverted, uint32_t compare) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    Operands o = operands(g, x, inverted);
-    uint32_t mask = SPV(g->s, compare, g->t_bool4, o.a, o.b);
-    uint32_t ones = vec4_const(g, 1, 1, 1, 1), zeros = vec4_const(g, 0, 0, 0, 0);
-    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_SELECT, g->t_vec4, mask, ones, zeros), false);
-    return true;
-}
-static bool trans_SGE(Decode* c, arg_SGE* x) { return set_compare(c, x, false, SPV_OP_F_ORD_GREATER_THAN_EQUAL); }
-static bool trans_SGEI(Decode* c, arg_SGEI* x) { return set_compare(c, x, true, SPV_OP_F_ORD_GREATER_THAN_EQUAL); }
-static bool trans_SLT(Decode* c, arg_SLT* x) { return set_compare(c, x, false, SPV_OP_F_ORD_LESS_THAN); }
-static bool trans_SLTI(Decode* c, arg_SLTI* x) { return set_compare(c, x, true, SPV_OP_F_ORD_LESS_THAN); }
-
-static bool trans_CMP(Decode* c, arg_CMP* x) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    /* ==, !=, <, <=, >, >= as GLSL compiles them (!= unordered) */
-    static const uint32_t compare[6] = {SPV_OP_F_ORD_EQUAL,        SPV_OP_F_UNORD_NOT_EQUAL,
-                                        SPV_OP_F_ORD_LESS_THAN,    SPV_OP_F_ORD_LESS_THAN_EQUAL,
-                                        SPV_OP_F_ORD_GREATER_THAN, SPV_OP_F_ORD_GREATER_THAN_EQUAL};
-    uint32_t pattern = g->setup->swizzle[x->desc];
-    uint32_t a = source(g, x->src1, x->addr, pattern, 1), b = source(g, x->src2, 0, pattern, 2);
-    /* the register the arithmetic format's destination field names (bits 21-25, the comparisons' low bits): the
-       other arithmetic instructions' code makes its variable, which the module keeps */
-    destination(g, (unsigned)(x->cmpx & 3) << 3 | (unsigned)x->cmpy);
-    unsigned mode[2] = {(unsigned)x->cmpx, (unsigned)x->cmpy};
-    if (mode[0] > 5 || mode[1] > 5) return true; /* an unknown compare mode: Azahar logs it and leaves the codes */
-    for (unsigned i = 0; i < 2; ++i)
-        store(g, g->cc[i],
-              SPV(g->s, compare[mode[i]], g->t_bool, extract(g, g->t_float, a, i), extract(g, g->t_float, b, i)));
-    return true;
-}
-
-/* DST, LITP and DSTI */
-static bool untranslated_arithmetic(Decode* c) {
-    if (emits(c, STEP_NEXT, 0, 0)) c->g->fail = "an arithmetic instruction Azahar does not translate either";
-    return true;
-}
-static bool trans_DST(Decode* c, arg_DST* x) { return (void)x, untranslated_arithmetic(c); }
-static bool trans_LITP(Decode* c, arg_LITP* x) { return (void)x, untranslated_arithmetic(c); }
-static bool trans_DSTI(Decode* c, arg_DSTI* x) { return (void)x, untranslated_arithmetic(c); }
-
-/* MAD and MADI (inverted: src3 takes the address register) */
-static bool multiply_add(Decode* c, const arg_mad* x, bool inverted) {
-    if (!emits(c, STEP_NEXT, 0, 0)) return true;
-    Gen* g = c->g;
-    uint32_t pattern = g->setup->swizzle[x->desc];
-    uint32_t a = source(g, x->src1, 0, pattern, 1);
-    uint32_t b = source(g, x->src2, inverted ? 0 : x->addr, pattern, 2);
-    uint32_t d = source(g, x->src3, inverted ? x->addr : 0, pattern, 3);
-    uint32_t product = SPV(g->s, SPV_OP_F_MUL, g->t_vec4, a, b);
-    set_dest(g, pattern, destination(g, x->dest), SPV(g->s, SPV_OP_F_ADD, g->t_vec4, product, d), false);
-    return true;
-}
-static bool trans_MAD(Decode* c, arg_MAD* x) { return multiply_add(c, x, false); }
-static bool trans_MADI(Decode* c, arg_MADI* x) { return multiply_add(c, x, true); }
-
-/* ---- flow control ---- */
-static bool trans_NOP(Decode* c, arg_NOP* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
-/* a geometry shader's: nothing in a vertex shader */
-static bool trans_EMIT(Decode* c, arg_EMIT* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
-static bool trans_SETEMIT(Decode* c, arg_SETEMIT* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
-static bool trans_END(Decode* c, arg_END* x) {
-    (void)x;
-    if (emits(c, STEP_END, 0, 0)) ret(c->g, true);
-    return true;
-}
-/* BREAK and BREAKC */
-static bool untranslated(Decode* c) {
-    if (emits(c, STEP_UNKNOWN, 0, 0)) c->g->fail = "an instruction Azahar does not translate either";
-    return true;
-}
-static bool trans_BREAK(Decode* c, arg_BREAK* x) { return (void)x, untranslated(c); }
-static bool trans_BREAKC(Decode* c, arg_BREAKC* x) { return (void)x, untranslated(c); }
-
-static void jump_to(Gen* g, uint32_t cond, uint32_t dest) {
-    if (!g->jmp_to) {
-        /* a range the analysis took from its cache without the labels: the GLSL had no loop to break */
-        g->fail = "a jump in a subroutine without labels";
-        return;
-    }
-    uint32_t merge = if_begin(g, cond);
-    store(g, g->jmp_to, uconst(g, dest));
-    jump(g, g->switch_merge);
-    place(g, merge);
-}
-static bool trans_JMPC(Decode* c, arg_JMPC* x) {
-    if (emits(c, STEP_JUMP, x->dest, x->num)) jump_to(c->g, condition(c->g, x), x->dest);
-    return true;
-}
-static bool trans_JMPU(Decode* c, arg_JMPU* x) {
-    if (emits(c, STEP_JUMP, x->dest, x->num)) jump_to(c->g, uniform_bool(c->g, x->id, x->num & 1), x->dest);
-    return true;
-}
-
-static bool trans_CALL(Decode* c, arg_CALL* x) {
-    if (emits(c, STEP_CALL, x->dest, x->num)) call_sub(c->g, sub(c->g, x->dest, x->dest + x->num));
-    return true;
-}
-static void call_if(Gen* g, uint32_t cond, uint32_t dest, uint32_t num) {
-    uint32_t merge = if_begin(g, cond);
-    call_sub(g, sub(g, dest, dest + num));
-    place(g, merge);
-}
-static bool trans_CALLC(Decode* c, arg_CALLC* x) {
-    if (emits(c, STEP_CALL_IF, x->dest, x->num)) call_if(c->g, condition(c->g, x), x->dest, x->num);
-    return true;
-}
-static bool trans_CALLU(Decode* c, arg_CALLU* x) {
-    if (emits(c, STEP_CALL_IF, x->dest, x->num)) call_if(c->g, uniform_bool(c->g, x->id, false), x->dest, x->num);
-    return true;
-}
-
-/* the body (up to dest) when cond holds, else the else part (dest to dest + num) */
-static void if_else(Decode* c, uint32_t cond, uint32_t dest, uint32_t num) {
-    Gen* g = c->g;
-    uint32_t else_offset = dest, endif_offset = else_offset + num;
-    uint32_t then = spv_emit_id(g->s), merge = spv_emit_id(g->s);
-    uint32_t otherwise = num ? spv_emit_id(g->s) : merge;
-    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
-    SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, otherwise);
-    g->open = false;
-    place(g, then);
-    call_sub(g, sub(g, c->offset + 1, else_offset));
-    if (num) {
-        jump(g, merge);
-        place(g, otherwise);
-        call_sub(g, sub(g, else_offset, endif_offset));
-    }
-    place(g, merge);
-}
-static bool trans_IFC(Decode* c, arg_IFC* x) {
-    if (emits(c, STEP_IF, x->dest, x->num)) if_else(c, condition(c->g, x), x->dest, x->num);
-    return true;
-}
-static bool trans_IFU(Decode* c, arg_IFU* x) {
-    if (emits(c, STEP_IF, x->dest, x->num)) if_else(c, uniform_bool(c->g, x->id, false), x->dest, x->num);
-    return true;
-}
-
-/* aL = i.y; for (uint n = 0u; n <= i.x; aL += i.z, ++n) */
-static bool trans_LOOP(Decode* c, arg_LOOP* x) {
-    if (!emits(c, STEP_LOOP, x->dest, 0)) return true;
-    Gen* g = c->g;
-    uint32_t i = uniform_i(g, x->id);
-    store(g, g->addr[2], SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 1)));
-    uint32_t counter = spv_emit_local(g->s, g->t_uint);
-    store(g, counter, uconst(g, 0));
-    uint32_t header = spv_emit_id(g->s), body = spv_emit_id(g->s), next = spv_emit_id(g->s);
-    uint32_t merge = spv_emit_id(g->s);
-    place(g, header);
-    uint32_t more = SPV(g->s, SPV_OP_U_LESS_THAN_EQUAL, g->t_bool, load(g, g->t_uint, counter),
-                        extract(g, g->t_uint, i, 0));
-    SPV_VOID(g->s, SPV_OP_LOOP_MERGE, merge, next, SPV_LOOP_CONTROL_NONE);
-    SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, more, body, merge);
-    g->open = false;
-    place(g, body);
-    call_sub(g, sub(g, c->offset + 1, (uint32_t)x->dest + 1));
-    place(g, next);
-    uint32_t step = SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 2));
-    store(g, g->addr[2], SPV(g->s, SPV_OP_I_ADD, g->t_int, load(g, g->t_int, g->addr[2]), step));
-    store(g, counter, SPV(g->s, SPV_OP_I_ADD, g->t_uint, load(g, g->t_uint, counter), uconst(g, 1)));
-    jump(g, header);
-    place(g, merge);
-    return true;
-}
+/* an instruction that goes on to the next */
+#define NEXT(NAME)                                                                                                     \
+    static bool trans_##NAME(Decode* c, arg_##NAME* x) { return (void)x, emits(c, STEP_NEXT, 0, 0, P_##NAME); }
+NEXT(ADD) NEXT(DP3) NEXT(DP4) NEXT(DPH) NEXT(DST) NEXT(EX2) NEXT(LG2) NEXT(LITP) NEXT(MUL) NEXT(SGE) NEXT(SLT)
+NEXT(FLR) NEXT(MAX) NEXT(MIN) NEXT(RCP) NEXT(RSQ) NEXT(MOVA) NEXT(MOV) NEXT(DPHI) NEXT(DSTI) NEXT(SGEI) NEXT(SLTI)
+NEXT(NOP) NEXT(EMIT) NEXT(SETEMIT) NEXT(CMP) NEXT(MADI) NEXT(MAD)
+static bool trans_END(Decode* c, arg_END* x) { return (void)x, emits(c, STEP_END, 0, 0, P_END); }
+/* BREAK and BREAKC: Azahar does not translate them either */
+static bool trans_BREAK(Decode* c, arg_BREAK* x) { return (void)x, emits(c, STEP_UNKNOWN, 0, 0, P_BREAK); }
+static bool trans_BREAKC(Decode* c, arg_BREAKC* x) { return (void)x, emits(c, STEP_UNKNOWN, 0, 0, P_BREAKC); }
+static bool trans_JMPC(Decode* c, arg_JMPC* x) { return emits(c, STEP_JUMP, x->dest, x->num, P_JMPC); }
+static bool trans_JMPU(Decode* c, arg_JMPU* x) { return emits(c, STEP_JUMP, x->dest, x->num, P_JMPU); }
+static bool trans_CALL(Decode* c, arg_CALL* x) { return emits(c, STEP_CALL, x->dest, x->num, P_CALL); }
+static bool trans_CALLC(Decode* c, arg_CALLC* x) { return emits(c, STEP_CALL_IF, x->dest, x->num, P_CALLC); }
+static bool trans_CALLU(Decode* c, arg_CALLU* x) { return emits(c, STEP_CALL_IF, x->dest, x->num, P_CALLU); }
+static bool trans_IFC(Decode* c, arg_IFC* x) { return emits(c, STEP_IF, x->dest, x->num, P_IFC); }
+static bool trans_IFU(Decode* c, arg_IFU* x) { return emits(c, STEP_IF, x->dest, x->num, P_IFU); }
+static bool trans_LOOP(Decode* c, arg_LOOP* x) { return emits(c, STEP_LOOP, x->dest, 0, P_LOOP); }
 
 static uint32_t compile_instr(Gen* g, uint32_t offset) {
-    Decode c = {g, offset, {STEP_UNKNOWN, 0, 0}};
+    Decode c = {g, offset, g->setup->code[offset], {STEP_UNKNOWN, 0, 0}};
     if (!decode_pica(&c, g->setup->code[offset])) g->fail = "an instruction Azahar does not translate either";
     return next_offset(g, offset);
 }
