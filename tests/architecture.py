@@ -223,6 +223,27 @@ def check_environment(repo):
     return errors
 
 
+DETACH = re.compile(r'(?<![A-Za-z0-9_])SDL_DetachThread\s*\(')
+
+
+def check_detached_threads(repo):
+    """no SDL_DetachThread in src/: it reads the thread's handle after it marks the thread detached, and a thread that
+    ends in between has freed the handle (SDL 3.4.18). A thread is waited for at its last answer (SDL_WaitThread)"""
+    errors = []
+    for path in sorted((repo / 'src').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc', '.m', '.mm'}:
+            continue
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        shown = path.relative_to(repo).as_posix()
+        for match in DETACH.finditer(source):
+            line = source.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{shown}:{line}: SDL_DetachThread reads a thread that may have ended and been freed (SDL 3.4.18): keep '
+                'the thread and wait for it when its last answer comes'
+            )
+    return errors
+
+
 THREAD32_STUB = re.compile(
     r'(?<![A-Za-z0-9_])(arm_cpu|hook_a32_cpu)\s*\(\s*(?:CPU|SnxArmCPU)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{([^}]*)\}'
 )
@@ -1328,6 +1349,7 @@ def main():
         + check_environment(args.repo.resolve())
         + check_test_threads(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
+        + check_detached_threads(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
         + check_packages(args.repo.resolve())
