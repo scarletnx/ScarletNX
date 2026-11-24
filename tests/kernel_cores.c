@@ -663,6 +663,61 @@ int main(void) {
     core_leave(a);
     core_leave(b);
 
+    /* svcStartThread: the thread it starts has its core, or its place in line, as the call returns, before its host
+       thread runs (none does here until the test makes one), as a thread is ready then on the console. Its host thread
+       finds the core it was given, or waits for it in the one place it has */
+    host(twelve, 12);
+    reset();
+    a = thread(0, 45, 0, 1), b = thread(1, 43, 0, 1);
+    core_enter(a);
+    CHECK(kthread_start(b) == 0 && b->on_core == -2 && b->core == 0, "43 started on 45's core: %d, waiting for %d",
+          b->on_core, b->core);
+    CHECK(atomic_load_explicit(&a->cpu.poll, memory_order_relaxed) == 1, "45 is not asked to let go for it");
+    pthread_create(&h, NULL, enter_body, b);
+    core_leave(a);
+    CHECK(settle(b, 0) == 0, "the started thread got core %d", b->on_core);
+    pthread_join(h, NULL);
+    CHECK(!g_hle.thread.core_wait[0] && g_hle.thread.core_best[0] == 64, "it is still in line");
+    core_leave(b);
+    reset(); /* an idle core is its own at once, and its host thread only pins itself */
+    a = thread(0, 44, 1, 2);
+    int host_moves = snx_kct_moves;
+    CHECK(kthread_start(a) == 0 && a->on_core == 1 && snx_kct_moves == host_moves,
+          "44 started on an idle core: on core %d, %d moves", a->on_core, snx_kct_moves - host_moves);
+    core_enter(a);
+    CHECK(a->on_core == 1 && moved_to("1 4 7 10", host_moves + 1), "its host thread: on core %d", a->on_core);
+    core_leave(a);
+    reset(); /* a holder with the started thread behind it moves to an idle core at its next SVC, with no host thread
+                of that one's: what a thread read of its core before svcStartThread returned is not its core after */
+    a = thread(0, 44, 1, 7), b = thread(1, 50, 1, 2);
+    core_enter(a);
+    CHECK(kthread_start(b) == 0 && b->on_core == -2, "50 started behind 44: %d", b->on_core);
+    core_preempt(a);
+    CHECK(a->on_core == 0 && b->on_core == 1, "44 on core %d, 50 on core %d", a->on_core, b->on_core);
+    core_leave(a);
+    core_leave(b);
+    /* the host thread's number its slot's last thread left is not the started thread's: a fault of that host thread,
+       another thread's by now, lends no core of its */
+    {
+        KThread* t;
+        for (int i = 0; i < KTHREAD_MAX; i++) g_host.thread.host_tid[i] = 4242;
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0, &t) == 0 && kthread_start(t) == 0 && t->on_core == 0,
+              "a thread started on core 0: %d", t->on_core);
+        kthread_fault_lend(4242);
+        CHECK(t->on_core == 0, "another thread's fault lent its core: %d", t->on_core);
+        core_leave(t);
+        t->state = 2; /* exited */
+        kobj_unref(&t->o);
+        for (int i = 0; i < KTHREAD_MAX; i++) g_host.thread.host_tid[i] = 0;
+    }
+    /* with the cores left to the host, a started thread takes none */
+    reset();
+    g_settings.emulated_cores_mode = 0;
+    a = thread(0, 44, 1, 2);
+    CHECK(kthread_start(a) == 0 && a->on_core == -1 && !g_hle.thread.core_owner[1], "no core model: on core %d",
+          a->on_core);
+    g_settings.emulated_cores_mode = SNX_KERNEL_CORES_AUTO;
+
     /* a host thread the system refuses: the fatal says why, and the log the stack it asked and what the address space
        holds */
     {
