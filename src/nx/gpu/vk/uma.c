@@ -2079,11 +2079,8 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
        else a new import's pages leave the scans (vk_uma_import_in), and every cache over its windows that asked
        write tracking compares contents from then on: a sparse volume a copy fed loaded all its 1.7 MB again for 64
        bytes copied into one tile, where it loads the tile's 8 KiB block (Liz, #1079). 0 there: the caller owns the
-       span, or lands it on a host without traps (owned.c's own_publish).
-       An open rendering pass takes it too: the copy is recorded outside one, and ending the pass for it broke the pass
-       a frame's draws share, a samples report after every draw ending it once each */
-    if (!vk_uma() || vk_render_open() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && vk_ww_tracks()) ||
-        !bind(cpu, len, 1, &ib, &io))
+       span, or lands it on a host without traps (owned.c's own_publish) */
+    if (!vk_uma() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && vk_ww_tracks()) || !bind(cpu, len, 1, &ib, &io))
         return 0;
     /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
     SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");

@@ -815,6 +815,69 @@ static int check_uma_nvdec(void) {
     return 0;
 }
 
+/* A result published over an import while a rendering pass is open: the pass ends and the copy is recorded in place,
+   as with none open. Turned away for the open pass, the span got an owner where the host traps, whose trap waits for
+   the GPU and lets go of the import (vk_uma_owning), and a readback of its own where it doesn't */
+static int check_uma_publish_open(void) {
+    u8 bytes[256];
+    VkBuffer r;
+    u64 ro;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    ch->id = 146;
+    CHECK(mem_map(UMA_P, 0x200000, MS_NORMAL, PERM_RW) == 0 && mem_map(UMA_N, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GP, UMA_P, 0x200000);
+    gmmu_map(UMA_GN, UMA_N, 0x200000);
+    memset(GP(UMA_P), 0xa0, 0x1000);
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GP + 0x100, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    VkOwnRes* owner = uma_owner(256, 0xa3);
+    CHECK(owner && vk_uma_held(UMA_P + 0x100, 256));
+    vk_unlock();
+    /* a 64 by 64 target cleared, its pass left open */
+    u32* reg = ch->r3d;
+    const float blue[4] = {0, 0, 1, 1};
+    reg[0x487] = 1;
+    reg[0x200] = (u32)(UMA_GN >> 32);
+    reg[0x201] = (u32)UMA_GN;
+    reg[0x202] = 64;
+    reg[0x203] = 64;
+    reg[0x204] = 0xD5;
+    reg[0x205] = 0;
+    reg[0x206] = 1;
+    reg[0x207] = 0;
+    memcpy(&reg[0x360], blue, sizeof blue);
+    engine_clear(ch, 15 << 2);
+    vk_lock();
+    int open = vk_render_begun();
+    u64 adds = vk_uma_writes(), lands = own_landings();
+    vk_own_publish(UMA_P + 0x100, 256, owner, 0);
+    int ended = !vk_render_begun(), owned = own_lookup(UMA_P + 0x100, 256, NULL, 0) != 0,
+        imported = vk_uma_imports(UMA_P, 0x200000) != 0;
+    u64 added = vk_uma_writes() - adds, landed = own_landings() - lands;
+    vk_own_res_unref(owner);
+    vk_unlock();
+    CHECK(!gmem_read(UMA_GP + 0x100, bytes, sizeof bytes));
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa3);
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    CHECK(mem_unmap(UMA_P, 0x200000) == 0 && mem_unmap(UMA_N, 0x200000) == 0);
+    free(ch);
+    if (!open || !ended || owned || !imported || !added || landed)
+        fprintf(stderr,
+                "publish with a pass open (%d): the pass ended %d, owned %d, imported %d, %llu in-place writes, %llu "
+                "landings\n",
+                open, ended, owned, imported, (unsigned long long)added, (unsigned long long)landed);
+    CHECK(open && ended && !owned && imported && added && !landed);
+    printf("in place: a result published over an import with a rendering pass open ends the pass, copied on the GPU\n");
+    return 0;
+}
+
 /* A host without traps has nothing to own a publish with: the span over memory no import held fell through to
    own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. Where an import takes no
    page from write tracking (uma_publish_imports) the publish asks bind for it, which makes it, so the copy is recorded
