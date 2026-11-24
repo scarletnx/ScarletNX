@@ -14,6 +14,7 @@ struct SgG {
     Operand op[8];
     Value val[8];
     uint8_t layout[2][3]; /* VDUAL's sources' layouts */
+    uint32_t test[4];     /* a test's results */
 };
 static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static uint32_t sgu_t_u64(SgG* g) { return (void)g, 0; }
@@ -121,6 +122,7 @@ static int sgu_kind_t(int kind) { return kind == K_FLOAT ? SGT_F32 : kind == K_U
     Value* d = &g->val[v];
     d->c[d->n++] = sg_as(g, x, sgu_kind_t(d->kind));
 }
+[[maybe_unused]] static void sg_SetCount(SgG* g, int64_t v, int64_t n) { g->val[v].n = (unsigned)n; }
 [[maybe_unused]] static void sg_SetKind(SgG* g, int64_t v, int64_t kind) { g->val[v].kind = (int)kind; }
 [[maybe_unused]] static void sg_CopyValue(SgG* g, int64_t w, int64_t v) { g->val[w] = g->val[v]; }
 [[maybe_unused]] static void sg_ToFloat(SgG* g, int64_t v, int64_t type, int64_t normal) {

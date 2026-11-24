@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE's tests (usse_test.sail), which were usse.c's vtst and vtstmsk
+op VTST U_VTST
+op VTSTMSK U_VTSTMSK
