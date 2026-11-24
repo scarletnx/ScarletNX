@@ -28,6 +28,10 @@ u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
+u64 snx_x64_fp_scale(CPU* c, u64 a, u64 by, u64 fpcr, u32 desc);
+u64 snx_x64_fp8_widen(CPU* c, u64 a, u32 bfloat);
+u64 snx_x64_fp8_narrow(CPU* c, u64 a, u32 width);
+u64 snx_x64_fp8_dot(u64 add, u64 a, u64 b, u32 desc);
 void snx_x64_set(CPU* c, u64 a, u64 size, u64 value);
 void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
 extern const u32 snx_x64_crc32_table[256];
@@ -223,6 +227,18 @@ u64 snx_x64_half(u64 a, u64 fpcr) {
 }
 /* BFDOT's step: sum plus the products of two pairs of bfloat16s */
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b) { return snx_vec_bfdot(NULL, (u32)sum, (u32)a, (u32)b); }
+/* a times 2^by, by of a's width signed; desc: width */
+u64 snx_x64_fp_scale(CPU* c, u64 a, u64 by, u64 fpcr, u32 desc) {
+    if (fpcr >> 32) return 0;
+    return snx_x64_fp_done(c, snx_fp_scale(a, snx_sext64(by, desc), (int)desc, (u32)fpcr));
+}
+/* FEAT_FP8's: a byte's half or bfloat16, a half's or a single's byte; the sum of add and products, desc: width,
+   products << 8 */
+u64 snx_x64_fp8_widen(CPU* c, u64 a, u32 bfloat) { return snx_x64_fp_done(c, snx_fp8_widen(a, (int)bfloat)); }
+u64 snx_x64_fp8_narrow(CPU* c, u64 a, u32 width) { return snx_x64_fp_done(c, snx_fp8_narrow(a, (int)width)); }
+u64 snx_x64_fp8_dot(u64 add, u64 a, u64 b, u32 desc) {
+    return snx_fp8_dot(add, a, b, (int)(desc >> 8), (int)(desc & 0xFF));
+}
 /* SM4's substitution of a byte */
 u64 snx_x64_sm4_box(u64 a) {
     static const u8 box[256] = {

@@ -36,6 +36,10 @@ typedef struct {
     int stale;
 } SnxNativeOptions;
 
+/* what r's modules are made without (SnxNativeOptions.without), as a test of it asks: words is kept as it is */
+struct snx_recompiler;
+void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t count);
+
 /* this host's native back end (mach/native.c): x86-64's on an x86-64 host that loads ELF objects, arm64's on an arm64
    one; 1 where there is one */
 int snx_native_available(void);
