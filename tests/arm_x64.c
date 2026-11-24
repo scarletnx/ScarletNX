@@ -22,7 +22,11 @@
    syndrome, the monitor, the TLS registers, the VFP registers and FPSCR, and guest memory must match. --pool N keeps
    the x86 values in N host registers, so they spill; --features takes the host's BMI1 (1), BMI2 (2) and LZCNT (4) out
    where not in MASK; --word runs the words given (HEX, or HEX,HEX... in a row), one block each, and says what each
-   state did; --dump prints a failing state's start */
+   state did; --dump prints a failing state's start.
+   --callee OBJECT (under Unicorn alone) is the runtime library's functions a block calls, compiled for the machine
+   (arm_call_abi_callee.c), in the place of the host's: with it the runs have a runtime (SnxArmRt) whose callbacks are
+   that object's on one side and the test's on the other, so an argument a block passes as the machine's ABI does not
+   have it shows */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
@@ -100,6 +104,7 @@ typedef SnxX64Arm Back;
 #endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "support/arm_rt_callbacks.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +134,9 @@ static struct {
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
     const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
     int dump;           /* --dump: a failing state's start printed */
+    unsigned char* callee; /* --callee's object, callee_size bytes */
+    size_t callee_size;
+    SnxArmRt rt[2]; /* with it, each side's runtime */
     /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
     size_t fp_calls[256], fp_hot_calls;
 } g_test;
@@ -250,13 +258,22 @@ static const Class* pick_class(void) {
 #include "common/cpu/recompiler/llvm/elf_object.h"
 #define SNX_TEST_SWAP_ARM 1
 #include "support/swap_state.h"
-static void swap_arm(void* cpu) { snx_test_swap_arm((SnxArmCPU*)cpu); }
+/* a state with nothing beside it to turn over */
+static void swap_cpu(void* cpu) { snx_test_swap_arm((SnxArmCPU*)cpu); }
 #endif
 
 typedef struct {
     SnxArmCPU cpu;
+    SnxArmRt rt; /* --callee's runtime */
     unsigned char mem[MEM_SIZE];
 } RunState;
+#ifdef SNX_TEST_NATIVE
+static void swap_arm(void* state) {
+    RunState* s = (RunState*)state;
+    snx_test_swap_arm(&s->cpu);
+    snx_test_swap_u64s(&s->rt, sizeof s->rt / 8);
+}
+#endif
 
 /* a random state of the kth kind */
 /* A block is generated code, with no type signature before its entry, which the function sanitizer's check of an
@@ -557,9 +574,24 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
 /* the native object loaded into Unicorn, the helpers its blocks call its traps: each block's function in addr */
 static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* blocks, size_t count, SnxU64* addr) {
     char error[512] = "";
+    if (g_test.callee) { /* the functions a block calls, the machine's own code: its symbols are the block's calls */
+        if (hostuc_load(uc, g_test.callee, g_test.callee_size, error, sizeof error)) {
+            fprintf(stderr, "FAIL: --callee's object: %s\n", error);
+            return 1;
+        }
+        g_test.rt[1].undefined =
+            (void (*)(SnxArmCPU*, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_undefined");
+        g_test.rt[1].coproc = (void (*)(SnxArmCPU*, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_coproc");
+        if (!g_test.rt[1].undefined || !g_test.rt[1].coproc) {
+            fprintf(stderr, "FAIL: --callee's object has no callbacks\n");
+            return 1;
+        }
+    } else if (!hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
+               !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc)) {
+        fprintf(stderr, "FAIL: the " BACK_NAME " code's helpers: out of memory\n");
+        return 1;
+    }
     if (!hostuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
-        !hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
-        !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
         !hostuc_native(uc, "snx_arm_crypto", (void*)snx_arm_crypto) ||
         hostuc_load(uc, object, size, error, sizeof error)) {
         fprintf(stderr, "FAIL: the " BACK_NAME " object: %s\n", error);
@@ -597,7 +629,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     /* the native code's world: the states in memory Unicorn maps at their own addresses */
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
     RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
-    if (s) hostuc_swapper(uc, swap_arm, &s[1].cpu); /* a big-endian machine's state turned over around its runs */
+    if (s) hostuc_swapper(uc, swap_arm, &s[1]); /* a big-endian machine's state turned over around its runs */
 #else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
 #endif
@@ -704,6 +736,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 g_test.seed = seed;
                 start(&s[side], k);
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
+                if (g_test.callee) s[side].rt = g_test.rt[side], s[side].cpu.rt = &s[side].rt;
 #if defined(SNX_TEST_NATIVE)
                 if (side) {
                     if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
@@ -1216,7 +1249,7 @@ static int run_poll_chain(Back* x64) {
     if (!t || !offset) goto done;
     *offset = (int64_t)offsetof(PollState, poll);
     if (object[EI_DATA] != snx_elf_host_data()) *offset = (int64_t)snx_bswap64((uint64_t)*offset);
-    hostuc_swapper(uc, swap_arm, &t->cpu);
+    hostuc_swapper(uc, swap_cpu, &t->cpu);
     if (hostuc_define(uc, "snx_arm_poll_offset", (uint64_t)(uintptr_t)offset) ||
         hostuc_load(uc, object, size, error, sizeof error) || !(addr = hostuc_symbol(uc, name)))
         goto done;
@@ -1306,7 +1339,14 @@ int main(int argc, char** argv) {
             g_test.object = argv[++i];
         else if (!strcmp(argv[i], "--ll") && i + 1 < argc)
             g_test.ll = argv[++i];
-        else if (!strcmp(argv[i], "--dump"))
+        else if (!strcmp(argv[i], "--callee") && i + 1 < argc) {
+            g_test.callee = snx_read_file(argv[++i], &g_test.callee_size);
+            if (!g_test.callee) return fprintf(stderr, "FAIL: cannot read %s\n", argv[i]), 1;
+            g_test.rt[0] = (SnxArmRt){snx_test_undefined, snx_test_coproc};
+#if !defined(SNX_TEST_NATIVE)
+            return fprintf(stderr, "--callee %s: the x86-64 blocks run here, with the host's functions\n", argv[i]), 2;
+#endif
+        } else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
         else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64) {
             const char* w = argv[++i];
@@ -1326,8 +1366,8 @@ int main(int argc, char** argv) {
         } else
             return fprintf(stderr,
                            "usage: snx-test-arm-x64 [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] "
-                           "[--seed N] [--object FILE] [--word HEX]... [--halves HEX[,HEX]...]\n%s is not one of "
-                           "these\n",
+                           "[--seed N] [--object FILE] [--callee OBJECT] [--word HEX]... "
+                           "[--halves HEX[,HEX]...]\n%s is not one of these\n",
                            argv[i]),
                    2;
     }

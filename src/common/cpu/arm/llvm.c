@@ -96,14 +96,15 @@ static LLVMValueRef flag(ArmIR* a, unsigned n) { return band(a, lsr(a, GET(a, cp
 static LLVMBasicBlockRef block(ArmIR* a, const char* name) {
     return LLVMAppendBasicBlockInContext(a->ctx, a->fn, name);
 }
-/* void name(SnxArmCPU*, u32...): a call into the runtime library (rt_helpers.c), which may change any of the state */
+/* void name(SnxArmCPU*, u64...): a call into the runtime library (rt_helpers.c), which may change any of the state; the
+   u32 args each in 64 bits, as arm.h has them */
 static void rt_call(ArmIR* a, const char* name, LLVMValueRef* args, unsigned count) {
-    LLVMTypeRef params[3] = {a->ptr, a->i32, a->i32};
+    LLVMTypeRef params[3] = {a->ptr, a->i64, a->i64};
     LLVMTypeRef type = LLVMFunctionType(LLVMVoidTypeInContext(a->ctx), params, count + 1, 0);
     LLVMValueRef fn = LLVMGetNamedFunction(a->mod, name), all[3];
     if (!fn) fn = LLVMAddFunction(a->mod, name, type);
     all[0] = a->cpu;
-    for (unsigned i = 0; i < count; ++i) all[i + 1] = args[i];
+    for (unsigned i = 0; i < count; ++i) all[i + 1] = z64(a, args[i]);
     LLVMBuildCall2(a->b, type, fn, all, count + 1, "");
 }
 /* after a runtime library call: the block ends here when it set an exit */

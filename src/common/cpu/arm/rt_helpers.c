@@ -12,20 +12,20 @@
 #include "common/cpu/arm/arm.h"
 #include "common/utilities/bits.h"
 
-void snx_arm_undefined(SnxArmCPU* cpu, uint32_t word, uint32_t reason) {
+void snx_arm_undefined(SnxArmCPU* cpu, uint64_t word, uint64_t reason) {
     if (cpu->rt && cpu->rt->undefined) {
-        cpu->rt->undefined(cpu, word, reason);
+        cpu->rt->undefined(cpu, (uint32_t)word, (uint32_t)reason);
         return;
     }
-    cpu->exit = reason;
-    cpu->syndrome = word;
+    cpu->exit = (uint32_t)reason;
+    cpu->syndrome = (uint32_t)word;
 }
 
-void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word) {
+void snx_arm_coproc(SnxArmCPU* cpu, uint64_t word) {
     if (cpu->rt && cpu->rt->coproc)
-        cpu->rt->coproc(cpu, word);
+        cpu->rt->coproc(cpu, (uint32_t)word);
     else
-        snx_arm_coproc_user(cpu, word);
+        snx_arm_coproc_user(cpu, (uint32_t)word);
 }
 
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word) {
@@ -119,8 +119,8 @@ static int multiply_carry_hi(uint32_t multiplicand, uint32_t multiplier, uint32_
     return (int)((sum ^ accum) >> 31);
 }
 
-void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb) {
-    uint32_t lhs, rhs, accum = 0, accum_hi = 0;
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t instruction, uint64_t thumb) {
+    uint32_t word = (uint32_t)instruction, lhs, rhs, accum = 0, accum_hi = 0;
     int full, carry, wide = 0, is_signed = 1;
     if (thumb) { /* MULS Rd, Rm: Rd is the multiplier */
         lhs = cpu->r[(word >> 3) & 7];

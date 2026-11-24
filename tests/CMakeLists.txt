@@ -4233,6 +4233,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
+    # rv64's ABI extends a narrow argument with its sign, arm64's does not (the control); la64's and the others' tests
+    # run the back end's own words (la64_interp) or skip, so they have no compiled function
+    include(arm_call_abi.cmake)
+    snx_arm_call_abi(rv64 riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax)
+    snx_arm_call_abi(arm64 aarch64-unknown-elf)
 endif()
 # the objects every native back end writes for an AOT module: no absolute address in their code, the little-endian ones
 # linked
