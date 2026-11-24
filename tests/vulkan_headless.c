@@ -9036,6 +9036,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
+        if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
@@ -9064,7 +9065,7 @@ static int run_headless(int argc, char** argv) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
                     "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
-                    "texture_pending, dispatch_constants, "
+                    "nvdec, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
                     "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
@@ -9088,6 +9089,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
+        CHECK(!check_uma_nvdec());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_dispatch_open());
         CHECK(!check_uma_texture_pending());
@@ -9365,6 +9367,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
+    CHECK(!check_uma_nvdec());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_dispatch_open());
     CHECK(!check_uma_texture_pending());
