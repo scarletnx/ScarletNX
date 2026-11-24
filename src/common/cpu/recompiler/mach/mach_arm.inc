@@ -18,7 +18,8 @@
    and stores, the multiplies, the exclusives...). The region is assembled where a condition's skip ends it, where it
    grows long, and at the block's end; the guest's registers are in the state at each region's end, as each write
    stores them. Its entry checks are llvm.c's block_begin's (exit and syndrome cleared, R15 the block's address,
-   CPSR.T and E clear), and it ends where arm_block ends: after an instruction that branches, one that leaves for the
+   CPSR.T and E clear; a hosted block has none), and it ends where arm_block ends: after an instruction that branches,
+   one that leaves for the
    backend, or the last word. Where the block goes on to a known address in A32 or Thumb state and the caller names
    that block a successor, the code jumps to it as chain_block's tail call does (reading the thread's poll first where
    it is at or before the block's start); anywhere else it returns, with R15 the next instruction's */
@@ -94,7 +95,7 @@ MG_ARM* MG_ARM_API(new)(void) {
 int MG_ARM_API(options)(MG_ARM* c, const SnxArmCodegenOptions* options) {
     if (!snx_arm_codegen_options_valid(options)) return -1;
     if (options && (options->profile == SNX_ARM_PROFILE_ARM7TDMI || options->profile == SNX_ARM_PROFILE_ARM946E ||
-                    options->memory != SNX_ARM_MEMORY_FLAT))
+                    options->memory == SNX_ARM_MEMORY_CHECKED))
         return -1;
     c->options = options ? *options : (SnxArmCodegenOptions){.abi = SNX_ARM_CODEGEN_OPTIONS_ABI};
     return 0;
@@ -427,9 +428,13 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
                 v = sgx_const(32, imm);
             }
             sg_flags_flush(g);
+            if (sgx_a32_hosted(g) && (mask & SNX_ARM_E)) /* a hosted block never sets E */
+                sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, v, sgx_const(32, SNX_ARM_E)))),
+                             SNX_ARM_ENDIAN_UNSUPPORTED, sgx_const(32, w), 0);
             SgD c = sg_d_or(g, sg_d_and(g, sgx_a32_cpsr(g), sgx_const(32, ~mask)), sg_d_and(g, v, sgx_const(32, mask)));
             g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
             g->origin = -1;
+            if (sgx_a32_hosted(g)) return 0; /* so no entry looks at it and no block has to end to be entered with it */
             /* a block reads E only on entry: one that may have changed it ends here, the next one's entry checked */
             g->e_written = !!(w & (1u << 17));
             return g->e_written;
@@ -710,6 +715,11 @@ static void media(SgCtx* g, SnxA32Kind kind) {
 /* SETEND: E, which a block reads only on entry, so the block ends after it and the next one's entry checks it */
 static int setend(SgCtx* g) {
     condition(g);
+    if (sgx_a32_hosted(g)) { /* a hosted block's E is never set: BE stops, LE is what it is */
+        if (!(g->word & SNX_ARM_E)) return 0;
+        sgx_a32_stop(g, SNX_ARM_ENDIAN_UNSUPPORTED, sgx_const(32, g->word), (SnxU32)g->pc);
+        return 1;
+    }
     cpsr_bits(g, SNX_ARM_E, sgx_const(32, g->word & SNX_ARM_E));
     g->e_written = 1;
     return 1;
@@ -1793,6 +1803,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     /* a Thumb block that ends inside an IT block: its ITSTATE left in CPSR, which the next block's entry looks at (so
        the jump there goes through its checks) */
     SnxU32 it = itstate ? sg_it_bits(itstate) : 0;
+    if (it && sgx_a32_hosted(g)) nnext = 0; /* its dispatch loop's, which looks at ITSTATE */
     /* the end: the last instruction's way (a branch's target, the backend's exit, or on), then, past its condition's
        skip, the next instruction's */
     if (g->branched) {
@@ -1834,9 +1845,9 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     sgx_a32_stubs(g, b);
     cold_ways(c);
 #ifdef MG_ARM_THUMB_BLOCK
-    mg_entry_exit(c, pc, thumb ? half_at(code, 0) : word_at(code, 0), bad);
+    if (!sgx_a32_hosted(g)) mg_entry_exit(c, pc, thumb ? half_at(code, 0) : word_at(code, 0), bad);
 #else
-    mg_entry_exit(c, pc, word_at(code, 0), bad);
+    if (!sgx_a32_hosted(g)) mg_entry_exit(c, pc, word_at(code, 0), bad);
 #endif
     sgx_a32_bind(g, b, g->ret);
     mg_return(c);

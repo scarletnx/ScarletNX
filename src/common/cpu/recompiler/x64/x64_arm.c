@@ -154,16 +154,12 @@ static int mg_patch_frame(MG_ARM* c) {
     }
     return 0;
 }
-/* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear, a Thumb block's T set and its ITSTATE 0;
-   then exit and syndrome cleared), on RDI, before the frame; where a check fails, a jump to bad (entry_exit). Then the
-   entry the block's own jumps from another of the x86-64 back end's take (X and the block's name), past them: RBX the
-   state, the frame */
-static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
+/* block_begin's checks of the entry's state, on RDI */
+static void entry_checks(MG_ARM* c, SnxU32 pc, int bad) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
-    *bad = sgx_a32_label(g);
     sgx_bytes(b, "81 7F"), sgx_byte(b, (unsigned char)(offsetof(SnxArmCPU, r) + 60)), sgx_imm(b, pc, 4); /* cmp */
-    sgx_a32_jcc(g, b, 5, *bad);
+    sgx_a32_jcc(g, b, 5, bad);
     if (g->thumb) { /* mov eax, [rdi + cpsr]; and eax, T, E and ITSTATE's bits; cmp eax, T */
         sgx_bytes(b, "8B 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
         sgx_byte(b, 0x25), sgx_imm(b, (long long)(SNX_ARM_T | SNX_ARM_E | SG_IT_BITS), 4);
@@ -172,9 +168,19 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
         sgx_bytes(b, "F7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
         sgx_imm(b, SNX_ARM_T | SNX_ARM_E, 4);
     }
-    sgx_a32_jcc(g, b, 5, *bad);
+    sgx_a32_jcc(g, b, 5, bad);
     sgx_bytes(b, "48 C7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, exit)),
         sgx_imm(b, 0, 4); /* and syndrome */
+}
+/* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear, a Thumb block's T set and its ITSTATE
+   0; then exit and syndrome cleared), on RDI, before the frame; where a check fails, a jump to bad (entry_exit). Then
+   the entry the block's own jumps from another of the x86-64 back end's take (X and the block's name), past them: RBX
+   the state, the frame. A hosted block's entry is that one alone (codegen.h) */
+static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
+    SgXBuf* b = &c->b;
+    SgCtx* g = &c->g;
+    *bad = sgx_a32_label(g);
+    if (!sgx_a32_hosted(g)) entry_checks(c, pc, *bad);
     c->own = b->n;
     sgx_bytes(b, "53 48 89 FB"); /* push rbx; mov rbx, rdi */
     frame(c, 0);

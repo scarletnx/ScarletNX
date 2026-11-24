@@ -14,6 +14,7 @@
    - Flat memory: an access whose bytes pass min(mem_size, 2^32) is a DATA_ABORT exit, R15 the instruction's, the
      syndrome its address, as llvm.c's bounds() makes it; a store clears the exclusive monitor where it overlaps the
      reservation (llvm.c's store_monitor), on a cold path.
+   - Hosted memory: no range check (a guard faults on the host), the rest as flat memory.
    The condition of
    an instruction (ConditionPassed) is a jump past it, made where it first changes something (sg_when's deferred
    skip), so a clause that hands its word on (sg_see) has emitted nothing but what nothing reads. The machine's
@@ -141,6 +142,7 @@ static inline long long sg_ArchVersion(SgCtx* g) {
         default: return 8;
     }
 }
+static inline int sgx_a32_hosted(const SgCtx* g) { return g->memory == SNX_ARM_MEMORY_HOSTED; }
 /* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): the block's until the instruction selects the other */
 static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->thumb ? 2 : 1; }
 static inline void sg_SetInstrSet(SgCtx* g, int iset) { g->iset = iset; }
@@ -434,6 +436,17 @@ static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
     sgx_a32_machine(g, SGX_A32_JMP, 0)->disp = g->ret;
     g->undefined = 1; /* the instruction's way leaves the block */
 }
+/* the block's stop at the instruction (llvm.c's trap of a code the backend does not take): R15 pc, the
+   exit, its syndrome */
+static inline void sgx_a32_stop(SgCtx* g, unsigned code, SgD syndrome, SnxU32 pc) {
+    sgx_a32_commit(g);
+    sg_flags_flush(g);
+    sgx_a32_pc(g, sgx_const(32, pc));
+    sgx_a32_put(g, offsetof(SnxArmCPU, syndrome), 32, syndrome);
+    sgx_a32_put(g, offsetof(SnxArmCPU, exit), 32, sgx_const(32, code));
+    sgx_a32_machine(g, SGX_A32_JMP, 0)->disp = g->ret;
+    g->undefined = 1; /* the instruction's way leaves the block */
+}
 static inline void sg_AArch32_CallSupervisor(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_SVC, imm); }
 static inline void sg_AArch32_SoftwareBreakpoint(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_BREAKPOINT, imm); }
 /* the ARM7TDMI's MULS's carry and its trace: a profile this back end makes no block of */
@@ -494,7 +507,8 @@ static inline int sgx_a32_mem(SgCtx* g) {
     return g->mem;
 }
 /* an access of bytes at address (32 bits) checked: misaligned for alignment (a power of two, 1 for none) an
-   ALIGNMENT exit, past the memory a DATA_ABORT one, both with the address as the syndrome (llvm.c's bounds) */
+   ALIGNMENT exit, past the memory a DATA_ABORT one (not on hosted memory, whose guard faults on the host), both with
+   the address as the syndrome (llvm.c's bounds) */
 static inline void sgx_a32_bounds(SgCtx* g, SgD address, unsigned bytes, unsigned alignment) {
     SgX* x = sgx(g);
     SgD a = address;
@@ -502,6 +516,7 @@ static inline void sgx_a32_bounds(SgCtx* g, SgD address, unsigned bytes, unsigne
     if (alignment > 1)
         sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, a, sgx_const(32, alignment - 1)))), SNX_ARM_ALIGNMENT,
                      a, 0);
+    if (sgx_a32_hosted(g)) return;
     SgD end = sg_d_add(g, sgx_zext(x, a, 64), sgx_const(64, bytes));
     sgx_a32_exit(g, sgx_d_ult(g, sgx_a32_limit(g), end), SNX_ARM_DATA_ABORT, a, 0);
 }
@@ -596,7 +611,7 @@ static inline void sg_GuestTransfer(SgCtx* g, SgD address, long long bytes, int 
     g->group_write = write;
     g->group_start = address;
 }
-/* flat memory takes a transfer of no bytes: its address checked, nothing moved */
+/* flat and hosted memory take a transfer of no bytes: its address checked, nothing moved */
 static inline int sg_GuestTransferEmpty(SgCtx* g) {
     (void)g;
     return 1;

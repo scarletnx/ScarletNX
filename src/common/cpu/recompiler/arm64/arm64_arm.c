@@ -69,21 +69,24 @@ static int mg_patch_frame(MG_ARM* c) {
 }
 /* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear; then exit and syndrome cleared), on
    X0, before the frame; where a check fails, a jump to bad (entry_exit). Then the entry the block's own jumps from
-   another of the arm64 back end's take (X and the block's name), past them: X19 the state, the frame */
+   another of the arm64 back end's take (X and the block's name), past them: X19 the state, the frame. A hosted block's
+   entry is that one alone (codegen.h) */
 static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
     *bad = sgx_a32_label(g);
-    sga_ldst(b, 1, 4, SGA_X16, 0, -1, (int)(offsetof(SnxArmCPU, r) + 60));
-    sga_movi(b, SGA_X17, pc, 0);
-    sga_w(b, sge_a64_subs_addsub_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* CMP W16, W17 */
-    sgx_a32_jcc(g, b, 1, *bad);                                              /* B.NE */
-    sga_ldst(b, 1, 4, SGA_X16, 0, -1, (int)offsetof(SnxArmCPU, cpsr));
-    sga_movi(b, SGA_X17, SNX_ARM_T | SNX_ARM_E, 0);
-    sga_w(b, sge_a64_ands_log_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* TST W16, W17 */
-    sgx_a32_jcc(g, b, 1, *bad);
-    sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, exit));
-    sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, syndrome));
+    if (!sgx_a32_hosted(g)) {
+        sga_ldst(b, 1, 4, SGA_X16, 0, -1, (int)(offsetof(SnxArmCPU, r) + 60));
+        sga_movi(b, SGA_X17, pc, 0);
+        sga_w(b, sge_a64_subs_addsub_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* CMP W16, W17 */
+        sgx_a32_jcc(g, b, 1, *bad);                                             /* B.NE */
+        sga_ldst(b, 1, 4, SGA_X16, 0, -1, (int)offsetof(SnxArmCPU, cpsr));
+        sga_movi(b, SGA_X17, SNX_ARM_T | SNX_ARM_E, 0);
+        sga_w(b, sge_a64_ands_log_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* TST W16, W17 */
+        sgx_a32_jcc(g, b, 1, *bad);
+        sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, exit));
+        sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, syndrome));
+    }
     c->own = b->n;
     sga_w(b, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-4 & 0x7F, 2)); /* STP X29, X30, [SP, #-32]! */
     sga_w(b, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));                    /* MOV X29, SP */

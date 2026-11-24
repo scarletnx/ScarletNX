@@ -27,21 +27,24 @@ static int mg_patch_frame(MG_ARM* c) {
 static void arm_jreg(MG_ARM* c, int nonzero, int r, int label) { risc_a32_jreg(&c->g, &c->b, nonzero, r, label); }
 /* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear; then exit and syndrome cleared), on
    the state's argument register, before the frame; where a check fails, a jump to bad (entry_exit). Then the entry
-   the block's own jumps from another of this back end's take (X and the block's name), past them: the frame */
+   the block's own jumps from another of this back end's take (X and the block's name), past them: the frame. A hosted
+   block's entry is that one alone (codegen.h) */
 static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     SgXBuf* b = &c->b;
     int s = sgx_arg_regs[0];
     *bad = sgx_a32_label(&c->g);
-    rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
-    rk_li(b, RK_ENTRY_S2, pc);
-    rk_xor(b, RK_ENTRY_S1, RK_ENTRY_S1, RK_ENTRY_S2);
-    arm_jreg(c, 1, RK_ENTRY_S1, *bad);
-    rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
-    rk_andi(b, RK_ENTRY_S1, RK_ENTRY_S1, SNX_ARM_T | SNX_ARM_E);
-    arm_jreg(c, 1, RK_ENTRY_S1, *bad);
-    rk_li(b, RK_ENTRY_S2, 0);
-    rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
-    rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, syndrome));
+    if (!sgx_a32_hosted(&c->g)) {
+        rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
+        rk_li(b, RK_ENTRY_S2, pc);
+        rk_xor(b, RK_ENTRY_S1, RK_ENTRY_S1, RK_ENTRY_S2);
+        arm_jreg(c, 1, RK_ENTRY_S1, *bad);
+        rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
+        rk_andi(b, RK_ENTRY_S1, RK_ENTRY_S1, SNX_ARM_T | SNX_ARM_E);
+        arm_jreg(c, 1, RK_ENTRY_S1, *bad);
+        rk_li(b, RK_ENTRY_S2, 0);
+        rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
+        rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, syndrome));
+    }
     c->own = b->n;
     if (c->a.nframe >= 256) sg_fail("a block of too many frames", c->a.nframe, 256);
     c->a.frame_at[c->a.nframe++] = rk_fn_prologue(b, 0);
