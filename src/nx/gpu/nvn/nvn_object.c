@@ -313,9 +313,9 @@ u64 nvn_DeviceGetTimestampInNanoseconds(CPU* c, u64 d, u64 counter) {
     (void)d;
     /* a report whose submission isn't done waits for it off the guest core, as nvn_SyncWait does */
     if (gpu_release_stamp_sync(counter, 0)) {
-        nvn_wait_begin();
+        kthread_host_wait_begin();
         gpu_release_stamp_sync(counter, 1);
-        nvn_wait_end();
+        kthread_host_wait_end();
     }
     return snx_gpu_ns_of_ticks(NVN_OBJ(NVNcounterData, counter)->timestamp);
 }
