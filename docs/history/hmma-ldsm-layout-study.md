@@ -74,13 +74,13 @@ Whole-game checks with the experimental runtime built on the Deck:
 
 | game | SM86 HMMA in the scene | proof triggers | result |
 | --- | --- | --- | --- |
-| Mario Kart World | none | no | path not exercised |
-| Pokopia | none | no | path not exercised |
-| Ocarina of Time remake | 2418 HMMA, 936 LDSM | no | 407 frames vs 405, no gain |
+| a racing game (game-6ea82159) | none | no | path not exercised |
+| another game | none | no | path not exercised |
+| a remake of an older game | 2418 HMMA, 936 LDSM | no | 407 frames vs 405, no gain |
 
 ## Why games swizzle
 
-The OoT remake's LDSM address chain is:
+The remake's LDSM address chain is:
 
 ```
 R116 = IMAD(R101, 16, RZ)        // the LDSM's address: 16*R101
