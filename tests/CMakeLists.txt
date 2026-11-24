@@ -3958,7 +3958,8 @@ add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 foreach(family IN ITEMS
         "pairs;FADDP_v;FADDP_s;FMAXP_v;FMINP_v;FMAXNMP_v;FMINNMP_v;FMAXP_s;FMINP_s;FMAXNMP_s;FMINNMP_s;FMAXV_s;FMINV_s;FMAXNMV_s;FMINNMV_s"
         "elements;FMUL_si;FMLA_si;FMLS_si"
-        "estimates;FRECPE_v;FRECPE_s;FRSQRTE_v;FRSQRTE_s;FRECPS_v;FRECPS_s;FRSQRTS_v;FRSQRTS_s")
+        "estimates;FRECPE_v;FRECPE_s;FRSQRTE_v;FRSQRTE_s;FRECPS_v;FRECPS_s;FRSQRTS_v;FRSQRTS_s"
+        "rounds;FRINTN_v;FRINTP_v;FRINTM_v;FRINTZ_v;FRINTA_v")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
     set_tests_properties(recompiler_backends_${name} PROPERTIES TIMEOUT 600)
