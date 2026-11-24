@@ -1744,9 +1744,9 @@ static void test_shared_no_uniform(const char* dir) {
 /* The pool map (ShCaps.pool_map, shader.h's SH_MAP_*): a fragment program's TEX of the handle at c[3][0x40], with the
    texture table, takes its view and sampler slots from the map, not from the draw's texture words. Handle 5 | 3 << 20:
    TIC record 5's 2D view slot (77) and TSC record 3's plain sampler slot (9), or with the depth compare its compare
-   one (10). A handle past a pool's limit takes the null slots (0). The map in the storage buffer at SNX_TABLE_MAP from
-   the word the per-draw block names, and by device address (a module spirv-val checks, as the evaluator reads no
-   addresses). The draw's texture words hold other slots, which none of these reads */
+   one (10). A handle past a pool's limit takes the null slots (0). The draw's bit of the slot (SH_DRAW_MAP_WORDS_FS)
+   takes its texture word instead (1234 and 567). The map in the storage buffer at SNX_TABLE_MAP from the word the
+   per-draw block names, and by device address (a module spirv-val checks, as the evaluator reads no addresses) */
 static void test_pool_map(const char* dir) {
     const ShCaps saved = g_spirv_translate;
     g_spirv_translate.cb_windows = 1;
@@ -1754,8 +1754,12 @@ static void test_pool_map(const char* dir) {
     g_spirv_translate.table_set = 5;
     g_spirv_translate.pool_map = 1;
     static const struct {
-        u32 handle, shadow, image, sampler;
-    } cases[] = {{5 | 3u << 20, 0, 77, 9}, {5 | 3u << 20, 1, 77, 10}, {300 | 3u << 20, 0, 0, 0}, {5 | 300u << 20, 0, 0, 0}};
+        u32 handle, shadow, own, image, sampler;
+    } cases[] = {{5 | 3u << 20, 0, 0, 77, 9},
+                 {5 | 3u << 20, 1, 0, 77, 10},
+                 {300 | 3u << 20, 0, 0, 0, 0},
+                 {5 | 300u << 20, 0, 0, 0, 0},
+                 {5 | 3u << 20, 0, 1, 1234, 567}}; /* the draw's bit of the slot: its texture word */
     static u32 map[4096];
     memset(map, 0, sizeof map);
     const u32 tic_dir = 4, tsc_dir = 8, tic_page = 16, tsc_page = tic_page + 256 * SH_MAP_TIC_WORDS;
@@ -1788,13 +1792,14 @@ static void test_pool_map(const char* dir) {
         static u32 window[256], cb3[32], words[256];
         memset(window, 0, sizeof window);
         memset(cb3, 0, sizeof cb3);
-        for (u32 w = 0; w < 256; w++) words[w] = 1234 | 567u << SNX_TABLE_SAMPLER_SHIFT; /* the draw's words: unread */
+        for (u32 w = 0; w < 256; w++) words[w] = 1234 | 567u << SNX_TABLE_SAMPLER_SHIFT; /* the draw's words */
         env.ubo[SNX_VKB_DRAW] = window;
         env.ubo_words[SNX_VKB_DRAW] = 256;
         env.push[0] = 0;
-        window[SH_DRAW_MAP] = 0;       /* the map from word 0 of its buffer */
-        window[SH_DRAW_MAP + 2] = 255; /* the pools' limits */
-        window[SH_DRAW_MAP + 3] = 255;
+        window[SH_DRAW_MAP] = 0;                    /* the map from word 0 of its buffer */
+        window[SH_DRAW_MAP_HEADER] = 0;             /* its header at word 0 */
+        window[SH_DRAW_MAP_LIMITS] = 255 | 255u << 20; /* the pools' limits */
+        window[SH_DRAW_MAP_WORDS_FS] = cases[k].own; /* slot 0 takes its texture word */
         cb3[0x40 / 4] = cases[k].handle;
         env.ubo[SNX_VKB_CB + 3] = cb3;
         env.ubo_words[SNX_VKB_CB + 3] = 32;

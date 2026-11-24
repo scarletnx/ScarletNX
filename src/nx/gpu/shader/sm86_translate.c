@@ -3095,10 +3095,12 @@ static u32 map_slots(Ctx* c, int slot) {
     u32 handle = cbuf_load(c, t->bl_cbuf, t->cbuf_off * 4, 0);
     u32 tic = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, handle, cu(c, 0xFFFFF));
     u32 tsc = ubits(c, handle, 20, 12);
-    u32 ok = op2(
-        c, SPV_OP_LOGICAL_AND, c->t_bool,
-        op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tic, to_u(c, draw_component(c, SH_DRAW_MAP + 2))),
-        op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tsc, to_u(c, draw_component(c, SH_DRAW_MAP + 3))));
+    const u32 limits = to_u(c, draw_component(c, SH_DRAW_MAP_LIMITS)),
+              header = to_u(c, draw_component(c, SH_DRAW_MAP_HEADER));
+    u32 ok = op2(c, SPV_OP_LOGICAL_AND, c->t_bool,
+                 op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tic,
+                     spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, limits, cu(c, 0xFFFFF))),
+                 op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tsc, ubits(c, limits, 20, 12)));
     tic = u_select(c, ok, tic, c->zero);
     tsc = u_select(c, ok, tsc, c->zero);
     const u32 ms = (t->flags & 2) != 0, type = t->type == 0 ? 1u : t->type;
@@ -3106,7 +3108,8 @@ static u32 map_slots(Ctx* c, int slot) {
                     : type == 2 ? SH_MAP_CLASS_3D
                     : type == 3 ? (t->array ? SH_MAP_CLASS_CUBE_ARRAY : SH_MAP_CLASS_CUBE)
                                 : (t->array ? SH_MAP_CLASS_2D_ARRAY : SH_MAP_CLASS_2D);
-    u32 page = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, map_word(c, cu(c, SH_MAP_TIC_DIR)),
+    u32 page = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                             map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, header, cu(c, SH_MAP_TIC_DIR))),
                                              spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, tic,
                                                              cu(c, SH_MAP_PAGE_SHIFT))));
     u32 record = spv_emit_iadd_u32(
@@ -3115,7 +3118,8 @@ static u32 map_slots(Ctx* c, int slot) {
                         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, tic, cu(c, (1u << SH_MAP_PAGE_SHIFT) - 1)),
                         cu(c, SH_MAP_TIC_WORDS)));
     u32 image = map_half(c, spv_emit_iadd_u32(&c->e, c->t_u32, record, cu(c, cls / 2)), cls & 1);
-    u32 tpage = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, map_word(c, cu(c, SH_MAP_TSC_DIR)),
+    u32 tpage = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                              map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, header, cu(c, SH_MAP_TSC_DIR))),
                                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, tsc,
                                                               cu(c, SH_MAP_PAGE_SHIFT))));
     u32 srecord = spv_emit_iadd_u32(
@@ -3142,7 +3146,14 @@ static void table_element(Ctx* c, int slot) {
     const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_TEX_FETCH
                    : g_spirv_translate.gbuf_address         ? SH_RECORD_GBUF
                                                             : 0;
-    u32 word = map_slot(c, slot) ? map_slots(c, slot) : record_word(c, at + (u32)slot);
+    u32 word = record_word(c, at + (u32)slot);
+    /* a plain slot reads the map, but where the draw's bit of the slot (SH_DRAW_MAP_WORDS_VS or _FS) says it takes
+       its texture word */
+    if (map_slot(c, slot)) {
+        const u32 masks = c->stage == ST_VS ? SH_DRAW_MAP_WORDS_VS : SH_DRAW_MAP_WORDS_FS;
+        u32 own = ubits(c, to_u(c, draw_component(c, masks + (u32)slot / 32)), (u32)slot % 32, 1);
+        word = u_select(c, spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, own, c->zero), map_slots(c, slot), word);
+    }
     /* the image index within the table's array whatever the word holds: an index past an array is undefined, where
        robustness doesn't reach */
     u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, SNX_TABLE_IMAGES - 1));

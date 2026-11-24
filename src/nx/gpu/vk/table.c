@@ -19,6 +19,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/runtime/platform/log.h"
 
 /* a view in a layout and its slot. view 0 is a free entry */
@@ -151,6 +152,7 @@ VkDescriptorSet vk_table_set(void) { return g_table.set; }
    first free entry still. Under the lock */
 static void forget_entry(u32 i) {
     const TableView gone = g_table.views[i];
+    vk_pool_map_view_gone(gone.view); /* the pool map's records that name its slot */
     g_table.free[g_table.nfree++] = gone.slot;
     g_table.slot_view[gone.slot] = (TableView){0};
     TableView* hit = &g_table.near_views[near_view_index(gone.view, gone.layout)];
@@ -280,4 +282,34 @@ void vk_table_forget_view(VkImageView view) {
         forget_entry(i);
     }
     pm_unlock(&g_table.lock);
+}
+void vk_table_reserve_null(void) {
+    pm_lock(&g_table.lock);
+    if (!g_table.next_image) g_table.next_image = 1;
+    if (!g_table.next_sampler) g_table.next_sampler = 1;
+    pm_unlock(&g_table.lock);
+}
+int vk_table_null(VkImageView view, VkSampler sampler) {
+    if (!view || !sampler || !g_table.set) return 0;
+    const VkDescriptorImageInfo image = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL}, smp = {sampler, VK_NULL_HANDLE,
+                                                                                                VK_IMAGE_LAYOUT_UNDEFINED};
+    const VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                        .dstSet = g_table.set,
+                                        .dstBinding = 0,
+                                        .descriptorCount = 1,
+                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                        .pImageInfo = &image},
+                                       {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                        .dstSet = g_table.set,
+                                        .dstBinding = 1,
+                                        .descriptorCount = 1,
+                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                        .pImageInfo = &smp}};
+    pm_lock(&g_table.lock);
+    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    pm_unlock(&g_table.lock);
+    return 1;
+}
+void vk_table_touch(u32 image_slot) {
+    if (image_slot < SNX_TABLE_IMAGES) g_table.slot_frame[image_slot] = vk_frame_id();
 }
