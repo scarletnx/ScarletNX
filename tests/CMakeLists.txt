@@ -3973,7 +3973,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # big-endian host's word has it elsewhere, and some hosts load aligned words only
         add_test(NAME arm_${m}_half COMMAND snx-test-arm-${m} --word eef21ae3 --word eeb21a44 --word eeb25be4
                  --word eeb26b6f --word eef35ac2 --word eeb36a62 --word eef36bc3 --word eeb37bc3 --word eef37b42)
-        set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        # VCVT of an odd S register to a double, both signs: a load of a double there is not aligned
+        add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
+        set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
 endif()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
