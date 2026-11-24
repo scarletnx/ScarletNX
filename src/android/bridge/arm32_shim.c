@@ -8,6 +8,7 @@
    queue, configuration and sensors are the 32-bit bridge's own, at the end */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "common/utilities/endian.h"
@@ -88,13 +89,15 @@ typedef struct {
 } Shim;
 
 static _Thread_local CPU* t_cpu;
-static CPU* cpu64(void) {
-    if (!t_cpu && !(t_cpu = calloc(1, sizeof *t_cpu))) abort();
-    return t_cpu;
+static void cpu64_end(void* what) {
+    if (t_cpu == what) t_cpu = NULL;
+    free(what);
 }
-void arm32_shim_thread_end(void) {
-    free(t_cpu);
-    t_cpu = NULL;
+static CPU* cpu64(void) {
+    if (t_cpu) return t_cpu;
+    if (!(t_cpu = calloc(1, sizeof *t_cpu))) abort();
+    bridge_thread_keep(cpu64_end, t_cpu);
+    return t_cpu;
 }
 
 /* a 64-bit handler called with x0.. and v0.. as given, the result in x0 */

@@ -340,6 +340,13 @@ uint32_t arm32_export(const char* name, Arm32Handler handler, void* data) {
 
 SnxArmCPU* arm32_cpu(void) { return arm32_cpu_with_stack(STACK_SIZE); }
 
+static void thread_end(void* what) {
+    Thread* t = what;
+    if (t_thread == t) t_thread = NULL;
+    arm32_unmap(t->stack, t->stack_size);
+    arm32_unmap(t->tls, PAGE);
+    free(t);
+}
 SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size) {
     if (t_thread) return &t_thread->cpu;
     Thread* t = calloc(1, sizeof *t);
@@ -362,7 +369,7 @@ SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size) {
     t->cpu.r[13] = stack + stack_size - 16;
     t->cpu.tpidruro = tls;
     t_thread = t;
-    bridge_thread_has_state();
+    bridge_thread_keep(thread_end, t);
     return &t->cpu;
 }
 
@@ -382,14 +389,6 @@ void arm32_thread_stack(uint32_t* base, uint32_t* size) {
     arm32_cpu();
     *base = t_thread->stack;
     *size = t_thread->stack_size;
-}
-void arm32_thread_end(void) {
-    Thread* t = t_thread;
-    if (!t) return;
-    t_thread = NULL;
-    arm32_unmap(t->stack, t->stack_size);
-    arm32_unmap(t->tls, PAGE);
-    free(t);
 }
 
 /* ---- the dispatch loop ---- */
@@ -647,7 +646,6 @@ bool arm32_init(char* error, size_t error_size) {
     s.exec = snx_arm_exec_new(error, error_size);
     if (!s.exec) return false;
     s.active = true;
-    bridge_on_thread_end(arm32_thread_gone);
     arm32_hle_init();
     return true;
 }

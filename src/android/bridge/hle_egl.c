@@ -340,10 +340,15 @@ static GlesSurface* surface_leave(Surface* s) {
 }
 /* what the calling thread has current, under e.lock: the ones it had are let go of, *gone the surfaces to free past
    the lock */
+static void context_end(void* what);
+static void draw_end(void* what);
+static void read_end(void* what);
 static void set_current(Context* x, Surface* draw, Surface* read, GlesSurface* gone[2]) {
     Context* was = t_context;
     Surface *was_draw = t_draw, *was_read = t_read;
-    bridge_thread_has_state(); /* hle_egl_thread_end's */
+    bridge_thread_keep(context_end, x);
+    bridge_thread_keep(draw_end, draw);
+    bridge_thread_keep(read_end, read);
     if (x) ++x->current;
     if (draw) ++draw->current;
     if (read) ++read->current;
@@ -366,11 +371,40 @@ static void release_thread(void) {
     if (gone[1]) gles_surface_free(gone[1]);
     t_error = EGL_SUCCESS_;
 }
-void hle_egl_thread_end(void) {
-    release_thread();
-    free(t_gl_call.cpu);
-    free(t_gl_call.gles_cpu);
-    t_gl_call.cpu = t_gl_call.gles_cpu = NULL;
+/* A thread ended with these current (bridge_thread_keep): let go of for it. The GLES state of the calling thread is its
+   own while its thread-locals are, and then the context's last commands go to the GPU */
+static void context_end(void* what) {
+    Context* x = what;
+    if (t_context == x) {
+        t_context = NULL;
+        gles_make_current(NULL, NULL);
+        gles2_make_current(NULL, NULL, NULL);
+    }
+    pthread_mutex_lock(&e.lock);
+    context_leave(x);
+    pthread_mutex_unlock(&e.lock);
+}
+static void surface_end(Surface* s) {
+    pthread_mutex_lock(&e.lock);
+    GlesSurface* gone = surface_leave(s);
+    pthread_mutex_unlock(&e.lock);
+    if (gone) gles_surface_free(gone);
+}
+static void draw_end(void* what) {
+    if (t_draw == what) t_draw = NULL;
+    surface_end(what);
+}
+static void read_end(void* what) {
+    if (t_read == what) t_read = NULL;
+    surface_end(what);
+}
+static void gl_cpu_end(void* what) {
+    if (t_gl_call.cpu == what) t_gl_call.cpu = NULL;
+    free(what);
+}
+static void gles_cpu_end(void* what) {
+    if (t_gl_call.gles_cpu == what) t_gl_call.gles_cpu = NULL;
+    free(what);
 }
 static bool destroy_context(uint64_t display, uint64_t context) {
     GlesSurface* gone[2] = {0};
@@ -858,7 +892,7 @@ static jlong JNICALL j_gl_call(JNIEnv* env, jclass unused, jstring name, jstring
     (void)unused;
     CPU* c = t_gl_call.cpu;
     if (!c && !(c = t_gl_call.cpu = calloc(1, sizeof *c))) return 0;
-    bridge_thread_has_state();
+    bridge_thread_keep(gl_cpu_end, c);
     const char* n = (*env)->GetStringUTFChars(env, name, NULL);
     const HleSymbol* fn = NULL;
     for (const HleSymbol* s = hle_gles; n && s->name[0]; ++s)
@@ -912,7 +946,7 @@ static jlong JNICALL j_gles_call(JNIEnv* env, jclass unused, jstring name, jstri
     (void)unused;
     CPU* c = t_gl_call.gles_cpu;
     if (!c && !(c = t_gl_call.gles_cpu = calloc(1, sizeof *c))) return 0;
-    bridge_thread_has_state();
+    bridge_thread_keep(gles_cpu_end, c);
     const char* n = (*env)->GetStringUTFChars(env, name, NULL);
     const HleSymbol* fn = n ? hle_find(n) : NULL;
     if (n) (*env)->ReleaseStringUTFChars(env, name, n);

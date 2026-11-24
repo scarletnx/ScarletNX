@@ -307,8 +307,10 @@ void signals_thread_start(GuestSignals* t, CPU* c) {
 }
 
 void signals_thread_end(GuestSignals* t) {
-    t_signal.self = NULL;
-    gnu_kernel_set_self(NULL);
+    if (t_signal.self == t) {
+        t_signal.self = NULL;
+        gnu_kernel_set_self(NULL);
+    }
     atomic_signal_fence(memory_order_seq_cst);
     gnu_kernel_thread_remove(&t->k);
     gnu_kernel_thread_destroy(&t->k);

@@ -14,6 +14,7 @@
    somewhere else). It runs between two blocks, or in a wait, never in the middle of a block */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/bridge.h"
 #include "common/utilities/endian.h"
 #include <errno.h>
 #include <pthread.h>
@@ -68,6 +69,15 @@ static struct {
 
 static _Thread_local ThreadInfo* t_info;
 
+static void forget(ThreadInfo* t);
+/* a thread that the guest did not make ended: no one joins it, and its thread-locals, where its record says the signals
+   it has pending are, go with it. A guest's own has its record left for its join (thread_main) */
+static void info_end(void* what) {
+    if (t_info == what) t_info = NULL;
+    pthread_mutex_lock(&th.lock);
+    forget(what);
+    pthread_mutex_unlock(&th.lock);
+}
 /* the calling thread's record, made the first time (a thread of the JVM's too) */
 static ThreadInfo* me(void) {
     if (t_info) return t_info;
@@ -82,6 +92,7 @@ static ThreadInfo* me(void) {
     th.threads = t;
     pthread_mutex_unlock(&th.lock);
     t_info = t;
+    bridge_thread_keep(info_end, t);
     return t;
 }
 /* a thread by its pthread_t or its id, under th.lock */
@@ -619,6 +630,7 @@ static void* thread_main(void* p) {
     Start* s = p;
     arm32_cpu_with_stack(s->stack_size);
     ThreadInfo* t = me();
+    bridge_thread_keep(info_end, NULL); /* the join's, or the detached thread's own end's */
     t->created = true;
     t->detached = s->detached;
     t->start = s->start;
@@ -642,24 +654,8 @@ static void* thread_main(void* p) {
     if (detached) forget(t);
     pthread_cond_broadcast(&th.changed);
     pthread_mutex_unlock(&th.lock);
-    arm32_shim_thread_end();
-    arm32_thread_end();
+    bridge_thread_end(); /* the rest: its guest stack, the shim's CPU */
     return NULL;
-}
-
-/* the calling thread's 32-bit state gone (arm32.h). A thread the guest made ends in thread_main, with its record left
-   for its join */
-void arm32_thread_gone(void) {
-    ThreadInfo* t = t_info;
-    t_info = NULL;
-    if (t && !t->created) {
-        pthread_mutex_lock(&th.lock);
-        forget(t);
-        pthread_mutex_unlock(&th.lock);
-    }
-    arm32_jni_thread_end();
-    arm32_shim_thread_end();
-    arm32_thread_end();
 }
 
 /* pthread_create(thread, attr, start, arg) */
