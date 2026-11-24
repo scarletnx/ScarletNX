@@ -12,6 +12,7 @@
    to the reading. On a host without the back end it passes, saying so */
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,11 +25,15 @@
 #define F1    0x10020u /* the stub */
 #define WORDS 16u
 
-static int failures;
+/* the checks that failed, and the program's code */
+static struct {
+    int failures;
+    unsigned char image[WORDS * 4];
+} g_x64_unit_facts;
 static void check(int ok, const char* what) {
     if (!ok) {
         fprintf(stderr, "FAIL: %s\n", what);
-        ++failures;
+        ++g_x64_unit_facts.failures;
     }
 }
 
@@ -40,13 +45,12 @@ static void put(void* user, const void* data, size_t size) {
     Facts* f = (Facts*)user;
     if (f->size + size > f->cap) {
         f->cap = (f->size + size) * 2;
-        f->bytes = (unsigned char*)realloc(f->bytes, f->cap);
+        f->bytes = (unsigned char*)snx_realloc(f->bytes, f->cap);
     }
     memcpy(f->bytes + f->size, data, size);
     f->size += size;
 }
 
-static unsigned char g_image[WORDS * 4];
 enum { NOP_RET, BL_RET, MOV_RET, BL_H };
 static void image(int below) {
     static const unsigned first[] = {0xD503201Fu /* NOP */, 0x94000002u /* BL X */, 0xD2800020u /* MOV x0, #1 */,
@@ -61,20 +65,20 @@ static void image(int below) {
     words[6] = 0xD65F03C0u; /* h */
     for (unsigned i = 0; i < 4; ++i) words[8 + i] = f1_code[i];
     for (unsigned i = 0; i < WORDS; ++i)
-        for (unsigned b = 0; b < 4; ++b) g_image[4 * i + b] = (unsigned char)(words[i] >> (8 * b));
+        for (unsigned b = 0; b < 4; ++b) g_x64_unit_facts.image[4 * i + b] = (unsigned char)(words[i] >> (8 * b));
 }
 
 /* the analysis of the image as image() made it, from F0; the functions it found said where it did not find f0 and
    f1, or not count below f0 and f1 at f1_index */
 static int analyze(SnxCodegen* codegen, size_t below, size_t f1_index) {
-    static SnxCodeImage module;
     const SnxU64 hint = F0;
-    const SnxFunction *f0, *f1;
-    int rc;
-    module = (SnxCodeImage){.image = g_image, .image_size = sizeof g_image, .base = BASE, .text_size = sizeof g_image};
-    rc = snx_codegen_analyze(codegen, &module, 1, &hint, 1, 1, 0);
-    f0 = rc ? NULL : snx_codegen_function(codegen, F0);
-    f1 = rc ? NULL : snx_codegen_function(codegen, F1);
+    const SnxCodeImage module = {.image = g_x64_unit_facts.image,
+                                 .image_size = sizeof g_x64_unit_facts.image,
+                                 .base = BASE,
+                                 .text_size = sizeof g_x64_unit_facts.image};
+    int rc = snx_codegen_analyze(codegen, &module, 1, &hint, 1, 1, 0);
+    const SnxFunction* f0 = rc ? NULL : snx_codegen_function(codegen, F0);
+    const SnxFunction* f1 = rc ? NULL : snx_codegen_function(codegen, F1);
     if (f0 && f1 && (size_t)(f0 - codegen->functions) == below && (size_t)(f1 - codegen->functions) == f1_index)
         return 0;
     fprintf(stderr, "the analysis found %zu functions, where f0 at index %zu and f1 at %zu were wanted:",
@@ -110,6 +114,13 @@ static Facts facts(const SnxCodegen* codegen, const SnxX64Options* options) { re
 static int same(const Facts* a, const Facts* b) {
     return a->size == b->size && a->size && !memcmp(a->bytes, b->bytes, a->size);
 }
+/* whether f0's unit's facts under options are base's */
+static int kept(const Facts* base, const SnxCodegen* codegen, const SnxX64Options* options) {
+    Facts f = facts(codegen, options);
+    int is = same(base, &f);
+    free(f.bytes);
+    return is;
+}
 
 /* the keys' SHA-256 (x64_cache.h) on FIPS 180-2's examples: an empty message, "abc", the 448-bit one that ends in a
    second block, and a million "a" */
@@ -125,7 +136,7 @@ static void sha256_vectors(void) {
              {"a", 1000000, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"}};
     for (size_t i = 0; i < sizeof v / sizeof *v; ++i) {
         size_t n = strlen(v[i].text) * v[i].repeat;
-        char *data = (char*)malloc(n + 1), hex[65];
+        char *data = (char*)snx_alloc(n + 1), hex[65];
         unsigned char out[32];
         for (size_t k = 0; k < v[i].repeat; ++k) memcpy(data + k * strlen(v[i].text), v[i].text, strlen(v[i].text));
         snx_x64_cache_sha256(data, n, out);
@@ -137,14 +148,13 @@ static void sha256_vectors(void) {
 }
 
 int main(void) {
-    SnxCodegen one, two, mid, other;
-    SnxX64Options plain = {0}, options;
-    Facts base, again, f;
     sha256_vectors();
     if (!snx_x64_available()) {
-        printf("x64 unit facts: no x86-64 back end on this host: %s\n", failures ? "FAILED" : "passed");
-        return failures != 0;
+        printf("x64 unit facts: no x86-64 back end on this host: %s\n",
+               g_x64_unit_facts.failures ? "FAILED" : "passed");
+        return g_x64_unit_facts.failures != 0;
     }
+    SnxCodegen one, two, mid, other;
     image(NOP_RET);
     check(!analyze(&one, 1, 2), "NOP; RET is one function below f0");
     image(BL_RET);
@@ -154,34 +164,27 @@ int main(void) {
     image(BL_H);
     check(!analyze(&mid, 1, 3) && snx_codegen_function(&mid, H), "BL h; RET puts h between f0 and f1");
     image(NOP_RET);
-    base = facts(&one, &plain);
-    again = facts(&one, &plain);
-    check(base.size > 0 && same(&base, &again), "the same facts twice");
-    free(again.bytes);
-
-    f = facts(&two, &plain);
-    check(!same(&base, &f), "f0's index and f1's (two functions below both) change them");
-    free(f.bytes);
-    f = facts(&mid, &plain);
-    check(!same(&base, &f), "f1's index alone (h between f0 and f1) changes them");
-    free(f.bytes);
+    const SnxX64Options plain = {0};
+    Facts base = facts(&one, &plain);
+    check(base.size > 0 && kept(&base, &one, &plain), "the same facts twice");
+    check(!kept(&base, &two, &plain), "f0's index and f1's (two functions below both) change them");
+    check(!kept(&base, &mid, &plain), "f1's index alone (h between f0 and f1) changes them");
     {
         Facts a = unit_facts(&one, F1, &plain), b = unit_facts(&mid, F1, &plain);
         check(a.size && !same(&a, &b), "f1's unit's own index alone (h below it) changes its facts");
         free(b.bytes);
-        options = plain;
-        options.bound = bound;
-        b = unit_facts(&one, F1, &options);
-        check(!same(&a, &b), "f1's BR bound changes its unit's facts");
-        free(b.bytes);
+        SnxX64Options options = {.bound = bound};
+        Facts c = unit_facts(&one, F1, &options);
+        check(!same(&a, &c), "f1's BR bound changes its unit's facts");
+        free(c.bytes);
         free(a.bytes);
     }
     {
         static const SnxU64 routed[1] = {F0 - BASE};
-        Facts a = unit_facts(&two, X, &plain), b;
+        Facts a = unit_facts(&two, X, &plain);
         two.modules[0].routed = routed;
         two.modules[0].routed_count = 1;
-        b = unit_facts(&two, X, &plain);
+        Facts b = unit_facts(&two, X, &plain);
         check(a.size && !same(&a, &b), "the function it falls through to routed changes the fall-through's facts");
         two.modules[0].routed = NULL;
         two.modules[0].routed_count = 0;
@@ -189,65 +192,37 @@ int main(void) {
         free(b.bytes);
     }
     one.features ^= 1;
-    f = facts(&one, &plain);
-    check(!same(&base, &f), "the guest's features change them");
-    free(f.bytes);
+    check(!kept(&base, &one, &plain), "the guest's features change them");
     one.features ^= 1;
     {
         static const SnxU64 routed[1] = {F1 - BASE};
         one.modules[0].routed = routed;
         one.modules[0].routed_count = 1;
         check(snx_codegen_routed(&one, F1), "f1 routed");
-        f = facts(&one, &plain);
-        check(!same(&base, &f), "the call's target routed changes them");
-        free(f.bytes);
+        check(!kept(&base, &one, &plain), "the call's target routed changes them");
         one.modules[0].routed = NULL;
         one.modules[0].routed_count = 0;
     }
-    options = plain;
-    options.direct = imported;
-    f = facts(&one, &options);
-    check(!same(&base, &f), "the call's target imported changes them");
-    free(f.bytes);
-    options = plain;
-    options.bound = bound;
-    f = facts(&one, &options);
-    check(!same(&base, &f), "the stub bound changes them");
-    free(f.bytes);
-    options = plain;
-    options.stale = 1;
-    f = facts(&one, &options);
-    check(!same(&base, &f), "the stale checks change them");
-    free(f.bytes);
-    options = plain;
-    options.jit = 1;
-    options.table_name = "snx_jit_1";
-    f = facts(&one, &options);
+    check(!kept(&base, &one, &(SnxX64Options){.direct = imported}), "the call's target imported changes them");
+    check(!kept(&base, &one, &(SnxX64Options){.bound = bound}), "the stub bound changes them");
+    check(!kept(&base, &one, &(SnxX64Options){.stale = 1}), "the stale checks change them");
     {
-        Facts g;
-        options.table_name = "snx_jit_2";
-        g = facts(&one, &options);
-        check(!same(&f, &g), "a JIT unit's table name changes them");
-        free(g.bytes);
+        Facts f = facts(&one, &(SnxX64Options){.jit = 1, .table_name = "snx_jit_1"});
+        check(!kept(&f, &one, &(SnxX64Options){.jit = 1, .table_name = "snx_jit_2"}),
+              "a JIT unit's table name changes them");
+        free(f.bytes);
     }
-    free(f.bytes);
-    options = plain;
-    options.llvm_at = F0;
-    f = facts(&one, &options);
-    check(!same(&base, &f), "the function ir_dump_pc names changes them");
-    free(f.bytes);
+    check(!kept(&base, &one, &(SnxX64Options){.llvm_at = F0}), "the function ir_dump_pc names changes them");
 
     /* other code below f0, one function as before: f0 never reaches it */
     image(MOV_RET);
     check(!analyze(&other, 1, 2), "MOV x0, #1; RET is one function below f0");
-    f = facts(&other, &plain);
-    check(same(&base, &f), "code f0 never reaches leaves them as they were");
-    free(f.bytes);
+    check(kept(&base, &other, &plain), "code f0 never reaches leaves them as they were");
     free(base.bytes);
     snx_codegen_free(&one);
     snx_codegen_free(&two);
     snx_codegen_free(&mid);
     snx_codegen_free(&other);
-    printf("x64 unit facts: %s\n", failures ? "FAILED" : "passed");
-    return failures != 0;
+    printf("x64 unit facts: %s\n", g_x64_unit_facts.failures ? "FAILED" : "passed");
+    return g_x64_unit_facts.failures != 0;
 }
