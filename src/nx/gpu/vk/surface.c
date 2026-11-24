@@ -7,6 +7,7 @@
    come back. Textures and render targets are each in a list from the least recently used to the most, which the
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
+#include "nx/gpu/vk/addr_gens.h"
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/rt_bands.h"
 #include "nx/gpu/vk/rt_cover.h"
@@ -253,6 +254,8 @@ u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
 static void surf_changed(u64 gva) {
     atomic_fetch_add_explicit(&g_vk_surf_epoch, 1, memory_order_relaxed);
     g_surf_bucket_epoch[hkey(gva)]++;
+    /* item 7b's events: a surface made or freed changes no texel, its draws do (vk_rt_drawn), so its first byte alone */
+    if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
@@ -1042,6 +1045,8 @@ static void take_changed(Surf* s) {
     g_take_gen++;
 }
 void vk_surf_wrote(Surf* s) {
+    /* item 7b's events: its pixels changed, by a draw or a copy, blit or pack into it */
+    if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
@@ -3122,6 +3127,8 @@ static u32 rt_own_runs(const Surf* s, u64 size, u64 run[][2], u32 max) {
     return n;
 }
 void vk_rt_drawn(Surf* s) {
+    /* item 7b's events: what a texture over the target's memory should show changed */
+    if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;

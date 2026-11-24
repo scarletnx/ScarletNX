@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/addr_gens.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
@@ -118,6 +119,7 @@ void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after, const Vk
                                                          .keep = k};
     atomic_store_explicit(&g_gfx_img_any, 1, memory_order_relaxed);
     pend_add(&g_img_pages, surf->gva, size, 1);
+    if (g_settings.texture_events_shadow) addr_gens_bump(ADDR_GENS_WRITE, surf->gva, size); /* item 7b's events */
 }
 /* [cpu, cpu + n) meets the image's bytes: the first run ending past cpu starts before cpu + n */
 static int image_meets(const GfxImageOut* out, u64 cpu, u64 n) {

@@ -1280,6 +1280,7 @@ typedef struct Surf {
     u8 written_batched;
     u64 last_used;
     u32 wgen;    /* render targets: bumped when drawn to */
+    u32 takes;   /* textures: the drawn targets copied into it (texture.c mark_copied), for tex_events_shadow */
     SnxVkRedraw redraw; /* render targets: drawn every frame, which async_pipelines asks (redraw.h) */
     u64 wseq;    /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
@@ -1655,6 +1656,8 @@ int vk_rt_drawn_fresh(Surf* s);          /* no guest-memory write has replaced t
 /* the same for its bytes [at, at + size) alone (a texture's level in one of its layers that the target gives): a
    write past them, in the rows that a taller block height puts after the level, leaves the level as it was */
 int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size);
+/* the counts of item 7b's events in shadow (render.c, tex_events_shadow), with the render statistics */
+void vk_tex_events_log(u64 presents);
 /* a storage image surface published after a dispatch wrote it (compute.c): its texels are guest memory's now, and a
    texture over that memory takes them on the GPU as it takes a drawn target's (texture.c tex_take_drawn) */
 void vk_surf_stored(Surf* s);
