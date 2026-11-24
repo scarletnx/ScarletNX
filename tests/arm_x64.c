@@ -48,6 +48,7 @@ static struct {
     size_t kinds[64], refusals[64];
     size_t exits[16];   /* the runs' exits, LLVM's: how many ran through and how many stopped, and at what */
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
+    const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
     int dump;           /* --dump: a failing state's start printed */
     /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
     size_t fp_calls[256], fp_hot_calls;
@@ -405,6 +406,13 @@ static int run_chunk(SnxIr* ir, SnxX64Arm* x64, Block* blocks, size_t count) {
         }
         g_test.words += b->n;
         g_test.consumed_words += lc;
+    }
+    if (!rc && g_test.ll) { /* --ll FILE: the first chunk's LLVM module before any pass, for opt and llc */
+        char* message = NULL;
+        if (LLVMPrintModuleToFile(module, g_test.ll, &message))
+            fprintf(stderr, "FAIL: cannot write %s: %s\n", g_test.ll, message ? message : ""), ++g_test.failures;
+        LLVMDisposeMessage(message);
+        g_test.ll = NULL;
     }
     if (!rc && (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
                 snx_x64_arm_object(x64, &xobj, &xsize, NULL))) {
@@ -787,6 +795,8 @@ int main(int argc, char** argv) {
             g_test.seed = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--object") && i + 1 < argc)
             g_test.object = argv[++i];
+        else if (!strcmp(argv[i], "--ll") && i + 1 < argc)
+            g_test.ll = argv[++i];
         else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
         else if (!strcmp(argv[i], "--word") && i + 1 < argc && g_test.nonly < 64)
