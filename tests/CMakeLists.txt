@@ -4120,6 +4120,32 @@ if(NOT WIN32)
                           snx_arm_llvm ${CMAKE_DL_LIBS})
     add_test(NAME native_link COMMAND snx-test-native-link)
 endif()
+# the words past the guests' CPUs (a64.profile's max): the back end makes each op's, and from random states they give what
+# qemu-aarch64 -cpu max gives (tests/qemu_ref), where this host has it: LLVM's back end has no code for half of them
+foreach(family IN ITEMS
+        "ints;CNT;CTZ;ABS;SMAX;SMIN;UMAX;UMIN;SMAX_i;SMIN_i;UMAX_i;UMIN_i;AXFLAG;XAFLAG;SUBP;SUBPS;ADDG_i;SUBG_i;GMI;IRG"
+        "sha;BCAX;EOR3;RAX1;XAR;SHA512H;SHA512H2;SHA512SU0;SHA512SU1"
+        "sm;SM3PARTW1;SM3PARTW2;SM3SS1;SM3TT1A;SM3TT1B;SM3TT2A;SM3TT2B;SM4E;SM4EKEY"
+        "matrices;SMMLA;UMMLA;USMMLA;USDOT_v;USDOT_vi;SUDOT_vi;BFDOT_v;BFDOT_vi;BFMLAL_v;BFMLAL_vi;BFMMLA;BFCVTN_v;BFCVT_s"
+        "fhm;FMLAL_v;FMLAL2_v;FMLSL_v;FMLSL2_v;FMLAL_vi;FMLAL2_vi;FMLSL_vi;FMLSL2_vi"
+        "complex;FCADD_90;FCADD_270;FCMLA_v;FCMLA_vi;FRINT32X_v;FRINT32Z_v;FRINT64X_v;FRINT64Z_v;FRINT32X_s;FRINT32Z_s;FRINT64X_s;FRINT64Z_s;FJCVTZS")
+    list(POP_FRONT family name)
+    set(backends backends)
+    if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+        list(APPEND backends arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
+    endif()
+    foreach(m IN LISTS backends)
+        add_test(NAME recompiler_${m}_past_${name}_made COMMAND snx-test-recompiler-${m} --refused --target max
+                 --ops ${family})
+        if(SNX_QEMU_REF)
+            file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/qemu_past/${m}_${name}")
+            add_test(NAME recompiler_${m}_past_${name} COMMAND snx-test-recompiler-${m} --target max --states 16 --ops
+                     ${family} --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/qemu_past/${m}_${name}")
+            set_tests_properties(recompiler_${m}_past_${name} PROPERTIES TIMEOUT 900)
+        endif()
+    endforeach()
+endforeach()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
 # run under Unicorn (loongarch64's in support/la64_interp.c)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
