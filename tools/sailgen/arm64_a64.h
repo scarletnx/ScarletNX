@@ -410,6 +410,18 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_FENCE_LD: sga_w(b, sge_a64_dmb(9)); return; /* DMB ISHLD */
         case SGX_M_FENCE_ST: sga_w(b, sge_a64_dmb(10)); return; /* DMB ISHST */
         case SGX_M_PAUSE: sga_w(b, sge_a64_yield()); return;
+        case SGX_M_FPENTER: /* LDR W16, [X19, #fpcr]; MSR FPCR, X16; MSR FPSR, XZR */
+            sga_state(b, 1, 4, 16, offsetof(CPU, fpcr));
+            sga_w(b, sge_a64_msr_reg(16, 0, 4, 4, 3, 1));
+            sga_w(b, sge_a64_msr_reg(SGA_ZR, 1, 4, 4, 3, 1));
+            return;
+        case SGX_M_FPLEAVE: /* MRS X16, FPSR; the guest's FPSR |= it; MSR FPCR, XZR (the host's own: 0) */
+            sga_w(b, sge_a64_mrs(16, 1, 4, 4, 3, 1));
+            sga_state(b, 1, 4, 17, offsetof(CPU, fpsr));
+            sga_w(b, sge_a64_orr_log_shift(17, 17, 0, 16, 0, 0));
+            sga_state(b, 0, 4, 17, offsetof(CPU, fpsr));
+            sga_w(b, sge_a64_msr_reg(SGA_ZR, 0, 4, 4, 3, 1));
+            return;
         case SGX_M_STX:
         case SGX_M_STXP:
         case SGX_M_CAS:

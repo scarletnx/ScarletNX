@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
             goto out;
         }
         made = (unsigned char*)calloc(cg.function_count + 1, 1);
-        if (snx_arm64_object(&cg, 0, cg.function_count, &options, SNX_ARM64_F_LSE | SNX_ARM64_F_CRC32, made, &object,
+        if (snx_arm64_object(&cg, 0, cg.function_count, &options, SNX_ARM64_F_ALL, made, &object,
                              &object_size, error, sizeof error) < 0) {
             fprintf(stderr, "FAIL: the arm64 object: %s\n", error);
             goto out;
@@ -534,9 +534,9 @@ int main(int argc, char** argv) {
     }
     printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
 #ifdef SNX_TEST_ARM64
-    /* a function with an AdvSIMD data-processing word (a third of the words drawn) is not the arm64 back end's yet */
-    if (made_arm64 * 10 < (size_t)functions * 2) {
-        fprintf(stderr, "FAIL: the arm64 back end made under a fifth of the functions\n");
+    /* what it leaves to another back end: TBL and TBX of several registers, FCMP, FCCMP, FCSEL and the like */
+    if (made_arm64 * 10 < (size_t)functions * 8) {
+        fprintf(stderr, "FAIL: the arm64 back end made under 80%% of the functions\n");
         ++failures;
     }
     if (0) {

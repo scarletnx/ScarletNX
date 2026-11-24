@@ -11,9 +11,13 @@
    PREFIX names the clauses' scattered function (__DecodeA64: every __DecodeA64_* clause). With --roots, only the
    clauses that call a root of that file (a roots file's root lines); else every one. Each encoder is
 
-     static inline SnxU32 PREFIX_NAME(fields...)     NAME: the decode function's, less decode_ and _aarch64_instrs_...
+     static inline SnxU32 sge_TAG_NAME(fields...)
 
-   with a table of every encoder's fixed bits, mask and fields (sge_<prefix>_table), for the tests to walk */
+   TAG the architecture's in PREFIX, lower case (a64), NAME the decode function's, less decode_ and its
+   _aarch64_instrs_... (add_addsub_shift: ADD, shifted register); decode functions named alike get the shortest tail
+   of their names that tells them apart (ldr_imm_gen_post_idx, ldr_imm_gen_pre_idx). With a table of every encoder's
+   family (its scattered function's name past PREFIX: DataProcFPSIMD), fixed bits, mask and fields
+   (sge_TAG_table), for the tests to walk and a back end to find a word's clause in */
 #include "sailgen.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,12 +220,14 @@ int sg_encoders(const char* prefix, const char* roots_path, const char* const* i
         sg_out(";\n}\n");
     }
     sg_out("\n/* every encoder's fixed bits and fields, in the clauses' order */\n");
-    sg_out("static const struct {\n    const char* name;\n    SnxU32 mask, value;\n    unsigned char nfields;\n"
+    sg_out("static const struct {\n    const char* name;\n    const char* family;\n    SnxU32 mask, value;\n    unsigned char nfields;\n"
            "    struct {\n        const char* name;\n        unsigned char lo, width;\n    } fields[16];\n} sge_%s_table[] = {\n",
            tag);
     for (k = 0; k < count; ++k) {
         const Enc* e = &encs[k];
-        sg_out("    {\"%s\", 0x%08llXu, 0x%08llXu, %u, {", e->short_name, e->mask, e->value, e->field_count);
+        sg_out("    {\"%s\", \"%s\", 0x%08llXu, 0x%08llXu, %u, {", e->short_name,
+               sg_str(g_parse.defs[e->def].name) + plen + (sg_str(g_parse.defs[e->def].name)[plen] == '_'), e->mask,
+               e->value, e->field_count);
         for (j = 0; j < e->field_count; ++j)
             sg_out("%s{\"%s\", %u, %u}", j ? ", " : "", sg_str(e->fields[j].name), e->fields[j].lo, e->fields[j].width);
         sg_out("}},\n");

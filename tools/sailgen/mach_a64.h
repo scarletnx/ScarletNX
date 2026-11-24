@@ -218,7 +218,10 @@ enum {
     SGX_M_RMW,  /* LDADD...SWP: imm op << 2 | log2 (x64_helpers.c's snx_x64_rmw's); the old value */
     SGX_M_CRC,  /* CRC32, CRC32C: imm bytes | castagnoli << 4; the result */
     SGX_M_FENCE_LD, /* a barrier of loads alone (a machine whose loads are no acquires) */
-    SGX_M_FENCE_ST  /* of stores alone */
+    SGX_M_FENCE_ST, /* of stores alone */
+    SGX_M_FPENTER,  /* the guest's FPCR into the host's, its FPSR cleared (a machine running the guest's own floating
+                       point: arm64's) */
+    SGX_M_FPLEAVE   /* the host's FPSR ORed into the guest's, the host's FPCR its own again */
 };
 
 /* a call of the helper sym (x64_helpers.c's) or of the runtime's function at rt_offset in RtAPI, the state first
