@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* snx_os_error: the system's reason for the file or folder call that just failed, on Windows too, whose calls set
    GetLastError and not errno */
+#define _POSIX_C_SOURCE 200809L /* symlink */
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <errno.h>
@@ -10,6 +11,8 @@
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 /* s, UTF-8 the test trusts, as the UTF-16 units FormatMessageW gives, into out (64 at most); their count */
@@ -62,6 +65,18 @@ int main(void) {
     assert(!strcmp(why, strerror(EEXIST)));
 #endif
     printf("a folder under a file: %s\n", why);
+#ifndef _WIN32
+    { /* a link to nothing where the folder goes: mkdir's reason, not that of the look at what the link leads to */
+        char* dangling = snx_path_join(root, "dangling");
+        assert(dangling && !symlink("nowhere", dangling));
+        errno = 0;
+        assert(snx_mkdirs(dangling));
+        snx_os_error(why, sizeof why);
+        printf("a folder where a link to nothing is: %s\n", why);
+        assert(!strcmp(why, strerror(EEXIST)));
+        free(dangling);
+    }
+#endif
     /* a file that is not there */
     errno = 0;
     f = snx_fopen(missing, "rb");
