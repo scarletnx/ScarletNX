@@ -4,5 +4,6 @@
 #define MIPS_BE 1
 #define snx_mips64_available snx_mips64be_available
 #define snx_mips64_object snx_mips64be_object
+#define snx_mips64_desc snx_mips64be_desc
 #include "common/cpu/recompiler/mips64/mips64be_codegen.h"
 #include "mips64_codegen.c"

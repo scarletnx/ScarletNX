@@ -348,6 +348,15 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
     ppc_w(b, sge_ppc64_mflr((SnxU32)d));
     return at;
 }
+/* rk_literal where there's no frame (a module descriptor's functions): LR, which its BL writes, kept in RK_S1 around
+   it */
+static inline size_t rk_leaf_literal(SgXBuf* b, int d) {
+    size_t at;
+    ppc_w(b, sge_ppc64_mflr(RK_S1));
+    at = rk_literal(b, d);
+    ppc_w(b, sge_ppc64_mtlr(RK_S1));
+    return at;
+}
 /* a call by the object's relocation: the callee's absolute address in the code (R_PPC64_ADDR64: the place this
    gives), loaded into r12 and called through CTR; no veneer, which would want a TOC in r2. A tail call keeps LR, the
    caller's, in RK_S1 around the BL that finds the address */

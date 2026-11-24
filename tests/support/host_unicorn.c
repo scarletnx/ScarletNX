@@ -312,9 +312,9 @@ static unsigned reloc_bytes(unsigned em, unsigned type) {
     return 0;
 }
 static int load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
-/* the object's sections laid out one after another in the region (.text and the others it holds bytes of), its
-   symbols at their places, each RELA section's relocations written; an object of the other byte order's tables read
-   turned over */
+/* the object's sections laid out one after another in the region (.text, the others it holds bytes of, .bss
+   zeroed), its symbols at their places, each RELA section's relocations written; an object of the other byte order's
+   tables read turned over */
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
     unsigned char* copy;
     int rc;
@@ -351,8 +351,12 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
             nsyms = sh[k].sh_size / sizeof *syms;
             strtab = (const char*)(object + sh[sh[k].sh_link].sh_offset);
         }
-        if ((sh[k].sh_flags & SHF_ALLOC) && sh[k].sh_type == SHT_PROGBITS && sh[k].sh_size) {
-            at[k] = hostuc_code(u, object + sh[k].sh_offset, sh[k].sh_size);
+        if ((sh[k].sh_flags & SHF_ALLOC) && (sh[k].sh_type == SHT_PROGBITS || sh[k].sh_type == SHT_NOBITS) &&
+            sh[k].sh_size) {
+            /* .bss and its kin: zeroes of their size */
+            void* zero = sh[k].sh_type == SHT_NOBITS ? calloc(1, sh[k].sh_size) : NULL;
+            at[k] = hostuc_code(u, zero ? zero : object + sh[k].sh_offset, sh[k].sh_size);
+            free(zero);
             if (!at[k]) {
                 snprintf(error, error_size, "no room for section %zu", k);
                 free(at);

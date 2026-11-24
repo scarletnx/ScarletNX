@@ -61,6 +61,10 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
+/* the module descriptor's functions (native.h's SnxNativeDesc) */
+#define MG_DESC snx_s390x_desc
+#define MG_DESC_NAME "s390x"
+#include "common/cpu/recompiler/mach/risc_desc.inc"
 
 int snx_s390x_available(void) {
 #if defined(__s390x__) && defined(__ELF__)

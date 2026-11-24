@@ -204,3 +204,26 @@ int snx_native_arm_entry(SnxNativeArm* c, uint32_t key) {
            : c->mips64be ? snx_mips64be_arm_entry(c->mips64be, key)
                          : snx_s390x_arm_entry(c->s390x, key);
 }
+
+/* the module descriptors' functions of the RISC machines (mach/risc_desc.inc, in their code generators) */
+#if !defined(_WIN32)
+extern const SnxNativeDesc snx_rv64_desc, snx_ppc64_desc, snx_ppc64be_desc, snx_mips64_desc, snx_mips64be_desc,
+    snx_la64_desc, snx_s390x_desc;
+static const SnxNativeDesc* const g_descs[] = {&snx_rv64_desc,   &snx_ppc64_desc, &snx_ppc64be_desc, &snx_mips64_desc,
+                                               &snx_mips64be_desc, &snx_la64_desc, &snx_s390x_desc};
+const SnxNativeDesc* snx_native_desc(void) {
+    if (snx_x64_available() || snx_arm64_available()) return NULL;
+    return snx_native_desc_named(snx_native_name());
+}
+const SnxNativeDesc* snx_native_desc_named(const char* name) {
+    for (size_t k = 0; k < sizeof g_descs / sizeof *g_descs; ++k)
+        if (!strcmp(g_descs[k]->name, name)) return g_descs[k];
+    return NULL;
+}
+#else
+const SnxNativeDesc* snx_native_desc(void) { return NULL; }
+const SnxNativeDesc* snx_native_desc_named(const char* name) {
+    (void)name;
+    return NULL;
+}
+#endif
