@@ -40,6 +40,7 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     g->spv.ncast = 0;
     g->spv.fold = 1;        /* cc_and, cc_or, cc_not and shader_select fold the constants */
     g->spv.fresh_casts = 1; /* the families bitcast each time (reg_read_as keeps its own) */
+    g->spv.known = 0;
 }
 [[maybe_unused]] static void sg_set_form(SgG* g, int k) { g->form = k; }
 [[maybe_unused]] static uint64_t sg_Field(SgG* g, int64_t lo, int64_t n) { return B(g->w, (u32)lo, (u32)n); }
