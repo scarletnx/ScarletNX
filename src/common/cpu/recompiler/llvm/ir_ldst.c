@@ -234,6 +234,7 @@ static int generated(SnxA64Op op) {
         case SNX_A64_OP_LDR_i:
         case SNX_A64_OP_STR:
         case SNX_A64_OP_LDR:
+        case SNX_A64_OP_LDRA:
         case SNX_A64_OP_LD_lit:
         case SNX_A64_OP_STP:
         case SNX_A64_OP_LDP:
@@ -271,6 +272,7 @@ int snx_ir_ldst_handles(SnxA64Op op) {
         case SNX_A64_OP_LDR:
         case SNX_A64_OP_STR_v:
         case SNX_A64_OP_LDR_v:
+        case SNX_A64_OP_LDRA:
         case SNX_A64_OP_LD_lit:
         case SNX_A64_OP_LD_lit_v:
         case SNX_A64_OP_STP:

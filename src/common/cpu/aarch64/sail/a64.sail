@@ -32611,6 +32611,90 @@ function clause __DecodeA64_LoadStore ((pc, ([_, _, bitone, bitone, bitone, bito
     decode_str_reg_fpsimd_aarch64_instrs_memory_single_simdfp_register(Rt, Rn, S, option_name, Rm, opc, size)
 }
 
+val execute_aarch64_instrs_memory_single_general_immediate_signed_pac : forall 'n ('nontemporal : Bool) 't ('tagchecked : Bool) ('use_key_a : Bool) ('wback : Bool),
+  (0 <= 't & 't <= 31 & 0 <= 'n & 'n <= 31).
+  (MemOp, int('n), bool('nontemporal), bits(64), int('t), bool('tagchecked), bool('use_key_a), bool('wback)) -> unit
+
+function execute_aarch64_instrs_memory_single_general_immediate_signed_pac (memop, n, nontemporal, offset, t, tagchecked, use_key_a, wback__arg) = {
+    wback : bool = wback__arg;
+    address : bits(64) = undefined;
+    let privileged : bool = PSTATE.EL != EL0;
+    wb_unknown : bool = false;
+    let auth_then_branch : bool = true;
+    let accdesc : AccessDescriptor = CreateAccDescGPR(memop, nontemporal, privileged, tagchecked);
+    if (wback & n == t) & n != 31 then {
+        let c : Constraint = ConstrainUnpredictable(Unpredictable_WBOVERLAPLD);
+        assert(c == Constraint_WBSUPPRESS | c == Constraint_UNKNOWN | c == Constraint_UNDEF | c == Constraint_NOP);
+        match c {
+          Constraint_WBSUPPRESS => {
+              wback = false
+          },
+          Constraint_UNKNOWN => {
+              wb_unknown = true
+          },
+          Constraint_UNDEF => {
+              throw(Error_Undefined())
+          },
+          Constraint_NOP => {
+              EndOfInstruction()
+          },
+          _ => ()
+        }
+    };
+    if n == 31 then {
+        address = SP_read()
+    } else {
+        address = X_read(n, 64)
+    };
+    if not_bool(wback) then {
+        AArch64_SetLSInstructionSyndrome(8, false, t, true, false)
+    };
+    if use_key_a then {
+        address = AuthDA(address, X_read(31, 64), auth_then_branch)
+    } else {
+        address = AuthDB(address, X_read(31, 64), auth_then_branch)
+    };
+    if n == 31 then {
+        CheckSPAlignment()
+    };
+    address : bits(64) = address + offset;
+    let data : bits(64) = Mem_read(address, 8, accdesc);
+    X_set(t, 64) = data;
+    if wback then {
+        if wb_unknown then {
+            address = __UNKNOWN_bits(64)
+        };
+        if n == 31 then {
+            SP_set() = address
+        } else {
+            X_set(n, 64) = address
+        }
+    };
+    if SPESampleInFlight then {
+        SPESampleGeneralPurposeLoadStore()
+    };
+    ()
+}
+
+val decode_ldra_aarch64_instrs_memory_single_general_immediate_signed_pac : (bits(5), bits(5), bits(1), bits(9), bits(1), bits(1), bits(2)) -> unit
+
+function decode_ldra_aarch64_instrs_memory_single_general_immediate_signed_pac (Rt, Rn, W, imm9, S, M, size) = {
+    if not_bool(HavePACExt()) | size != 0b11 then {
+        throw(Error_Undefined())
+    };
+    let 't = UInt(Rt);
+    let 'n = UInt(Rn);
+    let wback : bool = W == 0b1;
+    let use_key_a : bool = M == 0b0;
+    let S10 : bits(10) = S @ imm9;
+    let 'scale = 3;
+    let offset : bits(64) = LSL(SignExtend(S10, 64), scale);
+    let nontemporal : bool = false;
+    let memop : MemOp = MemOp_LOAD;
+    let tagchecked : bool = wback | n != 31;
+    execute_aarch64_instrs_memory_single_general_immediate_signed_pac(memop, n, nontemporal, offset, t, tagchecked, use_key_a, wback)
+}
+
 function clause __DecodeA64_LoadStore ((pc, ([bitone, bitone, bitone, bitone, bitone, bitzero, bitzero, bitzero, _, _, bitone, _, _, _, _, _, _, _, _, _, _, bitone, _, _, _, _, _, _, _, _, _, _] as __opcode)) if SEE < 667) = {
     SEE = 667;
     let Rt = Slice(__opcode, 0, 5);
