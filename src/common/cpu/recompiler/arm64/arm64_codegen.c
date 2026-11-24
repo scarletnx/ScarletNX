@@ -6,8 +6,8 @@
    The function's ABI is GuestFn's: the state in X0, kept in X19, the entry in X1 (SGX_FN_TARGET, as a call's target
    is); X29 and X30 saved, then X19 and X20, and X21 to X28 where the function pins guest registers there (the
    callee's: no call changes them), SP 16-aligned below a frame of spill slots whose size is patched in at the end.
-   The guest's vector registers are pinned in V31 down to V24 (caller-saved: stored around a call), and V8 to V15,
-   whose low halves are the callee's, hold no value. X16 and X17 are the glue's and the assembler's own.
+   The guest's vector registers are pinned in V31 down to V24 (caller-saved: stored around a call); V8 to V15,
+   whose low halves are the callee's, hold no value, nor does V7, a by-element form's Rm (arm64_vec.c). X16 and X17 are the glue's and the assembler's own.
 
    The object is ELF AArch64: F_<address> global and hidden in the AOT module's units, so another back end's
    function calls one of these and the other way; in a JIT unit local, with the unit's table (ABS64). A call is a
@@ -56,7 +56,7 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_PIN_RESERVED(h) 0
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
-#define MG_XRESERVED 0xFF00u
+#define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
@@ -354,6 +354,29 @@ static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at) {
     return put_offset(u, r->at, ((long long)target_at - (long long)r->at) / 4, FIX_B);
 }
 
+/* the guest's A64 features (SNX_A64_FEAT_*) the host runs as its own: the base architecture's, and those of its
+   features (SNX_ARM64_F_*) */
+static _Thread_local SnxU64 g_host_a64;
+static SnxU64 host_a64(unsigned host) {
+    static const struct {
+        unsigned host;
+        SnxU64 guest;
+    } map[] = {{SNX_ARM64_F_CRC32, SNX_A64_FEAT_CRC32},     {SNX_ARM64_F_AES, SNX_A64_FEAT_AES},
+               {SNX_ARM64_F_PMULL, SNX_A64_FEAT_PMULL},     {SNX_ARM64_F_SHA1, SNX_A64_FEAT_SHA1},
+               {SNX_ARM64_F_SHA256, SNX_A64_FEAT_SHA256},   {SNX_ARM64_F_LSE, SNX_A64_FEAT_LSE},
+               {SNX_ARM64_F_RDM, SNX_A64_FEAT_RDM},         {SNX_ARM64_F_FP16, SNX_A64_FEAT_FP16},
+               {SNX_ARM64_F_DOTPROD, SNX_A64_FEAT_DOTPROD}, {SNX_ARM64_F_FHM, SNX_A64_FEAT_FHM},
+               {SNX_ARM64_F_SHA512, SNX_A64_FEAT_SHA512},   {SNX_ARM64_F_SHA3, SNX_A64_FEAT_SHA3},
+               {SNX_ARM64_F_SM, SNX_A64_FEAT_SM3 | SNX_A64_FEAT_SM4}, {SNX_ARM64_F_JSCVT, SNX_A64_FEAT_JSCVT},
+               {SNX_ARM64_F_FCMA, SNX_A64_FEAT_FCMA},       {SNX_ARM64_F_FRINTTS, SNX_A64_FEAT_FRINTTS},
+               {SNX_ARM64_F_BF16, SNX_A64_FEAT_BF16},       {SNX_ARM64_F_I8MM, SNX_A64_FEAT_I8MM}};
+    SnxU64 f = SNX_A64_FEAT_V8_0;
+    size_t k;
+    for (k = 0; k < sizeof map / sizeof *map; ++k)
+        if (host & map[k].host) f |= map[k].guest;
+    return f;
+}
+
 #include "common/cpu/recompiler/arm64/arm64_vec.c"
 
 /* ---- the host ---- */
@@ -370,8 +393,19 @@ unsigned snx_arm64_features(void) {
 #elif defined(__FreeBSD__) || defined(__OpenBSD__)
     if (elf_aux_info(AT_HWCAP, &hw, sizeof hw)) hw = 0;
 #endif
-    if (hw & (1ul << 8)) f |= SNX_ARM64_F_LSE;   /* HWCAP_ATOMICS */
-    if (hw & (1ul << 7)) f |= SNX_ARM64_F_CRC32; /* HWCAP_CRC32 */
+    /* Linux's and FreeBSD's HWCAP bits (the kernel's arch/arm64 hwcap.h) */
+    static const struct {
+        unsigned bit, f;
+    } caps[] = {{3, SNX_ARM64_F_AES},      {4, SNX_ARM64_F_PMULL},     {5, SNX_ARM64_F_SHA1},
+                {6, SNX_ARM64_F_SHA256},   {7, SNX_ARM64_F_CRC32},     {8, SNX_ARM64_F_LSE},
+                {9 | 10 << 8, SNX_ARM64_F_FP16}, {12, SNX_ARM64_F_RDM}, {13, SNX_ARM64_F_JSCVT},
+                {14, SNX_ARM64_F_FCMA},    {17, SNX_ARM64_F_SHA3},     {18, SNX_ARM64_F_SM},
+                {20, SNX_ARM64_F_DOTPROD}, {21, SNX_ARM64_F_SHA512},   {23, SNX_ARM64_F_FHM}};
+    size_t k;
+    for (k = 0; k < sizeof caps / sizeof *caps; ++k) {
+        unsigned b0 = caps[k].bit & 0xFF, b1 = caps[k].bit >> 8;
+        if ((hw >> b0 & 1) && (!b1 || (hw >> b1 & 1))) f |= caps[k].f;
+    }
     return f;
 #else
     return 0;
@@ -387,6 +421,7 @@ int snx_arm64_available(void) {
 
 int snx_arm64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options, unsigned host,
                      unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    g_host_a64 = host_a64(host);
     return mach_object(codegen, first, last, options, made, object, size, error, error_size, host);
 }
 
