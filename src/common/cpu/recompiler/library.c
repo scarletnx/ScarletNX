@@ -668,6 +668,7 @@ typedef struct {
     /* the x86-64 back end's object of the unit's functions it made (x64_codegen.h), LLVM's object above the rest */
     unsigned char* x64;
     size_t x64_size, x64_made;
+    size_t x64_refused; /* of the others, those with an instruction it has no code for */
 } Unit;
 
 typedef struct {
@@ -691,6 +692,7 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
         /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
         SnxNativeOptions options = {0};
         options.llvm_at = snx_ir_dump_pc();
+        options.refused = &u->x64_refused;
         made = (unsigned char*)calloc(u->last - u->first, 1);
         if (!made) {
             snprintf(error, error_size, "out of memory");
@@ -1140,12 +1142,15 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         }
     }
     {
-        size_t x64_made = 0;
-        for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made;
+        size_t x64_made = 0, refused = 0;
+        for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made, refused += q.units[i].x64_refused;
         r->x64_made = x64_made;
         if (r->x64)
             report(r, "%s back end: %lu of %lu functions, LLVM the rest\n", snx_native_name(), (unsigned long)x64_made,
                    (unsigned long)codegen->function_count);
+        if (refused)
+            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: LLVM made them",
+                      (unsigned long)refused, (unsigned long)codegen->function_count);
     }
     const char* exports[1];
     exports[0] = DESCRIPTOR_SYMBOL;

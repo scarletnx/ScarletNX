@@ -23,6 +23,14 @@ typedef struct {
     void* bound_user;
     /* a function left to LLVM, 0 for none: the one whose IR the setting ir_dump_pc prints */
     SnxU64 llvm_at;
+    /* no other back end makes what this one can't: an instruction it has no code for raises an undefined instruction
+       where it runs, and its function is made. 0: the function is left to LLVM */
+    int alone;
+    /* where not NULL, how many functions it could not make whole, added to it; each is said once (snx_error) */
+    size_t* refused;
+    /* words taken as ones there is no code for, how many: what a test of that asks for */
+    const SnxU32* without;
+    size_t without_count;
     /* the AOT module's stale checks (ir_codegen.c's snx_ir_stale_checks): snx_stale[the function's index] read at the
        entry and after each call's return */
     int stale;

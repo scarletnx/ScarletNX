@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What generated code calls in the runtime (RtAPI), and the hints those calls record */
 #include "nx/runtime/rtapi.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/hook/hook.h"
@@ -36,8 +37,10 @@ static void rt_undef(CPU* c, u64 pc, u32 w) {
         jit_code_invalidate(pc & ~0xFFFull, 0x1000);
         return;
     }
-    WARN("\n*** The game ran instruction %08x at %llx, which the recompiler cannot run ***\n", w,
-         (unsigned long long)pc);
+    char what[64];
+    snx_a64_word_text(w, what, sizeof what);
+    WARN("\n*** The game ran instruction %08x at %llx, which the recompiler cannot run: %s ***\n", w,
+         (unsigned long long)pc, what);
     kernel_dump_regs(c);
     save_hints();
     fatal("The game ran an instruction the recompiler cannot run (%08x at %llx). See the .log for details.", w,

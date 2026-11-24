@@ -4034,6 +4034,16 @@ add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends -
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
 set_tests_properties(recompiler_backends_lanes PROPERTIES TIMEOUT 600)
+# what the native back ends say of an instruction they have no code for, at the recompile and where it runs, on every
+# machine's (native_refused.c)
+if(NOT WIN32)
+    add_executable(snx-test-native-refused native_refused.c)
+    snx_test_target(snx-test-native-refused gnu23)
+    target_link_libraries(snx-test-native-refused PRIVATE scarletnx-recompiler)
+    snx_decodetree_a64(snx-test-native-refused)
+    add_test(NAME native_refused COMMAND snx-test-native-refused)
+    set_tests_properties(native_refused PROPERTIES TIMEOUT 300)
+endif()
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling

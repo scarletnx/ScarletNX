@@ -131,7 +131,12 @@ encoding needing a feature the target lacks is an undefined instruction, as on t
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every
 feature the decoder knows; `llvm_qemu_differential` checks the emitters against QEMU
-for it. `SNX_RECOMPILER_A64_ANDROID` is an Android phone's CPU, as the Android
+for it. An instruction a native back end has no code for (FEAT_FP8's, FEAT_LSE128's and
+FEAT_MOPS's, which no guest's CPU has) is said at the recompile, once a function: its
+address, the instruction, its word and address, the feature and the target, and how many
+functions there were; LLVM makes them, and where there is no LLVM the instruction is an
+undefined one where it runs.
+`SNX_RECOMPILER_A64_ANDROID` is an Android phone's CPU, as the Android
 driver's native bridge runs it: Armv8.2 with the atomics, RDM, half precision, the
 dot product and LRCPC, without pointer authentication, so that the `PACIASP` and
 `AUTIASP` of the HINT space are NOPs, as on a phone without the feature.

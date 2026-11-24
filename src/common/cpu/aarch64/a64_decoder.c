@@ -26,4 +26,19 @@ SnxU64 snx_a64_branch_target(const SnxA64Insn* insn, SnxU64 pc) {
 
 const char* snx_a64_op_text(SnxA64Op op) { return snx_a64_op_name(op); }
 
+const char* snx_a64_feature_text(SnxU64 features) { return snx_a64_feature_name(features); }
+
+const char* snx_a64_target_text(SnxU64 features) { return snx_a64_target_name(snx_a64_features(features)); }
+
+void snx_a64_word_text(SnxU32 word, char* out, size_t size) {
+    SnxA64Insn insn;
+    SnxU64 past;
+    if (snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &insn) == SNX_A64_OP_UNDEF) {
+        snprintf(out, size, "no instruction");
+        return;
+    }
+    past = insn.feature & ~(SnxU64)SNX_A64_FEAT_V8_0;
+    snprintf(out, size, past ? "%s, which needs %s" : "%s", snx_a64_op_text(insn.op), snx_a64_feature_text(past));
+}
+
 SnxU64 snx_a64_decoder_hash(void) { return SNX_A64_DECODE_HASH; }

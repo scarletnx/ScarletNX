@@ -653,6 +653,12 @@ def main():
         '  pc <main+40598>  lr <main+40568>\n'
     )
     check(headless['signature'] == 'unsupported A64 instruction ce62c820', 'an instruction needs no place')
+    named = scan(
+        '*** The game ran instruction ce62c820 at 8040598, which the recompiler cannot run: SM4EKEY, which needs'
+        ' FEAT_SM4 ***\n'
+        '  pc <main+40598>  lr <main+40568>\n'
+    )
+    check(named['signature'] == headless['signature'], f"the instruction's name changes nothing: {named['signature']}")
     unnamed = scan('*** Crash (signal 11) at host pc=0x1 ***\n  invalid memory access\n  pc <main+40>  lr <main+44>\n')
     check(unnamed['signature'] is None, f"a module's offset in no named game: {unnamed['signature']}")
 

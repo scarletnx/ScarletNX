@@ -3,6 +3,7 @@
 #include "gnuabi/process/process.h"
 #include "gnuabi/abi/errno.inc"
 #include "gnuabi/runtime/jit.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "gnuabi/kernel/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,8 +75,10 @@ static void syscall_entry(CPU* c, u32 immediate) {
     if (gnu_jit_changed(&p->jit, c->pc)) resume(t);
 }
 static void undefined(CPU* c, u64 pc, u32 instruction) {
-    char reason[160];
-    snprintf(reason, sizeof reason, "Unsupported instruction %08x at 0x%llx", instruction, (unsigned long long)pc);
+    char reason[160], what[64];
+    snx_a64_word_text(instruction, what, sizeof what);
+    snprintf(reason, sizeof reason, "Unsupported instruction %08x at 0x%llx: %s", instruction, (unsigned long long)pc,
+             what);
     c->pc = pc;
     gnu_process_fault((GnuThread*)c->thread, 4, reason);
 }
