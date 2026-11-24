@@ -341,6 +341,32 @@ columns only with each other.)
   takes and 0.7 ms of waits a present on each side). The rest is probably the shared caches that both threads read
   and write (the buffer cache, the surfaces, the page tables). The next step is to measure those with no lock.
 
+### Split runs: fewer takes of the share lock
+
+The scene and the presses are those of the table above. Each row is one or two runs of 180 s. The renderer thread's
+time is from its busy line, "ran N records a present (K KB) in X ms", in runs at about 4,900 KB a present.
+
+| Build | Mode | fps | Renderer thread, ms a present | Share lock takes a present, renderer thread |
+| --- | --- | --- | --- | --- |
+| c6: the commit of the split | base | 74.0 to 74.8 | 12.1 to 12.4 | |
+| c7: `draw_timing=0` | base | 76.4 to 76.7 | 11.95 | |
+| c7 | split | 81.6 to 81.7 | 11.16 | 28,086 |
+| c8: the takes grouped | split | 83.5 to 83.7 | 10.9 | 22,211 |
+| c9: the vertex and index memo | split | 84.0 to 87.1 | 10.5 to 10.8 | 19,666 to 19,750 |
+
+- c7: the clock reads of the draw phases, the draw marks, the batch probe and the times of the share lock are now
+  read only with the `draw_timing` setting (default 0). They cost about 3% in base.
+- c8: the vertex streams of a draw and the miss path of `cb_get` (the pending checks and the staging upload) take
+  the lock one time, not one time for each call. A call inside a held group does not set the label of the next take
+  (`vk_share_lock`). Before this, the counts by function gave takes to the wrong function.
+- c9: `vin_get` keeps the vertex and index lookups of each thread by address, with the rules of `cb_kept`. A hit
+  takes no lock. 89% of the 16,300 lookups a present hit.
+- With c9 the split is about 14% faster than c6 in base. A run of a main build in the same scene is not done yet.
+- Prior art (from memory, not checked against the sources): Ryujinx and the yuzu family resolve the cache state on
+  one thread. The yuzu family takes its cache locks one time for each draw, not for each lookup.
+- What remains: `vk_surf_use` (3,700 takes a present, both sides) is the next largest. After the lock, the renderer
+  thread spends about 4.7 ms a present in records that are not draws. The GPU time of this scene is not measured.
+
 ### The search for a scene that the renderer thread limits
 
 Of the logs on this machine, only those of game-11ccd5f3 and of the Ounce game have the busy line. An older Ounce log (from a build of
