@@ -551,6 +551,134 @@ static int compute_pending_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* The texture memo's checks by the generations of the addresses it read (render.c tex_memo_unwritten and
+   tex_memo_unpended, vk/addr_gens.h). The texture program samples the 2x1 R32F texture of compute_pending_cases (red
+   0.75). A write to other memory, in a granule of its own, by a dispatch and by the CPU, two times each: the second
+   check keeps the texture by the generations alone, with no resolve and the same pixel. Then the writes that must
+   miss or load again: the CPU writes the texture's texel 0 (red one, then 0.75 again), the CPU writes the header
+   (its red read as one), and a dispatch stores 1.0 into texel 0 (red one) */
+#define GENS_OTHER_GPU (MEMO_GPU + 0x200000)
+#define GENS_OTHER_CPU (MEMO_CPU + 0x200000)
+/* a draw of pending_draw's, its pixel's red against want, and the counts it added into *d */
+static int gens_draw(GpuChannel* channel, u8 want, const char* what, VkDrawCounts* d) {
+    VkDrawCounts before, after;
+    u8 px[4];
+    int kept;
+    vk_draw_counts(&before);
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_draw_counts(&after);
+    for (int i = 0; i < VK_GENS_N; i++) d->gens[i] = after.gens[i] - before.gens[i];
+    for (int i = 0; i < VK_TEX_N; i++) d->tex[i] = after.tex[i] - before.tex[i];
+    const int near = px[0] + 2 >= want && px[0] <= want + 2;
+    if (!near)
+        fprintf(stderr, "memo generations, %s: red %u, expected %u (%llu resolved, gens %llu %llu %llu %llu)\n", what,
+                px[0], want, (unsigned long long)d->tex[VK_TEX_RESOLVED],
+                (unsigned long long)d->gens[VK_GENS_HEADERS_KEPT], (unsigned long long)d->gens[VK_GENS_HEADERS_CHECKED],
+                (unsigned long long)d->gens[VK_GENS_RESULTS_KEPT], (unsigned long long)d->gens[VK_GENS_RESULTS_CHECKED]);
+    CHECK(near);
+    return 0;
+}
+/* the CPU writes word at cpu and a submission starts an epoch, as the guest's queue submission does */
+static void gens_cpu_word(u64 cpu, u32 word) {
+    snx_st_le32(GP(cpu), word);
+    vk_ww_new_epoch();
+}
+static int memo_gens_cases(GpuChannel* channel) {
+    if (vk_uma()) {
+        puts("SKIP memo generations: memory is shared with the CPU, where a dispatch writes in place");
+        return 0;
+    }
+    static int mapped;
+    if (!mapped) {
+        CHECK(mem_map(GENS_OTHER_CPU, 0x1000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(GENS_OTHER_GPU, GENS_OTHER_CPU, 0x1000);
+        mapped = 1;
+    }
+    u32* r = channel->r3d;
+    CHECK(!life_headers(0, 0));
+    u8 texels[8] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    int saved_check = g_settings.draw_state_check;
+    g_settings.draw_state_check = 0;
+    vk_ww_new_epoch();
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    const u64 header_cpu = MEMO_CPU + (LIFE_POOL - MEMO_GPU), texel_cpu = header_cpu + 0x400;
+    const int tracking = vk_written_since(GP(header_cpu), 32, 0) >= 0;
+    vk_unlock();
+    VkDrawCounts d[2];
+    CHECK(!gens_draw(channel, 191, "the first draw", &d[0]));
+    /* a dispatch's result elsewhere, two times: the second check is kept by the generations, and nothing resolves */
+    for (int k = 0; k < 2; k++) {
+        CHECK(!pending_dispatch(GENS_OTHER_GPU));
+        CHECK(!gens_draw(channel, 191, "after a result elsewhere", &d[k]));
+        CHECK(!d[k].tex[VK_TEX_RESOLVED]);
+    }
+    if (!d[1].gens[VK_GENS_RESULTS_KEPT])
+        fprintf(stderr, "memo generations: a second result elsewhere was checked again (%llu checked)\n",
+                (unsigned long long)d[1].gens[VK_GENS_RESULTS_CHECKED]);
+    CHECK(d[1].gens[VK_GENS_RESULTS_KEPT] && !d[1].gens[VK_GENS_RESULTS_CHECKED]);
+    vk_lock();
+    vk_compute_land();
+    vk_finish();
+    vk_unlock();
+    /* the CPU writes elsewhere, two times, each with an epoch: the second check of the headers is kept by the
+       generations, where the write tracking runs */
+    for (int k = 0; k < 2; k++) {
+        gens_cpu_word(GENS_OTHER_CPU, 0x12345678u + (u32)k);
+        CHECK(!gens_draw(channel, 191, "after a CPU write elsewhere", &d[k]));
+        CHECK(!d[k].tex[VK_TEX_RESOLVED]);
+    }
+    if (tracking) {
+        if (!d[1].gens[VK_GENS_HEADERS_KEPT])
+            fprintf(stderr, "memo generations: a second CPU write elsewhere was checked again (%llu checked)\n",
+                    (unsigned long long)d[1].gens[VK_GENS_HEADERS_CHECKED]);
+        CHECK(d[1].gens[VK_GENS_HEADERS_KEPT] && !d[1].gens[VK_GENS_HEADERS_CHECKED]);
+    }
+    /* the CPU writes the texture memory: the new texel, then the old one */
+    gens_cpu_word(texel_cpu, 0x3f800000);
+    CHECK(!gens_draw(channel, 255, "after the CPU wrote texel 0", &d[0]));
+    gens_cpu_word(texel_cpu, 0);
+    CHECK(!gens_draw(channel, 191, "after the CPU wrote texel 0 back", &d[0]));
+    /* the CPU writes the header between two draws: its red read as one, a miss */
+    u32 tic[8];
+    life_tic(tic, 1);
+    for (u32 i = 0; i < 8; i++) snx_st_le32(GP(header_cpu) + i * 4, tic[i]);
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 255, "after the CPU wrote the header", &d[0]));
+    CHECK(d[0].tex[VK_TEX_RESOLVED] && !d[0].gens[VK_GENS_HEADERS_KEPT]);
+    CHECK(!life_headers(0, 0));
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "after the header written back", &d[0]));
+    /* a dispatch writes the texture memory: a miss, which lands the result. A result elsewhere first, whose check
+       takes the generations again after the header's miss kept the way anew: the store is then asked of them */
+    CHECK(!pending_dispatch(GENS_OTHER_GPU));
+    CHECK(!gens_draw(channel, 191, "after a result elsewhere again", &d[0]));
+    CHECK(!pending_dispatch(LIFE_POOL + 0x400));
+    CHECK(!gens_draw(channel, 255, "after a dispatch wrote texel 0", &d[0]));
+    CHECK(d[0].tex[VK_TEX_RESOLVED] && !d[0].gens[VK_GENS_RESULTS_KEPT]);
+    vk_lock();
+    vk_compute_land();
+    vk_finish();
+    vk_unlock();
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    vk_ww_new_epoch();
+    g_settings.draw_state_check = saved_check;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    printf("PASS memo generations: writes elsewhere by a dispatch and by the CPU kept by the generations%s; the "
+           "texture's memory and header written by the CPU and by a dispatch drawn new\n",
+           tracking ? "" : " (the CPU's not: no write tracking)");
+    return 0;
+}
+
 /* A draw's fragment key kept from the draw before where its texture lies over a render target without being it
    (render.c's fs_key, TexOver): the texture's header reads the 4x4 RGBA8 target at OVER_TARGET as R32F, the same bytes
    in another format, so the draws sample a copy of the target. The second draw of a pair keeps the first one's key.
@@ -1190,6 +1318,7 @@ static int check_draw_memo(void) {
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
     CHECK(!compute_pending_cases(channel));
+    CHECK(!memo_gens_cases(channel));
     CHECK(!over_target_cases(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
