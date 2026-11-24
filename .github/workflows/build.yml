@@ -86,10 +86,10 @@ jobs:
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" ;;
           esac
   # Each Linux architecture's one job, on every event: the runtime installed into /usr and the AppImage made of it, then
-  # the same tree with its tests on (ninja builds only what they change), the headless Vulkan tree and, on x86-64, the
-  # sanitizers' tree, each in its own folder where its flags differ, all through one compiler cache; their tests; on a
-  # push the AppImage run as installed; and on x86-64 Amberlith's probes on the AppImage's runtime. pkgforge's Arch
-  # image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
+  # the same tree with its tests on (ninja builds only what they change) and the headless Vulkan tree, each in its own
+  # folder where its flags differ, all through one compiler cache; their tests; on a push the AppImage run as installed;
+  # and on x86-64 Amberlith's probes on the AppImage's runtime. pkgforge's Arch image and tools
+  # (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
@@ -207,8 +207,8 @@ jobs:
           d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
-      # llvm: Clang's own, the opt of the LLVM settings, and llvm-config and LLVM-C for the trees that link Arch's LLVM
-      # (the sanitizers', the SDL3 fallback); the runtime links LLVM's libraries statically (below). jdk21-openjdk:
+      # llvm: Clang's own, the opt of the LLVM settings, and llvm-config and LLVM-C for the tree that links Arch's LLVM
+      # (the SDL3 fallback); the runtime links LLVM's libraries statically (below). jdk21-openjdk:
       # javac and jni.h, which the Android app driver (src/android) builds with, and the JVM scarletnx-android loads for
       # Amberlith's APK. meson: dav1d's build (cmake/dav1d.cmake), FFmpeg's AV1 decoder; without it AV1 movies play
       # black.
@@ -360,7 +360,7 @@ jobs:
           done
       # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
       # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
-      # is back in AArch64's test tree; on x86-64 the sanitizers' tree has it
+      # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it
       - name: Build the tests and the headless Vulkan tree
         run: |
           ccache --zero-stats
@@ -394,30 +394,6 @@ jobs:
             -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/sdl-fallback --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
-          ccache --show-stats
-      # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
-      # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed
-      # or past its end fails on every run, not only where it happens to crash. A report stops the program that made it,
-      # a code generator of the build or a test, and fails the job, printed whole. Its flags change every object, so it
-      # has a folder of its own, and the compiler cache keeps its objects beside the other trees'. The FFmpeg, OpenSSL
-      # and SPIRV-Tools builds are the other trees': the sanitizers leave them as they are
-      - name: Build with the sanitizers
-        if: matrix.arch == 'x86_64'
-        env: &sanitizers
-          ASAN_OPTIONS: halt_on_error=1
-          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-          # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
-          # read, what a leak check finds depends on what the stack happened to hold at exit
-          LSAN_OPTIONS: use_stacks=0:use_registers=0
-          # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
-          # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes,
-          # 3ds_addons)
-          VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
-        run: |
-          ccache --zero-stats
-          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
-            -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
       # Only what this run used is kept, so the cache saved is one build's worth of every tree. The disk left is said:
       # the trees share the runner's
@@ -464,14 +440,6 @@ jobs:
         run: |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
-      # The leaks of the system's libraries that are theirs to free (tests/lsan.supp), by the absolute path LSan needs:
-      # the tests start programs from folders of their own
-      - name: Test under the sanitizers
-        if: matrix.arch == 'x86_64'
-        env: *sanitizers
-        run: |
-          LSAN_OPTIONS="$LSAN_OPTIONS:suppressions=$PWD/tests/lsan.supp" \
-            ctest --test-dir build/sanitizers --output-on-failure --parallel 4
       # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries each.
       # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro; one that cannot be
       # fetched or checked is a warning, and its run is left out
@@ -604,6 +572,118 @@ jobs:
           overwrite: true
           retention-days: 1
           if-no-files-found: error
+
+  # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
+  # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
+  # past its end fails on every run, not only where it happens to crash. A report stops the program that made it, a code
+  # generator of the build or a test, and fails the job, printed whole. A job of its own, so a run waits for the longer
+  # of the two and not for both. The sources and the FFmpeg, OpenSSL and SPIRV-Tools builds, which the sanitizers leave
+  # as they are, are x86-64's appimage job's, restored and not saved
+  linux-sanitizers:
+    name: Linux (x86_64, ASan + UBSan)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    container: archlinux:latest
+    env:
+      ASAN_OPTIONS: halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
+      # read, what a leak check finds depends on what the stack happened to hold at exit
+      LSAN_OPTIONS: use_stacks=0:use_registers=0
+      # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
+      # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes,
+      # 3ds_addons)
+      VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
+    steps:
+      - name: Name the week
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's
+      - uses: actions/cache/restore@v5
+        id: pacman
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
+          restore-keys: pacman-${{ github.job }}-
+      # the appimage job's build and test tools, without the AppImage's
+      - name: Install tools
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      # Saved once a week, as in the appimage job
+      - name: Keep the installed packages
+        if: steps.pacman.outputs.cache-hit != 'true'
+        run: pacman -Sc --noconfirm >/dev/null
+      - if: steps.pacman.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: ${{ steps.pacman.outputs.cache-primary-key }}
+      # the whole history, which deprecations_check reads
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - *fail-fast-watch
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/cpm
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
+          restore-keys: cpmutil-linux-x86_64-
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/deps
+          key: deps-appimage-x86_64-${{ github.run_id }}
+          restore-keys: deps-appimage-x86_64-
+      # this job's newest, else the appimage job's
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ github.job }}-
+            ccache-appimage-x86_64-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
+      - name: Build with the sanitizers
+        run: |
+          git config --global --add safe.directory '*'
+          ccache --zero-stats
+          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
+            -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
+      # Trimmed and saved as in the appimage job
+      - name: Trim the compiler cache
+        run: |
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+          df -h .
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # The leaks of the system's libraries that are theirs to free (tests/lsan.supp), by the absolute path LSan needs:
+      # the tests start programs from folders of their own
+      - name: Test under the sanitizers
+        run: |
+          LSAN_OPTIONS="$LSAN_OPTIONS:suppressions=$PWD/tests/lsan.supp" \
+            ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      - *fail-fast-file
+      - *fail-fast-mark
 
   # A pull request runs the A64 differential on the cross builds (qemu-reference's recording, appimage-cross's run of
   # it) only when it changes what the differential tests or how it is built there: the A64 front end and the
