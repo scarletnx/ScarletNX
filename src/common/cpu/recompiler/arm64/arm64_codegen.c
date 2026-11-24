@@ -159,6 +159,7 @@ static void leave(Unit* u) {
    the runtime's miss, called with the state and the target: snx_lookup's, inline. tail: the epilogue and a jump */
 static void calldyn(Unit* u, int tail) {
     int miss = new_label(u), found = new_label(u);
+    pins(u, 1); /* the callee reads the guest's registers from the state; X16, the target's, is the stores' scratch */
     state_ldst(u, 1, 8, SGA_X16, offsetof(CPU, code_lo));
     state_ldst(u, 1, 8, SGA_X17, offsetof(CPU, code_hi));
     w32(u, sge_a64_sub_addsub_shift(SGA_X17, SGA_X17, 0, SGA_X16, 0, 1)); /* hi - lo */
@@ -176,7 +177,6 @@ static void calldyn(Unit* u, int tail) {
     state_ldst(u, 1, 8, SGA_X16, offsetof(CPU, rt));
     sga_ldst(&u->b, 1, 8, SGA_X16, SGA_X16, -1, (int)offsetof(RtAPI, miss));
     bind(u, found);
-    pins(u, 1); /* the callee reads the guest's registers from the state */
     mov_x0_state(u);
     if (tail) {
         epilogue(u);
