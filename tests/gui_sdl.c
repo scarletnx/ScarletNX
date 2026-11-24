@@ -6763,7 +6763,7 @@ static void ctr_own_console(App* app, const char* dir) {
     {
         char* argv_got;
         fixture_text(picks, "[3DS]\nctr_model=old\n");
-        app->menu.selected = GUI_3DS;
+        assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
         driver_will(argv_file, 0, "own console");
         for (way = 0; way < 2; ++way) {
             assert(gui_settings_set(&app->settings, "ctr_model", way ? "new" : "auto"));
