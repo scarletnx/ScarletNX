@@ -144,9 +144,10 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
 # armlib.c: what a 32-bit module links instead (the AArch32 blocks' VFP, SIMD and crypto helpers)
 file(GLOB snx_armlib_sources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/*.h"
     "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/*_helpers.c")
-# compiled as rtlib's object is: what a 32-bit module links and the AArch32 JIT loads
+# in the host's object format, the modules' (Mach-O on Apple, which rtlib's object is not): what a 32-bit module links.
+# The AArch32 JIT loads it on powerpc64 alone (cpu/arm/exec.c)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
-    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_object_base} ${snx_rtlib_object_flags} -I "${PROJECT_SOURCE_DIR}/src"
+    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -I "${PROJECT_SOURCE_DIR}/src"
         -c "${CMAKE_CURRENT_SOURCE_DIR}/armlib.c" -o "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
     DEPENDS armlib.c libc.inc ${snx_armlib_sources} ${snx_rtlib_sources} VERBATIM)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c"
