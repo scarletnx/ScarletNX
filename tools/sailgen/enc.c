@@ -129,8 +129,8 @@ int sg_encoders(const char* prefix, const char* roots_path, const char* const* i
     for (i = 0; i < input_count; ++i) sg_parse_file(inputs[i], 0);
     if (roots_path) {
         size_t size;
-        char *text = sg_read(roots_path, &size), *line, *save = NULL;
-        for (line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        char *text = sg_read(roots_path, &size), *line;
+        for (line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
             char word[32], name[512];
             if (sscanf(line, "%31s %511s", word, name) != 2 || strcmp(word, "root")) continue;
             if (root_count == root_cap) {
