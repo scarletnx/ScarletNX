@@ -41,6 +41,7 @@ enum { SGX_F_NONE_ZS = 1 };
 #define RK_SA 1
 #define RK_S1 12
 #define RK_S2 14
+#define RK_TAIL 4 /* a tail call's target past the epilogue, which restores r12: r2 and r3 are its arguments */
 #define RK_FA 11
 #define RK_FB 10
 static const signed char sgx_pool[] = {9, 8, 7, 6, 5, 4, 3, 2};

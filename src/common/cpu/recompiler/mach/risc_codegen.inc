@@ -102,8 +102,14 @@ static void calldyn(Unit* u, int tail) {
     pins(u, 1); /* the callee reads the guest's registers from the state */
     mov_state_arg(u);
     if (tail) {
+        /* the target in a register the epilogue leaves alone: RK_S1 is the callee's where RK_TAIL says another */
+        int to = RK_S1;
+#ifdef RK_TAIL
+        rk_mv(b, RK_TAIL, RK_S1);
+        to = RK_TAIL;
+#endif
         epilogue(u);
-        rk_jump_reg(b, RK_S1);
+        rk_jump_reg(b, to);
     } else {
         rk_call_reg(b, RK_S1);
         pins(u, 0);
