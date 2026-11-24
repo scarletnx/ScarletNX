@@ -1046,10 +1046,10 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
-    /* a game's own rows are its console's: a Switch game's none of another console's driver, the rest as they were; a
-       3DS game's its Console alone, in its group, its words Global and the two consoles (Auto is what Global gives,
-       unless the launcher picks one), kept in its picks as the driver reads it and back to Global by a reset. A picks
-       file without it loads all Global, and one that holds what its rows do not take keeps the rows' own */
+    /* a Switch game's own rows are every one of the runtime's, as they were; a 3DS game's its Console alone, in its
+       group, its words Global and the two consoles (Auto is what Global gives, unless the launcher picks one), kept in
+       its picks as the driver reads it and back to Global by a reset. A picks file without it loads all Global, and
+       one that holds what its rows do not take says so */
     {
         static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
                                    "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
@@ -1065,12 +1065,25 @@ int main(int argc, char** argv) {
         char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini), *text,
              out[256];
         static const char* const console_words[] = {"Global", "Old 3DS", "New 3DS"};
+        static const char* const every[] = {"fullscreen",     "ctr_model",       "ctr_hooks", "vita_hle_trace",
+                                            "linux_isolated", "android_jit_opt", "nds_aot",   "volume"};
         size_t size;
         int v, w;
-        assert(!gui_settings_read_game(&game, list) && game.game == GUI_GAME_SWITCH && game.count == 2 &&
-               at(&game, "fullscreen") >= 0 && at(&game, "volume") >= 0 && at(&game, "ctr_model") < 0);
+        /* a Switch game's picks with another console's key are read, kept and said as they were */
+        assert(!gui_settings_read_game(&game, list) && game.game == GUI_GAME_SWITCH);
+        for (w = 0; w < (int)(sizeof every / sizeof *every); ++w) assert(at(&game, every[w]) >= 0);
+        gui_settings_mark(&game);
+        text = snx_strdup("[3DS]\nctr_model=old\n[DS]\nnds_aot=1\n");
+        assert(!snx_write_file(picks, text, strlen(text)) && !gui_settings_load(&game, picks, NULL, 0) &&
+               !gui_settings_unread(&game, picks, out, sizeof out) && gui_settings_changed(&game) == 2);
+        free(text);
+        assert(gui_settings_set(&game, "fullscreen", "1") && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
+               strstr(text, "nds_aot=1\n") && strstr(text, "fullscreen=1\n"));
+        free(text);
+        assert(!remove(picks));
         gui_settings_free(&game);
-        assert(!gui_settings_read_console(&game, list, GUI_GAME_SWITCH) && game.count == 2);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_SWITCH) && at(&game, "ctr_model") >= 0);
         gui_settings_free(&game);
         assert(!gui_settings_read(&global, list) && at(&global, "ctr_hooks") >= 0 && at(&global, "nds_aot") >= 0);
         assert(!gui_settings_read_console(&game, list, GUI_GAME_3DS) && game.game == GUI_GAME_3DS && game.count == 1 &&

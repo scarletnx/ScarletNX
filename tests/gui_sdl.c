@@ -6695,13 +6695,13 @@ static void ctr_own_console(App* app, const char* dir) {
     }
     app->recent = recent_was;
     recent_changed(app);
-    /* a Switch game's own has the Switch's, none of the 3DS's */
+    /* a Switch game's own has every group but the 3DS's */
     {
         char *switch_folder = made_game(app, "unused", "a switch game"),
              *played = program_in(switch_folder, "a switch game");
         open_game_settings(app, played, "a switch game", false);
-        assert(app->editing && app->own_picks && app->groups == 2 && !strcmp(app->group_keys[0].key, "Display") &&
-               !strcmp(app->group_keys[1].key, "Reset to Global") && app->game_settings.count == 1);
+        assert(app->editing && app->own_picks && app->groups == 3 && !strcmp(app->group_keys[0].key, "Display") &&
+               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Reset to Global"));
         key(app, SDLK_ESCAPE);
         assert(!app->editing);
         made_gone(app, switch_folder);
@@ -6780,20 +6780,20 @@ static void ctr_own_console(App* app, const char* dir) {
         recent_changed(app);
         assert(!remove(picks));
     }
-    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest, a Switch
-       game's keep the Switch's and lose the console */
+    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest; a Switch
+       game's, a console's key in them too, are as they were */
     {
         GuiCleaned done = {0};
         char* other = snx_path_join(app->games_dir, "a switch game.picks");
         int keys_taken = 0;
         fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\n");
         fixture_text(other, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n");
-        assert(clean_picks(app, &done, &keys_taken) == 2 && keys_taken == 2 && done.count == 2);
+        assert(clean_picks(app, &done, &keys_taken) == 1 && keys_taken == 1 && done.count == 1);
         assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
                !strstr(text, "fullscreen"));
         free(text);
-        assert((text = (char*)snx_read_file(other, &size)) && strstr(text, "fullscreen=1\n") &&
-               !strstr(text, "ctr_model"));
+        assert((text = (char*)snx_read_file(other, &size)) &&
+               !strcmp(text, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n"));
         free(text);
         gui_cleaned_free(&done);
         assert(!remove(other) && !remove(picks));

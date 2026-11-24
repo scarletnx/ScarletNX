@@ -69,9 +69,8 @@ enum { GUI_GAME_SWITCH = 1, GUI_GAME_3DS };
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
 /* the rows of a Switch game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
-   gui_settings_save read and write it: the runtime's alone, none of another console's driver, each with Global first,
-   the value it starts with, which no pick has and the launcher's picks then give (no plain row, no slider). As
-   gui_settings_read: 0, else nonzero */
+   gui_settings_save read and write it: the runtime's alone, each with Global first, the value it starts with, which
+   no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
 int gui_settings_read_game(GuiSettings* settings, const char* runtime);
 /* a game's of console (GUI_GAME_*): a 3DS game's, the settings it has of its own alone (3ds/runtime/main.h's
    snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
