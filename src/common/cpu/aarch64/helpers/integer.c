@@ -6,7 +6,7 @@
    reaches. The compiler evaluates logical immediates itself, and CRC32 is emitted as IR. */
 
 /* STXP of two doublewords: one atomic compare-and-swap of all 16 bytes. Swapping the halves one at a time let
-   Tears of the Kingdom's lock-free lists pair one thread's pointer with another's counter. Clang emits
+   an open world game's lock-free lists pair one thread's pointer with another's counter. Clang emits
    lock cmpxchg16b with cx16 enabled (the builds also pass -mcx16: Clang 18 still called libatomic with the
    attribute alone), LDAXP/STLXP on AArch64, and lqarx/stqcx. on PowerPC64 from POWER8 (ppc64le's
    baseline); GCC makes it a libatomic call, which a module can't link. RISC-V and LoongArch machines have it

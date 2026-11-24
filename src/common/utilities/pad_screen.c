@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* the controls' boxes, as NieR sets them: the left side's on the left, top to bottom, then the right side's */
+/* the controls' boxes, as the CONTROLS page has them: the left side's on the left, top to bottom, then the right
+   side's */
 static const int ORDER[SNX_PAD_CONTROLS] = {
     SNX_PAD_LT, SNX_PAD_LB, SNX_PAD_UP,    SNX_PAD_DOWN, SNX_PAD_LEFT, SNX_PAD_RIGHT, SNX_PAD_LS, SNX_PAD_BACK,
     SNX_PAD_RT, SNX_PAD_RB, SNX_PAD_NORTH, SNX_PAD_WEST, SNX_PAD_EAST, SNX_PAD_SOUTH, SNX_PAD_RS, SNX_PAD_START};

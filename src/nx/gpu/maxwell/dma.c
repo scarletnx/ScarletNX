@@ -87,8 +87,8 @@ static u64 dma_pitch_span(const DmaSide* s, u32 lines, u32 line) { return gpu_dm
 
 /* ------------------------------------------------------------ copies of linear sources made at submission */
 /* The console's copy engine reads a source microseconds after the submission, while the GPU thread may run the copy
-   frames later, and games free a copy's source right after submitting it (Catherine frees its texture uploads'
-   staging at the start of the next frame, and the piano's keys reflected garbage). So a launch with a linear source
+   frames later, and games free a copy's source right after submitting it (one game frees its texture uploads'
+   staging at the start of the next frame, and a piano's keys reflected garbage). So a launch with a linear source
    has its source read at submission, in the channel's order; the copy uses it unless the GPU has written the source
    since (guest memory then has the newer data) */
 #define SNAP_RING 64
