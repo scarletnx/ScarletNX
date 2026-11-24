@@ -28,6 +28,8 @@ endif()
 target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-gnuabi-kernel scarletnx-common scarletnx-net snx_arm_llvm
                       scarletnx-recompiler)
 target_link_libraries(scarletnx-gnuabi PUBLIC OpenSSL::SSL)
+# the Linux group's tables (settings.txt's g_linux_ini and g_linux_debug_ini), which the command line takes by their keys
+target_link_libraries(scarletnx-gnuabi PUBLIC snx_settings_runtime)
 target_compile_options(scarletnx-gnuabi PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(scarletnx-gnuabi PRIVATE _CRT_SECURE_NO_WARNINGS)
 if(WIN32)

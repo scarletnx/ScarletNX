@@ -2561,6 +2561,180 @@ setting Vita screenshot interval
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
 
+# ---- a Linux program's run (scarletnx-gnuabi --key=value), the Linux group: the launcher passes each one picked to a
+# Linux program's run, before its name ----
+
+table g_linux_ini
+setting Linux isolated
+    label Isolated
+    key linux_isolated
+    int 0 1
+    default 0
+    words Off|On
+    help On = no host files and no variables of the host's: /tmp in memory, the program alone as /program and PATH and
+    help LANG in its environment (--isolated)
+setting Linux root
+    label Root folder
+    key linux_root
+    text 1024
+    path folder
+    default ""
+    help The guest's root (-L DIR, --sysroot=DIR): a guest path names its file when it has one, the host's otherwise, as
+    help with QEMU's -L. Empty: linux/ in the data folder. Isolated takes none
+setting Linux kept code
+    label Kept code
+    key linux_jit_cache
+    int 0 1
+    default 1
+    words Off|On
+    help Off = no compiled code is kept between runs (--no-jit-cache)
+setting Linux JIT level
+    label JIT optimization
+    key linux_jit_opt
+    text 4
+    default 2
+    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    help LLVM's optimization of the code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster
+setting Linux host page
+    label Host page
+    key linux_host_page
+    int 0 1048576
+    default 0
+    words Auto|# bytes
+    steps 0 4096 16384 65536
+    help Works as a host whose pages have that many bytes: a power of two from the host's page to 1048576 (--host-page=).
+    help 0 = the host's. Not on Windows, which works in 4096-byte pages and refuses another
+
+table g_linux_debug_ini
+setting Linux system call trace
+    label System call trace
+    key linux_strace
+    int 0 1
+    default 0
+    words Off|On
+    help On = each system call, its arguments and its result on stderr, with the process id (--strace)
+setting Linux pc sample
+    label Program counter sample
+    key linux_sample_pc
+    int 0 1
+    default 0
+    words Off|On
+    help On = the guest's program counter on stderr once a second, which shows a loop with no system call
+    help (--sample-pc). Not on Windows
+setting Linux JIT messages
+    label JIT messages
+    key linux_verbose_jit
+    int 0 1
+    default 0
+    words Off|On
+    help On = says what the JIT compiles (--verbose-jit)
+
+# ---- an Android app's run (scarletnx-android --key=value), the Android group: the launcher passes each one picked ----
+
+table g_android_ini
+setting Android JIT level
+    label JIT optimization
+    key android_jit_opt
+    text 4
+    default 2
+    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    help LLVM's optimization of the native code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster, to
+    help test the JIT itself
+setting Android Java options
+    label Java options
+    key android_java_options
+    text 1024
+    default ""
+    help Options for the JVM, a space between two, as -J gives one: -Xmx2g. Empty: none
+
+table g_android_debug_ini
+setting Android log level
+    label Log level
+    key android_log_level
+    text 4
+    default D
+    words V=Verbose|D=Debug|I=Info|W=Warning|E=Error|A=Assert
+    help The least android.util.Log level printed (--log-level=), the least Log.isLoggable is true for too
+setting Android frame trace
+    label Frame trace
+    key android_trace_frames
+    int 0 1
+    default 0
+    words Off|On
+    help On = each frame the app's windows make, on stderr (--trace-frames)
+setting Android signal log
+    label Signal log
+    key android_log_signals
+    int 0 1
+    default 0
+    words Off|On
+    help On = each guest signal action, send and delivery (--log-signals)
+setting Android sample
+    label Thread sample
+    key android_sample
+    int 0 1
+    default 0
+    words Off|On
+    help On = every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents (--sample)
+setting Android JIT messages
+    label JIT messages
+    key android_jit_verbose
+    int 0 1
+    default 0
+    words Off|On
+    help On = each unit the JIT compiles, before and after, with its time (--jit-verbose)
+setting Android JIT IR
+    label JIT IR folder
+    key android_jit_keep_ir
+    text 1024
+    path folder
+    default ""
+    help A folder that keeps the LLVM IR of each unit the JIT compiles, so one LLVM fails on can be compiled again by
+    help itself (--jit-keep-ir=). Empty: none
+setting Android linker messages
+    label Linker messages
+    key android_linker_verbose
+    int 0 1
+    default 0
+    words Off|On
+    help On = each native library and its load address (--linker-verbose)
+
+# ---- a DS game's run (scarletnx-nds --key=value), the DS group: the launcher passes each one picked to a DS game's
+# run, but the WFC service's, which the driver reads from settings.ini itself (g_nds_network_ini) ----
+
+table g_nds_ini
+setting DS compile first
+    label Compile first
+    key nds_aot
+    int 0 1
+    default 1
+    words Off|On
+    help Off = a game with no module is not compiled before it starts: every block compiles as the run reaches it (a
+    help quick look at a game, --aot=0; a recompile does it later, from the hints)
+
+table g_nds_debug_ini
+setting DS trace
+    label Trace
+    key nds_trace
+    int 0 2
+    default 0
+    words Off|Unknown accesses|And interrupts
+    help 1 = says each register access and ARM7 request the board does not know (--trace), 2 = each interrupt taken too
+setting DS sound file
+    label Sound file
+    key nds_wav
+    text 1024
+    path save
+    default ""
+    help A WAV file that gets the run's sound, 16 bits stereo (--wav=). Empty: none
+setting DS memory dump
+    label Memory dump
+    key nds_dump_ram
+    text 1024
+    path save
+    default ""
+    help A file that gets 0x01FF8000 to 0x02FFFFFF when the run ends (--dump_ram=). Empty: none
+
 # ---- the Vulkan extensions ----
 
 # One setting per Vulkan extension the renderers can use (the Switch's gpu/vk/device.c, the 3DS's), auto by default:
@@ -2668,6 +2842,9 @@ section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section Audio: g_audio_ini
 section 3DS: g_ctr_display_ini, g_ctr_debug_ini/Debug
 section Vita: g_vita_debug_ini/Debug
+section Linux: g_linux_ini, g_linux_debug_ini/Debug
+section Android: g_android_ini, g_android_debug_ini/Debug
+section DS: g_nds_ini, g_nds_debug_ini/Debug
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player, g_joycon2_ini/Bluetooth    backend

@@ -158,6 +158,11 @@ size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
 /* argv's --key=value for each of the Vita driver's settings picked: its Debug page's (keys that start with vita_). Its
    count */
 size_t gui_settings_vita_options(GuiSettings* settings, const char** argv);
+/* the same for a Linux program's run (linux_), an Android app's (android_) and a DS game's (nds_, but the WFC
+   service's, which that driver reads from settings.ini) */
+size_t gui_settings_linux_options(GuiSettings* settings, const char** argv);
+size_t gui_settings_android_options(GuiSettings* settings, const char** argv);
+size_t gui_settings_nds_options(GuiSettings* settings, const char** argv);
 /* Extract to tmpfs: --tmpfs while it is on, else NULL (extractions on disk) */
 const char* gui_settings_tmpfs(const GuiSettings* settings);
 /* Extract dump: --extract-container while it is on, else NULL (a dump read in place, nothing extracted).

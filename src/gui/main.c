@@ -16925,10 +16925,11 @@ typedef struct {
     if (n) argv[0] = first;
     argv[n++] = own->option;
     /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's and the Vita's their own, and the others' none, whose drivers refuse a setting they do not
-       have */
+       launcher's, the 3DS's, the Vita's and the DS's their own, and the others' none, whose drivers refuse a setting
+       they do not have */
     n += item == GUI_3DS      ? gui_settings_ctr_options(s, argv + n)
          : item == GUI_VITA   ? gui_settings_vita_options(s, argv + n)
+         : item == GUI_NDS    ? gui_settings_nds_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
@@ -20264,6 +20265,9 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (driver_run(app, app->menu.selected, &how) && how.first) argv[n++] = how.first;
     }
     if (make) argv[n++] = "-r";
+    /* the driver's own, before the program: the Linux one's are read up to it and its arguments after it are the
+       guest's */
+    if (!direct && !make && app->menu.selected == GUI_LINUX) n += gui_settings_linux_options(s, argv + n);
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     if (app->menu.selected == GUI_ANDROID) n += gui_settings_java_home(s, argv + n);
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
@@ -20292,6 +20296,8 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
     if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
+    if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
+    if (app->menu.selected == GUI_NDS && !make) n += gui_settings_nds_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);

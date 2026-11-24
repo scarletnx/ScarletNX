@@ -1112,6 +1112,35 @@ int main(int argc, char** argv) {
         assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
         gui_settings_free(&s);
     }
+    /* the Linux, Android and DS drivers': a run's options are its own group's, each only to its own driver; the DS's
+       WFC service, which that driver reads from settings.ini, never */
+    {
+        static const char drivers[] = "Linux\tlinux_isolated\t0\tint\t0\t1\tNo host\tIsolated\t0=Off|1=On\n"
+                                      "Linux\tlinux_root\t\ttext\t0\t0\tRoot\tRoot folder\t\t\t\tfolder\n"
+                                      "Linux/Debug\tlinux_strace\t0\tint\t0\t1\tCalls\tSystem call trace\t0=Off|1=On\n"
+                                      "Android\tandroid_jit_opt\t2\ttext\t0\t0\tLevel\tJIT optimization\t0=O0|2=O2\n"
+                                      "Android/Debug\tandroid_sample\t0\tint\t0\t1\tSamples\tThread sample\t"
+                                      "0=Off|1=On\n"
+                                      "DS\tnds_aot\t1\tint\t0\t1\tFirst\tCompile first\t0=Off|1=On\n"
+                                      "DS/Debug\tnds_trace\t0\tint\t0\t2\tTrace\tTrace\t0=Off|1=One|2=Two\n"
+                                      "Online\tnds_wfc\toff\ttext\t0\t0\tService\tDS WFC service\t"
+                                      "off=Off|kaeru=Kaeru\n";
+        assert(!gui_settings_read(&s, drivers));
+        assert(!gui_settings_linux_options(&s, options) && !gui_settings_android_options(&s, options) &&
+               !gui_settings_nds_options(&s, options));
+        assert(gui_settings_set(&s, "linux_isolated", "1") && gui_settings_set(&s, "linux_strace", "1") &&
+               gui_settings_set(&s, "linux_root", "/a root") && gui_settings_set(&s, "android_jit_opt", "0") &&
+               gui_settings_set(&s, "android_sample", "1") && gui_settings_set(&s, "nds_aot", "0") &&
+               gui_settings_set(&s, "nds_trace", "2") && gui_settings_set(&s, "nds_wfc", "kaeru"));
+        assert(gui_settings_linux_options(&s, options) == 3 && !strcmp(options[0], "--linux-isolated=1") &&
+               !strcmp(options[1], "--linux-root=/a root") && !strcmp(options[2], "--linux-strace=1"));
+        assert(gui_settings_android_options(&s, options) == 2 && !strcmp(options[0], "--android-jit-opt=0") &&
+               !strcmp(options[1], "--android-sample=1"));
+        assert(gui_settings_nds_options(&s, options) == 2 && !strcmp(options[0], "--nds-aot=0") &&
+               !strcmp(options[1], "--nds-trace=2"));
+        assert(gui_settings_vita_options(&s, options) == 0);
+        gui_settings_free(&s);
+    }
     /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its
        ends, set to the step nearest a place along it; the same words without the mark are no slider, nor are they
        where the default is no step (its row's first word the .ini's) */

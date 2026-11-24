@@ -247,6 +247,13 @@ if(BUILD_TESTING)
     target_compile_definitions(snx-test-android-gles2 PRIVATE VK_NO_PROTOTYPES)
     set_target_properties(snx-test-android-gles2 PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-gles2 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        # the driver's command line: the Android group's settings of the launcher's Settings, no app and no JVM
+        add_test(NAME android_driver COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/android_driver.py"
+                 "${PROJECT_BINARY_DIR}/scarletnx-android${CMAKE_EXECUTABLE_SUFFIX}")
+        set_tests_properties(android_driver PROPERTIES TIMEOUT 120)
+    endif()
     add_test(NAME android_gles2 COMMAND snx-test-android-gles2)
     set_tests_properties(android_gles2 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     find_package(Python3 COMPONENTS Interpreter QUIET)

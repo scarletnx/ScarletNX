@@ -98,6 +98,9 @@ These find what an app does when it stops or runs slowly:
 | `--linker-verbose` | Each native library and its load address |
 | `--framework=JAR`, `--java-home=DIR` | The framework's jar and the JDK, in place of the ones beside the program and that the build found |
 
+The diagnostics, the JIT's level and the JVM's options are settings too, the launcher's Settings > Android, which it
+passes to a run (`--android-log-level=W`, [Settings](../../user/settings.md#android-driver)): the last given counts.
+
 Without a display, the renderer draws into an image of its own, so the shots work on a machine with only a
 software Vulkan driver (lavapipe).
 

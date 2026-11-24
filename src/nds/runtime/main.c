@@ -64,6 +64,8 @@ static void usage(FILE* out) {
         "                         skytemple, diyfi, sudomemo; default off, or settings.ini's [Online] nds_wfc)\n"
         "  --nds-wfc-dns=IPV4     The DNS server --nds-wfc=custom sets\n"
         "\n"
+        "--nds-aot, --nds-trace, --nds-wav and --nds-dump-ram are the settings of the launcher's DS group, the same\n"
+        "as --aot, --trace, --wav and --dump_ram: the last given counts.\n"
         "--press-len, --aot-threads, --aot-threads-most, --shot-every, --nds-wfc and --nds-wfc-dns are settings:\n"
         "each with an _ for each - (--press_len=MS), the older spelling, is still read, and said once.\n"
         "\n"
@@ -278,6 +280,23 @@ int snx_nds_main(int argc, char** argv) {
             }
             ini_read(o, value);
             wfc_given |= !strcmp(key, "nds_wfc") ? 1u : 2u;
+        } else if (value && (ini_find(g_nds_ini, key) || ini_find(g_nds_debug_ini, key))) {
+            /* the DS group's settings, each what the option of its own here is: the last given counts */
+            const IniOpt* o = ini_find(g_nds_ini, key) ? ini_find(g_nds_ini, key) : ini_find(g_nds_debug_ini, key);
+            if (ini_check(o, value, error, sizeof error)) {
+                fprintf(stderr, "scarletnx-nds: %s\n", error);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            ini_read(o, value);
+            if (!strcmp(key, "nds_aot"))
+                aot = g_settings.ds_compile_first;
+            else if (!strcmp(key, "nds_trace"))
+                trace = g_settings.ds_trace;
+            else if (!strcmp(key, "nds_wav"))
+                wav = g_settings.ds_sound_file[0] ? g_settings.ds_sound_file : NULL;
+            else
+                dump_ram = g_settings.ds_memory_dump[0] ? g_settings.ds_memory_dump : NULL;
         } else if (!strncmp(argv[i], "--dump_ram=", 11))
             dump_ram = argv[i] + 11;
         else if (!strncmp(argv[i], "--wav=", 6))
