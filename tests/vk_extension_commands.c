@@ -10,6 +10,8 @@
    it can't or for a second device that lacks one; and the hide list checked, a name of no device command refused with
    the nearest */
 #include "common/gpu/vk/extension_commands.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -232,6 +234,21 @@ static void check_hide(void) {
                           "vkCmdSetDepthClampRange is no device command a Vulkan extension requires; the nearest: "
                           "vkCmdSetDepthClampRangeEXT, "),
           "a name of no command is refused, with the value given and the nearest first");
+    /* the Settings' boxes for it (settings.txt's boxes commands), read from the registry the table is made from: each
+       is a command the check takes */
+    {
+        const IniOpt* o = ini_find(g_debug_ini, "vk_debug_hide_commands");
+        int names = 0;
+        CHECK(o && (o->flags & INI_BOXES) && o->words && *o->words, "vk_debug_hide_commands has a box a command");
+        for (const char* c = o && o->words ? o->words : ""; *c; names++) {
+            char name[128];
+            snprintf(name, sizeof name, "%.*s", (int)strcspn(c, "="), c);
+            CHECK(snx_vk_hide_check(name, err, sizeof err), err);
+            c += strcspn(c, "|");
+            if (*c) c++;
+        }
+        CHECK(names >= 100, "a box for each device command of the extensions a renderer can use");
+    }
     CHECK(!snx_vk_hide_check("vkGetPhysicalDeviceMultisamplePropertiesEXT", err, sizeof err),
           "a physical device's command is no device command");
     CHECK(snx_vk_hide_has("a, vkCmdX ,b", "vkCmdX") && !snx_vk_hide_has("vkCmdXY", "vkCmdX") &&

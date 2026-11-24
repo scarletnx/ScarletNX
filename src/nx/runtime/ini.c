@@ -285,6 +285,10 @@ static void list_help(Listing* l, const char* help) {
 static void list_values(Listing* l, const IniOpt* o) {
     int step = o->step > 0 ? o->step : 1, v, first = 1;
     char word[64];
+    if (o->flags & INI_BOXES) { /* its items, as they are */
+        put(l, "%s", o->words ? o->words : "");
+        return;
+    }
     if (o->type == INI_TEXT && o->words) { /* value=word already */
         put(l, "%s", o->words);
         return;
@@ -388,12 +392,12 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                int open = (o->flags & INI_OPEN) || o->steps;
-                if ((o->flags & (INI_NEEDS_BUILD | INI_SLIDER)) || open)
+                int open = (o->flags & INI_OPEN) || o->steps, boxes = (o->flags & INI_BOXES) != 0;
+                if ((o->flags & (INI_NEEDS_BUILD | INI_SLIDER)) || open || boxes)
                     put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
-                if ((o->flags & INI_SLIDER) || open)
-                    put(&l, "\t%s%s%s", o->flags & INI_SLIDER ? "slider" : "",
-                        (o->flags & INI_SLIDER) && open ? " " : "", open ? "open" : "");
+                if ((o->flags & INI_SLIDER) || open || boxes)
+                    put(&l, "\t%s%s%s%s", o->flags & INI_SLIDER ? "slider" : "",
+                        (o->flags & INI_SLIDER) && open ? " " : "", open ? "open" : "", boxes ? "boxes" : "");
                 put(&l, "\n");
             }
         }

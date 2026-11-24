@@ -31,6 +31,11 @@ enum {
 /* a text with words whose words are its common values, not every one (settings.txt's open): the launcher keeps a value
    none of them is, shown as itself, as it does on a row with steps, which are open too */
 #define INI_OPEN        32
+/* a value that is a set of known items (settings.txt's boxes), a text's separated by commas and an int's the sum of
+   their bits: words are the items, value=Label~About between '|', made by settingsgen from what the items' reader reads
+   (the bans, the hook families, the Vulkan commands) or from the row's own words. The launcher gives a box an item; the
+   game's menu only reads the value */
+#define INI_BOXES       64
 
 /* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
    feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
@@ -142,7 +147,8 @@ int ini_step(const IniOpt* o, int v, int dir);
    [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', then
    ini_only's words (empty where the setting does something on this system), needs-build for an INI_NEEDS_BUILD row
    and its marks, a space between two, for the rest (an empty column before them where the row needs nothing):
-   slider for an INI_SLIDER row, open for an INI_OPEN one or one with steps, tabs between. Into out,
+   slider for an INI_SLIDER row, open for an INI_OPEN one or one with steps, boxes for an INI_BOXES one, whose values
+   are its items value=Label~About, tabs between. Into out,
    NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 

@@ -9,7 +9,7 @@ if(result OR NOT errors STREQUAL "")
     message(FATAL_ERROR "scarletnx --settings ended with ${result}: ${errors}")
 endif()
 set(field "[^\t\r\n]*")
-string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field}(\t(slider|open|slider open))?)?\r?\n"
+string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field}(\t(slider|open|slider open|boxes))?)?\r?\n"
        "" rest "${list}")
 if(NOT rest STREQUAL "" OR list STREQUAL "")
     message(FATAL_ERROR "lines of scarletnx --settings that are not ten, eleven or twelve fields:\n${rest}")
@@ -153,6 +153,20 @@ foreach(row "\nGraphics\tbc7_queue\t0\tint\t0\t16384\t" "\tBC7 queue\t0=Auto|256
             "\tHost page size\t0=Host's|8192=8192 bytes|16384=16384 bytes|" "|1048576=1048576 bytes\t\t\topen\n"
             "\nPerformance\tfps_limit\tgame\ttext\t" "\tFPS limit\tgame=Game's|0=No limit|30=30 FPS|" "|240=240 FPS\t\t\topen\n"
             "\nPerformance\theap_max_mb\t0\tint\t0\t1048576\t" "\tHeap limit (MB)\t0=No limit|512=512 MB|")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
+# a setting of boxes: its items as the launcher offers them, value=Label~About, and boxes as its mark; FSR's input
+# conventions' seven bits, the extension bans' keys (each with what the bans on it say), the hook families and the
+# Vulkan commands of the extensions a renderer can use, made from the files their readers read
+foreach(row "\tfsr_input_conventions\t0\tint\t0\t255\t" "1=Jitter reversed in x|2=Jitter reversed in y|"
+            "|64=HDR color input\t\t\tboxes\n"
+            "\tvulkan_ban_ignore\t\ttext\t" "VK_EXT_vertex_input_dynamic_state=VK_EXT_vertex_input_dynamic_state~nvidia < 580.119.02 breaks dynamic vertex input"
+            "\thooks_off\t\ttext\t" "libc=libc~|libc_str=libc_str~the C library's string, character, number"
+            "\thooks_verify\t\ttext\t"
+            "\tvk_debug_hide_commands\t\ttext\t" "|vkCmdDrawMeshTasksEXT=vkCmdDrawMeshTasksEXT~Of VK_EXT_mesh_shader")
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")

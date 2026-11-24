@@ -1481,6 +1481,15 @@ int main(void) {
         overlay_move(1); /* Eden room: a text with no words */
         picks.applied[0] = 0;
         assert(overlay_select() == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE && !picks.applied[0]);
+        assert(overlay_back() == OVERLAY_NONE);
+        overlay_move(
+            1); /* Debug's first, a row of boxes (a set of items): the menu reads its value, the launcher sets it */
+        g_settings.fsr_input_conventions = 9;
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(text_at(1, 3, "\xFE FSR input conventions") && shows("9") && !shows("< 9 >") && !shows("< 9 * >"));
+        assert(overlay_select() == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE && !picks.applied[0]);
+        g_settings.fsr_input_conventions = 0;
         assert(overlay_back() == OVERLAY_NONE && overlay_back() == OVERLAY_NONE);
         draw();
         assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE); /* on Settings again */
