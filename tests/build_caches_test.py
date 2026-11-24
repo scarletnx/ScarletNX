@@ -27,7 +27,7 @@ NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
 # the LLVM builds of the workflow and its saves of a compiler cache: fewer found means this check no longer reads the
 # file as it is written
 BUILDS = 6
-COMPILER_CACHES = 5
+COMPILER_CACHES = 6
 
 
 def indent(line):
@@ -273,7 +273,7 @@ def self_test(text):
         (
             "a compiler cache's save taken out",
             replace_once(text, linux, "      # Only the dependency builds this run's trees used stay"),
-            f'4 steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
+            f'5 steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
         ),
     ]
     failed = []
