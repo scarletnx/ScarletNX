@@ -143,7 +143,8 @@ static inline SgS sg_AArch32_CurrentCond(SgCtx* g) {
         return sg_s(g->word >> 22, 4);
     return sg_s(g->itstate & 15 ? g->itstate >> 4 : 14, 4);
 }
-/* ConditionHolds(cond) on the flags NZCV was last written from, while the host's flags are still them: the condition code
+/* ConditionHolds(cond) on the flags NZCV was last written from, while the host's flags are still them: the condition
+   code
    the selection gave Arm's cond on that form's flags. 0 otherwise: the Sail then reads PSTATE */
 static inline SgB sg_condition_origin(SgCtx* g, SgS cond) {
     SgX* x = sgx(g);
@@ -246,7 +247,8 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
     if (count == 4 && first == SG_PSTATE_N && v.nzcv) {
         int from = v.nzcv - 1;
         const SgXSel* fs = x->ins[from].fsel;
-        if (x->flags_ins != from) sg_fail("NZCV written after the host's flags that are them were overwritten", from, 0);
+        if (x->flags_ins != from)
+            sg_fail("NZCV written after the host's flags that are them were overwritten", from, 0);
         for (int f = 0; f < 4; ++f) {
             int cc = sgx_arm_flag_cc(fs, f);
             g->field[f] = cc < 0 ? sgx_const(1, 0) : sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, from, cc));

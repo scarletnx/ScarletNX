@@ -619,3 +619,8 @@ SGA_VF(clear, 2, 3)
 /* the state's address (X19, the callee's), and a call's arguments from the state's (X0) on */
 #define SGX_BASE 19
 static const signed char sgx_arg_regs[6] = {0, 1, 2, 3, 4, 5};
+/* AArch32's calls' arguments after the state's (X1-X4), and its exclusive store's address, value and the memory's base
+   (X1, X2, X3: mach_a32.h's SGX_A32_STREX), X4 and X5 its own */
+static const signed char sgx_a32_args[4] = {1, 2, 3, 4};
+static const signed char sgx_a32_strex[3] = {1, 2, 3};
+#define SGX_A32_STREX_CLOBBER (1u << 4 | 1u << 5)

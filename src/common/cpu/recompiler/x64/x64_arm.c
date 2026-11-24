@@ -30,6 +30,7 @@
 #define MG_ARM_NEXT SnxX64ArmNext
 #define MG_ARM_API(name) snx_x64_arm_##name
 #define MG_ARM_AVAILABLE() snx_x64_available()
+#define MG_ARM_MAKES() snx_x64_available()
 #define MG_ARM_FEATURES() snx_x64_features()
 #define MG_ARM_EM EM_X86_64
 #define MG_ARM_CALL_RELOC R_X86_64_PLT32

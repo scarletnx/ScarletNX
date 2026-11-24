@@ -5,11 +5,12 @@
    arm64/arm64_arm.c), and followed by the machine's glue, which it declares: the block's frame, prologue and entry
    checks, its return and its chaining to the next block, the entry checks' exit function, an entry stub for another
    back end's block, and the VFP's fp_call. The machine names its emitters' file (MG_ARM_INC: a32_<machine>.inc), its
-   compiler's type and functions (MG_ARM, MG_ARM_NEXT, MG_ARM_API(name)), whether it is this host's (MG_ARM_AVAILABLE,
-   MG_ARM_FEATURES), its object's machine (MG_ARM_EM) and call relocation (MG_ARM_CALL_RELOC), whether its loads need a
-   barrier to be acquires (MG_ARM_LOAD_FENCE), whether the VFP's arithmetic has a hot path of its own (MG_ARM_FP_HOT),
-   and, where its glue takes Thumb blocks (the prologue's and the entry exit's checks, as SgCtx.thumb says), the
-   function that makes one (MG_ARM_THUMB_BLOCK).
+   compiler's type and functions (MG_ARM, MG_ARM_NEXT, MG_ARM_API(name)), whether it is this host's (MG_ARM_AVAILABLE),
+   whether it makes code here (MG_ARM_MAKES: arm64's anywhere, for its tests) and for what features (MG_ARM_FEATURES),
+   its object's machine (MG_ARM_EM) and call relocation (MG_ARM_CALL_RELOC), whether its loads need a barrier to be
+   acquires (MG_ARM_LOAD_FENCE), whether the VFP's arithmetic has a hot path of its own (MG_ARM_FP_HOT), and, where its
+   glue takes Thumb blocks (the prologue's and the entry exit's checks, as SgCtx.thumb says), the function that makes
+   one (MG_ARM_THUMB_BLOCK).
 
    Each word is sailgen's emitter of the AArch32 Sail where its clauses take it (the data processing and branches),
    else one written here over the same SSA region, as llvm.c's emitters are written over LLVM's builder (the loads
@@ -71,7 +72,7 @@ struct MG_ARM {
 int MG_ARM_API(available)(void) { return MG_ARM_AVAILABLE(); }
 
 MG_ARM* MG_ARM_API(new)(void) {
-    if (!MG_ARM_AVAILABLE()) return NULL;
+    if (!MG_ARM_MAKES()) return NULL;
     MG_ARM* c = (MG_ARM*)calloc(1, sizeof *c);
     if (!c) return NULL;
     c->b.cap = 1u << 16;
@@ -303,10 +304,16 @@ static void divide(SgCtx* g) {
     /* 64 bits: the most negative over -1 needs no care there, and its quotient's low word is the Arm ARM's */
     SgD n = u ? sg_d_zext(g, reg(g, w & 15), 64) : sg_d_sext(g, reg(g, w & 15), 64);
     SgD m = u ? sg_d_zext(g, reg(g, (w >> 8) & 15), 64) : sg_d_sext(g, reg(g, (w >> 8) & 15), 64);
+#if SGX_DIV_ARM
+    /* the machine's division is Arm's own: 0 for a divisor of 0 */
+    SgD q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, m);
+    sg_GPR_write(g, (w >> 16) & 15, sg_d_slice(g, q, 31, 0));
+#else
     SgB zero = sg_d_is_zero(g, m);
     m = sg_d_select(g, zero, sgx_const(64, 1), m);
     SgD q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, sg_d_asr(g, n, 63), m);
     sg_GPR_write(g, (w >> 16) & 15, sg_d_select(g, zero, sgx_const(32, 0), sg_d_slice(g, q, 31, 0)));
+#endif
 }
 
 /* CLZ, REV, REV16, REVSH, RBIT, the extends, the bitfields, MRS and MSR (llvm.c's miscellaneous) */
@@ -871,10 +878,11 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
     int unary = v->op == AV_MOV || (v->op >= AV_FABS && v->op <= AV_FSQRT) || v->op == AV_FCVT || v->op == AV_FTOI ||
                 v->op == AV_ITOF || v->op == AV_FROUND || v->op == AV_FRECPE || v->op == AV_FRSQRTE ||
                 v->op == AV_URECPE || v->op == AV_URSQRTE;
-    /* the operations fp_call has a hot path for, whose operands are XMM values; the others' are bits */
-    int hot = MG_ARM_FP_HOT && (v->op == AV_FADD || v->op == AV_FSUB || v->op == AV_FMUL || v->op == AV_FDIV || v->op == AV_FMLA ||
-              v->op == AV_FMLS || v->op == AV_FNMLA || v->op == AV_FNMLS || v->op == AV_FNMUL || v->op == AV_FCMP ||
-              v->op == AV_FCMPE);
+    /* the operations fp_call has a hot path for, whose operands are vector values; the others' are bits */
+    int hot = MG_ARM_FP_HOT &&
+              (v->op == AV_FADD || v->op == AV_FSUB || v->op == AV_FMUL || v->op == AV_FDIV || v->op == AV_FMLA ||
+               v->op == AV_FMLS || v->op == AV_FNMLA || v->op == AV_FNMLS || v->op == AV_FNMUL || v->op == AV_FCMP ||
+               v->op == AV_FCMPE);
     if (v->op == AV_FCVT)
         outwidth = v->aux;
     else if (v->op == AV_FTOI)

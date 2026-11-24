@@ -176,3 +176,21 @@ function(snx_sailgen_a64_arm64 target)
     target_sources(${target} PRIVATE "${out}/a64_arm64.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
+
+# snx_sailgen_a32_arm64(<target>): generates a32_arm64.inc (the AArch32 emitters of a32.roots with sailgen's arm64 back
+# end at its top, over the A64 Sail's encoders) into the build folder, and gives <target> its include root. It builds
+# on any host: the code it writes is arm64's
+function(snx_sailgen_a32_arm64 target)
+    snx_sailgen_a64_encoders(${target})
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(arm64 a32 files args)
+    add_custom_command(OUTPUT "${out}/a32_arm64.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                -o "${out}/a32_arm64.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
+        COMMENT "Generating the AArch32 emitters' arm64 code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a32_arm64.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
