@@ -7,6 +7,7 @@
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/hotkeys.h"
+#include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/stats.h"
@@ -2037,7 +2038,12 @@ static const char* pads_hint(char* out, size_t size) {
 static float toast_width(int i, float cw) {
     return cw * (float)(strlen(toasts[i].text) + 2 + (toasts[i].icon != GUI_ICON_NONE ? 3 : 0));
 }
-static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, int span[OVERLAY_TOASTS + 1]) {
+/* whether the boxes a and b (x, y, w, h each) have a point in common */
+static int boxes_meet(const float a[4], const float b[4]) {
+    return a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1];
+}
+static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, const float* debug,
+                       int span[OVERLAY_TOASTS + 1]) {
     int px, py, s, i, right = 0;
     float cw, ch, x, y, w = 0, h;
     SNX_ZONE_V(z_toast, "plat overlay toast lay", (u64)ntoasts);
@@ -2052,14 +2058,17 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, int spa
     h = ch * (float)ntoasts;
     /* the stats' box (x, y, w, h; NULL for none) in that corner too: the bands go under it, from its left, half a
        line apart, where they would lie on it; in the picture's top right corner, each to its edge, when there is no
-       room under the box */
-    if (stats && x < stats[0] + stats[2] && x + w > stats[0] && y < stats[1] + stats[3] && y + h > stats[1]) {
+       room under it and under the Debug list, where that is */
+    if (stats && boxes_meet((const float[4]){x, y, w, h}, stats)) {
         x = stats[0];
         y = stats[1] + stats[3] + ch / 2;
-        if (y + h > (float)sh) {
-            right = 1;
-            y = ch;
-        }
+    }
+    /* the Debug list's (debug) too, which is under the stats' box when both are shown */
+    if (debug && boxes_meet((const float[4]){x, y, w, h}, debug)) y = debug[1] + debug[3] + ch / 2;
+    if (y + h > (float)sh) {
+        right = 1;
+        y = ch;
+        if (debug && boxes_meet((const float[4]){(float)sw - cw - w, y, w, h}, debug)) y = debug[1] + debug[3] + ch / 2;
     }
     for (i = 0; i < ntoasts; ++i) {
         float at = right ? (float)sw - cw - toast_width(i, cw) : x, row = y + (float)i * ch;
@@ -2120,6 +2129,8 @@ static struct {
     int n, sw, sh, percent, boxed;
     int span[OVERLAY_TOASTS + 1]; /* each line's first quad, and the end of them (toast_draw) */
     float stats[4];               /* the stats' box it was placed for, when boxed */
+    float debug[4];               /* the Debug list's, when listed */
+    int listed;
     u32 given, version;
 } g_toast;
 static void watch(const void* var) {
@@ -2234,14 +2245,17 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     toasts_drop(now_ns);
     if (ntoasts) {
         int percent = overlay_display_percent(), first = l->n, i;
-        float stats[4] = {0};
-        int boxed = stats_box_drawn(stats); /* the stats' box, which it keeps clear of */
+        float stats[4] = {0}, debug[4] = {0};
+        int boxed = stats_box_drawn(stats), listed = hud_box_drawn(debug); /* both kept clear of */
         if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
-            g_toast.boxed != boxed || memcmp(g_toast.stats, stats, sizeof stats) || !g_toast.version) {
+            g_toast.boxed != boxed || g_toast.listed != listed || memcmp(g_toast.stats, stats, sizeof stats) ||
+            memcmp(g_toast.debug, debug, sizeof debug) || !g_toast.version) {
             SnxUiList t = {g_toast.q, 0, (int)(sizeof g_toast.q / sizeof *g_toast.q)};
-            toast_draw(&t, sw, sh, boxed ? stats : NULL, g_toast.span);
+            toast_draw(&t, sw, sh, boxed ? stats : NULL, listed ? debug : NULL, g_toast.span);
             g_toast.boxed = boxed;
+            g_toast.listed = listed;
             memcpy(g_toast.stats, stats, sizeof stats);
+            memcpy(g_toast.debug, debug, sizeof debug);
             g_toast.n = t.n;
             g_toast.given = toast_version;
             g_toast.sw = sw;

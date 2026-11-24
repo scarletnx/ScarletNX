@@ -4,6 +4,7 @@
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
 #include <math.h>
+#include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/wait_screen.h"
@@ -2152,6 +2153,48 @@ int main(void) {
         g_settings.stats = 0;
         draw();
         assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+    }
+    /* the Debug list, under the stats' box in its column: the band goes under it, half a line apart, and back under the
+       stats' box once the list is empty; with no stats' box the list is at the top's middle, where a short band does not
+       reach it and a long one goes under it; in the top right corner, under the list where that is, when there is no room
+       under it */
+    {
+        static const int all[4] = {0, 0, SW, SH};
+        static SnxUiQuad kept[1024], under[1024];
+        SnxUiList box_quads = {kept, 0, 1024}, list_quads = {under, 0, 1024};
+        const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
+        float box[4], debug[4], cw = (float)(8 * stats_scale(s)), ch = (float)(16 * stats_scale(s));
+        int h, short_x, short_y, short_s;
+        assert(!hud_box_drawn(debug));
+        g_settings.stats = 1;
+        stats_corner_set(corner, "tl");
+        stats_draw(&box_quads, all, s, 1000);
+        assert(stats_box_drawn(box));
+        hud_debug_set("log=2, vk_validation=1");
+        hud_draw(&list_quads, all, stats_scale(s), box, 0);
+        assert(hud_box_drawn(debug) && debug[0] == box[0] && debug[1] == box[1] + box[3] + ch / 2);
+        draw();
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == debug[1] + debug[3] + ch / 2);
+        h = (int)(debug[1] + debug[3]) + 4; /* a picture that ends four pixels under the list */
+        overlay_place(SW, h, &short_x, &short_y, &short_s);
+        list.n = 0;
+        overlay_draw(&list, SW, h, 0);
+        assert(qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * stats_scale(short_s)));
+        hud_debug_set("");
+        draw();
+        assert(qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        g_settings.stats = 0;
+        hud_debug_set("log=2, vk_validation=1");
+        list_quads.n = 0;
+        hud_draw(&list_quads, all, stats_scale(s), NULL, 0);
+        assert(hud_box_drawn(debug) && debug[0] > cw + 15 * cw);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+        overlay_toast(GUI_ICON_FIRST, "a notification whose words reach the middle of the picture's width", 1000);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == debug[1] + debug[3] + ch / 2);
+        overlay_toast(GUI_ICON_FIRST, "", 1000);
+        hud_debug_set("");
     }
     toasts_gone();
     /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
