@@ -6,6 +6,7 @@
 #ifndef SNX_TOOLS_SAILGEN_H
 #define SNX_TOOLS_SAILGEN_H
 
+#include <setjmp.h>
 #include <stddef.h>
 
 typedef unsigned long long SgU64;
@@ -43,6 +44,7 @@ enum {
     N_WILD,    /* _ in a pattern */
     N_TYPE,    /* a type, as its source text (name) */
     N_UPDATE,  /* [a with b = d], or [a with b .. c = d]: bits a with bit b (bits b to c) made d */
+    N_WHILE,   /* while a do b */
     N_COUNT
 };
 
@@ -126,6 +128,9 @@ unsigned sg_find(const char* name, int kind);
 /* every definition of name and kind, in order: the first after index after (0 to start), 0 when none is left */
 unsigned sg_find_next(const char* name, int kind, unsigned after);
 void sg_fail(unsigned node, const char* fmt, ...);
+/* where sg_fail goes instead of exiting, after saying why (the generator's, for SAILGEN_SKIP: a clause it can't make
+   left out), NULL to exit */
+extern jmp_buf* sg_fail_jump;
 void* sg_alloc(size_t size);
 char* sg_read(const char* path, size_t* size);
 

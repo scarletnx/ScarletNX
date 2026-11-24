@@ -218,17 +218,18 @@ int sg_extract(const char* roots_path, const char* out_path, const char* const* 
             while (i < e && isspace((unsigned char)roots[i])) ++i;
             w = word_at(roots, i, e);
             if (!w || (strcmp(word, "root") && strcmp(word, "stop") && strcmp(word, "lower") &&
-                       strcmp(word, "decoder") && strcmp(word, "fixup") && strcmp(word, "encode"))) {
+                       strcmp(word, "decoder") && strcmp(word, "fixup") && strcmp(word, "encode") &&
+                       strcmp(word, "keep"))) {
                 fprintf(stderr,
-                        "%s:%u: error: expected \"root NAME\", \"stop NAME\", \"lower NAME\", \"encode NAME\", "
-                        "\"fixup NAME\" or \"decoder NAME FAMILY...\", found \"%.*s\"\n",
+                        "%s:%u: error: expected \"root NAME\", \"keep NAME\", \"stop NAME\", \"lower NAME\", "
+                        "\"encode NAME\", \"fixup NAME\" or \"decoder NAME FAMILY...\", found \"%.*s\"\n",
                         roots_path, line_no, (int)(e - i + w), roots + i - w);
                 free(roots);
                 return 1;
             }
             if (word[0] == 'd' || word[0] == 'f')
                 ; /* the generator's */
-            else if (word[0] == 'r')
+            else if (word[0] == 'r' || word[0] == 'k') /* keep: a root of the copy alone, which --generate skips */
                 g_extract.roots[g_extract.root_count++] = sg_intern(roots + i, w);
             else if (word[0] == 'e')
                 g_extract.encodes[g_extract.encode_count++] = sg_intern(roots + i, w);

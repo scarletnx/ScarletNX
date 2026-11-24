@@ -158,6 +158,12 @@ typedef struct {
                   vectors, which the operations of general-purpose registers take out of it first (sgx_flat) */
 } SgD;
 
+/* values over 128 bits (two SIMD&FP registers concatenated, TBL's four, up to 512 bits): their doublewords, the lowest
+   first, an SgD's wide - 1 indexing them; a ring, as they live for an instruction's emission */
+#define SGX_MAXDW 8
+static _Thread_local SgD sgx_wtab[256][SGX_MAXDW];
+static _Thread_local unsigned sgx_nwtab;
+
 /* an integer known only when the guest runs: its value modulo 2^64 (v, an SgD of 64 bits: what gen.c's (x).v reads),
    or not made yet: the product of a and b (UMULH's, SMULH's high half), or x MOD 2^m (a shift's amount, which the
    shift's x86 form takes as it is: the selection proved its count mask is Arm's MOD datasize) */
@@ -165,6 +171,7 @@ enum { SGX_I_VAL, SGX_I_MUL, SGX_I_MOD };
 typedef struct {
     SgD v;
     int kind, is_signed;
+    int uint; /* UInt's value itself, 0 to 2^64 - 1: compared unsigned (sg_i_cmp) */
     unsigned w;
     SgD a, b;
     long long m;
@@ -576,8 +583,16 @@ static inline int sgx_xclear(SgX* x, int v, unsigned w);
 /* ---- dynamic bits ---- */
 
 static inline SgD sg_d_empty(unsigned w) { return sgx_const(w, 0); }
-static inline SgD sg_d_from_s(SgS s) { return sgx_const(s.w, s.v); }
-static inline SgD sg_d_fill(long long w, int one) { return sgx_const((unsigned)w, one ? ~0ull : 0); }
+static inline SgD sg_d_from_s(SgS s) {
+    SgD d = sgx_const(s.w, s.v);
+    d.kh = s.vh;
+    return d;
+}
+static inline SgD sg_d_fill(long long w, int one) {
+    SgD d = sgx_const((unsigned)w, one ? ~0ull : 0);
+    if (one && w > 64) d.kh = sg_ones((unsigned)w - 64);
+    return d;
+}
 static inline SgD sg_d_of_int(long long v, long long hi, long long lo) {
     return sgx_const((unsigned)(hi - lo + 1), (SnxU64)v >> lo);
 }
@@ -603,6 +618,72 @@ static inline SgD sgx_zext(SgX* x, SgD a, unsigned w) {
     return a;
 }
 
+/* ---- values over 64 bits as doublewords ---- */
+static inline unsigned sgx_ndw(unsigned w) { return (w + 63) / 64; }
+static inline SgD sgx_half(SgD d, int k);
+static inline SgD sg_d_or(SgCtx* g, SgD a, SgD b);
+static inline SgD sg_d_lsl(SgCtx* g, SgD a, long long n);
+static inline SgD sg_d_lsr(SgCtx* g, SgD a, long long n);
+static inline SgD sg_d_not(SgCtx* g, SgD a);
+static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w);
+static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo);
+/* a's doublewords, the lowest first, each 64 bits wide and the last zero above a's bits */
+static inline void sgx_dws(SgCtx* g, SgD a, SgD* out) {
+    unsigned n = sgx_ndw(a.w), k;
+    sgx_flat(sgx(g), &a);
+    if (a.wide) {
+        int inv = a.inv;
+        memcpy(out, sgx_wtab[a.wide - 1], n * sizeof *out);
+        if (inv) {
+            for (k = 0; k < n; ++k) out[k] = sg_d_not(g, out[k]);
+            if (a.w % 64) out[n - 1] = sg_d_zext(g, sg_d_slice(g, out[n - 1], a.w % 64 - 1, 0), 64);
+        }
+        return;
+    }
+    if (a.w <= 64) {
+        out[0] = sg_d_zext(g, a, 64);
+        return;
+    }
+    out[0] = sgx_half(a, 0);
+    out[1] = sg_d_zext(g, sgx_half(a, 1), 64);
+}
+/* the 64 bits of the doublewords dw (n of them) from bit pos (negative or past them: zeros) */
+static inline SgD sgx_dw_at(SgCtx* g, const SgD* dw, unsigned n, long long pos) {
+    long long q = pos >= 0 ? pos / 64 : -((-pos + 63) / 64), r = pos - 64 * q;
+    SgD lo = q >= 0 && q < (long long)n ? dw[q] : sgx_const(64, 0);
+    SgD hi = q + 1 >= 0 && q + 1 < (long long)n ? dw[q + 1] : sgx_const(64, 0);
+    if (!r) return lo;
+    return sg_d_or(g, sg_d_lsr(g, lo, r), sg_d_lsl(g, hi, 64 - r));
+}
+/* a value of w bits from its doublewords (the last's bits past w ignored) */
+static inline SgD sgx_of_dws(SgCtx* g, unsigned w, SgD* dw) {
+    unsigned n = sgx_ndw(w);
+    SgD r;
+    if (w % 64) dw[n - 1] = sg_d_zext(g, sg_d_slice(g, dw[n - 1], w % 64 - 1, 0), 64);
+    if (w <= 64) {
+        r = sg_d_slice(g, dw[0], w - 1, 0);
+        return r;
+    }
+    memset(&r, 0, sizeof r);
+    r.w = w;
+    if (w <= 128) {
+        SgD lo = dw[0], hi = dw[1];
+        if (sgx_is_const(&lo)) r.k = lo.k;
+        else
+            r.v = sgx_reg(sgx(g), &lo);
+        if (sgx_is_const(&hi)) r.kh = hi.k;
+        else
+            r.vh = sgx_reg(sgx(g), &hi);
+        return r;
+    }
+    {
+        unsigned slot = sgx_nwtab++ % 256;
+        memcpy(sgx_wtab[slot], dw, n * sizeof *dw);
+        r.wide = (int)slot + 1;
+        return r;
+    }
+}
+
 static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
     if (a.x && a.w <= 64 && w > 64) return sgx_xval((unsigned)w, sgx_xclear(sgx(g), a.x, a.w));
     if (a.x && a.w > 64) {
@@ -611,9 +692,17 @@ static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
     }
     sgx_flat(sgx(g), &a);
     if (a.w == (unsigned)w) return a;
+    if (w > 128 || a.wide || (a.w > 64 && a.inv)) {
+        /* over 128 bits: its doublewords and zeros */
+        SgD d[SGX_MAXDW];
+        unsigned k;
+        if (w > 64 * SGX_MAXDW) sg_fail("an extension past 512 bits", a.w, w);
+        sgx_dws(g, a, d);
+        for (k = sgx_ndw(a.w); k < sgx_ndw((unsigned)w); ++k) d[k] = sgx_const(64, 0);
+        return sgx_of_dws(g, (unsigned)w, d);
+    }
     if (a.w > 64) {
         /* past 64 bits already: its high part's bits above it are 0, as a register's or a constant's are */
-        if (a.wide || a.inv) sg_fail("an extension of a value past 64 bits this back end doesn't make", a.w, w);
         a.w = (unsigned)w;
         return a;
     }
@@ -628,17 +717,27 @@ static inline SgD sg_d_zext(SgCtx* g, SgD a, long long w) {
     return sgx_zext(sgx(g), a, (unsigned)w);
 }
 
+static inline SgD sgx_shift_i(SgCtx* g, int kind, SgD a, long long n);
+static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l);
+static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo);
 static inline SgD sg_d_sext(SgCtx* g, SgD a, long long w) {
     sgx_flat(sgx(g), &a);
 
     SgX* x = sgx(g);
     unsigned aw = a.w;
+    if (w > 64 && aw != (unsigned)w) {
+        /* past a doubleword: the low one a's sign extended (or a's own), the high part its sign's copies (or a's
+           high part sign extended) */
+        SgD lo = aw <= 64 ? sg_d_sext(g, a, 64) : sg_d_slice(g, a, 63, 0);
+        SgD hi = aw <= 64 ? sg_d_slice(g, sgx_shift_i(g, 2, lo, 63), (long long)w - 65, 0)
+                          : sg_d_sext(g, sg_d_slice(g, a, aw - 1, 64), w - 64);
+        return sg_d_concat(g, hi, lo);
+    }
     if (sgx_is_const(&a)) {
         SnxU64 k = a.k;
         if (aw < 64 && (k >> (aw - 1)) & 1) k |= ~sg_ones(aw);
         return sgx_const((unsigned)w, k);
     }
-    if (w > 64) sg_fail("a sign extension past 64 bits", w, 64);
     if (aw == (unsigned)w) return a;
     if (aw == 8) a = w <= 32 ? SGX_OP(x, sext8, 32, a) : SGX_OP(x, sext8, 64, a);
     else if (aw == 16)
@@ -669,17 +768,13 @@ static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
         sgx_flat(x, &a);
     }
     if (a.w > 64) {
-        SgD l = a.v ? sgx_val(64, a.v) : sgx_const(64, a.k), h = a.vh ? sgx_val(a.w - 64, a.vh) : sgx_const(a.w - 64, a.kh);
-        if (lo >= 64) return sg_d_slice(g, h, hi - 64, lo - 64);
-        if (hi < 64) return sg_d_slice(g, l, hi, lo);
-        /* across the two: the low part's high bits and the high part's low ones (EXTR) */
-        {
-            SgD a1 = sg_d_slice(g, l, 63, lo), b1 = sg_d_zext(g, sg_d_slice(g, h, hi - 64, 0), 64);
-            SgD sh = SGX_OP(x, lsl_i, 64, b1, sgx_const(6, (SnxU64)(64 - lo)));
-            SgD r = SGX_OP(x, or, 64, sg_d_zext(g, a1, 64), sh);
-            r.w = w;
-            return r;
-        }
+        /* each doubleword of the slice: the source's 64 bits from there, the last cut to the slice's width */
+        SgD in[SGX_MAXDW], out[SGX_MAXDW];
+        unsigned j;
+        if (lo == 0 && (unsigned)hi + 1 == a.w) return a;
+        sgx_dws(g, a, in);
+        for (j = 0; j < sgx_ndw(w); ++j) out[j] = sgx_dw_at(g, in, sgx_ndw(a.w), lo + 64ll * j);
+        return sgx_of_dws(g, w, out);
     }
     if (a.nzcv) {
         /* a flag of NZCV not made yet (bit 3 N, 2 Z, 1 C, 0 V): its condition code */
@@ -700,6 +795,8 @@ static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
     return a;
 }
 
+static inline SgD sg_d_or(SgCtx* g, SgD a, SgD b);
+static inline SgD sg_d_lsl(SgCtx* g, SgD a, long long n);
 static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
     SgX* x = sgx(g);
     unsigned w = h.w + l.w;
@@ -713,22 +810,16 @@ static inline SgD sg_d_concat(SgCtx* g, SgD h, SgD l) {
     sgx_flat(x, &h);
     sgx_flat(x, &l);
     if (w > 64) {
-        SgD r;
-        if (l.w != 64) {
-            memset(&r, 0, sizeof r);
-            r.w = w;
-            r.wide = 1;
-            return r;
-        }
-        memset(&r, 0, sizeof r);
-        r.w = w;
-        if (sgx_is_const(&l)) r.k = l.k;
-        else
-            r.v = sgx_reg(x, &l);
-        if (sgx_is_const(&h)) r.kh = h.k;
-        else
-            r.vh = sgx_reg(x, &h);
-        return r;
+        /* each doubleword of the result: l's there, ORed with h's shifted up past l */
+        SgD hd[SGX_MAXDW], ld[SGX_MAXDW], out[SGX_MAXDW];
+        unsigned j;
+        if (w > 64 * SGX_MAXDW) sg_fail("a concatenation over 512 bits", h.w, l.w);
+        sgx_dws(g, h, hd);
+        sgx_dws(g, l, ld);
+        for (j = 0; j < sgx_ndw(w); ++j)
+            out[j] = sg_d_or(g, sgx_dw_at(g, ld, sgx_ndw(l.w), 64ll * j),
+                             sgx_dw_at(g, hd, sgx_ndw(h.w), 64ll * j - (long long)l.w));
+        return sgx_of_dws(g, w, out);
     }
     if (sgx_is_const(&h) && sgx_is_const(&l)) return sgx_const(w, h.k << l.w | l.k);
     if (sgx_is_const(&h) && !h.k) return sg_d_zext(g, l, w);
@@ -777,9 +868,14 @@ static inline SgD sgx_logic(SgCtx* g, int op, SgD a, SgD b) {
 
     SgX* x = sgx(g);
     unsigned w = a.w, pw = sgx_width(w);
-    if (a.w > 64) /* each doubleword's own */
-        return sg_d_concat(g, sgx_logic(g, op, sgx_half(a, 1), sgx_half(b, 1)),
-                           sgx_logic(g, op, sgx_half(a, 0), sgx_half(b, 0)));
+    if (a.w > 64) { /* each doubleword's own */
+        SgD ad[SGX_MAXDW], bd[SGX_MAXDW];
+        unsigned k;
+        sgx_dws(g, a, ad);
+        sgx_dws(g, b, bd);
+        for (k = 0; k < sgx_ndw(a.w); ++k) ad[k] = sgx_logic(g, op, ad[k], bd[k]);
+        return sgx_of_dws(g, a.w, ad);
+    }
     if (sgx_is_const(&a) && sgx_is_const(&b))
         return sgx_const(w, op == 0 ? a.k & b.k : op == 1 ? a.k | b.k : a.k ^ b.k);
     if (sgx_is_const(&a)) {
@@ -916,6 +1012,25 @@ static inline SgD sgx_shift_i(SgCtx* g, int kind, SgD a, long long n) {
     unsigned w = a.w, pw = sgx_width(w);
     SgD r;
     if (!n) return a;
+    if (kind != 3 && n >= (long long)w && w <= 64) {
+        /* by the width or more (SRI's mask of LSR(Ones(esize), esize)): zeros, or the sign's copies */
+        if (kind != 2) return sgx_const(w, 0);
+        n = w - 1;
+    }
+    if (w > 64 && kind != 3) {
+        /* over a doubleword: as slices of it, the bits shifted in zeros (or the sign's, ASR) */
+        if (n >= (long long)w) {
+            if (kind != 2) return sgx_const(w, 0) ;
+            n = w - 1;
+        }
+        if (kind == 0)
+            return sg_d_concat(g, sg_d_slice(g, a, w - 1 - n, 0), sgx_const((unsigned)n, 0));
+        {
+            SgD top = sg_d_slice(g, a, w - 1, n);
+            if (kind == 1) return sg_d_zext(g, top, w);
+            return sg_d_sext(g, top, w);
+        }
+    }
     if (sgx_is_const(&a)) {
         SnxU64 k = a.k, m = sg_ones(w);
         if (kind == 0) return sgx_const(w, n >= 64 ? 0 : k << n);
@@ -980,6 +1095,14 @@ static inline void sg_d_set_slice(SgCtx* g, SgD* a, long long hi, long long lo, 
     sgx_flat(sgx(g), &v);
     w = a->w;
     n = (unsigned)(hi - lo + 1);
+    if (w > 64) {
+        /* over a doubleword: its bits above the slice, the slice's n bits of v, and its bits below, concatenated */
+        SgD mid = v.w > n ? sg_d_slice(g, v, n - 1, 0) : sg_d_zext(g, v, n);
+        SgD low = lo ? sg_d_slice(g, *a, lo - 1, 0) : sgx_const(0, 0);
+        SgD high = (unsigned)hi + 1 < w ? sg_d_slice(g, *a, w - 1, hi + 1) : sgx_const(0, 0);
+        *a = sg_d_concat(g, high, sg_d_concat(g, mid, low));
+        return;
+    }
     SnxU64 mask = sg_ones(n) << lo;
     SgD keep = sg_d_and(g, *a, sgx_const(w, ~mask));
     SgD put = sg_d_lsl(g, sg_d_zext(g, v, w), lo);
@@ -1225,7 +1348,14 @@ static inline SgD sg_d_select(SgCtx* g, SgB c, SgD a, SgD b) {
     SgD in[3];
     int from, cc, r;
     if (cb.kind == SGX_B_CONST) return cb.v ? a : b;
-    if (w > 64) sg_fail("a choice of bits past 64", w, 64);
+    if (w > 64) { /* each doubleword's choice */
+        SgD ad[SGX_MAXDW], bd[SGX_MAXDW];
+        unsigned k;
+        sgx_dws(g, a, ad);
+        sgx_dws(g, b, bd);
+        for (k = 0; k < sgx_ndw(w); ++k) ad[k] = sg_d_select(g, c, ad[k], bd[k]);
+        return sgx_of_dws(g, w, ad);
+    }
     sgx_reg(x, &a);
     sgx_reg(x, &b);
     cc = sgx_bool_cc(x, c, &from);
@@ -1325,7 +1455,11 @@ static inline SgI sgx_int(SgD v, int is_signed) {
     i.w = v.w;
     return i;
 }
-static inline SgI sg_i_uint(SgCtx* g, SgD x) { return sgx_int(sg_d_zext(g, x, 64), 0); }
+static inline SgI sg_i_uint(SgCtx* g, SgD x) {
+    SgI i = sgx_int(sg_d_zext(g, x, 64), 0);
+    i.uint = 1;
+    return i;
+}
 static inline SgI sg_i_sint(SgCtx* g, SgD x) { return sgx_int(sg_d_sext(g, x, 64), 1); }
 static inline SgI sg_i_const(SgCtx* g, long long v) {
     (void)g;
@@ -1419,6 +1553,11 @@ static inline SgI sg_i_clz(SgCtx* g, SgD a) {
 
     SgX* x = sgx(g);
     unsigned w = a.w;
+    if (w < 32) {
+        /* an element's (CLZ (vector)): of it zero extended to 32 bits, less the 32 - w zeros above it */
+        SgI r = sg_i_clz(g, sg_d_zext(g, a, 32));
+        return sgx_int(sg_d_sub(g, r.v, sgx_const(64, 32 - w)), 0);
+    }
     if (w != 32 && w != 64) sg_fail("CLZ of a value not of 32 or 64 bits", w, 0);
     if (!sgx_pick(x, SGX_TABLE(clz, w), SGX_TABLE_N(clz, w), 0, w, 0)) return sgx_int(sg_d_zext(g, sgx_clz_search(g, a), 64), 0);
     return sgx_int(sg_d_zext(g, SGX_OP(x, clz, w, a), 64), 0);
@@ -2650,16 +2789,34 @@ static inline SgI sg_i_select(SgCtx* g, SgB c, SgI a, SgI b) {
     return sgx_int(sg_d_select(g, c, av, bv), s);
 }
 
+/* the sum of x's elements of size bits, modulo 2^size (gen.c's halves, ADDV's Reduce, on a machine whose back end has
+   no lanes: the elements added one after another) */
+static inline SgD sg_d_reduce_add(SgCtx* g, SgD x, unsigned size) {
+    SgD sum = sg_d_slice(g, x, size - 1, 0);
+    unsigned k;
+    if (!size || x.w % size) sg_fail("a sum of elements that don't divide their bits", x.w, size);
+    for (k = size; k < x.w; k += size) {
+        SgD e = sg_d_slice(g, x, k + size - 1, k);
+        unsigned pw = sgx_width(size);
+        sum = SGX_OP(sgx(g), add, pw, sg_d_zext(g, sum, pw), sg_d_zext(g, e, pw));
+        sum.w = size;
+    }
+    return sum;
+}
+
 /* ---- AArch32's builtins (core.h's, for LLVM) ---- */
 
 /* IsZeroBit: '1' where x is zero */
 static inline SgD sg_d_is_zero_bit(SgCtx* g, SgD x) { return sgx_bool_bits(sgx(g), sg_d_is_zero(g, x)); }
 
 /* a == b, !=, <, <=, > and >= (op 0 to 5) of integers known only at run time: their values modulo 2^64 compared as
-   signed, which is exact for what AArch32's decode compares (UInt and SInt of 32 bits at most, and their sums); a
-   product, which may not be, is left to another back end */
+   signed, which is exact for what AArch32's decode compares (UInt and SInt of 32 bits at most, and their sums), or as
+   unsigned where both are UInt's (or one a constant from 0 to 2^63 - 1: CMHS's elements of 64 bits); a product,
+   which may not be exact, is left to another back end */
 static inline SgB sg_i_cmp(SgCtx* g, int op, SgI a, SgI b) {
-    static const int cond[6] = {SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_LT, SGX_ARM_LE, SGX_ARM_GT, SGX_ARM_GE};
+    static const int scond[6] = {SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_LT, SGX_ARM_LE, SGX_ARM_GT, SGX_ARM_GE};
+    static const int ucond[6] = {SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_CC, SGX_ARM_LS, SGX_ARM_HI, SGX_ARM_CS};
+    const int* cond = scond;
     static const int mirror[6] = {0, 1, 4, 5, 2, 3}; /* a op b is b mirror[op] a */
     SgX* x = sgx(g);
     if (op < 0 || op > 5) sg_fail("a comparison of integers it does not know", op, 5);
@@ -2667,9 +2824,15 @@ static inline SgB sg_i_cmp(SgCtx* g, int op, SgI a, SgI b) {
     SgD av = sgx_i_val(g, &a), bv = sgx_i_val(g, &b);
     sgx_flat(x, &av);
     sgx_flat(x, &bv);
+    if ((a.uint || (sgx_is_const(&av) && (long long)av.k >= 0)) && (b.uint || (sgx_is_const(&bv) && (long long)bv.k >= 0)) &&
+        (a.uint || b.uint))
+        cond = ucond;
     if (sgx_is_const(&av) && sgx_is_const(&bv)) {
         long long p = (long long)av.k, q = (long long)bv.k;
-        int r = op == 0 ? p == q : op == 1 ? p != q : op == 2 ? p < q : op == 3 ? p <= q : op == 4 ? p > q : p >= q;
+        SnxU64 up = av.k, uq = bv.k;
+        int r = cond == ucond
+                    ? (op == 0 ? up == uq : op == 1 ? up != uq : op == 2 ? up < uq : op == 3 ? up <= uq : op == 4 ? up > uq : up >= uq)
+                    : (op == 0 ? p == q : op == 1 ? p != q : op == 2 ? p < q : op == 3 ? p <= q : op == 4 ? p > q : p >= q);
         return sgx_bool(x, SGX_B_CONST, r, 0);
     }
     if (sgx_is_const(&av)) {
