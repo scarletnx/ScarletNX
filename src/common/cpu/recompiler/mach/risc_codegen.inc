@@ -116,7 +116,7 @@ static void call_sym(Unit* u, const char* sym, int tail) {
     pins(u, 1);
     mov_state_arg(u);
     if (tail) epilogue(u);
-    reloc(u, u->b.n, sym, tail ? MG_R_TAIL : MG_R_CALL, 0);
+    reloc(u, u->b.n + (tail ? RK_TAIL_LIT_AT : RK_CALL_LIT_AT), sym, tail ? MG_R_TAIL : MG_R_CALL, 0);
     if (tail) rk_tail_reloc(&u->b);
     else {
         rk_call_reloc(&u->b);
@@ -159,7 +159,7 @@ static void poll_then(Unit* u, SnxU64 resume) {
     epilogue(u);
     rk_li(&u->b, SGX_FN_TARGET, resume);
     fname(sym, sizeof sym, "F_", u->f->start);
-    reloc(u, u->b.n, sym, MG_R_TAIL, 0);
+    reloc(u, u->b.n + RK_TAIL_LIT_AT, sym, MG_R_TAIL, 0);
     rk_tail_reloc(&u->b);
     bind(u, run);
 }

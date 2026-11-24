@@ -7,13 +7,15 @@
    arguments and puts its result in the ABI's result register (two of them for a native of 128 bits). An ELF
    relocatable object of the architecture (the back end's) is loaded into the code region, its relocations written by
    the recompiler's own snx_elf_relocate, an undefined symbol a trap of the native function registered under its name.
-   A little-endian architecture alone: the code and the test's C read the same structures */
+   A little-endian architecture alone: the code and the test's C read the same structures. PowerPC64 runs as POWER9
+   in 64-bit, hypervisor and little-endian mode (MSR), which Unicorn 2.1.4 needs patching for (its PPC64 models and
+   MSR's HV): hostuc_new gives NULL where the MSR it set doesn't hold */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { HOSTUC_ARM64, HOSTUC_RV64 } HostUcArch;
+typedef enum { HOSTUC_ARM64, HOSTUC_RV64, HOSTUC_PPC64LE } HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap);
