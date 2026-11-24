@@ -595,7 +595,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     snprintf(text, size, "%s", page == PAGE_PADS ? PADS[i] : CONTROLS[i]);
     if ((page == PAGE_CONTROLS && i == C_BUTTONS) || (page == PAGE_PADS && i == P_MAP)) snprintf(value, vsize, ">");
 }
-/* ---- the button map page: NieR's CONTROLS, pad_screen.c's layout over the picture ---- */
+/* ---- the button map page: CONTROLS, pad_screen.c's layout over the picture ---- */
 static SnxPadScreen map;
 static SnxPadDrawing map_drawing; /* as last drawn: what a tap lands on */
 static int map_swallow;           /* the press the page took: no menu key */

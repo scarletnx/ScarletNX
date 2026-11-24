@@ -1882,9 +1882,9 @@ int main(void) {
     pad_names[0] = pad_names[2];
     draw();
     assert(text_at(1, 1, "A controller with a very lo and 2 more"));
-    /* Button map: NieR's CONTROLS over the picture, no presets, the first control focused; its button changed (the map
-       the player's from then on), a press on the pad while waiting swapping two, that press no menu key; Back goes up
-       to its item */
+    /* Button map: the CONTROLS page over the picture, no presets, the first control focused; its button changed (the
+       map the player's from then on), a press on the pad while waiting swapping two, that press no menu key; Back goes
+       up to its item */
     pad_names[0] = "Xbox Wireless Controller";
     pad_names[1] = pad_names[2] = NULL;
     pad_of_player[0] = 0;

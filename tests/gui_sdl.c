@@ -14153,7 +14153,7 @@ int main(int argc, char** argv) {
         render(&app);
         page = rgb(app.theme.page);
         ink = rgb(app.theme.ink);
-        shows_big(&app, "SCARLETNX  /  MENU", ink, 2);        /* its head plain, as NieR's titles */
+        shows_big(&app, "SCARLETNX  /  MENU", ink, 2);        /* its head plain, as that theme's titles */
         shows(&app, "\xfe " ICON_SETTINGS " Settings", page); /* the focused box on a band */
         shows(&app, "\xfe " ICON_LOG_OUT " Exit", ink);
         shows_half(&app, "Working folder: ", ink);
