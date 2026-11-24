@@ -1919,7 +1919,6 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     *object = NULL;
     *size = 0;
     memset(made, 0, last - first);
-    if (codegen->hook_direct_calls) return 0; /* every call through the table: another back end's */
     memset(&u, 0, sizeof u);
     u.g = (SgCtx*)calloc(1, sizeof *u.g);
     if (!u.g) {
