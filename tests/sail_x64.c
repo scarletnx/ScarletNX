@@ -569,7 +569,7 @@ static size_t check_fp_guards(void) {
    words' one by one. With every register, with three, with six vector ones (a guard's value in a spill slot) and
    with three and six (a general-purpose value has no vector register to spill to) */
 static size_t check_fp_rows(void) {
-    enum { WORDS = 12, STATES = 400 };
+    enum { WORDS = 16, STATES = 400 };
     static const struct {
         const char* text;
         u32 words[WORDS];
@@ -586,6 +586,9 @@ static size_t check_fp_rows(void) {
         {"more vector values than a small pool",
          {0x1E220820u, 0x1E650883u, 0x1E6808E7u, 0x1E2B090Au, 0x1F021C26u, 0x1E223843u, 0x1E6A48C9u, 0x1E224841u,
           0x1E6828C5u, 0x1E202928u, 0x1E28082Bu, 0x1E2A6821u}},
+        {"a double's low half rounded where it is spilled",
+         {0x1E610810u, 0x1E630851u, 0x1E250892u, 0x1E2708D3u, 0x1E290914u, 0x1E2B0955u, 0x1E2D0996u, 0x1E254218u,
+          0x1E274239u, 0x1E332A5Au, 0x1E352A9Bu, 0x1E302ADCu, 0x1E322A3Du, 0x1E25427Eu}},
         {"each kind", {0x1E222020u, 0x1E224823u, 0x1E380020u, 0x1E6540A4u, 0x1E22C066u, 0x1E21C067u, 0x1E665888u}},
     };
     static const u64 values[] = {0,
