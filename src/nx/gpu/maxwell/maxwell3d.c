@@ -74,8 +74,14 @@ static int watched_in(u64 gva, u64 n, int all) {
 /* Each watched granule's newest write (gpu_mem_granules_generation): a texture asks its own granules, so a write on
    another granule leaves it as it was. Leaves of 4096 granules (8 GiB), made by gpu_mem_watch under g_wlk and never
    freed. A write's granules are noted while it is stamped and their generations stored once it is published; past
-   WHITS of them, or at the tables' overflow, every granule reads as written then (g_wgran_all) */
-#define WGRAN_LEAF 4096u
+   WHITS of them, or at the tables' overflow, every granule reads as written then (g_wgran_all).
+
+   After a leaf's granules, a block's newest write for each WGRAN_BLOCK granules (128 MiB), stored with the granule's:
+   generations only grow, so it is the newest of its granules. A read takes a block whole where the range covers it.
+   One game's streamed arrays of 1.4 to 5.8 GB read 700 to 2,900 granules at each check of each, 3% of the renderer
+   thread */
+#define WGRAN_LEAF  4096u
+#define WGRAN_BLOCK 64u
 static _Atomic u64* _Atomic g_wgran[WW_BITS / WGRAN_LEAF]; /* atomic pointers, made under g_wlk */
 static _Atomic u64 g_wgran_all;                            /* atomic, stored under g_wlk */
 #define WHITS 16u
@@ -119,7 +125,9 @@ static void publish(u64 gen, int kind) {
     else
         for (u32 i = 0; i < g_nhits; i++) {
             _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g_whits[i] / WGRAN_LEAF], memory_order_relaxed);
-            if (leaf) atomic_store_explicit(&leaf[g_whits[i] % WGRAN_LEAF], gen, memory_order_release);
+            if (!leaf) continue;
+            atomic_store_explicit(&leaf[g_whits[i] % WGRAN_LEAF], gen, memory_order_release);
+            atomic_store_explicit(&leaf[WGRAN_LEAF + g_whits[i] % WGRAN_LEAF / WGRAN_BLOCK], gen, memory_order_release);
         }
     g_nhits = 0;
     g_whits_over = 0;
@@ -267,7 +275,7 @@ int gpu_mem_watch(u64 gva, u64 size) {
     for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e && made; g++) {
         _Atomic u64* _Atomic* slot = &g_wgran[g / WGRAN_LEAF];
         if (!atomic_load_explicit(&(*slot), memory_order_relaxed)) {
-            _Atomic u64* leaf = calloc(WGRAN_LEAF, sizeof *leaf);
+            _Atomic u64* leaf = calloc(WGRAN_LEAF + WGRAN_LEAF / WGRAN_BLOCK, sizeof *leaf); /* granules, blocks */
             if (leaf) atomic_store_explicit(slot, leaf, memory_order_release);
             made = leaf != NULL;
         }
@@ -280,11 +288,19 @@ int gpu_mem_watch(u64 gva, u64 size) {
 u64 gpu_mem_granules_generation(u64 gva, u64 size) {
     u64 newest = atomic_load_explicit(&g_wgran_all, memory_order_acquire);
     if (!size || gva + size - 1 < gva || (gva + size - 1) >> WW_SHIFT >= WW_BITS) return ~(u64)0;
-    for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e; g++) {
+    for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e;) {
         const _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g / WGRAN_LEAF], memory_order_acquire);
         if (!leaf) return ~(u64)0; /* not watched: no answer */
-        u64 gen = atomic_load_explicit(&leaf[g % WGRAN_LEAF], memory_order_acquire);
+        u64 gen, next;
+        if (g % WGRAN_BLOCK == 0 && e - g + 1 >= WGRAN_BLOCK) { /* a whole block */
+            gen = atomic_load_explicit(&leaf[WGRAN_LEAF + g % WGRAN_LEAF / WGRAN_BLOCK], memory_order_acquire);
+            next = g + WGRAN_BLOCK;
+        } else {
+            gen = atomic_load_explicit(&leaf[g % WGRAN_LEAF], memory_order_acquire);
+            next = g + 1;
+        }
         if (gen > newest) newest = gen;
+        g = next;
     }
     return newest;
 }
