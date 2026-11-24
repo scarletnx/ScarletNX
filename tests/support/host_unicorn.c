@@ -33,6 +33,10 @@ static const Arch g_arch[] = {
                      {UC_RISCV_REG_A0, UC_RISCV_REG_A1, UC_RISCV_REG_A2, UC_RISCV_REG_A3, UC_RISCV_REG_A4,
                       UC_RISCV_REG_A5},
                      {UC_RISCV_REG_A0, UC_RISCV_REG_A1}, UC_RISCV_REG_SP, UC_RISCV_REG_RA, UC_RISCV_REG_PC},
+    [HOSTUC_PPC64LE] = {"ppc64le", UC_ARCH_PPC, UC_MODE_PPC64 | UC_MODE_BIG_ENDIAN, UC_CPU_PPC64_POWER9_V2_0, EM_PPC64,
+                        0x4E800020u, /* blr */
+                        {UC_PPC_REG_3, UC_PPC_REG_4, UC_PPC_REG_5, UC_PPC_REG_6, UC_PPC_REG_7, UC_PPC_REG_8},
+                        {UC_PPC_REG_3, UC_PPC_REG_4}, UC_PPC_REG_1, UC_PPC_REG_LR, UC_PPC_REG_PC},
 };
 
 typedef struct {
@@ -104,6 +108,18 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
         return NULL;
     }
     uc_ctl_set_cpu_model(u->uc, u->a->cpu);
+    if (arch == HOSTUC_PPC64LE) {
+        /* 64-bit (SF), the hypervisor's real mode (HV: every address its own), little-endian (LE) */
+        uint64_t msr = 1ull << 63 | 1ull << 60 | 1, got = 0;
+        uc_reg_write(u->uc, UC_PPC_REG_MSR, &msr);
+        uc_reg_read(u->uc, UC_PPC_REG_MSR, &got);
+        if (got != msr) {
+            fprintf(stderr, "ppc64le unicorn: MSR %llx doesn't hold (an unpatched Unicorn 2.1.4)\n", (unsigned long long)msr);
+            uc_close(u->uc);
+            free(u);
+            return NULL;
+        }
+    }
     u->code = (unsigned char*)page_alloc(code_cap + PAGE);
     u->stack = (unsigned char*)page_alloc(STACK_SIZE);
     if (!u->code || !u->stack || hostuc_map(u, u->code, code_cap + PAGE) || hostuc_map(u, u->stack, STACK_SIZE)) {
@@ -255,6 +271,7 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     uc_reg_write(u->uc, u->a->args[1], &a1);
     uc_reg_write(u->uc, u->a->sp, &sp);
     uc_reg_write(u->uc, u->a->lr, &lr);
+    if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
     e = uc_emu_start(u->uc, fn, lr, 0, 1u << 22);
     if (e != UC_ERR_OK) {
         uint64_t pc;

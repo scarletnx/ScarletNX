@@ -200,6 +200,8 @@ static inline int rk_patch(SgXBuf* b, size_t at, size_t to) {
 static inline void rk_call_reg(SgXBuf* b, int r) { rv_w(b, sge_rv64_jalr(RV_RA, (SnxU32)r, 0)); }
 static inline void rk_ret(SgXBuf* b) { rv_w(b, sge_rv64_jalr(RV_ZERO, RV_RA, 0)); }
 /* a call by the object's relocation (R_RISCV_CALL_PLT: AUIPC and JALR of ra, the relocation at the AUIPC) */
+#define RK_CALL_LIT_AT 0 /* the relocation's place in rk_call_reloc's and rk_tail_reloc's sequences */
+#define RK_TAIL_LIT_AT 0
 static inline void rk_call_reloc(SgXBuf* b) {
     rv_w(b, sge_rv64_auipc(RV_RA, 0));
     rv_w(b, sge_rv64_jalr(RV_RA, RV_RA, 0));

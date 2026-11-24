@@ -82,7 +82,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_CALL:
             rk_mv(b, sgx_arg_regs[0], SGX_BASE);
             if (a->reloc) {
-                a->reloc(a->machine, b->n, i->sym, 0);
+                a->reloc(a->machine, b->n + RK_CALL_LIT_AT, i->sym, 0);
                 rk_call_reloc(b);
             } else {
                 SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
