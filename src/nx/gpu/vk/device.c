@@ -31,6 +31,7 @@
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
+#include "common/platform/thread.h"
 #include "common/platform/time.h"
 
 int g_vk_preserve_infnan;
@@ -168,7 +169,7 @@ void vk_share_lock(void) {
     int waited = 0;
     while (atomic_exchange_explicit(&g_share_taken, 1, memory_order_acquire)) {
         waited = 1;
-        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) __builtin_ia32_pause();
+        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) plat_spin_hint();
     }
     t_share_at = timed ? __builtin_readcyclecounter() : 0;
     typeof(g_share_stats[0])* const st = &g_share_stats[vk_render_slot() != 0];

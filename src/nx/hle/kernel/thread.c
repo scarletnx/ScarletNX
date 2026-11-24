@@ -189,14 +189,6 @@ static void core_queue_nl(KThread* t, int k) {
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
 }
-/* a hint to the host CPU that this thread spins: it gives the other hardware thread of the core its share */
-static void spin_hint(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __builtin_arm_yield();
-#endif
-}
 /* the calling thread t, lined up for a core, waits without the lock until it is handed one. It watches its own word
    for CORE_SPIN_NS first, so a handoff within that costs no sleep and no wake: one game's handoffs took 150 us on
    average with its cores held half the time while threads waited for them, and 125 us with the watch. Watching
@@ -209,7 +201,7 @@ static void core_await(KThread* t) {
         for (u32 i = 1;; i++) {
             if (atomic_load_explicit(&t->on_core, memory_order_acquire) != -2) return;
             if (!(i & 31) && plat_ns() >= until) break;
-            spin_hint();
+            plat_spin_hint();
         }
     }
     for (;;) {

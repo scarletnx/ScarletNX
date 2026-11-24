@@ -39,13 +39,6 @@ static struct {
     u64 kicks, cancels; /* the renderer thread's */
 } g_prep;
 
-static void spin_hint(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __builtin_arm_yield();
-#endif
-}
 static void prep_thread(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("GPU draw prep");
@@ -56,7 +49,7 @@ static void prep_thread(void* arg) {
             if (atomic_compare_exchange_weak_explicit(&g_prep.state, &want, PREP_TAKEN, memory_order_acquire,
                                                       memory_order_relaxed))
                 break;
-            spin_hint();
+            plat_spin_hint();
             if (spins & 255) continue;
             u64 now = plat_ns();
             if (!since) since = now;
@@ -210,7 +203,7 @@ int vk_prep_join(void) {
         return 0; /* not taken yet: back to the renderer thread */
     }
     const u64 t0 = __builtin_readcyclecounter();
-    while (atomic_load_explicit(&g_prep.state, memory_order_acquire) != PREP_DONE) spin_hint();
+    while (atomic_load_explicit(&g_prep.state, memory_order_acquire) != PREP_DONE) plat_spin_hint();
     g_prep.join_wait += __builtin_readcyclecounter() - t0;
     g_prep.joined++;
     atomic_store_explicit(&g_prep.state, PREP_IDLE, memory_order_relaxed);
@@ -227,7 +220,7 @@ void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait) {
 }
 void vk_prep_join_wait(void) {
     const u64 t0 = __builtin_readcyclecounter();
-    while (atomic_load_explicit(&g_prep.state, memory_order_acquire) != PREP_DONE) spin_hint();
+    while (atomic_load_explicit(&g_prep.state, memory_order_acquire) != PREP_DONE) plat_spin_hint();
     g_prep.join_wait += __builtin_readcyclecounter() - t0;
     g_prep.joined++;
     atomic_store_explicit(&g_prep.state, PREP_IDLE, memory_order_relaxed);
