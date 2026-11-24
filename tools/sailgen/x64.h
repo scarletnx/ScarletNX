@@ -70,12 +70,10 @@ static inline void sgx_enc_lea(SgXBuf* b, const unsigned char* r, long long imm,
     sgx_byte(b, (unsigned char)(0x40 | (w64 ? 8 : 0) | (d >> 3) << 2 | (index > 0 ? (index >> 3) << 1 : 0) | (base >> 3)));
     sgx_byte(b, 0x8D);
     if (index >= 0) {
-        int mod = imm ? 2 : (base & 7) == 5 ? 1 : 0;
+        int mod = imm < -128 || imm > 127 ? 2 : imm || (base & 7) == 5 ? 1 : 0;
         sgx_byte(b, (unsigned char)(mod << 6 | (d & 7) << 3 | 4));
         sgx_byte(b, (unsigned char)((index & 7) << 3 | (base & 7)));
-        if (mod == 1) sgx_byte(b, 0);
-        else if (mod == 2)
-            sgx_imm(b, imm, 4);
+        if (mod) sgx_imm(b, imm, mod == 1 ? 1 : 4);
     } else {
         sgx_byte(b, (unsigned char)(0x80 | (d & 7) << 3 | (base & 7)));
         if ((base & 7) == 4) sgx_byte(b, 0x24);

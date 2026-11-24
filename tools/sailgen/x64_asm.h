@@ -145,6 +145,106 @@ static inline void sgx_cold_zf(SgXAsm* a, int v, int out, int cls, int w32) {
     sgx_byte(c, 0x01); /* add eax, eax */
     sgx_byte(c, 0xC0);
 }
+/* op reg, value v: reg (its low w bits) with v in a register or its slot, an opcode of reg, r/m's form (CMP 3B, SUB 2B) */
+static inline void sgx_op_v(SgXAsm* a, int op, unsigned w, int reg, int v) {
+    SgXBuf* b = a->b;
+    const SgXV* vv = &a->x->v[v];
+    int rm = vv->reg;
+    unsigned char rex = (unsigned char)((w == 64) << 3 | (reg >> 3) << 2 | (rm >= 0 ? rm >> 3 : 0));
+    if (rex) sgx_byte(b, (unsigned char)(0x40 | rex));
+    sgx_byte(b, (unsigned char)op);
+    if (rm >= 0)
+        sgx_byte(b, (unsigned char)(0xC0 | (reg & 7) << 3 | (rm & 7)));
+    else {
+        sgx_byte(b, (unsigned char)(0x84 | (reg & 7) << 3)); /* [rsp + disp32] */
+        sgx_byte(b, 0x24);
+        sgx_imm(b, 8 * vv->slot, 4);
+    }
+}
+/* op reg, the pool's doubleword k */
+static inline void sgx_op_pool(SgXAsm* a, int op, int reg, SnxU64 k) {
+    SgXBuf* b = a->b;
+    sgx_byte(b, (unsigned char)(0x48 | (reg >> 3) << 2));
+    sgx_byte(b, (unsigned char)op);
+    sgx_byte(b, (unsigned char)((reg & 7) << 3 | 5)); /* [rip + disp32] */
+    if (a->nrips == a->cap_rips) {
+        a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
+        a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
+        if (!a->rips) sg_fail("out of memory", 0, 0);
+    }
+    a->rips[a->nrips].at = b->n;
+    sgx_imm(b, 0, 4);
+    a->rips[a->nrips].end = b->n;
+    a->rips[a->nrips++].idx = sgx_pool_index(a, k, 0);
+}
+/* the jumps of a cold path's hot code into it: the condition's on the flags it has, then each test's. The result's
+   register is out (an XMM one where cls). What the tests need in registers is put there before the first jump, as the
+   cold code is made for the registers as they are at all of them */
+static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
+    SgX* x = a->x;
+    SgXIns* i = &x->ins[at];
+    SgXBuf* b = a->b;
+    unsigned avoid = cls ? 0 : 1u << out;
+    int k, t = -1;
+    /* the result is in out: no value moved out of the way goes there */
+    if (cls)
+        a->xowner[out] = -1;
+    else
+        a->owner[out] = -1;
+    for (k = 0; k < i->ntests; ++k) {
+        int l = i->test[k].limit ? i->in[i->test[k].limit] : 0, v = i->test[k].of ? i->in[i->test[k].of] : 0;
+        if (l && x->v[l].reg < 0 && x->v[l].slot < 0) sgx_in_reg(a, l, at, avoid);
+        if (l && x->v[l].reg >= 0) avoid |= 1u << x->v[l].reg;
+        if (v && !x->v[v].cls && x->v[v].reg >= 0) avoid |= 1u << x->v[v].reg;
+    }
+    if (i->ntests) t = sgx_free_reg(a, at, avoid);
+    if (i->flags_from >= 0) {
+        sgx_byte(b, 0x0F); /* Jcc rel32 */
+        sgx_byte(b, (unsigned char)(0x80 | (i->cc & 15)));
+        sgx_cjump(a, b->n, a->cold.n, 0);
+        sgx_imm(b, 0, 4);
+    }
+    for (k = 0; k < i->ntests; ++k) {
+        unsigned w = i->test[k].w;
+        int v = i->test[k].of ? i->in[i->test[k].of] : i->in[0], xcls = x->v[v].cls;
+        int reg = i->test[k].of ? x->v[v].reg : out, from = t, cc;
+        SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull,
+               inf = w == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
+        SnxU64 less = i->test[k].kind == SGX_T_NORMAL ? (normal + 1) << 1 : i->test[k].kind == SGX_T_DENORMAL ? 2 : 0;
+        unsigned char r[4] = {0, 0, 0, 0};
+        if (xcls && reg >= 0) {
+            const SgXVForm* f = w == 32 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
+            r[(int)f->rm] = (unsigned char)t;
+            r[(int)f->reg] = (unsigned char)reg;
+            f->enc(b, r, 0, 0);
+        } else if (reg >= 0)
+            from = reg;
+        else if (!xcls && x->v[v].xmm >= 0)
+            sgx_movq(b, 0, x->v[v].xmm, t);
+        else
+            sgx_mov_mem(a, 1, (int)w, t, SGX_RSP, 8 * x->v[v].slot);
+        r[0] = (unsigned char)t;
+        r[1] = r[2] = (unsigned char)from;
+        /* twice the bits less the constant, one LEA's displacement but for a double's smallest normal */
+        sgx_enc_lea(b, r, less >> 31 ? 0 : -(long long)less, w == 64, 1);
+        if (less >> 31) sgx_op_pool(a, 0x2B, t, less); /* sub */
+        if (i->test[k].limit)
+            sgx_op_v(a, 0x3B, w, t, i->in[i->test[k].limit]); /* cmp */
+        else if (w == 64)
+            sgx_op_pool(a, 0x3B, t, inf << 1);
+        else {
+            if (t >> 3) sgx_byte(b, 0x41);
+            sgx_byte(b, 0x81); /* cmp t, imm32 */
+            sgx_byte(b, (unsigned char)(0xF8 | (t & 7)));
+            sgx_imm(b, (long long)(inf << 1), 4);
+        }
+        cc = i->test[k].kind == SGX_T_NORMAL ? 3 : i->test[k].kind == SGX_T_DENORMAL ? 2 : 7; /* AE, B, A */
+        sgx_byte(b, 0x0F);
+        sgx_byte(b, (unsigned char)(0x80 | cc));
+        sgx_cjump(a, b->n, a->cold.n, 0);
+        sgx_imm(b, 0, 4);
+    }
+}
 static inline void sgx_assemble_cold(SgXAsm* a, int at) {
     static const signed char args_reg[5] = {6, 2, 1, 8, 9}; /* RSI RDX RCX R8 R9, RDI the state */
     SgX* x = a->x;
@@ -169,11 +269,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
         outreg = sgx_free_reg(a, at, 1u << from);
         sgx_mov_rr(a, outreg, from);
     }
-    /* the hot code: Jcc rel32 into the cold */
-    sgx_byte(b, 0x0F);
-    sgx_byte(b, (unsigned char)(0x80 | (i->cc & 15)));
-    sgx_cjump(a, b->n, a->cold.n, 0);
-    sgx_imm(b, 0, 4);
+    sgx_cold_jumps(a, at, outreg, cls);
     sgx_cold_room(a, 1024);
     {
         SgXBuf* hot = a->b;
@@ -305,7 +401,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
                     r[(int)f->reg] = (unsigned char)vv->reg;
                     f->enc(c, r, 0, 0);
                 } else
-                    sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
+                    sgx_mov_mem(a, 1, i->cw32 >> k & 1 ? 32 : 64, dst, SGX_RSP, 8 * vv->slot);
             } else if (vv->reg >= 0 && saved_g[vv->reg])
                 sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * gslot[(int)vv->reg]);
             else if (vv->reg >= 0)

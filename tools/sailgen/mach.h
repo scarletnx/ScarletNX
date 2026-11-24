@@ -53,13 +53,30 @@ enum {
 /* a machine instruction's inputs at most (CASP's six): its fixed registers, the loops that place them and the
    registers an encoding reads are this long */
 #define SGX_MACHINE_IN 6
+/* every instruction's inputs: the passes over them read this many */
+#define SGX_INS_IN     8
+/* the conditions of a cold path that are tests of their own (sgx_cold_fp's), a jump each: twice the bits of a float v (w
+   32 or 64, its sign shifted out) less a constant, compared unsigned with a limit made once a region */
+enum {
+    SGX_T_NORMAL,   /* cold unless 2v less 2 and twice the smallest normal is below the limit */
+    SGX_T_DENORMAL, /* cold where 2v less 2 is below the limit */
+    SGX_T_NAN       /* cold where 2v is above twice infinity (no limit) */
+};
+#define SGX_TESTS 4
+typedef struct {
+    int kind;
+    int of;    /* the float: 0 the value tied, 1 + k argument k */
+    int limit; /* the virtual register of the limit, 0 for none */
+    unsigned w;
+} SgXTest;
 typedef struct {
     unsigned char kind, cc, w, dead;
     unsigned char op; /* SGX_K_MACHINE's kind of instruction */
     const SgXSel* sel;
     int def;
     int def2;  /* a call's second result, in RDX */
-    int in[7]; /* the primitive's inputs (0-3), the zeroed value (4), a memory operand's base and index (5, 6) */
+    int in[SGX_INS_IN]; /* the primitive's inputs (0-3), the zeroed value (4), a memory operand's base and index (5, 6);
+                           a cold path's: the value tied (0), the call's arguments (1-5), its tests' limits (6, 7) */
     long long imm;
     int disp;
     signed char mplace; /* the form's operand that is the memory [in[5] + in[6] + mdisp], -1 for none */
@@ -87,6 +104,11 @@ typedef struct {
        alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
        alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's */
     unsigned char cstate, cfpcr, ckat, cw32, zacc;
+    /* and its tests: what kind of, the float in[of], the limit in[limit] (6 or 7, 0 for none), the width */
+    unsigned char ntests;
+    struct {
+        unsigned char kind, of, limit, w;
+    } test[SGX_TESTS];
     unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] and kv[0] what is dead where it goes (sgx_dead_words') */
 } SgXIns;
 
@@ -1230,13 +1252,18 @@ static inline SgD sgx_cold(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, 
    still where the state's FPCR has none of zmask's bits and (bits 0-2 not all clear) one of those arguments is a
    zero, and (bit 6) where FPCR.FZ is set none of the floating-point arguments before fpcr_at (of the width k's low
    byte names) is a denormal FZ flushes, tested on the cold path before the call (the guards' exact zeros, out of the
-   hot code) */
+   hot code). The cold path is taken where c holds (0: never) or one of the tests does, each a jump of its own: their
+   conditions are never made 0 or 1 */
 static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* args, int nargs, int fpcr_at, int k_at,
-                              long long k, int fpcr, int fpsr, unsigned zacc, SnxU32 zmask) {
-    int regs[5], j, from, cc, t, cls, n = 0, w32 = 0;
+                              long long k, int fpcr, int fpsr, unsigned zacc, SnxU32 zmask, const SgXTest* tests,
+                              int ntests) {
+    int regs[5], j, from = -1, cc = 0, t, cls, n = 0, w32 = 0;
     SgXIns* i;
     SgXBool* b = &x->b[c];
-    if (!c || (b->kind == SGX_B_CONST && !b->v)) return tied;
+    int known = !c || b->kind == SGX_B_CONST, always = c && known && b->v;
+    if (always) ntests = 0;
+    if (known && !always && !ntests) return tied;
+    if (ntests > SGX_TESTS) sg_fail("a cold path of this many tests", ntests, SGX_TESTS);
     for (j = 0; j < nargs + (fpcr_at >= 0) + (k_at >= 0); ++j) {
         if (j == fpcr_at || j == k_at) {
             regs[j] = 0;
@@ -1251,11 +1278,12 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
     cls = tied.x != 0;
     t = cls ? tied.x : sgx_reg(x, &tied);
     if (cls && tied.w <= 32) w32 |= 0x80;
-    if (b->kind == SGX_B_CONST) {
+    if (always) {
         SgD one = sgx_const(32, 1);
         c = sgx_bool(x, SGX_B_REG, sgx_reg(x, &one), 0);
     }
-    cc = sgx_bool_cc(x, c, &from);
+    if (!known || always) cc = sgx_bool_cc(x, c, &from);
+    if (ntests) sgx_flags_clobbered(x); /* the tests' own compares end them, after the condition's jump */
     i = sgx_append(x, SGX_K_COLD);
     i->cc = (unsigned char)cc;
     i->flags_from = from;
@@ -1263,6 +1291,21 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
     i->w = (unsigned char)j;
     i->in[0] = t;
     for (n = 0; n < j; ++n) i->in[1 + n] = regs[n];
+    for (n = 0; n < ntests; ++n) {
+        const SgXTest* p = &tests[n];
+        int l = 0, seen = 0;
+        for (j = 0; j < i->ntests; ++j) /* the same value's again: an operand that is both of them */
+            seen |= i->test[j].kind == p->kind && i->in[i->test[j].of] == i->in[p->of];
+        if (seen) continue;
+        if (p->limit)
+            for (l = 6; i->in[l] && i->in[l] != p->limit;)
+                if (++l == SGX_INS_IN) sg_fail("a cold path's tests of more than two limits", n, ntests);
+        if (l) i->in[l] = p->limit;
+        i->test[i->ntests].kind = (unsigned char)p->kind;
+        i->test[i->ntests].of = (unsigned char)p->of;
+        i->test[i->ntests].limit = (unsigned char)l;
+        i->test[i->ntests++].w = (unsigned char)p->w;
+    }
     i->side = 1;
     i->cstate = 1;
     i->disp = fpcr;
@@ -1753,7 +1796,7 @@ static inline void sgx_optimize(SgX* x) {
                     if (stamp[q] == now && stamp[q + 1] == now && stamp[q + 2] == now && stamp[q + 3] == now) {
                         s->dead = 1;
                         s->side = 0;
-                        for (e = 0; e < 7; ++e) s->in[e] = 0;
+                        for (e = 0; e < SGX_INS_IN; ++e) s->in[e] = 0;
                         continue;
                     }
                     for (e = 0; e < 4; ++e) stamp[q + e] = now;
@@ -1850,7 +1893,7 @@ static inline void sgx_optimize(SgX* x) {
                 s->alt = NULL;
             }
         }
-        for (k = 0; k < 7; ++k)
+        for (k = 0; k < SGX_INS_IN; ++k)
             if (s->in[k]) vlive[s->in[k]] = 1;
         if (s->flags_from >= 0) flive[s->flags_from] = 1;
     }
@@ -1877,7 +1920,7 @@ static inline void sgx_optimize(SgX* x) {
                    counted on it) */
                 int j, from = s->def, to = p->in[0];
                 for (j = i + 1; j < x->n; ++j)
-                    for (k = 0; k < 7; ++k)
+                    for (k = 0; k < SGX_INS_IN; ++k)
                         if (x->ins[j].in[k] == from) x->ins[j].in[k] = to;
                 s->dead = 1;
                 changed = 1;
@@ -1908,7 +1951,7 @@ static inline void sgx_optimize(SgX* x) {
                     s->dead = 1;
                     continue;
                 }
-                for (k = 0; k < 7; ++k)
+                for (k = 0; k < SGX_INS_IN; ++k)
                     if (s->in[k]) vlive[s->in[k]] = 1;
             }
         }
@@ -1916,7 +1959,7 @@ static inline void sgx_optimize(SgX* x) {
     for (i = 0; i < x->nv; ++i) x->v[i].last = -1;
     for (i = 0; i < x->n; ++i) {
         if (x->ins[i].dead) continue;
-        for (k = 0; k < 7; ++k)
+        for (k = 0; k < SGX_INS_IN; ++k)
             if (x->ins[i].in[k]) x->v[x->ins[i].in[k]].last = i;
     }
 }
@@ -2105,7 +2148,7 @@ static inline unsigned sgx_inputs_in_regs(SgXAsm* a, int at, unsigned avoid) {
     SgXIns* i = &a->x->ins[at];
     unsigned held = 0;
     int k;
-    for (k = 0; k < 7; ++k)
+    for (k = 0; k < SGX_INS_IN; ++k)
         if (i->in[k]) held |= 1u << sgx_in_reg(a, i->in[k], at, avoid | held);
     return held;
 }
@@ -2124,7 +2167,7 @@ static inline int sgx_pin_inplace(SgXAsm* a, int at, int tv, int def) {
         if (s->dead) continue;
         if (s->kind == SGX_K_PSET) return s->imm == key && s->in[0] == cur;
         if (s->kind == SGX_K_PGET || s->kind == SGX_K_MACHINE || s->kind == SGX_K_UNDEF) return 0;
-        for (k = 0; k < 7; ++k) reads += s->in[k] == cur;
+        for (k = 0; k < SGX_INS_IN; ++k) reads += s->in[k] == cur;
         if (!reads) continue;
         if (x->v[cur].last != j || reads != 1) return 0;
         if (s->kind == SGX_K_COLD && s->in[0] == cur) cur = s->def;
@@ -2154,7 +2197,7 @@ static inline int sgx_pin_target(SgXAsm* a, int at, int def, int cls) {
             return p;
         }
         if (s->kind == SGX_K_PGET || s->kind == SGX_K_MACHINE || s->kind == SGX_K_UNDEF) return -1;
-        for (k = 0; k < 7; ++k) reads += s->in[k] == cur;
+        for (k = 0; k < SGX_INS_IN; ++k) reads += s->in[k] == cur;
         if (!reads) continue;
         if (x->v[cur].last != j || reads != 1) return -1;
         if (s->kind == SGX_K_COLD && s->in[0] == cur) cur = s->def;
@@ -2169,7 +2212,7 @@ static inline int sgx_pin_target(SgXAsm* a, int at, int def, int cls) {
 static inline int sgx_any_input_in(SgXAsm* a, int at, int reg, int cls, int except) {
     SgXIns* i = &a->x->ins[at];
     int k;
-    for (k = 0; k < 7; ++k)
+    for (k = 0; k < SGX_INS_IN; ++k)
         if (k != except && i->in[k] && a->x->v[i->in[k]].reg == reg && a->x->v[i->in[k]].cls == cls) return 1;
     return 0;
 }
@@ -2196,7 +2239,7 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
         if (!v || p < SGX_FIX) continue;
         if (x->v[v].reg != p - SGX_FIX) {
             int o = a->owner[p - SGX_FIX], j, reads = 0;
-            for (j = 0; j < 7 && o > 0; ++j) reads |= i->in[j] == o;
+            for (j = 0; j < SGX_INS_IN && o > 0; ++j) reads |= i->in[j] == o;
             if (reads) {
                 /* another input of it (DIV's divisor in RDX): to a register, which its operand names. Spilled to a
                    slot or an XMM register it would have none, and the operand would read a stray address */
