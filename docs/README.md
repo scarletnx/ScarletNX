@@ -47,6 +47,9 @@ keeps audits and measurements as they were taken.
 - [Status and roadmap](dev/roadmap.md): what is next
 - [The CPU cost of a draw](dev/draw-cost.md): the plan to cut the GPU thread's work for each draw
 - [Render targets as views of their textures](dev/one-image.md): one image for each guest surface, in place of the copies of drawn targets into textures
+- [A draw-level fast path](dev/draw-fast-path.md): what a draw keeps from the draw before, the phases of a draw, and part D's measured ceilings
+- [Parallel draw preparation](dev/parallel-draw-prep.md): the next draw resolved on a second thread (built behind `draw_prep`), and why it lost time
+- [Parallel draw batches](dev/parallel-draw-batches.md): a design for setting up whole batches of draws on worker threads
 - [Contributing](../CONTRIBUTING.md): game data, checks, commits and pull requests
 
 ## Guest platforms

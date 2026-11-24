@@ -2942,6 +2942,7 @@ static const PipeKey* pipe_drawn_key(const PipeKey* k, PipeKey* dyn) {
    one is still being made is a stand-in too, so that a draw that keeps the handle binds the optimized one once it is
    there */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
+    vk_shared_note(12);
     PipeKey dyn;
     k = pipe_drawn_key(k, &dyn);
     if (!vk_rec_threaded()) return vk_pipeline_get(k);

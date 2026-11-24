@@ -170,7 +170,30 @@ static void fold_done(void) {
         c->reported = c->sum_end;
     }
 }
+/* A worker's draws (draw_batches=2) leave the segments to the splice: the renderer thread runs these calls there, in
+   the order of the commands, so a segment begins and ends in the pass of its draws (vk_rec_defer) */
+static void query_draw_deferred(const void* arg) {
+    u32 owner;
+    memcpy(&owner, arg, sizeof owner);
+    vk_query_draw(vk_cmd(), owner);
+}
+static void query_pass_end_deferred(const void* arg) {
+    (void)arg;
+    vk_query_pass_end(vk_cmd());
+}
+static void query_draw_locked(VkCommandBuffer cb, u32 owner);
 void vk_query_draw(VkCommandBuffer cb, u32 owner) {
+    vk_shared_note(16);
+    /* a worker's list (draw_batches=2) defers it to the splice: its own list, no share lock */
+    if (vk_rec_listing()) {
+        vk_rec_defer(query_draw_deferred, &owner, sizeof owner);
+        return;
+    }
+    vk_share_lock();
+    query_draw_locked(cb, owner);
+    vk_share_unlock();
+}
+static void query_draw_locked(VkCommandBuffer cb, u32 owner) {
     QCounter* c = counter(owner, 0);
     int own = c ? (int)(c - g_qc) + 1 : 0;
     if (g_q.open) {
@@ -193,6 +216,10 @@ void vk_query_draw(VkCommandBuffer cb, u32 owner) {
     g_q.open = 1;
 }
 void vk_query_pass_end(VkCommandBuffer cb) {
+    if (vk_rec_listing()) {
+        vk_rec_defer(query_pass_end_deferred, NULL, 0);
+        return;
+    }
     if (!g_q.open) return;
     rec_CmdEndQuery(cb, g_qpool, (u32)((g_q.next - 1) % QN));
     g_q.open = 0;
@@ -266,6 +293,7 @@ void vk_query_enable(u32 owner, int on) {
     }
     c->disabled = !on;
 }
+int vk_query_open(void) { return g_q.open; }
 int vk_query_enabled(u32 owner) {
     QCounter* c = counter(owner, 0);
     return c && c->started && !c->disabled;

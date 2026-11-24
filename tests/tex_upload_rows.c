@@ -2718,3 +2718,6 @@ int main(void) {
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }
+/* the split's surface views (draw_batches=2): this test records into no list */
+void vk_surf_before_reset(const Surf* s) { (void)s; }
+VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }

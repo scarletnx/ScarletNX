@@ -65,15 +65,19 @@ static struct {
     /* the renderer thread's side */
     _Alignas(64) _Atomic u64 tail; /* bytes taken out */
     _Atomic u64 done;              /* the fence of the last record that ran */
+    /* while a worker reads records that the taker already ran (draw_batches=2, gq_keep): the first byte that the front
+       end must not put over, else GQ_KEEP_NONE */
+    _Atomic u64 keep;
     _Atomic u32 progress;          /* moves with each record done: the front end sleeps on it */
     _Atomic int putter_sleeps;
     /* the change between the two (gq_mode): the front end clears split, and the renderer thread, once out of the
        record it runs, sets parked and takes no record until split is set again. One side takes the records at a
        time, so they run in their order */
     _Atomic int split, parked;
+    u64 next_at;          /* the taker's: where the record after the one it runs starts (gq_peek_call) */
     _Atomic u64 presents; /* the renderer's presents (gq_present), for gq_auto */
     _Atomic u64 run_ns;   /* the renderer thread's time in records, for gq_auto */
-} g_gq;
+} g_gq = {.keep = UINT64_MAX};
 /* the front end's last guest writes, in their order, for its reads of guest memory (gq_read): a read waits only for
    the newest write over its bytes, or takes the bytes from that write's record. written[] is the fallback once the
    list lost a write that the renderer's side hasn't run */
@@ -102,6 +106,105 @@ static void gq_mark(u64 gva, u64 size, u64 fence) {
     u64 first = gva >> 12, last = (gva + size - 1) >> 12;
     if (last - first >= (1u << GQ_SLOT_BITS)) last = first + (1u << GQ_SLOT_BITS) - 1; /* every slot already */
     for (u64 p = first; p <= last; p++) g_gq.written[gq_slot(p)] = fence;
+}
+/* The records' time by kind (a probe): a record's kind, for a call its function and the first word of its payload
+   (the kind of a draw state record, the op of a renderer call), the records and their counter ticks. The calls'
+   functions are named by gq_name where their file gives a name */
+#define GQ_TIMED 64
+#define GQ_NAMES 16
+static struct {
+    struct {
+        u32 kind, sub;
+        GqFn fn;
+        u64 n, ticks;
+    } e[GQ_TIMED];
+    struct {
+        GqFn fn;
+        const char* name;
+        const char* const* subs;
+        u32 nsubs;
+    } names[GQ_NAMES];
+    u64 tsc0, ns0;
+} g_gq_timed;
+void gq_name(GqFn fn, const char* name, const char* const* subs, u32 nsubs) {
+    for (u32 i = 0; i < GQ_NAMES; i++)
+        if (!g_gq_timed.names[i].fn) {
+            g_gq_timed.names[i].fn = fn;
+            g_gq_timed.names[i].name = name;
+            g_gq_timed.names[i].subs = subs;
+            g_gq_timed.names[i].nsubs = nsubs;
+            return;
+        }
+}
+static void gq_timed_add(const GqRecord* r, u64 ticks) {
+    GqFn fn = NULL;
+    u32 sub = 0;
+    if (r->kind == GQ_CALL) {
+        memcpy(&fn, &r->gva, sizeof fn);
+        if (r->size >= 4) memcpy(&sub, r + 1, 4);
+    }
+    u32 h = (u32)((((uintptr_t)fn >> 4) ^ r->kind * 31u ^ sub * 131u) & (GQ_TIMED - 1));
+    for (u32 i = 0; i < GQ_TIMED; i++, h = (h + 1) & (GQ_TIMED - 1)) {
+        if (!g_gq_timed.e[h].n) {
+            g_gq_timed.e[h].kind = r->kind;
+            g_gq_timed.e[h].fn = fn;
+            g_gq_timed.e[h].sub = sub;
+        } else if (g_gq_timed.e[h].kind != r->kind || g_gq_timed.e[h].fn != fn || g_gq_timed.e[h].sub != sub)
+            continue;
+        g_gq_timed.e[h].n++;
+        g_gq_timed.e[h].ticks += ticks;
+        return;
+    }
+}
+static void gq_timed_log(u64 presents) {
+    const u64 tsc = __builtin_readcyclecounter(), ns = plat_ns();
+    const double tick_ns = g_gq_timed.tsc0 && tsc > g_gq_timed.tsc0 ? (double)(ns - g_gq_timed.ns0) / (double)(tsc - g_gq_timed.tsc0) : 0;
+    g_gq_timed.tsc0 = tsc;
+    g_gq_timed.ns0 = ns;
+    if (tick_ns && presents) {
+        static const char* const kinds[] = {"write", "cb write", "release", "i2m", "call", "skip"};
+        char line[1400];
+        int at = 0;
+        for (u32 k = 0; k < 16 && at < (int)sizeof line - 120; k++) {
+            u32 best = GQ_TIMED;
+            for (u32 i = 0; i < GQ_TIMED; i++)
+                if (g_gq_timed.e[i].n && (best == GQ_TIMED || g_gq_timed.e[i].ticks > g_gq_timed.e[best].ticks)) best = i;
+            if (best == GQ_TIMED) break;
+            const u32 kind = g_gq_timed.e[best].kind, sub = g_gq_timed.e[best].sub;
+            char name[64];
+            snprintf(name, sizeof name, "%s", kind <= GQ_SKIP ? kinds[kind] : "?");
+            if (kind == GQ_CALL) {
+                u32 j = 0;
+                while (j < GQ_NAMES && g_gq_timed.names[j].fn && g_gq_timed.names[j].fn != g_gq_timed.e[best].fn) j++;
+                if (j < GQ_NAMES && g_gq_timed.names[j].fn) {
+                    if (sub < g_gq_timed.names[j].nsubs)
+                        snprintf(name, sizeof name, "%s %s", g_gq_timed.names[j].name, g_gq_timed.names[j].subs[sub]);
+                    else
+                        snprintf(name, sizeof name, "%s", g_gq_timed.names[j].name);
+                } else {
+                    uintptr_t f = 0, b = 0;
+                    const GqFn fn = g_gq_timed.e[best].fn;
+                    void (*const base)(u64) = gq_timed_log;
+                    memcpy(&f, &fn, sizeof f);
+                    memcpy(&b, &base, sizeof b);
+                    snprintf(name, sizeof name, "call at gq_timed_log%+lld", (long long)((intptr_t)f - (intptr_t)b));
+                }
+            }
+            const double n = (double)g_gq_timed.e[best].n, t = (double)g_gq_timed.e[best].ticks * tick_ns;
+            at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.0f a present %.3f ms (%.0f ns each)",
+                           k ? ";" : "", name, n / (double)presents, t / 1e6 / (double)presents, t / n);
+            g_gq_timed.e[best].n = 0; /* taken: the next look finds the next */
+            g_gq_timed.e[best].ticks = 0;
+        }
+        LOG("gpu: split: the records' time by kind:%s\n", line);
+    }
+    memset(g_gq_timed.e, 0, sizeof g_gq_timed.e);
+}
+/* the records run, and the constant buffer writes of them, for the batch probe (vk/render.c) */
+static u64 g_gq_seq_all, g_gq_seq_cb;
+void gq_seq(u64* all, u64* cb) {
+    *all = g_gq_seq_all;
+    *cb = g_gq_seq_cb;
 }
 static void gq_run(const GqRecord* r) {
     const u8* payload = (const u8*)(r + 1);
@@ -163,6 +266,7 @@ static struct {
     _Atomic u64 n, busy;
 } g_gq_site[GQ_SITES];
 void gq_stats_log(u64 presents) {
+    gq_timed_log(presents);
     if (!g_gq.started || !presents) return;
     u64 v[GQS_N];
     for (int i = 0; i < GQS_N; i++) v[i] = atomic_exchange_explicit(&g_gqs[i], 0, memory_order_relaxed);
@@ -198,7 +302,12 @@ static u32 gq_take_one(void) {
     const GqRecord* r = (const GqRecord*)(g_gq.ring + tail % GQ_RING);
     u64 fence = r->fence;
     u32 bytes = r->bytes;
+    g_gq.next_at = tail + bytes; /* where the record after this one starts (gq_peek_call) */
+    g_gq_seq_all++;
+    if (r->kind == GQ_WRITE_CB) g_gq_seq_cb++;
+    const u64 t0 = __builtin_readcyclecounter();
     gq_run(r);
+    gq_timed_add(r, __builtin_readcyclecounter() - t0);
     atomic_store_explicit(&g_gq.tail, tail + bytes, memory_order_release);
     atomic_store_explicit(&g_gq.done, fence, memory_order_release);
     atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);
@@ -267,7 +376,19 @@ static int gq_done_by(u64 fence) { return atomic_load_explicit(&g_gq.done, memor
 /* head: only the front end stores it, so its own loads of it are relaxed */
 static u64 gq_head(void) { return atomic_load_explicit(&g_gq.head, memory_order_relaxed); }
 static int gq_room(u64 bytes) {
-    return GQ_RING - (gq_head() - atomic_load_explicit(&g_gq.tail, memory_order_acquire)) >= bytes;
+    /* tail first: the taker stores keep before the tail that passes it, so a tail seen here comes with its keep */
+    u64 tail = atomic_load_explicit(&g_gq.tail, memory_order_acquire);
+    const u64 keep = atomic_load_explicit(&g_gq.keep, memory_order_acquire);
+    if (keep < tail) tail = keep;
+    return GQ_RING - (gq_head() - tail) >= bytes;
+}
+/* The taker's: keep the records from the one after the record it runs, until gq_keep_end. A worker reads them after
+   the taker ran them (draw_batches=2) */
+void gq_keep(void) { atomic_store_explicit(&g_gq.keep, g_gq.next_at, memory_order_seq_cst); }
+void gq_keep_end(void) {
+    atomic_store_explicit(&g_gq.keep, UINT64_MAX, memory_order_seq_cst);
+    atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&g_gq.putter_sleeps, memory_order_seq_cst)) plat_wake_word(&g_gq.progress);
 }
 static void gq_site_count(const char* file, int line, int busy) {
     for (u32 i = 0; i < GQ_SITES; i++) {
@@ -325,6 +446,10 @@ static void gq_mode(int on) {
     plat_wake_word(&g_gq.work);
 }
 void gq_present(void) { atomic_fetch_add_explicit(&g_gq.presents, 1, memory_order_relaxed); }
+/* for draw_prep=2 (vk/prep.c): the presents, the renderer thread's time in records, and whether it takes them now */
+u64 gq_presents(void) { return atomic_load_explicit(&g_gq.presents, memory_order_relaxed); }
+u64 gq_run_ns(void) { return atomic_load_explicit(&g_gq.run_ns, memory_order_relaxed); }
+int gq_split_now(void) { return g_gq.started && atomic_load_explicit(&g_gq.split, memory_order_relaxed); }
 /* gpu_split=2: which of the two runs the game's work a present faster, measured as it runs. A mode's cost is the GPU
    thread's busy time a present (gpu_thread_busy_ns: outside its waits for the game's work, and with its waits for the
    renderer thread in it), or with the split the renderer thread's time in records where that is longer: the frame
@@ -608,6 +733,77 @@ static int gq_read(u64 gva, void* dst, u64 size) {
     return 0;
 }
 void gq_read_wait(u64 gva, u64 size) { gq_read(gva, NULL, size); }
+/* The payload of the record after the one the taker runs, while it runs that one, when the next is a call of fn
+   that the front end has put in whole: NULL else. Another thread may ask while the taker waits for it, in the run:
+   the bytes stay until the taker passes them */
+/* what gq_peek_call found after the record run, for the stats line: none put in yet, a record of each kind, and
+   the calls of another function by the function (the first GQ_PEEK_FNS seen) */
+#define GQ_PEEK_FNS 8
+static struct {
+    u64 none, kind[GQ_SKIP + 1], fn_n[GQ_PEEK_FNS];
+    GqFn fn[GQ_PEEK_FNS];
+} g_gq_peek;
+void gq_peek_log(GqFn base) {
+    char line[512];
+    int at = snprintf(line, sizeof line, "none put in %llu, writes %llu, cb writes %llu, releases %llu, i2m %llu, calls %llu;",
+                      (unsigned long long)g_gq_peek.none, (unsigned long long)g_gq_peek.kind[GQ_WRITE],
+                      (unsigned long long)g_gq_peek.kind[GQ_WRITE_CB], (unsigned long long)g_gq_peek.kind[GQ_RELEASE],
+                      (unsigned long long)g_gq_peek.kind[GQ_I2M_BLOCK], (unsigned long long)g_gq_peek.kind[GQ_CALL]);
+    for (u32 i = 0; i < GQ_PEEK_FNS && g_gq_peek.fn[i] && at < (int)sizeof line - 48; i++) {
+        uintptr_t f = 0, b = 0;
+        memcpy(&f, &g_gq_peek.fn[i], sizeof f < sizeof g_gq_peek.fn[i] ? sizeof f : sizeof g_gq_peek.fn[i]);
+        memcpy(&b, &base, sizeof b < sizeof base ? sizeof b : sizeof base);
+        at += snprintf(line + at, sizeof line - (size_t)at, " fn%+lld %llu", (long long)((intptr_t)f - (intptr_t)b),
+                       (unsigned long long)g_gq_peek.fn_n[i]);
+        g_gq_peek.fn_n[i] = 0;
+    }
+    LOG("gpu: split: the records after a draw: %s\n", line);
+    g_gq_peek.none = 0;
+    memset(g_gq_peek.kind, 0, sizeof g_gq_peek.kind);
+}
+const void* gq_peek_call(GqFn fn, u64* bytes) {
+    u64 at = g_gq.next_at, head = atomic_load_explicit(&g_gq.head, memory_order_acquire);
+    if (at == head) g_gq_peek.none++;
+    for (int hop = 0; hop < 2 && at != head; hop++) {
+        const GqRecord* r = (const GqRecord*)(const void*)(g_gq.ring + at % GQ_RING);
+        if (r->kind == GQ_SKIP) { /* the filler at the ring's end */
+            at += r->bytes;
+            continue;
+        }
+        GqFn f;
+        memcpy(&f, &r->gva, sizeof f);
+        if (r->kind <= GQ_SKIP) g_gq_peek.kind[r->kind]++;
+        if (r->kind == GQ_CALL && f != fn)
+            for (u32 i = 0; i < GQ_PEEK_FNS; i++)
+                if (!g_gq_peek.fn[i] || g_gq_peek.fn[i] == f) {
+                    g_gq_peek.fn[i] = f;
+                    g_gq_peek.fn_n[i]++;
+                    break;
+                }
+        if (r->kind != GQ_CALL || f != fn) return NULL;
+        *bytes = r->size;
+        return r + 1;
+    }
+    return NULL;
+}
+/* The payloads of the calls of fn that follow the record the taker runs, while it runs that one, up to max: their
+   count. The bytes stay until the taker passes them */
+u32 gq_peek_calls(GqFn fn, const void** args, u64* sizes, u32 max) {
+    u64 at = g_gq.next_at, head = atomic_load_explicit(&g_gq.head, memory_order_acquire);
+    u32 n = 0;
+    while (n < max && at != head) {
+        const GqRecord* r = (const GqRecord*)(const void*)(g_gq.ring + at % GQ_RING);
+        if (r->kind != GQ_SKIP) {
+            GqFn f;
+            memcpy(&f, &r->gva, sizeof f);
+            if (r->kind != GQ_CALL || f != fn) break;
+            args[n] = r + 1;
+            sizes[n++] = r->size;
+        }
+        at += r->bytes;
+    }
+    return n;
+}
 int gq_forward(u64 gva, void* dst, u64 size) { return gq_read(gva, dst, size); }
 void* gq_call_begin(GqFn fn, u64 bytes) {
     u64 at = 0;
