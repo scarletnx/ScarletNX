@@ -40,6 +40,8 @@ struct SgCtx {
     SgB fp_fz;        /* sgx_fp_bad's check of FPCR.FZ alone, once a region */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
+    int base_seen[4]; /* a few recent values of sgx_base's, each checked against what made it */
+    unsigned base_next;
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
     SnxU64 (*resolve)(const char* sym); /* a helper's address, where the code calls it absolutely (a test's) */
     int start;       /* the instructions before this word's */
@@ -554,8 +556,6 @@ static inline void sgx_addr(SgX* x, SgD* address, int* disp) {
 static inline int sgx_base(SgCtx* g, SgD* address, int* disp) {
     SgX* x = sgx(g);
     int m = sgx_mem(g), a, b, k, d;
-    static _Thread_local int seen[4];
-    static _Thread_local unsigned next;
     SgXV* v;
     SgD r;
     sgx_addr(x, address, disp);
@@ -570,7 +570,7 @@ static inline int sgx_base(SgCtx* g, SgD* address, int* disp) {
         b = t;
     }
     for (k = 0; k < 4; ++k) {
-        int s = seen[k];
+        int s = g->base_seen[k];
         if (s <= 0 || s >= x->nv) continue;
         d = x->v[s].def;
         if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_SEL && x->ins[d].def == s &&
@@ -581,7 +581,7 @@ static inline int sgx_base(SgCtx* g, SgD* address, int* disp) {
     }
     r = SGX_OP(x, lea, 64, sgx_val(64, m), sgx_val(64, a));
     if (!r.v) return m;
-    seen[next++ & 3] = r.v;
+    g->base_seen[g->base_next++ & 3] = r.v;
     *address = sgx_val(64, b);
     return r.v;
 }
