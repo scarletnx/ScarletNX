@@ -177,6 +177,9 @@ static void ldst_start(CPU* c, u32 word, unsigned s) {
 }
 
 typedef u64 (*Step)(CPU* c);
+/* A step is generated code, with no type signature before its entry, which the function sanitizer's check of an
+   indirect call reads: the 8 bytes before the callee, below the mapping for the first one. So the call is unchecked */
+[[clang::no_sanitize("function")]] static u64 run_step(Step step, CPU* c) { return step(c); }
 
 /* FPCR.FZ set, as many games run: operands and results the host's arithmetic gives exactly, an exact zero among them,
    take the inline code with no helper call (snx_x64_fp_calls); a denormal operand, which FZ flushes, takes the helper
@@ -229,7 +232,7 @@ static size_t check_fz_hot(void) {
         c.fpsr = 0x10;     /* IXC */
         c.pc = 0x1000;
         calls = snx_x64_fp_calls();
-        ((Step)(void*)code)(&c);
+        run_step((Step)(void*)code, &c);
         cold = snx_x64_fp_calls() != calls;
         got = cases[k].word == 0x1E222020u ? (u64)(c.n << 3 | c.z << 2 | c.cf << 1 | c.vf) : c.v[0].d[0];
         /* FMADD is the helper's on a host without FMA */
@@ -407,7 +410,7 @@ int main(int argc, char** argv) {
                 next[0] = set.steps[i](&end[0]);
                 undef[0] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 g_test.undef = g_test.sev = g_test.wfe = 0;
-                next[1] = x64(&end[1]);
+                next[1] = run_step(x64, &end[1]);
                 undef[1] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 ++compared;
                 {
@@ -512,7 +515,7 @@ int main(int argc, char** argv) {
                 for (j = 0; j < seq[q].count; ++j) next[0] = set.steps[seq[q].first + j](&end[0]);
                 undef[0] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 g_test.undef = g_test.sev = g_test.wfe = 0;
-                next[1] = x64(&end[1]);
+                next[1] = run_step(x64, &end[1]);
                 undef[1] = g_test.undef + 16 * g_test.sev + 256 * g_test.wfe;
                 ++compared;
                 if (next[0] != next[1] || undef[0] != undef[1] || memcmp(end[0].x, end[1].x, sizeof end[0].x) ||
