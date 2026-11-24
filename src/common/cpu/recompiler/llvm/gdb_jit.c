@@ -90,11 +90,14 @@ static struct {
     _Atomic int on;
     /* the perf map's gate, set once before the first load like on: names the same objects for perf as well as GDB */
     _Atomic int perf;
+    /* 1 for good once snx_gdb_jit_add took an entry, stored by the thread that adds it: a loader's free comes after its
+       own load, so it sees the 1 whenever it has an entry, and with none ever added it takes no lock */
+    _Atomic int seen;
     /* the file's own lock: no file I/O runs under lock, but one writer at a time keeps lines from interleaving and keeps
        a snapshot's rewrite from racing a load's append */
     pthread_mutex_t perf_io_lock;
     PerfLine* perf_first; /* this file's lines, under lock */
-} g_gdb_jit = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, PTHREAD_MUTEX_INITIALIZER, NULL};
+} g_gdb_jit = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, 0, PTHREAD_MUTEX_INITIALIZER, NULL};
 
 void snx_gdb_jit_enable(void) { atomic_store_explicit(&g_gdb_jit.on, 1, memory_order_relaxed); }
 
@@ -263,6 +266,7 @@ void snx_gdb_jit_add(unsigned char* copy) {
     char text[96] = {0}; /* the line's text, made under lock and written after it */
     const char* pending = NULL;
     int perf = atomic_load_explicit(&g_gdb_jit.perf, memory_order_relaxed);
+    atomic_store_explicit(&g_gdb_jit.seen, 1, memory_order_relaxed);
     pthread_mutex_lock(&g_gdb_jit.lock);
     e->next = g_gdb_jit.first;
     g_gdb_jit.first = e;
@@ -294,6 +298,7 @@ void snx_gdb_jit_add(unsigned char* copy) {
 
 void snx_gdb_jit_remove(const void* owner) {
     Entry* e;
+    if (!atomic_load_explicit(&g_gdb_jit.seen, memory_order_relaxed)) return;
     int gdb = atomic_load_explicit(&g_gdb_jit.on, memory_order_relaxed);
     pthread_mutex_lock(&g_gdb_jit.lock);
     for (Entry** link = &g_gdb_jit.first; (e = *link) != NULL;) {

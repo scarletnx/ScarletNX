@@ -1490,8 +1490,11 @@ static void gpu_thread(void* arg) {
 }
 static PMutex g_submit_lk; /* defined below with PMUTEX_INIT */
 static void queue_init(void) {
-    pm_lock_announce(&g_qlk, "gpu queue"); /* the jobs' handoff, game threads to the GPU thread */
-    pm_lock_announce(&g_submit_lk, "gpu submit scan"); /* the queue-order scans of every channel's pushbuffer */
+    /* at each call, so that a client that attaches later still gets them; without one nothing is announced */
+    if (snx_tracy_attached()) {
+        pm_lock_announce(&g_qlk, "gpu queue");             /* the jobs' handoff, game threads to the GPU thread */
+        pm_lock_announce(&g_submit_lk, "gpu submit scan"); /* the queue-order scans of every channel's pushbuffer */
+    }
     if (!g_qcv_ready) {
         pc_init(&g_qcv);
         g_qcv_ready = 1;
