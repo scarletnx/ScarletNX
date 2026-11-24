@@ -21,8 +21,9 @@ val Form : unit -> int
 /* the translation of the program failed (an operand it can't read or write, the first reason kept): what is left of
    the instruction is not written */
 val Failed : unit -> bool
-/* an instruction the translator refuses: why */
+/* an instruction the translator refuses: why; and the end of one whose translation failed already */
 val Refuse : string -> unit
+val Stop : unit -> unit
 /* the program is a fragment program, and its translation the secondary program's (once per draw, into SA) */
 val Fragment : unit -> bool
 val Secondary : unit -> bool
@@ -44,12 +45,11 @@ val SetFlags : (int, int) -> unit
 val AddFlags : (int, int) -> unit
 val SetNum : (int, int) -> unit
 /* operand k's swizzle: four channels (SW_X... SW_U), operand j's, decode_vec34_swizzle's (swizzle, extended, type 0
-   scalar, 1 vec3, 2 vec4), the twelve bits of three a channel (V32NMAD's), and VDUAL's (vec4 or vec3) */
+   scalar, 1 vec3, 2 vec4), and the twelve bits of three a channel (V32NMAD's) */
 val SetSwizzle : (int, int, int, int, int) -> unit
 val CopySwizzle : (int, int) -> unit
 val Vec34Swizzle : (int, int, int, int) -> unit
 val Swizzle4 : (int, int) -> unit
-val DualSwizzle : (int, int, int, int) -> unit
 /* operand k's bank, register number, type and channel i, as they are now */
 val BankOf : int -> int
 val NumOf : int -> int

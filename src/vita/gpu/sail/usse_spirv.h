@@ -8,17 +8,20 @@
 struct SgG {
     SgSpv spv;
     T* t;
-    uint64_t w; /* the instruction's word */
+    uint64_t w;      /* the instruction's word */
+    const void* arg; /* its fields, as usse.decode's pattern decodes them (arg_<pattern>) */
     int form;   /* its opcode's place in its roots line */
     Operand op[8];
     Value val[8];
+    uint8_t layout[2][3]; /* VDUAL's sources' layouts */
 };
 static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static uint32_t sgu_t_u64(SgG* g) { return (void)g, 0; }
-[[maybe_unused]] static void sgu_begin(SgG* g, T* t, uint64_t w) {
+[[maybe_unused]] static void sgu_begin(SgG* g, T* t, uint64_t w, const void* arg) {
     memset(g, 0, sizeof *g);
     g->t = t;
     g->w = w;
+    g->arg = arg;
     g->spv.e = &t->e;
     g->spv.t_u32 = t->t_u32;
     g->spv.t_i32 = t->t_i32;
@@ -48,6 +51,7 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     }
     t->failed = true;
 }
+[[maybe_unused]] static void sg_throw_Stop(SgG* g) { (void)g; }
 
 /* ---- the operands ---- */
 [[maybe_unused]] static void sg_Dest(SgG* g, int64_t k, int64_t n, int64_t bank, int64_t ext, int64_t doubled, int64_t bits) {
@@ -76,9 +80,6 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     vec34_swizzle(g->op[k].swizzle, (unsigned)swizzle, extended, (int)type);
 }
 [[maybe_unused]] static void sg_Swizzle4(SgG* g, int64_t k, int64_t encoded) { swizzle4(g->op[k].swizzle, (unsigned)encoded); }
-[[maybe_unused]] static void sg_DualSwizzle(SgG* g, int64_t k, int64_t swizzle, int64_t extended, int64_t vec4) {
-    dual_swizzle(g->op[k].swizzle, (unsigned)swizzle, extended, vec4);
-}
 [[maybe_unused]] static int64_t sg_BankOf(SgG* g, int64_t k) { return g->op[k].bank; }
 [[maybe_unused]] static int64_t sg_NumOf(SgG* g, int64_t k) { return g->op[k].num; }
 [[maybe_unused]] static int64_t sg_TypeOf(SgG* g, int64_t k) { return g->op[k].type; }
