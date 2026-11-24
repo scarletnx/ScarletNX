@@ -34,15 +34,17 @@ static GuiSetting* row(GuiSettings* s, const char* section, const char* key, con
     return v;
 }
 /* a row's values, value=word between '|', split in place: its words (.ini first, a game's Global) from *pool, NULL
-   when one has no =. values gets them by word */
+   when one has no =. values gets them by word. Each list keeps a slot after its last word for a value none of them is
+   (GuiSetting's custom), NULL until one is set */
 static const char** words_of(char* list, const char*** pool, const char*** values, int game) {
     const char** words = *pool;
     int n = 1, i;
     char* c;
     for (c = list; *c; ++c) n += *c == '|';
-    *values = words + n + 2;
+    *values = words + n + 3;
     words[0] = game ? SNX_TR_NOOP("Global") : ".ini";
     (*values)[0] = NULL;
+    words[n + 1] = words[n + 2] = (*values)[n + 1] = NULL;
     for (i = 1, c = list; i <= n; ++i) {
         char *end = c + strcspn(c, "|"), *equals;
         if (*end) *end++ = 0;
@@ -53,8 +55,7 @@ static const char** words_of(char* list, const char*** pool, const char*** value
         words[i] = equals + 1;
         c = end;
     }
-    words[n + 1] = NULL;
-    *pool += 2 * n + 3;
+    *pool += 2 * n + 5;
     return words;
 }
 /* row i's words and values past the .ini's, the first: its values alone, its word the same value's */
@@ -62,6 +63,13 @@ static void plain(GuiSettings* s, int i) {
     ++s->keys[i].words;
     ++s->values[i].values;
     s->values[i].plain = 1;
+}
+/* 1 when mark is one of the words of a column, a space between two */
+static int has_mark(const char* column, const char* mark) {
+    size_t n = strlen(mark);
+    for (const char* c = column; (c = strstr(c, mark)) != NULL; c += n)
+        if ((c == column || c[-1] == ' ') && (!c[n] || c[n] == ' ')) return 1;
+    return 0;
 }
 /* the rows of the runtime's list; with game, a game's own (gui_settings_read_game) */
 static int read_list(GuiSettings* s, const char* runtime, int game) {
@@ -84,7 +92,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         n += *c == '\n' ? 3 : 0;
         bars += *c == '|';
     }
-    pool = 2 * bars + 5 * n;
+    pool = 2 * bars + 7 * n; /* a row's words and values, 2 * words + 5 (words_of): a line's 3 rows hold the 5 */
     if (n > (SIZE_MAX - size) / (sizeof *s->keys + sizeof *s->values + 5 * sizeof(char*)) ||
         bars > (SIZE_MAX - size) / 4 / sizeof(char*)) {
         free(list);
@@ -132,6 +140,9 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
+        v->number = field[3][0] == 'i' || field[3][0] == 'f' ? field[3][0] : 0;
+        v->lo = strtod(field[4], NULL);
+        v->hi = strtod(field[5], NULL);
         v->only = *field[9] ? field[9] : NULL;
         v->needs_build = !strcmp(field[10], "needs-build");
         if (!words && (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
@@ -154,7 +165,9 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
             plain(s, s->count - 1);
             --v->word;
         }
-        v->slider = v->plain && !strcmp(field[11], "slider"); /* its default a step, as the runtime's list makes it */
+        /* the twelfth column's marks: slider, its default a step as the runtime's list makes it, and open */
+        v->slider = v->plain && has_mark(field[11], "slider");
+        v->open = has_mark(field[11], "open");
         if (page) {
             link->count = s->count - link->first;
             all->count = s->count - all->first;
@@ -192,6 +205,38 @@ static const char* picked(const GuiSettings* s, int i) {
     if (s->keys[i].type == GUI_KEY_WORD) return v->word ? kept(s, i) : NULL;
     return s->keys[i].type == GUI_KEY_TEXT && v->text[0] ? v->text : NULL;
 }
+/* whether value is one row i keeps beside its words: a number in its range, a text where it is open */
+static int custom_fits(const GuiSetting* v, const char* value) {
+    char* end;
+    double x;
+    if (!*value || strlen(value) >= sizeof v->text || (!v->open && !v->slider)) return 0;
+    if (!v->number) return !strchr(value, '|');
+    x = strtod(value, &end);
+    if (end == value || *end || x != x || x < v->lo || x > v->hi) return 0;
+    return v->number == 'f' || x == (double)(long long)x;
+}
+/* row i set to value, none of its words, kept in its slot after them (words_of) and shown as itself: 1 when it did */
+static int set_custom(GuiSettings* s, int i, const char* value) {
+    GuiSetting* v = &s->values[i];
+    const char** words = (const char**)s->keys[i].words; /* words_of's pool, which the row's keys point into */
+    const char** values = (const char**)v->values;
+    int slot = v->custom;
+    if (!values || !custom_fits(v, value)) return 0;
+    if (!slot)
+        while (words[slot]) ++slot;
+    snprintf(v->text, sizeof v->text, "%s", value);
+    words[slot] = values[slot] = v->text;
+    v->custom = v->word = slot;
+    return 1;
+}
+/* row i's slot after its words emptied where the row keeps no value there (a try put back) */
+static void custom_drop(GuiSettings* s, int i) {
+    const char** words = (const char**)s->keys[i].words;
+    int k;
+    if (s->keys[i].type != GUI_KEY_WORD || !s->values[i].values || s->values[i].custom) return;
+    for (k = 0; words[k]; ++k)
+        if (words[k] == s->values[i].text) words[k] = ((const char**)s->values[i].values)[k] = NULL;
+}
 /* row i set to value, a value of its words or a text: 1 when it did */
 static int set(GuiSettings* s, int i, const char* value) {
     GuiSetting* v = &s->values[i];
@@ -208,7 +253,7 @@ static int set(GuiSettings* s, int i, const char* value) {
         v->word = 0;
         return 1;
     }
-    return 0;
+    return set_custom(s, i, value);
 }
 void gui_settings_mark(GuiSettings* s) {
     int i;
@@ -372,6 +417,7 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
             was = s->values[i];
             taken = set(s, i, value);
             s->values[i] = was;
+            custom_drop(s, i);
             if (taken) continue;
         }
         if (n < size) n += (size_t)snprintf(out + n, size - n, "%s%s=%s", count ? ", " : "", key, value);
@@ -385,11 +431,22 @@ static int steps(const GuiSettings* s, int row) {
     int n = 0;
     if (row < 0 || row >= s->count || !s->values[row].slider) return 0;
     while (s->keys[row].words[n]) ++n;
-    return n;
+    return s->values[row].custom ? s->values[row].custom : n; /* a value no step has comes after them */
+}
+/* the steps of a slider's row past value, a number its steps' values are in order of: how many */
+static int steps_below(const GuiSettings* s, int row, double value) {
+    int n = steps(s, row), k = 0;
+    while (k < n && strtod(s->values[row].values[k], NULL) < value) ++k;
+    return k;
 }
 int gui_settings_slide(GuiSettings* s, int row, int step) {
-    int n = steps(s, row), to;
+    int n = steps(s, row), to, below;
     if (!n) return 0;
+    if (s->values[row].custom && s->values[row].word == s->values[row].custom) { /* off its steps: the next one */
+        below = steps_below(s, row, strtod(s->values[row].text, NULL));
+        s->values[row].word = snx_clamp_int(step < 0 ? below - 1 : below, 0, n - 1);
+        return 1;
+    }
     to = snx_clamp_int(s->values[row].word + (step < 0 ? -1 : 1), 0, n - 1);
     if (to == s->values[row].word) return 0;
     s->values[row].word = to;
@@ -405,6 +462,11 @@ int gui_settings_slide_to(GuiSettings* s, int row, int at) {
 }
 int gui_settings_knob(const GuiSettings* s, int row) {
     int n = steps(s, row);
+    if (n > 1 && s->values[row].custom && s->values[row].word == s->values[row].custom) { /* by its value */
+        double first = strtod(s->values[row].values[0], NULL), last = strtod(s->values[row].values[n - 1], NULL);
+        double at = (strtod(s->values[row].text, NULL) - first) * 1000.0 / (last - first);
+        return last > first ? snx_clamp_int((int)(at + 0.5), 0, 1000) : 0;
+    }
     return n > 1 ? s->values[row].word * 1000 / (n - 1) : 0;
 }
 int gui_settings_step_all(GuiSettings* s, int row, int step) {
