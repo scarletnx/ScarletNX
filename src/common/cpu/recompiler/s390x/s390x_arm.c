@@ -19,7 +19,7 @@
 #define RK_BIG_ENDIAN 1
 #define MG_ARM_ELF_BIG 1
 /* the ELF s390x relocation the blocks have (the s390x ELF ABI's number) */
-enum { ZS_EM = 22, ZS_R_64 = 22 };
+enum { ZS_EM = 22, ZS_R_PC64 = 23 };
 #define MG_ARM_INC         "a32_s390x.inc"
 #define MG_ARM             SnxS390xArm
 #define MG_ARM_NEXT        SnxS390xArmNext
@@ -29,9 +29,9 @@ enum { ZS_EM = 22, ZS_R_64 = 22 };
 #define MG_ARM_FEATURES()  0u
 #define MG_ARM_EM          ZS_EM
 #define MG_ARM_ELF_FLAGS   0
-#define MG_ARM_CALL_RELOC  ZS_R_64
-#define MG_ARM_R_TAIL      ZS_R_64
-#define MG_ARM_R_ABS64     ZS_R_64
+#define MG_ARM_CALL_RELOC  ZS_R_PC64
+#define MG_ARM_R_TAIL      ZS_R_PC64
+#define MG_ARM_R_LITERAL   ZS_R_PC64
 #define MG_ARM_ENTRY_EXIT  "snx_zs_a32_entry_exit"
 #define MG_ARM_LOAD_FENCE  1 /* a load-acquire: a serialization after it */
 #define MG_ARM_FP_HOT      0

@@ -4019,6 +4019,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         target_link_libraries(snx-test-recompiler-${m} PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
         snx_decodetree_a64(snx-test-recompiler-${m})
         add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m})
+        # a JIT unit's: its literals hold addresses on MIPS64
+        add_test(NAME recompiler_${m}_jit COMMAND snx-test-recompiler-${m} --jit --made --states 40 --words 1e622820 1e621841
+                 9ac10c00 d65f03c0)
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
                  ${snx_half_words})
@@ -4043,6 +4046,16 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
+endif()
+# the objects every native back end writes for an AOT module: no absolute address in their code, the little-endian ones
+# linked
+if(NOT WIN32)
+    add_executable(snx-test-native-link native_link.c)
+    snx_test_target(snx-test-native-link gnu23)
+    target_include_directories(snx-test-native-link PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-native-link PRIVATE scarletnx-recompiler snx_driver_llvm snx_driver snx_llvm
+                          snx_arm_llvm ${CMAKE_DL_LIBS})
+    add_test(NAME native_link COMMAND snx-test-native-link)
 endif()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
 # run under Unicorn (loongarch64's in support/la64_interp.c)

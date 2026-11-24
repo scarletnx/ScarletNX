@@ -4,7 +4,7 @@
    block compiler: rv64/rv64_arm.c...): the frame (the machine's rk_fn_prologue, without pins), the entry checks on the
    state's register, the chaining's tail jumps and poll, the entry checks' exit function and the entry stub of a block
    another back end makes, from risc.h's operations and the machine's branches and calls. The machine names its
-   relocations (MG_ARM_R_TAIL, MG_ARM_R_ABS64) and the exit function's symbol (MG_ARM_ENTRY_EXIT, at most 23
+   relocations (MG_ARM_R_TAIL, MG_ARM_R_LITERAL) and the exit function's symbol (MG_ARM_ENTRY_EXIT, at most 23
    characters). The VFP's arithmetic is snx_arm_fp's, its helper */
 
 /* the scratch registers of the code before the frame (the entry checks, the exit function, an entry stub): the
@@ -77,8 +77,8 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         /* the thread's poll (the state's word at snx_arm_poll_offset): a thread of higher priority waits, the return
            with R15 stored */
         int go = sgx_a32_label(g);
-        add_rel(c, rk_literal(b, RK_S1), "snx_arm_poll_offset", MG_ARM_R_ABS64, 0);
-        rk_ldst(b, 1, 8, 0, RK_S1, RK_S1, -1, 0);
+        add_rel(c, rk_literal(b, RK_S1), "snx_arm_poll_offset", MG_ARM_R_LITERAL, 0);
+        rk_literal_value(b, RK_S1, RK_S1, RK_SA);
         rk_ldst(b, 1, 4, 0, RK_S1, SGX_BASE, RK_S1, 0);
         arm_jreg(c, 0, RK_S1, go);
         if (!public) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, key & ~1u);

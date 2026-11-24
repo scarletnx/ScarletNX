@@ -317,14 +317,14 @@ uint64_t hostuc_symbol(HostUc* u, const char* name) {
 /* the bytes a relocation of the architecture's type writes, where they're a number of its order (a big-endian one's
    turned over around snx_elf_relocate, which writes this host's): 0 for a type not known here */
 static unsigned reloc_bytes(unsigned em, unsigned type) {
-    if (em == EM_PPC64) return type == SNX_PPC_ADDR64 ? 8 : 0;
-    if (em == EM_MIPS) return type == SNX_MIPS_64 ? 8 : 0;
-    if (em == EM_S390) return type == 22 /* R_390_64 */ ? 8 : type == 19 /* R_390_PC32DBL */ ? 4 : 0;
+    if (em == EM_PPC64) return type == SNX_PPC_ADDR64 || type == SNX_PPC_REL64 ? 8 : 0;
+    if (em == EM_MIPS) return type == SNX_MIPS_64 ? 8 : type == SNX_MIPS_PC32 ? 4 : 0;
+    if (em == EM_S390) return type == SNX_390_64 || type == SNX_390_PC64 ? 8 : type == SNX_390_PC32DBL ? 4 : 0;
     return 0;
 }
 static int load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
-/* the object's sections laid out one after another in the region (.text, the others it holds bytes of, .bss
-   zeroed), its symbols at their places, each RELA section's relocations written; an object of the other byte order's
+/* the object's sections laid out one after another in the region (the data it holds bytes of and .bss zeroed, then the
+   code), its symbols at their places, each RELA section's relocations written; an object of the other byte order's
    tables read turned over */
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
     unsigned char* copy;
@@ -356,25 +356,27 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
     sh = (const Elf64_Shdr*)(const void*)(object + eh->e_shoff);
     at = (uint64_t*)calloc(eh->e_shnum, sizeof *at);
     if (!at) return -1;
-    for (k = 0; k < eh->e_shnum; ++k) {
+    for (k = 0; k < eh->e_shnum; ++k)
         if (sh[k].sh_type == SHT_SYMTAB) {
             syms = (const Elf64_Sym*)(const void*)(object + sh[k].sh_offset);
             nsyms = sh[k].sh_size / sizeof *syms;
             strtab = (const char*)(object + sh[sh[k].sh_link].sh_offset);
         }
-        if ((sh[k].sh_flags & SHF_ALLOC) && (sh[k].sh_type == SHT_PROGBITS || sh[k].sh_type == SHT_NOBITS) &&
-            sh[k].sh_size) {
-            /* .bss and its kin: zeroes of their size */
-            void* zero = sh[k].sh_type == SHT_NOBITS ? calloc(1, sh[k].sh_size) : NULL;
-            at[k] = hostuc_code(u, zero ? zero : object + sh[k].sh_offset, sh[k].sh_size);
-            free(zero);
-            if (!at[k]) {
-                snprintf(error, error_size, "no room for section %zu", k);
-                free(at);
-                return -1;
+    /* the data first, as a module's read-only data is before its code: the code's distances to it are negative */
+    for (int code = 0; code < 2; ++code)
+        for (k = 0; k < eh->e_shnum; ++k)
+            if ((sh[k].sh_flags & SHF_ALLOC) && (sh[k].sh_type == SHT_PROGBITS || sh[k].sh_type == SHT_NOBITS) &&
+                sh[k].sh_size && !(sh[k].sh_flags & SHF_EXECINSTR) == !code) {
+                /* .bss and its kin: zeroes of their size */
+                void* zero = sh[k].sh_type == SHT_NOBITS ? calloc(1, sh[k].sh_size) : NULL;
+                at[k] = hostuc_code(u, zero ? zero : object + sh[k].sh_offset, sh[k].sh_size);
+                free(zero);
+                if (!at[k]) {
+                    snprintf(error, error_size, "no room for section %zu", k);
+                    free(at);
+                    return -1;
+                }
             }
-        }
-    }
     for (k = 0; k < nsyms; ++k)
         if (syms[k].st_shndx != SHN_UNDEF && syms[k].st_shndx < eh->e_shnum && syms[k].st_name &&
             ELF64_ST_TYPE(syms[k].st_info) != STT_SECTION) {

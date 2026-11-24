@@ -45,6 +45,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 #define MG_EM EM_LOONGARCH
 #define MG_ELF_FLAGS 0x43 /* the LP64D ABI, object file v1: LLVM's loongarch64 objects' */
 #define MG_R_ABS64 SNX_LA_64
+#define MG_R_LITERAL SNX_LA_64_PCREL
 #define MG_R_CALL SNX_LA_CALL36
 #define MG_R_TAIL SNX_LA_CALL36
 #define SGX_FN_TARGET 5 /* a1 */

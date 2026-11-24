@@ -16,13 +16,13 @@ static int desc_done(SnxNativeFn* f, const SgXBuf* b) {
     f->size = b->n;
     return 0;
 }
-/* d = the address the literal holds (sym + addend), its relocation the function's next */
+/* d = sym + addend, by a literal (its relocation the function's next); RK_ENTRY_S1 a scratch where d is RK_SA */
 static void desc_address(SnxNativeFn* f, SgXBuf* b, int d, const char* sym, long long addend) {
     f->rel[f->nrel].at = rk_leaf_literal(b, RK_SA);
     f->rel[f->nrel].sym = sym;
     f->rel[f->nrel].type = 0;
     f->rel[f->nrel++].addend = addend;
-    rk_ldst(b, 1, 8, 0, d, RK_SA, -1, 0);
+    rk_literal_value(b, d, RK_SA, d == RK_SA ? RK_ENTRY_S1 : d);
 }
 #define DESC_BEGIN(f) SgXBuf b = {.p = (f)->code, .cap = sizeof (f)->code, .index = -1}; (f)->nrel = 0
 
@@ -105,5 +105,5 @@ static int desc_tail_to(SnxNativeFn* f, const char* sym) {
     return desc_done(f, &b);
 }
 
-const SnxNativeDesc MG_DESC = {MG_DESC_NAME,   MG_EM,          MG_ELF_FLAGS,    MG_R_ABS64,     MG_ELF_BIG,
-                               desc_returns,   desc_module_fn, desc_import_dyn, desc_tail_slot, desc_tail_to};
+const SnxNativeDesc MG_DESC = {MG_DESC_NAME, MG_EM,          MG_ELF_FLAGS,    MG_R_ABS64,     MG_R_LITERAL, MG_ELF_BIG,
+                               desc_returns, desc_module_fn, desc_import_dyn, desc_tail_slot, desc_tail_to};

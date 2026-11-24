@@ -5,8 +5,8 @@
 
    The function's ABI is GuestFn's under ELFv2: the state in r3, kept in r30, the entry in r4 (SGX_FN_TARGET); r2 and
    r14-r31 saved (ppc64.h's frame), r20-r29 the pinned guest registers. The object is ELF PowerPC64 (ELFv2): a call's
-   and snx_stale's absolute address an R_PPC64_ADDR64 in the code, the callee entered through CTR with its address in
-   r12 */
+   and snx_stale's literal in the code is a distance (R_PPC64_REL64), the callee entered through CTR with its address
+   in r12 */
 #include "common/cpu/recompiler/ppc64/ppc64_codegen.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/elf_object.h"
@@ -51,8 +51,9 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 #define MG_EM EM_PPC64
 #define MG_ELF_FLAGS 2 /* ELFv2 */
 #define MG_R_ABS64 SNX_PPC_ADDR64
-#define MG_R_CALL SNX_PPC_ADDR64
-#define MG_R_TAIL SNX_PPC_ADDR64
+#define MG_R_LITERAL SNX_PPC_REL64
+#define MG_R_CALL MG_R_LITERAL
+#define MG_R_TAIL MG_R_LITERAL
 #define SGX_FN_TARGET 4 /* r4 */
 static const signed char mg_pin_hosts[10] = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
 #define MG_NPINS 10

@@ -22,7 +22,7 @@
 #define RK_BIG_ENDIAN PPC_BE
 #define MG_ARM_ELF_BIG PPC_BE
 /* the ELF PowerPC64 relocation the blocks have (the ELFv2 ABI's number) */
-enum { PPC_EM = 21, PPC_R_ADDR64 = 38 };
+enum { PPC_EM = 21, PPC_R_REL64 = 44 };
 #define MG_ARM_INC         "a32_ppc64.inc"
 #define MG_ARM             SnxPpc64Arm
 #define MG_ARM_NEXT        SnxPpc64ArmNext
@@ -32,9 +32,9 @@ enum { PPC_EM = 21, PPC_R_ADDR64 = 38 };
 #define MG_ARM_FEATURES()  0u
 #define MG_ARM_EM          PPC_EM
 #define MG_ARM_ELF_FLAGS   2 /* ELFv2 */
-#define MG_ARM_CALL_RELOC  PPC_R_ADDR64
-#define MG_ARM_R_TAIL      PPC_R_ADDR64
-#define MG_ARM_R_ABS64     PPC_R_ADDR64
+#define MG_ARM_CALL_RELOC  PPC_R_REL64
+#define MG_ARM_R_TAIL      PPC_R_REL64
+#define MG_ARM_R_LITERAL   PPC_R_REL64
 #define MG_ARM_ENTRY_EXIT  "snx_ppc_a32_entry_exit"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a SYNC after it */
 #define MG_ARM_FP_HOT      0
