@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A native back end's code under Unicorn for the back ends' tests (host_unicorn.h) */
 #include "support/host_unicorn.h"
+#include "support/la64_interp.h"
 #include "common/cpu/recompiler/llvm/elf_object.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,9 @@ static const Arch g_arch[] = {
                          EM_MIPS, 0x03E00008u, /* jr ra (its delay slot the next word's: the page's words alternate) */
                          {UC_MIPS_REG_4, UC_MIPS_REG_5, UC_MIPS_REG_6, UC_MIPS_REG_7, UC_MIPS_REG_8, UC_MIPS_REG_9},
                          {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC},
+    /* la64_interp.c's: its registers by number */
+    [HOSTUC_LA64] = {"loongarch64", (uc_arch)0, (uc_mode)0, 0, EM_LOONGARCH, 0x4C000020u, /* jirl zero, ra, 0 */
+                     {4, 5, 6, 7, 8, 9}, {4, 5}, 3, 1, 0},
 };
 /* MIPS's virtual TLB: every address its own */
 static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
@@ -68,6 +72,9 @@ struct HostUc {
     unsigned char* stack;
     UcSym* syms;
     size_t nsyms, cap_syms;
+    La64* la; /* the interpreter's, where Unicorn has none of the architecture (no uc) */
+    La64Region regions[64];
+    size_t nregions;
 };
 
 const char* hostuc_name(HostUcArch arch) { return g_arch[arch].name; }
@@ -77,7 +84,15 @@ static void* page_alloc(size_t size) {
     return p == MAP_FAILED ? NULL : p;
 }
 int hostuc_map(HostUc* u, void* p, size_t size) {
-    uc_err e = uc_mem_map_ptr(u->uc, (uint64_t)(uintptr_t)p, (size + PAGE - 1) & ~(size_t)(PAGE - 1), UC_PROT_ALL, p);
+    uc_err e;
+    if (u->la) {
+        if (u->nregions == sizeof u->regions / sizeof *u->regions) return -1;
+        u->regions[u->nregions].lo = (uint64_t)(uintptr_t)p;
+        u->regions[u->nregions++].hi = (uint64_t)(uintptr_t)p + ((size + PAGE - 1) & ~(size_t)(PAGE - 1));
+        u->la->regions = u->regions, u->la->nregions = u->nregions;
+        return 0;
+    }
+    e = uc_mem_map_ptr(u->uc, (uint64_t)(uintptr_t)p, (size + PAGE - 1) & ~(size_t)(PAGE - 1), UC_PROT_ALL, p);
     if (e != UC_ERR_OK) {
         fprintf(stderr, "%s unicorn: no map of %p: %s\n", u->a->name, p, uc_strerror(e));
         return -1;
@@ -107,6 +122,25 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
     uc_reg_write(uc, u->a->result[0], &r);
 }
 
+/* the interpreter's trap: the native function's call as on_trap's, then its return (to ra); the exit's stops */
+static int la_trap(La64* c, void* user) {
+    HostUc* u = (HostUc*)user;
+    uint64_t exit = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
+    unsigned k = (unsigned)((c->pc - (uint64_t)(uintptr_t)u->trap) / 16);
+    if (c->pc == exit) return 0;
+    if (k >= u->ntraps || (c->pc & 15)) {
+        snprintf(c->why, sizeof c->why, "a trap page's word no native function is: %llx", (unsigned long long)c->pc);
+        return -1;
+    }
+    if (u->wide[k]) {
+        unsigned __int128 w = ((NativeWide)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
+        c->r[4] = (uint64_t)w, c->r[5] = (uint64_t)(w >> 64);
+    } else
+        c->r[4] = ((Native)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
+    c->pc = c->r[1];
+    return 1;
+}
+
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     HostUc* u = (HostUc*)calloc(1, sizeof *u);
     uc_hook hook;
@@ -114,6 +148,25 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     if (!u) return NULL;
     u->a = &g_arch[arch];
     code_cap = (code_cap + PAGE - 1) & ~(size_t)(PAGE - 1);
+    if (arch == HOSTUC_LA64) {
+        if (!(u->la = (La64*)calloc(1, sizeof *u->la)) || la64_selftest(u->la)) {
+            if (u->la) fprintf(stderr, "loongarch64 interpreter: %s\n", u->la->why);
+            hostuc_free(u);
+            return NULL;
+        }
+        u->code = (unsigned char*)page_alloc(code_cap + PAGE);
+        u->stack = (unsigned char*)page_alloc(STACK_SIZE);
+        if (!u->code || !u->stack || hostuc_map(u, u->code, code_cap + PAGE) || hostuc_map(u, u->stack, STACK_SIZE)) {
+            hostuc_free(u);
+            return NULL;
+        }
+        u->cap = code_cap;
+        u->trap = u->code + code_cap;
+        for (k = 0; k < PAGE / 4; ++k) memcpy(u->trap + 4 * k, &u->a->ret, 4);
+        u->la->trap_lo = (uint64_t)(uintptr_t)u->trap, u->la->trap_hi = u->la->trap_lo + PAGE;
+        u->la->trap = la_trap, u->la->user = u;
+        return u;
+    }
     if (uc_open(u->a->arch, u->a->mode, &u->uc) != UC_ERR_OK) {
         free(u);
         return NULL;
@@ -158,6 +211,7 @@ void hostuc_free(HostUc* u) {
     size_t k;
     if (!u) return;
     if (u->uc) uc_close(u->uc);
+    free(u->la);
     for (k = 0; k < u->ntraps; ++k) free(u->name[k]);
     for (k = 0; k < u->nsyms; ++k) free(u->syms[k].name);
     free(u->syms);
@@ -189,6 +243,7 @@ uint64_t hostuc_native(HostUc* u, const char* name, void* fn) { return native(u,
 uint64_t hostuc_native_wide(HostUc* u, const char* name, void* fn) { return native(u, name, fn, 1); }
 
 void hostuc_changed(HostUc* u, const void* p, size_t size) {
+    if (!u->uc) return; /* the interpreter reads the words as they are */
     uc_ctl_remove_cache(u->uc, (uint64_t)(uintptr_t)p, (uint64_t)(uintptr_t)p + size);
 }
 uint64_t hostuc_code(HostUc* u, const void* bytes, size_t size) {
@@ -285,6 +340,18 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     /* the stack's top less a caller's frame header (ELFv2's callee saves LR at 16(r1), in its caller's frame) */
     uint64_t sp = (uint64_t)(uintptr_t)(u->stack + STACK_SIZE - 256), lr = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
     uc_err e;
+    if (u->la) {
+        La64* c = u->la;
+        memset(c->r, 0, sizeof c->r);
+        c->r[4] = a0, c->r[5] = a1, c->r[3] = sp, c->r[1] = lr, c->pc = fn, c->ll_on = 0;
+        if (la64_run(c, 1u << 22)) {
+            fprintf(stderr, "loongarch64 interpreter: stopped at %llx (%+lld from the code): %s\n",
+                    (unsigned long long)c->pc, (long long)(c->pc - (uint64_t)(uintptr_t)u->code), c->why);
+            return -1;
+        }
+        if (result) *result = c->r[4];
+        return 0;
+    }
     uc_reg_write(u->uc, u->a->args[0], &a0);
     uc_reg_write(u->uc, u->a->args[1], &a1);
     uc_reg_write(u->uc, u->a->sp, &sp);
