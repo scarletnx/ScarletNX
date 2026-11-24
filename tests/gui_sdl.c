@@ -990,6 +990,52 @@ static void volume_view(App* app) {
     key(app, SDLK_ESCAPE);
     leave_editor(app);
 }
+/* Settings > Shortcuts: Enter on a row waits for the key it takes, as the game's menu's page does: the key pressed
+   with the modifiers held is the row's, kept and said; ESC keeps the one it has, Backspace puts its default back, and
+   a key another row has is refused, said with both rows */
+static void shortcuts_capture(App* app) {
+    static const char list[] = "Shortcuts\thotkey_help\tF1\ttext\t0\t0\tHelp\tHelp\t\n"
+                               "Shortcuts\thotkey_menu\tF2\ttext\t0\t0\tMenu\tMenu\t\n"
+                               "Shortcuts\thotkey_quit\tEscape\ttext\t0\t0\tQuit\tQuit\t\n";
+    SDL_Event e = {0};
+    int g, help;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Shortcuts"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->group == g);
+    help = row_of(app, setting_row(app, "hotkey_help"));
+    app->editor.row = help;
+    key(app, SDLK_RETURN);
+    assert(app->key_listen && strstr(app->editor.note, "Press the key for Help (ESC keeps F1"));
+    key(app, SDLK_LSHIFT); /* a modifier waits for its key */
+    assert(app->key_listen);
+    key(app, SDLK_ESCAPE);
+    assert(!app->key_listen && !strcmp(app->editor.note, "Help keeps F1") &&
+           !gui_settings_value(&app->settings, "hotkey_help"));
+    key(app, SDLK_RETURN);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_F9;
+    e.key.mod = SDL_KMOD_LCTRL;
+    assert(SDL_PushEvent(&e));
+    while (SDL_PollEvent(&e)) event(app, &e);
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "hotkey_help"), "Ctrl+F9") &&
+           !strcmp(app->editor.note, "Help: Ctrl+F9") && picks_have(app, "hotkey_help="));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_F2); /* Menu's: refused */
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "hotkey_help"), "Ctrl+F9") &&
+           !strcmp(app->editor.note, "F2 already does Menu: Help keeps Ctrl+F9"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_BACKSPACE); /* its default again */
+    assert(!app->key_listen && !gui_settings_value(&app->settings, "hotkey_help") &&
+           !strcmp(app->editor.note, "Help: F1"));
+    leave_editor(app);
+    settings_forget(app);
+}
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
    its A and B as its own swap says, else every player's; ESC comes back to the player's rows */
@@ -17523,6 +17569,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    shortcuts_capture(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */

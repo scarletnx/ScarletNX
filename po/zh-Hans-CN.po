@@ -4110,6 +4110,25 @@ msgid "Player %d keeps %s"
 msgstr "玩家 %d 保留 %s"
 
 #: src/gui/main.c
+msgid "no key"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Press the key for %s (ESC keeps %s, Backspace: its default)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s already does %s: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Looking for controllers..."
 msgstr "正在查找手柄..."
 

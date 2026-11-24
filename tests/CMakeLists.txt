@@ -2579,7 +2579,8 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/key_text.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
     if(SNX_TRACY)
         # the keys page has the capture's row in a build with the client, which the test expects of either
         target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1
@@ -2631,7 +2632,8 @@ add_test(NAME hud COMMAND snx-test-hud)
 if(TARGET SDL3::SDL3) # the keys' names are SDL's
     # the runtime's keys (runtime/platform/hotkeys.c): settings.txt's Shortcuts read as SDL names keys, a key pressed
     # found by them, a value that isn't a key refused with the one in effect
-    add_executable(snx-test-hotkeys hotkeys.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c")
+    add_executable(snx-test-hotkeys hotkeys.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/utilities/key_text.c")
     snx_test_target(snx-test-hotkeys gnu23)
     target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
     add_test(NAME hotkeys COMMAND snx-test-hotkeys)
