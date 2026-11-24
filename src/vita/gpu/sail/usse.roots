@@ -9,3 +9,4 @@ include usse_data.roots
 include usse_float.roots
 include usse_int.roots
 include usse_test.roots
+include usse_mem.roots

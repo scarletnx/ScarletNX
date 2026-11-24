@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE's loads, texture reads and special instructions (usse_mem.sail), which were usse.c's vldst, smp, kill and
+# depthf
+static LiteralRegister LiteralBase HasLiterals LiteralFits LiteralData HasBuffer Dependent TextureFormat TextureType TextureComponents HasDepth
+op VLDST U_VLDST
+op SMP U_SMP
+op KILL U_KILL
+op DEPTHF U_DEPTHF

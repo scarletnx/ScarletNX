@@ -550,6 +550,14 @@ static inline SgV sg_V3Of4(SgG* g, SgV a) {
     uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 3);
     return sg_vt(SPV(sg_spv(g)->e, SPV_OP_VECTOR_SHUFFLE, t, a.id, a.id, 0, 1, 2), t);
 }
+static inline SgV sg_V2Of(SgG* g, SgV x, SgV y) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 2), a = sg_f(g, x), b = sg_f(g, y);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, b), t);
+}
+static inline SgV sg_V3Of(SgG* g, SgV x, SgV y, SgV z) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 3), a = sg_f(g, x), b = sg_f(g, y), c = sg_f(g, z);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, b, c), t);
+}
 static inline SgV sg_V4FAdd(SgG* g, SgV a, SgV b) { return sg_vop2(g, SPV_OP_F_ADD, a, b); }
 static inline SgV sg_V4FMul(SgG* g, SgV a, SgV b) { return sg_vop2(g, SPV_OP_F_MUL, a, b); }
 static inline SgV sg_V4FNeg(SgG* g, SgV a) { return sg_vop1(g, SPV_OP_F_NEGATE, a); }
@@ -572,5 +580,25 @@ static inline SgV sg_V4Select(SgG* g, SgV c, SgV a, SgV b) {
 static inline SgV sg_B4Splat(SgG* g, SgV c) {
     uint32_t t = sg_t_vec(g, sg_spv(g)->t_bool, 4);
     return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, c.id, c.id, c.id, c.id), t);
+}
+
+/* ---- gpu.sail's sampled images: OpImageSampleImplicitLod and OpImageSampleExplicitLod of a sampled image's id ---- */
+static inline uint32_t sg_t_v4f(SgG* g) { return sg_t_vec(g, sg_spv(g)->t_f32, 4); }
+static inline SgV sg_SampleImplicit(SgG* g, SgV s, SgV c) {
+    uint32_t t = sg_t_v4f(g);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t, s.id, c.id), t);
+}
+static inline SgV sg_SampleBias(SgG* g, SgV s, SgV c, SgV bias) {
+    uint32_t t = sg_t_v4f(g), b = sg_f(g, bias);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_BIAS, b), t);
+}
+static inline SgV sg_SampleLod(SgG* g, SgV s, SgV c, SgV lod) {
+    uint32_t t = sg_t_v4f(g), l = sg_f(g, lod);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_LOD, l), t);
+}
+static inline SgV sg_SampleGrad(SgG* g, SgV s, SgV c, SgV dx, SgV dy) {
+    uint32_t t = sg_t_v4f(g);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_GRAD, dx.id, dy.id),
+                 t);
 }
 #endif
