@@ -747,11 +747,71 @@ static int shift_imm(SnxU32 word, unsigned* size, unsigned* left, unsigned* righ
     return 0;
 }
 
+/* the FP instructions the lanes above don't have: by element scalars, pairwise and across lanes, the reciprocal
+   estimates and steps and the roundings to an integer; 0 for the rest */
+static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned q = word >> 30 & 1, sz = word >> 22 & 1, rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
+    int n = sz ? 2 : q ? 4 : 2, r, scalar = 0;
+    switch (insn->op) {
+    case SNX_A64_OP_FADDP_v:
+    case SNX_A64_OP_FMAXP_v:
+    case SNX_A64_OP_FMINP_v:
+    case SNX_A64_OP_FMAXNMP_v:
+    case SNX_A64_OP_FMINNMP_v: {
+        int a, b, ev, od;
+        if (sz && !q) return -1; /* 1D: reserved */
+        a = vread(g, rn), b = vread(g, rm);
+        ev = vzip(g, 2, sz + 2, (int)q, a, b);
+        od = vzip(g, 3, sz + 2, (int)q, a, b);
+        if (insn->op == SNX_A64_OP_FADDP_v)
+            r = fbinary(g, SNX_FP_ADD, sz, n, ev, od);
+        else
+            r = fminmax(g, sz, n, ev, od, insn->op == SNX_A64_OP_FMINP_v || insn->op == SNX_A64_OP_FMINNMP_v,
+                        insn->op == SNX_A64_OP_FMAXNMP_v || insn->op == SNX_A64_OP_FMINNMP_v);
+        break;
+    }
+    case SNX_A64_OP_FADDP_s:
+    case SNX_A64_OP_FMAXP_s:
+    case SNX_A64_OP_FMINP_s:
+    case SNX_A64_OP_FMAXNMP_s:
+    case SNX_A64_OP_FMINNMP_s: { /* lane 0 with lane 1 */
+        int a = vread(g, rn), b = sgx_v1(X, &sgx_v_pshufd, a, sz ? 0xEE : 0x55);
+        scalar = n = 1;
+        if (insn->op == SNX_A64_OP_FADDP_s)
+            r = fbinary(g, SNX_FP_ADD, sz, 1, a, b);
+        else
+            r = fminmax(g, sz, 1, a, b, insn->op == SNX_A64_OP_FMINP_s || insn->op == SNX_A64_OP_FMINNMP_s,
+                        insn->op == SNX_A64_OP_FMAXNMP_s || insn->op == SNX_A64_OP_FMINNMP_s);
+        break;
+    }
+    case SNX_A64_OP_FMAXV_s:
+    case SNX_A64_OP_FMINV_s:
+    case SNX_A64_OP_FMAXNMV_s:
+    case SNX_A64_OP_FMINNMV_s: { /* (0 op 1) op (2 op 3) */
+        int a = vread(g, rn), t;
+        int mn = insn->op == SNX_A64_OP_FMINV_s || insn->op == SNX_A64_OP_FMINNMV_s;
+        int num = insn->op == SNX_A64_OP_FMAXNMV_s || insn->op == SNX_A64_OP_FMINNMV_s;
+        t = fminmax(g, 0, 2, sgx_v1(X, &sgx_v_pshufd, a, 0x88), sgx_v1(X, &sgx_v_pshufd, a, 0xDD), mn, num);
+        scalar = n = 1;
+        r = fminmax(g, 0, 1, t, sgx_v1(X, &sgx_v_pshufd, t, 0x55), mn, num);
+        break;
+    }
+    default: return 0;
+    }
+    if (scalar)
+        sg__V_write(g, rd, sgx_xval(128, sgx_xclear(X, r, sz ? 64 : 32)));
+    else
+        vwrite(g, rd, r, q);
+    return 1;
+}
+
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
     if (insn->feature & SNX_A64_FEAT_FP16) return 0; /* half-precision lanes: the LLVM back end's */
     {
         int f = vec_fp(u, insn, word);
+        if (!f) f = vec_fp_more(u, insn, word);
         if (f) return f;
     }
     unsigned q = word >> 30 & 1, uns = word >> 29 & 1, size = word >> 22 & 3;
