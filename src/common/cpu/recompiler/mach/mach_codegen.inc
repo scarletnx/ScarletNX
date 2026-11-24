@@ -995,6 +995,92 @@ static int newer(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     return 1;
 }
 
+/* FEAT_FP8's, as FPMR zero has them (E5M2, no scale, no saturation): the state holds no FPMR, and an MSR or MRS of it
+   is undefined, so zero is what it stays */
+static int fp8(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31, q = word >> 30 & 1, e, n, bits, count;
+    unsigned byte = (word >> 11 & 1) << 3 | (word >> 19 & 7), lane = 0; /* by element: Vm's byte; Vn's in the group */
+    int by_element = 0;
+    SgD r = sg_d_empty(128), args[4];
+    switch (insn->op) {
+    case SNX_A64_OP_FSCALE:
+        bits = 8u << insn->args.esz;
+        for (e = 0; e < (q ? 128 : 64) / bits; ++e) {
+            args[0] = vbits(g, rn, (e + 1) * bits - 1, e * bits);
+            args[1] = vbits(g, rm, (e + 1) * bits - 1, e * bits);
+            args[0] = sgx_fp(g, "snx_x64_fp_scale", 0, sg_FPCR_read(g), args, 2, 1, bits, bits);
+            sg_d_set_slice(g, &r, (e + 1) * bits - 1, e * bits, args[0]);
+        }
+        sg__V_write(g, rd, r);
+        return 1;
+    case SNX_A64_OP_F1CVTL:
+    case SNX_A64_OP_F2CVTL:
+    case SNX_A64_OP_BF1CVTL:
+    case SNX_A64_OP_BF2CVTL:
+        for (e = 0; e < 8; ++e) {
+            args[0] = sg_d_zext(g, vbits(g, rn, 64 * q + 8 * e + 7, 64 * q + 8 * e), 64);
+            args[1] = sgx_const(32, insn->op == SNX_A64_OP_BF1CVTL || insn->op == SNX_A64_OP_BF2CVTL);
+            args[0] = sg_d_slice(g, sgx_call(g, "snx_x64_fp8_widen", 0, 1, args, 2, 64), 15, 0);
+            sg_d_set_slice(g, &r, 16 * e + 15, 16 * e, args[0]);
+        }
+        sg__V_write(g, rd, r);
+        return 1;
+    case SNX_A64_OP_FCVTN_bh:
+    case SNX_A64_OP_FCVTN_bs:
+        bits = insn->op == SNX_A64_OP_FCVTN_bh ? 16 : 32;
+        n = bits == 16 && !q ? 4 : 128 / bits; /* of Vn, and then of Vm */
+        count = bits == 32 && q ? 64 : 0;      /* FCVTN2's: the register's top half, the other kept */
+        if (count) sg_d_set_slice(g, &r, 63, 0, vbits(g, rd, 63, 0));
+        for (e = 0; e < 2 * n; ++e) {
+            unsigned at = e % n * bits, to = count + 8 * e;
+            args[0] = sg_d_zext(g, vbits(g, e < n ? rn : rm, at + bits - 1, at), 64);
+            args[1] = sgx_const(32, bits);
+            args[0] = sg_d_slice(g, sgx_call(g, "snx_x64_fp8_narrow", 0, 1, args, 2, 64), 7, 0);
+            sg_d_set_slice(g, &r, to + 7, to, args[0]);
+        }
+        sg__V_write(g, rd, r);
+        return 1;
+    /* sums of n products of bytes, each into an element of bits */
+    case SNX_A64_OP_FDOT_sb_vi:
+        byte = 4 * ((word >> 11 & 1) << 1 | (word >> 21 & 1));
+        by_element = 1; /* fallthrough */
+    case SNX_A64_OP_FDOT_sb_v: bits = 32, n = 4, count = q ? 4 : 2; break;
+    case SNX_A64_OP_FDOT_hb_vi:
+        byte = 2 * ((word >> 11 & 1) << 2 | (word >> 20 & 3));
+        rm &= 15;
+        by_element = 1; /* fallthrough */
+    case SNX_A64_OP_FDOT_hb_v: bits = 16, n = 2, count = q ? 8 : 4; break;
+    case SNX_A64_OP_FMLAL_hb_vi:
+        rm &= 7;
+        by_element = 1; /* fallthrough */
+    case SNX_A64_OP_FMLAL_hb_v: bits = 16, n = 1, count = 8, lane = q; break;
+    case SNX_A64_OP_FMLALL_sb_vi:
+        rm &= 7;
+        by_element = 1; /* fallthrough */
+    case SNX_A64_OP_FMLALL_sb_v: bits = 32, n = 1, count = 4, lane = q << 1 | (word >> 22 & 1); break;
+    case SNX_A64_OP_FMMLA_sb: bits = 32, n = 8, count = 4; break;
+    case SNX_A64_OP_FMMLA_hb: bits = 16, n = 4, count = 8; break;
+    default: return 0;
+    }
+    for (e = 0; e < count; ++e) {
+        unsigned an, am;
+        if (n * 8 > bits) /* a matrix of 2 rows and 2 columns in each bits * 4 */
+            an = e / 4 * 64 + (e >> 1 & 1) * 8 * n, am = e / 4 * 64 + (e & 1) * 8 * n;
+        else
+            an = am = e * bits + 8 * lane;
+        if (by_element) am = 8 * byte;
+        args[0] = sg_d_zext(g, vbits(g, rd, (e + 1) * bits - 1, e * bits), 64);
+        args[1] = sg_d_zext(g, vbits(g, rn, an + 8 * n - 1, an), 64);
+        args[2] = sg_d_zext(g, vbits(g, rm, am + 8 * n - 1, am), 64);
+        args[3] = sgx_const(32, bits | n << 8);
+        args[0] = sg_d_slice(g, sgx_call(g, "snx_x64_fp8_dot", 0, 0, args, 4, 64), (long long)bits - 1, 0);
+        sg_d_set_slice(g, &r, (e + 1) * bits - 1, e * bits, args[0]);
+    }
+    sg__V_write(g, rd, r);
+    return 1;
+}
+
 /* FEAT_CMPBR's: CB<cc> of two registers (CBB<cc>'s and CBH<cc>'s low byte or halfword), or of one and a 6-bit
    integer */
 static void compare_branch(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
@@ -1123,7 +1209,7 @@ static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 addr
     case SNX_A64_OP_LDCLRP:
     case SNX_A64_OP_LDSETP:
     case SNX_A64_OP_SWPP: pair_atomic(u, insn, word, address_of); return 1;
-    default: return memory_op(u, insn, word) || newer(u, insn, word);
+    default: return memory_op(u, insn, word) || newer(u, insn, word) || fp8(u, insn, word);
     }
     base = sg_GPR_read(g, a->rn);
     address = a->p ? base : sg_d_add_int(g, base, (long long)offset);

@@ -8,7 +8,7 @@
    - with none (alone 1) the function is made, and the line says it raises an undefined instruction.
    On an x86-64 host the code made alone runs: the function that never reaches its word returns, the other calls the
    runtime's undef with the instruction's pc and word, whose text (snx_a64_word_text) names the op and the feature. And
-   through the library, with words no back end has (FP8's): the lines and their count, and the undefined
+   through the library, with words LLVM has no code for (FP8's): the lines and their count, and the undefined
    instruction where one runs */
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
@@ -50,7 +50,7 @@ static struct {
                    {{CBZ_OVER, SM4E, RET}, SM4E, 0, "SM4E", "FEAT_SM4"},
                    {{SM4E, ADD_ONE, RET}, SM4E, 1, "SM4E", "FEAT_SM4"},
                    {{ADD_ONE, ADD_ONE, RET}, 0, 1, "", ""}};
-static const SnxU32 k_without[] = {SHA512H, SM4E};
+static const SnxU32 k_without[] = {SHA512H, SM4E}, k_library_without[] = {F1CVTL, FSCALE};
 enum { FUNCTIONS = sizeof k_functions / sizeof *k_functions, REFUSED = 4 };
 
 static struct {
@@ -272,19 +272,20 @@ int main(void) {
                 check_run(&c, f, k_functions[f].word && k_functions[f].runs, of);
             }
         snx_code_loader_free(loader);
-        /* and through the library, which takes no options: words no back end has in their place */
+        /* and through the library: words LLVM has no code for either, undefined where they run */
         for (f = 0; f < REFUSED; ++f) {
             uint32_t w = f < 2 ? F1CVTL : FSCALE;
             size_t at = f * EACH + (k_functions[f].runs ? 0 : 4);
             k_functions[f].word = w;
             k_functions[f].op = f < 2 ? "F1CVTL" : "FSCALE";
-            k_functions[f].feature = f < 2 ? "FEAT_FP8" : "FEAT_FP8";
+            k_functions[f].feature = "FEAT_FP8";
             for (unsigned b = 0; b < 4; ++b) mem[CODE + at + b] = (uint8_t)(w >> (8 * b));
         }
         struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
         struct snx_code_range range = {CODE, mem + CODE, sizeof g_code};
         struct snx_recompiled* made = NULL;
         g_test.count = 0;
+        if (r) snx_native_without(r, k_library_without, sizeof k_library_without / sizeof *k_library_without);
         if (r && !snx_recompiler_set_a64_target(r, SNX_RECOMPILER_A64_MAX))
             made = snx_recompile_ranges(r, &range, 1, g_hints, FUNCTIONS);
         if (!made)
@@ -315,6 +316,14 @@ int main(void) {
         char text[64];
         snx_a64_word_text(0x4E228420u, text, sizeof text); /* a base instruction: no feature */
         check(!strcmp(text, "ADD_v"), text, "a base instruction's text");
+        snx_a64_word_text(0xD53B4440u, text, sizeof text);
+        check(!strcmp(text, "MRS of FPMR (S3_3_C4_C4_2)"), text, "a read of FPMR, its text");
+        snx_a64_word_text(0xD51B4440u, text, sizeof text);
+        check(!strcmp(text, "MSR of FPMR (S3_3_C4_C4_2)"), text, "a write of FPMR, its text");
+        snx_a64_word_text(0xD53BF000u, text, sizeof text);
+        check(!strcmp(text, "MRS of S3_3_C15_C0_0"), text, "a register with no name here, its text");
+        snx_a64_word_text(0xD50B7E20u, text, sizeof text);
+        check(!strcmp(text, "SYS of S1_3_C7_C14_1"), text, "DC CIVAC's text");
         snx_a64_word_text(0, text, sizeof text);
         check(!strcmp(text, "no instruction"), text, "an unallocated word's text");
     }

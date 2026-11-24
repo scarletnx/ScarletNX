@@ -101,6 +101,10 @@ u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
+u64 snx_x64_fp_scale(CPU* c, u64 a, u64 by, u64 fpcr, u32 desc);
+u64 snx_x64_fp8_widen(CPU* c, u64 a, u32 bfloat);
+u64 snx_x64_fp8_narrow(CPU* c, u64 a, u32 width);
+u64 snx_x64_fp8_dot(u64 add, u64 a, u64 b, u32 desc);
 void snx_x64_set(CPU* c, u64 a, u64 size, u64 value);
 void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
@@ -789,6 +793,14 @@ static void program_end(const OpWord* p, CPU* c, uint8_t* mem, int between) {
     }
 }
 
+/* the register that stands for Vn in QEMU's FCVTN2 over its own Vn, which QEMU (11.1.2) reads after writing it; 32 for
+   any other word */
+static unsigned own_vn(const OpWord* p) {
+    unsigned rd = p->word & 31, rm = p->word >> 16 & 31;
+    if (strcmp(p->op, "FCVTN_bs") || !(p->word >> 30 & 1) || rd != (p->word >> 5 & 31)) return 32;
+    return (rd ^ 1) == rm ? rd ^ 2 : rd ^ 1;
+}
+
 /* each word's end states under QEMU (how: its path, the runner's, a folder) from the starts, states of each; 0 or -1 */
 static int qemu_ends(const OpWord* words, size_t count, unsigned states, const CPU* starts, CPU* ends,
                      char* const* how) {
@@ -803,7 +815,8 @@ static int qemu_ends(const OpWord* words, size_t count, unsigned states, const C
         for (k = 0; k < n; ++k) {
             const CPU* s = &starts[done + k];
             SnxQrefCase c;
-            unsigned r;
+            uint32_t word = words[(done + k) / states].word;
+            unsigned r, spare;
             snx_qref_case_init(&c);
             for (r = 0; r < 31; ++r) c.state.x[r] = s->x[r];
             c.state.sp = s->x[31];
@@ -811,7 +824,12 @@ static int qemu_ends(const OpWord* words, size_t count, unsigned states, const C
             c.state.fpcr = s->fpcr;
             c.state.fpsr = s->fpsr;
             for (r = 0; r < 32; ++r) c.state.v[r][0] = s->v[r].d[0], c.state.v[r][1] = s->v[r].d[1];
-            if (snx_qref_add(&batch, &c, &words[(done + k) / states].word, 1, NULL, 0) < 0) goto out;
+            spare = own_vn(&words[(done + k) / states]);
+            if (spare < 32) {
+                c.state.v[spare][0] = s->v[word & 31].d[0], c.state.v[spare][1] = s->v[word & 31].d[1];
+                word = (word & ~(31u << 5)) | spare << 5;
+            }
+            if (snx_qref_add(&batch, &c, &word, 1, NULL, 0) < 0) goto out;
         }
         if (snx_qref_run(&batch, how[0], how[1], "max", how[2], error, sizeof error)) {
             fprintf(stderr, "FAIL: QEMU: %s\n", error);
@@ -833,7 +851,9 @@ static int qemu_ends(const OpWord* words, size_t count, unsigned states, const C
             e->n = q->state.nzcv >> 31, e->z = q->state.nzcv >> 30 & 1;
             e->cf = q->state.nzcv >> 29 & 1, e->vf = q->state.nzcv >> 28 & 1;
             e->fpcr = q->state.fpcr, e->fpsr = q->state.fpsr;
-            for (r = 0; r < 32; ++r) e->v[r].d[0] = q->state.v[r][0], e->v[r].d[1] = q->state.v[r][1];
+            for (r = 0; r < 32; ++r)
+                if (r != own_vn(&words[(done + k) / states]))
+                    e->v[r].d[0] = q->state.v[r][0], e->v[r].d[1] = q->state.v[r][1];
         }
     }
     result = 0;
@@ -1144,6 +1164,7 @@ int main(int argc, char** argv) {
         NATIVE(snx_x64_crc32), NATIVE(snx_x64_stxp), NATIVE(snx_x64_aes), NATIVE(snx_x64_estimate);
         NATIVE(snx_x64_half), NATIVE(snx_x64_bfdot), NATIVE(snx_x64_sm4_box);
         NATIVE(snx_x64_set), NATIVE(snx_x64_copy);
+        NATIVE(snx_x64_fp_scale), NATIVE(snx_x64_fp8_widen), NATIVE(snx_x64_fp8_narrow), NATIVE(snx_x64_fp8_dot);
         hostuc_native_wide(uc, "snx_x64_casp", (void*)casp_between);
 #undef NATIVE
         if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {

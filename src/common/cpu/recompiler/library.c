@@ -93,6 +93,8 @@ struct snx_recompiler {
        SNX_RECOMPILER_BACKEND=llvm or snx_recompiler_set_backend taking it back */
     int x64;
     size_t x64_made; /* the last module's functions the x86-64 back end made */
+    const SnxU32* without; /* snx_native_without's */
+    size_t without_count;
     char error[1024];
     /* PowerPC64: the code arena every module of the recompiler is loaded into, with the runtime library once, so all
        of them share one TOC (code_loader.h): a guest's jump from one module's code into another's keeps r2. Made by
@@ -274,6 +276,11 @@ int snx_recompiler_set_optimization(struct snx_recompiler* r, char opt) {
     }
     r->opt = opt;
     return 0;
+}
+
+void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t count) {
+    r->without = words;
+    r->without_count = count;
 }
 
 int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target) {
@@ -693,6 +700,8 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
         SnxNativeOptions options = {0};
         options.llvm_at = snx_ir_dump_pc();
         options.refused = &u->x64_refused;
+        options.without = q->r->without;
+        options.without_count = q->r->without_count;
         made = (unsigned char*)calloc(u->last - u->first, 1);
         if (!made) {
             snprintf(error, error_size, "out of memory");

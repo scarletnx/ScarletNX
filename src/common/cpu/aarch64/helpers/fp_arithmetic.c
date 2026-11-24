@@ -527,3 +527,85 @@ SnxFpReply snx_fp_bfcvt(u64 bits, u32 fpcr) {
     }
     return (SnxFpReply){(u64)v.sign << 15 | mant, c.fpsr};
 }
+
+/* FPScale (FSCALE): a number times 2^by, rounded once */
+SnxFpReply snx_fp_scale(u64 bits, i64 by, int width, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack(&c, bits, width);
+    u64 r;
+    if (v.kind >= FPV_QNAN) {
+        r = fp_nan(&c, v, width);
+    } else if (v.kind == FPV_INF) {
+        r = fp_inf(v.sign, width);
+    } else if (v.kind == FPV_ZERO) {
+        r = fp_zero(v.sign, width);
+    } else {
+        /* past every width's range, and fp_round_pack's exponent still in its field */
+        int exp = v.exp + (by > 8192 ? 8192 : by < -8192 ? -8192 : (int)by);
+        r = fp_round_pack(&c, v.sign, exp > 2048 ? 2048 : exp < -2048 ? -2048 : exp, v.frac, width, fp_rmode(&c));
+    }
+    return (SnxFpReply){r, c.fpsr};
+}
+
+/* FEAT_FP8's bytes as FPMR zero has them: E5M2 (a byte is a half's top one), no scale and no saturation, to nearest
+   and flushing nothing whatever FPCR says, a NaN the default one */
+static FpValue fp8_unpack(SnxFpEnv* c, u64 byte) { return fp_unpack(c, (byte & 0xFF) << 8, 16); }
+/* a byte's half, or with bfloat its bfloat16: exact */
+SnxFpReply snx_fp8_widen(u64 byte, int bfloat) {
+    SnxFpEnv c = {0, 0};
+    FpValue v = fp8_unpack(&c, byte);
+    if (v.kind >= FPV_QNAN)
+        return (SnxFpReply){fp_default_nan(bfloat ? 32 : 16) >> (bfloat ? 16 : 0), v.kind == FPV_SNAN ? FPSR_IOC : 0};
+    if (!bfloat) return (SnxFpReply){(byte & 0xFF) << 8, 0};
+    return (SnxFpReply){snx_fp_convert((byte & 0xFF) << 8, 16, 32, 0, 0).value >> 16, 0};
+}
+/* a half's or a single's byte: the half it is (a single rounded to odd, which keeps what the byte's rounding asks)
+   with the low 8 bits rounded off, the denormals' grid and exponent the same */
+SnxFpReply snx_fp8_narrow(u64 bits, int width) {
+    SnxFpEnv c = {0, 0};
+    FpValue v = fp_unpack(&c, bits, width);
+    u64 half, magnitude, low, mant;
+    u32 flags = 0;
+    if (v.kind >= FPV_QNAN) return (SnxFpReply){0x7E, v.kind == FPV_SNAN ? FPSR_IOC : 0};
+    half = width == 16 ? bits & 0xFFFF : snx_fp_convert(bits, 32, 16, 5, 0).value;
+    magnitude = half & 0x7FFF;
+    low = magnitude & 0xFF;
+    mant = magnitude >> 8;
+    mant += low > 0x80 || (low == 0x80 && (mant & 1));
+    if (low) {
+        flags |= FPSR_IXC;
+        if (!(magnitude >> 10)) flags |= FPSR_UFC;
+        if (mant == 0x7C) flags |= FPSR_OFC;
+    }
+    return (SnxFpReply){(u64)v.sign << 7 | mant, flags};
+}
+/* add (of width) plus the n products of a's bytes by b's, exact and rounded once; no flag is raised */
+u64 snx_fp8_dot(u64 add, u64 a, u64 b, int n, int width) {
+    SnxFpEnv c = {0, 0};
+    FpValue z = fp_unpack(&c, add, width);
+    /* the products' magnitudes in units of 2^-36, by their signs: 71 bits at most */
+    FpWide sum[2] = {{0, 0}, {0, 0}}, p;
+    int inf[2] = {0, 0}, signs[2] = {0, 0}, nan = z.kind >= FPV_QNAN, k, less;
+    if (z.kind == FPV_INF) inf[z.sign] = 1;
+    signs[z.sign] = 1;
+    for (k = 0; k < n; ++k, a >>= 8, b >>= 8) {
+        FpValue x = fp8_unpack(&c, a), y = fp8_unpack(&c, b);
+        int s = x.sign ^ y.sign, zero = x.kind == FPV_ZERO || y.kind == FPV_ZERO;
+        signs[s] = 1;
+        if (x.kind >= FPV_QNAN || y.kind >= FPV_QNAN) {
+            nan = 1;
+        } else if (x.kind == FPV_INF || y.kind == FPV_INF) {
+            if (zero) nan = 1;
+            inf[s] = 1;
+        } else if (!zero) { /* their 3 bits at 60 to 62: a byte is at least 2^-16 */
+            FpWide m = fp_wide(0, (x.frac >> 60) * (y.frac >> 60));
+            sum[s] = fp_wide_add(sum[s], fp_wide_shl(m, x.exp + y.exp - 4 + 36));
+        }
+    }
+    if (nan || (inf[0] && inf[1])) return fp_default_nan(width);
+    if (inf[0] || inf[1]) return fp_inf(inf[1], width);
+    less = fp_wide_less(sum[0], sum[1]);
+    p = less ? fp_wide_sub(sum[1], sum[0]) : fp_wide_sub(sum[0], sum[1]);
+    if (z.kind == FPV_ZERO && fp_wide_zero(p)) return fp_zero(signs[1] && !signs[0], width);
+    return fp_sum(&c, z.sign, z.exp, fp_wide_of(z), less, 125 - 36, p, 0, width, 0);
+}

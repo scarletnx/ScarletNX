@@ -4047,8 +4047,9 @@ endif()
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling
-# multiplications) and of the Ounce's is the native back end's: none of their words is left to LLVM
-foreach(target switch android ounce)
+# multiplications), of the Ounce's and of all the decoder knows is the native back end's: none of their words is left to
+# LLVM
+foreach(target switch android ounce max)
     add_test(NAME recompiler_backends_refused_${target} COMMAND snx-test-recompiler-backends --refused --target ${target})
     set_tests_properties(recompiler_backends_refused_${target} PROPERTIES TIMEOUT 600)
 endforeach()
@@ -4080,7 +4081,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
-        foreach(target switch android ounce)
+        foreach(target switch android ounce max)
             add_test(NAME recompiler_${m}_refused_${target} COMMAND snx-test-recompiler-${m} --refused --target ${target})
             set_tests_properties(recompiler_${m}_refused_${target} PROPERTIES TIMEOUT 600)
         endforeach()

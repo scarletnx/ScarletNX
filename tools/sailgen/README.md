@@ -544,9 +544,45 @@ doubleword. `SatQ` is one comparison and a choice where the integer fits 64 bits
 ### The RISC back ends (`rv64.h`, `ppc64.h`, `mips64.h`, `la64.h`, `s390x.h`, over `risc.h`)
 
 Machines without vector registers here: every A64 instruction is `a64_risc.roots`', the Advanced SIMD as general-purpose
-doublewords, element by element, the floating point and AES's tables the exact helpers' (`x64_helpers.c`). A clause not
-there needs a feature no guest has. `recompiler_<machine>_refused` fails where a word of the Switch's, or of the Ounce's
-half precision and dot products, is left to another back end.
+doublewords, element by element, the floating point and AES's tables the exact helpers' (`x64_helpers.c`).
+`recompiler_<machine>_refused` fails where a word of the Switch's, or of the Ounce's half precision and dot products, is
+left to another back end.
+
+### Past the guests' CPUs
+
+`snx_recompiler.h`'s `SNX_RECOMPILER_A64_MAX` decodes all of `a64.decode`, and the nine back ends make it too. What the
+Sail has (SHA512, SHA3, SM3, SM4, I8MM, FHM, BF16, FCMA, FRINTTS, JSCVT, FlagM2, CSSC, the tags of MTE in an address)
+is roots of `a64_x64.roots` and `a64_risc.roots`, with `nx.sail`'s definitions where the Sail's are not generated. What
+the Sail (v9.4-a) has not, or has as more than the guest sees, is written once for the nine in `mach/mach_codegen.inc`:
+
+- `past_guests`: DIT, SSBS and TCO (nothing), SB and DSB nXS (DSB), WFET and WFIT (YIELD), the tags' loads and stores
+  (no memory holds tags: LDG reads 0, STZG's and STZ2G's zeros and STGP's pair are stored), LDGM, STGM, STZGM and GCSSTR
+  (undefined at EL0);
+- `newer`: FPRCVT, FAMINMAX, LUT; `compare_branch`: CMPBR; `pair_atomic`: LSE128, in CASP's loop;
+- `memory_op`: MOPS, option A, the whole of it in the first of the three instructions;
+- `fp8`: FP8 (FP8FMA, FP8DOT4, FP8DOT2, F8F32MM, F8F16MM) as FPMR zero has it, and FSCALE.
+
+Left undefined, the fault's text naming them: EL1's instructions (HVC, SMC, HLT, ERET and the MSRs of PSTATE's EL1
+fields: no guest state), MSR SVCR (no guest of `a64.profile` has SME), and MSR and MRS of FPMR.
+
+FP8's formats, scales and saturations are FPMR's, and `CPU` has no FPMR. Zero (E5M2, no scale, no saturation) is exact
+for code that never writes it, which nothing here can. A field for it is for when a guest has FEAT_FP8, with the next
+`SNX_ABI`, because of what it costs:
+
+1. the field is a u64 after `poll`, at 904, the end of the 904 bytes: no other field moves, and every machine's
+   displacements reach it;
+2. `sizeof(CPU)` is `SNX_ABI`'s: modules of another ABI are refused, so every game recompiles once, and the JIT's cache,
+   whose key has the ABI, starts anew;
+3. a save state of another ABI does not load: every one of them would stop loading, the real cost;
+4. svcGetThreadContext3 has the console's layout, which has no FPMR, and the hooks' verify compares what is before
+   `mem`: neither would see it;
+5. a guest without FP8 pays 8 bytes a thread and not an instruction;
+6. MSR and MRS of it are the system registers' of each machine's `sys` and LLVM's read_sysreg and write_sysreg;
+7. the host's own FP8 is used by no back end, so the host changes nothing: the 17 operations are exact helpers', which
+   would read the field.
+
+`snx-test-recompiler-<machine>` proves them on the MAX target: `--qemu` against qemu-aarch64's CPU, `--programs` against
+C (CMPBR, MOPS, LSE128), and `--coverage` counts what is made, what calls a helper and what is refused.
 
 ### The arm64 back end (`arm64.h`, `arm64_asm.h`, `arm64_a64.h`)
 
