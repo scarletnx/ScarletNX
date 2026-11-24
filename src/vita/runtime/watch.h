@@ -25,8 +25,8 @@ void vita_watch_written(uint32_t address, uint32_t size);
 /* the range writable again and written: before the system writes it (a file read), and when it is committed or
    decommitted */
 void vita_watch_release(uint32_t address, uint32_t size);
-/* whether writes are tracked at all */
-bool vita_watch_active(void);
+/* the bytes of a page, what the functions above track: a range is its pages */
+uint64_t vita_watch_page(void);
 /* rows of row bytes, stride apart in data and in guest memory alike, into it without a fault, a generation or a change
    of protection, for a copy of what the GPU wrote. False when nothing is tracked, and the caller copies them itself */
 bool vita_watch_store(uint32_t address, const void* data, uint32_t row, uint32_t stride, uint32_t rows);

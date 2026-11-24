@@ -165,6 +165,68 @@ static void check_unmap(VitaProcess* p) {
     CHECK(!wrong(p, a + 0x8000, 0x2000, 2), "%u bytes written while the block was unmapped are old",
           (unsigned)wrong(p, a + 0x8000, 0x2000, 2));
 }
+/* the CPU writes a page whose other bytes a transfer still in flight writes: the GPU reads them, then and later */
+static void check_beside(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    fill(p, b + 0x4000, 0x1000, 9);
+    CHECK(copy(p, a, b + 0x4000, 0x800), "the transfer is refused");
+    fill(p, b + 0x4800, 0x400, 2); /* beside the GPU's bytes, on their page */
+    CHECK(copy(p, b + 0x4800, b + 0x10000, 0x400), "the transfer of the page's other bytes is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 0x10000, 0x400, 2), "%u bytes written beside a GPU write in flight are old on the GPU",
+          (unsigned)wrong(p, b + 0x10000, 0x400, 2));
+    CHECK(!wrong(p, b + 0x4000, 0x800, 1) && !wrong(p, b + 0x4800, 0x400, 2),
+          "the page's bytes are wrong once the GPU is done");
+}
+/* the same once the GPU is done and nothing looked yet, so its writes are not in guest memory: a rectangle whose rows
+   cross pages, the CPU's bytes between them, the GPU reading both */
+static void check_beside_done(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x2000, 1);
+    fill(p, b, 0x8000, 4);
+    CHECK(vita_render_transfer_copy(p, 25, 80, 4, a, 0, 0, 100, b, 4, 1, 252), "the rectangle is refused");
+    vita_render_finish(p);
+    vkQueueWaitIdle(vita_vk()->queue);
+    for (uint32_t y = 0; y < 80; ++y) fill(p, b + 252 + y * 252 + 116, 152, 5);
+    CHECK(copy(p, b, b + 0x20000, 0x8000), "the transfer of both is refused");
+    finish(p);
+    uint32_t missing = 0, lost = 0;
+    for (uint32_t y = 0; y < 80; ++y) {
+        missing += wrong_from(p, b + 0x20000 + 252 + y * 252 + 16, 100, 1, y * 100);
+        lost += wrong(p, b + 0x20000 + 252 + y * 252 + 116, 152, 5);
+    }
+    CHECK(!missing, "%u bytes of the rectangle are old on the GPU", (unsigned)missing);
+    CHECK(!lost, "%u bytes between its rows are old on the GPU", (unsigned)lost);
+}
+/* the same, where the bytes beside are looked at once the GPU is done, and the page was protected meanwhile */
+static void check_beside_later(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    CHECK(copy(p, a, b + 0x4000, 0x800), "the transfer is refused");
+    fill(p, b + 0x4800, 0x400, 2);
+    CHECK(copy(p, a, b + 0x8000, 0x100), "another transfer is refused"); /* the copy is brought up to date here */
+    vita_watch_protect(b + 0x4000, 0x1000); /* as a texture's or a surface's copy of the page does */
+    finish(p);
+    CHECK(copy(p, b + 0x4800, b + 0x10000, 0x400), "the transfer of the page's other bytes is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 0x10000, 0x400, 2), "%u bytes written beside a GPU write are old on the GPU for good",
+          (unsigned)wrong(p, b + 0x10000, 0x400, 2));
+}
+/* writes to a page left writable (a GPU write of its other bytes was in flight) while no other page is written */
+static void check_beside_quiet(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    CHECK(copy(p, a, b + 0x4000, 0x800), "the transfer is refused");
+    fill(p, b + 0x4800, 0x100, 2);
+    vita_render_show(p, b + 0x20000, 32, 32, 8); /* the block brought up to date, with no write of the GPU's after */
+    finish(p);
+    fill(p, b + 0x4a00, 0x100, 3); /* the page is writable already: no fault says it was written */
+    CHECK(copy(p, b + 0x4a00, a + 0x10000, 0x100), "the transfer is refused");
+    finish(p);
+    CHECK(!wrong(p, a + 0x10000, 0x100, 3), "%u bytes of a page left writable are old on the GPU",
+          (unsigned)wrong(p, a + 0x10000, 0x100, 3));
+}
 /* a rectangle the GPU writes into a wider picture: the bytes between its rows are the CPU's, which writes them while
    the transfer is in flight */
 static void check_gaps(VitaProcess* p) {
@@ -212,6 +274,32 @@ static uint64_t scene(VitaProcess* p, uint32_t at, uint32_t width, uint32_t heig
     c->color = (GxmColorSurface){.width = width, .height = height, .stride = stride, .data = at, .type = type};
     vita_render_begin_scene(p, c);
     return vita_render_end_scene(p, c);
+}
+/* a color surface whose rows are wider than what is drawn and whose last page it shares: the padding and the page's
+   other bytes are the CPU's, while the scene is in flight and after */
+static void check_surface(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true), size = 64 * 4 * 24;
+    fill(p, b, size, 1);
+    scene(p, b, 48, 24, 64, GXM_COLOR_SURFACE_LINEAR);
+    for (uint32_t y = 0; y < 24; ++y) fill(p, b + y * 256 + 192, 64, 2);
+    fill(p, b + size, 0x400, 3);
+    scene(p, b, 48, 24, 64, GXM_COLOR_SURFACE_LINEAR);
+    CHECK(copy(p, b + size, a, 0x400), "the transfer is refused");
+    finish(p);
+    uint32_t drawn = 0, padding = 0;
+    for (uint32_t y = 0; y < 24; ++y) {
+        drawn += wrong_from(p, b + y * 256, 192, 1, y * 256);
+        padding += wrong(p, b + y * 256 + 192, 64, 2);
+    }
+    CHECK(!drawn, "%u bytes of the surface are wrong", (unsigned)drawn);
+    CHECK(!padding, "%u bytes of the surface's padding are not what the CPU wrote", (unsigned)padding);
+    CHECK(!wrong(p, a, 0x400, 3), "%u bytes beside the surface are old on the GPU", (unsigned)wrong(p, a, 0x400, 3));
+    /* the CPU draws into the surface once the GPU is done, and the next scene starts from it */
+    fill(p, b + 256 * 4, 192, 5);
+    scene(p, b, 48, 24, 64, GXM_COLOR_SURFACE_LINEAR);
+    CHECK(copy(p, b + 256 * 4, a + 0x1000, 192), "the transfer is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 256 * 4, 192, 5) && !wrong(p, a + 0x1000, 192, 5), "the CPU's row of the surface is lost");
 }
 /* a depth surface stored at the scene's end: every sample the background's, in its rows alone */
 static void check_depth(VitaProcess* p) {
@@ -262,8 +350,13 @@ static const struct {
     {"chain", check_chain, false},
     {"serials", check_serials, false},
     {"unmap", check_unmap, false},
+    {"beside", check_beside, false},
+    {"beside_done", check_beside_done, false},
+    {"beside_later", check_beside_later, false},
+    {"beside_quiet", check_beside_quiet, false},
     {"gaps", check_gaps, false},
     {"many", check_many, false},
+    {"surface", check_surface, false},
     {"depth", check_depth, false},
     {"picture", check_picture, false},
 };

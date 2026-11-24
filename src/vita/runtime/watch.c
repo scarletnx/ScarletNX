@@ -185,7 +185,7 @@ bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since) {
             return true;
     return false;
 }
-bool vita_watch_active(void) { return g_watch.state != NULL; }
+uint64_t vita_watch_page(void) { return g_watch.state ? g_watch.page : 4096; }
 /* the protected pages of [first, last] writable, or protected again. Their states stay */
 static void store_protection(uint64_t first, uint64_t last, bool writable) {
     for (uint64_t i = first; i <= last;) {

@@ -33,7 +33,7 @@
 #define PIPELINES 256u
 #define STAGING   (4u << 20)
 #define LINEAR    (16u << 20) /* a slot's room for textures' rows made linear on the GPU */
-#define MIRROR_STEP 4096u     /* the grain a copy is checked and brought up to date at */
+#define MIRROR_STEP 4096u       /* a copy is filled this many bytes at a time, a bit for each the GPU writes */
 
 typedef struct {
     uint32_t address, size;
@@ -220,37 +220,70 @@ static struct VitaRender* g_retiring; /* the renderer whose staging the device's
 static uint32_t import_index(const struct VitaRender* r, const Import* m) { return (uint32_t)(m - r->imports); }
 /* the bytes from a write's first to its last, the ones between its rows with them */
 static uint64_t writeback_span(const Writeback* w) { return (uint64_t)(w->rows - 1) * w->stride + w->row; }
-static bool mirror_pending(const struct VitaRender* r, const Import* m, uint32_t at, uint32_t size) {
+/* the bits [from, to) set */
+static void bits_set(uint64_t* bits, uint32_t from, uint32_t to) {
+    for (uint32_t i = from / 64; i * 64 < to; ++i) {
+        uint32_t first = from > i * 64 ? from - i * 64 : 0, end = to - i * 64;
+        bits[i] |= (end < 64 ? (1ull << end) - 1 : ~0ull) & ~0ull << first;
+    }
+}
+/* the bytes of [at, at + size) of a copy, size at most MIRROR_STEP, that the GPU writes and guest memory does not hold
+   yet: a bit each set in bits, which start clear. False when there are none */
+static bool mirror_newer(const struct VitaRender* r, const Import* m, uint64_t at, uint32_t size,
+                         uint64_t bits[MIRROR_STEP / 64]) {
     uint32_t import = import_index(r, m);
-    uint64_t begin = (uint64_t)m->address + at, end = begin + size;
+    uint64_t end = at + size;
+    bool any = false;
     for (unsigned i = 0; i < r->writebacks; ++i) {
         const Writeback* w = &r->writeback[i];
-        if (w->import == import && w->address < end && w->address + writeback_span(w) > begin) return true;
-    }
-    return false;
-}
-/* the copy brought up to date with the pages the CPU wrote since it was. A page the GPU wrote and has not stored yet
-   is newer in the copy, so it stays */
-static void mirror_sync(struct VitaRender* r, Import* m) {
-    if (!m->mirror) return;
-    uint64_t now = vita_watch_epoch();
-    if (now == m->epoch) return;
-    uint32_t start = 0, length = 0;
-    for (uint32_t at = 0; at <= m->size; at += MIRROR_STEP) {
-        uint32_t step = at < m->size ? (m->size - at < MIRROR_STEP ? m->size - at : MIRROR_STEP) : 0;
-        if (step && vita_watch_changed(m->address + at, step, m->since) && !mirror_pending(r, m, at, step)) {
-            if (!length) start = at;
-            length += step;
-            continue;
+        if (w->import != import || w->address >= end || w->address + writeback_span(w) <= at) continue;
+        any = true;
+        for (uint64_t y = at > w->address ? (at - w->address) / w->stride : 0; y < w->rows; ++y) {
+            uint64_t from = w->address + y * w->stride, to = from + w->row;
+            if (from >= end) break;
+            if (to > at) bits_set(bits, (uint32_t)(from > at ? from - at : 0), (uint32_t)(to < end ? to - at : size));
         }
-        if (!length) continue;
+    }
+    return any;
+}
+/* [begin, end) of guest memory into a copy, but the bytes the GPU writes that are newer there */
+static void mirror_fill(const struct VitaRender* r, const Import* m, uint64_t begin, uint64_t end) {
+    unsigned char* to = m->mirror + (begin - m->address);
+    const unsigned char* from = r->mem + begin;
+    for (uint64_t at = begin; at < end;) {
+        uint64_t newer[MIRROR_STEP / 64] = {0};
+        uint32_t size = end - at < MIRROR_STEP ? (uint32_t)(end - at) : MIRROR_STEP;
+        bool some = r->writebacks && mirror_newer(r, m, at, size, newer);
+        for (uint32_t i = 0; i < size;) {
+            uint32_t start = i;
+            if (!some) i = size;
+            while (i < size && !(newer[i / 64] >> (i % 64) & 1)) ++i;
+            if (i > start) memcpy(to + (at - begin) + start, from + (at - begin) + start, i - start);
+            while (i < size && newer[i / 64] >> (i % 64) & 1) i += newer[i / 64] == ~0ull && !(i % 64) ? 64 : 1;
+        }
+        at += size;
+    }
+}
+/* the copy brought up to date with the pages the CPU wrote since it was */
+static void mirror_sync(const struct VitaRender* r, Import* m) {
+    uint64_t now = vita_watch_epoch();
+    if (!m->mirror || now == m->epoch) return;
+    uint64_t end = (uint64_t)m->address + m->size, page = vita_watch_page();
+    bool settled = true; /* every page protected, or it can be written with no generation counted */
+    for (uint64_t at = m->address, next; at < end; at = next) {
+        uint64_t stop = at; /* a run of pages written */
+        for (next = at; next < end && stop == next;) {
+            next = (next / page + 1) * page < end ? (next / page + 1) * page : end;
+            if (vita_watch_changed((uint32_t)stop, (uint32_t)(next - stop), m->since)) stop = next;
+        }
+        if (stop == at) continue;
         /* protected before it is read, so a write after that faults and counts */
-        vita_watch_protect(m->address + start, length);
-        memcpy(m->mirror + start, r->mem + m->address + start, length);
-        length = 0;
+        uint64_t since = vita_watch_protect((uint32_t)at, (uint32_t)(stop - at));
+        mirror_fill(r, m, at, stop);
+        if (vita_watch_changed((uint32_t)at, (uint32_t)(stop - at), since)) settled = false;
     }
     m->since = now;
-    m->epoch = vita_watch_active() ? now : UINT64_MAX;
+    m->epoch = settled ? now : UINT64_MAX;
 }
 /* the GPU writes rows of row bytes of the copy, stride apart, from address on. Its submission is the open recording's,
    which is the next one */
