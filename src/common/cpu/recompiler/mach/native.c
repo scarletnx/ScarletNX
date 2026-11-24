@@ -138,6 +138,17 @@ void snx_native_arm_free(SnxNativeArm* c) {
     snx_s390x_arm_free(c->s390x);
     free(c);
 }
+int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options) {
+    return c->x64        ? snx_x64_arm_options(c->x64, options)
+           : c->arm64    ? snx_arm64_arm_options(c->arm64, options)
+           : c->rv64     ? snx_rv64_arm_options(c->rv64, options)
+           : c->ppc64    ? snx_ppc64_arm_options(c->ppc64, options)
+           : c->mips64   ? snx_mips64_arm_options(c->mips64, options)
+           : c->la64     ? snx_la64_arm_options(c->la64, options)
+           : c->ppc64be  ? snx_ppc64be_arm_options(c->ppc64be, options)
+           : c->mips64be ? snx_mips64be_arm_options(c->mips64be, options)
+                         : snx_s390x_arm_options(c->s390x, options);
+}
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user) {
     c->why = NULL;

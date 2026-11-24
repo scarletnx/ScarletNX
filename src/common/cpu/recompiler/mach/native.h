@@ -4,6 +4,7 @@
    x64/x64_codegen.h, arm64/arm64_codegen.h) */
 #ifndef SNX_RECOMPILER_NATIVE_H
 #define SNX_RECOMPILER_NATIVE_H
+#include "common/cpu/arm/codegen.h"
 #include "common/cpu/recompiler/codegen.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -62,6 +63,9 @@ typedef size_t (*SnxNativeArmNext)(void* user, uint32_t key, size_t units, size_
 int snx_native_arm_available(void);
 SnxNativeArm* snx_native_arm_new(void);
 void snx_native_arm_free(SnxNativeArm* c);
+/* what the next blocks are made for (cpu/arm/codegen.h; NULL the Cortex-A57 on flat memory, as a new compiler's): 0, or
+   -1 for options no block compiler takes */
+int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options);
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user);
 /* the Thumb block at pc, where the host's back end makes them (x86-64's); refused elsewhere */

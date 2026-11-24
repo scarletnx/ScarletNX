@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The native back ends' AArch32 blocks, what any machine's shares: what cpu/arm/llvm.c's arm_block makes of an A32
-   block (the Cortex-A57, flat memory), without LLVM. Included by a machine's block compiler (x64/x64_arm.c,
+   block, for any profile and memory mode of its options (cpu/arm/codegen.h), without LLVM. Included by a machine's
+   block compiler (x64/x64_arm.c,
    arm64/arm64_arm.c), and followed by the machine's glue, which it declares: the block's frame, prologue and entry
    checks, its return and its chaining to the next block, the entry checks' exit function, an entry stub for another
    back end's block, and the VFP's fp_call. The machine names its emitters' file (MG_ARM_INC: a32_<machine>.inc), its
@@ -55,6 +56,7 @@ typedef struct {
 
 struct MG_ARM {
     SgCtx g;
+    SnxArmCodegenOptions options; /* the next blocks' */
     SgXAsm a;
     SgXBuf b;
     Rel* rel; /* the block being made's */
@@ -86,14 +88,23 @@ MG_ARM* MG_ARM_API(new)(void) {
         return NULL;
     }
     c->features = MG_ARM_FEATURES();
+    c->options.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
     return c;
+}
+int MG_ARM_API(options)(MG_ARM* c, const SnxArmCodegenOptions* options) {
+    if (!snx_arm_codegen_options_valid(options)) return -1;
+    if (options && (options->profile == SNX_ARM_PROFILE_ARM7TDMI || options->profile == SNX_ARM_PROFILE_ARM946E ||
+                    options->memory != SNX_ARM_MEMORY_FLAT))
+        return -1;
+    c->options = options ? *options : (SnxArmCodegenOptions){.abi = SNX_ARM_CODEGEN_OPTIONS_ABI};
+    return 0;
 }
 void MG_ARM_API(free)(MG_ARM* c) {
     if (!c) return;
     free(c->b.p);
     free(c->rel);
     free(c->text), free(c->rels), free(c->made);
-    free(c->g.label_at), free(c->g.fix), free(c->g.exits), free(c->g.monitors);
+    free(c->g.label_at), free(c->g.fix), free(c->g.exits), free(c->g.monitors), free(c->g.outs);
     free(c->a.cold.p), free(c->a.pool), free(c->a.rips), free(c->a.cjumps), free(c->a.ccalls);
     free(c);
 }
@@ -118,12 +129,43 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
     add_rel(c, at, sym, MG_ARM_CALL_RELOC, addend);
 }
 
-/* the machine's instructions are x64_a32.h's own */
+/* the machine's instructions besides its AArch32 part's own (x64_a32.h, arm64_a32.h, risc_a32.h): SGX_A32_OUT, a jump
+   to a way out of the block, whose cold way is written after the block's code (cold_ways) */
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
-    (void)a, (void)r;
-    sg_fail("a machine instruction of no kind", at, 0);
+    SgXIns* i = &a->x->ins[at];
+    SgCtx* g = (SgCtx*)a->machine;
+    SgXBuf* b = a->b;
+    if (i->op != SGX_A32_OUT) sg_fail("a machine instruction of no kind", i->op, at);
+    SgA32Out o = {.label = sgx_a32_label(g),
+                  .undefined = 1,
+                  .reason = (unsigned)(i->imm - 1),
+                  .word = (SnxU32)i->kv[0],
+                  .pc = (SnxU32)i->kv[1],
+                  .next = (SnxU32)(i->kv[1] >> 32)};
+    g->outs = (SgA32Out*)sgx_a32_grow(g->outs, &g->cap_outs, g->nouts + 1, sizeof *g->outs);
+    g->outs[g->nouts++] = o;
+    sgx_a32_jcc(g, b, i->cc, o.label);
+    (void)r;
 }
-
+/* the ways out of the block, after its code */
+static void cold_ways(MG_ARM* c) {
+    SgCtx* g = &c->g;
+    SgXBuf* b = &c->b;
+    for (int k = 0; k < g->nouts; ++k) {
+        const SgA32Out* o = &g->outs[k];
+        sgx_a32_bind(g, b, o->label);
+        if (o->undefined) { /* llvm.c's trap: the backend's to run or stop at */
+            sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, o->pc);
+            sgx_a32_movi(b, sgx_a32_args[0], o->word);
+            sgx_a32_movi(b, sgx_a32_args[1], o->reason);
+            sgx_a32_call_out(&c->a, b, "snx_arm_undefined");
+            sgx_a32_leave(g, b);
+        }
+        sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, o->next);
+        sgx_a32_jmp(g, b, g->ret);
+    }
+    g->nouts = 0;
+}
 
 /* ---- the machine's glue (defined after this file) ---- */
 static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad);
@@ -156,7 +198,7 @@ static SgD reg(SgCtx* g, unsigned r) {
     if (r != 15) return sg_GPR_read(g, r);
     return sgx_const(32, g->thumb ? ((SnxU32)g->pc + 4) & ~3u : (SnxU32)g->pc + 8);
 }
-/* a branch to value in ARM state on the Cortex-A57 (llvm.c's branch_exchange): CPSR.T from bit 0, R15 the rest */
+/* a branch to value in ARM state (llvm.c's branch_exchange): CPSR.T from bit 0, R15 the rest */
 static void write_pc(SgCtx* g, SgD value) {
     sg_PSTATE_write(g, SG_PSTATE_T, 1, sg_d_slice(g, value, 0, 0));
     g->branched = 1;
@@ -204,31 +246,26 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
     }
     SgD adjusted = up ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset), addr = pre ? adjusted : base;
     /* LDRD and STRD, and a load of the PC, word aligned (llvm.c's: unaligned support on, as ARMv6's SCTLR.U) */
-    sgx_a32_bounds(g, addr, pair ? 8 : bytes, pair || (load && d == 15) ? 4 : 1);
+    sgx_reg(sgx(g), &addr);
+    sgx_a32_transfer(g, addr, pair ? 8 : bytes, pair || (load && d == 15) ? 4 : 1, !load, pair);
     if (load) {
-        SgD value = sgx_a32_load(g, addr, (int)bytes, 0);
-        if (sign)
-            value = sg_d_sext(g, value, 32);
-        else if (bytes < 4)
-            value = sg_d_zext(g, value, 32);
+        SgD value = sgx_a32_read(g, addr, (int)bytes, 0, sign);
         if (d == 15)
             write_pc(g, value);
         else
             sg_GPR_write(g, d, value);
-        if (pair) sg_GPR_write(g, d + 1, sgx_a32_load(g, addr, 4, 4)); /* the range checked holds both: no wrap */
+        if (pair) sg_GPR_write(g, d + 1, sgx_a32_read(g, addr, 4, 4, 0)); /* the range checked holds both: no wrap */
     } else {
-        SgD value = reg(g, d); /* the Cortex-A57's PCStoreValue: the address plus 8 */
-        sgx_a32_store(g, addr, (int)bytes, 0, bytes < 4 ? sg_d_slice(g, value, 8 * bytes - 1, 0) : value);
-        if (pair) sgx_a32_store(g, addr, 4, 4, reg(g, d + 1));
-        /* one check of the monitor for the bytes stored: their range overlaps the reservation exactly where one of
-           its words does (llvm.c checks each store) */
-        sgx_a32_monitor(g, addr, pair ? 8 : bytes);
+        SgD value = reg(g, d); /* PCStoreValue: the address plus 8 */
+        sgx_a32_write(g, addr, (int)bytes, 0, value, 0);
+        if (pair) sgx_a32_write(g, addr, 4, 4, reg(g, d + 1), 0);
+        sgx_a32_written(g, addr, pair ? 8 : bytes);
     }
     if (wb) sg_GPR_write(g, n, adjusted);
     return d == 15 && load;
 }
 
-/* LDM, STM and their stack forms (llvm.c's multiple, on the Cortex-A57) */
+/* LDM, STM and their stack forms (llvm.c's multiple) */
 static int multiple(SgCtx* g) {
     SnxU32 w = g->word, list = w & 0xFFFF;
     unsigned n = (w >> 16) & 15, count = 0, index = 0;
@@ -240,11 +277,11 @@ static int multiple(SgCtx* g) {
     SgD adjusted = up ? sg_d_add(g, base, sgx_const(32, count * 4)) : sg_d_sub(g, base, sgx_const(32, count * 4));
     SgD start = up ? sg_d_add(g, base, sgx_const(32, pre ? 4 : 0)) : sg_d_add(g, adjusted, sgx_const(32, pre ? 0 : 4));
     sgx_reg(sgx(g), &start);
-    sgx_a32_bounds(g, start, count * 4, 4);
+    sgx_a32_transfer(g, start, count * 4, 4, !load, 1);
     /* every source read before any update, the base and the PC among them */
     for (unsigned i = 0; i < 16; ++i)
         if (list >> i & 1) {
-            values[i] = load ? sgx_a32_load(g, start, 4, (int)(index * 4)) : reg(g, i);
+            values[i] = load ? sgx_a32_read_list(g, start, (int)(index * 4)) : reg(g, i);
             ++index;
         }
     if (load && (list >> 15 & 1)) write_pc(g, values[15]);
@@ -254,10 +291,10 @@ static int multiple(SgCtx* g) {
             if (load) {
                 if (i != 15) sg_GPR_write(g, i, values[i]);
             } else
-                sgx_a32_store(g, start, 4, (int)(index * 4), values[i]);
+                sgx_a32_write(g, start, 4, (int)(index * 4), values[i], 1);
             ++index;
         }
-    if (!load) sgx_a32_monitor(g, start, count * 4); /* one check for the words stored, as memory's */
+    if (!load) sgx_a32_written(g, start, count * 4);
     /* writeback after the stores (STM stored the old base), but not over a loaded base */
     if ((w & (1u << 21)) && !(load && (list >> n & 1))) sg_GPR_write(g, n, adjusted);
     return load && (list >> 15 & 1);
@@ -693,6 +730,11 @@ static int voff_w(unsigned off, unsigned width) {
 }
 /* FPSCR, as a field the D bank's offsets reach */
 #define FPSCR_OFF ((unsigned)(offsetof(SnxArmCPU, fpscr) - offsetof(SnxArmCPU, d)))
+/* FPSCR bits that an ARM11 VMSR may set (llvm_vector.inc's): NZCV, DN, FZ, RMode (23-22), STRIDE (21-20), LEN (18-16),
+   IDC (7) and the cumulative flags. Any other bit stops the block: the trap enables (15-8), which the block does not
+   model, and bits 27 and 26, which the ARM11 does not define; and what it stores, those two with them */
+#define FPSCR_ARM11_WRITABLE 0xf3f7009fu
+#define FPSCR_ARM11_STORED   0xfff7009fu
 /* a VFP register's bits (32 or 64) in a general-purpose register */
 static SgD vbits(SgCtx* g, unsigned off, unsigned width) {
     SgX* x = sgx(g);
@@ -792,7 +834,7 @@ static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
         else
             sgx_a32_store(g, addr, (int)step, (int)i, vbits(g, v->d + i, step * 8));
     }
-    if (!(v->flags & AV_LOAD)) sgx_a32_monitor(g, addr, v->bytes); /* one check for the words stored, as memory's */
+    if (!(v->flags & AV_LOAD)) sgx_a32_written(g, addr, v->bytes);
     if (v->flags & AV_WB) sg_GPR_write(g, v->n, end);
 }
 /* ---- lanes: llvm_vector.inc's vget and vset, a D register's 64 bits read once and written once an instruction ---- */
@@ -863,7 +905,12 @@ static void vfp_transfer(SgCtx* g, const SnxArmVector* v) {
             } else
                 sg_GPR_write(g, v->n, f);
         } else {
-            vset(g, FPSCR_OFF, 32, sg_d_and(g, reg(g, v->n), sgx_const(32, 0xffc0009fu)));
+            SgD f = reg(g, v->n);
+            if (g->profile == SNX_ARM_PROFILE_ARM11) /* a bit its block does not model stops it (llvm_vector.inc's) */
+                sgx_a32_trap_on(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, f, sgx_const(32, ~FPSCR_ARM11_WRITABLE)))),
+                                SNX_ARM_BACKEND_UNSUPPORTED);
+            vset(g, FPSCR_OFF, 32,
+                 sg_d_and(g, f, sgx_const(32, g->profile == SNX_ARM_PROFILE_ARM11 ? FPSCR_ARM11_STORED : 0xffc0009fu)));
             g->vfp_ok[0] = g->vfp_ok[1] = 0;
         }
     } else if (v->op == AV_CORE_PAIR) {
@@ -1502,7 +1549,7 @@ static void neon_struct(SgCtx* g, const SnxArmVector* v) {
     if (v->flags & AV_LOAD)
         vflush(g, &o);
     else
-        sgx_a32_monitor(g, base, v->bytes); /* one check for the bytes stored, as memory's */
+        sgx_a32_written(g, base, v->bytes);
     if (v->flags & AV_WB) sg_GPR_write(g, v->n, sg_d_add(g, base, offset));
 }
 /* VMOV and VMVN of an immediate (aux 0), VORR and VBIC of one (aux 1 and 2), each lane */
@@ -1525,13 +1572,31 @@ static void neon_crypto(SgCtx* g, const SnxArmVector* v) {
     sgx_a32_call(g, "snx_arm_crypto", args, 4, 0);
 }
 
-/* a VFP or Advanced SIMD word (llvm_vector.inc's vector_instruction on the Cortex-A57) */
+/* FPSCR's bits the ARM11's VFP data processing stops at, for the backend (llvm_vector.inc's vector_instruction): an
+   enabled exception, and a short vector (LEN, STRIDE) but for a compare or a conversion, which are scalar */
+static void arm11_stops(SgCtx* g, const SnxArmVector* v) {
+    int scalar = v->op == AV_FCMP || v->op == AV_FCMPE || v->op == AV_FCVT || v->op == AV_FTOI || v->op == AV_ITOF;
+    SnxU32 stop = SNX_ARM_FPSCR_TRAP_ENABLES | (scalar ? 0 : SNX_ARM_FPSCR_LEN_STRIDE);
+    if (v->op == AV_MEM || v->op == AV_CORE || v->op == AV_CORE_PAIR || v->op == AV_STATUS) return;
+    sgx_a32_trap_on(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, vbits(g, FPSCR_OFF, 32), sgx_const(32, stop)))),
+                    SNX_ARM_BACKEND_UNSUPPORTED);
+}
+/* a VFP or Advanced SIMD word (llvm_vector.inc's vector_instruction) */
 static void vfp(SgCtx* g) {
     SnxArmVector v = {0};
     condition(g);
     if (!snx_arm_vector_decode(g->word, &v)) {
         sg_undefined(g);
         return;
+    }
+    if (g->profile == SNX_ARM_PROFILE_ARM11) {
+        /* odd double-register multiple counts are legacy FSTMX/FLDMX forms with an extra format word */
+        int multiple = !(v.flags & AV_PRE) || (v.flags & AV_WB);
+        if (v.op == AV_MEM && (v.bytes > 128 || (multiple && v.width == 64 && (v.imm & 4)))) {
+            sgx_a32_trap(g, SNX_ARM_BACKEND_UNSUPPORTED);
+            return;
+        }
+        arm11_stops(g, &v);
     }
     if (v.op == AV_CRYPTO)
         neon_crypto(g, &v);
@@ -1581,7 +1646,10 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
             sgx_a32_machine(g, SGX_A32_FENCE, 0);
             return 0;
         case SNX_A32_HINT: return 0; /* hints may complete without waiting */
+        case SNX_A32_UADD8:          /* the ARM11's, the A57's decoder's PARALLEL */
         case SNX_A32_PARALLEL: parallel(g); return 0;
+        case SNX_A32_SEL: media(g, SNX_A32_SELECT); return 0;    /* the ARM11's */
+        case SNX_A32_MULH: media(g, SNX_A32_HALF_MUL); return 0; /* the ARM11's: the same words */
         case SNX_A32_SATURATE:
         case SNX_A32_PACK:
         case SNX_A32_SELECT:
@@ -1638,13 +1706,14 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
         g->word = w;
         g->pc = pc + 4 * (SnxU32)i;
         g->next = (SnxU32)g->pc + 4;
-        g->start = x->n;
         g->branched = g->undefined = 0;
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
+        g->start = x->n;
         /* the Sail's clauses' (their condition and their end their own), else the emitters here */
-        int stop = sg_decode_a32(g) ? g->branched || (g->undefined && g->skip < 0) : instruction(g, snx_a32_decode(w));
+        int stop = sg_decode_a32(g) ? g->branched || (g->undefined && g->skip < 0)
+                                    : instruction(g, snx_a32_decode_profile(g->profile, w));
         if (x->unmade) sg_fail("a primitive this host has no form of", 0, 0);
         sgx_a32_finish(g);
         if (stop || i + 1 == count) return i + 1;
@@ -1687,7 +1756,9 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     c->a.b = b;
     c->a.machine = g;
     c->a.reloc = unit_reloc;
-    g->nlabels = g->nfix = g->nexits = g->nmonitors = 0;
+    g->nlabels = g->nfix = g->nexits = g->nmonitors = g->nouts = 0;
+    g->profile = c->options.profile;
+    g->memory = c->options.memory;
     x->n = 0;
     x->nv = 1;
     x->nb = 1;
@@ -1761,6 +1832,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
         mg_go_on(c, g->next | (SnxU32)thumb, pc, nexts, nnext, it != 0);
     }
     sgx_a32_stubs(g, b);
+    cold_ways(c);
 #ifdef MG_ARM_THUMB_BLOCK
     mg_entry_exit(c, pc, thumb ? half_at(code, 0) : word_at(code, 0), bad);
 #else

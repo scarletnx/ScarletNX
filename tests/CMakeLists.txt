@@ -880,6 +880,7 @@ add_test(NAME game_stamp COMMAND snx-test-game-stamp)
 if(SNX_TEST_ARM_AOT)
     include(arm_checked.cmake)
 endif()
+include(arm_native_modes.cmake)
 
 # Board/GUI-only builds do not configure either AOT runtime or LLVM. Do not
 # create CPU execution tests that link the absent backend targets in that case.
@@ -3677,6 +3678,7 @@ if(NOT WIN32)
         add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool 3 --blocks 2000 --seed 2)
         add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
         set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        snx_arm_native_modes(x64)
     endif()
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
@@ -4232,6 +4234,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # VCVT of an odd S register to a double, both signs: a load of a double there is not aligned
         add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        snx_arm_native_modes(${m} --blocks 600 --states 8)
     endforeach()
     # rv64's ABI extends a narrow argument with its sign, arm64's does not (the control); la64's and the others' tests
     # run the back end's own words (la64_interp) or skip, so they have no compiled function

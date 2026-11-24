@@ -56,6 +56,10 @@ enum { PPC_EM = 21, PPC_R_REL64 = 44 };
 int snx_ppc64_arm_available(void) { return 0; }
 SnxPpc64Arm* snx_ppc64_arm_new(void) { return NULL; }
 void snx_ppc64_arm_free(SnxPpc64Arm* c) { (void)c; }
+int snx_ppc64_arm_options(SnxPpc64Arm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_ppc64_arm_block(SnxPpc64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxPpc64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
