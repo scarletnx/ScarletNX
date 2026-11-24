@@ -4,6 +4,7 @@
 #define SNX_ARM_LLVM_H
 #include "common/cpu/arm/arm.h"
 #include "common/cpu/arm/checked.h"
+#include "common/cpu/arm/codegen.h"
 #include <llvm-c/Core.h>
 
 /* Emit void name(SnxArmCPU*) into a host-target module. No interpreter or runtime
@@ -22,39 +23,7 @@ LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const ui
 LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
                                   uint32_t pc, size_t* consumed);
 
-/* Versioned opt-in code generation. NULL means the original A57/flat ABI.
-   Checked memory currently supports integer transfers only; exclusives and
-   vectors stop with BACKEND_UNSUPPORTED, never access the flat pointer.
-   Every instruction is fetched through the bus before executing, including
-   condition-failed instructions. Permission faults report PREFETCH_ABORT;
-   changed bytes report CODE_CHANGED without executing the stale instruction.
-   The runtime must return to its dispatcher on either exit, never re-enter
-   stale code or silently compile at runtime. ARM11 VFPv2 emission is pending.
-   ARM7TDMI takes flat memory only: its bus hook reads cpu->io and cpu->mem.
-   HOSTED is flat memory for a runtime that owns the whole process, as the 3DS and Vita runtimes do. A block of this
-   mode assumes three things, and a block of the other modes assumes none of them:
-   - the mapping covers all 2^32 guest addresses and is followed by pages that fault on the host (at least 256 bytes
-     of them), so an access that leaves the mapping is a host fault and gets no range check;
-   - while a block runs, the SnxArmCPU is reached only through the pointer the block got, so LLVM keeps registers and
-     flags in host registers across guest loads and stores (the cpu argument is noalias);
-   - the dispatch loop has seen to the entry state: r15 is the block's address, CPSR.T is its instruction set, ITSTATE
-     is clear (snx_arm_itstate), and exit is SNX_ARM_OK. The block checks and clears none of these.
-   CPSR.E is never set by a hosted block: SETEND BE and an MSR that sets E stop with SNX_ARM_ENDIAN_UNSUPPORTED
-   instead, so no entry has to look at it. */
-typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED, SNX_ARM_MEMORY_HOSTED } SnxArmMemoryMode;
-#define SNX_ARM_CODEGEN_OPTIONS_ABI 1u
-typedef struct SnxArmCodegenOptions {
-    uint32_t abi;
-    SnxArmProfile profile;
-    SnxArmMemoryMode memory;
-    /* the ARM7TDMI's trace, for a runtime that times its blocks itself: where, past the pointer its blocks get, it keeps
-       a uint32_t per instruction of the longest block it compiles and a bit per instruction after it (skipped). An
-       instruction's slot, by its offset from the block's start (halfwords in Thumb, words in ARM), gets its load's or
-       store's address (a multiple one's lowest), or its multiplier (ARM's Rs, Thumb's Rd); the bit is set when a
-       conditional instruction whose time depends on running did not run (any but a data processing one with no
-       register shift that leaves the PC alone). 0 traces nothing; another profile takes none */
-    uint32_t trace, skipped;
-} SnxArmCodegenOptions;
+/* The same for options (codegen.h): NULL is the original A57 on flat memory. */
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
 LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
