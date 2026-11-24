@@ -820,6 +820,15 @@ typedef struct {
     int returned; /* ends in a return: the choice must be the function's last item */
 } Arm;
 
+/* what branches keeps while it walks its arms and merges them, some 80 KiB: in the heap, as it calls itself at each
+   nested choice and Windows gives a program's main thread 1 MiB of stack */
+typedef struct {
+    Bind base[1024];         /* the environment the arms start from */
+    const char* names[1025]; /* the merged locals and value: their C names, types and places in the environment */
+    Val types[1025];
+    int which[1025];
+} Walk;
+
 /* the value of a merged local: the time and kind both arms agree on */
 static Val merge_type(unsigned at, Val a, Val b) {
     Val r = a;
@@ -843,9 +852,10 @@ static const char* c_type(Val v) {
    DYN condition (dyn_cond, two arms) merges them as selects instead, and no arm may change state */
 static Val branches(unsigned at, const char** conds, const unsigned* bodies, int n, const char* dyn_cond) {
     Arm* arms = (Arm*)sg_alloc(sizeof(Arm) * (size_t)n);
+    Walk* walk = (Walk*)sg_alloc(sizeof *walk);
+    Bind* base = walk->base;
     Buf* outer = g_buf;
     int i, k, base_nenv = g_nenv, has_value = 0, live = 0;
-    Bind base[1024];
     Val result = v_unit();
     memcpy(base, g_env, sizeof(Bind) * (size_t)g_nenv);
     if (dyn_cond) ++g_dyn_ctl;
@@ -924,9 +934,10 @@ static Val branches(unsigned at, const char** conds, const unsigned* bodies, int
         }
     } else {
         /* the merged locals and value are declared before the choice; each arm ends by setting them */
-        const char* names[1025];
-        Val types[1025];
-        int which[1025], nm = 0, first_live = -1, implicit_else = n == 1 || conds[n - 1] != NULL;
+        const char** names = walk->names;
+        Val* types = walk->types;
+        int* which = walk->which;
+        int nm = 0, first_live = -1, implicit_else = n == 1 || conds[n - 1] != NULL;
         for (i = 0; i < n; ++i)
             if (!arms[i].aborted) {
                 first_live = i;
@@ -1011,6 +1022,7 @@ static Val branches(unsigned at, const char** conds, const unsigned* bodies, int
     }
     for (i = 0; i < n; ++i) free(arms[i].text.text);
     free(arms);
+    free(walk);
     return result;
 }
 
@@ -1073,7 +1085,9 @@ static Val ev_match(unsigned n) {
 static Val ev_foreach(unsigned n) {
     Val from = ev(NODE(n).a), to = ev(NODE(n).b), by = NODE(n).c ? ev(NODE(n).c) : v_int_static("1");
     int base_nenv = g_nenv, k, round;
-    Bind base[1024];
+    Walk* walk = (Walk*)sg_alloc(sizeof *walk); /* the environment and the carried locals' names, as branches' */
+    Bind* base = walk->base;
+    const char** carried = walk->names;
     const char* var;
     if (from.time == TD || to.time == TD || by.time == TD) sg_fail(n, "a foreach of run-time bounds");
     if (g_dyn_ctl) sg_fail(n, "a foreach under a run-time condition");
@@ -1082,7 +1096,6 @@ static Val ev_foreach(unsigned n) {
     for (round = 0; round < 8; ++round) {
         Buf body = {0};
         Buf* outer = g_buf;
-        const char* carried[1024];
         int changed = 0;
         memcpy(g_env, base, sizeof(Bind) * (size_t)base_nenv);
         g_nenv = base_nenv;
@@ -1142,6 +1155,7 @@ static Val ev_foreach(unsigned n) {
         buf_add(g_buf, body.text ? body.text : "");
         emit("}");
         free(body.text);
+        free(walk);
         return v_unit();
     }
     sg_fail(n, "a foreach whose locals' times don't settle");
