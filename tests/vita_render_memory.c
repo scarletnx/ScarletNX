@@ -266,6 +266,26 @@ static void check_many(VitaProcess* p) {
     CHECK(!lost, "%u bytes the CPU wrote between the GPU's writes are lost", (unsigned)lost);
     CHECK(!wrong(p, c + 0x100, 0x200, 1), "the write into another block is not in guest memory");
 }
+/* two ranges of one block mapped apart, and a transfer across both: what the GPU wrote through one is read */
+static void check_straddle(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, false);
+    vita_render_map(p, b, 0x8000);
+    vita_render_map(p, b + 0x8000, 0x8000);
+    fill(p, a, 0x2000, 1);
+    fill(p, b, 0x10000, 4);
+    CHECK(copy(p, b + 0x7000, b + 0x20000, 0x2000), "the transfer across the mappings is refused");
+    finish(p);
+    CHECK(copy(p, a, b + 0x7000, 0x1000), "the transfer into one mapping is refused");
+    CHECK(copy(p, a + 0x1000, b + 0x8000, 0x1000), "the transfer into the other mapping is refused");
+    CHECK(copy(p, b + 0x7000, b + 0x10000, 0x2000), "the transfer across the mappings is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 0x10000, 0x2000, 1), "%u bytes written through two mappings are old through the block",
+          (unsigned)wrong(p, b + 0x10000, 0x2000, 1));
+    CHECK(copy(p, b + 0x7000, b + 0x14000, 0x2000), "the transfer across the mappings is refused");
+    finish(p);
+    CHECK(!wrong(p, b + 0x14000, 0x2000, 1), "%u bytes written through two mappings are old through the block for good",
+          (unsigned)wrong(p, b + 0x14000, 0x2000, 1));
+}
 /* memory that was there before its writes were watched (the module's segments), mapped a second time, and once more
    while a part of it is mapped. Another block is mapped between, so the memory a copy gets is not its old one */
 static void check_again(VitaProcess* p) {
@@ -386,6 +406,7 @@ static const struct {
     {"beside_quiet", check_beside_quiet, false},
     {"gaps", check_gaps, false},
     {"many", check_many, false},
+    {"straddle", check_straddle, false},
     {"again", check_again, false},
     {"surface", check_surface, false},
     {"depth", check_depth, false},
