@@ -3891,7 +3891,15 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "the picker could not open: %s. Enter now types the path"
+msgid "the picker could not open: %s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Ctrl+V pastes its path"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Enter on its row now types it"
 msgstr ""
 
 #: src/gui/main.c
