@@ -45,6 +45,11 @@
 #     steps V V...        an int's values the menus offer, in order (ini.h's IniOpt steps), a range as A..B/S: its words
 #                         name each (Auto|# MB), a value between two is still read, and the launcher keeps it, shown as
 #                         itself
+#     boxes SOURCE        its value is a set of items, a text's separated by commas, an int's the sum of their bits: a box
+#                         an item in the launcher's Settings. SOURCE: words (the row's own words, value=Label each, an
+#                         int's value one bit), bans (the keys of the extension bans, --bans), families (the hook
+#                         families, --hooks), commands (the vulkan table's extensions' device commands, --vk-registry);
+#                         without that file the row is typed
 #     open                a text whose words are its common values, not every one (ini.h's INI_OPEN): the launcher
 #                         keeps a value none of them is, shown as itself
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
@@ -516,6 +521,7 @@ setting Vulkan ban ignore
     key vulkan_ban_ignore
     text 512
     default ""
+    boxes bans
     startup
     perf
     help Keys of the extension bans (the drivers known to break a Vulkan extension or feature), separated by commas,
@@ -1314,6 +1320,8 @@ setting FSR input conventions
     key fsr_input_conventions
     int 0 255
     default 0
+    words 1=Jitter reversed in x|2=Jitter reversed in y|4=Motion vectors reversed|8=Inverted depth|16=Motion vectors that include the jitter|32=FSR's own exposure|64=HDR color input
+    boxes words
     help Reverses what the runtime takes a game's DLSS inputs to mean when it gives them to FSR 2, a bit each:
     help 1 = the jitter's sign in x, 2 = in y, 4 = the motion vectors' sign, 8 = inverted depth, 16 = motion vectors
     help that include the jitter, 32 = FSR's own exposure, 64 = HDR color input. For a game whose picture smears
@@ -1656,6 +1664,7 @@ setting Hook families off
     key hooks_off
     text 256
     default ""
+    boxes families
     startup
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
     help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
@@ -1675,6 +1684,7 @@ setting Hook families verified
     key hooks_verify
     text 256
     default ""
+    boxes families
     startup
     help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
@@ -1797,6 +1807,7 @@ setting Vulkan hidden commands
     key vk_debug_hide_commands
     text 512
     default ""
+    boxes commands
     startup
     help Vulkan device commands, separated by commas, that the check of each extension's commands takes as missing
     help from the driver, to test that path: an extension that requires one goes off, and the device is made again

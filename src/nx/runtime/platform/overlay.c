@@ -402,7 +402,8 @@ static int page_picked(void) {
 }
 /* a number, stepped by the arrows around it, not a word; a slider's is its own (INI_SLIDER) */
 static int arrows(const IniOpt* o) {
-    if (!o || o->type == INI_TEXT) return 0; /* a text's words are stepped as words, one with none only read */
+    /* a text's words are stepped as words, one with none or of boxes only read */
+    if (!o || o->type == INI_TEXT || (o->flags & INI_BOXES)) return 0;
     return o->type == INI_FLOAT || (!(o->flags & INI_SLIDER) && (!o->words || strchr(o->words, '#')));
 }
 static const IniOpt* slider(int i) {
@@ -485,6 +486,7 @@ static void row_now(const IniOpt* o, char* out, size_t n) {
    next start for one read then. A text without words is only read */
 static int section_step(const IniOpt* o, int step) {
     char now[PICK_TEXT], to[PICK_TEXT];
+    if (o->flags & INI_BOXES) return OVERLAY_NONE; /* a set of items, whose boxes the launcher's Settings have */
     row_now(o, now, sizeof now);
     if (o->type == INI_INT)
         snprintf(to, sizeof to, "%d", ini_step(o, atoi(now), step));
@@ -503,7 +505,9 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o && page == PAGE_SECTION) { /* any type; one read when the game starts says so */
         char now[PICK_TEXT], word[OVERLAY_COLS_MAX];
         row_now(o, now, sizeof now);
-        if (o->type == INI_INT)
+        if (o->flags & INI_BOXES)
+            snprintf(word, sizeof word, "%s", now);
+        else if (o->type == INI_INT)
             ini_word(o, atoi(now), word, sizeof word);
         else if (o->type == INI_TEXT)
             text_word(o, now, word, sizeof word);

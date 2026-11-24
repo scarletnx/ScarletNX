@@ -122,6 +122,12 @@ if(snx_vk_registry)
     list(APPEND snx_settings_args --vk-registry "${snx_vk_registry}")
 endif()
 
+# what the rows of boxes take their items from (settings.txt's boxes): the extension bans and the hook families, their
+# files as the readers read them
+set(snx_settings_bans "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/extension_bans.txt")
+set(snx_settings_hooks "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+list(APPEND snx_settings_args --bans "${snx_settings_bans}" --hooks "${snx_settings_hooks}")
+
 # a file for each game's table, runtime or vulkan (settings_<name>.c, settingsgen's table_file), named from
 # settings.txt's table lines
 file(STRINGS "${snx_settings_spec}" snx_settings_tables REGEX "^table ")
@@ -145,6 +151,7 @@ list(APPEND snx_settings_outputs ${snx_settings_runtime_files})
 add_custom_command(OUTPUT ${snx_settings_outputs}
     COMMAND snx-settingsgen --out "${snx_settings_out}" ${snx_settings_args} "${snx_settings_spec}"
     DEPENDS snx-settingsgen "${snx_settings_spec}" $<$<BOOL:${SNX_BUILD_NX}>:${snx_pipelines}> ${snx_vk_registry}
+            "${snx_settings_bans}" "${snx_settings_hooks}"
     COMMENT "Generating the settings" VERBATIM)
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
 

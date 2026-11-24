@@ -221,6 +221,23 @@ int main(void) {
         assert(ini_step(&rows[0], 300, 1) == 1024 && ini_step(&rows[0], 300, -1) == 256 &&
                ini_step(&rows[0], 5000, -1) == 1024);
     }
+    /* a row of boxes (INI_BOXES): its items as they are in the values' column, whatever its type, and boxes as the last
+       column's mark */
+    {
+        static int v;
+        static char t[16];
+        static const IniOpt rows[] = {
+            {"bits", "0", "Bits", INI_INT, INI_BOXES, &v, 0, 255, NULL, "Bits", "1=One|64=Six", 0, 0, 0, NULL},
+            {"set", "", "A set", INI_TEXT, INI_BOXES, t, 0, 0, NULL, "Set", "a=A~of a|b=B~", 0, 0, sizeof t, NULL},
+            {"none", "", "No items", INI_TEXT, INI_BOXES, t, 0, 0, NULL, "None", NULL, 0, 0, sizeof t, NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
+        static const IniSection sections[] = {{"Debug", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        static const char want[] = "Debug\tbits\t0\tint\t0\t255\tBits\tBits\t1=One|64=Six\t\t\tboxes\n"
+                                   "Debug\tset\t\ttext\t0\t0\tA set\tSet\ta=A~of a|b=B~\t\t\tboxes\n"
+                                   "Debug\tnone\t\ttext\t0\t0\tNo items\tNone\t\t\t\tboxes\n";
+        char list[512];
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
+    }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
     {
