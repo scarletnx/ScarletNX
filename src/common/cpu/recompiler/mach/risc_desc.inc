@@ -20,6 +20,7 @@ static int desc_done(SnxNativeFn* f, const SgXBuf* b) {
 static void desc_address(SnxNativeFn* f, SgXBuf* b, int d, const char* sym, long long addend) {
     f->rel[f->nrel].at = rk_leaf_literal(b, RK_SA);
     f->rel[f->nrel].sym = sym;
+    f->rel[f->nrel].type = 0;
     f->rel[f->nrel++].addend = addend;
     rk_ldst(b, 1, 8, 0, d, RK_SA, -1, 0);
 }
@@ -86,13 +87,23 @@ static int desc_import_dyn(SnxNativeFn* f) {
     return desc_done(f, &b);
 }
 
-static int desc_import_stub(SnxNativeFn* f, size_t index) {
+static int desc_tail_slot(SnxNativeFn* f, const char* sym, long long addend) {
     DESC_BEGIN(f);
-    desc_address(f, &b, RK_SA, "IMPORT_FN", (long long)(8 * index));
+    desc_address(f, &b, RK_SA, sym, addend);
     rk_ldst(&b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
     rk_jump_reg(&b, RK_SA);
     return desc_done(f, &b);
 }
+/* the machine's tail call by its relocation (MG_R_TAIL: a literal's, or a PC-relative pair's) */
+static int desc_tail_to(SnxNativeFn* f, const char* sym) {
+    DESC_BEGIN(f);
+    f->rel[0].at = rk_tail_reloc(&b);
+    f->rel[0].sym = sym;
+    f->rel[0].addend = 0;
+    f->rel[0].type = MG_R_TAIL;
+    f->nrel = 1;
+    return desc_done(f, &b);
+}
 
-const SnxNativeDesc MG_DESC = {MG_DESC_NAME,        MG_EM,          MG_ELF_FLAGS,    MG_R_ABS64,      MG_ELF_BIG,
-                               desc_returns,        desc_module_fn, desc_import_dyn, desc_import_stub};
+const SnxNativeDesc MG_DESC = {MG_DESC_NAME,   MG_EM,          MG_ELF_FLAGS,    MG_R_ABS64,     MG_ELF_BIG,
+                               desc_returns,   desc_module_fn, desc_import_dyn, desc_tail_slot, desc_tail_to};

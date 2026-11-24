@@ -7,6 +7,8 @@
      snx_routes()    its table's version
      snx_aot_<a>     a tail call of IMPORT_FN's pointer, the arguments as they were
      snx_import_dyn  CPU.disp's function for an address in the code, aligned, with one; else rt->miss
+     snx_variants   a profile run's unit's functions: their data, and each one's tail call through the unit's table
+     snx_aot_<e>    (with a profile run's units) a tail call of the entry's function
    A big-endian host's descriptor is the same code; its data is the host's numbers, which a test here can't read.
      snx-test-module-desc [MACHINE...]   (riscv64 ppc64le mips64el loongarch64 by default) */
 #include "nx/loader/module_x64.h"
@@ -14,6 +16,7 @@
 #include "nx/loader/loader.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
+#include "common/cpu/recompiler/variants.h"
 #include "support/host_unicorn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,7 +54,7 @@ static int machine(const char* name, HostUcArch arch) {
     SnxCodegenOptions options;
     SnxProgram* loaded = (SnxProgram*)calloc(1, sizeof *loaded);
     unsigned char* object = NULL;
-    size_t size = 0, entries = 0;
+    size_t size = 0, entries = 0, variants = 0;
     char error[256], sym[48];
     int failures = 0;
     HostUc* u;
@@ -72,8 +75,14 @@ static int machine(const char* name, HostUcArch arch) {
     }
     codegen.functions = functions;
     codegen.function_count = 3;
-    if (snx_x64_descriptor_for(desc, &codegen, &options, loaded, imports, 2, &object, &size, &entries, error,
-                               sizeof error)) {
+    /* a profile run's unit of two functions, its table UNIT_T (the test's: two traps) */
+    static const SnxU64 vleaders[2] = {0x7200000000ull, 0x7200000010ull};
+    static const SnxVariantRun vruns[1] = {{0x7200000000ull, 8}};
+    static const SnxJitCacheFunction vfns[2] = {{0x7200000000ull, 2, vleaders, 1, vruns, 0x1111, 0x2222},
+                                                {0x7200000100ull, 0, NULL, 0, NULL, 0x3333, 0x4444}};
+    SnxJitCacheRecord record = {"UNIT_T", 2, vfns, NULL, 0};
+    if (snx_x64_descriptor_for(desc, &codegen, &options, loaded, imports, 2, &record, 1, &object, &size, &entries,
+                               &variants, error, sizeof error)) {
         fprintf(stderr, "FAIL %s: the descriptor: %s\n", name, error);
         free(loaded);
         return 1;
@@ -88,6 +97,18 @@ static int machine(const char* name, HostUcArch arch) {
         snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)starts[i]);
         hostuc_native(u, sym, fns[i]);
     }
+    /* the unit's table: fn0's and fn2's traps */
+    uint64_t* unit = (uint64_t*)hostuc_alloc(u, 16);
+    if (!unit || hostuc_define(u, "UNIT_T", (uint64_t)(uintptr_t)unit)) {
+        fprintf(stderr, "FAIL %s: out of memory\n", name);
+        free(object);
+        hostuc_free(u);
+        return 1;
+    }
+    snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)starts[0]);
+    unit[0] = hostuc_trap_of(u, sym);
+    snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)starts[2]);
+    unit[1] = hostuc_trap_of(u, sym);
     if (hostuc_load(u, object, size, error, sizeof error)) {
         fprintf(stderr, "FAIL %s: loading the descriptor: %s\n", name, error);
         free(object);
@@ -114,6 +135,40 @@ static int machine(const char* name, HostUcArch arch) {
                 CHECK(fn == hostuc_trap_of(u, sym), "entry %d's function %llx, not %s's %llx", i,
                       (unsigned long long)fn, sym, (unsigned long long)hostuc_trap_of(u, sym));
             }
+        }
+    }
+    /* snx_variants() and the wrappers */
+    {
+        uint64_t got = 0;
+        const SnxVariants* v;
+        CHECK(variants == 2, "%zu variants, not 2", variants);
+        CHECK(!hostuc_call(u, hostuc_symbol(u, "snx_variants"), 0, 0, &got), "snx_variants stopped");
+        v = (const SnxVariants*)(uintptr_t)got;
+        CHECK(v && v->version == SNX_VARIANTS_VERSION && v->count == 2, "snx_variants' table wrong");
+        if (v && v->count == 2) {
+            const SnxVariantFunction* f = v->functions;
+            CHECK(f[0].start == vfns[0].start && f[0].leader_count == 2 && f[0].leaders[1] == vleaders[1] &&
+                      f[0].run_count == 1 && f[0].runs[0].words == 8 && f[0].h1 == 0x1111 && f[0].h2 == 0x2222,
+                  "variant 0's data");
+            CHECK(f[1].start == vfns[1].start && !f[1].leader_count && !f[1].leaders && !f[1].runs &&
+                      f[1].h2 == 0x4444,
+                  "variant 1's data");
+            for (int k = 0; k < 2; ++k) {
+                uint64_t want = k ? 0xF2 : 0xF0;
+                g_called = 0;
+                CHECK(!hostuc_call(u, (uint64_t)(uintptr_t)f[k].fn, 0xC0 + k, 0xE0 + k, &got), "variant %d stopped",
+                      k);
+                CHECK(g_called == want && g_args[0] == 0xC0u + k && g_args[1] == 0xE0u + k,
+                      "variant %d called %llx", k, (unsigned long long)g_called);
+            }
+        }
+        for (int i = 0; i < 5; ++i) {
+            uint64_t want = 0xF0 + (uint64_t)want_fn[i];
+            snprintf(sym, sizeof sym, "snx_aot_%llx", (unsigned long long)want_addr[i]);
+            g_called = 0;
+            CHECK(hostuc_symbol(u, sym) && !hostuc_call(u, hostuc_symbol(u, sym), 7, want_addr[i], &got) &&
+                      g_called == want && g_args[1] == want_addr[i],
+                  "%s called %llx, not %llx", sym, (unsigned long long)g_called, (unsigned long long)want);
         }
     }
     /* snx_routes() */

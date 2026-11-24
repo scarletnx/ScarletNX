@@ -296,6 +296,17 @@ uint64_t hostuc_code(HostUc* u, const void* bytes, size_t size) {
     return (uint64_t)(uintptr_t)(u->code + at);
 }
 
+int hostuc_define(HostUc* u, const char* name, uint64_t address) {
+    if (u->nsyms == u->cap_syms) {
+        UcSym* grown = (UcSym*)realloc(u->syms, (u->cap_syms ? 2 * u->cap_syms : 256) * sizeof *u->syms);
+        if (!grown) return -1;
+        u->syms = grown;
+        u->cap_syms = u->cap_syms ? 2 * u->cap_syms : 256;
+    }
+    if (!(u->syms[u->nsyms].name = strdup(name))) return -1;
+    u->syms[u->nsyms++].at = address;
+    return 0;
+}
 uint64_t hostuc_symbol(HostUc* u, const char* name) {
     size_t k;
     for (k = 0; k < u->nsyms; ++k)
@@ -387,8 +398,9 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
             if (ELF64_ST_TYPE(s->st_info) == STT_SECTION) S = at[s->st_shndx];
             else if (s->st_shndx != SHN_UNDEF)
                 S = at[s->st_shndx] + s->st_value;
-            else if (!(S = hostuc_trap_of(u, strtab + s->st_name))) {
-                snprintf(error, error_size, "an undefined symbol no native function is: %s", strtab + s->st_name);
+            else if (!(S = hostuc_trap_of(u, strtab + s->st_name)) && !(S = hostuc_symbol(u, strtab + s->st_name))) {
+                snprintf(error, error_size, "an undefined symbol no native function or definition is: %s",
+                         strtab + s->st_name);
                 free(at);
                 return -1;
             }

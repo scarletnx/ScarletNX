@@ -947,19 +947,33 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         printf("%s back end: %lu of %lu functions%s\n", snx_native_name(), (unsigned long)made, (unsigned long)codegen.function_count,
                made == codegen.function_count ? "" : ", LLVM the rest");
     }
-    /* the module descriptor: without LLVM where the x86-64 back end made every function (and no profile cache's
-       units come in), LLVM's IR otherwise */
+    /* the module descriptor: without LLVM where the native back end made every function (with the profile cache's
+       units' variants and wrappers), LLVM's IR otherwise */
     start = snx_seconds();
-    x64_only = q.x64 && !cache_count;
+    x64_only = q.x64;
     for (i = 0; x64_only && i < q.count; ++i)
         if (q.units[i].object || q.units[i].x64_made != q.units[i].last - q.units[i].first) x64_only = 0;
     if (x64_only) {
-        if (snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, &module_object, &module_size,
-                               &entry_count, error, sizeof(error))) {
+        SnxJitCacheRecord* records = cache_count ? (SnxJitCacheRecord*)calloc(cache_count, sizeof *records) : NULL;
+        size_t nrecords = 0;
+        if (cache_count && !records) {
+            snx_error("%s back end: out of memory", snx_native_name());
+            goto done;
+        }
+        for (i = 0; i < cache_count; ++i)
+            if (snx_jit_cache_record(cache, i)) records[nrecords++] = *snx_jit_cache_record(cache, i);
+        int failed = snx_x64_descriptor(&codegen, options, loaded, q.imports, q.import_count, records, nrecords,
+                                        &module_object, &module_size, &entry_count, &variant_count, error,
+                                        sizeof(error));
+        free(records);
+        if (failed) {
             snx_error("%s back end: %s", snx_native_name(), error);
             goto done;
         }
-        if (build->wrappers) *build->wrappers = 0;
+        if (build->wrappers) *build->wrappers = nrecords ? entry_count : 0;
+        if (options->jit_cache && !options->quiet)
+            printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
+                   variant_count ? "" : " (the cache did not match the game)");
         goto descriptor_done;
     }
     ir = new_ir(build, "module", error, sizeof(error));
