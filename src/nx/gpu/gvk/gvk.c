@@ -18,7 +18,7 @@
 #include <string.h>
 
 /* the host's structures have the guest's layout (gvk.h): 64-bit pointers, little-endian */
-typedef char gvk_host_lp64[sizeof(void*) == 8 && sizeof(size_t) == 8 ? 1 : -1];
+static_assert(sizeof(void*) == 8 && sizeof(size_t) == 8, "a 64-bit host");
 
 #define GVK_CHUNKS     24 /* scratch chunks, each at least twice the one before */
 #define GVK_CHUNK      (1u << 20)
@@ -129,6 +129,11 @@ static int fix(const GvkType* t, u8* h, int fix_chain) {
             continue;
         }
         u64 g = ld64(h + f->off), count = 1;
+        if (f->kind == GVK_DRAW_ONE) {
+            const VkPipelineRasterizationStateCreateInfo* rs;
+            memcpy(&rs, h + f->count_off, sizeof rs);
+            if (rs && rs->rasterizerDiscardEnable) g = 0;
+        }
         if (f->count_size == 4) {
             u32 c;
             memcpy(&c, h + f->count_off, sizeof c);
@@ -260,6 +265,7 @@ void gvk_out(const GvkType* t, u64 g, void* host) {
 #define OPT(S, p, n, E)        {offsetof(S, p), GVK_OPTIONAL_ARRAY, SZ(S, n), offsetof(S, n), sizeof(E), NULL}
 #define ONE(S, p, T)           {offsetof(S, p), GVK_ONE, 0, 0, 0, &(T)}
 #define OPT_ONE(S, p, T)       {offsetof(S, p), GVK_OPTIONAL_ONE, 0, 0, 0, &(T)}
+#define DRAW_ONE(S, p, T)      {offsetof(S, p), GVK_DRAW_ONE, 0, offsetof(S, pRasterizationState), 0, &(T)}
 #define ONE_PLAIN(S, p, E)     {offsetof(S, p), GVK_ONE, 0, 0, sizeof(E), NULL}
 #define BYTES(S, p, n)         {offsetof(S, p), GVK_BYTES, SZ(S, n), offsetof(S, n), 1, NULL}
 #define STR(S, p)              {offsetof(S, p), GVK_STR, 0, 0, 1, NULL}
@@ -270,7 +276,8 @@ void gvk_out(const GvkType* t, u64 g, void* host) {
 /* a pNext chain's structures, and the structures inside others */
 static const GvkType t_spec_info, t_stage, t_vertex_input, t_input_assembly, t_tess, t_viewport, t_raster,
     t_multisample, t_depth_stencil, t_blend, t_dynamic, t_subpass, t_dsbinding, t_inherit, t_dedicated_req,
-    t_dedicated_alloc, t_format_list, t_reduction, t_view_usage, t_depth_clip, t_provoking, t_color_write;
+    t_dedicated_alloc, t_format_list, t_reduction, t_view_usage, t_depth_clip, t_provoking, t_color_write,
+    t_domain_origin, t_input_aspect;
 
 STRUCT(t_spec_info, VkSpecializationInfo,
        PLAIN(VkSpecializationInfo, pMapEntries, mapEntryCount, VkSpecializationMapEntry),
@@ -326,6 +333,12 @@ static CHAINED(t_provoking, VkPipelineRasterizationProvokingVertexStateCreateInf
                VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT, {0});
 static CHAINED(t_color_write, VkPipelineColorWriteCreateInfoEXT, VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT,
                PLAIN(VkPipelineColorWriteCreateInfoEXT, pColorWriteEnables, attachmentCount, VkBool32));
+static CHAINED(t_domain_origin, VkPipelineTessellationDomainOriginStateCreateInfo,
+               VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO, {0});
+static CHAINED(t_input_aspect, VkRenderPassInputAttachmentAspectCreateInfo,
+               VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO,
+               PLAIN(VkRenderPassInputAttachmentAspectCreateInfo, pAspectReferences, aspectReferenceCount,
+                     VkInputAttachmentAspectReference));
 
 /* the ones gvk_api.c passes */
 CHAINED(gvk_t_submit, VkSubmitInfo, VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -370,11 +383,12 @@ CHAINED(gvk_t_gpipe, VkGraphicsPipelineCreateInfo, VK_STRUCTURE_TYPE_GRAPHICS_PI
         ONE(VkGraphicsPipelineCreateInfo, pVertexInputState, t_vertex_input),
         ONE(VkGraphicsPipelineCreateInfo, pInputAssemblyState, t_input_assembly),
         OPT_ONE(VkGraphicsPipelineCreateInfo, pTessellationState, t_tess),
-        ONE(VkGraphicsPipelineCreateInfo, pViewportState, t_viewport),
-        ONE(VkGraphicsPipelineCreateInfo, pRasterizationState, t_raster),
-        ONE(VkGraphicsPipelineCreateInfo, pMultisampleState, t_multisample),
-        ONE(VkGraphicsPipelineCreateInfo, pDepthStencilState, t_depth_stencil),
-        ONE(VkGraphicsPipelineCreateInfo, pColorBlendState, t_blend),
+        ONE(VkGraphicsPipelineCreateInfo, pRasterizationState, t_raster), /* before the four it can have ignored */
+        DRAW_ONE(VkGraphicsPipelineCreateInfo, pViewportState, t_viewport),
+        DRAW_ONE(VkGraphicsPipelineCreateInfo, pMultisampleState, t_multisample),
+        /* and these two where the subpass has no such attachment: what is there can be anything */
+        OPT_ONE(VkGraphicsPipelineCreateInfo, pDepthStencilState, t_depth_stencil),
+        OPT_ONE(VkGraphicsPipelineCreateInfo, pColorBlendState, t_blend),
         ONE(VkGraphicsPipelineCreateInfo, pDynamicState, t_dynamic));
 CHAINED(gvk_t_cpipe, VkComputePipelineCreateInfo, VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         EMBED(VkComputePipelineCreateInfo, stage, t_stage));
@@ -413,6 +427,8 @@ static const GvkType* chain_type(u32 parent, u32 stype) {
         {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, &t_depth_clip},
         {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, &t_provoking},
         {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, &t_color_write},
+        {VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO, &t_domain_origin},
+        {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, &t_input_aspect},
     };
     for (size_t i = 0; i < sizeof ext / sizeof *ext; i++)
         if (ext[i].parent == parent && ext[i].type->stype == stype) return ext[i].type;

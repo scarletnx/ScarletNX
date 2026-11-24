@@ -263,6 +263,71 @@ static void marshal_optional_one(void) {
     assert(hp && !hp->pTessellationState);
 }
 
+static void marshal_ignored_state(void) {
+    /* rasterizerDiscardEnable: the four states Vulkan ignores can be any pointer, or zeros that no state is */
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .rasterizerDiscardEnable = VK_TRUE};
+    VkPipelineMultisampleStateCreateInfo zeros = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    VkGraphicsPipelineCreateInfo pipe = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pRasterizationState = (const VkPipelineRasterizationStateCreateInfo*)(uintptr_t)NODE,
+        .pMultisampleState = (const VkPipelineMultisampleStateCreateInfo*)(uintptr_t)(UNMAPPED + 64),
+        .pColorBlendState = (const VkPipelineColorBlendStateCreateInfo*)(uintptr_t)(UNMAPPED + 64)};
+    memcpy(GP(ROOT), &pipe, sizeof pipe);
+    memcpy(GP(NODE), &rs, sizeof rs);
+    const VkGraphicsPipelineCreateInfo* h = gvk_in(&gvk_t_gpipe, ROOT, 1);
+    assert(h && h->pRasterizationState && !h->pMultisampleState && !h->pColorBlendState);
+    pipe.pMultisampleState = (const VkPipelineMultisampleStateCreateInfo*)(uintptr_t)(NODE + 0x200);
+    memcpy(GP(ROOT), &pipe, sizeof pipe);
+    memcpy(GP(NODE + 0x200), &zeros, sizeof zeros);
+    assert(gvk_in(&gvk_t_gpipe, ROOT, 1));
+}
+
+static void marshal_core_chains(void) {
+    /* structures of core 1.1 that no feature guards: the host is given them */
+    VkPipelineTessellationDomainOriginStateCreateInfo origin = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO,
+        .domainOrigin = VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT};
+    VkPipelineTessellationStateCreateInfo tess = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                                  .pNext = (const void*)(uintptr_t)EXTRA,
+                                                  .patchControlPoints = 3};
+    VkGraphicsPipelineCreateInfo pipe = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                         .pTessellationState =
+                                             (const VkPipelineTessellationStateCreateInfo*)(uintptr_t)NODE};
+    memcpy(GP(ROOT), &pipe, sizeof pipe);
+    memcpy(GP(NODE), &tess, sizeof tess);
+    memcpy(GP(EXTRA), &origin, sizeof origin);
+    const VkGraphicsPipelineCreateInfo* h = gvk_in(&gvk_t_gpipe, ROOT, 1);
+    const VkPipelineTessellationDomainOriginStateCreateInfo* o =
+        h && h->pTessellationState ? h->pTessellationState->pNext : NULL;
+    assert(o && o->sType == origin.sType && o->domainOrigin == VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT);
+    VkInputAttachmentAspectReference ref = {1, 2, VK_IMAGE_ASPECT_DEPTH_BIT};
+    VkRenderPassInputAttachmentAspectCreateInfo aspects = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO,
+        .aspectReferenceCount = 1,
+        .pAspectReferences = (const VkInputAttachmentAspectReference*)(uintptr_t)(NODE + 0x100)};
+    VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                                   .pNext = (const void*)(uintptr_t)EXTRA};
+    memcpy(GP(ROOT), &pass, sizeof pass);
+    memcpy(GP(EXTRA), &aspects, sizeof aspects);
+    memcpy(GP(NODE + 0x100), &ref, sizeof ref);
+    const VkRenderPassCreateInfo* p = gvk_in(&gvk_t_rpass, ROOT, 1);
+    const VkRenderPassInputAttachmentAspectCreateInfo* a = p ? p->pNext : NULL;
+    assert(a && a->aspectReferenceCount == 1 && a->pAspectReferences == (const void*)GP(NODE + 0x100) &&
+           a->pAspectReferences[0].inputAttachmentIndex == 2);
+}
+
+static void scaled_rect(void) {
+    /* ucas: w * f passes INT32_MAX at w = 2147483647, f = 2, which Vulkan refuses of a scissor */
+    VkRect2D all = gvk_rect_at((VkRect2D){{0, 0}, {INT32_MAX, INT32_MAX}}, 2);
+    assert(all.offset.x == 0 && all.extent.width == INT32_MAX && all.extent.height == INT32_MAX);
+    VkRect2D from = gvk_rect_at((VkRect2D){{100, 200}, {INT32_MAX - 100, INT32_MAX - 200}}, 4);
+    assert(from.offset.x == 400 && (int64_t)from.offset.x + from.extent.width == INT32_MAX);
+    assert(from.offset.y == 800 && (int64_t)from.offset.y + from.extent.height == INT32_MAX);
+    VkRect2D part = gvk_rect_at((VkRect2D){{-3, 5}, {7, 11}}, 8);
+    assert(part.offset.x == -24 && part.offset.y == 40 && part.extent.width == 56 && part.extent.height == 88);
+}
+
 int main(void) {
     marshal_submit();
     gvk_scratch_reset();
@@ -271,7 +336,12 @@ int main(void) {
     marshal_sample_mask();
     gvk_scratch_reset();
     marshal_optional_one();
+    gvk_scratch_reset();
+    marshal_ignored_state();
+    gvk_scratch_reset();
+    marshal_core_chains();
     gvk_scratch_free();
+    scaled_rect();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
     install_driver();
 #endif

@@ -516,14 +516,12 @@ static int tab_take(u8* t, size_t size, u32 cap, u32* n, u64 key, void* out) {
     pm_unlock(&g_gvk_api.lock);
     return found;
 }
-typedef char gvk_entries_fit[sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) <= 64 &&
-                                     sizeof(GvkTarget) <= 64 && sizeof(GvkView) <= 64 && sizeof(GvkDyn) <= 64 &&
-                                     sizeof(GvkPoolTwin) <= 64 && sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 &&
-                                     sizeof(GvkLayout) <= 64 && sizeof(GvkCbWrites) <= 64 &&
-                                     sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
-                                     sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64 && sizeof(GvkTemplate) <= 64
-                                 ? 1
-                                 : -1];
+static_assert(sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) <= 64 && sizeof(GvkTarget) <= 64 &&
+                  sizeof(GvkView) <= 64 && sizeof(GvkDyn) <= 64 && sizeof(GvkPoolTwin) <= 64 &&
+                  sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 && sizeof(GvkLayout) <= 64 &&
+                  sizeof(GvkCbWrites) <= 64 && sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
+                  sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64 && sizeof(GvkTemplate) <= 64,
+              "tab_take_nl moves an entry through 64 bytes");
 
 static void mem_put(GvkMem m) { tab_put(TAB(mem), &g_gvk_api.nmem, &m); }
 static GvkMem mem_get(u64 mem) {
@@ -767,13 +765,6 @@ static VkViewport viewport_at(VkViewport v, u32 f) {
     v.width *= (float)f;
     v.height *= (float)f;
     return v;
-}
-static VkRect2D rect_at(VkRect2D r, u32 f) {
-    r.offset.x = (i32)((u32)r.offset.x * f);
-    r.offset.y = (i32)((u32)r.offset.y * f);
-    r.extent.width *= f;
-    r.extent.height *= f;
-    return r;
 }
 static VkOffset3D offset_at(VkOffset3D o, u32 f) {
     o.x = (i32)((u32)o.x * f);
@@ -1511,14 +1502,10 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
             return;
         }
         m.size = snx_align_up(size, g_gvk_api.import_align);
-        const VkMemoryDedicatedAllocateInfo* dedicated =
-            next && ((const VkBaseInStructure*)next)->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO ? next
-                                                                                                                : NULL;
-        if (dedicated && (dedicated->buffer || dedicated->image) && m.size != size) {
-            WARN_LIMIT(8, "gvk: dedicated allocation size is not aligned for guest memory import\n");
-            ret_vk(c, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-            return;
-        }
+        /* guest pages come by a whole number of import_align, and a dedicated allocation's size is its resource's own:
+           of another size the pages go without VkMemoryDedicatedAllocateInfo (the one structure next holds), which is a
+           hint where the host doesn't ask for it */
+        if (m.size != size) next = NULL;
         m.va = guest_pages(m.size, g_gvk_api.import_align);
         if (!m.va) {
             WARN_LIMIT(8, "gvk: no guest memory for an allocation of %llu bytes\n", (unsigned long long)size);
@@ -3397,7 +3384,7 @@ static void set_viewports(VkCommandBuffer cb, u32 first, u32 n, const VkViewport
 }
 static void set_scissors(VkCommandBuffer cb, u32 first, u32 n, const VkRect2D* r, u32 f) {
     VkRect2D* s = f > 1 ? gvk_scratch(sizeof *s * n) : NULL;
-    for (u32 i = 0; s && i < n; i++) s[i] = rect_at(r[i], f);
+    for (u32 i = 0; s && i < n; i++) s[i] = gvk_rect_at(r[i], f);
     vkCmdSetScissor(cb, first, n, s ? s : r);
 }
 /* at the scale of the render pass it is in, the first one kept for a pass at another scale (dyn_again) */
@@ -3461,7 +3448,7 @@ static void dyn_again(VkCommandBuffer cb) {
         changed = 1;
     }
     if ((cmd.dynamic & DYN_SCISSOR) && d.has_sc && d.sc_at != f) {
-        VkRect2D sc = f > 1 ? rect_at(d.sc, f) : d.sc;
+        VkRect2D sc = f > 1 ? gvk_rect_at(d.sc, f) : d.sc;
         vkCmdSetScissor(cb, 0, 1, &sc);
         d.sc_at = f;
         changed = 1;
@@ -3573,7 +3560,7 @@ static void gvk_CmdBeginRenderPass(CPU* RESTRICT c, u64 entry) {
     if (bi) {
         VkSubpassContents contents = (VkSubpassContents)(u32)c->x[2];
         u32 scaled = set_has(g_gvk_api.sfb, GVK_SCALED, U(bi->framebuffer));
-        if (scaled) bi->renderArea = rect_at(bi->renderArea, scale_factor());
+        if (scaled) bi->renderArea = gvk_rect_at(bi->renderArea, scale_factor());
         mixed_sync(CB, U(bi->framebuffer), 0);
         vkCmdBeginRenderPass(CB, bi, contents);
         GvkPass p = {c->x[0], U(bi->renderPass), U(bi->framebuffer), bi->renderArea, 0, contents, scaled};
@@ -4005,7 +3992,7 @@ static void gvk_CmdClearAttachments(CPU* RESTRICT c, u64 entry) {
     VkClearRect* s = f > 1 ? gvk_scratch(sizeof *s * n) : NULL;
     for (u32 i = 0; s && i < n; i++) {
         s[i] = r[i];
-        s[i].rect = rect_at(r[i].rect, f);
+        s[i].rect = gvk_rect_at(r[i].rect, f);
     }
     GUEST(atts, VkClearAttachment, c->x[2], (u32)c->x[1]);
     vkCmdClearAttachments(CB, (u32)c->x[1], atts, n, s ? s : r);
