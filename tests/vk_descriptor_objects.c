@@ -30,6 +30,7 @@ void vk_descriptor_heaps_forget_view(VkImageView view) {
 }
 /* table.c's: no texture table here */
 void vk_table_forget_view(VkImageView view) { (void)view; }
+void vk_pool_map_view_gone(VkImageView view) { (void)view; }
 static void check(int pass, const char* what) {
     g_test.checks++;
     if (!pass && g_test.failures++ < 12) fprintf(stderr, "FAIL: %s\n", what);

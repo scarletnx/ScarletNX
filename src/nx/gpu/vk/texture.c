@@ -6,6 +6,7 @@
    (vk/blocklinear.c, vk/texconv.c, vk/astc.c), and checked for changes now and then: often at first, rarely once
    they have stayed the same. */
 #include "nx/gpu/vk/descriptor_objects.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/texture/descriptor.h"
 #include <stdio.h>
@@ -1317,6 +1318,7 @@ static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat
     atomic_fetch_add_explicit(&g_tex_frees, 1, memory_order_relaxed);
     t->img = img;
     t->mem = mem;
+    vk_pool_map_swapped(t);
     if (t->took_drawn) vk_devmem_priority(mem, DM_PRIO_MID); /* new memory has the low class of its owner */
     if (t->movable) vk_devmem_owner(mem, t);
     vk_surf_bytes(t, bytes);

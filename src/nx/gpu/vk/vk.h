@@ -1592,6 +1592,7 @@ typedef struct {
 extern VkRtWatchStats g_vk_rt_watch;
 void vk_surf_wrote(Surf* s); /* its image changed: its copies are out of date (wgen), and it is the newest (wseq) */
 u32 vk_surf_gen(void);       /* a write generation no image has held yet */
+u32 vk_surf_gen_now(void);   /* the last write generation vk_surf_gen gave */
 /* vk_surf_flush in two halves, the GPU not waited for: the bytes a write-back of s copies (0 for none), its copy
    recorded into buf at at (host-readable once the submit being recorded is done), and its landing from those bytes p,
    as of the write generation the copy was recorded at */
