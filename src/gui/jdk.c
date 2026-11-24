@@ -60,7 +60,7 @@ char** gui_jdks(const char* const* roots, size_t* count) {
         size_t n = 0;
         keep(&j, *roots);
         if (snx_list_dir(*roots, &names, &n)) continue; /* a root this machine does not have */
-        qsort(names, n, sizeof *names, by_name);
+        if (n) qsort(names, n, sizeof *names, by_name); /* an empty folder has no list at all */
         for (size_t i = 0; i < n; ++i) {
             char *path = snx_path_join(*roots, names[i]), *home = path ? snx_path_join(path, "Contents/Home") : NULL;
             if (path) keep(&j, path);
