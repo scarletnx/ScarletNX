@@ -7,6 +7,7 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 ## Files and API
 
 - `arm.h`: separate, versioned `SnxArmCPU` state and exit reasons, the backend's `SnxArmRt`, plus the Thumb decode model.
+- `codegen.h`: what a block is made for (`SnxArmCodegenOptions`: the profile, the memory mode, the ARM7TDMI's trace), whichever compiler makes it.
 - `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults for no backend.
 - `a32.c` and `thumb.c`: the A32 and Thumb decoders. QEMU's `a32.decode`, `a32-uncond.decode`, `t32.decode` and
   `t16.decode` (`decode/`, LGPL-2.1-or-later) sort a word into its instruction, through the decoders that
@@ -71,12 +72,8 @@ ISA and memory mode are independent. NULL options preserve the original API.
 `SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
 have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
 the dispatch loop sees to r15, CPSR.T, ITSTATE (`snx_arm_itstate`) and exit. They never set CPSR.E: SETEND BE and an
-MSR that sets E stop with `SNX_ARM_ENDIAN_UNSUPPORTED`. `llvm.h` gives the full contract.
+MSR that sets E stop with `SNX_ARM_ENDIAN_UNSUPPORTED`. `codegen.h` gives the full contract.
 
-`SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
-have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
-the dispatch loop sees to r15, CPSR.T, ITSTATE (`snx_arm_itstate`) and exit. They never set CPSR.E: SETEND BE and an
-MSR that sets E stop with `SNX_ARM_ENDIAN_UNSUPPORTED`. `llvm.h` gives the full contract.
 Invalid option versions/enums are refused without modifying the LLVM module.
 `snx_a32_decode_profile` / `snx_thumb_decode_profile` are LLVM-independent.
 

@@ -523,8 +523,8 @@ static LLVMValueRef thumb_block(LLVMModuleRef module, const char* name, const ui
     size_t used = 0;
     unsigned itstate = 0; /* ITSTATE before the instruction being emitted */
     if (consumed) *consumed = 0;
-    if (!options_valid(options) || !module || !name || !*name || !halfwords || !count || count > 65536 || (pc & 1) ||
-        LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
+    if (!snx_arm_codegen_options_valid(options) || !module || !name || !*name || !halfwords || !count ||
+        count > 65536 || (pc & 1) || LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
         return NULL;
     if (options) {
         a.profile = options->profile;
