@@ -348,14 +348,12 @@ static int test_rejections(void) {
 }
 
 int main(void) {
-    CHECK(test_evaluator());
-    CHECK(test_tld_txq_and_dedup());
-    CHECK(test_tex_no_candidate_fallback());
-    CHECK(test_iadd_composer());
-    CHECK(test_cached_ldg_subtree());
-    CHECK(test_registers_used_again());
-    CHECK(test_probe_is_no_offset());
-    CHECK(test_rejections());
+    /* CHECK returns 0, which a main would exit with: a failure is the first test's that returns it */
+    static int (*const tests[])(void) = {test_evaluator,           test_tld_txq_and_dedup,  test_tex_no_candidate_fallback,
+                                         test_iadd_composer,       test_cached_ldg_subtree, test_registers_used_again,
+                                         test_probe_is_no_offset, test_rejections};
+    for (size_t k = 0; k < sizeof tests / sizeof *tests; k++)
+        if (!tests[k]()) return 1;
     puts("shader_direct_memh: PASS");
     return 0;
 }
