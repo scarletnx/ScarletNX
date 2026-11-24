@@ -957,6 +957,12 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (v < 0) goto undef;
             if (v) break;
         }
+        if (insn.op == SNX_A64_OP_LDXR || insn.op == SNX_A64_OP_LDXP || insn.op == SNX_A64_OP_STXR) {
+            /* the fields the encoding wants all ones, which the Sail's decode reads so and the processor ignores: Rt2
+               of a single's, Rs of a load's */
+            if (insn.op != SNX_A64_OP_LDXP) g->word |= 31u << 10;
+            if (insn.op != SNX_A64_OP_STXR) g->word |= 31u << 16;
+        }
         if ((word >> 25 & 7) == 7 && (x->n > SGX_MAXI / 4 || x->nv > SGX_MAXV / 4 || x->nb > SGX_MAXB / 4)) {
             /* an Advanced SIMD instruction by its elements may take most of a region: it begins one */
             flush_to(u, address);
