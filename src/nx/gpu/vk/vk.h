@@ -1272,6 +1272,10 @@ typedef struct Surf {
     VkImageLayout layout;   /* the whole image is kept in one layout */
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
+    /* the barriers at the writer (writer_barriers, surface.c vk_surf_written_flush): its place in the written list plus
+       one (0 for none), and whether a batch of that list made its last write visible to every later read */
+    u32 written_at;
+    u8 written_batched;
     u64 last_used;
     u32 wgen;    /* render targets: bumped when drawn to */
     SnxVkRedraw redraw; /* render targets: drawn every frame, which async_pipelines asks (redraw.h) */
@@ -1490,6 +1494,21 @@ int vk_rt_pages_hit(u64 gva, u64 size);
 VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
+/* The barriers at the writer (docs/dev/draw-cost.md, item 7, step 4; the setting writer_barriers, with unified image
+   layouts). A surface that a pass, a copy, an upload or a storage write of the frame's command buffer changes goes on
+   the written list. A rendering pass's start (render.c render_begin) calls vk_surf_written_flush first, outside any
+   pass: one barrier call makes the last write of each surface on the list visible to every later read, but for the
+   pass's own attachments (rt, n, zt), which stay on the list. The surfaces' recorded state does not change, so the
+   reader barriers of vk_surf_use still run: this step adds barriers and counts what they cover */
+void vk_surf_written_flush(VkCommandBuffer cb, Surf* const* rt, u32 n, const Surf* zt);
+typedef struct {
+    u64 batches, batched; /* the batch calls made, and the surfaces in them */
+    u64 readers;          /* vk_surf_use's reader barriers after a write, in GENERAL */
+    u64 covered;          /* of those, the surfaces that a batch covered, or that the next pass's batch covers */
+    u64 compute;          /* of those, readers in compute alone, which no pass's batch comes before */
+    u64 full;             /* writes not listed: the list was full */
+} VkWriterCounts;
+void vk_surf_writer_counts(VkWriterCounts* c);
 /* vk_surf_use's barriers between these two in one barrier call, at the end: for uses of different surfaces that
    nothing is recorded between (a pass's targets, a copy's two surfaces) */
 void vk_surf_batch_begin(void);
