@@ -1377,6 +1377,20 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail"
 add_custom_target(snx_sailgen_extract_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
 add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/extract_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+# GPU mode on the USSE's Sail with the 1 MiB of stack Windows gives a program's main thread (gpu.c's Walk)
+if(UNIX AND NOT CMAKE_CROSSCOMPILING AND NOT SNX_TEST_SANITIZERS)
+    set(sailgen_usse "${PROJECT_SOURCE_DIR}/src/vita/gpu/sail")
+    file(GLOB sailgen_usse_sail CONFIGURE_DEPENDS "${sailgen_usse}/usse_*.sail")
+    file(GLOB sailgen_usse_backends CONFIGURE_DEPENDS "${sailgen_usse}/usse_*_spirv.h")
+    set(sailgen_usse_args --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/spirv.h" --backend "${sailgen_usse}/usse_spirv.h")
+    foreach(backend IN LISTS sailgen_usse_backends)
+        list(APPEND sailgen_usse_args --backend "${backend}")
+    endforeach()
+    add_test(NAME sailgen_stack COMMAND sh -c "ulimit -s 1024 && exec \"$0\" \"$@\"" $<TARGET_FILE:snx-sailgen>
+        --gpu "${sailgen_usse}/usse.roots" ${sailgen_usse_args}
+        -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/usse_stack.inc" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sail/gpu.sail"
+        "${sailgen_usse}/usse.sail" ${sailgen_usse_sail})
+endif()
 # --sdm reads pdftotext's layout of an instruction page (a footer's page number, a row whose operands a footnote's
 # superscript pushed onto the line above, the stacked tables with a CPUID column) and puts an override's section in
 # place of the page's; the fixture is written for the test, not the manual's text
