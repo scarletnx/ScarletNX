@@ -690,7 +690,7 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
             g_vk.has_task ? " with task shaders" : ", without task shaders");
 }
 /* How the ASTC textures the GPU decodes are held, where it samples BCn but not ASTC (astc_mode, gpu/texture/astc_bc.h).
-   Auto, for a program that is not an Ounce one, follows the room of the heap images go to as the game runs
+   Auto follows the room of the heap images go to as the game runs
    (vk_astc_auto_trimmed, vk_astc_auto_present); its line says the budget and the use it starts from. vk_mem_use's
    budget is the one the caches keep within: the driver's, or vk_budget_mb where that is lower. Without
    VK_EXT_memory_budget both numbers are devmem.c's own, the blocks it took for the use and 80% of the heap's size for
@@ -706,12 +706,12 @@ static void astc_choose(void) {
         return;
     }
     if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which vk_blocks_say's line says */
-    g_vk.astc_auto = (SnxAstcAuto){g_shader_sm86, 0, 0};
-    g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
-    if (g_settings.astc_mode == 0 && g_shader_sm86)
-        LOG("vulkan: astc_mode=0 (Auto): an Ounce program: ASTC textures are encoded as BC7 as they load, a quarter of "
-            "RGBA8's memory (BC7 at load)\n");
-    else if (g_settings.astc_mode == 0) {
+    /* An Ounce program's Auto was BC7 at load once, as feat/ounce held them. In one Ounce game's race on a GPU of 16
+       GB, BC7 at load made 54 slow frames where Exact made 7 (its encoder's pace waited for the GPU in the draws that
+       loaded them), and its caches evicted textures they took back within 60 presents about five times as often */
+    g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
+    g_vk.astc_at_load = g_settings.astc_mode == 3;
+    if (g_settings.astc_mode == 0) {
         vk_mem_use(&usage, &budget);
         LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load are %s while heap %d has room, and BC7 from the first "
             "trim of its caches, past %llu of the %llu MB budgeted, until the room under that is more than any "
@@ -728,9 +728,9 @@ static void astc_choose(void) {
     else
         LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", g_astc_bc7);
 }
-/* Auto follows the memory here: astc_mode 0, a program that is not an Ounce one, ASTC decoded where BC7 is sampled */
+/* Auto follows the memory here: astc_mode 0, ASTC decoded where BC7 is sampled */
 static int astc_auto_follows(void) {
-    return g_settings.astc_mode == 0 && !g_shader_sm86 && !g_vk.feat.textureCompressionASTC_LDR &&
+    return g_settings.astc_mode == 0 && !g_vk.feat.textureCompressionASTC_LDR &&
            g_vk.feat.textureCompressionBC;
 }
 /* the use and the budget of a switch's line: "U of B MB budgeted in use, R MB free", or past it */
@@ -764,13 +764,16 @@ void vk_astc_auto_present(void) {
     vk_pipeline_bc7_cache();
     vk_mem_use(&usage, &budget);
     const u64 mark = vk_mem_trim_start(budget);
-    if (!snx_astc_auto_room(&g_vk.astc_auto, usage, mark)) return;
+    /* the band's rule first: the walk over the textures runs only where it would turn Exact */
+    if (usage >= mark || mark - usage <= g_vk.astc_auto.band) return;
+    const u64 held = vk_tex_astc_bc7_bytes();
+    if (!snx_astc_auto_room(&g_vk.astc_auto, usage, mark, held)) return;
     astc_room(room, sizeof room, usage, budget);
     LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are Exact again: heap %d has %s, %llu MB "
         "under the %llu MB where its caches' trim starts, more than the %llu MB the trims of this run left under it "
-        "at most\n",
+        "at most and the %llu MB its ASTC textures held as BC7 would take more as RGBA8\n",
         vk_mem_heap(), room, (unsigned long long)((mark - usage) >> 20), (unsigned long long)(mark >> 20),
-        (unsigned long long)(g_vk.astc_auto.band >> 20));
+        (unsigned long long)(g_vk.astc_auto.band >> 20), (unsigned long long)((held * 3) >> 20));
 }
 void vk_astc_auto_say(void) {
     if (!astc_auto_follows()) return;
