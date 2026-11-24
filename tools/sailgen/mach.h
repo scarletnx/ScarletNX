@@ -2420,7 +2420,7 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
         int from = sgx_xin(a, i->in[implicit], at, 0);
         if (from != 0) {
             int o = a->xowner[0];
-            if (o > 0 && x->v[o].last > at) {
+            if (o > 0 && x->v[o].last >= at) { /* another operand of it, where it is last read here */
                 int to = sgx_xfree(a, at, 1u | (1u << from));
                 sgx_xmov(a, to, 0);
                 a->xowner[0] = 0;
