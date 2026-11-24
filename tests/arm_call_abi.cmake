@@ -31,4 +31,11 @@ function(snx_arm_call_abi machine triple)
     add_test(NAME arm_${machine}_call_abi
              COMMAND snx-test-arm-${machine} --callee "${object}" --blocks 600 --states 8)
     set_tests_properties(arm_${machine}_call_abi PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    # the ARM7TDMI's and the ARM946E's bus: the hook and the functions that call it are compiled code too, which
+    # clobbers what the ABI lets it
+    foreach(profile arm946e arm7tdmi)
+        add_test(NAME arm_${machine}_call_abi_${profile}
+                 COMMAND snx-test-arm-${machine} --profile ${profile} --callee "${object}" --blocks 600 --states 8)
+        set_tests_properties(arm_${machine}_call_abi_${profile} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    endforeach()
 endfunction()

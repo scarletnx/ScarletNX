@@ -634,8 +634,8 @@ sailgen --generate a32.roots --backend bits.h --backend machdef.h --backend x64.
 
 The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
 `src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` and `llvm_thumb.inc` make of an A32 or
-Thumb block on the Cortex-A57 with flat memory (a 32-bit NX program's); a block with an instruction it doesn't make is
-refused and stays LLVM's. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
+Thumb block, for any profile and memory mode of its options (`cpu/arm/codegen.h`: "The profiles and the memory modes",
+below); a block with an instruction it doesn't make stays LLVM's. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
 does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
 overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
 into one store of CPSR at the instruction's end, and a condition read before another instruction writes the flags is
@@ -657,6 +657,24 @@ takes the host's: FPSCR's rounding to nearest, no trap enabled and IXC already s
 finite and normal or zero, a result normal or an exact zero the operation allows; anything else calls
 `snx_arm_fp_x64` on a cold path, which is `snx_arm_fp`. FZ on or off does not change the choice.
 
+**The profiles and the memory modes** (`snx_x64_arm_options`, every machine's `_arm_options`: the options of the next
+blocks) are the same emitters, what differs asked where LLVM's ask it. `sg_ArchVersion` is the profile's, for the Sail;
+the hand-written emitters decode with `snx_a32_decode_profile` and `snx_thumb_decode_profile`, and before Thumb-2 (the
+ARM11, the ARM946E-S and the ARM7TDMI) every Thumb halfword is the Sail's. Guest memory goes through four functions of
+`mach_a32.h`: `sgx_a32_transfer` begins an instruction's transfer (its alignment and range, a trace's slot, a checked
+load's call), `sgx_a32_read` and `sgx_a32_write` move its bytes (`sgx_a32_read_list` a multiple one's words), and
+`sgx_a32_written` ends a store (the monitor, a checked store's call).
+- *Hosted* blocks check no range and nothing at their entry, and stop rather than set CPSR.E.
+- *Checked* blocks call the runtime library for each fetch and each transfer (`snx_arm_checked_fetch`,
+  `snx_arm_checked_access`, which call `checked.h`'s callback), a transfer's bytes as numbers in the state's `words`.
+- The *ARM7TDMI's* and the *ARM946E's* bus: the access itself is in the hot code, and one whose address the hook may
+  take (`sgx_a32_route`) jumps to a cold call of `snx_arm_io_read` or `snx_arm_io_write` with the live caller-saved
+  registers kept in the frame around it (`SGX_A32_BUS`, whose code is `mach_arm.inc`'s on every machine); a write
+  whose hook returns nonzero ends the block after its instruction (`SGX_A32_OUT`), chained or not. The ARM7TDMI's MULS
+  calls `snx_arm_multiply_carry`, and its trace is stores past the state and a bit on a skipped instruction's way.
+- The *ARM11's* VFP stops for the backend where FPSCR enables an exception or a short vector, and at a VMSR of bits it
+  does not model (`SGX_A32_OUT` too).
+
 A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 its address, CPSR.T and E clear) on a
 shared stub of the object; its end goes on to the block after it with a jump to that block's function where
 `nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
@@ -676,4 +694,7 @@ with each of their failures, and an MSR of E is run into the next block. Thumb b
 way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
 instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
 TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
-registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT.
+registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT. `--profile` and `--memory` run the other profiles and modes
+(`arm_x64_a9`, `arm_x64_arm7tdmi_trace`, `arm_x64_arm11_checked`, ... and the same on each other machine), against
+LLVM's blocks of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
+window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw.

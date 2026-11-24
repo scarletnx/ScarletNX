@@ -11,6 +11,7 @@
    the runtime running it, as A64 code calls RtAPI's undef. Linked into snx_arm_rt and every 32-bit game module */
 #include "common/cpu/arm/arm.h"
 #include "common/cpu/arm/checked.h"
+#include "common/cpu/arm/codegen.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 
@@ -146,6 +147,50 @@ void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t instruction, uint64_t thumb
     else
         carry = wide ? multiply_carry_hi(lhs, rhs, accum_hi, is_signed) : multiply_carry_simple(rhs);
     cpu->cpsr = (cpu->cpsr & ~0x20000000u) | (carry ? 0x20000000u : 0); /* C, bit 29 */
+}
+
+/* ---- the native back ends' bus accesses (arm.h), as llvm.c's readmem and writemem make them ---- */
+
+static int io_takes(uint32_t address, uint32_t regions, uint64_t size) {
+    if (size & SNX_ARM_IO_ARM9) return address >> 24 == 0x04; /* the NDS's registers alone */
+    return address >> 28 || (regions >> (address >> 24) & 1);
+}
+static uint32_t io_load(const uint8_t* p, unsigned bytes) {
+    return bytes == 1 ? *p : bytes == 2 ? snx_ld_le16(p) : snx_ld_le32(p);
+}
+/* What a read of an I/O register with nothing to read gives on the GBA: the opcode the ARM7TDMI fetched last, as mGBA's
+   GBALoadBad makes it. ARM: [$+8]. Thumb: [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and from
+   IWRAM [$+4] above [$+2] or below it by $+4's place in its word */
+static uint32_t io_open_bus(const SnxArmCPU* cpu, uint32_t where) {
+    if (where == ~0u) return 0; /* the NDS's registers answer a read with nothing to give with zero */
+    uint32_t pc = where & ~1u, region = (pc + 4) >> 24, h2, h4;
+    if (!(where & 1)) return snx_ld_le32(cpu->mem + (pc + 8));
+    h2 = snx_ld_le16(cpu->mem + (pc + 2));
+    h4 = snx_ld_le16(cpu->mem + (pc + 4));
+    if (region == 0x00 || region == 0x07 || (region == 0x03 && ((pc + 4) & 2))) return h4 << 16 | h2;
+    return h4 | (region == 0x03 ? h2 : h4) << 16;
+}
+uint64_t snx_arm_io_read(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t where) {
+    uint32_t a = (uint32_t)address;
+    unsigned bytes = (unsigned)size & 7;
+    if (cpu->io && io_takes(a, SNX_ARM_IO_REGIONS, size))
+        return cpu->io(cpu, a, (uint32_t)size & (SNX_ARM_IO_SIGNED | 7), io_open_bus(cpu, (uint32_t)where));
+    if (size & SNX_ARM_IO_SIGNED) /* ARMv4T: a misaligned LDRSH reads a sign extended byte instead */
+        return (uint32_t)(a & 1 ? (int32_t)(int8_t)cpu->mem[a] : (int32_t)(int16_t)io_load(cpu->mem + a, 2));
+    return io_load(cpu->mem + (size & SNX_ARM_IO_LIST ? a : a & ~(uint32_t)(bytes - 1)), bytes);
+}
+uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t value) {
+    uint32_t a = (uint32_t)address;
+    unsigned bytes = (unsigned)size & 7;
+    if (cpu->io && io_takes(a, SNX_ARM_IO_STORE_REGIONS, size)) return cpu->io(cpu, a, 0x100u | bytes, (uint32_t)value);
+    uint8_t* p = cpu->mem + (size & SNX_ARM_IO_LIST ? a : a & ~(uint32_t)(bytes - 1));
+    if (bytes == 1)
+        *p = (uint8_t)value;
+    else if (bytes == 2)
+        snx_st_le16(p, (uint16_t)value);
+    else
+        snx_st_le32(p, (uint32_t)value);
+    return 0;
 }
 
 /* ---- checked memory for the native back ends' blocks (arm.h), as llvm.c's bus_access makes it ---- */

@@ -94,8 +94,6 @@ MG_ARM* MG_ARM_API(new)(void) {
 }
 int MG_ARM_API(options)(MG_ARM* c, const SnxArmCodegenOptions* options) {
     if (!snx_arm_codegen_options_valid(options)) return -1;
-    if (options && (options->profile == SNX_ARM_PROFILE_ARM7TDMI || options->profile == SNX_ARM_PROFILE_ARM946E))
-        return -1;
     c->options = options ? *options : (SnxArmCodegenOptions){.abi = SNX_ARM_CODEGEN_OPTIONS_ABI};
     return 0;
 }
@@ -104,7 +102,7 @@ void MG_ARM_API(free)(MG_ARM* c) {
     free(c->b.p);
     free(c->rel);
     free(c->text), free(c->rels), free(c->made);
-    free(c->g.label_at), free(c->g.fix), free(c->g.exits), free(c->g.monitors), free(c->g.outs);
+    free(c->g.label_at), free(c->g.fix), free(c->g.exits), free(c->g.monitors), free(c->g.outs), free(c->g.buses);
     free(c->a.cold.p), free(c->a.pool), free(c->a.rips), free(c->a.cjumps), free(c->a.ccalls);
     free(c);
 }
@@ -130,24 +128,63 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 }
 
 /* the machine's instructions besides its AArch32 part's own (x64_a32.h, arm64_a32.h, risc_a32.h): SGX_A32_OUT, a jump
-   to a way out of the block, whose cold way is written after the block's code (cold_ways) */
+   to a way out of the block, and SGX_A32_BUS, an access of the ARM7TDMI or the ARM946E the bus hook may take. Their
+   cold ways are written after the block's code (cold_ways) */
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     SgXIns* i = &a->x->ins[at];
     SgCtx* g = (SgCtx*)a->machine;
     SgXBuf* b = a->b;
-    if (i->op != SGX_A32_OUT) sg_fail("a machine instruction of no kind", i->op, at);
-    SgA32Out o = {.label = sgx_a32_label(g),
-                  .undefined = 1,
-                  .reason = (unsigned)(i->imm - 1),
-                  .word = (SnxU32)i->kv[0],
-                  .pc = (SnxU32)i->kv[1],
-                  .next = (SnxU32)(i->kv[1] >> 32)};
-    g->outs = (SgA32Out*)sgx_a32_grow(g->outs, &g->cap_outs, g->nouts + 1, sizeof *g->outs);
-    g->outs[g->nouts++] = o;
-    sgx_a32_jcc(g, b, i->cc, o.label);
-    (void)r;
+    if (i->op == SGX_A32_OUT) {
+        SgA32Out o = {.label = sgx_a32_label(g),
+                      .undefined = i->imm != 0,
+                      .reason = (unsigned)(i->imm ? i->imm - 1 : 0),
+                      .word = (SnxU32)i->kv[0],
+                      .pc = (SnxU32)i->kv[1],
+                      .next = (SnxU32)(i->kv[1] >> 32)};
+        g->outs = (SgA32Out*)sgx_a32_grow(g->outs, &g->cap_outs, g->nouts + 1, sizeof *g->outs);
+        g->outs[g->nouts++] = o;
+        sgx_a32_jcc(g, b, i->cc, o.label);
+        return;
+    }
+    if (i->op != SGX_A32_BUS) sg_fail("a machine instruction of no kind", i->op, at);
+    SgA32Bus m = {.label = sgx_a32_label(g),
+                  .back = sgx_a32_label(g),
+                  .sym = i->sym,
+                  .size = (SnxU32)i->imm,
+                  .key = (SnxU32)i->kv[0],
+                  .pc = (SnxU32)(i->kv[0] >> 32),
+                  .load = i->kv[1] != 0};
+    int kept = 0;
+    /* a vector read after it goes to its slot now: every vector register is the call's to change */
+    for (int k = 0; k < SGX_NXREG; ++k) sgx_xspill(a, k, at);
+    m.slot = a->slots;
+    for (int k = 0; k < SGX_NREG; ++k)
+        if ((SGX_CALLER_SAVED >> k & 1) && k != SGX_RET && a->owner[k] > 0 && a->x->v[a->owner[k]].last > at) {
+            m.live |= 1u << k;
+            ++kept;
+        }
+    if (a->slots + kept > a->slots_max) a->slots_max = a->slots + kept;
+    g->buses = (SgA32Bus*)sgx_a32_grow(g->buses, &g->cap_buses, g->nbuses + 1, sizeof *g->buses);
+    g->buses[g->nbuses++] = m;
+    sgx_a32_jcc(g, b, i->cc, m.label);
+    /* the access itself, through the form the selection gave it */
+    unsigned char o[4] = {0};
+    const SgXSel* s = i->sel;
+    if (m.load) {
+        o[(int)s->out] = SGX_RET;
+        o[(int)s->in[0]] = (unsigned char)SGX_MEMR(r[1]);
+    } else {
+        o[(int)s->in[0]] = r[3];
+        o[(int)s->out] = (unsigned char)SGX_MEMR(r[1]);
+    }
+    b->index = r[2];
+    b->disp = 0;
+    s->enc(b, o, 0, 0);
+    b->index = -1;
+    if (!m.load) sgx_a32_movi(b, SGX_RET, 0);
+    sgx_a32_bind(g, b, m.back);
 }
-/* the ways out of the block, after its code */
+/* the ways out of the block and the bus's calls, after the block's code */
 static void cold_ways(MG_ARM* c) {
     SgCtx* g = &c->g;
     SgXBuf* b = &c->b;
@@ -164,7 +201,22 @@ static void cold_ways(MG_ARM* c) {
         sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, o->next);
         sgx_a32_jmp(g, b, g->ret);
     }
-    g->nouts = 0;
+    for (int k = 0; k < g->nbuses; ++k) {
+        const SgA32Bus* m = &g->buses[k];
+        int slot = m->slot;
+        sgx_a32_bind(g, b, m->label);
+        for (int j = 0; j < SGX_NREG; ++j)
+            if (m->live >> j & 1) sgx_mov_mem(&c->a, 0, 64, j, SGX_FRAME, 8 * slot++);
+        sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, m->pc); /* the hook may read it */
+        sgx_a32_movi(b, sgx_a32_args[1], m->size);
+        if (m->load) sgx_a32_movi(b, sgx_a32_args[2], m->key);
+        sgx_a32_call_out(&c->a, b, m->sym);
+        slot = m->slot;
+        for (int j = 0; j < SGX_NREG; ++j)
+            if (m->live >> j & 1) sgx_mov_mem(&c->a, 1, 64, j, SGX_FRAME, 8 * slot++);
+        sgx_a32_jmp(g, b, m->back);
+    }
+    g->nouts = g->nbuses = 0;
 }
 
 /* ---- the machine's glue (defined after this file) ---- */
@@ -198,11 +250,21 @@ static SgD reg(SgCtx* g, unsigned r) {
     if (r != 15) return sg_GPR_read(g, r);
     return sgx_const(32, g->thumb ? ((SnxU32)g->pc + 4) & ~3u : (SnxU32)g->pc + 8);
 }
-/* a branch to value in ARM state (llvm.c's branch_exchange): CPSR.T from bit 0, R15 the rest */
-static void write_pc(SgCtx* g, SgD value) {
+/* a branch to value with the state from its bit 0 (llvm.c's branch_exchange): CPSR.T from it, R15 the rest */
+static void branch_exchange(SgCtx* g, SgD value) {
     sg_PSTATE_write(g, SG_PSTATE_T, 1, sg_d_slice(g, value, 0, 0));
     g->branched = 1;
     g->target = sg_d_and(g, value, sgx_const(32, ~1u));
+}
+/* a load written to the PC (llvm.c's arm_write_pc). The ARM7TDMI (ARMv4T) does not interwork there: bits 1 and 0 are
+   dropped and the state stays ARM; only BX changes the state. Later cores branch with the state from bit 0 */
+static void write_pc(SgCtx* g, SgD value) {
+    if (!sgx_a32_arm7(g)) {
+        branch_exchange(g, value);
+        return;
+    }
+    g->branched = 1;
+    g->target = sg_d_and(g, value, sgx_const(32, ~3u));
 }
 /* a shift by an immediate (llvm.c's shift with immediate set), its carry not taken */
 static SgD shift_imm(SgCtx* g, SgD v, unsigned type, unsigned imm) {
@@ -245,20 +307,26 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
         }
     }
     SgD adjusted = up ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset), addr = pre ? adjusted : base;
-    /* LDRD and STRD, and a load of the PC, word aligned (llvm.c's: unaligned support on, as ARMv6's SCTLR.U) */
+    /* LDRD and STRD, and a load of the PC, word aligned (llvm.c's: unaligned support on, as ARMv6's SCTLR.U), but on
+       the ARM7TDMI, which rotates a misaligned PC, and the ARM946E-S, neither of which faults on a
+       misaligned doubleword */
     sgx_reg(sgx(g), &addr);
-    sgx_a32_transfer(g, addr, pair ? 8 : bytes, pair || (load && d == 15) ? 4 : 1, !load, pair);
+    sgx_a32_transfer(g, addr, pair ? 8 : bytes, (pair || (load && d == 15)) && !sgx_a32_legacy(g) ? 4 : 1, !load, pair);
     if (load) {
+        /* both words of a pair read before a register is written, which the bus hook's code sees */
         SgD value = sgx_a32_read(g, addr, (int)bytes, 0, sign);
+        SgD second = pair && sgx_a32_legacy(g) ? sgx_a32_read(g, addr, 4, 4, 0) : value;
         if (d == 15)
             write_pc(g, value);
         else
             sg_GPR_write(g, d, value);
-        if (pair) sg_GPR_write(g, d + 1, sgx_a32_read(g, addr, 4, 4, 0)); /* the range checked holds both: no wrap */
+        if (pair) sg_GPR_write(g, d + 1, sgx_a32_legacy(g) ? second : sgx_a32_read(g, addr, 4, 4, 0));
     } else {
-        SgD value = reg(g, d); /* PCStoreValue: the address plus 8 */
+        /* PCStoreValue: the address plus 8, the ARM7TDMI's and the ARM946E's plus 12 */
+        SgD value = d == 15 && sgx_a32_legacy(g) ? sgx_const(32, (SnxU32)g->pc + 12) : reg(g, d);
+        SgD second = pair ? reg(g, d + 1) : value;
         sgx_a32_write(g, addr, (int)bytes, 0, value, 0);
-        if (pair) sgx_a32_write(g, addr, 4, 4, reg(g, d + 1), 0);
+        if (pair) sgx_a32_write(g, addr, 4, 4, second, 0);
         sgx_a32_written(g, addr, pair ? 8 : bytes);
     }
     if (wb) sg_GPR_write(g, n, adjusted);
@@ -277,11 +345,17 @@ static int multiple(SgCtx* g) {
     SgD adjusted = up ? sg_d_add(g, base, sgx_const(32, count * 4)) : sg_d_sub(g, base, sgx_const(32, count * 4));
     SgD start = up ? sg_d_add(g, base, sgx_const(32, pre ? 4 : 0)) : sg_d_add(g, adjusted, sgx_const(32, pre ? 0 : 4));
     sgx_reg(sgx(g), &start);
-    sgx_a32_transfer(g, start, count * 4, 4, !load, 1);
+    /* the ARM7TDMI and the ARM946E-S transfer at an unaligned base instead of faulting */
+    sgx_a32_transfer(g, start, count * 4, sgx_a32_legacy(g) ? 1 : 4, !load, 1);
     /* every source read before any update, the base and the PC among them */
     for (unsigned i = 0; i < 16; ++i)
         if (list >> i & 1) {
-            values[i] = load ? sgx_a32_read_list(g, start, (int)(index * 4)) : reg(g, i);
+            /* the ARM7TDMI stores the written back base where the base is not the first in the list */
+            int written_back = sgx_a32_arm7(g) && i == n && (w & (1u << 21)) && (list & ((1u << i) - 1));
+            values[i] = load                           ? sgx_a32_read_list(g, start, (int)(index * 4))
+                        : i == 15 && sgx_a32_legacy(g) ? sgx_const(32, (SnxU32)g->pc + 12)
+                        : written_back                 ? adjusted
+                                                       : reg(g, i);
             ++index;
         }
     if (load && (list >> 15 & 1)) write_pc(g, values[15]);
@@ -295,8 +369,10 @@ static int multiple(SgCtx* g) {
             ++index;
         }
     if (!load) sgx_a32_written(g, start, count * 4);
-    /* writeback after the stores (STM stored the old base), but not over a loaded base */
-    if ((w & (1u << 21)) && !(load && (list >> n & 1))) sg_GPR_write(g, n, adjusted);
+    /* writeback after the stores (STM stored the old base), but not over a loaded base. The ARM946E-S (ARMv5) writes
+       back where the base is the list's only register or not its last */
+    int arm9_writes = sgx_a32_arm9(g) && (!(list & ~(1u << n)) || (list & ~((2u << n) - 1)));
+    if ((w & (1u << 21)) && (!(load && (list >> n & 1)) || arm9_writes)) sg_GPR_write(g, n, adjusted);
     return load && (list >> 15 & 1);
 }
 
@@ -312,6 +388,9 @@ static void multiply(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
     unsigned n = (w >> 16) & 15, d = (w >> 12) & 15;
     condition(g);
+    if (g->trace) sg_TraceMultiplier(g, reg(g, (w >> 8) & 15)); /* whose bytes time it */
+    /* the ARM7TDMI's C: the runtime library reads the operands before the results land (snx_arm_multiply_carry) */
+    if (sgx_a32_arm7(g) && (w & (1u << 20)) && (kind == SNX_A32_MUL || kind == SNX_A32_MULL)) sg_MultiplyCarry(g);
     SgD a = reg(g, w & 15), b = reg(g, (w >> 8) & 15);
     if (kind == SNX_A32_MULL) {
         int umaal = (w & 0x00e00000) == 0x00400000, sign = !umaal && (w & (1u << 22));
@@ -368,6 +447,15 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
     unsigned d = (w >> 12) & 15, n = (w >> 16) & 15;
     condition(g);
+    if (kind == SNX_A32_MOVW ||
+        kind == SNX_A32_MOVT) { /* a profile the Sail has none for (the ARM7TDMI, which decodes it) */
+        SnxU32 imm = ((w >> 4) & 0xf000) | (w & 0xfff);
+        sg_GPR_write(g, d,
+                     kind == SNX_A32_MOVW
+                         ? sgx_const(32, imm)
+                         : sg_d_or(g, sg_d_and(g, reg(g, d), sgx_const(32, 65535)), sgx_const(32, imm << 16)));
+        return 0;
+    }
     SgD v = reg(g, w & 15), r;
     switch (kind) {
         case SNX_A32_CLZ: r = sg_i_slice(g, sg_i_clz(g, v), 31, 0); break;
@@ -868,7 +956,7 @@ static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
     int single = (v->flags & AV_PRE) && !(v->flags & AV_WB);
     SgD end = v->flags & AV_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
     SgD addr = single || (v->flags & AV_PRE) ? end : base;
-    int wide = !sgx_a32_checked(g); /* a doubleword at once */
+    int wide = !sgx_a32_legacy(g) && !sgx_a32_checked(g); /* a doubleword at once */
     sgx_reg(sgx(g), &addr);
     if (sgx_a32_checked(g))
         sgx_a32_transfer(g, addr, v->bytes, 4, !(v->flags & AV_LOAD), 1);
@@ -1680,6 +1768,13 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
         return 1;
     }
     switch (kind) {
+        case SNX_A32_BX: { /* BLX of a register on the ARM7TDMI, whose decoder runs it and the Sail has from ARMv5 on */
+            condition(g);
+            SgD target = reg(g, w & 15); /* it may be LR: read before the return address is written */
+            branch_exchange(g, target);
+            if (w & 0x20) sg_GPR_write(g, 14, sgx_const(32, (SnxU32)g->pc + 4));
+            return 1;
+        }
         case SNX_A32_SINGLE:
         case SNX_A32_EXTRA: return memory(g, kind);
         case SNX_A32_MULTIPLE: return multiple(g);
@@ -1691,6 +1786,8 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
         case SNX_A32_REV:
         case SNX_A32_EXTEND:
         case SNX_A32_BITFIELD:
+        case SNX_A32_MOVW:
+        case SNX_A32_MOVT:
         case SNX_A32_MRS:
         case SNX_A32_MSR: return miscellaneous(g, kind);
         case SNX_A32_EXCLUSIVE:
@@ -1708,8 +1805,10 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
             condition(g);
             sgx_a32_machine(g, SGX_A32_FENCE, 0);
             return 0;
-        case SNX_A32_HINT: return 0; /* hints may complete without waiting */
-        case SNX_A32_UADD8:          /* the ARM11's, the A57's decoder's PARALLEL */
+        case SNX_A32_HINT: /* hints may complete without waiting; a trace's bit for one skipped is its condition's */
+            if (g->skipped) condition(g);
+            return 0;
+        case SNX_A32_UADD8: /* the ARM11's, the A57's decoder's PARALLEL */
         case SNX_A32_PARALLEL: parallel(g); return 0;
         case SNX_A32_SEL: media(g, SNX_A32_SELECT); return 0;    /* the ARM11's */
         case SNX_A32_MULH: media(g, SNX_A32_HALF_MUL); return 0; /* the ARM11's: the same words */
@@ -1757,11 +1856,38 @@ static SnxU32 word_at(const unsigned char* code, size_t i) {
     return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
 }
 
+/* the block's way past an instruction its condition skipped, bound where the two meet: with a trace (the ARM7TDMI's)
+   the skipped instruction's bit first, which the way that ran jumps over where it comes here (on) */
+static void bind_skip(MG_ARM* c, int on) {
+    SgCtx* g = &c->g;
+    SgXBuf* b = &c->b;
+    int over = -1;
+    flush(c);
+    if (!g->skipped || g->thumb || !snx_arm_timed_condition(g->word)) {
+        sgx_a32_bind(g, b, g->skip);
+        g->skip = -1;
+        return;
+    }
+    if (on) {
+        over = sgx_a32_label(g);
+        sgx_a32_jmp(g, b, over);
+    }
+    sgx_a32_bind(g, b, g->skip);
+    g->skip = -1;
+    SnxU32 i = ((SnxU32)g->pc - g->block_pc) >> 2;
+    size_t at = g->skipped + (size_t)(i >> 5) * 4;
+    SgXIns* l = sgx_append(&g->x, SGX_K_LOAD);
+    l->w = 32;
+    l->disp = (int)at;
+    l->def = sgx_vreg(&g->x, g->x.n - 1, 32);
+    sgx_a32_put(g, at, 32, sg_d_or(g, sgx_val(32, l->def), sgx_const(32, 1u << (i & 31))));
+    flush(c);
+    if (on) sgx_a32_bind(g, b, over);
+}
 /* the A32 words of the block, until one ends it: how many (a Thumb block's halfwords are thumb_code's) */
 static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 pc) {
     SgCtx* g = &c->g;
     SgX* x = &g->x;
-    SgXBuf* b = &c->b;
     for (size_t i = 0;; ++i) {
         SnxU32 w = word_at(code, i);
         if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
@@ -1773,6 +1899,7 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
+        g->yields = 0;
         sgx_a32_fetch(g, w, 4);
         g->start = x->n;
         /* the Sail's clauses' (their condition and their end their own), else the emitters here */
@@ -1780,11 +1907,9 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
                                     : instruction(g, snx_a32_decode_profile(g->profile, w));
         if (x->unmade) sg_fail("a primitive this host has no form of", 0, 0);
         sgx_a32_finish(g);
+        if (!stop) sgx_a32_yield_check(g);
         if (stop || i + 1 == count) return i + 1;
-        if (g->skip >= 0) {
-            flush(c);
-            sgx_a32_bind(g, b, g->skip);
-        }
+        if (g->skip >= 0) bind_skip(c, 1);
     }
 }
 #ifdef MG_ARM_THUMB_BLOCK
@@ -1837,9 +1962,13 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     c->a.b = b;
     c->a.machine = g;
     c->a.reloc = unit_reloc;
-    g->nlabels = g->nfix = g->nexits = g->nmonitors = g->nouts = 0;
+    g->nlabels = g->nfix = g->nexits = g->nmonitors = g->nouts = g->nbuses = 0;
     g->profile = c->options.profile;
     g->memory = c->options.memory;
+    g->trace = c->options.trace;
+    g->skipped = c->options.skipped;
+    g->block_pc = pc;
+    g->yields = 0;
     x->n = 0;
     x->nv = 1;
     x->nb = 1;
@@ -1897,8 +2026,10 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
             sgx_a32_jmp(g, b, g->ret);
     } else if (!g->undefined) {
         /* on, both ways past the skip */
-        flush(c);
-        if (g->skip >= 0) sgx_a32_bind(g, b, g->skip), g->skip = -1;
+        if (g->skip >= 0)
+            bind_skip(c, 1);
+        else
+            flush(c);
         if (it) {
             cpsr_bits(g, 0, sgx_const(32, it));
             flush(c);
@@ -1907,7 +2038,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     } else
         flush(c); /* its own code left */
     if (g->skip >= 0) {
-        sgx_a32_bind(g, b, g->skip);
+        bind_skip(c, 0);
         if (it) {
             cpsr_bits(g, 0, sgx_const(32, it));
             flush(c);

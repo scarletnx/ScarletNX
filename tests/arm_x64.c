@@ -33,7 +33,7 @@
    --callee OBJECT (under Unicorn alone) is the runtime library's functions a block calls, compiled for the machine
    (arm_call_abi_callee.c), in the place of the host's: with it the runs have a runtime (SnxArmRt) whose callbacks are
    that object's on one side and the test's on the other, so an argument a block passes as the machine's ABI does not
-   have it shows */
+   have it shows, and the hook (SnxArmCPU.io) is that object's too */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
@@ -127,7 +127,7 @@ typedef uint64_t u64;
 #define PC        0x1000u /* the blocks' address */
 #define MEM_SIZE  0x10000u
 #define CHUNK     256
-#define MAX_WORDS 6
+#define MAX_WORDS 48
 #define MAX_HALF  16 /* halfwords of a Thumb block */
 /* the window of the modes that reach past MEM_SIZE: VIEW bytes of memory mirrored through 4 GiB and a guard */
 #define VIEW      0x40000u
@@ -154,12 +154,13 @@ static struct {
     SnxArmCodegenOptions options; /* --profile, --memory and --trace */
     int windowed;                 /* the runs' memory is the windows' */
     unsigned char *window[2], *view[2],
-        *pristine;            /* each side's window and the memory it mirrors; what both start from */
-    size_t hooked, transfers; /* the hook's calls and checked memory's, LLVM's side's */
-    uint32_t chain_returns;   /* what chain_io gives a write */
+        *pristine;                      /* each side's window and the memory it mirrors; what both start from */
+    size_t hooked, transfers;           /* the hook's calls and checked memory's, LLVM's side's */
+    uint32_t chain_returns, chain_sets; /* what chain_io gives a write, and sets R2 to (0: leaves it) */
     unsigned char* callee; /* --callee's object, callee_size bytes */
     size_t callee_size;
     SnxArmRt rt[2]; /* with it, each side's runtime */
+    uint32_t (*io[2])(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value); /* and hook */
 } g_test;
 static int legacy(void) {
     return g_test.options.profile == SNX_ARM_PROFILE_ARM7TDMI || g_test.options.profile == SNX_ARM_PROFILE_ARM946E;
@@ -462,8 +463,8 @@ static void start(RunState* s, unsigned k, uint32_t pc) {
     cpu->mem_size = MEM_SIZE;
     if (g_test.windowed) /* the AGB board's, past 4 GiB by a guard, or one that ends in a region */
         cpu->mem_size = k % 4 == 3 ? 0x0E000010u : (1ull << 32) + 0x1000;
-    if (hosted()) cpu->exit = SNX_ARM_OK;                            /* the dispatch loop's */
-    if (legacy() && k % 8 != 7 && !g_test.callee) cpu->io = test_io; /* the test's, which compiled code cannot call */
+    if (hosted()) cpu->exit = SNX_ARM_OK; /* the dispatch loop's */
+    if (legacy() && k % 8 != 7) cpu->io = test_io;
     if (checked()) {
         s->checked.abi = SNX_ARM_CHECKED_ABI + (k % 16 == 13);
         s->checked.access = k % 16 == 14 ? NULL : test_access;
@@ -610,6 +611,8 @@ static SnxCodeLoader* new_loader(char* error, size_t size) {
                    snx_code_define(loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
                    snx_code_define(loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||
                    snx_code_define(loader, "snx_arm_multiply_carry", (SnxU64)(uintptr_t)snx_arm_multiply_carry) ||
+                   snx_code_define(loader, "snx_arm_io_read", (SnxU64)(uintptr_t)snx_arm_io_read) ||
+                   snx_code_define(loader, "snx_arm_io_write", (SnxU64)(uintptr_t)snx_arm_io_write) ||
                    snx_code_define(loader, "snx_arm_checked_fetch", (SnxU64)(uintptr_t)snx_arm_checked_fetch) ||
                    snx_code_define(loader, "snx_arm_checked_access", (SnxU64)(uintptr_t)snx_arm_checked_access) ||
                    snx_code_define(loader, "snx_arm_checked_strex", (SnxU64)(uintptr_t)snx_arm_checked_strex))) {
@@ -787,13 +790,17 @@ static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* 
         g_test.rt[1].undefined =
             (void (*)(SnxArmCPU*, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_undefined");
         g_test.rt[1].coproc = (void (*)(SnxArmCPU*, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_coproc");
-        if (!g_test.rt[1].undefined || !g_test.rt[1].coproc) {
+        g_test.io[1] =
+            (uint32_t (*)(SnxArmCPU*, uint32_t, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_io");
+        if (!g_test.rt[1].undefined || !g_test.rt[1].coproc || !g_test.io[1]) {
             fprintf(stderr, "FAIL: --callee's object has no callbacks\n");
             return 1;
         }
     } else if (!hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
                !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
                !hostuc_native(uc, "snx_arm_multiply_carry", (void*)snx_arm_multiply_carry) ||
+               !hostuc_native(uc, "snx_arm_io_read", (void*)snx_arm_io_read) ||
+               !hostuc_native(uc, "snx_arm_io_write", (void*)snx_arm_io_write) ||
                !hostuc_native(uc, "snx_arm_checked_fetch", (void*)snx_arm_checked_fetch) ||
                !hostuc_native(uc, "snx_arm_checked_access", (void*)snx_arm_checked_access) ||
                !hostuc_native(uc, "snx_arm_checked_strex", (void*)snx_arm_checked_strex)) {
@@ -948,6 +955,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 start(&s[side], k, b->pc);
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
                 if (g_test.callee) s[side].rt = g_test.rt[side], s[side].cpu.rt = &s[side].rt;
+                if (g_test.callee && s[side].cpu.io) s[side].cpu.io = g_test.io[side];
                 s[side].code = code_of(b), s[side].code_size = b->n * (b->thumb ? 2 : 4), s[side].code_pc = b->pc;
                 if (g_test.windowed) {
                     memcpy(g_test.view[side], g_test.pristine, VIEW);
@@ -1242,7 +1250,8 @@ static int run_endian_chain(Back* x64) {
    its dispatch loop, which looks at ITSTATE ---- */
 
 static uint32_t chain_io(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value) {
-    (void)cpu, (void)address, (void)size_write, (void)value;
+    (void)address, (void)size_write, (void)value;
+    if (g_test.chain_sets) cpu->r[2] = g_test.chain_sets;
     return g_test.chain_returns;
 }
 static size_t chain_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
@@ -1253,12 +1262,13 @@ static size_t chain_next(void* user, uint32_t key, size_t units, size_t count, u
 }
 typedef struct {
     const char* what;
-    const unsigned char code[8]; /* the first block's units, then the second's one */
+    const unsigned char code[16]; /* the first block's units, then the second's one */
     int thumb;
     size_t units;                             /* the first block's */
     uint32_t returns;                         /* the hook's */
     uint32_t r15, cpsr, exit;                 /* the state it starts from */
     uint32_t end15, end_cpsr, end_exit, end2; /* R15, CPSR, the exit and R2 (0 to start with) as it ends */
+    uint32_t sets;                            /* what the hook sets R2 to, 0 for nothing */
 } ChainCase;
 static const ChainCase bus_chains[] = {
     /* STR R0, [R1]; MOV R2, #1: the hook's write returns 0, the block goes on; nonzero, it ends there */
@@ -1273,7 +1283,8 @@ static const ChainCase bus_chains[] = {
      PC + 8,
      0x10,
      0,
-     1},
+     1,
+     0},
     {"STR whose hook yields",
      {0x00, 0x00, 0x81, 0xe5, 0x01, 0x20, 0xa0, 0xe3},
      0,
@@ -1285,18 +1296,46 @@ static const ChainCase bus_chains[] = {
      PC + 4,
      0x10,
      0,
+     0,
      0},
     /* the same in Thumb: STR R0, [R1]; MOVS R2, #1 */
-    {"T16 STR whose hook goes on", {0x08, 0x60, 0x01, 0x22}, 1, 1, 0, PC, 0x30, 0, PC + 4, 0x30, 0, 1},
-    {"T16 STR whose hook yields", {0x08, 0x60, 0x01, 0x22}, 1, 1, 0x80000000u, PC, 0x30, 0, PC + 2, 0x30, 0, 0},
+    {"T16 STR whose hook goes on", {0x08, 0x60, 0x01, 0x22}, 1, 1, 0, PC, 0x30, 0, PC + 4, 0x30, 0, 1, 0},
+    {"T16 STR whose hook yields", {0x08, 0x60, 0x01, 0x22}, 1, 1, 0x80000000u, PC, 0x30, 0, PC + 2, 0x30, 0, 0, 0},
+    /* ADD R2, R2, #1; STR R0, [R1], whose hook sets R2 to 0x40; ADD R2, R2, #1; NOP: the instruction after it reads
+       what the hook left, not the value the block had */
+    {"STR whose hook sets a register",
+     {0x01, 0x20, 0x82, 0xe2, 0x00, 0x00, 0x81, 0xe5, 0x01, 0x20, 0x82, 0xe2, 0x00, 0xf0, 0x20, 0xe3},
+     0,
+     3,
+     0,
+     PC,
+     0x10,
+     0,
+     PC + 16,
+     0x10,
+     0,
+     0x41,
+     0x40},
     /* STREQ, its condition failing (Z clear): nothing stored, the block goes on whatever the hook gave before */
-    {"STREQ not run", {0x00, 0x00, 0x81, 0x05, 0x01, 0x20, 0xa0, 0xe3}, 0, 1, 1, PC, 0x10, 0, PC + 8, 0x10, 0, 1},
+    {"STREQ not run", {0x00, 0x00, 0x81, 0x05, 0x01, 0x20, 0xa0, 0xe3}, 0, 1, 1, PC, 0x10, 0, PC + 8, 0x10, 0, 1, 0},
 };
 static const ChainCase hosted_chains[] = {
     /* NOP; MOV R2, #1, from a state no block of another mode takes: R15 elsewhere, CPSR.T and E set, an exit left */
-    {"a hosted entry", {0x00, 0xf0, 0x20, 0xe3, 0x01, 0x20, 0xa0, 0xe3}, 0, 1, 0, 0x777, 0x230, 5, PC + 8, 0x230, 5, 1},
+    {"a hosted entry",
+     {0x00, 0xf0, 0x20, 0xe3, 0x01, 0x20, 0xa0, 0xe3},
+     0,
+     1,
+     0,
+     0x777,
+     0x230,
+     5,
+     PC + 8,
+     0x230,
+     5,
+     1,
+     0},
     /* IT EQ; MOVS R2, #1: the first block ends inside the IT block (Z clear) */
-    {"a hosted IT block's end", {0x08, 0xbf, 0x01, 0x22}, 1, 1, 0, PC, 0x30, 0, PC + 2, 0x30 | 0x00000800, 0, 0},
+    {"a hosted IT block's end", {0x08, 0xbf, 0x01, 0x22}, 1, 1, 0, PC, 0x30, 0, PC + 2, 0x30 | 0x00000800, 0, 0, 0},
 };
 static int run_chains(Back* x64) {
     const ChainCase* cases = legacy() ? bus_chains : hosted() ? hosted_chains : NULL;
@@ -1324,6 +1363,7 @@ static int run_chains(Back* x64) {
             (input = (SnxLinkInput){.data = object, .size = size, .name = "chain"}, 1) &&
             !snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
             g_test.chain_returns = k->returns;
+            g_test.chain_sets = k->sets;
             s->cpu.mem = g_test.window[1];
             s->cpu.mem_size = 1ull << 32;
             s->cpu.io = chain_io;
@@ -1684,6 +1724,7 @@ int main(int argc, char** argv) {
             g_test.callee = snx_read_file(argv[++i], &g_test.callee_size);
             if (!g_test.callee) return fprintf(stderr, "FAIL: cannot read %s\n", argv[i]), 1;
             g_test.rt[0] = (SnxArmRt){snx_test_undefined, snx_test_coproc};
+            g_test.io[0] = snx_test_io;
 #if !defined(SNX_TEST_NATIVE)
             return fprintf(stderr, "--callee %s: the x86-64 blocks run here, with the host's functions\n", argv[i]), 2;
 #endif
@@ -1816,7 +1857,7 @@ int main(int argc, char** argv) {
             Block* b = &blocks[i];
             *b = (Block){0};
             /* one word alone a third of the time, else two to six */
-            b->n = rnd() % 3 == 0 ? 1 : 2 + (size_t)(rnd() % (MAX_WORDS - 1));
+            b->n = rnd() % 3 == 0 ? 1 : 2 + (size_t)(rnd() % 5); /* MAX_WORDS is --word's */
             b->pc = block_pc(0);
             for (size_t k = 0; k < b->n; ++k) {
                 const Class* c;

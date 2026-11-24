@@ -3,7 +3,8 @@
 /* Included by mach_arm.inc on the machines with Thumb blocks (MG_ARM_THUMB_BLOCK). Thumb blocks (what
    cpu/arm/llvm_thumb.inc's thumb_block makes, for any profile and memory mode): the 16-bit instructions are sailgen's
    emitters of the AArch32 Sail (sg_decode_t16), their condition the IT block's while one is open, as the Sail's
-   CurrentCond has it (before Thumb-2, on the ARM11, every halfword is one, BL's two halves among them); the 32-bit ones
+   CurrentCond has it (before Thumb-2, on the ARM11, the ARM946E-S and the ARM7TDMI, every halfword is one, BL's two
+   halves among them); the 32-bit ones
    the Thumb decoder's shapes (thumb.c), made here over the same SSA, and those that are an A32 instruction in another
    encoding its emitter's (TH_A32: an A32 word whose PC reads Thumb's). ITSTATE is known as the block is made: it
    advances with each instruction, and an SVC, a BKPT or a block that ends inside one leaves it in CPSR */
@@ -336,6 +337,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
         if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
             flush(c);
         g->pc = pc + 2 * (SnxU32)used;
+        g->yields = 0;
         g->branched = g->undefined = 0;
         g->iset = 0;
         g->skip = -1;
@@ -389,6 +391,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
         }
         if (x->unmade) sg_fail("a primitive this host has no form of", 0, 0);
         sgx_a32_finish(g);
+        if (!stop) sgx_a32_yield_check(g);
         used += len;
         if (stop || used >= count) break;
         if (g->skip >= 0) {

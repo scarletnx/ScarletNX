@@ -6,7 +6,8 @@
 # snx_arm_native_modes(<machine> [<argument>...]): arm_<machine>_<mode> for each mode of snx-test-arm-<machine>, with
 # the arguments (how many blocks and states), and each again with three host registers, so that values spill
 function(snx_arm_native_modes machine)
-    foreach(mode a9 arm11 a57_hosted a9_hosted arm11_hosted a57_checked a9_checked arm11_checked)
+    foreach(mode a9 arm11 arm946e arm7tdmi arm7tdmi_trace a57_hosted a9_hosted arm11_hosted a57_checked a9_checked
+                 arm11_checked)
         string(REGEX MATCH "^[^_]+" profile "${mode}")
         set(options --profile ${profile})
         if(mode MATCHES "_(hosted|checked)$")
@@ -28,6 +29,21 @@ function(snx_arm_native_modes machine)
                      COMMAND snx-test-arm-x64 --profile a9 --states 64 --halves ${halves})
         endforeach()
     endif()
+    # what random words hardly are: the ARM946E's LDM with writeback of its base alone, of the base first and of it last
+    add_test(NAME arm_${machine}_arm946e_ldm_base
+             COMMAND snx-test-arm-${machine} --profile arm946e --states 64 --word e8b10002 --word e9b10002
+                     --word e8310002 --word e9310002 --word e8b10006 --word e8b10003)
+    set_tests_properties(arm_${machine}_arm946e_ldm_base PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    # a block longer than the trace's skipped bits have in a word: MULEQ and MULNE, one of each pair not run
+    # a list at a misaligned address of the save memory's bus, which keeps it as it is, where no hook takes it
+    add_test(NAME arm_${machine}_arm7tdmi_list_save
+             COMMAND snx-test-arm-${machine} --profile arm7tdmi --states 256 --word e3a0140e,e2811002,e891000c
+                     --word e3a0140e,e2811002,e881000c)
+    set_tests_properties(arm_${machine}_arm7tdmi_list_save PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    string(REPEAT "00000291,10000291," 23 long)
+    add_test(NAME arm_${machine}_arm7tdmi_trace_long
+             COMMAND snx-test-arm-${machine} --profile arm7tdmi --trace --states 64 --word ${long}00000291)
+    set_tests_properties(arm_${machine}_arm7tdmi_trace_long PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # an empty Thumb PUSH and POP, which checked memory has no transaction of (UNDEFINED there); Thumb is x86-64's
     if(machine STREQUAL "x64")
         foreach(halfword b400 bc00)
