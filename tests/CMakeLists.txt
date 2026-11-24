@@ -3690,8 +3690,13 @@ target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 # each back end (the sanitizers' runtime keeps its own there)
 add_test(NAME runtime_tls_self COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime_tls.py" --self-test)
 if(NOT SNX_TEST_SANITIZERS)
+    set(snx_tls_limit 16384)
+    if(SNX_BUILD_ANDROID AND NOT WIN32)
+        # t_dyn (src/android/bridge/arm32.c), 1024 entries of 16 bytes: to go when that cache leaves the thread-locals
+        math(EXPR snx_tls_limit "${snx_tls_limit} + 1024 * 16")
+    endif()
     add_test(NAME runtime_tls COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime_tls.py"
-             $<TARGET_FILE:scarletnx>)
+             --limit ${snx_tls_limit} $<TARGET_FILE:scarletnx>)
     set_tests_properties(runtime_tls PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
