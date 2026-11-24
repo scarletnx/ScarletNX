@@ -32,7 +32,7 @@ static char* jdk(const char* dir, const char* name, const char* version, int jvm
 }
 int main(void) {
     char *dir = snx_temp_dir(NULL), *a, *b, *c, *d, *e, *f, *root2 = snx_path_join(dir, "second"),
-         *none = snx_path_join(dir, "none"), **found, **roots;
+         *none = snx_path_join(dir, "none"), *jdks, **found, **roots;
     const char* list[4];
     size_t n, i, home_at = 0;
     assert(dir && root2 && none);
@@ -86,9 +86,11 @@ int main(void) {
 #endif
     roots = gui_jdk_roots("/home/someone", &n);
     assert(roots && n > 4);
+    jdks = snx_path_join("/home/someone", ".jdks"); /* with the system's separator */
     for (i = 0; i < n; ++i)
-        if (strstr(roots[i], "/home/someone/.jdks")) home_at = i;
+        if (!strcmp(roots[i], jdks)) home_at = i;
     assert(home_at > 0 && home_at < n);
+    free(jdks);
     gui_jdks_free(roots, n);
     roots = gui_jdk_roots(NULL, &n);
     assert(roots && n);
