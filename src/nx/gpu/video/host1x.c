@@ -26,7 +26,6 @@
 #include "nx/gpu/video/host1x_regs.h"
 #include "nx/gpu/video/nvdec_regs.h"
 #include "nx/gpu/video/vic_regs.h"
-#include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/state_io.h"
 #include <stdatomic.h>
@@ -303,51 +302,24 @@ static void run_words(H1Ch* ch, const u32* w, u32 n) {
         }
     }
 }
-/* The job's syncpoint increments, once the GPU has done what the job's command buffers recorded. A picture's copy
-   reaches guest memory in stream order, as a write in place over an import or as a result the CPU's read faults on
-   (uma.c, owned.c), and the guest's wait on this syncpoint is the only thing that orders that copy with its own load
-   of the picture's bytes: a bump here, on the host, let the guest read the picture before the copy had run. The
-   renderer queues each increment as a release the submit carrying the copy performs (renderer.h's stream_incr,
-   release.c), which is how a copy's own syncpoint steps elsewhere (nvn/nvn_copy.c). Nothing waits: the decoder's
-   thread held vk_lock for a whole picture's copy before this, and the frame's recording waited behind it.
-   stream_end lets those releases go, as nvn_copy.c's texel read does between jobs: without it they wait for the next
-   job's end, and the thread that waits for the increment is often the one that would submit it.
-   With a stream, each count becomes that many increments, since a release steps its syncpoint by one. A job that
-   recorded nothing, or a renderer that is not up or has no stream_end to let those releases go, steps on the host as
-   before */
-static void job_increments(const u32* job, u32 ninc, u32 k, int streamed, u32* value) {
-    u32 c, i;
-    if (!ninc) return;
-    if (!streamed) {
-        for (c = 0; c < ninc; c++, k += 2) {
-            syncpt_add(job[k], job[k + 1]);
-            if (!c) *value = syncpt_read(job[k]);
-        }
-        return;
-    }
-    for (c = 0; c < ninc; c++, k += 2) {
-        if (!c) *value = syncpt_read(job[k]) + job[k + 1]; /* the value it reaches, which the zone shows */
-        for (i = 0; i < job[k + 1]; i++) g_renderer->stream_incr(job[k]);
-    }
-    g_renderer->stream_end();
-}
 /* a queued job: its command buffers under the engines' lock, then its syncpoint increments, and the value its
    first reaches, which the guest waits on when it waits for the job */
 static u32 run_job(H1Ch* ch, const u32* job) {
-    u32 ncb = job[0], ninc = job[1], k = 4, c, value = 0, words = 0;
+    u32 ncb = job[0], ninc = job[1], k = 4, c, value = 0;
 #if defined(SNX_TRACY)
     u64 t_submit = (u64)job[2] | (u64)job[3] << 32; /* only the job-time plot reads it */
 #endif
     pm_lock(&g_host1x.engine_lk);
     for (c = 0; c < ncb; c++) {
         u32 len = job[k++];
-        words += len;
         run_words(ch, job + k, len);
         k += len;
     }
     pm_unlock(&g_host1x.engine_lk);
-    job_increments(job, ninc, k, words && g_renderer_up && g_renderer && g_renderer->stream_incr && g_renderer->stream_end,
-                   &value);
+    for (c = 0; c < ninc; c++, k += 2) {
+        syncpt_add(job[k], job[k + 1]);
+        if (!c) value = syncpt_read(job[k]);
+    }
 #if defined(SNX_TRACY)
     /* submit to output: the guest called SUBMIT, the job waited in the queue, and the engine wrote its result */
     SNX_PLOT(ch->is_vic ? "video vic job ms" : "video nvdec job ms", (double)(plat_ns() - t_submit) / 1e6);
