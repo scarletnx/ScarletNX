@@ -147,6 +147,12 @@ typedef struct {
     u32* mh_new;
     u32 nmh_new;
     char mh_why[96];
+    /* the guard under which the value being found matters (mh_guard_code, 0 for none): the texture instruction's,
+       while no write of its predicate lies between; whether a writer under it was taken (mh_writer), and by
+       instruction the guard its value was found under (0 where none was needed) */
+    u32 mh_guard;
+    int mh_used;
+    u8* mh_gneed;
     u32 img[8], img_type[8];
     u32 interfaces[MAX_INTERFACES], ninterfaces;
     /* the uniform register pair a ULDC.64 last loaded from a constant buffer: (bank << 16 | offset) + 1, 0 for none */
@@ -6187,27 +6193,42 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
         for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                                \
             if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                     \
     } while (0)
-/* The one instruction whose write of value r of the file reaches instruction i on every path there, unguarded, as
-   reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes */
-static int mh_writer(Ctx* c, u32 i, int file, u32 r) {
+/* an instruction's guard as mh_guard holds it: 0 for none (PT), else 0x80, the negation at bit 3, the predicate */
+static u32 mh_guard_code(const Sm86Insn* in) {
+    return in->pred == SM86_PT && !in->pred_not ? 0 : 0x80u | (u32)in->pred_not << 3 | in->pred;
+}
+/* The one instruction whose write of value r of the file reaches instruction i on every path there, as
+   reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes. A
+   write needs no guard, or the one of c->mh_guard: the compiler computes a handle under the guard of the texture
+   instruction that takes it (@!P0 ULOP3 UR4 = UR8 | UR4, then @!P0 TEX of UR4; @P1 MOV R18 = c[3][0x70], @P1 LOP3
+   R18 = R18 | c[3][0x78], then @P1 TEX.B of R18), and where the texture instruction runs, so does that write, when no
+   write of the guard's predicate lies between them. *changed: one does (the writer's own too), so that the
+   instructions before it can't count on the guard */
+static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed) {
+    *changed = 0;
     if ((file == MH_R && r >= SM86_RZ) || (file == MH_UR && r >= SM86_URZ) || (file >= MH_P && r >= SM86_PT)) return -2;
     if (!flow_sources(c)) return -1;
-    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, g = c->mh_guard;
     u8* seen = calloc((size_t)n + 1, 1);
-    int ok = stack && seen, found = -1;
+    int ok = stack && seen, found = -1, under = 0;
     if (ok) MH_FLOW_PREDS(i);
     while (ok && top) {
         u32 k = stack[--top];
         const Sm86Insn* in = &c->in[k];
+        if (g && mh_may_write(in, MH_P, g & 7)) *changed = 1;
         if (!mh_may_write(in, file, r)) {
             MH_FLOW_PREDS(k);
             continue;
         }
-        if (!sm86_always(in) || (found >= 0 && (u32)found != k)) ok = 0;
+        int guarded = !sm86_always(in) && g && !sm86_has_cond(in) && mh_guard_code(in) == g;
+        if ((!sm86_always(in) && !guarded) || (found >= 0 && (u32)found != k)) ok = 0;
+        under |= guarded;
         found = (int)k;
     }
     free(stack);
     free(seen);
+    if (ok && under && *changed) ok = 0;
+    if (ok && under) c->mh_used = 1;
     return ok ? found : -1;
 }
 #undef MH_FLOW_PREDS
@@ -6223,9 +6244,19 @@ static int mh_fail(Ctx* c, const char* fmt, ...) {
     return 0;
 }
 static int mh_add(Ctx* c, u32 k, u32 reader);
+/* the writer k of a value that instruction at reads joins ShaderInfo.memh, under the guard only where no write of its
+   predicate lies between them */
+static int mh_add_under(Ctx* c, u32 k, u32 at, int changed) {
+    u32 g = c->mh_guard;
+    if (changed) c->mh_guard = 0;
+    int ok = mh_add(c, k, at);
+    c->mh_guard = g;
+    return ok;
+}
 /* instruction at, of ShaderInfo.memh or the texture instruction, reads value r of the file: its writer joins them */
 static int mh_need(Ctx* c, u32 at, int file, u32 r) {
-    int k = mh_writer(c, at, file, r);
+    int changed;
+    int k = mh_writer(c, at, file, r, &changed);
     if (k == -2) return 1;
     if (k < 0 || (u32)k >= at)
         return mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file),
@@ -6240,7 +6271,7 @@ static int mh_need(Ctx* c, u32 at, int file, u32 r) {
         c->mh_dep = grown, c->mh_dep_cap = cap;
     }
     c->mh_dep[c->nmh_dep++] = (MhDep){at, (u32)file, r, (u32)k};
-    return mh_add(c, (u32)k, at);
+    return mh_add_under(c, (u32)k, at, changed);
 }
 static int mh_src(Ctx* c, u32 at, const Sm86Src* s) {
     if (s->kind == SM86_SRC_REG) return mh_need(c, at, MH_R, s->reg);
@@ -6252,9 +6283,17 @@ static int mh_src(Ctx* c, u32 at, const Sm86Src* s) {
 static int mh_pred(Ctx* c, u32 at, int uniform, u32 field) {
     return mh_need(c, at, uniform ? MH_UP : MH_P, sm86_field(&c->in[at], field, 3));
 }
-/* instruction k, which reader reads, joins ShaderInfo.memh, with the writers of what it reads */
+static int mh_sources(Ctx* c, u32 k);
+/* instruction k, which reader reads, joins ShaderInfo.memh, with the writers of what it reads. One already there that
+   took a write under a guard holds for a reader under that guard alone */
 static int mh_add(Ctx* c, u32 k, u32 reader) {
-    if (c->mh_mark[k]) return 1;
+    if (c->mh_mark[k]) {
+        if (c->mh_gneed[k] && c->mh_gneed[k] != c->mh_guard)
+            return mh_fail(c, "a texture handle from memory made with %s at %u under another guard",
+                           sm86_ops[c->in[k].op].name, k);
+        c->mh_used |= c->mh_gneed[k] != 0;
+        return 1;
+    }
     const Sm86Insn* in = &c->in[k];
     if (!sm86_eval_takes(in))
         return mh_fail(c, "a texture handle from memory made with %s at %u (for %u)", sm86_ops[in->op].name, k, reader);
@@ -6263,6 +6302,16 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
     c->nmh++;
     c->mh_mark[k] = 1;
     c->mh_new[c->nmh_new++] = k;
+    int outer = c->mh_used;
+    c->mh_used = 0;
+    int ok = mh_sources(c, k);
+    c->mh_gneed[k] = (u8)(c->mh_used ? c->mh_guard : 0);
+    c->mh_used |= outer;
+    return ok;
+}
+/* the writers of what instruction k of ShaderInfo.memh reads join it */
+static int mh_sources(Ctx* c, u32 k) {
+    const Sm86Insn* in = &c->in[k];
     int op = in->op, u = sm86_ops[op].kind == SM86_K_UALU;
     switch (op) {
         case SM86_MOV:
@@ -6329,15 +6378,34 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
     }
 }
 /* the probe (SH_PROBE, by instruction index until mh_finish) of value r of the file at texture instruction at, whose
-   writer joins ShaderInfo.memh: ~0 when it can't */
+   writer joins ShaderInfo.memh: ~0 when it can't. The handle's value matters where the texture instruction runs,
+   under its guard */
 static u32 mh_probe(Ctx* c, u32 at, int file, u32 r) {
-    int k = mh_writer(c, at, file, r);
-    if (k < 0 || (u32)k >= at) {
+    int changed;
+    c->mh_guard = mh_guard_code(&c->in[at]);
+    c->mh_used = 0;
+    int k = mh_writer(c, at, file, r, &changed);
+    int ok = k >= 0 && (u32)k < at;
+    if (!ok)
         mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file), r, at);
-        return SH_PROBE_NONE;
+    else
+        ok = mh_add_under(c, (u32)k, at, changed);
+    c->mh_guard = 0;
+    return ok ? SH_PROBE(k, file == MH_UR, r) : SH_PROBE_NONE;
+}
+/* whether an instruction of ShaderInfo.memh writes a value between its writer and an instruction there that reads it,
+   which the renderer, running only the list in order, would read instead (why in mh_why). memory_handles asks after
+   each texture instruction's handle, and samples one that brings such an instruction as none: one game's compute
+   program wrote UR6 twice for two handles, and as one list of the two it was not translated at all */
+static int mh_conflict(Ctx* c) {
+    for (u32 d = 0; d < c->nmh_dep; d++) {
+        const MhDep* x = &c->mh_dep[d];
+        for (u32 j = x->writer + 1; j < x->at; j++)
+            if (c->mh_mark[j] && mh_may_write(&c->in[j], (int)x->file, x->reg))
+                return !mh_fail(c, "a texture handle from memory whose %s%u another of its instructions writes",
+                                mh_file_name((int)x->file), x->reg);
     }
-    if (!mh_add(c, (u32)k, at)) return SH_PROBE_NONE;
-    return SH_PROBE(k, file == MH_UR, r);
+    return 0;
 }
 /* ShaderInfo.memh in program order. Each value an instruction there reads must be the one its writer left: no other
    instruction of the list between the two may write it, as the renderer runs only the list, in order */
@@ -6449,11 +6517,12 @@ static void memory_handles(Ctx* c) {
     }
     if (!any) return;
     c->mh_mark = calloc((size_t)n + 1, 1);
+    c->mh_gneed = calloc((size_t)n + 1, 1);
     c->mh_pos = calloc((size_t)n + 1, sizeof *c->mh_pos);
     c->mh_new = calloc((size_t)n + 1, sizeof *c->mh_new);
     u32(*probe)[2] = malloc(((size_t)n + 1) * sizeof *probe); /* ~0 for none */
     if (!c->handle) c->handle = calloc((size_t)n + 1, sizeof *c->handle);
-    if (!c->mh_mark || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
+    if (!c->mh_mark || !c->mh_gneed || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
         free(probe);
         fail(c, "out of memory");
         return;
@@ -6478,7 +6547,7 @@ static void memory_handles(Ctx* c) {
         c->mh_why[0] = 0;
         probe[i][0] = mh_probe(c, i, u ? MH_UR : MH_R, u ? ur : reg);
         if (u && probe[i][0] != SH_PROBE_NONE) probe[i][1] = mh_probe(c, i, MH_UR, ur + 1);
-        if (probe[i][0] == SH_PROBE_NONE || (u && probe[i][1] == SH_PROBE_NONE)) {
+        if (probe[i][0] == SH_PROBE_NONE || (u && probe[i][1] == SH_PROBE_NONE) || mh_conflict(c)) {
             for (u32 k = 0; k < c->nmh_new; k++) c->mh_mark[c->mh_new[k]] = 0;
             c->nmh = nmh, c->nmh_dep = ndep;
             probe[i][0] = SH_PROBE_NONE, probe[i][1] = u ? SH_PROBE_NONE : ~0u;
@@ -7186,6 +7255,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(c->fused);
     free(c->handle);
     free(c->mh_mark);
+    free(c->mh_gneed);
     free(c->mh_pos);
     free(c->mh_dep);
     free(c->mh_new);
