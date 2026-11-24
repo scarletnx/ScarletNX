@@ -431,6 +431,53 @@ static int ffrom_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
     }
 }
 
+/* FRECPS (2 - a b) and FRSQRTS ((3 - a b) / 2) rounded once: the host's FMA, an infinity by a zero and the rest the FMA
+   would get wrong (a NaN, a result not normal) going cold through the exact helper, whose special cases are its own */
+static int fstep(SgCtx* g, unsigned sz, int n, int a, int b, int sqrt) {
+    int t, r, bad, op = sqrt ? SNX_FP_RSQRTS : SNX_FP_RECPS;
+    SgB cold;
+    if (!(X->features & SGX_F_FMA))
+        return fcold(g, sg_bool(g, 1), vzero(g), a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
+    {
+        int in[4] = {fsplat(g, sz, sz ? (sqrt ? 0x4008000000000000ull : 0x4000000000000000ull)
+                                      : sqrt ? 0x40400000u : 0x40000000u),
+                     vxor(g, a, fsplat(g, sz, 1ull << (sz ? 63 : 31))), b, 0};
+        t = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    /* halving a result whose half is normal is exact */
+    r = sqrt ? op2(g, k_fmul[sz], t, fsplat(g, sz, sz ? 0x3FE0000000000000ull : 0x3F000000u)) : t;
+    bad = fnot_roomy(g, sz, r);
+    cold = sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0));
+    return fcold(g, sg_b_or(g, cold, vany(g, bad, sz, n)), r, a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
+}
+/* FRECPE, FRSQRTE as ir_vec_fp.c's fast_estimate makes them, where every lane is normal with a normal estimate
+   (FRSQRTE's positive): the exponent, and the low 8 bits of (2^19 / a' + 1) / 2 (FRSQRTE's: of the root of 2^28 / a'),
+   which a single gives exactly for every a' it can take; another lane goes cold */
+static int festimate(SgCtx* g, unsigned sz, int n, int a, int sqrt) {
+    unsigned size = sz + 2, fb = sz ? 52 : 23, bias = sz ? 1023 : 127;
+    int e = vand(g, vshr(g, size, a, fb, 0), vsplat(g, size, 2 * bias + 1));
+    int top = vand(g, vshr(g, size, a, fb - 8, 0), vsplat(g, size, 0xFF)), d, x, est, r, bad;
+    if (sqrt) {
+        SnxU64 least = sz ? 1ull << 52 : 1ull << 23, inf = (SnxU64)(2 * bias + 1) << fb;
+        bad = vor(g, vgt(g, size, vsplat(g, size, least), a, 0), vgt(g, size, a, vsplat(g, size, inf - 1), 0));
+        d = vadd(g, size, vand(g, top, vsplat(g, size, 0xFE)), vsplat(g, size, 0x101));
+        /* twice, an even e's */
+        d = vadd(g, size, d, vand(g, d, veq(g, size, vand(g, e, vsplat(g, size, 1)), vzero(g))));
+        x = vshr(g, size, vsub(g, size, vsplat(g, size, 3 * bias - 1), e), 1, 0);
+    } else {
+        bad = vor(g, veq(g, size, e, vzero(g)), vgt(g, size, e, vsplat(g, size, 2 * bias - 2), 0));
+        d = vadd(g, size, vshl(g, size, top, 1), vsplat(g, size, 0x201));
+        x = vsub(g, size, vsplat(g, size, 2 * bias - 1), e);
+    }
+    if (sz) d = vor(g, d, vsplat(g, 3, 1ull << 32)); /* the words between: 1, no division by zero */
+    est = op2(g, &sgx_v_divps, fsplat(g, 0, sqrt ? 0x4D800000u : 0x49000000u), sgx_v1(X, &sgx_v_cvtdq2ps, d, 0));
+    if (sqrt) est = sgx_v1(X, k_fsqrt[0], est, 0);
+    est = vshr(g, 2, vadd(g, 2, sgx_v1(X, &sgx_v_cvttps2dq, est, 0), vsplat(g, 2, 1)), 1, 0);
+    r = vor(g, vshl(g, size, x, fb), vshl(g, size, vand(g, est, vsplat(g, size, 0xFF)), fb - 8));
+    if (!sqrt) r = vor(g, r, vand(g, a, fsplat(g, sz, 1ull << (sz ? 63 : 31))));
+    return fcold(g, vany(g, bad, sz, n), r, a, 0, 0,
+                 FDESC(2, sz, n) | (SnxU32)(sqrt ? SNX_FP_RSQRTE : SNX_FP_RECPE) << 12);
+}
 /* the FP instructions by lanes; 0 for the rest */
 static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
@@ -808,6 +855,28 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         t = fminmax(g, 0, 2, sgx_v1(X, &sgx_v_pshufd, a, 0x88), sgx_v1(X, &sgx_v_pshufd, a, 0xDD), mn, num);
         scalar = n = 1;
         r = fminmax(g, 0, 1, t, sgx_v1(X, &sgx_v_pshufd, t, 0x55), mn, num);
+        break;
+    }
+    case SNX_A64_OP_FRECPE_v:
+    case SNX_A64_OP_FRECPE_s:
+    case SNX_A64_OP_FRSQRTE_v:
+    case SNX_A64_OP_FRSQRTE_s: {
+        int sqrt = insn->op == SNX_A64_OP_FRSQRTE_v || insn->op == SNX_A64_OP_FRSQRTE_s;
+        scalar = insn->op == SNX_A64_OP_FRECPE_s || insn->op == SNX_A64_OP_FRSQRTE_s;
+        if (!scalar && sz && !q) return -1;
+        if (scalar) n = 1;
+        r = festimate(g, sz, n, vread(g, rn), sqrt);
+        break;
+    }
+    case SNX_A64_OP_FRECPS_v:
+    case SNX_A64_OP_FRECPS_s:
+    case SNX_A64_OP_FRSQRTS_v:
+    case SNX_A64_OP_FRSQRTS_s: {
+        int sqrt = insn->op == SNX_A64_OP_FRSQRTS_v || insn->op == SNX_A64_OP_FRSQRTS_s;
+        scalar = insn->op == SNX_A64_OP_FRECPS_s || insn->op == SNX_A64_OP_FRSQRTS_s;
+        if (!scalar && sz && !q) return -1;
+        if (scalar) n = 1;
+        r = fstep(g, sz, n, vread(g, rn), vread(g, rm), sqrt);
         break;
     }
     default: return 0;
