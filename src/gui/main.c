@@ -11803,6 +11803,31 @@ static void users_commit(App* app) {
 }
 static void settings_reset_ask(App* app);
 static void keep_settings(App* app);
+static int setting_row(const App* app, const char* key);
+/* the microphone row's words, after System default and Off: the recording devices by name, read as its group opens, so
+   one plugged in since is there. Where they cannot be read, its two words and the value it has, and why in the note */
+enum { GUI_MICROPHONES = 32 };
+static void mic_words(App* app, int group) {
+    const char* names[GUI_MICROPHONES];
+    SDL_AudioDeviceID* ids = NULL;
+    int n = 0, count = 0, i, row = setting_row(app, "microphone");
+    bool on;
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    on = SDL_InitSubSystem(SDL_INIT_AUDIO);
+    if (on) ids = SDL_GetAudioRecordingDevices(&count);
+    if (!ids) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Recording devices cannot be read: %s"),
+                 SDL_GetError());
+        gui_log("%s", app->editor.note);
+    }
+    for (i = 0; ids && i < count && n < GUI_MICROPHONES; ++i) {
+        const char* name = SDL_GetAudioDeviceName(ids[i]);
+        if (name) names[n++] = name;
+    }
+    if (ids) gui_settings_add_words(screen_settings(app), row, names, n);
+    SDL_free(ids);
+    if (on) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+}
 /* ---- a setting of boxes: a box an item, On or Off, over the row's value (gui_settings_item_toggle) ---- */
 static void boxes_close(App* app) {
     free(app->box_keys);
@@ -11905,6 +11930,7 @@ static void open_group(App* app, int g) {
     app->group = g;
     app->first = app->group_first[g];
     app->page = -1;
+    mic_words(app, g);
     group_view(app, g);
 }
 static void open_pad(App* app, int row);

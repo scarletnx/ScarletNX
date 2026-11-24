@@ -1200,6 +1200,61 @@ int main(int argc, char** argv) {
         assert(!gui_settings_step_number(&s, at(&s, "name"), 1)); /* a text is no number */
         gui_settings_free(&s);
     }
+    /* an open row's words with more the launcher found itself (the recording devices): after its own, none twice, in
+       the place of those a call before added; the value a word of them now, or itself still; System default an empty
+       value, which is a pick, passed and kept */
+    {
+        static const char mic[] =
+            "Game\tmicrophone\toff\ttext\t0\t0\tHears\tMicrophone\t=System default|off=Off\t\t\topen\n"
+            "Game\tclosed\toff\ttext\t0\t0\tClosed\tClosed\toff=Off|on=On\n";
+        static const char* const two[] = {"USB Mic", "Headset", "USB Mic", "off"};
+        static const char* const one[] = {"Headset"};
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), *text;
+        size_t size;
+        int m;
+        assert(!gui_settings_read(&s, mic));
+        gui_settings_mark(&s);
+        m = at(&s, "microphone");
+        assert(words(&s.keys[m]) == 2 && !strcmp(on_screen(&s, "microphone"), "Off [default]"));
+        assert(gui_settings_set(&s, "microphone", "usb")); /* a part of a name, as the .ini takes it */
+        assert(gui_settings_add_words(&s, m, two, 4) && words(&s.keys[m]) == 5 &&
+               !strcmp(s.keys[m].words[2], "USB Mic") && !strcmp(s.keys[m].words[3], "Headset") &&
+               !strcmp(on_screen(&s, "microphone"), "usb") && s.values[m].custom == 4);
+        assert(gui_settings_set(&s, "microphone", "Headset") && gui_settings_options(&s, 0, NULL, options) == 2 &&
+               !strcmp(options[0], "--microphone=Headset"));
+        assert(gui_settings_add_words(&s, m, one, 1) && words(&s.keys[m]) == 3 && !s.values[m].custom &&
+               !strcmp(gui_settings_value(&s, "microphone"), "Headset") && s.values[m].word == 2);
+        assert(gui_settings_add_words(&s, m, NULL, 0) && words(&s.keys[m]) == 3 && s.values[m].custom == 2 &&
+               !strcmp(on_screen(&s, "microphone"), "Headset")); /* unplugged: its value stays */
+        assert(gui_settings_set(&s, "microphone", "") && !strcmp(gui_settings_value(&s, "microphone"), "") &&
+               !strcmp(on_screen(&s, "microphone"), "System default") &&
+               gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--microphone="));
+        assert(!gui_settings_save(&s, path));
+        text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "microphone=\n"));
+        free(text);
+        assert(!gui_settings_add_words(&s, at(&s, "closed"), one, 1) && !gui_settings_add_words(&s, -1, one, 1));
+        gui_settings_free(&s);
+        assert(!gui_settings_read(&s, mic));
+        gui_settings_mark(&s);
+        assert(!gui_settings_load(&s, path, NULL, 0) && !strcmp(on_screen(&s, "microphone"), "System default"));
+        gui_settings_reset(&s, -1);
+        assert(!gui_settings_value(&s, "microphone"));
+        gui_settings_free(&s);
+        /* a game's own: Global first, which stays the one it starts with */
+        assert(!gui_settings_read_game(&s, mic));
+        gui_settings_mark(&s);
+        m = at(&s, "microphone");
+        assert(gui_settings_add_words(&s, m, one, 1) && words(&s.keys[m]) == 4 &&
+               !strcmp(s.keys[m].words[0], "Global") && !gui_settings_value(&s, "microphone") &&
+               !gui_settings_changed(&s));
+        assert(gui_settings_set(&s, "microphone", "Headset") &&
+               !strcmp(gui_settings_value(&s, "microphone"), "Headset") && gui_settings_changed(&s) == 1);
+        gui_settings_free(&s);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
     /* a row of boxes (the twelfth column's boxes): its items' labels and abouts, on or off in the row's value, a text's
        separated by commas or spaces, an int's a sum of bits; a name the row has not kept where it is, said; an item
        turned off leaves the others, and nothing on is no value, the default's */

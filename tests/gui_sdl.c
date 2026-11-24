@@ -1039,6 +1039,53 @@ static void shortcuts_capture(App* app) {
 /* a setting of boxes (the runtime's list's boxes): its row says how many of its items are on, and Enter on it opens a
    form with a row an item, On or Off, its about under it; Enter, Left and Right turn one on or off, the picks kept at
    once; a name the row has not stays in its value; ESC comes back to the row in its group, with what it says now */
+static void microphone_words(App* app) {
+    static const char list[] = "Audio\tmicrophone\toff\ttext\t0\t0\tHears\tMicrophone\t"
+                               "=System default|off=Off\t\t\topen\n"
+                               "Other\tother\t0\tint\t0\t1\tOther\tOther\t0=Off|1=On\n";
+    const char* names[3] = {"", "", ""};
+    SDL_AudioDeviceID* ids;
+    int g, count = 0, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Audio"); ++g) {}
+    assert(g < app->groups);
+    /* the dummy driver has one recording device, of a name SDL gives it: it is the row's word, after its own two */
+    assert(SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE) &&
+           SDL_InitSubSystem(SDL_INIT_AUDIO) && (ids = SDL_GetAudioRecordingDevices(&count)) && count == 1);
+    names[0] = SDL_GetAudioDeviceName(ids[0]);
+    assert(names[0] && *names[0]);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "microphone"));
+    assert(app->form == GUI_FORM_GROUP && !app->editor.note[0] &&
+           !strcmp(app->settings.keys[setting_row(app, "microphone")].words[2], names[0]));
+    app->editor.row = row;
+    key(app, SDLK_RIGHT); /* from Off, its default */
+    assert(!strcmp(gui_settings_value(&app->settings, "microphone"), names[0]));
+    key(app, SDLK_RIGHT); /* round */
+    assert(!strcmp(gui_settings_value(&app->settings, "microphone"), ""));
+    render(app);
+    SDL_free(ids);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    /* a driver SDL does not have: said, with SDL's reason, and the row keeps its two words and the value */
+    assert(SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE));
+    leave_form(app);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Audio"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && strstr(app->editor.note, "Recording devices cannot be read: ") &&
+           !app->settings.keys[setting_row(app, "microphone")].words[2]);
+    SDL_ResetHint(SDL_HINT_AUDIO_DRIVER);
+    leave_form(app);
+    settings_forget(app);
+}
 static void boxes_form(App* app) {
     static const char list[] = "Debug\tfirst\t0\tint\t0\t1\tFirst\tFirst\t0=Off|1=On\n"
                                "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
@@ -17673,6 +17720,7 @@ int main(int argc, char** argv) {
     }
     players_view(&app);
     shortcuts_capture(&app);
+    microphone_words(&app);
     boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */

@@ -152,6 +152,7 @@ endforeach()
 foreach(row "\nGraphics\tbc7_queue\t0\tint\t0\t16384\t" "\tBC7 queue\t0=Auto|256=256|512=512|1024=1024|2048=2048|4096=4096|8192=8192|16384=16384\t\t\topen\n"
             "\tHost page size\t0=Host's|8192=8192 bytes|16384=16384 bytes|" "|1048576=1048576 bytes\t\t\topen\n"
             "\nPerformance\tfps_limit\tgame\ttext\t" "\tFPS limit\tgame=Game's|0=No limit|30=30 FPS|" "|240=240 FPS\t\t\topen\n"
+            "\nGame\tmicrophone\toff\ttext\t" "\tMicrophone\t=System default|off=Off\t\t\topen\n"
             "\nPerformance\theap_max_mb\t0\tint\t0\t1048576\t" "\tHeap limit (MB)\t0=No limit|512=512 MB|")
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)
