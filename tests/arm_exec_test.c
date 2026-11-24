@@ -185,6 +185,28 @@ int main(void) {
             failures++;
         }
     }
+    /* TBB [r0, r1] of a table entry past guest memory stops with a data abort, as a load does, not with a read of the
+       host's memory */
+    static const unsigned char tbb[] = {0xd0, 0xe8, 0x01, 0xf0}; /* tbb [r0, r1] */
+    memset(mem, 0, sizeof mem);
+    memcpy(mem + 0x1000, tbb, sizeof tbb);
+    cpu = (SnxArmCPU){0};
+    cpu.mem = mem;
+    cpu.mem_size = sizeof mem;
+    cpu.cpsr = 0x30;
+    cpu.r[15] = 0x1000;
+    cpu.r[0] = (uint32_t)sizeof mem;
+    SnxArmExecRange tbb_range = {0x1000, mem + 0x1000, sizeof tbb};
+    SnxArmExec* tbb_exec = snx_arm_exec_new(NULL, 0);
+    if (!tbb_exec) return 1;
+    Svc tbb_stop = {0};
+    exit = snx_arm_exec_run(tbb_exec, &cpu, &tbb_range, 1, syscall, &tbb_stop);
+    snx_arm_exec_free(tbb_exec);
+    if (exit != SNX_ARM_DATA_ABORT || cpu.r[15] != 0x1000) {
+        fprintf(stderr, "FAIL: TBB past guest memory: exit %d, R15 %08x; a data abort (%d) at 00001000 wanted\n", exit,
+                (unsigned)cpu.r[15], SNX_ARM_DATA_ABORT);
+        failures++;
+    }
     failures += forget_test();
     if (!failures) puts("A32 executor and DRY zero-extending SVC passed");
     return failures ? 1 : 0;
