@@ -17,6 +17,7 @@
    - Descriptor sets: where the host has host-only pools, each set has a twin in host memory that copies read
      (GvkTwinSet). */
 #include "nx/gpu/gvk/gvk.h"
+#include "nx/gpu/gvk/gvk_rect.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/vk.h"
