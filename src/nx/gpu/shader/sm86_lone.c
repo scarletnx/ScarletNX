@@ -152,7 +152,7 @@ static int pseudo(const Lone* l, u32 i, u64* w) {
         case SM86_SHFL_RR: *w = 0; return O_SHFL;
         case SM86_FLO:
         case SM86_UFLO:
-            /* the highest set bit, or with SH (74) the 31 - it of the same of a mask reversed, the lowest running lane */
+            /* the highest set bit, or with SH (74) the 31 - it of a mask reversed, the lowest running lane */
             if (b == NOVAR || sm86_field(in, 63, 1) || sm86_field(in, 73, 1)) return O_MOV_R;
             if (!sm86_field(in, 74, 1)) {
                 *w = FLO_U32 | (u64)b << 20;
@@ -431,7 +431,7 @@ static void match_runs(Lone* l, ShMatchRun* run, u32* runs) {
         if (at >= l->n || go->pred != p || !go->pred_not || (go->op != SM86_EXIT && go->op != SM86_BRA) ||
             sm86_field(go, 87, 3) != SM86_PT || sm86_field(go, 90, 1))
             continue;
-        /* the end of the run: where the branch goes to, or the EXIT at its end, if it falls there with no flow between */
+        /* the end of the run: where the branch goes to, or the EXIT at its end, if it falls there with no flow */
         u32 end;
         if (go->op == SM86_BRA) {
             end = sm86_branch_target(go, at);

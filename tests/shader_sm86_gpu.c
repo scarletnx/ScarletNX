@@ -1154,9 +1154,14 @@ static int run_lone(Gpu* g) {
     memset(&p, 0, sizeof p);
     lone_program(&p);
     int ok = 1;
-    for (int lanes = 0; lanes <= SM86_LANES_WARP; lanes++) {
-        if (lanes && g->subgroup < 32) {
-            printf("lone lanes: subgroups of %u, the warp's module not run\n", g->subgroup);
+    /* the module with no subgroup, then the warp's, in the device's own subgroups and in required ones of 32, whole */
+    for (int run = 0; run < 4; run++) {
+        const int lanes = run & 1 ? SM86_LANES_WARP : 0, warp32 = run >> 1;
+        const char *module = lanes ? "a warp's module" : "no subgroup in the module",
+                   *own = warp32 ? "required" : "its own";
+        const u32 size = warp32 ? 32 : g->subgroup;
+        if (warp32 ? !g->warp32 : lanes && g->subgroup < 32) {
+            printf("lone lanes (%s, subgroups of %u, %s): not run, the device cannot\n", module, size, own);
             continue;
         }
         u32 cb0[64] = {0};
@@ -1172,7 +1177,9 @@ static int run_lone(Gpu* g) {
             fprintf(stderr, "lone lanes: not translated: %s\n", si.first_unsupported);
             return 0;
         }
+        g_warp32 = warp32;
         int ran = si.ngbuf == 1 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof out);
+        g_warp32 = 0;
         free(spv);
         u64 seen = 0;
         u32 bad = 0;
@@ -1181,9 +1188,8 @@ static int run_lone(Gpu* g) {
                 bad++;
             else
                 seen |= 1ull << out[1 + i];
-        printf("lone lanes (%s, subgroups of %u): %u invocations counted of %u, %u places wrong%s\n",
-               lanes ? "a warp's module" : "no subgroup in the module", g->subgroup, out[0], INVOCATIONS, bad,
-               ran ? "" : ", Vulkan failed");
+        printf("lone lanes (%s, subgroups of %u, %s): %u invocations counted of %u, %u places wrong%s\n", module, size,
+               own, out[0], INVOCATIONS, bad, ran ? "" : ", Vulkan failed");
         ok &= ran && out[0] == INVOCATIONS && !bad;
     }
     return ok;
