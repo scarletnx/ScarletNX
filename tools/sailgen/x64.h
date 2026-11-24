@@ -2786,6 +2786,8 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             sgx_byte(c, 0xFF);
             sgx_byte(c, 0xD0);
         }
+        /* the pins back before the result, whose register may be one of them (sgx_pin_target's) */
+        if (a->pin_cs) a->pin_cs(a->machine, 0);
         if (i->vflags == 2)
             sgx_vmem(a, &sgx_v_movdqu_ld, outreg, SGX_RSP, 8 * argslot[0]);
         else if (cls) {
@@ -2799,7 +2801,6 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             if (saved_g[k] && x->v[a->owner[k]].last > at) sgx_mov_mem(a, 1, 64, k, SGX_RSP, 8 * gslot[k]);
             if (saved_x[k]) sgx_vmem(a, &sgx_v_movdqu_ld, k, SGX_RSP, 8 * xslot[k]);
         }
-        if (a->pin_cs) a->pin_cs(a->machine, 0);
         sgx_byte(c, 0xE9); /* jmp back */
         sgx_cjump(a, c->n, back, 1);
         sgx_imm(c, 0, 4);

@@ -37,6 +37,9 @@ int snx_x64_available(void);
 /* the host's processor features the back end's forms may need (sailgen's SGX_F_*: CPUID's BMI1, BMI2, LZCNT, the SSE
    levels, PCLMULQDQ, POPCNT, and AVX, FMA and F16C where the system keeps the YMM state); 0 where unavailable */
 unsigned snx_x64_features(void);
+/* the features (SGX_F_*) the back end goes without from here on though the host has them, for a test of a host without
+   them (0 none); those every host it runs on has stay */
+void snx_x64_without(unsigned features);
 /* the object of the functions [first, last) of codegen it can make, made[i - first] 1 for each (an AOT module's
    unit: the others are LLVM's); for a JIT unit all of them or none (0 and no object then). The object's size, or 0
    with none made, -1 with the reason in error */
