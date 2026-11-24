@@ -3932,6 +3932,16 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_link_libraries(snx-test-recompiler-arm64 PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
     snx_decodetree_a64(snx-test-recompiler-arm64)
     add_test(NAME recompiler_arm64 COMMAND snx-test-recompiler-arm64)
+    # its A32 blocks (arm64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host registers
+    add_executable(snx-test-arm-arm64 arm_x64.c support/arm64_unicorn.c)
+    snx_test_target(snx-test-arm-arm64 gnu23)
+    target_compile_definitions(snx-test-arm-arm64 PRIVATE SNX_TEST_ARM64=1)
+    target_include_directories(snx-test-arm-arm64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-arm-arm64 PRIVATE snx_llvm snx_arm_llvm snx_driver "${SNX_UNICORN_LIBRARY}"
+                          ${CMAKE_DL_LIBS})
+    add_test(NAME arm_arm64 COMMAND snx-test-arm-arm64)
+    add_test(NAME arm_arm64_spill COMMAND snx-test-arm-arm64 --pool 3 --blocks 2000 --seed 2)
+    set_tests_properties(arm_arm64 arm_arm64_spill PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
 endif()
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
