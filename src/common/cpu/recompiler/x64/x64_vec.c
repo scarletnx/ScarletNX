@@ -791,6 +791,10 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* a >> n rounded (half up), logical (arith: arithmetic): the bits shifted out, the top one of them, added back */
+static int vrshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
+    return vadd(g, size, vshr(g, size, a, n, arith), vand(g, vshr(g, size, a, n - 1, 0), vsplat(g, size, 1)));
+}
 /* UADDLP, SADDLP: each pair of lanes added to a lane twice as wide */
 static int vaddlp(SgCtx* g, unsigned size, int a, int sign) {
     unsigned e = 8u << size;
@@ -1439,6 +1443,33 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         r = left_in ? vshl(g, sz, a, left) : vshr(g, sz, a, right, 0);
         r = vor(g, r, vand(g, vread(g, rd), vsplat(g, sz, ones)));
         vwrite(g, rd, r, scalar ? 0 : q);
+        return 1;
+    }
+    case SNX_A64_OP_SRSHR_v:
+    case SNX_A64_OP_URSHR_v:
+    case SNX_A64_OP_SRSRA_v:
+    case SNX_A64_OP_URSRA_v:
+    case SNX_A64_OP_SRSHR_s:
+    case SNX_A64_OP_URSHR_s:
+    case SNX_A64_OP_SRSRA_s:
+    case SNX_A64_OP_URSRA_s: {
+        unsigned sz, left, right;
+        int scalar = insn->op == SNX_A64_OP_SRSHR_s || insn->op == SNX_A64_OP_URSHR_s ||
+                     insn->op == SNX_A64_OP_SRSRA_s || insn->op == SNX_A64_OP_URSRA_s;
+        int sign = insn->op == SNX_A64_OP_SRSHR_v || insn->op == SNX_A64_OP_SRSRA_v || insn->op == SNX_A64_OP_SRSHR_s ||
+                   insn->op == SNX_A64_OP_SRSRA_s;
+        int acc = insn->op == SNX_A64_OP_SRSRA_v || insn->op == SNX_A64_OP_URSRA_v || insn->op == SNX_A64_OP_SRSRA_s ||
+                  insn->op == SNX_A64_OP_URSRA_s;
+        if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar) || (scalar && sz != 3)) return -1;
+        r = vrshr(g, sz, vread(g, rn), right, sign);
+        if (acc) r = vadd(g, sz, vread(g, rd), r);
+        vwrite(g, rd, r, scalar ? 0 : q);
+        return 1;
+    }
+    case SNX_A64_OP_RSHRN_v: {
+        unsigned sz, left, right;
+        if (shift_imm(word, &sz, &left, &right) < 0 || sz == 3) return -1;
+        vwrite_narrow(g, rd, vnarrow(g, sz, vrshr(g, sz + 1, vread(g, rn), right, 0), 0), q);
         return 1;
     }
     case SNX_A64_OP_UADDL_v:
