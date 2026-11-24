@@ -533,6 +533,13 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
     }
     return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz, lanes);
 }
+const char* vk_lane_note(char out[32], const ShaderInfo* si) {
+    static const char lanes[] = "subgroup ballot/shuffle unavailable";
+    out[0] = 0;
+    if (!strncmp(si->first_unsupported, lanes, sizeof lanes - 1))
+        snprintf(out, 32, " (%u lanes of 32)", g_vk_subgroup_lanes);
+    return out;
+}
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
     return vk_translate_spirv_fold(code, max_bytes, stage, si, words, read, reads, NULL);
@@ -576,12 +583,6 @@ u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInf
         free(result);
         return NULL;
     }
-    /* a program that needs its warp's other lanes: this device's size, beside the 32 a warp has */
-    static const char g_warp_reason[] = "subgroup ballot/shuffle unavailable";
-    size_t said = strlen(si->first_unsupported);
-    if (!result && !strncmp(si->first_unsupported, g_warp_reason, sizeof g_warp_reason - 1))
-        snprintf(si->first_unsupported + said, sizeof si->first_unsupported - said, " (%u lanes of 32)",
-                 g_vk_subgroup_lanes);
     if (result) {
         const char* reason = vk_spirv_unavailable(result, *words);
         if (reason) {
@@ -1573,8 +1574,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
             return NULL;
         }
         if (s->failed)
-            WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
-                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
+            WARN("vulkan: shader %016llx (stage %d) not translated: %s%s\n", (unsigned long long)h, stage,
+                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls",
+                 vk_lane_note((char[32]){0}, &s->si));
         g_pipeline.sh_new++;
         g_pipeline.sh_ns += plat_ns() - t0;
         s->next = g_pipeline.shh[h & 1023];
@@ -4030,8 +4032,9 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
        and is counted as failed, for this build and driver. Taking every failure without a reason as one to try again
        would walk the files again on every run of a game with a program that fails so */
     if (!translated) {
-        LOG("vulkan: %s %016llx not translated: %s\n", shipped_stage_name(stage), (unsigned long long)h,
-            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls");
+        LOG("vulkan: %s %016llx not translated: %s%s\n", shipped_stage_name(stage), (unsigned long long)h,
+            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls",
+            vk_lane_note((char[32]){0}, &s.si));
         return SHIP_FAILED;
     }
     if (!at) return SHIP_STOP;
