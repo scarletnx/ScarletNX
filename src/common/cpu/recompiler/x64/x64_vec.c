@@ -669,12 +669,13 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 
 /* ---- saturation ---- */
 
-/* FPSR.QC set where any of the first bytes of mask (whole lanes) is set: the saturating instructions' */
+/* FPSR.QC set where any of the first bytes of mask (whole lanes; 8 << n of them, a scalar's 1 to 8) is set: the
+   saturating instructions' */
 static void set_qc(SgCtx* g, int mask, int bytes) {
     SgX* x = X;
     SgXIns* i;
     SgD fpsr, bits = sgx_val(32, sgx_v1(x, &sgx_v_pmovmskb, mask, 0));
-    SgB any = sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, bytes == 16 ? 0xFFFF : 0xFF))));
+    SgB any = sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, (1u << bytes) - 1))));
     i = sgx_append(x, SGX_K_LOAD);
     i->w = 32;
     i->disp = (int)offsetof(CPU, fpsr);
@@ -1558,6 +1559,58 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         }
         vwrite(g, rd, r, 0);
         return 1;
+    case SNX_A64_OP_SQADD_s:
+    case SNX_A64_OP_UQADD_s:
+    case SNX_A64_OP_SQSUB_s:
+    case SNX_A64_OP_UQSUB_s: {
+        int sat, sub = insn->op == SNX_A64_OP_SQSUB_s || insn->op == SNX_A64_OP_UQSUB_s;
+        r = vqaddsub(g, size, vread(g, rn), vread(g, rm),
+                     insn->op == SNX_A64_OP_UQADD_s || insn->op == SNX_A64_OP_UQSUB_s, sub, &sat);
+        set_qc(g, sat, 1 << size);
+        vwrite_scalar(g, rd, size, r);
+        return 1;
+    }
+    case SNX_A64_OP_SQXTN_s:
+    case SNX_A64_OP_UQXTN_s:
+    case SNX_A64_OP_SQXTUN_s: {
+        int sat, to = insn->op == SNX_A64_OP_SQXTN_s ? 0 : insn->op == SNX_A64_OP_UQXTN_s ? 1 : 2;
+        if (size == 3) return -1;
+        r = vqnarrow(g, size, vread(g, rn), to, &sat);
+        set_qc(g, sat, 2 << size);
+        vwrite_scalar(g, rd, size, r);
+        return 1;
+    }
+    case SNX_A64_OP_SQRSHRN_v:
+    case SNX_A64_OP_UQRSHRN_v:
+    case SNX_A64_OP_SQRSHRUN_v:
+    case SNX_A64_OP_SQSHRN_si:
+    case SNX_A64_OP_UQSHRN_si:
+    case SNX_A64_OP_SQSHRUN_si:
+    case SNX_A64_OP_SQRSHRN_si:
+    case SNX_A64_OP_UQRSHRN_si:
+    case SNX_A64_OP_SQRSHRUN_si: {
+        unsigned sz, left, right;
+        int sat, scalar = 0, round = 0, to;
+        switch (insn->op) {
+        case SNX_A64_OP_SQSHRN_si: scalar = 1, to = 0; break;
+        case SNX_A64_OP_UQSHRN_si: scalar = 1, to = 1; break;
+        case SNX_A64_OP_SQSHRUN_si: scalar = 1, to = 2; break;
+        case SNX_A64_OP_SQRSHRN_si: scalar = 1, round = 1, to = 0; break;
+        case SNX_A64_OP_UQRSHRN_si: scalar = 1, round = 1, to = 1; break;
+        case SNX_A64_OP_SQRSHRUN_si: scalar = 1, round = 1, to = 2; break;
+        case SNX_A64_OP_SQRSHRN_v: round = 1, to = 0; break;
+        case SNX_A64_OP_UQRSHRN_v: round = 1, to = 1; break;
+        default: round = 1, to = 2; break;
+        }
+        if (shift_imm(word, &sz, &left, &right) < 0 || sz == 3) return -1;
+        a = round ? vrshr(g, sz + 1, vread(g, rn), right, to != 1) : vshr(g, sz + 1, vread(g, rn), right, to != 1);
+        r = vqnarrow(g, sz, a, to, &sat);
+        set_qc(g, sat, scalar ? 2 << sz : 16);
+        if (scalar) vwrite_scalar(g, rd, sz, r);
+        else
+            vwrite_narrow(g, rd, r, q);
+        return 1;
+    }
     default: return 0;
     }
 }
