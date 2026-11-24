@@ -93,6 +93,7 @@ typedef SnxRv64Arm Back;
 #define BACK_UC     HOSTUC_RV64
 #else
 #include "common/cpu/recompiler/x64/x64_arm.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
 typedef SnxX64Arm Back;
 #define back_(name) snx_x64_arm_##name
 #define BACK_NAME   "x86-64"
@@ -246,6 +247,7 @@ static const Class* pick_class(void) {
 /* ---- running ---- */
 
 #ifdef SNX_TEST_NATIVE
+#include "common/cpu/recompiler/llvm/elf_object.h"
 #define SNX_TEST_SWAP_ARM 1
 #include "support/swap_state.h"
 static void swap_arm(void* cpu) { snx_test_swap_arm((SnxArmCPU*)cpu); }
@@ -1181,6 +1183,102 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
 }
 #endif
 
+/* ---- a block that goes on to its own start: past the thread's poll, the word at snx_arm_poll_offset from the state,
+   which the module's variable holds. Set, the block returns there, R15 its start; clear, it loops */
+typedef struct {
+    SnxArmCPU cpu;
+    uint32_t other;
+    uint32_t poll; /* the thread's */
+} PollState;
+static size_t poll_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
+    (void)user, (void)units, (void)count;
+    if (key != PC) return 0;
+    keys[0] = PC;
+    return 1;
+}
+static int run_poll_chain(Back* x64) {
+    static const uint32_t words[2] = {0xE2500001u, 0x1AFFFFFDu}; /* SUBS R0, R0, #1; BNE the block */
+    unsigned char* object = NULL;
+    size_t consumed = 0, size = 0, failures = 0;
+    char error[512] = "", name[16];
+    SnxU64 addr = 0;
+    int rc = 1;
+    snprintf(name, sizeof name, "A_%08x", PC);
+    if (!back_(block)(x64, NULL, (const unsigned char*)words, 2, PC, &consumed, poll_next, NULL) ||
+        back_(object)(x64, &object, &size, NULL)) {
+        fprintf(stderr, "FAIL: the poll's block: %s\n", back_(why)(x64));
+        return 1;
+    }
+#if defined(SNX_TEST_NATIVE)
+    HostUc* uc = hostuc_new(BACK_UC, 1u << 20);
+    PollState* t = uc ? (PollState*)hostuc_alloc(uc, sizeof *t) : NULL;
+    int64_t* offset = uc ? (int64_t*)hostuc_alloc(uc, sizeof *offset) : NULL;
+    if (!t || !offset) goto done;
+    *offset = (int64_t)offsetof(PollState, poll);
+    if (object[EI_DATA] != snx_elf_host_data()) *offset = (int64_t)snx_bswap64((uint64_t)*offset);
+    hostuc_swapper(uc, swap_arm, &t->cpu);
+    if (hostuc_define(uc, "snx_arm_poll_offset", (uint64_t)(uintptr_t)offset) ||
+        hostuc_load(uc, object, size, error, sizeof error) || !(addr = hostuc_symbol(uc, name)))
+        goto done;
+#else
+    /* the module's variable in an object of its own: the code reads it within 2 GiB */
+    SnxCodeLoader* loader = NULL;
+    PollState* t = (PollState*)malloc(sizeof *t);
+    int64_t offset = (int64_t)offsetof(PollState, poll);
+    SnxXElf* data = snx_xelf_new();
+    unsigned char* data_object = NULL;
+    size_t data_size = 0;
+    const char* names[1] = {name};
+    int made = data != NULL;
+    if (made) {
+        size_t at = snx_xelf_put(data, SNX_ELF_DATA, &offset, sizeof offset, 8);
+        snx_xelf_symbol(data, "snx_arm_poll_offset", SNX_ELF_DATA, at, sizeof offset, SNX_ELF_GLOBAL);
+        made = !snx_xelf_write(data, &data_object, &data_size);
+        snx_xelf_free(data);
+    }
+    SnxLinkInput inputs[2] = {{.data = object, .size = size, .name = "poll"},
+                              {.data = data_object, .size = data_size, .name = "data"}};
+    if (!made || !t || !(loader = new_loader(error, sizeof error)) ||
+        snx_code_load_private(loader, inputs, 2, names, 1, &addr, error, sizeof error))
+        goto done;
+#endif
+    for (int set = 0; set < 2; ++set) {
+        *t = (PollState){0};
+        t->cpu.r[0] = 5;
+        t->cpu.r[15] = PC;
+        t->cpu.cpsr = 0x10u;
+        t->poll = (uint32_t)set;
+#if defined(SNX_TEST_NATIVE)
+        if (hostuc_call(uc, addr, (uint64_t)(uintptr_t)&t->cpu, 0, NULL)) {
+            fprintf(stderr, "FAIL: the poll's block stopped, the poll %s\n", set ? "set" : "clear");
+            ++failures;
+            continue;
+        }
+#else
+        run_block(addr, &t->cpu);
+#endif
+        uint32_t r0 = set ? 4 : 0, r15 = set ? PC : PC + 8;
+        if (t->cpu.exit != SNX_ARM_OK || t->cpu.r[0] != r0 || t->cpu.r[15] != r15) {
+            fprintf(stderr, "FAIL: the poll's block, the poll %s: exit %u, R0 %u, R15 %08x; wanted R0 %u, R15 %08x\n",
+                    set ? "set" : "clear", t->cpu.exit, t->cpu.r[0], t->cpu.r[15], r0, r15);
+            ++failures;
+        }
+    }
+    printf("a block back to its start past the thread's poll, set and clear: %zu failures\n", failures);
+    g_test.failures += failures;
+    rc = 0;
+done:
+    if (rc) fprintf(stderr, "FAIL: the poll's object: %s\n", error);
+    free(object);
+#if defined(SNX_TEST_NATIVE)
+    if (uc) hostuc_free(uc);
+#else
+    free(t), free(data_object);
+    snx_code_loader_free(loader);
+#endif
+    return rc;
+}
+
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir = NULL;
@@ -1266,11 +1364,13 @@ int main(int argc, char** argv) {
 #if defined(SNX_TEST_NATIVE)
     back_(limit)(x64, g_test.pool, ~0u);
     size_t done = 0;
+    if (!g_test.nonly && !g_test.nhalves && run_poll_chain(x64)) ++g_test.failures;
 #else
     back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
     if (!g_test.nonly && !g_test.nhalves && run_witnesses(ir, x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_endian_chain(x64)) ++g_test.failures;
+    if (!g_test.nonly && !g_test.nhalves && run_poll_chain(x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
     if (!g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
 #endif
