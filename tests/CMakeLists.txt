@@ -3874,10 +3874,10 @@ add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends 
 # one where no register of the pool is free when DIV takes RDX from the divisor it holds
 add_test(NAME recompiler_backends_div_divisor COMMAND snx-test-recompiler-backends --words d2800030 f9400ac7 1acc096b
          d503201f aa0b00cd aa0b000a d503201f d503201f d503201f d503201f 9ac8092e d503201f f9401746 f1000610 54fffe61)
-# FMLA of a vector in a loop on a host without FMA, where it is a cold call always taken: its result stays in the
-# destination's pin, past the pins' reload
+# FMLA of a vector in a loop on a host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a cold
+# call always taken: its result stays in the destination's pin, past the pins' reload
 add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without 0x800 --states 40 --words
-         d2800030 6e208bff 4fbf1bff 9a8211c3 0f406000 f1000610 54ffff61)
+         d2800030 4ee1d41f 4f821bff 9a8211c3 0f406000 f1000610 54ffff61)
 # random functions on a host of SSE4.2: no BMI1, BMI2, LZCNT, F16C, AVX or FMA
 add_test(NAME recompiler_backends_plain COMMAND snx-test-recompiler-backends --without 0xd07 --seed 209458
          --functions 1200)
