@@ -4,7 +4,7 @@
    FCPX in a bfarc) names the font it belongs to by the console font's file name and lists the private-use characters
    that font draws, U+E000 to U+E1FF, and the SDK checks each one against the font engine's cmap
    (nn::fontll::ScalableFontEngine::CheckGlyphExist). A character with no cmap entry leaves the layout without a glyph,
-   and the caller that draws it follows a null pointer (Super Mario 3D All-Stars does at its launcher's title text).
+   and the caller that draws it follows a null pointer (a collection's launcher does at its title text).
    The stand-ins are the Noto Sans JP, SC, TC and KR subsets (docs/platforms/nx/filesystem.md) and yuzu's controller button glyphs, none of
    which has the console's code points, and the engine has no fallback face to consult: it checks the one font the layout
    named (putting Last Resort, which maps every PUA code point, in another shared font slot still crashed at the same

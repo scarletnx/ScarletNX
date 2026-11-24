@@ -361,8 +361,8 @@ static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t 
     assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
     assert(CALL(n, "sceNgsRackGetVoiceHandle", at9_rack, 0, voice_out) == 0);
     assert(vita_read32(p, voice_out) == at9_voice);
-    /* a Simple Atrac9 voice has the simple voice's six modules: Need For Speed Most Wanted bypasses modules 1-5 and
-       locks module 3's params (a game that got an error there read the SceNgsBufferInfo it never got and crashed), and
+    /* a Simple Atrac9 voice has the simple voice's six modules: a racing game bypasses modules 1-5 and locks
+       module 3's params (a game that got an error there read the SceNgsBufferInfo it never got and crashed), and
        a seventh is out of range */
     for (uint32_t module = 0; module < 6; ++module) {
         vita_write32(p, buffer_info, 0);

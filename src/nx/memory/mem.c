@@ -136,8 +136,8 @@ static void layout_fixed(const char* which) {
    region its bounds, a 6 GiB alias region and an 8 GiB heap region above it, and the kernel's pages in the last GiB.
    What the layout has to guarantee is that every address the game holds fits in 36 bits: the SDK marshals an IPC
    buffer descriptor's address into 4 bits above 32 and 22 above 36 and drops the rest, so an address of the 39-bit
-   layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. Zelda: Breath
-   of the Wild's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
+   layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. One
+   open world game's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
 void mem_layout36(void) {
     layout_fixed("the 36-bit one, which lies below 64 GiB with its code at 128 MiB");
     g_layout.base = 0x8000000ull;

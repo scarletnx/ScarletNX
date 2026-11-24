@@ -358,8 +358,8 @@ static int table_add(SnxU32 word, unsigned* rd, unsigned* rn, unsigned* rm, unsi
 
 /* The address the instruction at address puts in a register, 0 for none: ADR's, or an ADD of the page an ADRP a few
    instructions before put in its source (the linker relaxes such a pair into a NOP and an ADR when the target is
-   near). Code takes function pointers this way, for a callback or a call through a register. Ender Magnolia's main,
-   which has unwind info for a seventh of its text, reaches four fifths of the functions it misses only through them */
+   near). Code takes function pointers this way, for a callback or a call through a register. One game's main, which
+   has unwind info for a seventh of its text, reaches four fifths of the functions it misses only through them */
 static SnxU64 address_value(SnxCodegen* codegen, SnxU64 address, SnxU32 word, unsigned* reg) {
     if ((word & 0x9f000000UL) == 0x10000000UL) { /* ADR */
         SnxU64 imm = ((SnxU64)((word >> 5) & 0x7ffffUL) << 2) | ((word >> 29) & 3);

@@ -804,7 +804,7 @@ static int by_entry(const void* a, const void* b) {
     uint32_t x = ((const SnxCtrHook*)a)->entry, y = ((const SnxCtrHook*)b)->entry;
     return x < y ? -1 : x > y;
 }
-/* The SDK's GX command enqueue, as the 3DS SDK of Mario Kart 7 builds it: its words, with the two BLs' offsets
+/* The SDK's GX command enqueue, as one racing game's 3DS SDK builds it: its words, with the two BLs' offsets
    (GX_ENQUEUE_GETTER, GX_ENQUEUE_TRIGGER) the only ones that differ from game to game. The function ends at the POP
    before its three literals */
 static const uint32_t gx_enqueue[] = {

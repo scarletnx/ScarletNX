@@ -994,14 +994,14 @@ static void global_buffers(void) {
     check(code && !info.unsupported && info.ngbuf == 1 && info.gbuf_cbuf_off[0] == (6u << 16),
           "of an offset and a bare address, the one added last is the base");
     free(code);
-    /* LEA.LO R2, R0, c[0][0x510], 4: the base plus an index, as a 64-bit address's low word (Pokemon Legends Z-A) */
+    /* LEA.LO R2, R0, c[0][0x510], 4: the base plus an index, as a 64-bit address's low word (one game's program) */
     const u64 lea[] = {0x4BD7020014470002ull, 0xEED4200000070200ull};
     code = translate(lea, 2, ST_FS, &info, &words, 1);
     check(code && !info.unsupported && info.ngbuf == 1 && info.gbuf_cbuf_off[0] == 0x510,
           "an LEA of a buffer's base keeps the buffer");
     free(code);
     /* A load and a store through bases the tracking lost (R6 from an FMUL, as a switch's case reaches a base in
-       Pokemon Legends Z-A, issue #440) find their buffer among the tracked one when they run */
+       one game's program, issue #440) find their buffer among the tracked one when they run */
     const u64 dynamic[] = {
         0x4C98078014470002ull, /* MOV R2, c[0][0x510] */
         0xEED4200000070200ull, /* LDG.E R0, [R2] */
@@ -1520,8 +1520,8 @@ static void half_f32_operand_range(void) {
 }
 
 static void fragment_storage_images(void) {
-    /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as Pokemon Legends Z-A's fragment
-       programs write them (issue #440): the layer in the coordinates' third register */
+    /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as one game's fragment programs
+       write them (issue #440): the layer in the coordinates' third register */
 #define SURFACE_2D_ARRAY(w) (((w) & ~(7ull << 33)) | 4ull << 33)
     static const struct {
         u64 instructions[2];
@@ -1856,7 +1856,7 @@ static void surface_atomic_operations(void) {
    stages have helper invocations to guard. */
 static void draw_buffer_surfaces(void) {
     const u64 store[] = {0x4c9807880487001cull, unguarded(0xeb200e0200f00f18ull, 24, 15, 28)};
-    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as Ender Magnolia's compute loads it */
+    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as one game's compute program loads it */
     const u64 load[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
     for (int stage = ST_VS; stage <= ST_FS; stage++)
         for (int write = 0; write < 2; write++) {
@@ -2437,13 +2437,13 @@ static void issue126_shader_modes(void) {
     };
     const u64 dynamic_3d_offset[] = {0x4c98078800070004ull,
                                      0xdeb8000000070008ull | (4ull << 28) | (1ull << 36) | (4ull << 20)};
-    /* Ender Magnolia ORs the sampler half in from a constant buffer operand. */
+    /* A game ORs the sampler half in from a constant buffer operand. */
     const u64 split_cbuf_handle[] = {
         0x4c98078805c70006ull, /* MOV R6, c[0x2][0x170] */
         0x4c47020815c70606ull, /* LOP.OR R6, R6, c[0x2][0x570] */
         0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
     };
-    /* Ender Magnolia's buffer images: SULD.D.32, SUATOM.ADD and SUST.P on the handle MOV R4, c[0x2][0x128] */
+    /* A game's buffer images: SULD.D.32, SUATOM.ADD and SUST.P on the handle MOV R4, c[0x2][0x128] */
     const u64 buffer_surfaces[] = {
         0x4c98078804a70004ull,
         unguarded(0xeb10020200480370ull, 8, 0, 4),
@@ -3857,7 +3857,7 @@ static void beyond_eden(void) {
 /* AL2P keeps byte offsets, including bit 10, and adds the register before an attribute access. */
 /* Transform feedback (ShaderInfo.xfb): a vertex program's AST.128 of R0-R3 to generic 0, of which buffer 0 captures y
    and z (from mid-vector, 8 bytes a vertex) and buffer 1 x. Each captured component gets an offset of its own: the
-   module declares TransformFeedback and Xfb, and three captures (Pokemon Legends Z-A skins with them, issue #440) */
+   module declares TransformFeedback and Xfb, and three captures (a game skins with them, issue #440) */
 static void transform_feedback(void) {
     const u64 instructions[] = {mov32i(0, 0x3f800000), mov32i(1, 0x40000000), mov32i(2, 0x40400000),
                                 mov32i(3, 0x40800000), 0xeff000000007ff00ull | (0x80ull << 20) | (3ull << 47)};
@@ -4690,7 +4690,7 @@ static void audit_shader_regressions(void) {
     }
 }
 
-/* Fire Emblem Three Houses fragment shaders sample fp16 surfaces with TLDS.
+/* A game's fragment shaders sample fp16 surfaces with TLDS.
    The f32 forms translate; the fp16 form must translate the same way, with the
    components converted and packed into halves. */
 static void tlds_fp16(void) {
@@ -4943,7 +4943,7 @@ static void scaled_texel_fetch(void) {
     free(code);
 }
 
-/* Fire Emblem Three Houses fragment shaders sample array textures with TXD,
+/* A game's fragment shaders sample array textures with TXD,
    explicit gradients in Rb. It must sample with the Grad operands and write
    the masked components to consecutive registers. */
 static void txd_grad(void) {
