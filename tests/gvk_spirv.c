@@ -13,6 +13,9 @@
    a variable is skipped, and a 1D query left alone. With the validator's path as the argument, each module that
    changes is valid SPIR-V for Vulkan 1.1 */
 #include "nx/gpu/gvk/gvk.h"
+#ifdef VULKAN_CORE_H_
+#error "gvk.h includes Vulkan's headers: the kernel and the runtime include it, and their tests are built without them"
+#endif
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

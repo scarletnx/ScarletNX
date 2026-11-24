@@ -15,8 +15,6 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/memory/mem.h"
 #include <stddef.h>
-#include <stdint.h>
-#include <vulkan/vulkan_core.h>
 
 /* Reserve space for GVK entry points that are not exports of the guest driver. */
 u64 gvk_proc_space(u64 code_hi);
@@ -80,16 +78,6 @@ void gvk_out(const GvkType* t, u64 g, void* host);
 /* An empty chain succeeds with *out == NULL, a malformed chain fails. */
 int gvk_chain_in(u32 parent, u64 g, const void** out);
 int gvk_writable(u64 g, u64 size);
-/* r at f times its size: an extent may reach INT32_MAX from its offset (a game's scissor of everything), and stays
-   there */
-static inline VkRect2D gvk_rect_at(VkRect2D r, u32 f) {
-    int64_t x = (int64_t)r.offset.x * f, y = (int64_t)r.offset.y * f;
-    int64_t w = (int64_t)r.extent.width * f, h = (int64_t)r.extent.height * f;
-    x = x < INT32_MIN ? INT32_MIN : x > INT32_MAX ? INT32_MAX : x;
-    y = y < INT32_MIN ? INT32_MIN : y > INT32_MAX ? INT32_MAX : y;
-    int64_t wmax = INT32_MAX - (x > 0 ? x : 0), hmax = INT32_MAX - (y > 0 ? y : 0);
-    return (VkRect2D){{(i32)x, (i32)y}, {(u32)(w < wmax ? w : wmax), (u32)(h < hmax ? h : hmax)}};
-}
 /* the host address of guest address a, NULL for 0: the caller checks first that the game mapped what it reads */
 static inline void* gvk_ptr(u64 a) { return a ? (void*)GP(a) : NULL; }
 /* the export of the game's Vulkan function name, 0 when it exports none */
