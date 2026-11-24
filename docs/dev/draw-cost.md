@@ -151,6 +151,64 @@ the 2%, and leave the map near even. A map that wins must check nothing for each
 kept valid by the writes that change it (uploads, the pool's header writes, drawn targets), so a draw binds the table
 alone. That is a new validity model for the texture cache, not a change to this map.
 
+**7b. A texture table kept valid by writes.** The design that replaces the map's checks.
+
+What it can save, from the profile above with the map off: inclusive `tex_resolve` is 2.7% of the samples, about 11% of
+the renderer thread. Some of `stage_set_` (5.7% inclusive) and `fs_key` (3.0%) is texture work too. The ceiling is
+about 15% of the renderer thread, and less where the memo already answers.
+
+What a draw must still do: read its handle words from the constant buffers. Nothing else says which textures the
+draw reads, and a texture that no draw resolved has no image yet. The model does not load every texture that the
+game registered: the pools of an Ounce game name about 131,000 headers, and the game uses about 1,300 of them.
+
+The model:
+
+1. **An entry for each TIC index that a draw resolved**: the texture, its view and sampler slots, and a valid bit.
+   This is the pool map's record (`pool_map.c`), with the stamps and the checks by address removed. A draw reads
+   each handle and tests the bit. A set bit binds the slots with no other read. A clear bit takes today's full path
+   (`tex_resolve`, `vk_tex_recheck`, take of drawn targets) and sets the bit again.
+2. **Events clear the bits.** Each of the memo's checks becomes the event that makes it fail:
+
+   | Today's check for each draw | The event that clears the bits |
+   | --- | --- |
+   | The surface table at the texture's address (`vk_surf_epoch_at`) | A surface made, freed or moved there: the entries of the textures at that address |
+   | CPU writes to the headers (`tex_memo_unwritten`) | A write-tracking intake of a pool page: the headers that changed, compared with the record |
+   | GPU-side writes to the headers | `gpu_mem_written_by` over a pool page: the same compare |
+   | Pending results over the headers or the texture (`tex_memo_unpended`) | A result added over a texture's memory: its entries |
+   | A pending storage image over the texture (`tex_memo_image_pending`) | The same, when the image is added |
+   | A drawn target under the texture (`over`, `wgen`) | `vk_rt_drawn` over a texture's memory: its entries |
+   | The texels (`vk_tex_recheck`) | A CPU write to a texture's pages at the intake, or a GPU-side write over them: its entries |
+
+3. **An index from guest address to the textures that have entries.** These are the textures that drawing uses,
+   about 1,300. The index is buckets of 64 KiB with a list of textures each, so an event with a range finds them with
+   no search of the surface table. Each texture keeps the list of its entries. A first test of a bitmap of the pages
+   in the index lets most events (most DMA copies, most publishes) return at once.
+4. **Pages on the GPU written only where they change.** An entry's words go into its page in CPU memory when it
+   changes. A changed page is written into a new block of the buffer, and the old block is freed when the
+   submission that last used it is done. This is how drivers version buffers that the GPU reads. A frame no longer
+   writes every page again.
+5. **The order of events.** An event and the draws are on the renderer thread, in stream order. The front end's
+   writes come to the renderer in that order already (`gpu_mem_written_by`, the intake of the scans at a submission).
+   A bit that a write clears is clear before the next draw that the write comes before.
+
+What stays per draw is the handle reads, a bit test for each slot, and the bind of the table. The fs_key and the
+descriptor set of the texture slots go when the bits are all set and the handles did not change since the last draw
+of the same program (item 6's signature, for the texture slots alone).
+
+The checks, as for the map:
+
+- `draw_state_check=1` resolves each slot in full and counts each set bit that a full resolve contradicts. Each
+  contradiction names the event that the model missed.
+- A warm A/B/B/A on the race, and the route of a Switch game, before the setting goes on by default.
+
+The steps:
+
+1. The index and the events, with the bits only counted against today's memo (a shadow, as `pool_map_shadow` was).
+   This shows that the events are complete before any draw uses them.
+2. The draws use the bits (no stamps, no checks by address).
+3. The pages written only where they change.
+4. The texture slots' set and fs_key left out when nothing changed.
+
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
 thread, its largest phase. 18.1% came from one path: the import branch of `rt_watch` publishes every target drawn
