@@ -2464,19 +2464,24 @@ static void ww_take_peers(void) {
     for (int i = 0; i < n; i++) mem_alias_peers(g_wpeer.r[i].a, g_wpeer.r[i].e - g_wpeer.r[i].a, ww_peer_mark, NULL);
 }
 
-/* the scans and changes over [host, host + len) taken in, so the stamps of its pages are up to date: 0, or -1 when
-   write tracking can't tell (vk_written_since) */
-static int ww_take(const u8* host, u64 len) {
-    if (!g_ww || !host || !len) return -1;
+/* the host's write tracking, tried the first time it is asked for: 1 when it is on (under vk_lock) */
+static int ww_on(void) {
     if (g_ww < 0) {
         g_ww = mem_ww_probe(ww_mark) == 0;
         LOG("vulkan: %s\n",
             g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
-        if (!g_ww) return -1;
-        pc_init(&g_wscan_cv);
-        if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
-            atomic_store_explicit(&g_wscan_on, 1, memory_order_release);
+        if (g_ww) {
+            pc_init(&g_wscan_cv);
+            if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
+                atomic_store_explicit(&g_wscan_on, 1, memory_order_release);
+        }
     }
+    return g_ww;
+}
+/* the scans and changes over [host, host + len) taken in, so the stamps of its pages are up to date: 0, or -1 when
+   write tracking can't tell (vk_written_since) */
+static int ww_take(const u8* host, u64 len) {
+    if (!host || !len || !ww_on()) return -1;
     if (atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) {
         g_ww = 0;
         LOG("vulkan: write tracking failed, caches check contents\n");
@@ -2568,10 +2573,7 @@ int vk_ww_take(const u8* host, u64 len) {
     }
     return ww_take(host, len);
 }
-int vk_ww_tracks(void) {
-    if (g_ww < 0) (void)ww_take(g_mem + AS_BASE, 1); /* asked for the first time: the host's tracking is tried */
-    return g_ww > 0 && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire);
-}
+int vk_ww_tracks(void) { return ww_on() && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire); }
 u32 vk_ww_now(void) { return g_wclock; }
 void vk_ww_stats(u32 presents) {
     static u32 epoch0;
