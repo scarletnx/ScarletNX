@@ -29,8 +29,9 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
    the vector ones (0: all sixteen) */
 void snx_x64_set_pool(int registers);
 void snx_x64_set_xpool(int registers);
-/* the pool snx_x64_set_pool set last, 0 for every register */
+/* the pools those set last, 0 for every register */
 int snx_x64_pool(void);
+int snx_x64_xpool(void);
 /* the SSA instructions the last step appended, dropped ones counted */
 unsigned snx_x64_instructions(void);
 /* the calls of the floating-point helpers the code made so far */

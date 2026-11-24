@@ -9,8 +9,8 @@
    become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
    a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
      snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose] [--dump WORD...]
-   --pool N gives the back end N host registers of its nine, so it spills, --xmm N of its sixteen vector ones (ctest
-   runs it with 3 and 6 too)
+   --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too), --xmm N of its
+   sixteen vector ones (ctest: 6 with 3)
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "llvm_steps.h"
@@ -566,9 +566,10 @@ static size_t check_fp_guards(void) {
 
 /* guarded operations in a row, where one's limits are another's, the registers they need are all taken, an atomic
    between them ends what lived in registers and a guest's flags live on the host's: the block's state after it is its
-   words' one by one */
+   words' one by one. With every register, with three, with six vector ones (a guard's value in a spill slot) and
+   with three and six (a general-purpose value has no vector register to spill to) */
 static size_t check_fp_rows(void) {
-    enum { WORDS = 12, STATES = 800 };
+    enum { WORDS = 12, STATES = 400 };
     static const struct {
         const char* text;
         u32 words[WORDS];
@@ -608,21 +609,25 @@ static size_t check_fp_rows(void) {
     unsigned char* at = g_test.memory[0] + MEMORY_ZERO + 0x1000;
     u64 seed = 0x9E3779B97F4A7C15ull;
     size_t failures = 0, runs = 0;
+    int pool = snx_x64_pool(), xpool = snx_x64_xpool();
     if (code == MAP_FAILED) {
         fprintf(stderr, "FAIL: guarded operations in a row: no memory for the code\n");
         return 1;
     }
-    for (size_t k = 0; k < sizeof rows / sizeof *rows; ++k) {
+    for (size_t k = 0; k < 4 * (sizeof rows / sizeof *rows); ++k) {
         size_t n = 0, count, made;
-        while (n < WORDS && rows[k].words[n]) ++n;
+        const char* text = rows[k / 4].text;
+        snx_x64_set_pool(k & 1 ? 3 : pool);
+        snx_x64_set_xpool(k & 2 ? 6 : xpool);
+        while (n < WORDS && rows[k / 4].words[n]) ++n;
         count = n;
         if (mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE)) return 1;
-        made = snx_x64_block(rows[k].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX) != 0;
+        made = snx_x64_block(rows[k / 4].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX) != 0;
         for (size_t w = 0; w < n; ++w)
-            made += snx_x64_step(rows[k].words[w], 0x1000 + 4 * w, TARGET, host_features(), code + (w + 1) * CODE_MAX,
-                                 CODE_MAX) != 0;
+            made += snx_x64_step(rows[k / 4].words[w], 0x1000 + 4 * w, TARGET, host_features(),
+                                 code + (w + 1) * CODE_MAX, CODE_MAX) != 0;
         if (made != n + 1 || count != n || mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_EXEC)) {
-            fprintf(stderr, "FAIL: %s: %zu of %zu made, the block of %zu words\n", rows[k].text, made, n + 1, count);
+            fprintf(stderr, "FAIL: %s: %zu of %zu made, the block of %zu words\n", text, made, n + 1, count);
             ++failures;
             continue;
         }
@@ -659,11 +664,12 @@ static size_t check_fp_rows(void) {
                 if (++failures <= 8)
                     fprintf(stderr,
                             "FAIL: %s, state %zu: the block differs from its words (FPCR %08x FPSR %02x: %02x, %02x)\n",
-                            rows[k].text, state, c[0].fpcr, (unsigned)(seed >> 47 & 1 ? 0x10 : 0), c[0].fpsr,
-                            c[1].fpsr);
+                            text, state, c[0].fpcr, (unsigned)(seed >> 47 & 1 ? 0x10 : 0), c[0].fpsr, c[1].fpsr);
             }
         }
     }
+    snx_x64_set_pool(pool);
+    snx_x64_set_xpool(xpool);
     munmap(code, (WORDS + 1) * (size_t)CODE_MAX);
     printf("sail_x64: guarded operations in a row, %zu runs: %zu failures\n", runs, failures);
     return failures;
