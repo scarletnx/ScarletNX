@@ -123,8 +123,10 @@ val V4Splat : bits(32) -> vec4
 val V4At : (vec4, int) -> bits(32)
 /* four components of a (0-3) and b (4-7) */
 val V4Shuffle : (vec4, vec4, int, int, int, int) -> vec4
-/* the first three components */
+/* the first three components; the vec2 and vec3 of two and three floats */
 val V3Of4 : vec4 -> vec3
+val V2Of : (bits(32), bits(32)) -> vec2
+val V3Of : (bits(32), bits(32), bits(32)) -> vec3
 val V4FAdd : (vec4, vec4) -> vec4
 val V4FMul : (vec4, vec4) -> vec4
 val V4FNeg : vec4 -> vec4
@@ -139,3 +141,10 @@ val V3Dot : (vec3, vec3) -> bits(32)
 val V4FCompare : (int, vec4, vec4) -> bvec4
 val V4Select : (bvec4, vec4, vec4) -> vec4
 val B4Splat : bool -> bvec4
+
+/* ---- a sampled image's texels: the vec4 at a coordinate (a vec2 or a vec3), at the implicit level of detail, biased
+   from it, at a level of detail, and with the coordinate's gradients (a vec2 or a vec3 each) ---- */
+val SampleImplicit : (sampler, vec2) -> vec4
+val SampleBias : (sampler, vec2, bits(32)) -> vec4
+val SampleLod : (sampler, vec2, bits(32)) -> vec4
+val SampleGrad : (sampler, vec2, vec2, vec2) -> vec4

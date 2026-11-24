@@ -15,6 +15,7 @@ struct SgG {
     Value val[8];
     uint8_t layout[2][3]; /* VDUAL's sources' layouts */
     uint32_t test[4];     /* a test's results */
+    uint32_t pointer;     /* VLDST's reads' pointer type */
 };
 static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static uint32_t sgu_t_u64(SgG* g) { return (void)g, 0; }

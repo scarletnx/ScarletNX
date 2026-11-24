@@ -488,10 +488,9 @@ static void reset_repeats(T* t) {
 /* operands' indices into repeat_increase: src0, src1, src2, dest */
 enum { O_SRC0, O_SRC1, O_SRC2, O_DEST };
 
-/* ---- the instructions: each a handler of its pattern's fields (usse.decode, arg_<pattern>) ---- */
-
-/* ---- the instructions ported second: the ALU (alu.cpp, ialu.cpp), tests (branch_cond.cpp), loads (data.cpp),
-   dependent texture reads (texture.cpp) and the special ones (special.cpp) ---- */
+/* ---- the instructions: what each computes is in Sail (below, usse_sail.inc); the texture reads' back end
+   (gpu/sail/usse_mem_spirv.h) takes the program's textures and the registers they fill from the interface's code
+   further down ---- */
 static Type texture_component_type(uint32_t format);
 static unsigned gxp_sampler_dimension(const T* t, unsigned resource);
 static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension);
@@ -499,166 +498,6 @@ static unsigned texture_components(uint32_t format);
 static Value vector_value(T* t, uint32_t vec, unsigned n, int kind);
 static void store_input(T* t, Bank bank, unsigned offset, Type type, Value v);
 
-/* ---- loads (data.cpp) ---- */
-/* VLDST: a load of 32-bit words from a uniform buffer read from memory, at src0 + src1 (+ 4 without moe expansion) +
-   src2 bytes, src0 a register the program's uniform buffer table filled; one from the literal buffer, constants from
-   the program */
-static bool vldst(T* t, const arg_VLDST* arg) {
-    if (arg->op != 1) return fail(t, arg->op == 2 ? "VLDST stores" : "VLDST operation %u", arg->op);
-    if (arg->data_type > 2) return fail(t, "VLDST of data type %u", arg->data_type);
-    unsigned size = arg->data_type == 0 ? 4 : arg->data_type == 1 ? 2 : 1, bytes = size * (arg->mask_count + 1);
-    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, false, 7);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
-    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
-    src0.type = src1.type = src2.type = T_I32;
-    Bank bank = t->secondary ? B_SA : arg->primattr ? B_PA : B_TEMP;
-    if (src1.bank == B_IMM) src1.num *= size;
-    if (src0.bank == B_SA && (int)src0.num == t->literal_register) {
-        if (arg->mask_count || src1.bank != B_IMM || src2.bank != B_IMM) { /* at a register's offset: from the array */
-            if (!t->literals) return fail(t, "a literal buffer read past the program");
-            uint32_t b1 = load(t, src1, 1, 0).c[0], b2 = load(t, src2, 1, 0).c[0];
-            if (t->failed) return false;
-            if (src1.bank != B_IMM) b1 = op2(t, SPV_OP_I_SUB, t->t_i32, b1, ci(t, 0x10000));
-            uint32_t offset = op2(t, SPV_OP_I_ADD, t->t_i32, ci(t, (int32_t)t->literal_base), op2(t, SPV_OP_I_ADD, t->t_i32, b1, b2));
-            uint32_t first = op2(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t->t_u32, bitcast(t, t->t_u32, offset), cu(t, 2));
-            uint32_t pointer = spv_emit_type_pointer(&t->e, SPV_STORAGE_PRIVATE, t->t_u32);
-            for (unsigned i = 0; i < bytes / 4; ++i) {
-                uint32_t at = ext2(t, t->t_u32, SPV_GLSL_U_MIN, op2(t, SPV_OP_I_ADD, t->t_u32, first, cu(t, i)),
-                                   cu(t, t->literal_words - 1));
-                store_word(t, bank, arg->dest_n + i, SPV(&t->e, SPV_OP_LOAD, t->t_u32,
-                                                    SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->literals, at)));
-            }
-            return !t->failed;
-        }
-        uint32_t offset = t->literal_base + src1.num + src2.num;
-        const unsigned char* data = gxp_at(t->gxp, GXP_LITERAL_DATA);
-        if ((size_t)(data - t->gxp) + offset + 4 > t->size) return fail(t, "a literal past the program");
-        store_word(t, bank, arg->dest_n, cu(t, snx_ld_le32(data + offset)));
-        return !t->failed;
-    }
-    if (!t->buffer) return fail(t, "a VLDST with no uniform buffer");
-    uint32_t a0 = load(t, src0, 1, 0).c[0], a1 = load(t, src1, 1, 0).c[0], a2 = load(t, src2, 1, 0).c[0];
-    if (t->failed) return false;
-    if (src1.bank != B_IMM) a1 = op2(t, SPV_OP_I_SUB, t->t_i32, a1, ci(t, 0x10000));
-    if (!arg->moe_expand) a1 = op2(t, SPV_OP_I_ADD, t->t_i32, a1, ci(t, 4));
-    uint32_t address = bitcast(t, t->t_u32, op2(t, SPV_OP_I_ADD, t->t_i32, a0, op2(t, SPV_OP_I_ADD, t->t_i32, a1, a2)));
-    uint32_t index = op2(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t->t_u32, address, cu(t, 2));
-    uint32_t pointer = spv_emit_type_pointer(&t->e, SPV_STORAGE_STORAGE_BUFFER, t->t_u32);
-    for (unsigned i = 0; i < bytes / 4; ++i) {
-        uint32_t at = op2(t, SPV_OP_I_ADD, t->t_u32, index, cu(t, i));
-        uint32_t w = SPV(&t->e, SPV_OP_LOAD, t->t_u32, SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->buffer, cu(t, 0), at));
-        store_word(t, bank, arg->dest_n + i, w);
-    }
-    return !t->failed;
-}
-/* ---- dependent texture reads (texture.cpp) ---- */
-/* SMP's gather4: the four texels' components pixel by pixel, four a register group; with uv, then the four bilinear
-   weights as halves, in the order the SDK's shaders read them ((1-u)(1-v), u(1-v), uv, (1-u)v) */
-static bool gather(T* t, uint32_t sampler, uint32_t coord, uint32_t format, Type type, Bank bank, unsigned dest,
-                   bool uv) {
-    unsigned n = texture_components(format);
-    uint32_t texels[16];
-    for (unsigned c = 0; c < n; ++c) {
-        uint32_t g = SPV(&t->e, SPV_OP_IMAGE_GATHER, t->t_v4f, sampler, coord, ci(t, (int32_t)c));
-        for (unsigned pixel = 0; pixel < 4; ++pixel)
-            texels[pixel * n + c] = SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32, g, pixel);
-    }
-    unsigned step = type_size(type); /* registers four components take */
-    for (unsigned at = 0; at < 4 * n; at += 4, dest += step) {
-        Value v = {{texels[at], texels[at + 1], texels[at + 2], texels[at + 3]}, 4, K_FLOAT};
-        store_input(t, bank, dest, type, v);
-    }
-    if (!uv) return !t->failed;
-    spv_emit_image_query_capability(&t->e);
-    uint32_t v2i = spv_emit_type_vector(&t->e, t->t_i32, 2);
-    uint32_t lod = t->fragment ? SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32,
-                                     SPV(&t->e, SPV_OP_IMAGE_QUERY_LOD, t->t_v2f, sampler, coord), 0)
-                               : cf(t, 0);
-    uint32_t image_type = spv_emit_type_image(&t->e, t->t_f32, SPV_DIM_2D, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
-    uint32_t image = op1(t, SPV_OP_IMAGE, image_type, sampler);
-    uint32_t size = SPV(&t->e, SPV_OP_IMAGE_QUERY_SIZE_LOD, v2i, image, op1(t, SPV_OP_CONVERT_F_TO_S, t->t_i32, lod));
-    uint32_t texel = op2(t, SPV_OP_F_MUL, t->t_v2f, coord, op1(t, SPV_OP_CONVERT_S_TO_F, t->t_v2f, size));
-    uint32_t half = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, cf(t, 0.5f), cf(t, 0.5f));
-    uint32_t f = ext1(t, t->t_v2f, SPV_GLSL_FRACT, op2(t, SPV_OP_F_SUB, t->t_v2f, texel, half));
-    uint32_t u = SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32, f, 0), w = SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32, f, 1);
-    uint32_t nu = op2(t, SPV_OP_F_SUB, t->t_f32, cf(t, 1), u), nw = op2(t, SPV_OP_F_SUB, t->t_f32, cf(t, 1), w);
-    Value weights = {{op2(t, SPV_OP_F_MUL, t->t_f32, nu, nw), op2(t, SPV_OP_F_MUL, t->t_f32, u, nw),
-                      op2(t, SPV_OP_F_MUL, t->t_f32, u, w), op2(t, SPV_OP_F_MUL, t->t_f32, nu, w)},
-                     4, K_FLOAT};
-    store_input(t, bank, dest, T_F16, weights);
-    return !t->failed;
-}
-/* SMP: the texture is the dependent sampler src1 names, read at src0 (one, two, or three components), its LOD from
-   src2 when lod_mode says */
-static bool smp(T* t, const arg_SMP* arg) {
-    unsigned dim = arg->dim + 1;
-    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, true, 8);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 8);
-    src0.type = arg->src0_type == 0 ? T_F32 : arg->src0_type == 1 ? T_F16 : T_C10;
-    if (src1.bank != B_SA || src1.num >= BANK_WORDS || !t->dependent[src1.num])
-        return fail(t, "an SMP whose sampler isn't a dependent one");
-    if (arg->sb_mode == 2) return fail(t, "SMP queries");
-    if (dim > 3) return fail(t, "SMP dimension %u", dim);
-    unsigned resource = t->dependent[src1.num] - 1u;
-    if (resource >= USSE_TEXTURES) return fail(t, "SMP sampler %u", resource);
-    uint32_t format = t->hints->texture_formats[resource];
-    Type type = arg->fconv == 2 ? T_F16 : arg->fconv == 3 ? T_F32 : texture_component_type(format);
-    Value c = load(t, src0, dim == 1 ? 1 : dim == 2 ? 3 : 7, 0);
-    if (t->failed) return false;
-    if (c.kind != K_FLOAT) c = to_float(t, c, src0.type, true);
-    uint32_t coord = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, c.c[0], c.c[1], c.c[2])
-                              : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
-    unsigned sampler_dim = dim == 3 ? SPV_DIM_CUBE : SPV_DIM_2D;
-    uint32_t sampler = sampler_of(t, resource, sampler_dim), sampled;
-    Bank bank = arg->use_pa ? (t->secondary ? B_SA : B_PA) : B_TEMP;
-    if (arg->sb_mode == 3 && dim == 3) return fail(t, "SMP cube gather with UV coefficients");
-    if (arg->sb_mode) /* the four texels' components: each component of the four, then the next component's */
-        return gather(t, sampler, coord, format, type, bank, arg->dest_n, arg->sb_mode == 3);
-    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 8);
-    src2.type = src0.type;
-    bool implicit = t->fragment && (arg->lod_mode == 0 || arg->lod_mode == 1);
-    if (arg->lod_mode == 3) { /* gradients */
-        Value dx = dim == 3 ? load(t, src2, 7, 0) : load(t, src2, 3, 0);
-        Value dy = dim == 3 ? load(t, src2, 7, 1) : load(t, src2, 12, 0);
-        if (t->failed) return false;
-        uint32_t gx = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dx.c[0], dx.c[1], dx.c[2])
-                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
-        uint32_t gy = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dy.c[0], dy.c[1], dy.c[2])
-                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
-        sampled =
-            SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, SPV_IMAGE_OPERANDS_GRAD, gx, gy);
-    } else if (arg->lod_mode) {
-        uint32_t lod = load(t, src2, 1, 0).c[0];
-        if (t->failed) return false;
-        sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord,
-                                 SPV_IMAGE_OPERANDS_BIAS, lod)
-                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord,
-                                 SPV_IMAGE_OPERANDS_LOD, arg->lod_mode == 1 ? cf(t, 0) : lod);
-    } else
-        sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord)
-                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord,
-                                 SPV_IMAGE_OPERANDS_LOD, cf(t, 0));
-    store_input(t, bank, arg->dest_n, type, vector_value(t, sampled, texture_components(format), K_FLOAT));
-    return !t->failed;
-}
-
-/* ---- the special instructions (special.cpp) ---- */
-/* KILL: the fragment is discarded (predicated, the program's if around it) */
-static bool kill(T* t) {
-    if (!t->fragment) return fail(t, "KILL in a vertex program");
-    spv_emit_void_op(&t->e, SPV_OP_KILL, NULL, 0);
-    t->terminated = 1;
-    return true;
-}
-/* DEPTHF: src0 is the fragment's depth */
-static bool depthf(T* t, const arg_DEPTHF* arg) {
-    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, true, 7);
-    src0.type = T_F32;
-    if (!t->frag_depth) return fail(t, "DEPTHF in a program that doesn't say it writes depth");
-    uint32_t depth = load(t, src0, 1, 0).c[0];
-    if (!t->failed) SPV_VOID(&t->e, SPV_OP_STORE, t->frag_depth, depth);
-    return !t->failed;
-}
 /* the predicate of an instruction (usse_program_analyzer.cpp: get_predicate): 0 none, else ExtPredicate's
    P0 to P3 (1 to 4), NEGP0 and NEGP1 (5, 6), PN (7); 8 for one this translator doesn't know */
 static unsigned predicate(uint64_t inst) {
@@ -791,17 +630,17 @@ UNTRANSLATED(ILLEGAL24)
 UNTRANSLATED(I8MAD2)
 TRANS(I32MAD2, true, sail(t, U_I32MAD2, arg))
 UNTRANSLATED(ILLEGAL27)
-TRANS(SMP, true, smp(t, arg))
+TRANS(SMP, true, sail(t, U_SMP, arg))
 TRANS(PHAS, false, sail(t, U_PHAS, arg))
 TRANS(NOP, false, sail(t, U_NOP, arg))
 TRANS(BR, false, sail(t, U_BR, arg)) /* translate_code makes the branches of the program's blocks */
 TRANS(SMLSI, false, sail(t, U_SMLSI, arg))
 TRANS(SMBO, true, sail(t, U_SMBO, arg))
-TRANS(KILL, true, kill(t))
+TRANS(KILL, true, sail(t, U_KILL, arg))
 TRANS(LIMM, true, sail(t, U_LIMM, arg))
-TRANS(DEPTHF, true, depthf(t, arg))
+TRANS(DEPTHF, true, sail(t, U_DEPTHF, arg))
 TRANS(SPEC, false, sail(t, U_SPEC, arg))
-TRANS(VLDST, true, vldst(t, arg))
+TRANS(VLDST, true, sail(t, U_VLDST, arg))
 
 /* one instruction: its handler, in an if when it is predicated. False when the program can't be translated */
 static bool translate_one(T* t, uint64_t w, unsigned pc) {
