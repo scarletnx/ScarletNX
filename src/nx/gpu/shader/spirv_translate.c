@@ -1591,11 +1591,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
        quad (DirectCtx.quad_lane, from FragCoord): its ballot is that lane's bit, the votes are its predicate,
        FSWZADD takes the mode of its place, a SHFL within the quad reads the other pixel's register through fine
        derivatives (sail/sm53_thread_spirv.h's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
-       SHFL keeps its own value. Those reads take every pixel of the quad in step, as derivatives do */
+       SHFL keeps its own value. Those reads take every pixel of the quad in step, as derivatives do.
+       A compute program's warps are whole, so on a device whose subgroups are narrower one runs as lone lanes only where
+       warp_idioms.c shows that gives what the console does (shader_lone_lane_gives, once it is written) */
     int quad_lane = stage == ST_FS && !can_subgroup && (votes || swizzle_lanes || lane_used);
-    int lone_lane = quad_lane ||
-                    (votes && !swizzle_lanes && !can_subgroup && (stage == ST_VS || stage == ST_TES || stage == ST_GS));
-    int lane_model = quad_lane || ((!needs_subgroup || lone_lane) && stage != ST_FS && stage != ST_CS);
+    int lone_lane = quad_lane || (votes && !swizzle_lanes && !can_subgroup &&
+                                  (stage == ST_VS || stage == ST_TES || stage == ST_GS || stage == ST_CS));
+    int lane_model = quad_lane || (stage == ST_CS ? lone_lane : (!needs_subgroup || lone_lane) && stage != ST_FS);
     int lane_is_invocation = lane_model && stage == ST_TCS;
     if (lane_used && lane_is_invocation) invocation_used = 1;
     if (lane_used && !lane_model) needs_subgroup = 1;
@@ -3083,6 +3085,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (phase) phase[PH_ALLOC] += plat_ns() - pt;
     pt = phase ? plat_ns() : 0;
     SNX_ZONE(z_snx_emit, "shader emission");
+    ShNotes notes = {0};
+    if (lone_lane && stage == ST_CS) c->notes = &notes;
     for (u32 i = 11; structure || i < n; i++) {
         /* structured: the blocks in the order their constructs need, the constructs written between them */
         while (structure && i >= se.body_end) {
@@ -3132,6 +3136,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         u64 w = insn[i];
         int op = (i < n ? flow->op[i] : decode(w))->id;
         u32 d = B(w, 0, 8), a = B(w, 8, 8), b = B(w, 20, 8);
+        notes.at = i;
         u32 guard_merge = 0;
         c->guard = 0; /* the instruction before may have ended its translation early */
         if (structure && (op == O_BRA || op == O_SYNC || op == O_BRK || op == O_CONT || op == O_RET)) {
@@ -3229,6 +3234,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     for (u32 id = 0; id < SH_SPEC_COUNT; id++)
         if (c->spec[id]) spec |= 1u << id;
     spv_emit_destroy(&c->emit);
+    char lone_why[sizeof si->first_unsupported] = "";
+    int lone_wrong = c->notes && !shader_lone_lane_gives(flow, crs_static || !has_stack ? pop_targets : NULL, &notes,
+                                                         si, lone_why, sizeof lone_why);
+    free(notes.word);
     free(c->ftz);
     free(c->ftz_of);
     free(c->ftz_of_block);
@@ -3238,6 +3247,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     free(se.label); /* and what was used */
     free(pop_targets);
     free(gb_at);
+    if (lone_wrong) {
+        free(result);
+        return snx_reject(si, lone_why);
+    }
     ShaderInfo next = {0};
     next.stage = stage;
     next.chosen_tex = chosen_tex;

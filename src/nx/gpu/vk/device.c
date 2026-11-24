@@ -774,7 +774,8 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
     if (without[0])
         LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
             "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
-            "derivatives), and a control or compute one is not translated\n",
+            "derivatives), a compute one too where its adds, minima and maxima come to the same, and a control one or "
+            "any other compute one is not translated\n",
             without);
 }
 
