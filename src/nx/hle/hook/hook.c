@@ -289,6 +289,19 @@ int hook_family_off(const char* family) {
     return !g_settings.native_hooks || family_listed(g_settings.hook_families_off, family);
 }
 
+void hook_off_text(char* out, size_t n, const char* family) {
+    if (n) out[0] = 0;
+    if (!g_settings.native_hooks)
+        snprintf(out, n,
+                 "hooks=0 (its default is 1) runs every SDK function's own code, which opened it: the game starts "
+                 "with hooks=1");
+    else if (family_listed(g_settings.hook_families_off, family))
+        snprintf(out, n,
+                 "hooks_off=%s (its default is \"\") names the %s family, so its SDK functions run their own code, "
+                 "which opened it: the game starts with the family on",
+                 g_settings.hook_families_off, family);
+}
+
 int hook_states_refused(char* why, size_t whysize) {
     const HostHook* h = &g_host.hook;
     u32 i;

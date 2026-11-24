@@ -53,6 +53,13 @@ static const char* test_missed = "";
 void hook_missed_text(char* out, size_t n) { snprintf(out, n, "%s", test_missed); }
 static const char* test_unread = "";
 void hook_unread_text(char* out, size_t n) { snprintf(out, n, "%s", test_unread); }
+/* hook.c's: the setting that turns a family's hooks off, "" until the test gives one; the family sm.c asks it of */
+static const char* test_off = "";
+static char test_off_family[32];
+void hook_off_text(char* out, size_t n, const char* family) {
+    snprintf(test_off_family, sizeof test_off_family, "%s", family);
+    snprintf(out, n, "%s", test_off);
+}
 /* debug.c's: the threads and their calls, which name the SDK function that asked; counted, and before the stop */
 static unsigned test_thread_dumps;
 void kernel_dump_threads(void) {
@@ -194,11 +201,34 @@ int main(void) {
                                   "functions, nn::pctl (nn/pctl.c). This 32-bit game's SDK is 4.4.0 (module sdk) and "
                                   "the runtime's declarations for a 32-bit game were read in SDK 0.12.16 alone, so "
                                   "132 of its SDK functions run their own code (nn_fs 44)"));
-    test_unread = "";
+    /* the settings turn the native functions off: the stop names the setting and its value, and neither the SDK
+       functions that are not native nor a 32-bit game's reason. Each service is asked of the family whose hooks
+       answer it */
+    test_off = "hooks=0 (its default is 1) runs every SDK function's own code";
+    static const char* const off_family[][2] = {
+        {"fsp-srv", "nn_fs"},          {"time:u", "nn_time"},        {"pl:u", "nn_pl"},
+        {"pctl", "nn_pctl"},           {"nsd:u", "nn_nsd"},          {"ngc:u", "nn_ngc"},
+        {"prepo:u", "nn_prepo"},       {"audout:u", "nn_audio_out"}, {"audren:u", "nn_audio_renderer"},
+        {"hwopus", "nn_codec_hwopus"}, {"audin:u", "nn_audio_in"},
+    };
+    for (size_t i = 0; i < sizeof off_family / sizeof off_family[0]; i++) {
+        name = name_of(off_family[i][0], strlen(off_family[i][0]));
+        test_expects_stop = 1;
+        if (!setjmp(test_stopped)) {
+            nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle);
+            test_fail("the program went on with a session of a native-only service", __LINE__);
+        }
+        test_expects_stop = 0;
+        CHECK(!strcmp(test_off_family, off_family[i][1]));
+        CHECK(strstr(test_stop_text, "hooks=0 (its default is 1) runs every SDK function's own code"));
+        CHECK(!strstr(test_stop_text, "not native yet") && !strstr(test_stop_text, "4.4.0"));
+    }
+    test_off = test_unread = "";
     name = name_of("time:x", 6);
     handle = 0;
     CHECK(nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle) == 0 && handle == 0x1234);
-    CHECK(test_thread_dumps == sizeof native_only / sizeof native_only[0] + 2);
+    CHECK(test_thread_dumps ==
+          sizeof native_only / sizeof native_only[0] + 2 + sizeof off_family / sizeof off_family[0]);
 
     /* an application may host no service: NotAllowed, whether or not the name is taken */
     name = name_of("mysrv", 5);
