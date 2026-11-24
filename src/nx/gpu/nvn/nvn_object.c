@@ -1125,7 +1125,10 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
                   o.d.height);
     /* a whole range, guest to guest, as the driver's own copy: bytes already in the texture's layout, nothing
        converted, before any submission can read the texture */
-    if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
+    if (s->packaged_data && o.memory && o.size) {
+        memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
+        mem_wrote(o.memory, o.size); /* the texture cache reads these bytes: the write marks must see them */
+    }
     memcpy(GP(t), &o, sizeof o);
     /* a live texture at that address (gpu/guest_textures.c), until nvn_TextureFinalize: the renderer's texture cache
        measures what it holds for none. A texture with no storage has no address */
