@@ -8,11 +8,10 @@
    imported (SnxX64Options.direct), the stub bound (bound), the stale checks and the function ir_dump_pc names; f1's
    unit's with its own index alone and its BR bound; the fall-through's with what its next function answers (routed).
    MOV x0, #1; RET below them, one function as NOP; RET is but other code, which f0 never reaches, leaves f0's as they
-   were. The back end's own code, the rest of the key (snx_x64_code), is the segment that holds it. The host's
-   features, the one fact no test on one host changes, are left to the reading. On a host without the back end it
-   passes, saying so */
+   were; a JIT unit's table name changes them. The host's features, the one fact no test on one host changes, are left
+   to the reading. On a host without the back end it passes, saying so */
 #include "common/cpu/recompiler/codegen.h"
-#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,25 +107,43 @@ static Facts unit_facts(const SnxCodegen* codegen, SnxU64 start, const SnxX64Opt
     return f;
 }
 static Facts facts(const SnxCodegen* codegen, const SnxX64Options* options) { return unit_facts(codegen, F0, options); }
-/* whether one of the segments snx_x64_code puts holds the back end's own code */
-static int held;
-static void segment(void* user, const void* data, size_t size) {
-    const unsigned char* at = (const unsigned char*)(const void*)snx_x64_object;
-    (void)user;
-    if (at >= (const unsigned char*)data && at < (const unsigned char*)data + size) held = 1;
-}
-
 static int same(const Facts* a, const Facts* b) {
     return a->size == b->size && a->size && !memcmp(a->bytes, b->bytes, a->size);
+}
+
+/* the keys' SHA-256 (x64_cache.h) on FIPS 180-2's examples: an empty message, "abc", the 448-bit one that ends in a
+   second block, and a million "a" */
+static void sha256_vectors(void) {
+    static const struct {
+        const char* text;
+        size_t repeat;
+        const char* hex;
+    } v[] = {{"", 1, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+             {"abc", 1, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+             {"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 1,
+              "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"},
+             {"a", 1000000, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"}};
+    for (size_t i = 0; i < sizeof v / sizeof *v; ++i) {
+        size_t n = strlen(v[i].text) * v[i].repeat;
+        char *data = (char*)malloc(n + 1), hex[65];
+        unsigned char out[32];
+        for (size_t k = 0; k < v[i].repeat; ++k) memcpy(data + k * strlen(v[i].text), v[i].text, strlen(v[i].text));
+        snx_x64_cache_sha256(data, n, out);
+        for (size_t k = 0; k < 32; ++k) snprintf(hex + 2 * k, 3, "%02x", out[k]);
+        if (strcmp(hex, v[i].hex)) fprintf(stderr, "SHA-256 of example %zu: %s, not %s\n", i, hex, v[i].hex);
+        check(!strcmp(hex, v[i].hex), "the keys' SHA-256 gives FIPS 180-2's digests");
+        free(data);
+    }
 }
 
 int main(void) {
     SnxCodegen one, two, mid, other;
     SnxX64Options plain = {0}, options;
     Facts base, again, f;
+    sha256_vectors();
     if (!snx_x64_available()) {
-        printf("x64 unit facts: no x86-64 back end on this host: passed\n");
-        return 0;
+        printf("x64 unit facts: no x86-64 back end on this host: %s\n", failures ? "FAILED" : "passed");
+        return failures != 0;
     }
     image(NOP_RET);
     check(!analyze(&one, 1, 2), "NOP; RET is one function below f0");
@@ -203,6 +220,18 @@ int main(void) {
     check(!same(&base, &f), "the stale checks change them");
     free(f.bytes);
     options = plain;
+    options.jit = 1;
+    options.table_name = "snx_jit_1";
+    f = facts(&one, &options);
+    {
+        Facts g;
+        options.table_name = "snx_jit_2";
+        g = facts(&one, &options);
+        check(!same(&f, &g), "a JIT unit's table name changes them");
+        free(g.bytes);
+    }
+    free(f.bytes);
+    options = plain;
     options.llvm_at = F0;
     f = facts(&one, &options);
     check(!same(&base, &f), "the function ir_dump_pc names changes them");
@@ -219,7 +248,6 @@ int main(void) {
     snx_codegen_free(&two);
     snx_codegen_free(&mid);
     snx_codegen_free(&other);
-    check(!snx_x64_code(segment, NULL) && held, "the back end's own code is one of the segments put");
     printf("x64 unit facts: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

@@ -7506,12 +7506,12 @@ msgid "The instructions a code unit takes, whole functions at a time, when the g
 msgstr "重新编译时一个代码单元包含的指令数，以完整函数为单位：每个单元单独编译，较小的单元一次占用更少内存，手机需要这一点（Android 的分配器在多线程下达到 90000 时会耗尽，iOS 会在达到上限时结束应用）。已编译的游戏在重新编译前保持其单元"
 
 #: src/nx/runtime/settings.txt
-msgid "Unit cache limit"
-msgstr "单元缓存上限"
+msgid "Unit cache ceiling"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
-msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
+msgid "The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 = none held. Nothing is kept on the disk"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -7668,6 +7668,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Unit cache limit"
+#~ msgstr "单元缓存上限"
+
+#~ msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+#~ msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
 
 #~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
 #~ msgstr "按其记录继续在汇总前中断的 edenprobe %s 运行：目前用例 %d 个，崩溃列表中 %d 个"

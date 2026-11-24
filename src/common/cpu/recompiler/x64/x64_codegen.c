@@ -15,9 +15,6 @@
    The object is ELF x86-64, as LLVM's are: F_<address> global and hidden in the AOT module's units (library.c), so
    an LLVM unit's function calls one of these and the other way; in a JIT unit local, with the unit's table. A call
    is a PLT32 relocation, resolved here where the callee is this object's own */
-#if defined(__linux__) && !defined(_GNU_SOURCE)
-#define _GNU_SOURCE /* dl_iterate_phdr */
-#endif
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -28,8 +25,6 @@
 #include <stdlib.h>
 #if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
 #include <elf.h>
-#include <link.h>
-#include <stdint.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -2332,6 +2327,7 @@ void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, co
     fact64(put, user, (SnxU64)codegen->direct_svc);
     fact64(put, user, (SnxU64)codegen->hook_direct_calls);
     fact64(put, user, (SnxU64)options->jit);
+    if (options->jit && options->table_name) put(user, options->table_name, strlen(options->table_name) + 1);
     fact64(put, user, (SnxU64)options->stale);
     fact64(put, user, options->llvm_at);
     fact64(put, user, first);
@@ -2366,38 +2362,6 @@ void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, co
     }
 }
 
-/* the object (the executable or a library) whose segments hold the back end's code, and those segments put */
-typedef struct {
-    FactPut put;
-    void* user;
-    int found;
-} CodeWalk;
-static int code_segments(struct dl_phdr_info* info, size_t size, void* data) {
-    CodeWalk* walk = (CodeWalk*)data;
-    uintptr_t here = (uintptr_t)(void*)snx_x64_object;
-    int ours = 0;
-    (void)size;
-    for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
-        const Elf64_Phdr* p = &info->dlpi_phdr[i];
-        uintptr_t at = (uintptr_t)info->dlpi_addr + p->p_vaddr;
-        if (p->p_type == PT_LOAD && here >= at && here < at + p->p_memsz) ours = 1;
-    }
-    if (!ours) return 0;
-    /* the read-only ones alone: the writable hold what relocation and the run change */
-    for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
-        const Elf64_Phdr* p = &info->dlpi_phdr[i];
-        if (p->p_type == PT_LOAD && !(p->p_flags & PF_W))
-            walk->put(walk->user, (const void*)((uintptr_t)info->dlpi_addr + p->p_vaddr), p->p_filesz);
-    }
-    walk->found = 1;
-    return 1;
-}
-int snx_x64_code(void (*put)(void* user, const void* data, size_t size), void* user) {
-    CodeWalk walk = {put, user, 0};
-    dl_iterate_phdr(code_segments, &walk);
-    return walk.found ? 0 : -1;
-}
-
 #else
 int snx_x64_available(void) { return 0; }
 unsigned snx_x64_features(void) { return 0; }
@@ -2413,9 +2377,5 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
 void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options,
                         void (*put)(void* user, const void* data, size_t size), void* user) {
     (void)codegen, (void)first, (void)last, (void)options, (void)put, (void)user;
-}
-int snx_x64_code(void (*put)(void* user, const void* data, size_t size), void* user) {
-    (void)put, (void)user;
-    return -1;
 }
 #endif

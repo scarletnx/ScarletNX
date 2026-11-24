@@ -446,6 +446,25 @@ static void test_bc7_cache_gb_old(void) {
     g_test.write = 0;
 }
 
+/* unit_cache_gb, deprecated with the code units' folder: an old .ini's value is said with what bounds the units now,
+   and stays in the file under [Deprecated] */
+static void test_unit_cache_gb_old(void) {
+    char* text;
+    g_test.write = 1;
+    text = open_ini("[Launch]\nunit_cache_gb=7\n");
+    CHECK(strstr(g_test.said,
+                 "settings: unit_cache_gb=7, deprecated, bounds nothing: the code units are not kept on the disk now, "
+                 "and are held in memory while ScarletNX runs, up to 1% of the machine's memory and at most "
+                 "unit_cache_ceil_mb (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nunit_cache_gb=7\n"));
+    free(text);
+    text = open_ini("[Launch]\nunit_cache_ceil_mb=64\n"); /* an .ini without it says nothing of it */
+    CHECK(!strstr(g_test.said, "unit_cache_gb"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the log's settings line: the Display, Graphics, Audio and Performance settings off their default, each with its
    default */
 static void test_settings_line(void) {
@@ -1259,6 +1278,7 @@ int main(int argc, char** argv) {
     test_memory_fit_old();
     test_astc_bc_old();
     test_bc7_cache_gb_old();
+    test_unit_cache_gb_old();
     test_compress_shader_cache_old();
     test_controls_opacity_old();
     test_dropped_keys_old();

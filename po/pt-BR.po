@@ -7506,12 +7506,12 @@ msgid "The instructions a code unit takes, whole functions at a time, when the g
 msgstr "As instruções que uma unidade de código leva, funções inteiras por vez, quando o jogo é recompilado: cada uma é compilada sozinha, e uma menor ocupa menos memória de uma vez, o que um celular precisa (o alocador do Android esgotou em 90000 com várias threads, e o iOS encerra um app no limite dele). Um jogo já feito mantém suas unidades até ser recompilado"
 
 #: src/nx/runtime/settings.txt
-msgid "Unit cache limit"
-msgstr "Limite do cache de unidades"
+msgid "Unit cache ceiling"
+msgstr "Teto do cache de unidades"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
-msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
+msgid "The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 = none held. Nothing is kept on the disk"
+msgstr "A memória máxima, em MB, em que as unidades de código do backend x86-64 ficam guardadas enquanto o ScarletNX roda, para que uma unidade feita de novo (um NRO que o jogo carrega de novo, a próxima recompilação do launcher) seja copiada em vez de feita. Elas ocupam no máximo um centésimo da memória da máquina, e este teto acima disso; as usadas há mais tempo saem primeiro. 0 = nenhuma guardada. Nada fica no disco"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -7668,6 +7668,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Unit cache limit"
+#~ msgstr "Limite do cache de unidades"
+
+#~ msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+#~ msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
 
 #~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
 #~ msgstr "Continua a execução do edenprobe %s que terminou antes do resumo, a partir do journal dela: casos até agora %d, na lista de crashes %d"

@@ -43,8 +43,7 @@ def main():
         data, config, state, cache = (homes[kind] / 'scarletnx' for kind in ('DATA', 'CONFIG', 'STATE', 'CACHE'))
         games = data / 'recompiled'
         folder = games / 'Smoke'  # the game's own
-        # code units, which the unit cache's checks count: an NCE recompile (nce=1, the default where the runtime runs
-        # NCE) makes none
+        # code units: an NCE recompile (nce=1, the default where the runtime runs NCE) makes none
         aot = ['--nce=0']
 
         def run(command, cwd=root, environment=None):
@@ -85,12 +84,9 @@ def main():
         check(older in (folder / 'Smoke.ini').read_text(), 'the older Smoke.ini was touched', out)
         told = f'{folder / "Smoke.ini"} was left by an older version: this one keeps it in {ini}'
         check(told in out, 'the recompile did not say where the older Smoke.ini is', out)
-        # the code units' cache, units/ of the cache folder, which every game's recompile shares
-        units = cache / 'units'
-        kept = len(list(units.glob('*.o')))
         check(
-            kept and f'unit cache: 0 of {kept} units reused (0.0 MB) from {units}' in out,
-            f'no units kept in {units}',
+            not (cache / 'units').exists(),
+            f'the recompile made {cache / "units"}: code units are not kept on disk',
             out,
         )
 
@@ -110,11 +106,6 @@ def main():
         checkout = Path(__file__).resolve().parents[1]
         status, out = run([driver, '-r', str(nro), 'Tree', '--runtime', driver, '--jobs', '2', *aot])
         check(status == 0 and (games / 'Tree/Tree').is_file(), 'the driver without --repo did not use recompiled/', out)
-        check(
-            f'unit cache: {kept} of {kept} units reused' in out,
-            f'another game of the same code did not reuse {units}',
-            out,
-        )
         check(not (checkout / 'games/Tree').exists(), 'the driver without --repo wrote in its checkout', out)
 
         # the game, started in its folder as ./Smoke, logs in the state folder and stops before the GPU without its
@@ -209,12 +200,6 @@ def main():
         check(
             status == 0 and (portable / 'config/games/Port/Port.ini').is_file() and not (port / 'Port.ini').exists(),
             "the portable copy's recompile did not keep Port.ini in its config/",
-            out,
-        )
-        check(
-            f'unit cache: 0 of {kept} units reused (0.0 MB) from {portable / "cache/units"}' in out
-            and len(list((portable / 'cache/units').glob('*.o'))) == kept,
-            "the portable copy's recompile did not keep its units in its cache/units",
             out,
         )
         shutil.rmtree(port / 'Port_data/exefs')

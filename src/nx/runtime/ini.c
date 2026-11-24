@@ -402,6 +402,8 @@ static const struct {
                       {"controls_opacity", "the on-screen controls are opaque"},
                       {"controls_alpha", "the on-screen controls are opaque"},
                       {"controls_skin", "the on-screen controls are white shapes, with no skin"},
+                      {"unit_cache_gb", "the code units are held in memory now, up to unit_cache_ceil_mb: "
+                                        "units/ of the cache folder is not read, and deleting it frees its room"},
                       {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
                                          "later 3, is its Automatic"},
                       {"nvn_direct", "the runtime always runs the game's NVN calls"},

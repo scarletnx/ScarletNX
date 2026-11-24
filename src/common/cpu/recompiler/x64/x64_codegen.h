@@ -44,17 +44,13 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
                    unsigned char** object, size_t* size, char* error, size_t error_size);
 
 /* Where a unit's object comes from, put through put: what snx_x64_object makes of the functions [first, last) of
-   codegen under options, given the back end's own code (snx_x64_code), depends on these alone. The host's and the
-   guest's features, the options and codegen fields that change the code, each function's index (its stale check
-   reads snx_stale there), addresses, words and leaders, then for each address its code calls or branches to and each
-   fall-through out of it what the call there asks of codegen and options (a function, routed, imported, a bound PLT
-   stub with its words and index), and each BR's binding. The unit cache's key of an x64 unit (unit_cache.c): a new
-   question the back end asks of codegen or the options goes here too, or a unit made under another answer is
-   reused */
+   codegen under options depends on these alone. The host's and the guest's features, the options and codegen fields
+   that change the code (a JIT unit's table name too), each function's index (its stale check reads snx_stale there),
+   addresses, words and leaders, then for each address its code calls or branches to and each fall-through out of it
+   what the call there asks of codegen and options (a function, routed, imported, a bound PLT stub with its words and
+   index), and each BR's binding. The key a unit is held in memory under (x64_cache.h): a new question the back end
+   asks of codegen or the options goes here too, or a unit made under another answer is reused */
 void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options,
                         void (*put)(void* user, const void* data, size_t size), void* user);
-/* The back end's own code and constants: each read-only segment of the executable or library it is linked into, put
-   through put. 0, or -1 where they cannot be found (no x86-64 back end in this build) */
-int snx_x64_code(void (*put)(void* user, const void* data, size_t size), void* user);
 
 #endif
