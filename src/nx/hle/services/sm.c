@@ -85,11 +85,16 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
     for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
         if (!strcmp(s, g_native_only[i][0])) {
-            char missed[640]; /* what the hooks did not take for the game's SDK version, which may be why */
+            char missed[640];  /* what the hooks did not take for the game's SDK version, which may be why */
+            char unread[1024]; /* a 32-bit game's SDK that no declaration was read in, which is why */
             hook_missed_text(missed, sizeof missed);
+            hook_unread_text(unread, sizeof unread);
             /* the SDK function that asked is in the calls of the thread that sent this request */
             WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
             kernel_dump_threads();
+            if (*unread)
+                fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
+                      g_native_only[i][1], unread);
             fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
                   "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
                   "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "

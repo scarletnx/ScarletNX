@@ -37,6 +37,12 @@ int main(void) {
                   "another driver"));
     assert(!fatal_hint("Vulkan could not start (see the log)."));
     assert(strstr(fatal_hint("kernel: out of memory mapping 0x10000000 bytes"), "ran out of memory"));
+    /* a 32-bit game of an SDK no declaration was read in (sm.c's stop): its way out is an update of the game */
+    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
+                             "nn::pctl (nn/pctl.c). This 32-bit game's SDK is 4.4.0 (module sdk) and the runtime's "
+                             "declarations for a 32-bit game were read in SDK 0.12.16 alone, so 132 of its SDK "
+                             "functions run their own code (nn_fs 44), which needs services"),
+                  "64-bit update"));
     assert(!fatal_hint("svc 0x7f is not implemented"));
 
     /* at spaces, never past the width */

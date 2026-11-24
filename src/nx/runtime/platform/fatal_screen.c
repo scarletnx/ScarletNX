@@ -82,6 +82,8 @@ const char* fatal_hint(const char* msg) {
         return "The GPU stopped answering and its driver reset it: something the game gave it, a shader or a draw, "
                "ran too long or read memory it should not.";
     if (strstr(msg, "Unsupported instruction")) return "The game ran an instruction ScarletNX does not translate yet.";
+    if (strstr(msg, "This 32-bit game's SDK is"))
+        return "This is a 32-bit game of an SDK ScarletNX does not have yet: its 64-bit update, if it has one, plays.";
     if (strstr(msg, "ScarletNX needs Vulkan 1.3"))
         return "ScarletNX needs a GPU and driver with Vulkan 1.3, and this one has none.";
     if (strstr(msg, "swapchain could not be made"))
