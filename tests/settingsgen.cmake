@@ -209,6 +209,24 @@ foreach(lines "text 8\n    default a" "int 0 9\n    default 0")
         message(FATAL_ERROR "settingsgen took a slider of ${lines} (${slider_result}), or did not say why:\n${slider_errors}")
     endif()
 endforeach()
+# steps that do not go up, are no whole numbers or leave the range, steps on a text, and open on an int, refused with
+# their line and why
+foreach(case "int 0 9\n    default 0\n    steps 0 4 2@@steps.txt:6: steps go up: 2 after 4"
+             "int 0 9\n    default 0\n    steps 0 x@@steps.txt:6: steps takes whole numbers: x"
+             "int 0 9\n    default 0\n    steps 0 12@@steps.txt:2: Stepped: step 12 is outside 0..9"
+             "text 8\n    default a\n    steps 1 2@@steps.txt:2: Stepped: steps takes an int, not a slider"
+             "int 0 9\n    default 0\n    words Off|On\n    open@@steps.txt:2: Stepped: open takes a text with words")
+    string(REPLACE "@@" ";" parts "${case}")
+    list(GET parts 0 lines)
+    list(GET parts 1 said)
+    file(WRITE "${WORK}/steps.txt" "table g_test_ini\nsetting Stepped\n    key stepped\n    ${lines}\n")
+    execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/steps.txt"
+                    RESULT_VARIABLE steps_result ERROR_VARIABLE steps_errors)
+    string(FIND "${steps_errors}" "${said}" at)
+    if(NOT steps_result OR at LESS 0)
+        message(FATAL_ERROR "settingsgen took \"${lines}\" (${steps_result}), or did not say \"${said}\":\n${steps_errors}")
+    endif()
+endforeach()
 # each setter found, with its argument cast to the type the header declares, and the setting its @ID names
 foreach(line "LLVMPassBuilderOptionsSetLoopVectorization(options, (LLVMBool)s->loop_vectorization)"
              "LLVMPassBuilderOptionsSetSLPVectorization(options, (LLVMBool)s->llvm_slp_vectorization)"
@@ -249,10 +267,10 @@ endforeach()
 file(READ "${WORK}/out/settings_launch.c" launch)
 file(READ "${WORK}/out/settings_test.c" runtime)
 # every LLVM row is a perf one, as every Vulkan extension's
-foreach(row "{\"llvm_inliner_threshold\", NULL, \"How large a function the inliner inlines\", INI_INT, INI_PERF, &g_settings.inliner_threshold, INT_MIN + 1, INT_MAX, NULL, \"Inliner threshold\", NULL, 0, 0, 0}"
-            "{\"llvm_slp_vectorization\", NULL, \"LLVMPassBuilderOptionsSetSLPVectorization, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_slp_vectorization, 0, 1, NULL, \"LLVM SLP vectorization\", \"Off|On\", 0, 0, 0}"
+foreach(row "{\"llvm_inliner_threshold\", NULL, \"How large a function the inliner inlines\", INI_INT, INI_PERF, &g_settings.inliner_threshold, INT_MIN + 1, INT_MAX, NULL, \"Inliner threshold\", NULL, 0, 0, 0, NULL}"
+            "{\"llvm_slp_vectorization\", NULL, \"LLVMPassBuilderOptionsSetSLPVectorization, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_slp_vectorization, 0, 1, NULL, \"LLVM SLP vectorization\", \"Off|On\", 0, 0, 0, NULL}"
             # the key an @ID gives, where snake_case of the ID would not do (fast_i_sel); its name LLVM's still
-            "{\"llvm_fast_isel\", NULL, \"LLVMSetTargetMachineFastISel, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_fast_i_sel, 0, 1, NULL, \"LLVM fast i sel\", \"Off|On\", 0, 0, 0}")
+            "{\"llvm_fast_isel\", NULL, \"LLVMSetTargetMachineFastISel, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_fast_i_sel, 0, 1, NULL, \"LLVM fast i sel\", \"Off|On\", 0, 0, 0, NULL}")
     string(FIND "${launch}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_launch.c lacks the row ${row}:\n${launch}")
@@ -289,8 +307,8 @@ foreach(line "LLVMPassBuilderOptionsSet${long_id}(options, (unsigned)s->llvm_${l
         message(FATAL_ERROR "settings_llvm.c lacks the long \"${line}\":\n${llvm}")
     endif()
 endforeach()
-foreach(line "{\"llvm_${long_key}\", NULL, \"LLVMPassBuilderOptionsSet${long_id}, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_${long_key}, 0, INT_MAX, NULL, \"LLVM ${long_words}\", NULL, 0, 0, 0}"
-             "{\"long\", \"\", \"${long_name}\", INI_TEXT, 0, g_settings.${long_member}, 0, 0, NULL, \"${long_name}\", NULL, 0, 0, sizeof g_settings.${long_member}}")
+foreach(line "{\"llvm_${long_key}\", NULL, \"LLVMPassBuilderOptionsSet${long_id}, LLVM's own value until it is set\", INI_INT, INI_PERF, &g_settings.llvm_${long_key}, 0, INT_MAX, NULL, \"LLVM ${long_words}\", NULL, 0, 0, 0, NULL}"
+             "{\"long\", \"\", \"${long_name}\", INI_TEXT, 0, g_settings.${long_member}, 0, 0, NULL, \"${long_name}\", NULL, 0, 0, sizeof g_settings.${long_member}, NULL}")
     string(FIND "${launch};${runtime}" "${line}" at)
     if(at LESS 0)
         message(FATAL_ERROR "the tables lack the long row ${line}:\n${launch}\n${runtime}")

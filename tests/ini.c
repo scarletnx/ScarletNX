@@ -26,10 +26,10 @@ static char held[8];
 static char line_said[256];
 static void catch_said(const char* line) { snprintf(line_said, sizeof line_said, "%s", line); }
 static const IniOpt TABLE[] = {
-    {"number", "1", "help", INI_INT, 0, &number, -5, 10, tell, NULL, NULL, 0, 0, 0},
-    {"resolution", "1", NULL, INI_FLOAT, INI_STARTUP, &base_resolution_mult, 0.25, 16, NULL, NULL, NULL, 0, 0, 0},
-    {"text", NULL, NULL, INI_TEXT, 0, held, 0, 0, keep, NULL, NULL, 0, 0, sizeof held},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+    {"number", "1", "help", INI_INT, 0, &number, -5, 10, tell, NULL, NULL, 0, 0, 0, NULL},
+    {"resolution", "1", NULL, INI_FLOAT, INI_STARTUP, &base_resolution_mult, 0.25, 16, NULL, NULL, NULL, 0, 0, 0, NULL},
+    {"text", NULL, NULL, INI_TEXT, 0, held, 0, 0, keep, NULL, NULL, 0, 0, sizeof held, NULL},
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 
 int main(void) {
     const IniOpt *n = ini_find(TABLE, "number"), *r = ini_find(TABLE, "resolution"), *t = ini_find(TABLE, "text");
@@ -130,15 +130,16 @@ int main(void) {
        number where there is none. Words go round, numbers and a slider's words (INI_SLIDER) stop at the ends */
     {
         static int v;
-        static const IniOpt onoff = {"onoff", "0", NULL, INI_INT, 0, &v, 0, 1, NULL, "On or off", "Off|On", 0, 0, 0};
+        static const IniOpt onoff = {"onoff", "0",         NULL,     INI_INT, 0, &v, 0,   1,
+                                     NULL,    "On or off", "Off|On", 0,       0, 0,  NULL};
         static const IniOpt three = {"three", "0", NULL, INI_INT, 0, &v, 0, 2, NULL, "Three", "Off|Fingers|Mouse too",
-                                     0,       0, 0};
-        static const IniOpt scale = {"scale", "50", NULL, INI_INT, 0, &v, 0, 100, NULL, "Scale", "#%", 10, 50, 0};
-        static const IniOpt rumble = {"rumble", "100", NULL,        INI_INT,  0,  &v, 0,
-                                      100,      NULL,  "Vibration", "Off|#%", 10, 0, 0};
-        static const IniOpt plain = {"plain", "1", NULL, INI_INT, 0, &v, -5, 10, NULL, NULL, NULL, 0, 0, 0};
-        static const IniOpt level = {"level", "1",  NULL,    INI_INT,        INI_SLIDER, &v, 0,
-                                     2,       NULL, "Level", "Low|Mid|High", 0,          0,  0};
+                                     0,       0,   0,    NULL};
+        static const IniOpt scale = {"scale", "50", NULL, INI_INT, 0, &v, 0, 100, NULL, "Scale", "#%", 10, 50, 0, NULL};
+        static const IniOpt rumble = {"rumble", "100",       NULL,     INI_INT, 0, &v, 0,   100,
+                                      NULL,     "Vibration", "Off|#%", 10,      0, 0,  NULL};
+        static const IniOpt plain = {"plain", "1", NULL, INI_INT, 0, &v, -5, 10, NULL, NULL, NULL, 0, 0, 0, NULL};
+        static const IniOpt level = {"level", "1",     NULL,           INI_INT, INI_SLIDER, &v, 0,   2,
+                                     NULL,    "Level", "Low|Mid|High", 0,       0,          0,  NULL};
         ini_word(&onoff, 0, out, sizeof out);
         assert(!strcmp(out, "Off"));
         ini_word(&onoff, 1, out, sizeof out);
@@ -175,9 +176,10 @@ int main(void) {
     {
         static int v;
         static const IniOpt rows[] = {
-            {"volume", "100", "How loud", INI_INT, INI_SLIDER, &v, 0, 100, NULL, "Volume", "Mute|#%", 50, 0, 0},
-            {"gated", "0", "Help", INI_INT, INI_SLIDER | INI_NEEDS_BUILD, &v, 0, 1, NULL, "Gated", "Off|On", 0, 0, 0},
-            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+            {"volume", "100", "How loud", INI_INT, INI_SLIDER, &v, 0, 100, NULL, "Volume", "Mute|#%", 50, 0, 0, NULL},
+            {"gated", "0", "Help", INI_INT, INI_SLIDER | INI_NEEDS_BUILD, &v, 0, 1, NULL, "Gated", "Off|On", 0, 0, 0,
+             NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
         static const IniSection sections[] = {{"Audio", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
         static const char want[] =
             "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider\n"
@@ -196,6 +198,29 @@ int main(void) {
                ini_float_step(0.1, 0, 1, -1) == 0.05);
         assert(ini_float_step(-0.3, -1, 1, -1) > -0.3501 && ini_float_step(-0.3, -1, 1, -1) < -0.3499); /* 7 twentieths */
     }
+    /* a row's steps (settings.txt's steps): its values listed with their words and open in its last column, and the
+       menus' arrows going to the next listed value, from one between two too, stopping at the ends; an open text's
+       mark after its words */
+    {
+        static int v;
+        static char t[16];
+        static const IniOpt rows[] = {
+            {"queue", "0", "Queued", INI_INT, 0, &v, 0, 16384, NULL, "Queue", "Auto|# MB", 0, 0, 0, "0|256|1024"},
+            {"pace", "game", "Pace", INI_TEXT, INI_OPEN, t, 0, 0, NULL, "Pace", "game=Game's|0=No limit", 0, 0,
+             sizeof t, NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
+        static const IniSection sections[] = {{"Performance", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        static const char want[] =
+            "Performance\tqueue\t0\tint\t0\t16384\tQueued\tQueue\t0=Auto|256=256 MB|1024=1024 MB\t\t\topen\n"
+            "Performance\tpace\tgame\ttext\t0\t0\tPace\tPace\tgame=Game's|0=No limit\t\t\topen\n";
+        char list[512];
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
+        assert(ini_step(&rows[0], 0, 1) == 256 && ini_step(&rows[0], 256, 1) == 1024 &&
+               ini_step(&rows[0], 1024, 1) == 1024);
+        assert(ini_step(&rows[0], 1024, -1) == 256 && ini_step(&rows[0], 0, -1) == 0);
+        assert(ini_step(&rows[0], 300, 1) == 1024 && ini_step(&rows[0], 300, -1) == 256 &&
+               ini_step(&rows[0], 5000, -1) == 1024);
+    }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
     {
@@ -203,11 +228,11 @@ int main(void) {
         static float speed = 1.0f;
         static char folder[32] = "";
         static const IniOpt changed[] = {
-            {"level", "1", NULL, INI_INT, 0, &level, 0, 2, NULL, NULL, NULL, 0, 0, 0},
-            {"speed", "1", NULL, INI_FLOAT, 0, &speed, 0.25, 4, NULL, NULL, NULL, 0, 0, 0},
-            {"folder", "", NULL, INI_TEXT, 0, folder, 0, 0, NULL, NULL, NULL, 0, 0, sizeof folder},
-            {"free", NULL, NULL, INI_INT, 0, &on, 0, 1, NULL, NULL, NULL, 0, 0, 0},
-            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+            {"level", "1", NULL, INI_INT, 0, &level, 0, 2, NULL, NULL, NULL, 0, 0, 0, NULL},
+            {"speed", "1", NULL, INI_FLOAT, 0, &speed, 0.25, 4, NULL, NULL, NULL, 0, 0, 0, NULL},
+            {"folder", "", NULL, INI_TEXT, 0, folder, 0, 0, NULL, NULL, NULL, 0, 0, sizeof folder, NULL},
+            {"free", NULL, NULL, INI_INT, 0, &on, 0, 1, NULL, NULL, NULL, 0, 0, 0, NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
         char list[128];
         assert(ini_changed(changed, 0, list, sizeof list) == 0 && !strcmp(list, ""));
         on = 0; /* no default: never listed */
@@ -234,11 +259,12 @@ int main(void) {
         static int level = 1, quiet = 0, threshold = INT_MIN;
         static char driver[16] = "";
         static const IniOpt rows[] = {
-            {"level", "1", NULL, INI_INT, INI_PERF, &level, 0, 2, NULL, NULL, NULL, 0, 0, 0},
-            {"quiet", "0", NULL, INI_INT, 0, &quiet, 0, 1, NULL, NULL, NULL, 0, 0, 0},
-            {"threshold", NULL, NULL, INI_INT, INI_PERF, &threshold, INT_MIN + 1, INT_MAX, NULL, NULL, NULL, 0, 0, 0},
-            {"driver", NULL, NULL, INI_TEXT, INI_PERF, driver, 0, 0, NULL, NULL, NULL, 0, 0, sizeof driver},
-            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+            {"level", "1", NULL, INI_INT, INI_PERF, &level, 0, 2, NULL, NULL, NULL, 0, 0, 0, NULL},
+            {"quiet", "0", NULL, INI_INT, 0, &quiet, 0, 1, NULL, NULL, NULL, 0, 0, 0, NULL},
+            {"threshold", NULL, NULL, INI_INT, INI_PERF, &threshold, INT_MIN + 1, INT_MAX, NULL, NULL, NULL, 0, 0, 0,
+             NULL},
+            {"driver", NULL, NULL, INI_TEXT, INI_PERF, driver, 0, 0, NULL, NULL, NULL, 0, 0, sizeof driver, NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
         char list[64];
         assert(ini_at_default(&rows[0]) && ini_at_default(&rows[2]) && ini_at_default(&rows[3]));
         assert(ini_perf_keys(rows, NULL, list, sizeof list) == 0 && !strcmp(list, ""));
@@ -275,15 +301,15 @@ int main(void) {
     {
         static int v;
         static const IniOpt rows[] = {
-            {"mac", "0", "Help", INI_INT, INI_STARTUP | INI_ONLY_MACOS, &v, 0, 1, NULL, "Mac", "Off|On", 0, 0, 0},
-            {"win", "0", "Help", INI_INT, INI_ONLY_WINDOWS, &v, 0, 1, NULL, "Win", "Off|On", 0, 0, 0},
-            {"phone", "0", "Help", INI_INT, INI_ONLY_ANDROID, &v, 0, 1, NULL, "Phone", "Off|On", 0, 0, 0},
-            {"kernel", "0", "Help", INI_INT, INI_ONLY_LINUX, &v, 0, 1, NULL, "Kernel", "Off|On", 0, 0, 0},
-            {"nce", "0", "Help", INI_INT, INI_ONLY_ARM64_LINUX, &v, 0, 1, NULL, "NCE", "Off|On", 0, 0, 0},
-            {"apple", "0", "Help", INI_INT, INI_ONLY_APPLE, &v, 0, 1, NULL, "Apple", "Off|On", 0, 0, 0},
-            {"all", "0", "Help", INI_INT, INI_STARTUP, &v, 0, 1, NULL, "All", "Off|On", 0, 0, 0},
-            {"never", "0", "Help", INI_INT, INI_ONLY_NONE, &v, 0, 0, NULL, "Never", "Off", 0, 0, 0},
-            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+            {"mac", "0", "Help", INI_INT, INI_STARTUP | INI_ONLY_MACOS, &v, 0, 1, NULL, "Mac", "Off|On", 0, 0, 0, NULL},
+            {"win", "0", "Help", INI_INT, INI_ONLY_WINDOWS, &v, 0, 1, NULL, "Win", "Off|On", 0, 0, 0, NULL},
+            {"phone", "0", "Help", INI_INT, INI_ONLY_ANDROID, &v, 0, 1, NULL, "Phone", "Off|On", 0, 0, 0, NULL},
+            {"kernel", "0", "Help", INI_INT, INI_ONLY_LINUX, &v, 0, 1, NULL, "Kernel", "Off|On", 0, 0, 0, NULL},
+            {"nce", "0", "Help", INI_INT, INI_ONLY_ARM64_LINUX, &v, 0, 1, NULL, "NCE", "Off|On", 0, 0, 0, NULL},
+            {"apple", "0", "Help", INI_INT, INI_ONLY_APPLE, &v, 0, 1, NULL, "Apple", "Off|On", 0, 0, 0, NULL},
+            {"all", "0", "Help", INI_INT, INI_STARTUP, &v, 0, 1, NULL, "All", "Off|On", 0, 0, 0, NULL},
+            {"never", "0", "Help", INI_INT, INI_ONLY_NONE, &v, 0, 0, NULL, "Never", "Off", 0, 0, 0, NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
         static const IniSection sections[] = {{"Test", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
         const char *mac = "macOS only", *win = "Windows only", *phone = "Android only";
         const char *kernel = "Linux and Android only", *nce = "arm64 Linux and Android only";

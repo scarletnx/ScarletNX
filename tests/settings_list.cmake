@@ -9,7 +9,7 @@ if(result OR NOT errors STREQUAL "")
     message(FATAL_ERROR "scarletnx --settings ended with ${result}: ${errors}")
 endif()
 set(field "[^\t\r\n]*")
-string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field}(\tslider)?)?\r?\n"
+string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field}(\t(slider|open|slider open))?)?\r?\n"
        "" rest "${list}")
 if(NOT rest STREQUAL "" OR list STREQUAL "")
     message(FATAL_ERROR "lines of scarletnx --settings that are not ten, eleven or twelve fields:\n${rest}")
@@ -147,6 +147,17 @@ foreach(key vita_lockstep vita_lockstep_steps)
         message(FATAL_ERROR "scarletnx --settings: ${key} does not say that a build without lockstep has none of it")
     endif()
 endforeach()
+# a number's common values, each with its word, as the launcher offers them and keeps a value between two (open);
+# the FPS limit's, a text's, open the same way; the heap's limit a whole number of MB
+foreach(row "\nGraphics\tbc7_queue\t0\tint\t0\t16384\t" "\tBC7 queue\t0=Auto|256=256|512=512|1024=1024|2048=2048|4096=4096|8192=8192|16384=16384\t\t\topen\n"
+            "\tHost page size\t0=Host's|8192=8192 bytes|16384=16384 bytes|" "|1048576=1048576 bytes\t\t\topen\n"
+            "\nPerformance\tfps_limit\tgame\ttext\t" "\tFPS limit\tgame=Game's|0=No limit|30=30 FPS|" "|240=240 FPS\t\t\topen\n"
+            "\nPerformance\theap_max_mb\t0\tint\t0\t1048576\t" "\tHeap limit (MB)\t0=No limit|512=512 MB|")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
 # a game's HDR output, off until asked for, and the paper white and the peak it is told: the launcher's Settings and
 # a game's menu show them (gpu/vk/hdr_swapchain.c, hle/services/gsv.c)
 foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\t\n"
@@ -155,5 +166,17 @@ foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
+# the recompile's, the launcher's Launch group: the AOT threads' common counts, open as every row with steps
+execute_process(COMMAND "${RUNTIME}" --settings=recompile RESULT_VARIABLE result OUTPUT_VARIABLE recompile
+                ERROR_VARIABLE errors)
+if(result OR NOT errors STREQUAL "")
+    message(FATAL_ERROR "scarletnx --settings=recompile ended with ${result}: ${errors}")
+endif()
+foreach(row "\tAOT threads\t0=Auto|1=1|2=2|3=3|4=4|" "|256=256\t\t\topen\n" "\tUnit size\t5000=5000 instructions|")
+    string(FIND "${recompile}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings=recompile has no \"${row}\"")
     endif()
 endforeach()

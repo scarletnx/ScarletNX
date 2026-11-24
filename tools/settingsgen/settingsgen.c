@@ -21,6 +21,7 @@
    only rewritten when it changes. Without --pipelines or --llvm-include, the llvm table has no passes or no options
    of LLVM's; without --vk-registry, a vulkan table's names go unchecked and its help says nothing of the registry. */
 #include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,8 @@ typedef struct {
     const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
     int slider;  /* drawn on a slider (ini.h's INI_SLIDER): an int with words */
+    int open;    /* a text whose words are its common values (ini.h's INI_OPEN) */
+    char* steps; /* an int's values the menus offer, '|' between (ini.h's IniOpt steps), NULL for every step */
     int perf;    /* changes how fast the game runs where the player can't see it (ini.h's INI_PERF) */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
@@ -116,6 +119,43 @@ static void fail(int line, const char* fmt, ...) {
     fputc('\n', stderr);
     free(reading);
     exit(1);
+}
+
+/* steps' values, whole numbers in order a space or a comma between, as the table keeps them: '|' between two */
+static char* steps_of(const char* text, int line) {
+    char* out = calloc(strlen(text) + 1, 1);
+    const char* c = text;
+    long last = LONG_MIN;
+    size_t at = 0;
+    if (!out) fail(line, "out of memory");
+    while (*c) {
+        char* end;
+        long v;
+        while (*c == ' ' || *c == ',' || *c == '\t') ++c;
+        if (!*c) break;
+        v = strtol(c, &end, 10);
+        if (end == c || (*end && *end != ' ' && *end != ',' && *end != '\t'))
+            fail(line, "steps takes whole numbers: %s", c);
+        if (v <= last) fail(line, "steps go up: %ld after %ld", v, last);
+        at += (size_t)sprintf(out + at, "%s%ld", at ? "|" : "", v);
+        last = v;
+        c = end;
+    }
+    if (!at) fail(line, "steps takes its values");
+    return out;
+}
+/* a setting's steps within its range, where the range is numbers (a constant's, INT_MAX, is taken as it says) */
+static void steps_in_range(const Setting* s) {
+    char *lo_end, *hi_end;
+    long lo = strtol(s->lo, &lo_end, 10), hi = strtol(s->hi, &hi_end, 10);
+    const char* c = s->steps;
+    while (c) {
+        long v = strtol(c, NULL, 10);
+        if ((!*lo_end && v < lo) || (!*hi_end && v > hi))
+            fail(s->line, "%s: step %ld is outside %s..%s", s->name, v, s->lo, s->hi);
+        c = strchr(c, '|');
+        if (c) ++c;
+    }
 }
 
 static void* alloc(size_t n) {
@@ -592,6 +632,10 @@ static void read_spec(const char* path) {
             s->recompile = 1;
         } else if (!strcmp(word, "slider")) {
             s->slider = 1;
+        } else if (!strcmp(word, "open")) {
+            s->open = 1;
+        } else if (!strcmp(word, "steps")) {
+            s->steps = steps_of(rest, number);
         } else if (!strcmp(word, "perf")) {
             s->perf = 1;
         } else if (!strcmp(word, "set")) {
@@ -619,6 +663,11 @@ static void read_spec(const char* path) {
             fail(s->line, "%s: recompile takes a game's setting of one value, without default-if or set", s->name);
         if (s->slider && (s->type != T_INT || !s->words))
             fail(s->line, "%s: slider takes an int with words, the steps its slider shows", s->name);
+        if (s->open && (s->type != T_TEXT || !s->words))
+            fail(s->line, "%s: open takes a text with words, its common values", s->name);
+        if (s->steps && (s->type != T_INT || s->slider))
+            fail(s->line, "%s: steps takes an int, not a slider (whose steps are its words')", s->name);
+        if (s->steps) steps_in_range(s);
         if (s->perf && tables[s->table].scope == S_LAUNCHER)
             fail(s->line,
                  "%s: perf takes a game's or the recompile's setting: a launcher table's never reaches the game",
@@ -1156,6 +1205,7 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         if (s->startup) at = snprintf(flags, sizeof flags, "INI_STARTUP");
         if (s->in_game) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_IN_GAME", at ? " | " : "");
         if (s->slider) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_SLIDER", at ? " | " : "");
+        if (s->open) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_OPEN", at ? " | " : "");
         if (s->perf || scope_of_setting(s) == S_VULKAN || scope_of_setting(s) == S_LLVM)
             at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PERF", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);
@@ -1188,6 +1238,8 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
             out("sizeof g_settings.%s", s->member);
     } else
         outs("0");
+    outs(", ");
+    out_string(s->steps);
     outs("},\n");
 }
 
