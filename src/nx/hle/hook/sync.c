@@ -224,7 +224,8 @@ void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
 #if defined(SNX_TRACY)
     SNX_PLOT("hook cv timed wait ms", (double)(plat_ns() - waited) / 1e6);
 #endif
-    if (plat_unix_ns() >= ns) SNX_MSG("hook cv timed out", sizeof("hook cv timed out") - 1); /* rare outcome */
+    if (snx_tracy_attached() && plat_unix_ns() >= ns)
+        SNX_MSG("hook cv timed out", sizeof("hook cv timed out") - 1); /* rare outcome */
 }
 
 /* ---- the C library's waits on a std::mutex of the family's (libc++'s inlined waits), on the host as the condition

@@ -835,6 +835,7 @@ u64 g_sync_shim_cpu; /* the syncpoint shim's guest CPU page (GET_SYNC_RO_MAP), 0
    thread. Diagnostics only: a plain u32, written under sync_lk with the value's advance and read without the lock. */
 static u32 syncpt_causer[SYNCPT_IDS];
 static void syncpt_causer_mark(u32 id) {
+    if (!snx_tracy_attached()) return; /* syncpt_wait reads it only with a client */
     KThread* t = kthread_cur();
     syncpt_causer[id] = t ? (u32)t->id : plat_tid();
 }
