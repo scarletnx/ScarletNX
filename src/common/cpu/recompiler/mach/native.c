@@ -3,8 +3,11 @@
 /* This host's native back end (native.h): the code generator whose code this machine runs */
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "common/cpu/recompiler/arm64/arm64_arm.h"
+#include "common/cpu/recompiler/x64/x64_arm.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#include <stdlib.h>
 #include <string.h>
 
 int snx_native_available(void) { return snx_x64_available() || snx_arm64_available(); }
@@ -31,4 +34,55 @@ int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, con
         return snx_x64_cached_object(codegen, first, last, options, made, object, size, reused, error, error_size);
     *reused = 0;
     return snx_native_object(codegen, first, last, options, made, object, size, error, error_size);
+}
+
+/* the AArch32 blocks' compiler: x86-64's where the host is, else arm64's where the host is */
+struct SnxNativeArm {
+    SnxX64Arm* x64;
+    SnxArm64Arm* arm64;
+    const char* why; /* the last block's refusal where it was here, NULL for the machine's own */
+};
+int snx_native_arm_available(void) { return snx_x64_arm_available() || snx_arm64_arm_available(); }
+SnxNativeArm* snx_native_arm_new(void) {
+    SnxNativeArm* c;
+    if (!snx_native_arm_available() || !(c = (SnxNativeArm*)calloc(1, sizeof *c))) return NULL;
+    if (snx_x64_arm_available() ? !(c->x64 = snx_x64_arm_new()) : !(c->arm64 = snx_arm64_arm_new())) {
+        free(c);
+        return NULL;
+    }
+    return c;
+}
+void snx_native_arm_free(SnxNativeArm* c) {
+    if (!c) return;
+    snx_x64_arm_free(c->x64);
+    snx_arm64_arm_free(c->arm64);
+    free(c);
+}
+int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                         size_t* consumed, SnxNativeArmNext next, void* user) {
+    c->why = NULL;
+    return c->x64 ? snx_x64_arm_block(c->x64, name, code, count, pc, consumed, next, user)
+                  : snx_arm64_arm_block(c->arm64, name, code, count, pc, consumed, next, user);
+}
+int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                           size_t* consumed, SnxNativeArmNext next, void* user) {
+    c->why = NULL;
+    if (c->x64) return snx_x64_thumb_block(c->x64, name, code, count, pc, consumed, next, user);
+    c->why = "a Thumb block, which this host's back end doesn't make";
+    *consumed = 0;
+    return 0;
+}
+const char* snx_native_arm_why(const SnxNativeArm* c) {
+    if (c->why) return c->why;
+    return c->x64 ? snx_x64_arm_why(c->x64) : snx_arm64_arm_why(c->arm64);
+}
+int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks) {
+    return c->x64 ? snx_x64_arm_object(c->x64, object, size, blocks)
+                  : snx_arm64_arm_object(c->arm64, object, size, blocks);
+}
+int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from) {
+    return c->x64 ? snx_x64_arm_absorb(c->x64, from->x64) : snx_arm64_arm_absorb(c->arm64, from->arm64);
+}
+int snx_native_arm_entry(SnxNativeArm* c, uint32_t key) {
+    return c->x64 ? snx_x64_arm_entry(c->x64, key) : snx_arm64_arm_entry(c->arm64, key);
 }
