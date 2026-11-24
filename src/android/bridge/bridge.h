@@ -57,8 +57,15 @@ void bridge_prepare(uint64_t address);
 
 /* the calling thread's guest stack: its lowest address and its size */
 void bridge_stack(uint64_t* base, size_t* size);
-/* the calling thread's state gone (its guest stack freed): as a thread that ran guest code ends */
+/* the calling thread's state gone (its guest stack freed, and what the HLE keeps for it): as a thread that ran guest
+   code ends */
 void bridge_thread_end(void);
+/* the calling thread has state that ends with it. bridge_thread_end runs as the thread ends, whoever made it: one of the
+   JVM's ends with no call into the bridge */
+void bridge_thread_has_state(void);
+/* fn ends what another part of the bridge keeps for the calling thread, run by bridge_thread_end. Before the first
+   thread that has state */
+void bridge_on_thread_end(void (*fn)(void));
 
 /* the guest's stack guard (bionic's __stack_chk_guard, TLS slot 5) */
 uint64_t bridge_stack_guard(void);

@@ -154,6 +154,7 @@ static GuestEnv* guest_env(JNIEnv* host) {
     if (!t_env) {
         t_env = snx_alloc(sizeof *t_env);
         t_env->table = (uint64_t)(uintptr_t)j.env_table;
+        bridge_thread_has_state();
     }
     t_env->host = host;
     return t_env;
@@ -165,6 +166,11 @@ JNIEnv* bridge_jni_host(uint64_t guest_env) {
     return host_env(guest_env);
 }
 uint64_t bridge_jni_env(JNIEnv* host) { return (uint64_t)(uintptr_t)guest_env(host); }
+void jni_thread_end(void) {
+    free(t_env);
+    t_env = NULL;
+    t_app_calls = 0;
+}
 
 /* ---- method signatures ---- */
 
