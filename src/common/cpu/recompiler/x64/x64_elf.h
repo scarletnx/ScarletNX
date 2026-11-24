@@ -14,6 +14,8 @@ enum { SNX_ELF_LOCAL = 0, SNX_ELF_GLOBAL = 1, SNX_ELF_HIDDEN = 2, SNX_ELF_FUNC =
 
 SnxXElf* snx_xelf_new(void);
 void snx_xelf_free(SnxXElf* o);
+/* the object's ELF machine (EM_X86_64 by default, EM_AARCH64...), whose relocation numbers snx_xelf_reloc takes */
+void snx_xelf_set_machine(SnxXElf* o, unsigned machine);
 /* n bytes (none: zeros; .bss takes none) at an offset of align, which it gives */
 size_t snx_xelf_put(SnxXElf* o, int section, const void* bytes, size_t n, size_t align);
 /* the section's bytes so far, to patch (not .bss) */

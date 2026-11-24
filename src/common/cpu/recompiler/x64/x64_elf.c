@@ -6,9 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* only module_x64.c, on the x86-64 hosts whose objects are ELF, makes one: Windows and Darwin have no <elf.h> */
-#if defined(__x86_64__) && !defined(_WIN32)
+/* module_x64.c makes one for any machine whose objects are ELF (elf_object.h has the definitions where the system's
+   <elf.h> is missing) */
+#if !defined(_WIN32)
+#if defined(__APPLE__)
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#else
 #include <elf.h>
+#endif
 
 typedef struct {
     unsigned char* p;
@@ -34,6 +39,7 @@ struct SnxXElf {
     Rel* rels;
     size_t nrels, cap_rels;
     int oom;
+    unsigned machine; /* EM_X86_64 unless snx_xelf_set_machine said */
 };
 
 static int room(Buf* b, size_t n) {
@@ -68,8 +74,10 @@ SnxXElf* snx_xelf_new(void) {
     int k;
     if (o)
         for (k = 0; k < SNX_ELF_SECTIONS; ++k) o->align[k] = k == SNX_ELF_TEXT ? 16 : 8;
+    if (o) o->machine = EM_X86_64;
     return o;
 }
+void snx_xelf_set_machine(SnxXElf* o, unsigned machine) { o->machine = machine; }
 void snx_xelf_free(SnxXElf* o) {
     size_t i;
     int k;
@@ -318,7 +326,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
         eh.e_ident[EI_DATA] = ELFDATA2LSB;
         eh.e_ident[EI_VERSION] = EV_CURRENT;
         eh.e_type = ET_REL;
-        eh.e_machine = EM_X86_64;
+        eh.e_machine = (Elf64_Half)o->machine;
         eh.e_version = EV_CURRENT;
         eh.e_shoff = file.n;
         eh.e_ehsize = sizeof eh;
