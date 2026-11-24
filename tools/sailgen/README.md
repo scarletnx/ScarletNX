@@ -244,10 +244,14 @@ its own, `gpu.c`, which shares the parse with the CPUs' generator and nothing el
 and none of the GPU's in `--generate`: `gen.c`'s decode clauses, PSTATE, element loops and LLVM back ends are the
 CPUs', `gpu.c`'s roots, times and SPIR-V back end the GPUs'. Every instruction of SM86 (`sm86.sail`) and of SM53
 (`sm53.sail` and its families' `sm53_<family>.sail`) is emitted so: `sm86_translate.c`'s `emit_insn` and
-`spirv_translate.c`'s to_spirv run the generated dispatcher, and refuse an opcode no root takes.
+`spirv_translate.c`'s to_spirv run the generated dispatcher, and refuse an opcode no root takes. So is every
+instruction of the 3DS's PICA200 (`src/3ds/gpu/sail/pica.sail`, which `vk/vsgen.c`'s trans_ functions run once they
+have given the control flow analysis each instruction's step) and of the Vita's USSE (`src/vita/gpu/sail/usse.sail`
+and its families': `usse.c`'s trans_ functions run a pattern's root inside its predicate's if). Each ISA's Sail is
+in a folder of its own (`snx_sailgen_gpu`'s `DIR`), `gpu.sail` the one they share.
 
-The decoders stay `tools/decodetree`'s (`sm53.decode`, `sm86.decode`): the Sail says what each decoded instruction
-computes. The roots file names them:
+The decoders stay `tools/decodetree`'s (`sm53.decode`, `sm86.decode`, `pica.decode`, `usse.decode`): the Sail says
+what each decoded instruction computes. The roots file names them:
 
 - `prefix NAME`: the generated functions' prefix (`sg86`, `sg53`);
 - `include FILE`: another roots file beside this one (a family's);
@@ -295,19 +299,26 @@ its instructions run one after another by the tests (below), which is what keeps
 
 **Back ends.** `spirv.h` makes SPIR-V (`common/utilities/spirv_emit.h`): bits of up to 32 a u32, of 33 to 64 a u64,
 an f32 or an i32 kept so until an operation wants another type, each operator the one instruction the hand-written
-emitters make for it; `gpu.sail`'s vals are its floats, halves, subgroup operations and truth tables. Two switches
-follow the translators: `fold`, whose booleans' operations and selects fold the true and false constants out (SM53's
-`cc_and`, `shader_select`), and `fresh_casts`, which bitcasts a value each time an operation takes it as another type
-(SM53's families) instead of once an instruction (SM86's). The ISA's files after it (`sm86_spirv.h`, `sm53_spirv.h`
-and a family's `sm53_<family>_spirv.h`) define `struct SgG` and give the state and the helpers above, which the file
-sailgen writes is compiled with. `eval.h` runs the same Sail on values, with an ISA's state file
+emitters make for it; `gpu.sail`'s vals are its floats, halves, subgroup operations and truth tables, PICA's vec4s
+and bvec4s, the integer operations that keep an operand's type (an i32 or a u32: the USSE's words) and the image
+samples. Three switches follow the translators: `fold`, whose booleans' operations and selects fold the true and
+false constants out (SM53's `cc_and`, `shader_select`), `fresh_casts`, which bitcasts a value each time an
+operation takes it as another type (SM53's families and the USSE's) instead of once an instruction (SM86's), and
+`known`, which makes the constants with `spv_emit_const_*`, the module's table of what it declared, where the
+translator makes its own there (PICA's and the USSE's), so that a constant both make is one. The ISA's files after
+it (`sm86_spirv.h`, `sm53_spirv.h` and a family's `sm53_<family>_spirv.h`; `pica_spirv.h`; `usse_spirv.h` and a
+family's `usse_<family>_spirv.h`) define `struct SgG` and give the state and the helpers above, which the file
+sailgen writes is compiled with. What stays the translator's is what it was for SM53: PICA's registers, its uniform
+block's window and its structured control flow, the USSE's operand model (its banks, packed types, conversions and
+repeats), its buffers and its textures' samplers and gathers. `eval.h` runs the same Sail on values, with an ISA's state file
 (`sm86_eval_state.h`) and the roots of the instructions it can run (`sm86_eval.roots`), and says where an instruction
 `spirv.h` would make is undefined in SPIR-V (a shift by the width or more), which the tests fail on.
 
 **Tests.** `tests/shader_sail_sm86.c` runs `sm86.sail`'s integer instructions on values against `sm86_eval` (the CPU's
 run of the integer ALU) on random encodings and states, checks LOP3's and PLOP3's 256 truth tables whole, and each
 fusion against its instructions run in turn, both where its guard takes them and near misses where it must not. The
-shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules.
+shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the generated emitters' modules, the
+3DS's draw tests (`3ds_vk_draw*`) PICA's, and `vita_usse_*` the USSE's.
 
 ## Encoders (`--encoders`)
 
