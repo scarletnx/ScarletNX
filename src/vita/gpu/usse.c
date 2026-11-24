@@ -233,7 +233,6 @@ static void finalize_register(T* t, Operand* r, bool doubled, unsigned reg_bits)
 static void double_reg(Operand* r) {
     if (r->bank != B_SPECIAL && r->bank != B_IMM) r->num = (r->num << 1) & 0xff;
 }
-static const uint8_t default_swizzle[4] = {SW_X, SW_Y, SW_Z, SW_W};
 static Operand decode_dest(T* t, unsigned n, unsigned bank, bool ext, bool doubled, unsigned reg_bits) {
     static const Bank normal[4] = {B_TEMP, B_OUT, B_PA, B_INDEXED1}, extended[4] = {B_SA, B_SPECIAL, B_INDEX, B_INDEXED2};
     Operand r = {n, ext ? extended[bank & 3] : normal[bank & 3], 0, {SW_X, SW_Y, SW_Z, SW_W}, T_F32};
@@ -495,66 +494,6 @@ enum { O_SRC0, O_SRC1, O_SRC2, O_DEST };
 /* ---- the instructions: each a handler of its pattern's fields (usse.decode, arg_<pattern>) ---- */
 static unsigned popcount4(unsigned m) { return (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1); }
 
-/* VMOV (data.cpp) */
-static bool vmov(T* t, const arg_VMOV* arg) {
-    unsigned mask = arg->mask;
-    Type type = (Type)arg->data_type;
-    if (arg->move_type == 3) return fail(t, "VMOV move type 3");
-    bool doubled = type == T_C10 || type == T_F16 || type == T_F32, conditional = arg->move_type != 0;
-    unsigned bits = doubled ? 7 : 6;
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, doubled, bits);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, doubled, bits);
-    if (type == T_F16 || type == T_F32)
-        mask = decode_write_mask(dest.bank, mask, type == T_F16);
-    else if (!doubled)
-        mask = 1;
-    if (doubled)
-        vec34_swizzle(src1.swizzle, arg->src0_swiz, false, 2);
-    else
-        memcpy(src1.swizzle, default_swizzle, 4);
-    src1.type = dest.type = type;
-    Operand src0 = {0}, src2 = {0};
-    Type test_type = arg->move_type == 2 ? T_U8 : type;
-    unsigned compare = (arg->test2 << 1) | arg->test1; /* 0 == 0, 1 != 0, 2 < 0, 3 <= 0 */
-    if (conditional) {
-        src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, doubled, bits);
-        src0.type = test_type;
-        src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, doubled, bits);
-        src2.type = type;
-        if (arg->comp_sel) memcpy(src0.swizzle, src1.swizzle, 4);
-        memcpy(src2.swizzle, src1.swizzle, 4);
-    }
-    if (doubled && (type == T_F16 || type == T_F32))
-        set_multiplier(t, 2, 2, 2, 2);
-    else
-        set_multiplier(t, 1, 1, 1, 1);
-    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
-        Value a = load(t, src1, mask, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI)), result = a;
-        if (conditional) {
-            Value test = load(t, src0, mask, repeat_offset(t, &src0, r, O_SRC0, R_SLMSI));
-            Value b = load(t, src2, mask, repeat_offset(t, &src2, r, O_SRC2, R_SLMSI));
-            static const uint32_t float_ops[4] = {SPV_OP_F_ORD_EQUAL, SPV_OP_F_UNORD_NOT_EQUAL, SPV_OP_F_ORD_LESS_THAN,
-                                                  SPV_OP_F_ORD_LESS_THAN_EQUAL};
-            for (unsigned i = 0; i < a.n && i < test.n; ++i) {
-                uint32_t zero = test.kind == K_FLOAT ? cf(t, 0) : test.kind == K_UINT ? cu(t, 0) : ci(t, 0), cond;
-                if (test.kind == K_FLOAT)
-                    cond =
-                        op2(t, compare == 1 ? SPV_OP_F_ORD_NOT_EQUAL : float_ops[compare], t->t_bool, test.c[i], zero);
-                else if (compare < 2)
-                    cond = op2(t, compare ? SPV_OP_I_NOT_EQUAL : SPV_OP_I_EQUAL, t->t_bool, test.c[i], zero);
-                else if (test.kind == K_UINT)
-                    cond = op2(t, compare == 2 ? SPV_OP_U_LESS_THAN : SPV_OP_U_LESS_THAN_EQUAL, t->t_bool, test.c[i], zero);
-                else
-                    cond = op2(t, compare == 2 ? SPV_OP_S_LESS_THAN : SPV_OP_S_LESS_THAN_EQUAL, t->t_bool, test.c[i], zero);
-                result.c[i] = SPV(&t->e, SPV_OP_SELECT, kind_type(t, a.kind), cond, a.c[i], b.c[i]);
-            }
-        }
-        store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
-    }
-    reset_repeat_multiplier(t);
-    return !t->failed;
-}
-
 /* VMAD (vec3/vec4 multiply-add with the GPI registers) */
 static bool vmad(T* t, const arg_VMAD* arg) {
     int type = arg->opcode2 ? 2 : 1;
@@ -618,85 +557,6 @@ static bool vnmad(T* t, const arg_nmad* arg, bool f32) {
     }
     store(t, dest, r, arg->mask, 0);
     return !t->failed;
-}
-
-/* VPCK (data.cpp) */
-static bool vpck(T* t, const arg_VPCK* arg) {
-    unsigned src1_n = arg->src1_n;
-    static const Type types[8] = {T_U8, T_I8, T_O8, T_U16, T_I16, T_F16, T_F32, T_C10};
-    Type dest_type = types[arg->dest_fmt], src_type = types[arg->src_fmt];
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
-    dest.type = dest_type;
-    bool src1_doubled = true;
-    if (!is_float_type(src_type)) {
-        src1_n = arg->sel0_bit1 | (src1_n << 1);
-        src1_doubled = false;
-    }
-    Operand src1 = decode_src12(t, src1_n, arg->src1_bank, arg->src1_ext, src1_doubled, 7);
-    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
-    src1.type = src_type;
-    unsigned sel0 = arg->sel0_bit0 | ((src_type == T_F32 ? arg->sel0_bit1 & 1 : arg->src2_n & 1) << 1);
-    uint8_t swizzle[4] = {(uint8_t)sel0, (uint8_t)arg->sel1, (uint8_t)arg->sel2, (uint8_t)arg->sel3};
-    memcpy(src1.swizzle, swizzle, 4);
-    bool no_cycle = (is_float_type(src_type) && is_float_type(dest_type)) ||
-                    (arg->scale && (src_type == T_U8 || dest_type == T_U8));
-    bool use_src2 = false;
-    if (src_type == T_F32 && src2.bank != B_IMM) {
-        bool same = src1.num == src2.num && src1.bank == src2.bank;
-        bool contiguous = arg->mask == 1 || arg->mask == 3 || arg->mask == 7 || arg->mask == 15, defaulted = true;
-        unsigned n = popcount4(arg->mask);
-        for (unsigned i = 0; i < n; ++i) defaulted = defaulted && src1.swizzle[i] == i;
-        use_src2 = !defaulted || !same || !contiguous;
-    }
-    if (!no_cycle) {
-        uint8_t taken[4];
-        memcpy(taken, src1.swizzle, 4);
-        bool two = src_type == T_U8 || dest_type == T_U8;
-        unsigned next = 0;
-        for (unsigned i = 0; i < 4; ++i)
-            if (arg->mask & (1u << i)) src1.swizzle[i] = two && arg->mask == 15 ? taken[i % 2] : taken[next++];
-    }
-    set_multiplier(t, 1, is_float_type(src_type) ? 2 : 1, is_float_type(src_type) ? 2 : 1, 1);
-    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
-        int o1 = repeat_offset(t, &src1, r, O_SRC1, R_SLMSI), o2 = repeat_offset(t, &src2, r, O_SRC2, R_SLMSI);
-        Value v;
-        if (use_src2) {
-            /* the two sources as one range of four: src1's x and y, then src2's */
-            Operand a = src1, b = src2;
-            memcpy(a.swizzle, default_swizzle, 4), memcpy(b.swizzle, default_swizzle, 4);
-            b.type = src_type;
-            Value lo = load(t, a, 3, o1), hi = load(t, b, 3, o2);
-            uint32_t all[4] = {lo.c[0], lo.c[1], hi.c[0], hi.c[1]};
-            v = (Value){{0}, 0, K_FLOAT};
-            for (unsigned i = 0; i < 4; ++i)
-                if (arg->mask & (1u << i)) {
-                    unsigned ch = src1.swizzle[i];
-                    v.c[v.n++] = ch <= SW_W ? all[ch] : swizzle_constant(t, ch, K_FLOAT);
-                }
-        } else
-            v = load(t, src1, arg->mask, o1);
-        if (is_float_type(dest_type) && !is_float_type(src_type)) v = to_float(t, v, src_type, arg->scale);
-        if (!is_float_type(dest_type) && is_float_type(src_type)) v = to_int(t, v, dest_type, arg->scale);
-        if (!is_float_type(dest_type) && !is_float_type(src_type) && is_signed_type(dest_type) != is_signed_type(src_type))
-            for (unsigned i = 0; i < v.n; ++i)
-                v.c[i] = bitcast(t, is_signed_type(dest_type) ? t->t_i32 : t->t_u32, v.c[i]),
-                v.kind = is_signed_type(dest_type) ? K_INT : K_UINT;
-        store(t, dest, v, arg->mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
-    }
-    reset_repeat_multiplier(t);
-    return !t->failed;
-}
-/* SMLSI: the repeat increments (special.cpp) */
-static bool smlsi(T* t, const arg_SMLSI* arg) {
-    unsigned modes[4] = {arg->src0_mode, arg->src1_mode, arg->src2_mode, arg->dest_mode};
-    unsigned values[4] = {arg->src0_inc, arg->src1_inc, arg->src2_inc, arg->dest_inc};
-    for (unsigned k = 0; k < 4; ++k) {
-        if (modes[k])
-            for (int i = 0; i < 4; ++i) t->repeat_increase[k][i] = (int)((values[k] >> (2 * i)) & 3);
-        else
-            for (int i = 0; i < 17; ++i) t->repeat_increase[k][i] = i * (int8_t)values[k];
-    }
-    return true;
 }
 
 /* ---- the instructions ported second: the ALU (alu.cpp, ialu.cpp), tests (branch_cond.cpp), loads (data.cpp),
@@ -1408,14 +1268,6 @@ static bool vldst(T* t, const arg_VLDST* arg) {
     }
     return !t->failed;
 }
-/* LIMM (a 32-bit immediate into a register) */
-static bool limm(T* t, const arg_LIMM* arg) {
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
-    dest.type = T_U32;
-    store(t, dest, one_value(cu(t, arg->imm), K_UINT), 1, 0);
-    return !t->failed;
-}
-
 /* ---- dependent texture reads (texture.cpp) ---- */
 /* SMP's gather4: the four texels' components pixel by pixel, four a register group; with uv, then the four bilinear
    weights as halves, in the order the SDK's shaders read them ((1-u)(1-v), u(1-v), uv, (1-u)v) */
@@ -1524,14 +1376,6 @@ static bool depthf(T* t, const arg_DEPTHF* arg) {
     if (!t->failed) SPV_VOID(&t->e, SPV_OP_STORE, t->frag_depth, depth);
     return !t->failed;
 }
-/* SMBO: the repeats' base offsets */
-static bool smbo(T* t, const arg_SMBO* arg) {
-    unsigned offsets[4] = {arg->src0_offset, arg->src1_offset, arg->src2_offset, arg->dest_offset};
-    for (unsigned k = 0; k < 4; ++k)
-        for (int i = 0; i < 17; ++i) t->repeat_increase[k][i] = i + (int)offsets[k];
-    return true;
-}
-
 /* the predicate of an instruction (usse_program_analyzer.cpp: get_predicate): 0 none, else ExtPredicate's
    P0 to P3 (1 to 4), NEGP0 and NEGP1 (5, 6), PN (7); 8 for one this translator doesn't know */
 static unsigned predicate(uint64_t inst) {
@@ -1603,6 +1447,29 @@ static bool untranslated(T* t, const char* name) {
     return true;
 }
 
+/* ---- the instructions in Sail: what each computes is gpu/sail/usse.sail's and its families' (sailgen --gpu), their back
+   ends gpu/sail/usse_spirv.h and usse_<family>_spirv.h over the operand model above, the generated usse_sail.inc's
+   sgu_emit running the root of a pattern ---- */
+#define USSE_OPS(X)                                                                                                    \
+    X(VMAD2) X(V32NMAD) X(V16NMAD) X(VMAD) X(VDP) X(VDUAL) X(VCOMP) X(VMOV) X(VPCK) X(VTST) X(VTSTMSK) X(VBW) X(SOP2)  \
+    X(SOP3) X(SOP2M) X(I8MAD) X(I16MAD) X(I32MAD) X(ILLEGAL22) X(ILLEGAL23) X(ILLEGAL24) X(I8MAD2) X(I32MAD2)         \
+    X(ILLEGAL27) X(SMP) X(PHAS) X(NOP) X(BR) X(SMLSI) X(SMBO) X(KILL) X(LIMM) X(DEPTHF) X(SPEC) X(VLDST)
+#define USSE_OP(NAME) U_##NAME,
+enum { USSE_OPS(USSE_OP) };
+#undef USSE_OP
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#include "usse_sail.inc"
+#pragma GCC diagnostic pop
+/* the instruction being translated, its root run */
+static void sail(T* t, int op) {
+    SgG g;
+    sgu_begin(&g, t, t->instr);
+    sgu_emit(&g, op);
+}
+
 /* the trans_ function of each pattern of usse.decode, which decode_usse calls: the handler of the instruction, inside
    its predicate (PREDICATED: whether the instruction has one). Each answers true, so a { } group of usse.decode never
    tries a later pattern for a word that an earlier one matched, as Vita3K's first match */
@@ -1624,8 +1491,8 @@ TRANS(VMAD, true, vmad(t, arg))
 TRANS(VDP, true, vdp(t, arg))
 TRANS(VDUAL, true, vdual(t, arg))
 TRANS(VCOMP, true, vcomp(t, arg))
-TRANS(VMOV, true, vmov(t, arg))
-TRANS(VPCK, true, vpck(t, arg))
+TRANS(VMOV, true, sail(t, U_VMOV))
+TRANS(VPCK, true, sail(t, U_VPCK))
 TRANS(VTST, true, vtst(t, arg))
 TRANS(VTSTMSK, true, vtstmsk(t, arg))
 TRANS(VBW, true, vbw(t, arg))
@@ -1642,15 +1509,15 @@ UNTRANSLATED(I8MAD2)
 TRANS(I32MAD2, true, i32mad2(t, arg))
 UNTRANSLATED(ILLEGAL27)
 TRANS(SMP, true, smp(t, arg))
-TRANS(PHAS, false, (void)0)
-TRANS(NOP, false, (void)0)
-TRANS(BR, false, (void)0) /* translate_code makes the branches of the program's blocks */
-TRANS(SMLSI, false, smlsi(t, arg))
-TRANS(SMBO, true, smbo(t, arg))
+TRANS(PHAS, false, sail(t, U_PHAS))
+TRANS(NOP, false, sail(t, U_NOP))
+TRANS(BR, false, sail(t, U_BR)) /* translate_code makes the branches of the program's blocks */
+TRANS(SMLSI, false, sail(t, U_SMLSI))
+TRANS(SMBO, true, sail(t, U_SMBO))
 TRANS(KILL, true, kill(t))
-TRANS(LIMM, true, limm(t, arg))
+TRANS(LIMM, true, sail(t, U_LIMM))
 TRANS(DEPTHF, true, depthf(t, arg))
-TRANS(SPEC, false, (void)0)
+TRANS(SPEC, false, sail(t, U_SPEC))
 TRANS(VLDST, true, vldst(t, arg))
 
 /* one instruction: its handler, in an if when it is predicated. False when the program can't be translated */

@@ -464,6 +464,7 @@ static inline SgV sg_SConst(SgG* g, int64_t v) {
     if (s->known) return sg_v(spv_emit_const_i32(s->e, (int32_t)v), SGT_I32);
     return sg_v(spv_emit_constant_u32(s->e, s->t_i32, (uint32_t)v), SGT_I32);
 }
+static inline SgV sg_UConst(SgG* g, int64_t v) { return sg_const(g, 32, (uint64_t)v); }
 static inline int sg_int_t(SgV a) { return a.t == SGT_I32 ? SGT_I32 : SGT_U32; }
 static inline SgV sg_top2(SgG* g, uint32_t op, SgV a, SgV b) {
     int t = sg_int_t(a);
