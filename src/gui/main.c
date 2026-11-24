@@ -6726,8 +6726,8 @@ static void states_open(App* app, const char* game, const char* title) {
 static void states_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
-    bool recent = row && row < head && (int)row - 1 < recent_shown(app), game = row >= head && index < app->games.count;
-    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
+    bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
+    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
     if (r && r->driver == GUI_SWITCH && r->prepared)
         states_open(app, r->path, r->name);
     else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
@@ -6740,8 +6740,8 @@ static void states_focus(App* app) {
 static void settings_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
-    bool recent = row && row < head && (int)row - 1 < recent_shown(app), game = row >= head && index < app->games.count;
-    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
+    bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
+    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
     if (r && r->driver == GUI_SWITCH && r->prepared)
         open_game_settings(app, r->path, r->name, false);
     else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))

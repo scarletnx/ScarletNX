@@ -808,6 +808,14 @@ static char* made_game(const App* app, const char* dump, const char* name) {
     free(data_name);
     return folder;
 }
+/* the program of the game name in its folder, named after it */
+static char* program_in(const char* folder, const char* name) {
+#ifdef _WIN32
+    return snx_format("%s/%s.exe", folder, name);
+#else
+    return snx_path_join(folder, name);
+#endif
+}
 /* the question a dump whose game is made asks (GUI_ASK_MADE), naming the game and where it is: Play, in focus, taken */
 static void play_made(App* app) {
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_MADE && !app->confirm.selected && app->made_file);
@@ -6454,12 +6462,8 @@ static void sfo_file(const char* folder, const char* id) {
 /* the program of the made game named name in app's games, its .ini (in its folder) holding ini: as a 3DS or a Vita
    driver leaves one. Its folder into *folder, owned */
 static char* console_game(const App* app, const char* name, const char* ini, char** folder) {
-    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name);
-#ifdef _WIN32
-    char* program = snx_format("%s/%s.exe", made, name);
-#else
-    char* program = snx_path_join(made, name);
-#endif
+    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name),
+         *program = program_in(made, name);
     assert(!snx_write_file(file, ini, strlen(ini)));
     free(file);
     *folder = made;
@@ -13078,6 +13082,31 @@ int main(int argc, char** argv) {
                            !strcmp(app.addons_title, "Folder Quest 2.0") && !strcmp(app.addons_game, absolute));
                     key(&app, SDLK_ESCAPE);
                     assert(!app.addons_shown && !app.menu.running);
+                    { /* S and its box's Settings take the recent game in focus, the newest and the one under it */
+                        char *other = made_game(&app, "unused", "another made game"),
+                             *last = program_in(other, "another made game"), *ini = game_ini_of(absolute),
+                             *picks = snx_game_picks(ini);
+                        assert(!gui_recent_add(&app.recent, last, GUI_SWITCH, 1));
+                        recent_changed(&app);
+                        for (int at = 0; at < 2; ++at) {
+                            char* said =
+                                snx_format("%s has no save states: ", at ? "Folder Quest 2.0" : "another made game");
+                            app.browser.selected = (size_t)at;
+                            app.message[0] = 0;
+                            key(&app, SDLK_S);
+                            assert(!app.states_shown && !strncmp(app.message, said, strlen(said)));
+                            settings_focus(&app);
+                            assert(app.editing && app.form == GUI_FORM_SETTINGS && app.own_picks &&
+                                   (strcmp(app.own_picks, picks) == 0) == (at == 1));
+                            key(&app, SDLK_ESCAPE);
+                            assert(!app.editing && !app.own_picks && app.menu.view == GUI_LOAD_GAMES);
+                            free(said);
+                        }
+                        made_gone(&app, other);
+                        free(last);
+                        free(picks);
+                        free(ini);
+                    }
                     app.recent = was;
                     recent_changed(&app);
                     app.browser.selected = selected;
