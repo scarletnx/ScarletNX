@@ -22,6 +22,8 @@ void fake_room_chat(FakeRoom* f, const char* nickname, const char* text);
 int fake_room_ldn_count(FakeRoom* f, int type, size_t* last_size);
 /* the start of the last datagram message relayed: its size, up to max bytes copied */
 size_t fake_room_last_datagram(FakeRoom* f, uint8_t* out, size_t max);
+/* what the room has done, for a test that waited in vain to say: the datagrams it relayed and its thread's passes */
+void fake_room_work(FakeRoom* f, unsigned* relayed, unsigned* passes);
 /* the game the last IdSetGameInfo named */
 void fake_room_last_game(FakeRoom* f, char* name, size_t size, uint64_t* id);
 #endif
