@@ -336,6 +336,17 @@ static void check_freed(VitaProcess* p) {
     CHECK(!wrong(p, a + 0x8000, 0x4000, 2), "%u bytes of the new block are old on the GPU",
           (unsigned)wrong(p, a + 0x8000, 0x4000, 2));
 }
+/* what the CPU writes after the work is recorded and before it is submitted: the GPU reads it, as it reads memory
+   when it runs */
+static void check_submit(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    CHECK(copy(p, a, b, 0x1000), "the transfer is refused");
+    fill(p, a, 0x1000, 2);
+    finish(p);
+    CHECK(!wrong(p, b, 0x1000, 2), "%u bytes written before the submission are old", (unsigned)wrong(p, b, 0x1000, 2));
+}
+
 /* a scene on a color surface of width x height, its rows stride pixels, nothing drawn: loaded and stored */
 static uint64_t scene(VitaProcess* p, uint32_t at, uint32_t width, uint32_t height, uint32_t stride, uint32_t type) {
     GxmContext* c = &p->gxm->context;
@@ -439,6 +450,7 @@ static const struct {
     {"many", check_many, false},
     {"straddle", check_straddle, false},
     {"again", check_again, false},
+    {"submit", check_submit, false},
     {"surface", check_surface, false},
     {"tiled", check_tiled, true},
     {"depth", check_depth, false},

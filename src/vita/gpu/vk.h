@@ -64,6 +64,8 @@ void vita_vk_notice(const char* text);
 const char* vita_vk_notice_text(void);
 /* the renderer's per-submission resources, freed when the slot's submission is done */
 void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial));
+/* the recording about to be submitted */
+void vita_vk_on_submit(void (*submit)(void));
 /* Shows the framebuffer: width by height pixels, pitch pixels a row, R8G8B8A8 bytes at offset in buffer, scaled into
    the window. False when nothing was shown: no window, or no swapchain image free this time */
 bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height);
