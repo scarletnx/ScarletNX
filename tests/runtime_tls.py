@@ -12,6 +12,7 @@ Exits 0 where each program is within BYTES (LIMIT without it), 1 where one is no
 
 import contextlib
 import io
+import os
 import struct
 import sys
 import tempfile
@@ -98,6 +99,19 @@ def program(order, size, symbols):
     return head + phdr + table + names + sections
 
 
+def check_bytes(data, limit):
+    """check's code and what it says, for a program of these bytes"""
+    # a file of a temporary folder: Windows opens none another handle has (NamedTemporaryFile's)
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, 'program')
+        with open(path, 'wb') as f:
+            f.write(data)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            code = check([path], limit)
+    return code, said.getvalue()
+
+
 def self_test():
     symbols = [('small', 8, STT_TLS), ('a_function', 1 << 20, 2), ('largest', 16384, STT_TLS)] + [
         ('kept%d' % k, 16 + k, STT_TLS) for k in range(NAMED)
@@ -112,13 +126,7 @@ def self_test():
             (24577, 24576, 1),
         ):
             for with_symbols in (True, False):
-                with tempfile.NamedTemporaryFile() as f:
-                    f.write(program(order, size, symbols if with_symbols else []))
-                    f.flush()
-                    said = io.StringIO()
-                    with contextlib.redirect_stdout(said):
-                        got = check([f.name], limit)
-                text = said.getvalue()
+                got, text = check_bytes(program(order, size, symbols if with_symbols else []), limit)
                 line = '%d bytes of thread-local storage (at most %d)' % (size or 0, limit)
                 fails = ('gives %d bytes to it' % (size or 0)) + (
                     want_named if with_symbols else ': it has no symbols\n'
@@ -129,12 +137,10 @@ def self_test():
                         % (size, limit, order, got, want, text)
                     )
                     return 1
-    with tempfile.NamedTemporaryFile() as f:
-        f.write(b'MZ' + bytes(100))
-        f.flush()
-        if check([f.name], LIMIT) != 77:
-            print('FAIL: a program that is not ELF was not skipped')
-            return 1
+    got, text = check_bytes(b'MZ' + bytes(100), LIMIT)
+    if got != 77:
+        print('FAIL: a program that is not ELF was not skipped: %d, %s' % (got, text))
+        return 1
     return 0
 
 
