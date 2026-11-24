@@ -1455,8 +1455,8 @@ static inline void sg_add_with_carry(SgCtx* g, SgD a, SgD b, SgD cin, SgD* resul
             const SgXSel* add1 = sgx_pick(x, sgx_sel_adds_i_32, sgx_sel_adds_i_32_n, 0xFFFFFFFFu, 32, 0);
             const SgXSel* cmp1 = sgx_pick(x, sgx_sel_cmp_i_32, sgx_sel_cmp_i_32_n, 1, 32, 0);
             /* each's map of Arm's C: CF (flag 0), negated or not */
-            if (add1 && add1->flag_of[2] == 0 && ((add1->flag_neg >> 2) & 1) == s2->carry_neg) setter = add1;
-            else if (cmp1 && cmp1->flag_of[2] == 0 && ((cmp1->flag_neg >> 2) & 1) == s2->carry_neg)
+            if (add1 && add1->flag_of[2] == SGX_CARRY && ((add1->flag_neg >> 2) & 1) == s2->carry_neg) setter = add1;
+            else if (cmp1 && cmp1->flag_of[2] == SGX_CARRY && ((cmp1->flag_neg >> 2) & 1) == s2->carry_neg)
                 setter = cmp1, by_cmp = 1;
         }
         if (!setter) sg_fail("no form sets CF from a carry", w, 0);
@@ -1808,19 +1808,16 @@ typedef struct SgXAsm {
    a register's copy; a register to or from memory at base + disp (64 bits, or 32: a 32-bit load zero extends); a
    general-purpose register to (to_x) or from a vector register, as bytes (a spill there); a flag's byte at base +
    disp, zero extended (what sgx_store_flag stored); the condition code cc on the flags of the instruction at's
-   flags_from stored as the 32-bit 0 or 1 at base + disp; a vector register's copy; a vector form (SGX_K_VEC), a cold
-   path (SGX_K_COLD); a vector register's value spilled where read after at, a free one, a value in one */
+   flags_from stored as the 32-bit 0 or 1 at base + disp; a vector register's copy; a cold path (SGX_K_COLD) */
 static inline void sgx_mov_rr(SgXAsm* a, int dst, int src);
 static inline void sgx_mov_mem(SgXAsm* a, int load, int w, int reg, int base, int disp);
 static inline void sgx_spill_x(SgXAsm* a, int to_x, int xr, int gr);
 static inline void sgx_load8(SgXAsm* a, int d, int base, int disp);
 static inline void sgx_store_flag(SgXAsm* a, int at, int base, int disp, int cc);
 static inline void sgx_xmov(SgXAsm* a, int d, int s);
-static inline void sgx_assemble_vec(SgXAsm* a, int at);
 static inline void sgx_assemble_cold(SgXAsm* a, int at);
-static inline void sgx_xspill(SgXAsm* a, int k, int at);
-static inline int sgx_xfree(SgXAsm* a, int at, unsigned avoid);
-static inline int sgx_xin(SgXAsm* a, int v, int at, unsigned avoid);
+/* a vector register's 16 bytes (or its low 8) stored to or loaded from base + disp (the frame's slots) */
+static inline void sgx_xmem(SgXAsm* a, int store, int bytes, int xr, int base, int disp);
 /* the machine's part: the instructions of its own kind (SGX_K_MACHINE, SGX_K_UNDEF, SGX_K_RET), their inputs in
    registers r[] (in[k]'s), which it may only read; the prologue and the epilogues */
 static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r);
@@ -2116,6 +2113,211 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     }
 }
 
+/* ---- vector registers: vectors' values and spilled general-purpose ones ---- */
+
+/* 16 bytes of the frame (two 8-byte slots; MOVDQU needs no alignment) */
+static inline int sgx_slot2(SgXAsm* a) {
+    int k = a->slots;
+    a->slots += 2;
+    if (a->slots > a->slots_max) a->slots_max = a->slots;
+    return k;
+}
+static inline void sgx_xrelease(SgXAsm* a, int k) {
+    int o = a->xowner[k];
+    if (o > 0) {
+        if (a->x->v[o].cls) a->x->v[o].reg = -1;
+        else
+            a->x->v[o].xmm = -1;
+    }
+    a->xowner[k] = 0;
+}
+/* what vector register k holds, kept where it is read after at: a vector in its 16 bytes of the frame, a spilled
+   general-purpose value in its 8 (once: an SSA value never changes) */
+static inline void sgx_xspill(SgXAsm* a, int k, int at) {
+    int o = a->xowner[k];
+    if (o > 0 && a->x->v[o].last > at && a->x->v[o].slot < 0) {
+        SgXV* vv = &a->x->v[o];
+        if (vv->cls) {
+            vv->slot = (short)sgx_slot2(a);
+            sgx_xmem(a, 1, 16, k, SGX_FRAME, 8 * vv->slot);
+        } else {
+            vv->slot = (short)a->slots++;
+            if (a->slots > a->slots_max) a->slots_max = a->slots;
+            sgx_xmem(a, 1, 8, k, SGX_FRAME, 8 * vv->slot);
+        }
+    }
+    sgx_xrelease(a, k);
+}
+/* a vector register free at at, none of avoid's: one holding nothing read after, or else the one whose value is read
+   latest, spilled */
+static inline int sgx_xfree(SgXAsm* a, int at, unsigned avoid) {
+    int k, best = -1;
+    avoid |= a->xreserved;
+    for (k = 0; k < SGX_NXREG; ++k) {
+        int o = a->xowner[k];
+        if ((avoid >> k) & 1) continue;
+        if (!o || (o > 0 && a->x->v[o].last < at)) {
+            sgx_xrelease(a, k);
+            return k;
+        }
+    }
+    for (k = 0; k < SGX_NXREG; ++k)
+        if (!((avoid >> k) & 1) && a->xowner[k] > 0 &&
+            (best < 0 || a->x->v[a->xowner[k]].last > a->x->v[a->xowner[best]].last))
+            best = k;
+    if (best < 0) sg_fail("no vector register to spill", at, (long long)avoid);
+    sgx_xspill(a, best, at);
+    return best;
+}
+/* vector value v in a vector register (reloaded from its slot where it was spilled), not one of avoid's */
+static inline int sgx_xin(SgXAsm* a, int v, int at, unsigned avoid) {
+    SgXV* vv = &a->x->v[v];
+    int k;
+    if (vv->reg >= 0) return vv->reg;
+    if (vv->slot < 0) sg_fail("a vector in neither a register nor a slot", v, at);
+    k = sgx_xfree(a, at, avoid);
+    sgx_xmem(a, 0, 16, k, SGX_FRAME, 8 * a->x->v[v].slot);
+    a->xowner[k] = v;
+    a->x->v[v].reg = (signed char)k;
+    return k;
+}
+/* the constant pool's entry of these 16 bytes */
+static inline int sgx_pool_index(SgXAsm* a, SnxU64 lo, SnxU64 hi) {
+    int k;
+    for (k = 0; k < a->npool; ++k)
+        if (a->pool[k][0] == lo && a->pool[k][1] == hi) return k;
+    if (a->npool == a->cap_pool) {
+        a->cap_pool = a->cap_pool ? 2 * a->cap_pool : 16;
+        a->pool = (SnxU64(*)[2])realloc(a->pool, (size_t)a->cap_pool * sizeof *a->pool);
+        if (!a->pool) sg_fail("out of memory", 0, 0);
+    }
+    a->pool[a->npool][0] = lo;
+    a->pool[a->npool][1] = hi;
+    return a->npool++;
+}
+/* a vector form (SGX_K_VEC): its operands in registers (a tied result copied from its input unless that dies here),
+   a memory operand the state's (SGX_MEMR of the base), the constant pool's (SGX_POOLR, its displacement recorded for
+   sgx_pool_emit to patch) or guest memory's (SGX_MEMR of in[5], b's index in[6] and disp) */
+static inline void sgx_assemble_vec(SgXAsm* a, int at) {
+    SgX* x = a->x;
+    SgXIns* i = &x->ins[at];
+    const SgXVForm* f = i->vf;
+    SgXBuf* b = a->b;
+    unsigned char r[4] = {0, 0, 0, 0};
+    unsigned heldg = 0, heldx = 0;
+    int k, out = i->vout, outreg = -1, implicit = -1, base = -1, index = -1, isx = 0;
+    for (k = 0; k < f->nops; ++k)
+        if (k != f->reg && k != f->rm && k != f->vvvv && ((f->xmask >> k) & 1)) implicit = k; /* x86's <XMM0> */
+    if (implicit >= 0 && i->in[implicit]) {
+        int from = sgx_xin(a, i->in[implicit], at, 0);
+        if (from != 0) {
+            int o = a->xowner[0];
+            if (o > 0 && x->v[o].last > at) {
+                int to = sgx_xfree(a, at, 1u | (1u << from));
+                sgx_xmov(a, to, 0);
+                a->xowner[0] = 0;
+                if (x->v[o].cls) x->v[o].reg = (signed char)to;
+                else
+                    x->v[o].xmm = (signed char)to;
+                a->xowner[to] = o;
+            } else
+                sgx_xrelease(a, 0);
+            sgx_xmov(a, 0, from);
+            a->xowner[0] = -1;
+        }
+        heldx |= 1;
+    }
+    for (k = 0; k < f->nops; ++k) {
+        int v = i->in[k], rr;
+        if (!v || k == implicit || k == i->mplace) continue;
+        if ((f->xmask >> k) & 1) {
+            rr = sgx_xin(a, v, at, heldx);
+            heldx |= 1u << rr;
+        } else {
+            rr = sgx_in_reg(a, v, at, heldg);
+            heldg |= 1u << rr;
+        }
+        r[k] = (unsigned char)rr;
+    }
+    if (i->mplace >= 0 && !i->mstate && !i->mrip) {
+        base = sgx_in_reg(a, i->in[5], at, heldg);
+        heldg |= 1u << base;
+        if (i->in[6]) {
+            index = sgx_in_reg(a, i->in[6], at, heldg);
+            heldg |= 1u << index;
+        }
+    }
+    if (out >= 0 && out != i->mplace) {
+        isx = (f->xmask >> out) & 1;
+        if (i->vtied) {
+            int tv = i->in[out], from = r[out],
+                dies = x->v[tv].last == at && (!x->v[tv].pinned || sgx_pin_inplace(a, at, tv, i->def));
+            for (k = 0; k < f->nops; ++k)
+                if (k != out && i->in[k] == tv) dies = 0;
+            if (dies) {
+                outreg = from;
+                if (isx) {
+                    a->xowner[from] = 0;
+                    x->v[tv].reg = -1;
+                } else {
+                    a->owner[from] = 0;
+                    x->v[tv].reg = -1;
+                }
+            } else if (isx) {
+                int pt = sgx_pin_target(a, at, i->def, 1);
+                outreg = pt >= 0 && !sgx_any_input_in(a, at, pt, 1, out) ? pt : sgx_xfree(a, at, heldx | (1u << from));
+                sgx_xmov(a, outreg, from);
+            } else {
+                int pt = sgx_pin_target(a, at, i->def, 0);
+                outreg = pt >= 0 && !sgx_any_input_in(a, at, pt, 0, out) ? pt : sgx_free_reg(a, at, heldg | (1u << from));
+                sgx_mov_rr(a, outreg, from);
+            }
+        } else {
+            int pt = sgx_pin_target(a, at, i->def, isx);
+            outreg = pt >= 0 && !(i->vzero && sgx_any_input_in(a, at, pt, isx, -1)) ? pt
+                     : isx                                                   ? sgx_xfree(a, at, heldx)
+                                                                             : sgx_free_reg(a, at, heldg);
+        }
+        r[out] = (unsigned char)outreg;
+        if (i->vzero && f->rm >= 0) r[(int)f->rm] = (unsigned char)outreg; /* x86's PXOR of itself */
+    }
+    if (i->mplace >= 0) {
+        if (i->mstate) r[(int)i->mplace] = (unsigned char)SGX_MEMR(x->base);
+        else if (i->mrip)
+            r[(int)i->mplace] = SGX_POOLR;
+        else
+            r[(int)i->mplace] = (unsigned char)SGX_MEMR(base);
+        b->index = index;
+        b->disp = i->mrip ? 0 : i->mdisp;
+    }
+    f->enc(b, r, i->imm, 0);
+    b->index = -1;
+    if (i->mrip) {
+        if (a->nrips == a->cap_rips) {
+            a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
+            a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
+            if (!a->rips) sg_fail("out of memory", 0, 0);
+        }
+        a->rips[a->nrips].at = b->rip_at;
+        a->rips[a->nrips].end = b->n;
+        a->rips[a->nrips++].idx = sgx_pool_index(a, i->kv[0], i->kv[1]);
+    }
+    for (k = 0; k < SGX_NREG; ++k)
+        if (a->owner[k] == -1) a->owner[k] = 0;
+    for (k = 0; k < SGX_NXREG; ++k)
+        if (a->xowner[k] == -1) a->xowner[k] = 0;
+    if (outreg >= 0 && i->def) {
+        if (isx) {
+            if (a->xowner[outreg] > 0 && a->xowner[outreg] != i->def) sgx_xrelease(a, outreg);
+            a->xowner[outreg] = i->def;
+        } else {
+            if (a->owner[outreg] > 0 && a->owner[outreg] != i->def) a->x->v[a->owner[outreg]].reg = -1;
+            a->owner[outreg] = i->def;
+        }
+        x->v[i->def].reg = (signed char)outreg;
+    }
+}
+
 /* one region of code (the instructions in x since the last region): dropped what nothing reads, its values given
    registers, its bytes written after what a's buffer holds. No value lives from one region into the next */
 static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
@@ -2396,17 +2598,26 @@ static inline SgI sg_i_div(SgCtx* g, SgI a, SgI b) {
     int s = a.is_signed;
     SgD av = sgx_i_val(g, &a), bv = sgx_i_val(g, &b), d, q;
     SgB avoid;
-    if (sgx_is_const(&bv) && bv.k && !(s && bv.k == ~0ull)) d = bv;
+    if ((sgx_is_const(&bv) && bv.k && !(s && bv.k == ~0ull)) || SGX_DIV_ARM) d = bv;
     else {
         avoid = sg_d_is_zero(g, bv);
         if (s) avoid = sg_b_or(g, avoid, sg_b_and(g, sg_d_eq(g, av, sgx_const(64, 1ull << 63)), sg_d_eq(g, bv, sgx_const(64, ~0ull))));
         d = sg_d_select(g, avoid, sgx_const(64, 1), bv);
     }
     if (sgx_is_const(&av) && sgx_is_const(&d)) {
-        SnxU64 r = s ? (SnxU64)((long long)av.k / (long long)d.k) : av.k / d.k;
+        /* Arm's: 0 for a divisor of 0 (SGX_DIV_ARM's d may be), the dividend for the most negative over -1 */
+        SnxU64 r = !d.k ? 0
+                   : s && d.k == ~0ull && av.k == 1ull << 63 ? av.k
+                   : s ? (SnxU64)((long long)av.k / (long long)d.k) : av.k / d.k;
         return sgx_int(sgx_const(64, r), s);
     }
+#if SGX_DIV_ARM
+    /* the machine's division is Arm's own: 0 for a divisor of 0, the dividend for the most negative over -1 */
+    (void)d;
+    q = s ? SGX_OP(x, sdiv, 64, av, bv) : SGX_OP(x, udiv, 64, av, bv);
+#else
     q = s ? SGX_OP(x, sdiv, 64, av, sg_d_asr(g, av, 63), d) : SGX_OP(x, udiv, 64, av, d);
+#endif
     return sgx_int(q, s);
 }
 
