@@ -842,9 +842,94 @@ out:
     return result;
 }
 
+#ifdef SNX_TEST_NATIVE
+/* the arm64 code of each function under QEMU too, whose CPU has I8MM and BF16 (Unicorn's hasn't) and raises FCMLA by
+   element's flags for its own lanes alone: ran[k] where it got to its return, which code that calls a helper's doesn't
+   there. 0 or -1 */
+static int qemu_native(HostUc* uc, const uint64_t* hints, unsigned functions, unsigned states, const CPU* starts,
+                       CPU* ends, unsigned char* ran, char* const* how) {
+    /* the host's own word is a short function; what is longer is an emulation, which Unicorn runs as well */
+    enum { BATCH = 512, MOST = 0x400, CODE_SIZE = 2 * SNX_QREF_PAGE };
+    /* the state at the window's start, the stack below its end */
+    const uint64_t cpu_at = SNX_QREF_WINDOW, size = 8 * SNX_QREF_PAGE;
+    const uint64_t code = SNX_QREF_WINDOW + SNX_QREF_MAX_WINDOW; /* apart from the window, which is compared whole */
+    uint64_t* fns = (uint64_t*)calloc(functions, sizeof *fns);
+    uint32_t* words = (uint32_t*)malloc(MOST);
+    SnxQrefBatch batch = {0};
+    size_t total = (size_t)functions * states, done, k;
+    unsigned i, j;
+    int result = -1;
+    char name[40], error[512];
+    for (i = 0; i < functions; ++i) {
+        snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[i]);
+        fns[i] = hostuc_symbol(uc, name);
+    }
+    for (done = 0; done < total; done += BATCH) {
+        size_t n = total - done < BATCH ? total - done : BATCH;
+        snx_qref_clear(&batch);
+        for (k = 0; k < n; ++k) {
+            SnxQrefCase c;
+            CPU cpu = starts[done + k];
+            SnxQrefPatch patch = {cpu_at, &cpu, sizeof cpu};
+            uint64_t fn = fns[i = (unsigned)((done + k) / states)], end = 0;
+            for (j = 0; j < functions; ++j)
+                if (fns[j] > fn && (!end || fns[j] < end)) end = fns[j];
+            if (!end) end = fn + MOST; /* the last one's, and what is after it */
+            cpu.mem = NULL, cpu.rt = NULL, cpu.disp = NULL;
+            cpu.code_lo = CODE, cpu.code_hi = CODE + (uint64_t)functions * SLOT * 4, cpu.pc = hints[i];
+            snx_qref_case_init(&c);
+            c.window_size = size;
+            c.flags = SNX_QREF_FULL_DIFF;
+            c.seed_kind = SNX_QREF_SEED_ZERO;
+            c.code = c.pc = code;
+            c.code_size = CODE_SIZE;
+            c.steps = 0;
+            c.state.x[0] = cpu_at, c.state.x[1] = hints[i];
+            c.state.x[30] = code + CODE_SIZE - 4, c.state.sp = SNX_QREF_WINDOW + size;
+            if (end - fn > MOST) words[0] = SNX_QREF_PAD, end = fn + 4;
+            else
+                memcpy(words, (const void*)(uintptr_t)fn, (size_t)(end - fn));
+            if (snx_qref_add(&batch, &c, words, (uint32_t)(end - fn) / 4, &patch, 1) < 0) goto out;
+        }
+        if (snx_qref_run(&batch, how[0], how[1], "max", how[2], error, sizeof error)) {
+            fprintf(stderr, "FAIL: QEMU: %s\n", error);
+            goto out;
+        }
+        for (k = 0; k < n; ++k) {
+            const SnxQrefResult* q = &batch.results[k];
+            uint8_t bytes[sizeof(CPU)];
+            CPU start = starts[done + k];
+            if (q->outcome != SNX_QREF_BRANCH || q->pc != code + CODE_SIZE - 4) continue;
+            start.mem = NULL, start.rt = NULL, start.disp = NULL;
+            start.code_lo = CODE, start.code_hi = CODE + (uint64_t)functions * SLOT * 4;
+            start.pc = hints[(done + k) / states];
+            memcpy(bytes, &start, sizeof bytes);
+            for (j = 0; j < q->changes; ++j) {
+                const SnxQrefChange* d = &batch.changes[q->first_change + j];
+                uint64_t at;
+                for (at = d->address; at < d->address + d->size; ++at)
+                    if (at >= cpu_at && at < cpu_at + sizeof bytes)
+                        bytes[at - cpu_at] = batch.bytes[d->offset + (at - d->address)];
+            }
+            memcpy(&ends[done + k], bytes, sizeof bytes);
+            ran[done + k] = 1;
+        }
+    }
+    result = 0;
+out:
+    snx_qref_free(&batch);
+    free(words), free(fns);
+    return result;
+}
+#endif
+
 int main(int argc, char** argv) {
     char** qemu = NULL;
     CPU *starts = NULL, *ends = NULL; /* --qemu's */
+#ifdef SNX_TEST_NATIVE
+    CPU* own = NULL; /* --qemu's on arm64: its code's ends there, and which ran to one */
+    unsigned char* ran = NULL;
+#endif
     unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0;
     int refused = 0, must_make = 0, branches = 0;
     uint32_t (*more)[2] = NULL; /* --programs' words after the first */
@@ -1165,6 +1250,16 @@ int main(int argc, char** argv) {
                 starts[(size_t)i * states + s].x[30] = STOP;
             }
         if (qemu_ends(opw, functions, states, starts, ends, qemu)) goto out;
+#ifdef SNX_TEST_NATIVE
+        if (NATIVE_UC == HOSTUC_ARM64) {
+            own = (CPU*)calloc((size_t)functions * states, sizeof *own);
+            ran = (unsigned char*)calloc((size_t)functions * states, 1);
+            if (qemu_native(uc, hints, functions, states, starts, own, ran, qemu)) goto out;
+            for (i = k = 0; k < functions * states; ++k) i += ran[k];
+            printf("recompiler arm64: %u of %u runs of its code under QEMU, the others under Unicorn\n", i,
+                   functions * states);
+        }
+#endif
     }
     for (i = 0; i < functions; ++i)
         for (s = 0; s < states; ++s) {
@@ -1210,7 +1305,7 @@ int main(int argc, char** argv) {
                 ucpu->code_hi = CODE + (uint64_t)functions * SLOT * 4;
                 ucpu->pc = hints[i];
                 g_running = hints[i];
-                for (;;) {
+                for (; !ran || !ran[(size_t)i * states + s];) {
                     uint64_t entry = ucpu->pc;
                     if (hostuc_call(uc, fn, (uint64_t)(uintptr_t)ucpu, entry, NULL)) {
                         ++failures;
@@ -1223,6 +1318,7 @@ int main(int argc, char** argv) {
                     if (!fn) break;
                 }
                 c[1] = *ucpu;
+                if (ran && ran[(size_t)i * states + s]) c[1] = own[(size_t)i * states + s], c[1].rt = urt;
             }
             for (k = 0; k < 1; ++k) {
                 struct snx_recompiled* m = ml;
@@ -1290,6 +1386,9 @@ out:
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
     free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw), free(starts), free(ends);
+#ifdef SNX_TEST_NATIVE
+    free(own), free(ran);
+#endif
     free(more);
     return result;
 }

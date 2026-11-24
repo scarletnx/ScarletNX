@@ -206,7 +206,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         return 0;
     {
         /* a by-element form's Rm of 4 bits is M:Rm, 5 bits, for elements of 32 and 64 bits ("size" 2 or 3, or "sz"
-           of a single's or a double's); of 16 bits M is the index's, and Rm one of V0-V15 */
+           of a single's or a double's, FCMLA's pairs of halves, a dot product's); of 16 bits (FMLAL's too, whose "sz"
+           is 0) M is the index's, and Rm one of V0-V15 */
         int rm4 = 0, has_m = 0, wide = 0;
         for (f = 0; f < sge_a64_table[k].nfields; ++f) {
             const char* fn = sge_a64_table[k].fields[f].name;
@@ -228,6 +229,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             else if (fn[1] == 'a')
                 imm |= 1ll << 34;
         }
+        if (!strncmp(name, "fcmla", 5) || strstr(name, "dot_")) wide = 1;
+        if (!strncmp(name, "fmlal", 5) || !strncmp(name, "fmlsl", 5)) wide = 0;
         if (rm4 && !(has_m && wide)) {
             imm |= 1ll << 35; /* Rm copied to V7 first (sga_v_pass) */
             rm &= 15;         /* bit 20 is M, the index's */
