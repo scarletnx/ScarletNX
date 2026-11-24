@@ -3938,7 +3938,7 @@ add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backend
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
-    foreach(m arm64 rv64)
+    foreach(m arm64 rv64 ppc64)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
@@ -3953,7 +3953,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
-    foreach(m arm64 rv64)
+    foreach(m arm64 rv64 ppc64)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-arm-${m} arm_x64.c support/host_unicorn.c)
         snx_test_target(snx-test-arm-${m} gnu23)

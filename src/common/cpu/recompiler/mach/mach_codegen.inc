@@ -1713,7 +1713,7 @@ static size_t name_hash(const char* n) {
 
 static int write_object(Unit* u, unsigned char** object, size_t* size) {
     Out o = {0}, strtab = {0}, symtab = {0}, rela = {0}, data = {0}, rela_data = {0}, shstr = {0};
-    size_t i, j, nundef = 0, first_global;
+    size_t i, j, nundef = 0, first_global, def0;
     char** undef = NULL;
     size_t cap_undef = 0, *reloc_undef = NULL;
     Elf64_Ehdr eh;
@@ -1766,6 +1766,12 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
                 u->relocs[i].sym = NULL;
                 continue;
             }
+            if (hsym[h]) {
+                /* the unit's own function where the machine's relocation stays one (an absolute address): its
+                   symbol's, defined here */
+                reloc_undef[i] = SIZE_MAX - (hsym[h] - 1);
+                continue;
+            }
             for (h = h0; hund[h]; h = (h + 1) & (hcap - 1))
                 if (!strcmp(u->relocs[i].sym, undef[hund[h] - 1])) break;
             if (!hund[h]) {
@@ -1789,6 +1795,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             put(&symtab, &sym, sizeof sym);
         }
     first_global = symtab.n / sizeof sym;
+    def0 = jit ? 2 : first_global; /* the unit's functions' symbols, in syms' order */
     if (!jit)
         for (i = 0; i < u->nsyms; ++i) {
             memset(&sym, 0, sizeof sym);
@@ -1833,7 +1840,9 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             Elf64_Rela r;
             if (!u->relocs[i].sym) continue;
             r.r_offset = u->relocs[i].at;
-            r.r_info = ELF64_R_INFO(undef0 + reloc_undef[i], u->relocs[i].type);
+            r.r_info = reloc_undef[i] > SIZE_MAX / 2
+                           ? ELF64_R_INFO(def0 + (SIZE_MAX - reloc_undef[i]), u->relocs[i].type)
+                           : ELF64_R_INFO(undef0 + reloc_undef[i], u->relocs[i].type);
             r.r_addend = u->relocs[i].addend;
             put(&rela, &r, sizeof r);
         }
