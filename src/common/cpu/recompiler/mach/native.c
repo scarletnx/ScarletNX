@@ -4,6 +4,8 @@
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
+#include "common/cpu/recompiler/la64/la64_arm.h"
+#include "common/cpu/recompiler/la64/la64_codegen.h"
 #include "common/cpu/recompiler/mips64/mips64_arm.h"
 #include "common/cpu/recompiler/mips64/mips64_codegen.h"
 #include "common/cpu/recompiler/ppc64/ppc64_arm.h"
@@ -18,7 +20,7 @@
 
 int snx_native_available(void) {
     return snx_x64_available() || snx_arm64_available() || snx_rv64_available() || snx_ppc64_available() ||
-           snx_mips64_available();
+           snx_mips64_available() || snx_la64_available();
 }
 
 const char* snx_native_name(void) {
@@ -27,6 +29,7 @@ const char* snx_native_name(void) {
            : snx_rv64_available()  ? "riscv64"
            : snx_ppc64_available() ? "ppc64le"
            : snx_mips64_available() ? "mips64el"
+           : snx_la64_available()   ? "loongarch64"
                                    : "none";
 }
 
@@ -43,6 +46,8 @@ int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxN
         return snx_ppc64_object(codegen, first, last, options, made, object, size, error, error_size);
     if (snx_mips64_available())
         return snx_mips64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (snx_la64_available())
+        return snx_la64_object(codegen, first, last, options, made, object, size, error, error_size);
     memset(made, 0, last - first);
     *object = NULL;
     *size = 0;
@@ -65,11 +70,13 @@ struct SnxNativeArm {
     SnxRv64Arm* rv64;
     SnxPpc64Arm* ppc64;
     SnxMips64Arm* mips64;
+    SnxLa64Arm* la64;
     const char* why; /* the last block's refusal where it was here, NULL for the machine's own */
 };
 int snx_native_arm_available(void) {
     return snx_x64_arm_available() || snx_arm64_arm_available() || snx_rv64_arm_available() ||
-           snx_ppc64_arm_available() || snx_mips64_arm_available();
+           snx_ppc64_arm_available() || snx_mips64_arm_available() ||
+           snx_la64_arm_available();
 }
 SnxNativeArm* snx_native_arm_new(void) {
     SnxNativeArm* c;
@@ -82,8 +89,10 @@ SnxNativeArm* snx_native_arm_new(void) {
         ok = !!(c->rv64 = snx_rv64_arm_new());
     else if (snx_ppc64_arm_available())
         ok = !!(c->ppc64 = snx_ppc64_arm_new());
-    else
+    else if (snx_mips64_arm_available())
         ok = !!(c->mips64 = snx_mips64_arm_new());
+    else
+        ok = !!(c->la64 = snx_la64_arm_new());
     if (!ok) {
         free(c);
         return NULL;
@@ -97,6 +106,7 @@ void snx_native_arm_free(SnxNativeArm* c) {
     snx_rv64_arm_free(c->rv64);
     snx_ppc64_arm_free(c->ppc64);
     snx_mips64_arm_free(c->mips64);
+    snx_la64_arm_free(c->la64);
     free(c);
 }
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
@@ -106,7 +116,8 @@ int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char*
            : c->arm64 ? snx_arm64_arm_block(c->arm64, name, code, count, pc, consumed, next, user)
            : c->rv64  ? snx_rv64_arm_block(c->rv64, name, code, count, pc, consumed, next, user)
            : c->ppc64 ? snx_ppc64_arm_block(c->ppc64, name, code, count, pc, consumed, next, user)
-                      : snx_mips64_arm_block(c->mips64, name, code, count, pc, consumed, next, user);
+           : c->mips64 ? snx_mips64_arm_block(c->mips64, name, code, count, pc, consumed, next, user)
+                      : snx_la64_arm_block(c->la64, name, code, count, pc, consumed, next, user);
 }
 int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                            size_t* consumed, SnxNativeArmNext next, void* user) {
@@ -122,26 +133,30 @@ const char* snx_native_arm_why(const SnxNativeArm* c) {
            : c->arm64 ? snx_arm64_arm_why(c->arm64)
            : c->rv64  ? snx_rv64_arm_why(c->rv64)
            : c->ppc64 ? snx_ppc64_arm_why(c->ppc64)
-                      : snx_mips64_arm_why(c->mips64);
+           : c->mips64 ? snx_mips64_arm_why(c->mips64)
+                      : snx_la64_arm_why(c->la64);
 }
 int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks) {
     return c->x64     ? snx_x64_arm_object(c->x64, object, size, blocks)
            : c->arm64 ? snx_arm64_arm_object(c->arm64, object, size, blocks)
            : c->rv64  ? snx_rv64_arm_object(c->rv64, object, size, blocks)
            : c->ppc64 ? snx_ppc64_arm_object(c->ppc64, object, size, blocks)
-                      : snx_mips64_arm_object(c->mips64, object, size, blocks);
+           : c->mips64 ? snx_mips64_arm_object(c->mips64, object, size, blocks)
+                      : snx_la64_arm_object(c->la64, object, size, blocks);
 }
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from) {
     return c->x64     ? snx_x64_arm_absorb(c->x64, from->x64)
            : c->arm64 ? snx_arm64_arm_absorb(c->arm64, from->arm64)
            : c->rv64  ? snx_rv64_arm_absorb(c->rv64, from->rv64)
            : c->ppc64 ? snx_ppc64_arm_absorb(c->ppc64, from->ppc64)
-                      : snx_mips64_arm_absorb(c->mips64, from->mips64);
+           : c->mips64 ? snx_mips64_arm_absorb(c->mips64, from->mips64)
+                      : snx_la64_arm_absorb(c->la64, from->la64);
 }
 int snx_native_arm_entry(SnxNativeArm* c, uint32_t key) {
     return c->x64 ? snx_x64_arm_entry(c->x64, key)
            : c->arm64 ? snx_arm64_arm_entry(c->arm64, key)
            : c->rv64  ? snx_rv64_arm_entry(c->rv64, key)
            : c->ppc64 ? snx_ppc64_arm_entry(c->ppc64, key)
-                      : snx_mips64_arm_entry(c->mips64, key);
+           : c->mips64 ? snx_mips64_arm_entry(c->mips64, key)
+                      : snx_la64_arm_entry(c->la64, key);
 }

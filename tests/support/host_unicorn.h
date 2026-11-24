@@ -10,13 +10,14 @@
    A little-endian architecture alone: the code and the test's C read the same structures. PowerPC64 runs as POWER9
    in 64-bit, hypervisor and little-endian mode (MSR), which Unicorn 2.1.4 needs patching for (its PPC64 models and
    MSR's HV): hostuc_new gives NULL where the MSR it set doesn't hold. MIPS64 runs as MIPS64R2 with Unicorn's virtual
-   TLB, every address its own (the kernel's segments would want them under 2 GiB) */
+   TLB, every address its own (the kernel's segments would want them under 2 GiB). Unicorn has no LoongArch: its
+   code runs in la64_interp.c's interpreter, on the same memory and the same traps */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { HOSTUC_ARM64, HOSTUC_RV64, HOSTUC_PPC64LE, HOSTUC_MIPS64EL } HostUcArch;
+typedef enum { HOSTUC_ARM64, HOSTUC_RV64, HOSTUC_PPC64LE, HOSTUC_MIPS64EL, HOSTUC_LA64 } HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap);
