@@ -1,19 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* sailgen's arm64 back end (tools/sailgen/arm64.h, the A64 Sail's encoders) against its LLVM back end, word by word,
-   as sail_x64.c holds the x86-64 one: every word of the decoder's rows (llvm_qemu_words.c, decoded for the ounce
-   target, each again with Rd, Rn and Rm 31) that the roots (a64_x64.roots) take becomes arm64 code for u64
+/* A native back end of sailgen other than x86-64's (SAIL_MACH: arm64's, tools/sailgen/arm64.h over the A64 Sail's
+   encoders; riscv64's, rv64.h and risc.h over LLVM's RISC-V records...) against its LLVM back end, word by word, as
+   sail_x64.c holds the x86-64 one: every word of the decoder's rows (llvm_qemu_words.c, decoded for the ounce target,
+   each again with Rd, Rn and Rm 31) that the roots (a64_x64.roots) take becomes the machine's code for u64
    step(CPU*), and an LLVM step; both run from the same random states, and every register, the flags, the SIMD&FP
    state, guest memory, the next pc and the runtime's UNDEF must match. Then sequences of two to four of those words
    become one block each and run beside the LLVM steps one after another.
 
-   The arm64 code runs under Unicorn (QEMU's AArch64, its "max" CPU) on any host: the test's own memory (the code, the
-   CPU structure, guest memory, a stack) is mapped into it at the same addresses, so the code and this process's C
-   share every pointer, and a call out (a helper by its name, the runtime's RtAPI functions) goes to a page of traps
-   whose hook calls the native function with the registers' arguments.
-     snx-test-sail-arm64 [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
-   --dump prints the words' block as hex bytes for a disassembler (llvm-mc --disassemble -triple=aarch64) */
-#include "sail_arm64_emit.h"
+   The machine's code runs under Unicorn (QEMU's CPU of it, support/host_unicorn.c) on any host: the test's own memory
+   (the code, the CPU structure, guest memory) is mapped into it at the same addresses, so the code and this
+   process's C share every pointer, and a call out (a helper by its name, the runtime's RtAPI functions) goes to a page
+   of traps whose hook calls the native function with the registers' arguments.
+     snx-test-sail-MACH [--states N] [--samples N] [--sequences N] [--pool N] [--verbose] [--dump WORD...]
+   --dump prints the words' block as hex bytes for a disassembler (llvm-mc --disassemble -triple=MACH) */
+#include "sail_mach_emit.h"
+#include "support/host_unicorn.h"
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -23,7 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <unicorn/unicorn.h>
 
 #define TARGET SNX_A64_TARGET_OUNCE
 #define CODE_MAX 4096
@@ -31,8 +32,7 @@
 #define MEMORY_ZERO    (2u << 20)
 #define MEMORY_TOUCHED 0x14000u
 #define PAGE 4096u
-#define STACK_SIZE (64u << 10)
-#define HOST (SNX_ARM64_LSE | SNX_ARM64_CRC32)
+#define HOST SAIL_MACH_HOST /* the machine's features the code may use (its SGX_F_*) */
 
 static struct {
     u64 seed;
@@ -40,16 +40,11 @@ static struct {
     int verbose;
     sigjmp_buf jump;
     int jumping;
-    unsigned char* memory[3]; /* the LLVM side's, the arm64 side's, the bytes both start from */
+    unsigned char* memory[3]; /* the LLVM side's, the machine's side's, the bytes both start from */
     unsigned sev, wfe;
-    uc_engine* uc;
-    unsigned char* trap; /* a page of RET words: each 16 bytes a native function's entry, the last the exit */
-    void* trap_fn[64];
-    const char* trap_name[64];
-    unsigned ntraps;
-    RtAPI* rt;    /* the arm64 side's RtAPI, its functions traps */
-    CPU* cpu;     /* the arm64 side's state, in mapped memory */
-    unsigned char* stack;
+    HostUc* uc;
+    RtAPI* rt;    /* the machine's side's RtAPI, its functions traps */
+    CPU* cpu;     /* the machine's side's state, in mapped memory */
 } g_test;
 
 static u64 rnd(void) {
@@ -119,15 +114,6 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 
-static u64 trap_of(void* f, const char* name) {
-    unsigned k;
-    for (k = 0; k < g_test.ntraps; ++k)
-        if (g_test.trap_fn[k] == f) return (u64)(uintptr_t)(g_test.trap + 16 * k);
-    if (g_test.ntraps == PAGE / 16 - 1) return 0;
-    g_test.trap_fn[g_test.ntraps] = f;
-    g_test.trap_name[g_test.ntraps] = name;
-    return (u64)(uintptr_t)(g_test.trap + 16 * g_test.ntraps++);
-}
 #define TRAP_FN(name) {#name, (void*)name}
 static u64 resolve(const char* sym) {
     static const struct {
@@ -138,31 +124,9 @@ static u64 resolve(const char* sym) {
                  TRAP_FN(snx_x64_fp_round), TRAP_FN(snx_x64_fp_round_int), TRAP_FN(snx_x64_fp_to_int),
                  TRAP_FN(snx_x64_fp_from_int), TRAP_FN(snx_x64_fp_jcvt), TRAP_FN(snx_x64_fp_bfcvt)};
     size_t i;
+    if (!g_test.uc) return 0x1000; /* --dump's: no Unicorn, an address of the right size */
     for (i = 0; i < sizeof table / sizeof *table; ++i)
-        if (!strcmp(sym, table[i].name)) return trap_of(table[i].f, table[i].name);
-    return 0;
-}
-/* the native function of a trap the code reached, called with X0 to X5 (System V passes them all the same way, a
-   function of fewer ignoring the rest), its result into X0; the trap's RET goes back */
-typedef u64 (*Native)(u64, u64, u64, u64, u64, u64);
-static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) {
-    unsigned k = (unsigned)((address - (u64)(uintptr_t)g_test.trap) / 16);
-    u64 a[6], r;
-    int regs[6] = {UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4, UC_ARM64_REG_X5};
-    unsigned i;
-    (void)size, (void)user;
-    if (k >= g_test.ntraps) return; /* the exit's, which emu_start stops at */
-    for (i = 0; i < 6; ++i) uc_reg_read(uc, regs[i], &a[i]);
-    r = ((Native)g_test.trap_fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
-    uc_reg_write(uc, UC_ARM64_REG_X0, &r);
-}
-
-static int map(void* p, size_t size) {
-    uc_err e = uc_mem_map_ptr(g_test.uc, (u64)(uintptr_t)p, (size + PAGE - 1) & ~(size_t)(PAGE - 1), UC_PROT_ALL, p);
-    if (e != UC_ERR_OK) {
-        fprintf(stderr, "FAIL: Unicorn maps no %p: %s\n", p, uc_strerror(e));
-        return -1;
-    }
+        if (!strcmp(sym, table[i].name)) return hostuc_native(g_test.uc, table[i].name, table[i].f);
     return 0;
 }
 static void* page_alloc(size_t size) {
@@ -170,58 +134,30 @@ static void* page_alloc(size_t size) {
     return p == MAP_FAILED ? NULL : p;
 }
 
-/* Unicorn with the test's memory mapped: the code's region, the state, guest memory, the traps, the stack */
+/* Unicorn with the test's memory mapped: the code's region, the state, guest memory, the runtime's traps */
 static int unicorn_begin(unsigned char* code, size_t code_cap) {
-    uc_hook hook;
-    uc_err e = uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &g_test.uc);
-    unsigned k;
-    if (e != UC_ERR_OK) {
-        fprintf(stderr, "FAIL: no Unicorn AArch64: %s\n", uc_strerror(e));
+    g_test.uc = hostuc_new(SAIL_MACH_UC, PAGE);
+    if (!g_test.uc) {
+        fprintf(stderr, "FAIL: no Unicorn %s\n", hostuc_name(SAIL_MACH_UC));
         return -1;
     }
-    uc_ctl_set_cpu_model(g_test.uc, UC_CPU_ARM64_MAX);
-    g_test.trap = (unsigned char*)page_alloc(PAGE);
-    g_test.rt = (RtAPI*)page_alloc(sizeof(RtAPI));
-    g_test.cpu = (CPU*)page_alloc(sizeof(CPU));
-    g_test.stack = (unsigned char*)page_alloc(STACK_SIZE);
-    if (!g_test.trap || !g_test.rt || !g_test.cpu || !g_test.stack) return -1;
-    for (k = 0; k < PAGE / 4; ++k) { /* RET */
-        g_test.trap[4 * k] = 0xC0, g_test.trap[4 * k + 1] = 0x03, g_test.trap[4 * k + 2] = 0x5F;
-        g_test.trap[4 * k + 3] = 0xD6;
-    }
+    g_test.rt = (RtAPI*)hostuc_alloc(g_test.uc, sizeof(RtAPI));
+    g_test.cpu = (CPU*)hostuc_alloc(g_test.uc, sizeof(CPU));
+    if (!g_test.rt || !g_test.cpu) return -1;
     memset(g_test.rt, 0, sizeof *g_test.rt);
-    g_test.rt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)trap_of((void*)on_undef, "undef");
-    g_test.rt->sev = (void (*)(void))(uintptr_t)trap_of((void*)on_sev, "sev");
-    g_test.rt->wfe = (void (*)(CPU*))(uintptr_t)trap_of((void*)on_wfe, "wfe");
-    if (map(code, code_cap) || map(g_test.trap, PAGE) || map(g_test.rt, sizeof(RtAPI)) || map(g_test.cpu, sizeof(CPU)) ||
-        map(g_test.stack, STACK_SIZE) || map(g_test.memory[1], MEMORY_SIZE))
-        return -1;
-    e = uc_hook_add(g_test.uc, &hook, UC_HOOK_CODE, (void*)on_trap, NULL, (u64)(uintptr_t)g_test.trap,
-                    (u64)(uintptr_t)g_test.trap + PAGE - 1);
-    if (e != UC_ERR_OK) {
-        fprintf(stderr, "FAIL: no hook of the traps: %s\n", uc_strerror(e));
-        return -1;
-    }
-    return 0;
+    g_test.rt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(g_test.uc, "undef", (void*)on_undef);
+    g_test.rt->sev = (void (*)(void))(uintptr_t)hostuc_native(g_test.uc, "sev", (void*)on_sev);
+    g_test.rt->wfe = (void (*)(CPU*))(uintptr_t)hostuc_native(g_test.uc, "wfe", (void*)on_wfe);
+    g_test.rt->cas128 = (u32 (*)(u64*, u64, u64, u64, u64))(uintptr_t)hostuc_native(g_test.uc, "cas128",
+                                                                                     (void*)snx_runtime_cas128);
+    return hostuc_map(g_test.uc, code, code_cap) || hostuc_map(g_test.uc, g_test.memory[1], MEMORY_SIZE) ? -1 : 0;
 }
 /* the code at code run on *c (copied into the mapped state and back): the next pc it returns */
 static u64 run(unsigned char* code, CPU* c) {
-    u64 x0 = (u64)(uintptr_t)g_test.cpu, sp = (u64)(uintptr_t)(g_test.stack + STACK_SIZE),
-        lr = (u64)(uintptr_t)(g_test.trap + PAGE - 16), r = 0;
-    uc_err e;
+    u64 r = 0;
     *g_test.cpu = *c;
     g_test.cpu->rt = g_test.rt;
-    uc_reg_write(g_test.uc, UC_ARM64_REG_X0, &x0);
-    uc_reg_write(g_test.uc, UC_ARM64_REG_SP, &sp);
-    uc_reg_write(g_test.uc, UC_ARM64_REG_X30, &lr);
-    e = uc_emu_start(g_test.uc, (u64)(uintptr_t)code, lr, 0, 1u << 20);
-    if (e != UC_ERR_OK) {
-        u64 pc;
-        uc_reg_read(g_test.uc, UC_ARM64_REG_PC, &pc);
-        fprintf(stderr, "  Unicorn stopped at %llx (code %p): %s\n", (unsigned long long)pc, (void*)code, uc_strerror(e));
-        r = ~0ull;
-    } else
-        uc_reg_read(g_test.uc, UC_ARM64_REG_X0, &r);
+    if (hostuc_call(g_test.uc, (u64)(uintptr_t)code, (u64)(uintptr_t)g_test.cpu, 0, &r)) r = ~0ull;
     g_test.cpu->rt = c->rt;
     *c = *g_test.cpu;
     return r;
@@ -258,17 +194,17 @@ static void report(const CPU* a, const CPU* b, const CPU* start, const u64* next
     unsigned r;
     for (r = 0; r < 32; ++r)
         if (a->x[r] != b->x[r])
-            fprintf(stderr, "  x%u: llvm %016llx arm64 %016llx (was %016llx)\n", r, (unsigned long long)a->x[r],
+            fprintf(stderr, "  x%u: llvm %016llx native %016llx (was %016llx)\n", r, (unsigned long long)a->x[r],
                     (unsigned long long)b->x[r], (unsigned long long)start->x[r]);
-    fprintf(stderr, "  nzcv: llvm %u%u%u%u arm64 %u%u%u%u; next: llvm %llx arm64 %llx; undef %u %u\n", a->n, a->z,
+    fprintf(stderr, "  nzcv: llvm %u%u%u%u native %u%u%u%u; next: llvm %llx native %llx; undef %u %u\n", a->n, a->z,
             a->cf, a->vf, b->n, b->z, b->cf, b->vf, (unsigned long long)next[0], (unsigned long long)next[1], undef[0],
             undef[1]);
     for (r = 0; r < 32; ++r)
         if (memcmp(&a->v[r], &b->v[r], sizeof a->v[r]))
-            fprintf(stderr, "  v%u: llvm %016llx:%016llx arm64 %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
+            fprintf(stderr, "  v%u: llvm %016llx:%016llx native %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
                     (unsigned long long)a->v[r].d[0], (unsigned long long)b->v[r].d[1],
                     (unsigned long long)b->v[r].d[0]);
-    if (a->fpsr != b->fpsr) fprintf(stderr, "  fpsr: llvm %08x arm64 %08x\n", a->fpsr, b->fpsr);
+    if (a->fpsr != b->fpsr) fprintf(stderr, "  fpsr: llvm %08x native %08x\n", a->fpsr, b->fpsr);
 }
 
 /* one start state of a run, s its number (which odd values it has) */
@@ -300,13 +236,13 @@ int main(int argc, char** argv) {
     char error[1024];
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     struct sigaction sa;
-    snx_arm64_set_resolve(resolve);
+    snx_mach_set_resolve(resolve);
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--samples") && i + 1 < (unsigned)argc)
             samples = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--pool") && i + 1 < (unsigned)argc)
-            snx_arm64_set_pool(atoi(argv[++i]));
+            snx_mach_set_pool(atoi(argv[++i]));
         else if (!strcmp(argv[i], "--sequences") && i + 1 < (unsigned)argc)
             sequences = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--verbose"))
@@ -317,15 +253,15 @@ int main(int argc, char** argv) {
             unsigned char buf[CODE_MAX];
             u32 ws[16];
             size_t nw = 0, got, b;
-            g_test.trap = (unsigned char*)page_alloc(PAGE);
             while (i + 1 < (unsigned)argc && nw < 16) ws[nw++] = (u32)strtoul(argv[++i], NULL, 16);
-            got = snx_arm64_block(ws, &nw, 0x1000, TARGET, HOST, buf, sizeof buf);
+            got = snx_mach_block(ws, &nw, 0x1000, TARGET, HOST, buf, sizeof buf);
             for (b = 0; b < got; ++b) printf("0x%02x%c", buf[b], b + 1 < got ? ' ' : '\n');
             if (!got) printf("(not made)\n");
             return 0;
         } else {
-            fprintf(stderr, "usage: snx-test-sail-arm64 [--states N] [--samples N] [--sequences N] [--pool N] "
-                            "[--verbose] [--dump WORD...]\n");
+            fprintf(stderr, "usage: snx-test-sail-%s [--states N] [--samples N] [--sequences N] [--pool N] "
+                            "[--verbose] [--dump WORD...]\n",
+                    hostuc_name(SAIL_MACH_UC));
             return 2;
         }
     }
@@ -364,12 +300,13 @@ int main(int argc, char** argv) {
             g_test.jumping = 1;
             if (sigsetjmp(g_test.jump, 1)) failed = 1;
             else
-                got = snx_arm64_step(w, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
+                got = snx_mach_step(w, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
             g_test.jumping = 0;
             if (failed) {
                 ++unmade;
                 ++failures;
-                fprintf(stderr, "FAIL: %s %08x: the arm64 back end takes it but can't make it\n", name, (unsigned)w);
+                fprintf(stderr, "FAIL: %s %08x: the %s back end takes it but can't make it\n", name, (unsigned)w,
+                        hostuc_name(SAIL_MACH_UC));
                 continue;
             }
             if (!got) continue;
@@ -420,8 +357,8 @@ int main(int argc, char** argv) {
                 end[0].n != end[1].n || end[0].z != end[1].z || end[0].cf != end[1].cf || end[0].vf != end[1].vf ||
                 fp_differs(&end[0], &end[1])) {
                 ++failures;
-                fprintf(stderr, "FAIL: %s %08x state %u: the arm64 code's result differs\n", op_name(words[i]),
-                        (unsigned)words[i], s);
+                fprintf(stderr, "FAIL: %s %08x state %u: the %s code's result differs\n", op_name(words[i]),
+                        (unsigned)words[i], s, hostuc_name(SAIL_MACH_UC));
                 if (g_test.verbose) report(&end[0], &end[1], &start, next, undef);
                 break;
             }
@@ -448,7 +385,7 @@ int main(int argc, char** argv) {
             g_test.jumping = 1;
             if (sigsetjmp(g_test.jump, 1)) failed = 1;
             else
-                got = snx_arm64_block(sq->w, &sq->count, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
+                got = snx_mach_block(sq->w, &sq->count, 0x1000, TARGET, HOST, code + code_at, code_cap - code_at);
             g_test.jumping = 0;
             if (failed) {
                 ++failures;
@@ -462,7 +399,7 @@ int main(int argc, char** argv) {
             code_at += (got + 15) & ~(size_t)15;
             ++nseq;
         }
-        uc_ctl_remove_cache(g_test.uc, (u64)(uintptr_t)code, (u64)(uintptr_t)code + code_cap);
+        hostuc_changed(g_test.uc, code, code_cap);
         if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
             fprintf(stderr, "FAIL: %s\n", error);
             return 1;
@@ -500,19 +437,18 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "FAIL: the block of");
                     for (j = 0; j < seq[q].count; ++j)
                         fprintf(stderr, " %s %08x", op_name(seq[q].w[j]), (unsigned)seq[q].w[j]);
-                    fprintf(stderr, " state %u: the arm64 code's result differs\n", st);
+                    fprintf(stderr, " state %u: the %s code's result differs\n", st, hostuc_name(SAIL_MACH_UC));
                     if (g_test.verbose) report(&end[0], &end[1], &start, next, undef);
                     break;
                 }
             }
         }
         llvm_steps_end(&set);
-        printf("sail_arm64: %zu blocks of 2 to 4 words\n", nseq);
+        printf("sail_%s: %zu blocks of 2 to 4 words\n", hostuc_name(SAIL_MACH_UC), nseq);
         free(seq);
     }
-    printf("sail_arm64: %zu words made (%zu bytes of arm64, %.1f a word), %zu runs, %zu failures (%zu words not "
-           "made)\n",
-           n, bytes, n ? (double)bytes / (double)n : 0.0, compared, failures, unmade);
-    uc_close(g_test.uc);
+    printf("sail_%s: %zu words made (%zu bytes of code, %.1f a word), %zu runs, %zu failures (%zu words not made)\n",
+           hostuc_name(SAIL_MACH_UC), n, bytes, n ? (double)bytes / (double)n : 0.0, compared, failures, unmade);
+    hostuc_free(g_test.uc);
     return failures ? 1 : 0;
 }
