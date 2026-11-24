@@ -316,6 +316,26 @@ static void check_again(VitaProcess* p) {
     CHECK(!wrong_from(p, b + 0x18000, 0x4000, 1, 0x2000), "a second mapping: %u bytes the GPU reads are wrong",
           (unsigned)wrong_from(p, b + 0x18000, 0x4000, 1, 0x2000));
 }
+/* a block given back while a transfer into it is in flight, and another block made in its place: nothing hangs, and
+   the new block holds what the CPU writes there */
+static void check_freed(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, false);
+    fill(p, a, 0x1000, 1);
+    CHECK(copy(p, a, b + 0x1000, 0x1000), "the transfer is refused");
+    vita_free(p, b);
+    finish(p);
+    CHECK(block_make(p, BLOCK, false) == b, "the block is made elsewhere");
+    CHECK(copy(p, a, b + 0x2000, 0x1000), "the transfer into the new block is refused");
+    vita_free(p, b);
+    CHECK(block_make(p, BLOCK, false) == b, "the block is made elsewhere");
+    fill(p, b, 0x8000, 2);
+    finish(p);
+    CHECK(!wrong(p, b, 0x8000, 2), "%u bytes of the new block are the old one's", (unsigned)wrong(p, b, 0x8000, 2));
+    CHECK(copy(p, b, a + 0x8000, 0x4000), "the transfer from the new block is refused");
+    finish(p);
+    CHECK(!wrong(p, a + 0x8000, 0x4000, 2), "%u bytes of the new block are old on the GPU",
+          (unsigned)wrong(p, a + 0x8000, 0x4000, 2));
+}
 /* a scene on a color surface of width x height, its rows stride pixels, nothing drawn: loaded and stored */
 static uint64_t scene(VitaProcess* p, uint32_t at, uint32_t width, uint32_t height, uint32_t stride, uint32_t type) {
     GxmContext* c = &p->gxm->context;
@@ -423,6 +443,7 @@ static const struct {
     {"tiled", check_tiled, true},
     {"depth", check_depth, false},
     {"picture", check_picture, false},
+    {"freed", check_freed, true},
 };
 
 int main(int argc, char** argv) {

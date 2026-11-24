@@ -12,6 +12,8 @@ void vita_render_free(VitaProcess* p);
 /* sceGxmMapMemory's range the GPU reads and writes, and its unmapping */
 void vita_render_map(VitaProcess* p, uint32_t address, uint32_t size);
 void vita_render_unmap(VitaProcess* p, uint32_t address);
+/* a memory block the game gives back, before it goes: the GPU's writes into a copy of it are done and stored */
+void vita_render_freed(VitaProcess* p, uint32_t address, uint32_t size);
 void vita_render_begin_scene(VitaProcess* p, GxmContext* c);
 /* sceGxmDraw with the context's state: indices at an address, of index_format (SceGxmIndexFormat: 0 16-bit, 1
    32-bit), count of them, instances times */

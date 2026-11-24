@@ -186,24 +186,32 @@ bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since) {
     return false;
 }
 uint64_t vita_watch_page(void) { return g_watch.state ? g_watch.page : 4096; }
-/* the protected pages of [first, last] writable, or protected again. Their states stay */
+/* The protected pages of [first, last] writable, or protected again. Their states stay, but for a page that can't be
+   protected again, which is written and watched no more */
 static void store_protection(uint64_t first, uint64_t last, bool writable) {
+    lock();
     for (uint64_t i = first; i <= last;) {
         uint64_t end = i;
         while (end <= last && atomic_load_explicit(&g_watch.state[end], memory_order_acquire) == PROTECTED) ++end;
-        if (end > i) page_protect(i, end - i, writable);
+        if (end > i && !page_protect(i, end - i, writable) && !writable) {
+            uint64_t now = next_generation();
+            for (uint64_t k = i; k < end; ++k) {
+                atomic_store_explicit(&g_watch.generation[k], now, memory_order_release);
+                atomic_store_explicit(&g_watch.state[k], UNWATCHED, memory_order_release);
+            }
+        }
         i = end > i ? end : i + 1;
     }
+    unlock();
 }
 bool vita_watch_store(uint32_t address, const void* data, uint32_t row, uint32_t stride, uint32_t rows) {
     const unsigned char* from = data;
     uint64_t first, last, size = rows ? (uint64_t)(rows - 1) * stride + row : 0;
     if (size > UINT32_MAX || !span(address, (uint32_t)size, &first, &last)) return false;
-    lock();
     store_protection(first, last, true);
+    /* outside the lock, which the fault handler takes: a page the game gave back faults here, and the run says it */
     for (size_t y = 0; y < rows; ++y) memcpy(g_watch.base + address + y * stride, from + y * stride, row);
     store_protection(first, last, false);
-    unlock();
     return true;
 }
 uint64_t vita_watch_epoch(void) { return atomic_load_explicit(&g_watch.now, memory_order_acquire); }
