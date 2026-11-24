@@ -508,6 +508,60 @@ static void test_signals(void) {
     expect_int("sigpending", CALL("sigpending", pending), 0);
     expect_int("sigpending holds the blocked SIGUSR1", word_at(pending), 1u << 9);
     CALL("sigprocmask", 1 /* SIG_UNBLOCK */, usr1, 0);
+    /* tgkill, as the kernel's: a thread that is alive in this process, -1 and errno else (ESRCH 3, EINVAL 22). One that
+       ended is none before its join too: this one writes its gettid to its argument and ends */
+    static const uint32_t code[] = {0xe92d0090u /* push {r4, r7} */,
+                                    0xe1a04000u /* mov r4, r0 */,
+                                    0xe3a070e0u /* mov r7, #224 */,
+                                    0xef000000u /* svc #0 */,
+                                    0xe5840000u /* str r0, [r4] */,
+                                    0xe8bd0090u /* pop {r4, r7} */,
+                                    0xe12fff1eu /* bx lr */};
+    uint32_t pid = (uint32_t)getpid(), tid = CALL("gettid", 0), thread = zeroed(4), ended = zeroed(4);
+    expect_int("pthread_create", CALL("pthread_create", thread, 0, arm32_guest_code(code, 7), ended), 0);
+    for (int ms = 0; ms < 5000 && (!word_at(ended) || !CALL("tgkill", pid, word_at(ended), 0)); ++ms)
+        CALL("usleep", 1000);
+    expect_int("the thread had an id of its own", word_at(ended) && word_at(ended) != tid, 1);
+    const struct {
+        const char* what;
+        uint32_t tgid, tid, sig, error;
+    } asks[] = {
+        {"tgkill of signal 0 to this thread", pid, tid, 0, 0},
+        {"tgkill of SIGUSR1 to this thread", pid, tid, 10, 0},
+        {"tgkill of signal 65 to this thread", pid, tid, 65, 22},
+        {"tgkill of signal 0 to a thread that ended", pid, word_at(ended), 0, 3},
+        {"tgkill of SIGUSR1 to a thread that ended", pid, word_at(ended), 10, 3},
+        {"tgkill of signal 65 to a thread that ended", pid, word_at(ended), 65, 3},
+        {"tgkill to another process's thread", 1, tid, 0, 3},
+        {"tgkill to thread 0", pid, 0, 0, 22},
+        {"tgkill to thread -1", pid, UINT32_MAX, 0, 22},
+        {"tgkill to process 0", 0, tid, 0, 22},
+        {"tgkill to process -1", UINT32_MAX, tid, 0, 22},
+    };
+    CALL("sched_yield", 0); /* the one raised above */
+    CALL("sigprocmask", 0 /* SIG_BLOCK */, usr1, 0);
+    for (size_t i = 0; i < sizeof asks / sizeof *asks; ++i) {
+        char errno_is[96];
+        snprintf(errno_is, sizeof errno_is, "%s: errno", asks[i].what);
+        for (int raw = 0; raw < 2; ++raw) { /* the function, then the system call (268) */
+            memset(G(arm32_errno_address()), 0, 4);
+            int32_t got = raw ? (int32_t)CALL("syscall", 268, asks[i].tgid, asks[i].tid, asks[i].sig)
+                              : (int32_t)CALL("tgkill", asks[i].tgid, asks[i].tid, asks[i].sig);
+            expect_int(asks[i].what, got, asks[i].error ? -1 : 0);
+            expect_int(errno_is, guest_errno(), asks[i].error);
+            uint32_t want = !asks[i].error && asks[i].sig ? 1u << 9 : 0;
+            memset(G(pending), 0, 4);
+            CALL("sigpending", pending);
+            expect_int(asks[i].what, word_at(pending), want);
+            CALL("sigprocmask", 1 /* SIG_UNBLOCK */, usr1, 0);
+            CALL("sched_yield", 0); /* what was sent runs, ignored */
+            CALL("sigprocmask", 0 /* SIG_BLOCK */, usr1, 0);
+        }
+    }
+    CALL("sigprocmask", 1 /* SIG_UNBLOCK */, usr1, 0);
+    expect_int("pthread_join", CALL("pthread_join", word_at(thread), 0), 0);
+    expect_int("tgkill to a thread that was joined", (int32_t)CALL("tgkill", pid, word_at(ended), 0), -1);
+    expect_int("tgkill to a thread that was joined: errno", guest_errno(), 3);
 }
 
 /* ---- the shim: every name it sends to the 64-bit bridge has a handler there ---- */
