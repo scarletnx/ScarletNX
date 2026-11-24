@@ -1827,6 +1827,15 @@ setting Draw batches
     help 2 = a long run of draw records is split in two: the renderer thread draws the first half, and the worker thread
     help the second half into its list at the same time. Their calls into the shared parts of the renderer take a
     help lock in turn. In one game's busiest scene, 2 ran about 6% faster than 0
+setting Draw timing
+    key draw_timing
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the renderer thread times the steps of each draw with the processor's counter, for the log's lines of
+    help draw phases and a draw record's steps, and counts the batch probe's batches. About 30 reads of the counter
+    help a draw took 3.6% of the renderer thread in one game's busiest scene. 0 = none of it
 setting Constant buffer window epochs
     key vk_cb_window_epochs
     int 0 1

@@ -225,7 +225,8 @@ static void run_close(u64 len, u64* hist, u64* draws) {
     hist[b]++;
     draws[b] += len;
 }
-static u64 ph_now(void) { return __builtin_readcyclecounter(); }
+/* the draw phases' clock: 0 where the draw_timing setting is off, so that a phase sums nothing and costs no read */
+static u64 ph_now(void) { return g_settings.draw_timing ? __builtin_readcyclecounter() : 0; }
 /* The batch probe: the guest's draws in batches that a worker could set up alone, by three rules: (a) any record that
    is not a draw, or a new pass, ends a batch; (b) as (a), but a constant buffer write doesn't; (c) only a new pass
    does. For (b): the batches that sample a target an earlier batch of the present wrote (dependent), and those with a
@@ -254,7 +255,7 @@ static void bp_close(int k) {
 /* The probe and the draw marks (g_draw_marks) are the renderer thread's alone: a worker's draws (t_rc) writing the same
    lines at each draw moved them between the two cores, and its marks went into the renderer thread's steps */
 static void bp_draw(void) {
-    if (t_rc) return;
+    if (t_rc || !g_settings.draw_timing) return;
     u64 all, cb;
     gq_seq(&all, &cb);
     const u64 records = all - g_bp.last_all, cbw = cb - g_bp.last_cb;
@@ -3132,6 +3133,48 @@ static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
     return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
            !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
 }
+/* A draw's vertex and index buffers, kept for each thread (t_rc) by address as constant buffers are (cb_kept): a lookup
+   whose entry was made with no result pending over it, with no result added, no GPU write of its bytes and no new
+   epoch of write tracking since, binds what it bound, with no take of the share lock (draw_batches=2). The lookup
+   (vk_buf_get_input) was the share lock's most taken call. g_vin_n: each thread's hits and lookups, on a line of its
+   own */
+static CbEntry g_vin[RC_SLOTS][1024];
+static alignas(64) _Atomic u64 g_vin_n[RC_SLOTS][8];
+static u64 g_vin_read[2]; /* the sums the last statistics read */
+static void vin_count(u32 k) { /* only this thread writes its row */
+    _Atomic u64* c = &g_vin_n[t_rc][k];
+    atomic_store_explicit(c, atomic_load_explicit(c, memory_order_relaxed) + 1, memory_order_relaxed);
+}
+static CbEntry* vin_entry(u64 gva) { return &g_vin[t_rc][(u32)((gva >> 4) * 0x9E3779B97F4A7C15ull >> 54)]; }
+/* whether a lookup of len bytes at gva would be kept (vin_get) */
+static int vin_kept(u64 gva, u64 len) {
+    return gva && len <= 0xFFFFFFFFull && cb_kept(vin_entry(gva), gva, (u32)len, 1, vk_ww_epoch());
+}
+static int vin_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (!gva || len > 0xFFFFFFFFull || g_settings.draw_state_check) return vk_buf_get_input(gva, len, align, buf, off);
+    const u32 epoch = vk_ww_epoch();
+    CbEntry* e = vin_entry(gva);
+    vin_count(1);
+    if (cb_kept(e, gva, (u32)len, 1, epoch) && !(e->off % align)) {
+        *buf = e->buf;
+        *off = e->off;
+        vin_count(0);
+        return 1;
+    }
+    vk_share_lock();
+    const u64 adds = cb_adds(), gw = gpu_mem_generation();
+    const int got = vk_buf_get_input(gva, len, align, buf, off);
+    if (got) {
+        *e = (CbEntry){.a = gva, .adds = adds, .gw = gw, .sz = (u32)len, .epoch = epoch, .buf = *buf, .off = *off};
+        cb_life(e, CB_OWN);
+    }
+    /* a binding over a pending result of any kind is that result's, for this draw only */
+    if (!got || (atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(gva, len)) ||
+        vk_uma_pending(gva, len) || vk_compute_pending(gva, len) || pend_hit(&g_pend_any, gva, len))
+        e->a = 0;
+    vk_share_unlock();
+    return got;
+}
 /* VkDrawCounts.inl's row of a lookup of sz bytes of the inline block in */
 static int inline_kind(DsCbBlock in, u32 sz) {
     return in.size != DS_INLINE_BANK0 ? 2 : sz > SH_CB0_BASE_VERTEX ? 0 : 1;
@@ -3206,6 +3249,9 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached. Neither is
        one under a result of another kind (the mirror's writes, a storage image, a queued release), which the buffer
        cache looks for: the entry would live past the submission that lands it */
+    /* the checks and the staging below under one take of the share lock (draw_batches=2), not one take each */
+    const int grouped = a != 0;
+    if (grouped) vk_share_lock();
     if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && a) vk_compute_mem_need(a, sz);
     int pending = a && ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(a, sz)) ||
                         vk_uma_pending(a, sz) || /* written in place too */
@@ -3219,6 +3265,7 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
             e->adds = cb_adds();
             if (x->a == a && x->sz == sz && x->buf == e->buf && x->off == e->off) x->adds = e->adds;
         }
+        if (grouped) vk_share_unlock();
         *buf = e->buf;
         *off = e->off;
         g_stats.n.cb[VK_CB_KEPT_CHECKED]++;
@@ -3239,6 +3286,7 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
         gmmu_run(a, sz, &cpu) == sz) {
         u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
         u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
+        vk_share_unlock(); /* grouped: a is set */
         if (!p) return 0;
         life = CB_FRAME;
         if (!own_any())
@@ -3250,10 +3298,12 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
         if (t_copy) CNT(g_cb_copied_ns) += (plat_ns() - t_copy) * CB_TIME_EVERY;
         g_stats.n.cb[VK_CB_COPIED]++;
         CNT(g_cb_copied_bytes) += sz;
-    } else if (!(a ? vk_buf_get_uniform_at(a, sz, align, buf, off) : vk_buf_copy(a, sz, buf, off)))
-        return 0;
-    else
+    } else {
+        const int got = a ? vk_buf_get_uniform_at(a, sz, align, buf, off) : vk_buf_copy(a, sz, buf, off);
+        if (grouped) vk_share_unlock();
+        if (!got) return 0;
         g_stats.n.cb[pending ? VK_CB_PENDING : VK_CB_CACHE]++;
+    }
     if (pending) {
         e->a = 0;
         return 1;
@@ -7007,7 +7057,7 @@ static void vk_render_prep_log(void) {
     u64 kicks, cancels;
     vk_prep_counts(&kicks, &cancels);
     {
-        const u64 tsc = ph_now(), ns = plat_ns();
+        const u64 tsc = __builtin_readcyclecounter(), ns = plat_ns();
         const double tick_ns = g_ph.tsc0 && tsc > g_ph.tsc0 ? (double)(ns - g_ph.ns0) / (double)(tsc - g_ph.tsc0) : 0;
         g_ph.tsc0 = tsc;
         g_ph.ns0 = ns;
@@ -7327,7 +7377,7 @@ static struct {
 } g_split;
 static void split_log(void) {
     static u64 tsc0, ns0;
-    const u64 tsc = ph_now(), ns = plat_ns();
+    const u64 tsc = __builtin_readcyclecounter(), ns = plat_ns();
     const double tick_ns = tsc0 && tsc > tsc0 ? (double)(ns - ns0) / (double)(tsc - tsc0) : 0;
     tsc0 = tsc;
     ns0 = ns;
@@ -7345,6 +7395,14 @@ static void split_log(void) {
             (double)join_wait * per, (unsigned long long)joined, (double)takes[0] / 600.0, (double)waited[0] / 600.0,
             (double)wait[0] * per, (double)hold[0] * per, (double)takes[1] / 600.0, (double)waited[1] / 600.0,
             (double)wait[1] * per, (double)hold[1] * per);
+        u64 v[2] = {0};
+        for (u32 k = 0; k < RC_SLOTS; k++)
+            for (u32 j = 0; j < 2; j++) v[j] += atomic_load_explicit(&g_vin_n[k][j], memory_order_relaxed);
+        const u64 vh = v[0] - g_vin_read[0], vn = v[1] - g_vin_read[1];
+        g_vin_read[0] = v[0];
+        g_vin_read[1] = v[1];
+        LOG("vulkan: draw_batches=2: vertex and index lookups a present %.0f, %.0f of them kept without the share lock\n",
+            (double)vn / 600.0, (double)vh / 600.0);
         LOG("vulkan: draw_batches=2: the renderer thread's steps of the splits, ms a present: the peeks %.3f (%.0f a "
             "present), the copies %.3f, the hold and command buffers %.3f, the kicks %.3f, the joins %.3f\n",
             (double)g_split.t_peek * per, (double)g_split.peeks / 600.0, (double)g_split.t_snap * per,
@@ -7478,7 +7536,7 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     }
     g_prep_use = g_prep_out.record ? &g_prep_out : NULL; /* made ahead of this draw, or of none (prep_holds) */
     render_draw(ds, dc, o, NULL);
-    g_draw_marks[DM_RENDER_DONE] = __builtin_readcyclecounter();
+    g_draw_marks[DM_RENDER_DONE] = DRAW_MARK();
     g_vk.has_descriptor_heaps = heaps;
     render_batch();
     SNX_ZONE_END(z);
@@ -8272,11 +8330,15 @@ resolved:
     }
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 0);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 1);
+    /* the streams' lookups under one take of the share lock (draw_batches=2) where any misses its memo (vin_get), not
+       one take each: each take moves the lock's line between the two cores */
+    int grouped = 0;
     for (u32 q = 0; q < nvq; q++) {
         u32 b = vq[q].b;
         if (pl->guest_stride[b]) {
             if (!restride(vq[q].gva + vq[q].base, vq[q].len - vq[q].base, pl->guest_stride[b], (u32)pl->stride[b],
                           &vbuf[b], &voff[b], &vsize[b])) {
+                if (grouped) vk_share_unlock();
                 CNT(g_vk_skipped)++;
                 return;
             }
@@ -8288,13 +8350,19 @@ resolved:
            whole (the record's length stays the stream's own) */
         const u64 lead = k->fetch ? vq[q].gva & 3 : 0;
         const u64 gva = vq[q].gva - lead, glen = k->fetch ? ((vq[q].gva + vq[q].len + 3) & ~3ull) - gva : vq[q].len;
-        if (!vk_buf_get_input(gva, glen, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
+        if (!grouped && nvq - q > 1 && !vin_kept(gva, glen)) {
+            vk_share_lock();
+            grouped = 1;
+        }
+        if (!vin_get(gva, glen, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
+            if (grouped) vk_share_unlock();
             CNT(g_vk_skipped)++;
             return;
         }
         voff[vq[q].b] += lead + vq[q].base;
         vsize[vq[q].b] = vq[q].len - vq[q].base;
     }
+    if (grouped) vk_share_unlock();
     if (!ahead && g_draw_depth == 1) g_ph.m_vb = ph_now();
     /* an indirect draw's arguments and count, as the GPU holds them (a compute program's results that haven't landed
        read where they are) */
@@ -8657,7 +8725,7 @@ resolved:
                 if (late_depth) vk_depth_shadow_cancel();
                 return;
             }
-        } else if (!vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
+        } else if (!vin_get(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             return;
