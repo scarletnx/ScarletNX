@@ -82,8 +82,8 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_CALL:
             rk_mv(b, sgx_arg_regs[0], SGX_BASE);
             if (a->reloc) {
-                a->reloc(a->machine, b->n + RK_CALL_LIT_AT, i->sym, 0);
-                rk_call_reloc(b);
+                size_t lit = rk_call_reloc(b);
+                a->reloc(a->machine, lit, i->sym, 0);
             } else {
                 SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
                 if (!to) sg_fail("a helper nothing resolves", 0, 0);

@@ -1,8 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* sailgen's RISC back ends, their assembly (after mach.h and the machine's frame, rv64_asm.h...): mach.h's hooks from
-   risc.h's operations. No vector register holds a value (SGX_HAS_VREGS 0), so the vector hooks are never reached;
+/* sailgen's RISC back ends, their assembly (after mach.h): the frame and mach.h's hooks from risc.h's operations and the
+   machine's frame. No vector register holds a value (SGX_HAS_VREGS 0), so the vector hooks are never reached;
    nor are the cold paths or the constant pool, which only vector code makes */
+
+/* a step's or a block's frame: the machine's function frame (rk_fn_prologue, rk_fn_epilogue), its size patched in once
+   the code is done (rk_fn_patch_frame) */
+static inline void sgx_prologue(SgXAsm* a) {
+    size_t at = rk_fn_prologue(a->b, 0);
+    if (a->nframe < 256) a->frame_at[a->nframe++] = at;
+}
+static inline void sgx_epilogue(SgXAsm* a) { rk_fn_epilogue(a->b, 0); }
+static inline void sgx_patch_frame(SgXAsm* a) {
+    int k;
+    for (k = 0; k < a->nframe; ++k)
+        if (!rk_fn_patch_frame(a->b, a->frame_at[k], (long long)a->slots_max * 8))
+            sg_fail("a frame too large for the machine's", a->slots_max, 0);
+}
 
 /* an immediate: any for a logical operation (the machine makes what its encoding can't hold), the 32-bit one sign
    extended the primitives take for an addition and a compare */

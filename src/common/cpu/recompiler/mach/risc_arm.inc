@@ -46,8 +46,7 @@ static void mg_entry_exit(MG_ARM* c, SnxU32 pc, SnxU32 first, int bad) {
     sgx_a32_bind(&c->g, b, bad);
     rk_li(b, sgx_arg_regs[1], pc);
     rk_li(b, sgx_arg_regs[2], first);
-    add_rel(c, b->n + RK_TAIL_LIT_AT, MG_ARM_ENTRY_EXIT, MG_ARM_R_TAIL, 0);
-    rk_tail_reloc(b);
+    add_rel(c, rk_tail_reloc(b), MG_ARM_ENTRY_EXIT, MG_ARM_R_TAIL, 0);
 }
 static void epilogue(MG_ARM* c) { rk_fn_epilogue(&c->b, 0); }
 static void mg_return(MG_ARM* c) {
@@ -84,8 +83,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
     char sym[24];
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
     if (!public) sym[0] = 'X';
-    add_rel(c, b->n + RK_TAIL_LIT_AT, sym, MG_ARM_R_TAIL, 0);
-    rk_tail_reloc(b);
+    add_rel(c, rk_tail_reloc(b), sym, MG_ARM_R_TAIL, 0);
 }
 
 /* the exit function (state, the block's address, its first word), each object's own, where a block's entry check
@@ -126,8 +124,7 @@ int MG_ARM_API(entry)(MG_ARM* c, uint32_t key) {
     b.cap = sizeof code;
     rk_li(&b, RK_S1, key & ~1u);
     rk_ldst(&b, 0, 4, 0, RK_S1, sgx_arg_regs[0], -1, (int)(offsetof(SnxArmCPU, r) + 60));
-    Rel rel = {.at = b.n + RK_TAIL_LIT_AT, .type = MG_ARM_R_TAIL, .addend = 0};
-    rk_tail_reloc(&b);
+    Rel rel = {.at = rk_tail_reloc(&b), .type = MG_ARM_R_TAIL, .addend = 0};
     name_of(rel.sym, sizeof rel.sym, key);
     char name[24];
     snprintf(name, sizeof name, "X%s", rel.sym);

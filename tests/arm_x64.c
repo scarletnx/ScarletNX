@@ -35,6 +35,14 @@ typedef SnxArm64Arm Back;
 #define back_(name) snx_arm64_arm_##name
 #define BACK_NAME   "arm64"
 #define BACK_UC     HOSTUC_ARM64
+#elif defined(SNX_TEST_MIPS64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/mips64/mips64_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxMips64Arm Back;
+#define back_(name) snx_mips64_arm_##name
+#define BACK_NAME   "mips64el"
+#define BACK_UC     HOSTUC_MIPS64EL
 #elif defined(SNX_TEST_PPC64)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/ppc64/ppc64_arm.h"

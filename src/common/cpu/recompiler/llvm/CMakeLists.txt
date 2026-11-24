@@ -203,3 +203,8 @@ target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64_arm.c")
 snx_sailgen_a64_risc(snx_llvm ppc64)
 snx_sailgen_a32_risc(snx_llvm ppc64)
+# and the mips64 back end (src/common/cpu/recompiler/mips64), over LLVM's MIPS records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64_arm.c")
+snx_sailgen_a64_risc(snx_llvm mips64)
+snx_sailgen_a32_risc(snx_llvm mips64)

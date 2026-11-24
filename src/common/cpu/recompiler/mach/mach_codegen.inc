@@ -21,6 +21,10 @@
 #ifndef MG_ELF_FLAGS
 #define MG_ELF_FLAGS 0
 #endif
+/* a relocation's r_info of a symbol and a type: the ELF64 one's, or the machine's (MIPS64's n64 layout) */
+#ifndef MG_R_INFO
+#define MG_R_INFO(sym, type) ELF64_R_INFO((sym), (type))
+#endif
 
 /* ---- the unit: its code, labels, relocations, symbols ---- */
 
@@ -1821,7 +1825,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             SnxU64 zero = 0;
             put(&data, &zero, 8);
             r.r_offset = 8 * i;
-            r.r_info = ELF64_R_INFO(2 + i, MG_R_ABS64);
+            r.r_info = MG_R_INFO(2 + i, MG_R_ABS64);
             r.r_addend = 0;
             put(&rela_data, &r, sizeof r);
         }
@@ -1841,8 +1845,8 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             if (!u->relocs[i].sym) continue;
             r.r_offset = u->relocs[i].at;
             r.r_info = reloc_undef[i] > SIZE_MAX / 2
-                           ? ELF64_R_INFO(def0 + (SIZE_MAX - reloc_undef[i]), u->relocs[i].type)
-                           : ELF64_R_INFO(undef0 + reloc_undef[i], u->relocs[i].type);
+                           ? MG_R_INFO(def0 + (SIZE_MAX - reloc_undef[i]), u->relocs[i].type)
+                           : MG_R_INFO(undef0 + reloc_undef[i], u->relocs[i].type);
             r.r_addend = u->relocs[i].addend;
             put(&rela, &r, sizeof r);
         }

@@ -343,11 +343,16 @@ RK_E(or_i_32) { (void)cc, rk_ori(b, r[0], r[1], (long long)RK_SX32(imm)); }
 RK_E(xor_i_64) { (void)cc, rk_xori(b, r[0], r[1], imm); }
 RK_E(xor_i_32) { (void)cc, rk_xori(b, r[0], r[1], (long long)RK_SX32(imm)); }
 
+/* guest memory's accesses (the moves' and extensions' memory operands): the machine's rk_gldst where its loads and
+   stores must be aligned and Arm's needn't be (RK_GLDST), else its plain ones */
+#ifndef RK_GLDST
+#define rk_gldst rk_ldst
+#endif
 /* moves: a load where operand 1 is memory, a store where operand 0 is, else the register's copy */
 static inline void risc_mov_form(SgXBuf* b, const unsigned char* r, int bytes) {
-    if (RK_ISMEM(r[1])) rk_ldst(b, 1, bytes, 0, r[0], r[1] - 64, b->index, b->disp);
+    if (RK_ISMEM(r[1])) rk_gldst(b, 1, bytes, 0, r[0], r[1] - 64, b->index, b->disp);
     else if (RK_ISMEM(r[0]))
-        rk_ldst(b, 0, bytes, 0, r[1], r[0] - 64, b->index, b->disp);
+        rk_gldst(b, 0, bytes, 0, r[1], r[0] - 64, b->index, b->disp);
     else
         rk_mv(b, r[0], r[1]);
 }
@@ -356,7 +361,7 @@ RK_E(mov_32) { (void)imm, (void)cc, risc_mov_form(b, r, 4); }
 RK_E(mov_16) { (void)imm, (void)cc, risc_mov_form(b, r, 2); }
 RK_E(mov_8) { (void)imm, (void)cc, risc_mov_form(b, r, 1); }
 static inline void risc_ext(SgXBuf* b, const unsigned char* r, int bits, int sign) {
-    if (RK_ISMEM(r[1])) rk_ldst(b, 1, bits / 8, sign, r[0], r[1] - 64, b->index, b->disp);
+    if (RK_ISMEM(r[1])) rk_gldst(b, 1, bits / 8, sign, r[0], r[1] - 64, b->index, b->disp);
     else if (sign)
         rk_sext(b, r[0], r[1], bits);
     else
