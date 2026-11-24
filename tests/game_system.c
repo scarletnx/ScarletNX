@@ -99,9 +99,12 @@ static void unwritten(const char* root) {
         assert(!fclose(held));
     }
     snx_error_sink(NULL);
-    assert(!snx_path_exists(tmp) && (text = snx_ini_value(ini, "name")) && !strcmp(text, "A Name")); /* as it was */
+    assert(!snx_path_exists(tmp));
+    text = snx_ini_value(ini, "name"); /* as it was */
+    assert(text && !strcmp(text, "A Name"));
     free(text);
-    assert((text = (char*)snx_read_file(ini, &size)) && strstr(text, "name=A Name\n"));
+    text = (char*)snx_read_file(ini, &size);
+    assert(text && strstr(text, "name=A Name\n"));
     free(text);
     free(tmp);
     free(ini);
