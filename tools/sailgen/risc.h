@@ -344,9 +344,27 @@ RK_E(xor_i_64) { (void)cc, rk_xori(b, r[0], r[1], imm); }
 RK_E(xor_i_32) { (void)cc, rk_xori(b, r[0], r[1], (long long)RK_SX32(imm)); }
 
 /* guest memory's accesses (the moves' and extensions' memory operands): the machine's rk_gldst where its loads and
-   stores must be aligned and Arm's needn't be (RK_GLDST), else its plain ones */
+   stores must be aligned and Arm's needn't be, or where the host is big-endian (RK_GLDST; the guest's memory is
+   little-endian, its numbers byte-reversed), else its plain ones. A big-endian machine has rk_bswap too:
+
+     rk_bswap(b, d, a, bytes)   d = the low 2, 4 or 8 bytes of a reversed, zero extended (RK_SA and RK_S2 its own,
+                                and RK_S1 for 8); RK_BSWAP where it has one */
+#ifndef RK_BIG_ENDIAN
+#define RK_BIG_ENDIAN 0
+#endif
 #ifndef RK_GLDST
+#if RK_BIG_ENDIAN
+#error "a big-endian machine's guest memory wants its rk_gldst"
+#endif
 #define rk_gldst rk_ldst
+#endif
+#ifndef RK_BSWAP
+#if RK_BIG_ENDIAN
+#error "a big-endian machine's atomics want its rk_bswap"
+#endif
+static inline void rk_bswap(SgXBuf* b, int d, int a, int bytes) {
+    (void)b, (void)d, (void)a, (void)bytes;
+}
 #endif
 /* moves: a load where operand 1 is memory, a store where operand 0 is, else the register's copy */
 static inline void risc_mov_form(SgXBuf* b, const unsigned char* r, int bytes) {

@@ -770,4 +770,15 @@ static inline SnxU32 sge_ppc64_nop(void) {
     return w;
 }
 
+/* RLWIMI8: rlwimi $RA, $RS, $SH, $MB, $ME (4 bytes) */
+static inline SnxU32 sge_ppc64_rlwimi(SnxU32 RA, SnxU32 RS, SnxU32 SH, SnxU32 MB, SnxU32 ME) {
+    SnxU32 w = 0x50000000u;
+    w |= ((SnxU32)RA & 0x1fu) << 16;
+    w |= ((SnxU32)RS & 0x1fu) << 21;
+    w |= ((SnxU32)SH & 0x1fu) << 11;
+    w |= ((SnxU32)MB & 0x1fu) << 6;
+    w |= ((SnxU32)ME & 0x1fu) << 1;
+    return w;
+}
+
 #endif

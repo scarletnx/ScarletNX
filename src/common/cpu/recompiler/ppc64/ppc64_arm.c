@@ -15,6 +15,12 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+/* the big-endian host's blocks (ppc64be_arm.c) are these with PPC_BE 1 */
+#ifndef PPC_BE
+#define PPC_BE 0
+#endif
+#define RK_BIG_ENDIAN PPC_BE
+#define MG_ARM_ELF_BIG PPC_BE
 /* the ELF PowerPC64 relocation the blocks have (the ELFv2 ABI's number) */
 enum { PPC_EM = 21, PPC_R_ADDR64 = 38 };
 #define MG_ARM_INC         "a32_ppc64.inc"

@@ -7,7 +7,10 @@
    arguments and puts its result in the ABI's result register (two of them for a native of 128 bits). An ELF
    relocatable object of the architecture (the back end's) is loaded into the code region, its relocations written by
    the recompiler's own snx_elf_relocate, an undefined symbol a trap of the native function registered under its name.
-   A little-endian architecture alone: the code and the test's C read the same structures. PowerPC64 runs as POWER9
+   A big-endian architecture's code reads the structures the test shares with it as its own numbers: the test's
+   swapper (hostuc_swapper) turns them over each time the code starts or a trap's native function returns to it, and
+   back each time it stops or calls one; its objects' tables are in its order (read here turned over), their
+   relocations' fields written in it. PowerPC64 runs as POWER9
    in 64-bit, hypervisor and little-endian mode (MSR), which Unicorn 2.1.4 needs patching for (its PPC64 models and
    MSR's HV): hostuc_new gives NULL where the MSR it set doesn't hold. MIPS64 runs as MIPS64R2 with Unicorn's virtual
    TLB, every address its own (the kernel's segments would want them under 2 GiB). Unicorn has no LoongArch: its
@@ -17,7 +20,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { HOSTUC_ARM64, HOSTUC_RV64, HOSTUC_PPC64LE, HOSTUC_MIPS64EL, HOSTUC_LA64 } HostUcArch;
+typedef enum {
+    HOSTUC_ARM64,
+    HOSTUC_RV64,
+    HOSTUC_PPC64LE,
+    HOSTUC_MIPS64EL,
+    HOSTUC_LA64,
+    HOSTUC_PPC64, /* big-endian, ELFv2 */
+    HOSTUC_MIPS64 /* big-endian */
+} HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap);
@@ -41,6 +52,10 @@ void hostuc_changed(HostUc* u, const void* p, size_t size);
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
 /* the loaded objects' symbol's address, 0 for none */
 uint64_t hostuc_symbol(HostUc* u, const char* name);
+/* 1 for a big-endian architecture */
+int hostuc_big(HostUcArch arch);
+/* swap(user): the structures the test shares with a big-endian architecture's code turned over (its own inverse) */
+void hostuc_swapper(HostUc* u, void (*swap)(void* user), void* user);
 /* the code at fn run with the first two arguments a0 and a1 until it returns: 0 and its result, -1 where Unicorn
    stopped (why on stderr) */
 int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* result);

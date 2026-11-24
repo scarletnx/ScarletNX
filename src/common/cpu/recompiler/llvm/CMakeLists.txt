@@ -208,6 +208,11 @@ target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64_arm.c")
 snx_sailgen_a64_risc(snx_llvm mips64)
 snx_sailgen_a32_risc(snx_llvm mips64)
+# the big-endian hosts' powerpc64 and mips64 back ends: the same sources with PPC_BE and MIPS_BE (their emitters' too)
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64be_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64be_arm.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64be_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mips64/mips64be_arm.c")
 # and the loongarch64 back end (src/common/cpu/recompiler/la64), over LLVM's LoongArch records
 target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/la64/la64_codegen.c"
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/la64/la64_arm.c")

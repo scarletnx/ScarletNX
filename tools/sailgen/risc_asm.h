@@ -30,10 +30,15 @@ static inline int sgx_imm_ok(SgX* x, int kind, SnxU64 k, unsigned w) {
 }
 
 static inline void sgx_mov_rr(SgXAsm* a, int dst, int src) { rk_mv(a->b, dst, src); }
+/* the guest's state field at disp holds guest bytes (A64's vector registers: guest memory's order), not a number */
+static inline int sgx_state_bytes(int disp);
 static inline void sgx_mov_mem(SgXAsm* a, int load, int w, int reg, int base, int disp) {
-    rk_ldst(a->b, load, w / 8, 0, reg, base, -1, disp);
+    if (RK_BIG_ENDIAN && base == SGX_BASE && sgx_state_bytes(disp)) rk_gldst(a->b, load, w / 8, 0, reg, base, -1, disp);
+    else
+        rk_ldst(a->b, load, w / 8, 0, reg, base, -1, disp);
 }
-static inline void sgx_load8(SgXAsm* a, int d, int base, int disp) { rk_ldst(a->b, 1, 1, 0, d, base, -1, disp); }
+/* a flag's 0 or 1: its 32-bit field whole (sgx_store_flag's), whose low byte a big-endian host has at its end */
+static inline void sgx_load8(SgXAsm* a, int d, int base, int disp) { rk_ldst(a->b, 1, 4, 0, d, base, -1, disp); }
 /* the condition's 0 or 1 (risc_cond in RK_S1), stored as the field's 32 bits */
 static inline void sgx_store_flag(SgXAsm* a, int at, int base, int disp, int cc) {
     (void)at;

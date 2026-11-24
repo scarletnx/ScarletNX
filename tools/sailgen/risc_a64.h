@@ -131,6 +131,9 @@ static inline void sgx_release(SgCtx* g, int after) {
 enum { SGX_M_NONE };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
+static inline int sgx_state_bytes(int disp) {
+    return (size_t)disp >= offsetof(CPU, v) && (size_t)disp < offsetof(CPU, v) + sizeof(V128) * 32;
+}
 /* the state's field at off to or from rt */
 static inline void rk_state(SgXBuf* b, int load, int bytes, int rt, size_t off) {
     rk_ldst(b, load, bytes, 0, rt, SGX_BASE, -1, (int)off);
@@ -144,8 +147,10 @@ static inline void risc_atomic(SgXBuf* b, int sz, int op, int expected, int desi
     size_t loop, out = 0, done;
     rk_add(b, RK_M_T1, RK_M_BASE, RK_M_ADDR, 1);
     if (bytes < 4) {
-        /* the word: the address's low bits its byte offset, the access a field of it at (offset * 8) */
+        /* the word: the address's low bits its byte offset, the access a field of it at (offset * 8); a big-endian
+           host's word has the offset's bytes at the other end (an aligned field's: offset ^ (4 - bytes)) */
         rk_andi(b, RK_M_T3, RK_M_T1, 3);
+        if (RK_BIG_ENDIAN) rk_xori(b, RK_M_T3, RK_M_T3, 4 - bytes);
         rk_slli(b, RK_M_T3, RK_M_T3, 3, 1);
         rk_andi(b, RK_M_T1, RK_M_T1, -4);
         shift = 1;
@@ -160,6 +165,8 @@ static inline void risc_atomic(SgXBuf* b, int sz, int op, int expected, int desi
         rk_zext(b, SGX_RET, RK_S1, 32);
     else
         rk_mv(b, SGX_RET, RK_S1);
+    /* a big-endian host's: the guest's number of the bytes */
+    if (RK_BIG_ENDIAN && bytes > 1) rk_bswap(b, SGX_RET, SGX_RET, bytes);
     /* new into RK_M_T2 */
     switch (op) {
     case 0: rk_add(b, RK_M_T2, SGX_RET, value, 1); break;
@@ -197,6 +204,8 @@ static inline void risc_atomic(SgXBuf* b, int sz, int op, int expected, int desi
         break;
     }
     }
+    /* and new's bytes in the host's order */
+    if (RK_BIG_ENDIAN && bytes > 1) rk_bswap(b, RK_M_T2, RK_M_T2, bytes);
     if (shift) {
         /* the word with the field replaced: (word & ~(mask << off)) | ((new & mask) << off) */
         rk_li(b, RK_S2, bytes == 1 ? 0xffu : 0xffffu);

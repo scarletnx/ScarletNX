@@ -215,13 +215,18 @@ function(snx_sailgen_a64_risc target machine)
     set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     snx_sailgen_machine_backends(${machine} a64 files args)
-    add_custom_command(OUTPUT "${out}/a64_${machine}.inc"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64_risc.roots" ${args} --profile "${profile}"
-                -o "${out}/a64_${machine}.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64_risc.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
-                "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
-        COMMENT "Generating the A64 emitters' ${machine} code from Sail" VERBATIM)
+    # one rule a directory: a big-endian host's targets (ppc64be...) share the machine's emitters
+    get_property(made DIRECTORY PROPERTY SNX_SAILGEN_A64_${machine})
+    if(NOT made)
+        set_property(DIRECTORY PROPERTY SNX_SAILGEN_A64_${machine} 1)
+        add_custom_command(OUTPUT "${out}/a64_${machine}.inc"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+            COMMAND snx-sailgen --generate "${dir}/a64_risc.roots" ${args} --profile "${profile}"
+                    -o "${out}/a64_${machine}.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+            DEPENDS snx-sailgen "${dir}/a64_risc.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+                    "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+            COMMENT "Generating the A64 emitters' ${machine} code from Sail" VERBATIM)
+    endif()
     target_sources(${target} PRIVATE "${out}/a64_${machine}.inc")
     target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
 endfunction()
@@ -230,13 +235,18 @@ function(snx_sailgen_a32_risc target machine)
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
     snx_sailgen_machine_backends(${machine} a32 files args)
-    add_custom_command(OUTPUT "${out}/a32_${machine}.inc"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
-                -o "${out}/a32_${machine}.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
-        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
-                "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
-        COMMENT "Generating the AArch32 emitters' ${machine} code from Sail" VERBATIM)
+    # one rule a directory: a big-endian host's targets (ppc64be...) share the machine's emitters
+    get_property(made DIRECTORY PROPERTY SNX_SAILGEN_A32_${machine})
+    if(NOT made)
+        set_property(DIRECTORY PROPERTY SNX_SAILGEN_A32_${machine} 1)
+        add_custom_command(OUTPUT "${out}/a32_${machine}.inc"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+            COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                    -o "${out}/a32_${machine}.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+            DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
+                    "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+            COMMENT "Generating the AArch32 emitters' ${machine} code from Sail" VERBATIM)
+    endif()
     target_sources(${target} PRIVATE "${out}/a32_${machine}.inc")
     target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
 endfunction()

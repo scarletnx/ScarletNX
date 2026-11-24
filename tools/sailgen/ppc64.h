@@ -232,6 +232,58 @@ static inline void rk_ldst(SgXBuf* b, int load, int bytes, int sign, int rt, int
     }
 }
 
+#if RK_BIG_ENDIAN
+/* a big-endian host's: d = the low bytes of a reversed (no BRH/BRW/BRD before POWER10: rotates and inserts) */
+static inline void ppc_bswap32(SgXBuf* b, int d, int a) { /* d != a, d's high half zero after */
+    ppc_w(b, sge_ppc64_rlwinm((SnxU32)d, (SnxU32)a, 8, 0, 31));
+    ppc_w(b, sge_ppc64_rlwimi((SnxU32)d, (SnxU32)a, 24, 0, 7));
+    ppc_w(b, sge_ppc64_rlwimi((SnxU32)d, (SnxU32)a, 24, 16, 23));
+}
+#define RK_BSWAP 1
+static inline void rk_bswap(SgXBuf* b, int d, int a, int bytes) {
+    if (bytes == 2) {
+        ppc_w(b, sge_ppc64_rlwinm(RK_SA, (SnxU32)a, 8, 16, 23));
+        ppc_w(b, sge_ppc64_rlwinm(RK_S2, (SnxU32)a, 24, 24, 31));
+        rk_or(b, d, RK_SA, RK_S2);
+    } else if (bytes == 4) {
+        ppc_bswap32(b, RK_SA, a);
+        rk_mv(b, d, RK_SA);
+    } else {
+        /* the low word's reversed into the high one, the high word's into the low */
+        ppc_w(b, sge_ppc64_rldicl(RK_S2, (SnxU32)a, 32, 32));
+        ppc_bswap32(b, RK_SA, a);
+        ppc_w(b, sge_ppc64_rldicr(RK_SA, RK_SA, 32, 31));
+        ppc_bswap32(b, RK_S1, RK_S2);
+        rk_or(b, d, RK_SA, RK_S1);
+    }
+}
+/* guest memory's loads and stores (risc.h's moves): LHBRX, LWBRX and LDBRX (and their stores) of base and RK_SA (the
+   index and the displacement), a byte's the plain one's; a reversed load is zero extended, so sign extended after */
+#define RK_GLDST 1
+static inline void rk_gldst(SgXBuf* b, int load, int bytes, int sign, int rt, int base, int index, int disp) {
+    SnxU32 r = (SnxU32)rt, ra = (SnxU32)base, rb;
+    if (bytes == 1) {
+        rk_ldst(b, load, bytes, sign, rt, base, index, disp);
+        return;
+    }
+    if (index >= 0 && !disp) rb = (SnxU32)index;
+    else {
+        rk_li(b, RK_SA, (SnxU64)(long long)disp);
+        if (index >= 0) rk_add(b, RK_SA, RK_SA, index, 1);
+        rb = RK_SA;
+    }
+    if (ra == 0) { /* r0 as RA reads 0: the base added into RB instead */
+        rk_add(b, RK_SA, (int)rb, 0, 1);
+        rb = RK_SA;
+    }
+    if (load) {
+        ppc_w(b, bytes == 2 ? sge_ppc64_lhbrx(r, ra, rb) : bytes == 4 ? sge_ppc64_lwbrx(r, ra, rb) : sge_ppc64_ldbrx(r, ra, rb));
+        if (sign && bytes < 8) rk_sext(b, rt, rt, 8 * bytes);
+    } else
+        ppc_w(b, bytes == 2 ? sge_ppc64_sthbrx(r, ra, rb) : bytes == 4 ? sge_ppc64_stwbrx(r, ra, rb) : sge_ppc64_stdbrx(r, ra, rb));
+}
+#endif
+
 /* ---- branches, calls and the frame ---- */
 
 static inline SnxU32 ppc_word_at(const SgXBuf* b, size_t at) {

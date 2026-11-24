@@ -680,8 +680,17 @@ static int setend(SgCtx* g) {
 
 /* ---- VFP: llvm_vector.inc's scalar part (vector_memory, vector_transfer, vector_fp), its hot paths fp_call's ---- */
 
-/* the D bank's byte offset off (S2n at Dn's, S2n+1 4 past it: the host's little-endian words) as a state field */
-static int voff(unsigned off) { return (int)(offsetof(SnxArmCPU, d) + off); }
+/* the D bank's byte offset off (S2n at Dn's, S2n+1 4 past it) as a state field of width bits: Dn is a number, so a
+   big-endian host (RK_BIG_ENDIAN) has S2n's word 4 past its start and S2n+1's at it */
+#if defined(RK_BIG_ENDIAN) && RK_BIG_ENDIAN
+#define MG_ARM_VWORD 4u
+#else
+#define MG_ARM_VWORD 0u
+#endif
+static int voff_w(unsigned off, unsigned width) {
+    if (width != 64 && off < 32 * 8) off ^= MG_ARM_VWORD;
+    return (int)(offsetof(SnxArmCPU, d) + off);
+}
 /* FPSCR, as a field the D bank's offsets reach */
 #define FPSCR_OFF ((unsigned)(offsetof(SnxArmCPU, fpscr) - offsetof(SnxArmCPU, d)))
 /* a VFP register's bits (32 or 64) in a general-purpose register */
@@ -689,7 +698,7 @@ static SgD vbits(SgCtx* g, unsigned off, unsigned width) {
     SgX* x = sgx(g);
     SgXIns* i = sgx_append(x, SGX_K_LOAD);
     i->w = (unsigned char)(width == 64 ? 64 : 32);
-    i->disp = voff(off);
+    i->disp = voff_w(off, width);
     i->def = sgx_vreg(x, x->n - 1, width == 64 ? 64 : 32);
     return sgx_val(width, i->def);
 }
@@ -698,7 +707,8 @@ static void vset(SgCtx* g, unsigned off, unsigned width, SgD v) {
     SgX* x = sgx(g);
     if (v.x) {
         int in[4] = {0, v.x, 0, 0};
-        sgx_vins(x, width == 64 ? SGX_VF_ST8 : SGX_VF_ST4, 0, 0, in, 0, 0, SGX_VM_STATE, 0, 0, voff(off), 0, 0);
+        sgx_vins(x, width == 64 ? SGX_VF_ST8 : SGX_VF_ST4, 0, 0, in, 0, 0, SGX_VM_STATE, 0, 0, voff_w(off, width), 0,
+                 0);
         return;
     }
     {
@@ -706,13 +716,13 @@ static void vset(SgCtx* g, unsigned off, unsigned width, SgD v) {
         SgXIns* i = sgx_append(x, SGX_K_STORE);
         i->w = (unsigned char)(width == 64 ? 64 : 32);
         i->in[0] = r;
-        i->disp = voff(off);
+        i->disp = voff_w(off, width);
     }
 }
 /* a VFP register as a vector value (a 4- or 8-byte load from the state) */
 static SgD vxmm(SgCtx* g, unsigned off, unsigned width) {
     return sgx_xval(width, sgx_vins(sgx(g), width == 64 ? SGX_VF_LD8 : SGX_VF_LD4, 0, 0, NULL, 0, 1, SGX_VM_STATE, 0,
-                                    0, voff(off), 0, 0));
+                                    0, voff_w(off, width), 0, 0));
 }
 /* FPSCR lets the hot path run: round to nearest and no trap enabled, and for arithmetic (not a compare) IXC set already
    (the inline code raises no flag): fp_call's mask. Once a region, until a VMSR or a call */
@@ -1866,6 +1876,9 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     if (!o) return -1;
     snx_xelf_set_machine(o, MG_ARM_EM);
     snx_xelf_set_flags(o, MG_ARM_ELF_FLAGS);
+#ifdef MG_ARM_ELF_BIG
+    snx_xelf_set_big(o, MG_ARM_ELF_BIG);
+#endif
     mg_entry_exit_fn(o);
     qsort(c->made, c->nmade, sizeof *c->made, by_address);
     for (size_t i = 0; i < c->nmade; ++i) {

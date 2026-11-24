@@ -3485,26 +3485,32 @@ if(NOT WIN32)
     find_library(SNX_UNICORN_LIBRARY unicorn)
     if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # machine, Unicorn's architecture (host_unicorn.h), the machine's features the code may use
-        foreach(mach arm64:HOSTUC_ARM64:3 rv64:HOSTUC_RV64:0 ppc64:HOSTUC_PPC64LE:0 mips64:HOSTUC_MIPS64EL:0 la64:HOSTUC_LA64:0)
+        # (a big-endian host's, ppc64be and mips64be: its machine's emitters with RK_BIG_ENDIAN)
+        foreach(mach arm64:HOSTUC_ARM64:3 rv64:HOSTUC_RV64:0 ppc64:HOSTUC_PPC64LE:0 mips64:HOSTUC_MIPS64EL:0
+                     la64:HOSTUC_LA64:0 ppc64be:HOSTUC_PPC64:0 mips64be:HOSTUC_MIPS64:0)
             string(REPLACE ":" ";" parts "${mach}")
             list(GET parts 0 m)
             list(GET parts 1 uc)
             list(GET parts 2 features)
+            string(REGEX REPLACE "be$" "" gen "${m}")
             add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
                            support/host_unicorn.c support/la64_interp.c
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
             snx_cpu_helpers_flags(snx-test-sail-${m})
             snx_test_target(snx-test-sail-${m} gnu23)
-            target_compile_definitions(snx-test-sail-${m} PRIVATE SAIL_MACH_INC="a64_${m}.inc" SAIL_MACH_UC=${uc}
+            target_compile_definitions(snx-test-sail-${m} PRIVATE SAIL_MACH_INC="a64_${gen}.inc" SAIL_MACH_UC=${uc}
                                                                      SAIL_MACH_HOST=${features})
+            if(NOT gen STREQUAL m)
+                target_compile_definitions(snx-test-sail-${m} PRIVATE RK_BIG_ENDIAN=1)
+            endif()
             target_include_directories(snx-test-sail-${m} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
             target_link_libraries(snx-test-sail-${m} PRIVATE snx_llvm snx_driver "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
             snx_decodetree_a64(snx-test-sail-${m})
             if(m STREQUAL "arm64")
                 snx_sailgen_a64_arm64(snx-test-sail-${m})
             else()
-                snx_sailgen_a64_risc(snx-test-sail-${m} ${m})
+                snx_sailgen_a64_risc(snx-test-sail-${m} ${gen})
             endif()
             add_test(NAME sail_${m} COMMAND snx-test-sail-${m})
             add_test(NAME sail_${m}_spill COMMAND snx-test-sail-${m} --pool 3 --states 32)
@@ -3938,7 +3944,7 @@ add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backend
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
-    foreach(m arm64 rv64 ppc64 mips64 la64)
+    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c support/la64_interp.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
@@ -3953,7 +3959,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
-    foreach(m arm64 rv64 ppc64 mips64 la64)
+    foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-arm-${m} arm_x64.c support/host_unicorn.c support/la64_interp.c)
         snx_test_target(snx-test-arm-${m} gnu23)

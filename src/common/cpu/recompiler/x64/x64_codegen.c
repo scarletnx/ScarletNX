@@ -25,7 +25,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
-#include <elf.h>
+#include "common/cpu/recompiler/llvm/elf_object.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>

@@ -36,6 +36,10 @@ static inline int sgx_a32_patch(SgCtx* g, SgXBuf* b) {
 
 /* ---- the machine's words ---- */
 
+static inline int sgx_state_bytes(int disp) {
+    (void)disp;
+    return 0; /* SnxArmCPU's fields are all numbers */
+}
 static inline void sgx_a32_state(SgXBuf* b, int load, int bytes, int rt, size_t off) {
     rk_ldst(b, load, bytes, 0, rt, SGX_BASE, -1, (int)off);
 }
@@ -117,12 +121,19 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             rk_add(b, t1, t1, base, 1);
             if (bytes < 4) {
                 rk_andi(b, RK_FA, t1, 3);
+                if (RK_BIG_ENDIAN) rk_xori(b, RK_FA, RK_FA, (long long)(4 - bytes)); /* the word's other end */
                 rk_slli(b, RK_FA, RK_FA, 3, 1);
                 rk_andi(b, t1, t1, -4);
             }
-            /* RK_FB = the expected value (the load-exclusive's, at the access's size) */
+            /* RK_FB = the expected value (the load-exclusive's, at the access's size); a big-endian host's compare
+               and store in its own order, the expected and the value byte-reversed once */
             sgx_a32_state(b, 1, 8, RK_FB, offsetof(SnxArmCPU, exclusive_value));
             if (bytes < 8) rk_zext(b, RK_FB, RK_FB, (int)(8 * bytes));
+            if (RK_BIG_ENDIAN && bytes > 1) {
+                rk_bswap(b, RK_FB, RK_FB, (int)bytes);
+                rk_bswap(b, t2, val, (int)bytes);
+                val = t2;
+            }
             loop = b->n;
             rk_lr(b, RK_S1, t1, (int)word);
             /* old: the access's bits */
