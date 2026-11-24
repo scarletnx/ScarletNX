@@ -2159,7 +2159,7 @@ int main(void) {
        reach it and a long one goes under it; in the top right corner, under the list where that is, when there is no room
        under it */
     {
-        static const int all[4] = {0, 0, SW, SH};
+        static const int all[4] = {0, 0, SW, SH}, narrow[4] = {0, 0, 900, SH};
         static SnxUiQuad kept[1024], under[1024];
         SnxUiList box_quads = {kept, 0, 1024}, list_quads = {under, 0, 1024};
         const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
@@ -2190,7 +2190,10 @@ int main(void) {
         assert(hud_box_drawn(debug) && debug[0] > cw + 15 * cw);
         draw();
         assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
-        overlay_toast(GUI_ICON_FIRST, "a notification whose words reach the middle of the picture's width", 1000);
+        list_quads.n = 0;
+        hud_draw(&list_quads, narrow, stats_scale(s), NULL, 0);
+        assert(hud_box_drawn(debug) && debug[0] < 40 * cw);
+        overlay_toast(GUI_ICON_FIRST, "a notification whose words reach the list in the middle", 1000);
         draw();
         assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == debug[1] + debug[3] + ch / 2);
         overlay_toast(GUI_ICON_FIRST, "", 1000);
