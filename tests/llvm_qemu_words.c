@@ -41,14 +41,14 @@ static int push(uint32_t** out, size_t* count, size_t* capacity, uint32_t word) 
     return 0;
 }
 
-size_t lqd_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
+static size_t row_words(unsigned samples, LqdRandom random, uint64_t without, uint32_t** out) {
     size_t count = 0, capacity = 0, i;
     *out = NULL;
     for (i = 0; i < ROWS; ++i) {
         const SnxA64Row* row = &snx_a64_rows[i];
         uint32_t bases[2], first = row->value, second = row->value;
         unsigned s, k, b;
-        if (row->feature & (SNX_A64_FEAT_SME | SNX_A64_FEAT_MOPS)) continue;
+        if (row->feature & without) continue;
         for (s = 0; s < samples; ++s) {
             uint32_t word = row->value;
             unsigned attempt;
@@ -76,6 +76,12 @@ size_t lqd_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
             }
     }
     return count;
+}
+size_t lqd_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
+    return row_words(samples, random, SNX_A64_FEAT_SME | SNX_A64_FEAT_MOPS, out);
+}
+size_t lqd_all_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
+    return row_words(samples, random, 0, out);
 }
 
 const char* lqd_op_name(uint32_t word, int* unrunnable) {

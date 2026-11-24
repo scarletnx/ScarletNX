@@ -16,6 +16,8 @@ typedef uint64_t (*LqdRandom)(void);
    left out (lqd_op_name). *out is
    allocated; the count is returned */
 size_t lqd_row_words(unsigned samples, LqdRandom random, uint32_t** out);
+/* the same with those rows: for what doesn't run the words */
+size_t lqd_all_row_words(unsigned samples, LqdRandom random, uint32_t** out);
 /* the name a word decodes to under the max target, or the space of words no row decodes: "(SVE space)",
    "(SME space)", "(unallocated)". *unrunnable is set for the words QEMU's runner can't host: SME's (SMSTART would
    leave it in streaming mode) and MOPS's (their sizes and directions come from registers a random state leaves

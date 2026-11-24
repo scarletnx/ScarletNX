@@ -201,6 +201,15 @@ static void hints(void) {
     /* MRS x0, TPIDR_EL0: L=1 op0=11 op1=011 CRn=1101 CRm=0000 op2=010 (C6.2.245) */
     DEC(0xd53bd040u, SW, SYS);
     A(l, 1), A(op0, 3), A(op1, 3), A(crn, 13), A(crm, 0), A(op2, 2), A(rt, 0);
+    /* LDCLRP, LDSETP and SWPP x1, x2, [x20]: FEAT_LSE128; XZR, and the same register twice, are reserved */
+    UNDEF(0x19221281u, SW);
+    DEC(0x19221281u, MAX, LDCLRP);
+    DEC(0x19223281u, MAX, LDSETP);
+    DEC(0x19228281u, MAX, SWPP);
+    A(rt, 1), A(rt2, 2), A(rn, 20), NEEDS(SNX_A64_FEAT_LSE128);
+    UNDEF(0x1922129fu, MAX);
+    UNDEF(0x193f3281u, MAX);
+    UNDEF(0x19218281u, MAX);
     /* WFET x3: FEAT_WFxT */
     UNDEF(0xd5031003u, SW);
     DEC(0xd5031003u, MAX, WFET);

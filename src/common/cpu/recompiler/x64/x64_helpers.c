@@ -28,6 +28,8 @@ u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
+void snx_x64_set(CPU* c, u64 a, u64 size, u64 value);
+void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
 extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
@@ -240,6 +242,16 @@ u64 snx_x64_sm4_box(u64 a) {
         0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84, 0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e,
         0xd7, 0xcb, 0x39, 0x48};
     return box[a & 255];
+}
+
+/* FEAT_MOPS's SET and CPY: size bytes of guest memory set to value's low byte, or copied as if through another place */
+void snx_x64_set(CPU* c, u64 a, u64 size, u64 value) {
+    u8* M = c->mem;
+    if (size) memset(MP(a), (int)(value & 255), (size_t)size);
+}
+void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size) {
+    u8* M = c->mem;
+    if (size) memmove(MP(to), MP(from), (size_t)size);
 }
 
 /* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's
