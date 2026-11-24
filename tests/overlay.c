@@ -162,9 +162,9 @@ static int capture(int ask) {
 }
 static const Renderer renderer = {.capture = capture};
 const Renderer* g_renderer = &renderer;
-const IniOpt g_backend_ini[] = {
-    {"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen", "Off|Fingers|Fingers and mouse", 0, 0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+const IniOpt g_backend_ini[] = {{"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen",
+                                 "Off|Fingers|Fingers and mouse", 0, 0, 0, NULL},
+                                {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 /* each player's own, two of them here: swap and vibration, every player's until picked, and a map */
 static SnxPlayerConfig players[2];
 static int player_maps_stored;
@@ -174,18 +174,19 @@ void gamepad_store_player_map(int p) {
     ++player_maps_stored;
 }
 const IniOpt g_gamepad_players_ini[] = {{"gamepad_p1_swap_ab", "-1", NULL, INI_INT, 0, &g_settings.player_swap_a_b[0],
-                                         -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0},
+                                         -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0, NULL},
                                         {"gamepad_p1_rumble", "-10", NULL, INI_INT, 0, &g_settings.player_vibration[0],
-                                         -10, 100, NULL, "Vibration", "As All|Off|#%", 10, 0, 0},
-                                        {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+                                         -10, 100, NULL, "Vibration", "As All|Off|#%", 10, 0, 0, NULL},
+                                        {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 const IniOpt g_gamepad_ini[] = {
-    {"gamepad_swap_ab", "0", NULL, INI_INT, 0, &g_settings.swap_a_b, 0, 1, NULL, "Swap A/B", "Off|On", 0, 0, 0},
+    {"gamepad_swap_ab", "0", NULL, INI_INT, 0, &g_settings.swap_a_b, 0, 1, NULL, "Swap A/B", "Off|On", 0, 0, 0, NULL},
     {"gamepad_deadzone", "20", NULL, INI_INT, 0, &g_settings.stick_dead_zone, 0, 90, NULL, "Stick dead zone", "#%", 5,
-     0, 0},
-    {"gamepad_rumble", "100", NULL, INI_INT, 0, &g_settings.vibration, 0, 100, NULL, "Vibration", "Off|#%", 10, 0, 0},
+     0, 0, NULL},
+    {"gamepad_rumble", "100", NULL, INI_INT, 0, &g_settings.vibration, 0, 100, NULL, "Vibration", "Off|#%", 10, 0, 0,
+     NULL},
     {"gamepad_background", "0", NULL, INI_INT, 0, &g_settings.background_input, 0, 1, NULL, "Background input",
-     "Off|On", 0, 0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+     "Off|On", 0, 0, 0, NULL},
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 static char stored[64], log_[512]; /* the last key kept, and every key=value since log_ was emptied */
 static void store(const char* key, const char* value) {
     size_t n = strlen(log_);

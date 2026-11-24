@@ -42,6 +42,10 @@
 #                         there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
+#     steps V V...        an int's values the menus offer, in order (ini.h's IniOpt steps): its words name each
+#                         (Auto|# MB), a value between two is still read, and the launcher keeps it, shown as itself
+#     open                a text whose words are its common values, not every one (ini.h's INI_OPEN): the launcher
+#                         keeps a value none of them is, shown as itself
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
 #                         INI_SLIDER): every step a word the launcher lists, its default one of them
 #     perf                off its default it changes how fast the game runs, and nothing on the screen shows it (ini.h's
@@ -584,6 +588,7 @@ setting BC7 queue
     default 0
     startup
     words Auto|#
+    steps 0 256 512 1024 2048 4096 8192 16384
     perf
     help The thousands of blocks the BC7 encoder may have queued on the GPU. An upload submits at each half of them
     help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
@@ -605,6 +610,7 @@ setting ASTC quick Mtexels
     int 0 4096
     default 8
     words Never|#
+    steps 0 1 2 4 8 16 32 64 128 256 512 1024 2048 4096
     perf
     help With ASTC textures encoded as BC7 as they load (Auto for an Ounce game, or BC7 at load), a texture level of
     help this many megatexels or more, all its layers counted (8 = 4096x2048, or two layers of 2048x2048), is encoded
@@ -640,6 +646,8 @@ setting FPS limit
     key fps_limit
     text 16
     default game
+    words game=Game's|0=No limit|30=30 FPS|60=60 FPS|90=90 FPS|120=120 FPS|144=144 FPS|165=165 FPS|240=240 FPS
+    open
     set options_fps_set
     perf
     help game = the pace the game asks for, as on the console (60 FPS, or 30 for a game made for 30); 0 = no limit;
@@ -677,8 +685,10 @@ setting Memory fit mode
     help whatever the device can give. It takes the place of memory_fit, whose 0 was Off (docs/user/deprecations.md)
 setting Heap limit (MB)
     key heap_max_mb
-    text 32
+    int 0 1048576
     default 0
+    words No limit|# MB
+    steps 0 512 1024 1536 2048 3072 4096 6144 8192
     startup
     set options_heap_max_set
     perf
@@ -690,6 +700,7 @@ setting Map limit (MB)
     default-if SNX_IOS 256
     startup
     words No limit|#
+    steps 0 128 256 512 1024 2048 4096 8192 16384 32768
     perf
     help The most of the game's files mapped into memory, in MB, as the game first reads them; 0 = no limit. A file past
     help it is read from disk when the game asks, slower, which leaves address space for threads and graphics where a
@@ -701,6 +712,7 @@ setting Map limit (files)
     default-if SNX_IOS 2048
     startup
     words No limit|#
+    steps 0 512 1024 2048 4096 8192 16384 32768 65536
     perf
     help The most of the game's files mapped, as the game first reads them; 0 = no limit. A file past it is read from
     help disk when the game asks: each mapped file holds a descriptor, of which a device may give the whole app a few
@@ -710,6 +722,8 @@ setting Thread stack (MB)
     int 1 256
     default 32
     default-if SNX_IOS 8
+    words # MB
+    steps 1 2 4 8 16 32 64 128 256
     startup
     perf
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
@@ -809,6 +823,7 @@ setting JIT region size
     default 0
     startup
     words Auto|# instructions
+    steps 0 256 512 1024 2048 4096 8192 16384 32768 65536
     perf
     help The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function
     help cannot stall the game for seconds. Branches out of it resume through the dispatch table. 0 = up to 4096, and
@@ -819,6 +834,7 @@ setting JIT live budget
     default 0
     startup
     words Auto|# instructions
+    steps 0 16 32 64 128 256 512 1024 4096
     perf
     help The instructions beyond the missed code itself that a miss the game is waiting on discovers (callees).
     help The background queue keeps its larger budget. 0 = 64
@@ -1313,6 +1329,8 @@ setting Log size limit
     key log_max
     int 1 1024
     default 16
+    words # MiB
+    steps 1 2 4 8 16 32 64 128 256 512 1024
     help The game log's size in MiB, 1 to 1024: past it the run's start stays and the oldest lines after it go, said in
     help the log and once over the game, so the log always ends with the last lines. The 5 last runs' logs are kept,
     help the ones before this run's in logs/ beside it, named by when each was last written
@@ -1565,6 +1583,8 @@ setting Host page size
     key host_page
     int 0 1048576
     default 0
+    words Host's|# bytes
+    steps 0 8192 16384 32768 65536 131072 262144 524288 1048576
     startup
     help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
     help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
@@ -1577,6 +1597,7 @@ setting NCE foreign scan
     default 0
     startup
     words Off|# s
+    steps 0 1 2 5 10 30 60 120 300 600 1800 3600
     help Under NCE, the seconds between two looks at the game's addresses for what of the host's process is not the
     help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
     help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
@@ -2026,6 +2047,8 @@ setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
     default 0
+    words Device's|# MiB
+    steps 0 64 128 256 512 1024 2048 4096
     startup
     help The largest Vulkan allocation in MiB, below the device's own (larger images in pieces with sparse binding),
     help to test the pieces on a driver that takes anything (lavapipe). 0 = the default
@@ -2047,6 +2070,8 @@ setting Submit every
     key vk_submit_every
     int 0 65536
     default 512
+    words Only when needed|#
+    steps 0 64 128 256 512 1024 2048 4096 8192 65536
     help The draws, dispatches and copy bands that a submission holds at most: what was recorded goes to the GPU after
     help this much work, so the GPU starts on a frame while the rest of it is recorded (Eden's renderer submits every
     help 4096 draws). 0 = a submission only where the GPU's results are needed (a present, a wait, a readback)
@@ -2054,6 +2079,8 @@ setting Vulkan memory budget
     key vk_budget_mb
     int 0 INT_MAX
     default 0
+    words Driver's|# MiB
+    steps 0 256 512 1024 2048 3072 4096 6144 8192 12288 16384
     startup
     help The caches keep within this many MiB of the GPU's heap, below the driver's budget, for testing. 0 = the
     help driver's budget alone
@@ -2670,6 +2697,7 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
+    steps 0 1 2 3 4 5 6 7 8 10 12 14 16 20 24 28 32 48 64 96 128 256
     help The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each
     help second while the memory the code units are seen to take leaves room for it and the system reports no memory
     help pressure, up to the cores with the last quarter left free (aot_threads_most), so the machine stays responsive;
@@ -2680,6 +2708,7 @@ setting AOT threads most
     int 0 1024
     default 0
     words Auto|#
+    steps 0 1 2 3 4 5 6 7 8 10 12 14 16 20 24 28 32 48 64 96 128 256
     help The most threads aot_threads' Auto opens: 0 (Auto) = the cores with the last quarter left free; N = N at most,
     help whatever the cores. Only Auto takes it: with aot_threads at N, the recompile runs on N
 setting Unit size
@@ -2689,6 +2718,7 @@ setting Unit size
     default-if __ANDROID__ 20000
     default-if SNX_IOS 20000
     words # instructions
+    steps 5000 10000 20000 45000 90000 180000 360000
     perf
     help The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled
     help on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at
@@ -2699,6 +2729,7 @@ setting Unit cache ceiling
     int 0 1048576
     default 512
     words Off|# MB
+    steps 0 64 128 256 512 1024 2048 4096 8192
     help The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit
     help made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a
     help hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 =

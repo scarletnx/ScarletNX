@@ -131,20 +131,23 @@ int main(int argc, char** argv) {
            !strcmp(s.values[opt + 3].key, "aot_threads_most") &&
            !strcmp(s.values[opt + 3].def, "0")); /* Auto, the default, which is not passed */
     assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", ""));
+           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", "0") &&
+           !gui_settings_value(&s, "aot_threads_most")); /* back to Auto, a step of its list */
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit size") &&
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
+           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", "90000") &&
+           !gui_settings_value(&s, "unit_instructions"));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache ceiling") &&
            !strcmp(s.values[opt + 5].key, "unit_cache_ceil_mb") && strstr(s.keys[opt + 5].about, "0 = none held"));
     assert(!strcmp(s.values[opt + 5].def, "512") &&
            strstr(s.keys[opt + 5].about, "a hundredth of the machine's memory at most")); /* 512 MB */
     assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", ""));
+           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", "512") &&
+           !gui_settings_value(&s, "unit_cache_ceil_mb"));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
-    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
+    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "0") &&
            !gui_settings_recompile(&s, 0, NULL, options));
     /* Settings > GBA's Covers, the launcher's own after Launch's: None by default, Box art (libretro-thumbnails) when
        picked, an unknown value refused, and never a recompile's option nor a run's */
@@ -838,8 +841,12 @@ int main(int argc, char** argv) {
         assert(words(key(&s, "fullscreen")) == 2 && words(key(&s, "controls")) == 3);
         assert(!strcmp(on_screen(&s, "fullscreen"), "Off [default]") &&
                !strcmp(on_screen(&s, "controls"), "Auto [default]"));
-        /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says */
-        assert(key(&s, "map_limit_mb")->numeric && key(&s, "map_limit_mb")->hi == 1048576.0);
+        /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says; a number
+           with steps (settings.txt's steps) a word row of them instead, open to a value between two */
+        assert(key(&s, "vita_lockstep_steps")->numeric && key(&s, "vita_lockstep_steps")->hi == 2147483647.0);
+        assert(key(&s, "map_limit_mb")->type == GUI_KEY_WORD && s.values[at(&s, "map_limit_mb")].open &&
+               !strcmp(key(&s, "map_limit_mb")->words[0], "No limit") && gui_settings_set(&s, "map_limit_mb", "300") &&
+               !strcmp(on_screen(&s, "map_limit_mb"), "300") && gui_settings_set(&s, "map_limit_mb", "0"));
         assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);
         page = at(&s, "Buttons");
         assert(page > 0 && s.values[page].count == 1 + 17 && !strcmp(s.keys[page + 2].key, "L"));

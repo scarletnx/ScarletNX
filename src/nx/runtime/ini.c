@@ -234,8 +234,25 @@ double ini_float_step(double v, double lo, double hi, int dir) {
         to = (dir < 0 ? (double)(long long)(at - (at < 0 ? 1 : 0)) : (double)(long long)(at + (at < 0 ? 0 : 1))) * unit;
     return to < lo ? lo : to > hi ? hi : to;
 }
+/* the i-th of o's steps (settings.txt's steps), into *v: 1, 0 past the last */
+static int step_at(const IniOpt* o, int i, int* v) {
+    const char* c = o->steps;
+    while (c && i-- > 0 && (c = strchr(c, '|')) != NULL) ++c;
+    if (!c || !*c) return 0;
+    *v = atoi(c);
+    return 1;
+}
 int ini_step(const IniOpt* o, int v, int dir) {
     int step = step_of(o), count;
+    if (o->steps) { /* the next listed value either way, stopping at the ends; from one between two, its neighbour */
+        int i, at, prev = (int)o->lo;
+        for (i = 0; step_at(o, i, &at); ++i) {
+            if (dir > 0 && at > v) return at;
+            if (dir < 0 && at >= v) return i ? prev : at;
+            prev = at;
+        }
+        return dir < 0 ? prev : (i ? prev : v);
+    }
     if (!o->words || strchr(o->words, '#') || (o->flags & INI_SLIDER)) {
         double n = (double)v + (double)dir * step;
         return n < o->lo ? (int)o->lo : n > o->hi ? (int)o->hi : (int)n;
@@ -273,6 +290,16 @@ static void list_values(Listing* l, const IniOpt* o) {
         return;
     }
     if (o->type != INI_INT) return;
+    if (o->steps) { /* the values listed, each with its word */
+        for (int i = 0; step_at(o, i, &v); ++i) {
+            if (o->words)
+                ini_word(o, v, word, sizeof word);
+            else
+                snprintf(word, sizeof word, "%d", v);
+            put(l, "%s%d=%s", i ? "|" : "", v, word);
+        }
+        return;
+    }
     /* typed: a number of no words, or more than the menus step through */
     if (!o->words && (o->lo < 0 || (o->hi - o->lo) / step + 1 > 16)) return;
     if (o->words && strchr(o->words, '#') && (o->hi - o->lo) / step + 1 > 128) return;
@@ -361,9 +388,12 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                if (o->flags & (INI_NEEDS_BUILD | INI_SLIDER))
+                int open = (o->flags & INI_OPEN) || o->steps;
+                if ((o->flags & (INI_NEEDS_BUILD | INI_SLIDER)) || open)
                     put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
-                if (o->flags & INI_SLIDER) put(&l, "\tslider");
+                if ((o->flags & INI_SLIDER) || open)
+                    put(&l, "\t%s%s%s", o->flags & INI_SLIDER ? "slider" : "",
+                        (o->flags & INI_SLIDER) && open ? " " : "", open ? "open" : "");
                 put(&l, "\n");
             }
         }

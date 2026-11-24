@@ -28,6 +28,9 @@ enum {
 /* off its default it changes how fast the game runs, and nothing on the screen shows it (settings.txt's perf; every
    Vulkan extension's and LLVM's row): the game names it over its picture as it starts (options_perf_changed) */
 #define INI_PERF        16
+/* a text with words whose words are its common values, not every one (settings.txt's open): the launcher keeps a value
+   none of them is, shown as itself, as it does on a row with steps, which are open too */
+#define INI_OPEN        32
 
 /* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
    feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
@@ -72,6 +75,9 @@ struct IniOpt {
     const char* words;
     int step, shift;
     size_t size; /* INI_TEXT: var's size */
+    /* INI_INT: the values the menus offer, '|' between, in order (settings.txt's steps), NULL for every step of its
+       range: a value between two is still read, and kept */
+    const char* steps;
 };
 /* a section of the .ini (a group of the launcher's Settings): up to INI_SECTION_TABLES tables, a table with a page
    having a page of its own in the menus, listed after the section's other keys. own: the tables options.c applies
@@ -135,7 +141,8 @@ int ini_step(const IniOpt* o, int v, int dir);
 /* the sections' settings but the INI_IN_GAME ones as the launcher reads them (gui/settings.h), a line each: section
    [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', then
    ini_only's words (empty where the setting does something on this system), needs-build for an INI_NEEDS_BUILD row
-   and slider for an INI_SLIDER one (an empty column before it where the row needs nothing), tabs between. Into out,
+   and its marks, a space between two, for the rest (an empty column before them where the row needs nothing):
+   slider for an INI_SLIDER row, open for an INI_OPEN one or one with steps, tabs between. Into out,
    NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 
