@@ -239,12 +239,11 @@ typedef struct {
     u64 lag_lo, lag_hi;     /* live stamps from lag_lo on may have been read up to submit lag_hi (vk_uma_settle) */
     /* in-place writes: the draw's or dispatch's being set up (prep), and those recorded, oldest first, until their
        submit is done (out, by guest page in out_pages) */
-    Out prep[UMA_PREP_N];
-    u32 nprep, nout, capout;
+    u32 nout, capout;
     Out* out;
     PendPages out_pages;
     WritePages written, read; /* the pages written and read in place since the last barrier: barrier_no + 1 */
-    Seen rmemo[256];          /* the ranges note_read stamped since that barrier */
+    Seen rmemo[VK_RC_SLOTS][256]; /* the ranges note_read stamped since that barrier, by the draws' slot */
     u64 barrier_no;
     /* placed maps: the chunks, sorted by cpu, and those given back until their last binding's submit is done; each
        table changed under lk too, as vk_uma_import_in reads them on any thread */
@@ -301,7 +300,7 @@ typedef struct {
     u32 capdrg;
     u64 clock;    /* the generations' source */
     _Atomic int old_any[UMA_ST_N]; /* the old tables hold a stamp of that kind (a page in no region) */
-    UmaMemo memo[UMA_MEMO_N];
+    UmaMemo memo[VK_RC_SLOTS][UMA_MEMO_N]; /* by the slot of the draws that look (vk_render_slot) */
     UmaCheck* chk; /* draw_state_check=1 */
     /* statistics: the fast path's hits and misses by why (UMA_FAST_*), and the cross-checks' differences */
     u64 fast_hits, fast_miss[UMA_FAST_N], check_diffs;
@@ -330,6 +329,12 @@ static void untracked_count(void) {
     for (u32 i = 0; i < g_uma.ngone; i++) n += !g_uma.gone[i].tracked;
     atomic_store_explicit(&g_uma.untracked, n, memory_order_release);
 }
+/* the in-place writes of the draw or dispatch being set up, for each thread: two draws are set up at once in a
+   split run (draw_batches=2) */
+static _Thread_local struct {
+    Out prep[UMA_PREP_N];
+    u32 n;
+} t_uma_prep;
 /* this thread's: vk_uma_gpu_reads, the caller copies the in-place writes pending on the GPU */
 static _Thread_local struct {
     int gpu_reads;
@@ -1802,7 +1807,7 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.fast_miss[UMA_FAST_DEAD]++;
         return 0;
     }
-    UmaMemo* m = &g_uma.memo[(u32)(((gva ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 52)];
+    UmaMemo* m = &g_uma.memo[vk_render_slot()][(u32)(((gva ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 52)];
     const u32 mg = vk_buf_map_gen();
     u64 cpu = 0;
     Rgn* r = m->rid ? &g_uma.rg[m->rid] : NULL;
@@ -1928,7 +1933,7 @@ void vk_uma_ordered(void) {
     g_uma.order_asked = 0;
 }
 static void note_read(u64 cpu, u64 len) {
-    Seen* m = &g_uma.rmemo[(u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56)];
+    Seen* m = &g_uma.rmemo[vk_render_slot()][(u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56)];
     if (m->cpu == cpu && m->len == len && m->sub == g_uma.barrier_no + 1) return;
     *m = (Seen){cpu, len, g_uma.barrier_no + 1};
     st_stamp(UMA_RSEQ, cpu, len, g_uma.barrier_no + 1);
@@ -1942,13 +1947,13 @@ int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* o
         g_uma.refused[VK_UMA_REFUSED_RUN]++;
         return 0;
     }
-    for (u32 i = 0; i < g_uma.nprep; i++) /* bound twice in one draw: the same binding */
-        if (g_uma.prep[i].gva == gva && g_uma.prep[i].len == len) {
+    for (u32 i = 0; i < t_uma_prep.n; i++) /* bound twice in one draw: the same binding */
+        if (t_uma_prep.prep[i].gva == gva && t_uma_prep.prep[i].len == len) {
             if (bind(cpu, len, align, buf, off)) return 1;
             g_uma.refused[VK_UMA_REFUSED_REGION]++;
             return 0;
         }
-    int why = g_uma.nprep == UMA_PREP_N                      ? VK_UMA_REFUSED_FULL
+    int why = t_uma_prep.n == UMA_PREP_N                      ? VK_UMA_REFUSED_FULL
               : write_pages_since(&g_uma.front, 0, cpu, len) ? VK_UMA_REFUSED_FRONT
               : !bind(cpu, len, align, buf, off)             ? VK_UMA_REFUSED_REGION
                                                              : -1;
@@ -1957,7 +1962,7 @@ int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* o
         return 0;
     }
     order(cpu, len, 1, ordered);
-    g_uma.prep[g_uma.nprep++] = (Out){gva, cpu, len, 0};
+    t_uma_prep.prep[t_uma_prep.n++] = (Out){gva, cpu, len, 0};
     return 1;
 }
 /* the GPU writes guest memory [cpu, cpu + len) in place in the submit being recorded: pending until it is done */
@@ -1987,16 +1992,16 @@ static void out_add(u64 gva, u64 cpu, u64 len) {
     atomic_store_explicit(&g_uma_any, 1, memory_order_relaxed);
 }
 void vk_uma_writes_commit(void) {
-    for (u32 i = 0; i < g_uma.nprep; i++) out_add(g_uma.prep[i].gva, g_uma.prep[i].cpu, g_uma.prep[i].len);
-    g_uma.nprep = 0;
+    for (u32 i = 0; i < t_uma_prep.n; i++) out_add(t_uma_prep.prep[i].gva, t_uma_prep.prep[i].cpu, t_uma_prep.prep[i].len);
+    t_uma_prep.n = 0;
 }
-void vk_uma_writes_abort(void) { g_uma.nprep = 0; }
+void vk_uma_writes_abort(void) { t_uma_prep.n = 0; }
 /* The writes in place of the draw being set up so far (vk_uma_prep_mark), and those after the mark undone: a group of
    bindings that went to the atlas after some of its writes were bound in place leaves none of them pending. The
    barriers order recorded for them stay, which only order more */
-u32 vk_uma_prep_mark(void) { return g_uma.nprep; }
+u32 vk_uma_prep_mark(void) { return t_uma_prep.n; }
 void vk_uma_writes_rollback(u32 mark) {
-    if (mark < g_uma.nprep) g_uma.nprep = mark;
+    if (mark < t_uma_prep.n) t_uma_prep.n = mark;
 }
 void vk_uma_no_wait(int on) { g_uma.no_wait = on; }
 u64 vk_uma_regions(void) { return g_uma.regions; }

@@ -67,6 +67,27 @@ void (*g_gpu_mapping_waits)(void);
    of a run lands first (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then.
    A read lands only bytes it reads: what the GPU holds beside them on their pages stays there (a shader's constant
    buffer words beside a copy engine's result, in one game every frame) */
+/* A thread that resolves ahead of the renderer (gpu_spec_begin, vk/prep.c) reads guest memory as it is and lands
+   nothing: a landing records GPU work, which only the renderer thread does. Where a read would land or wait, the
+   read gives zeros and the resolve fails (gpu_spec_end), and the renderer thread resolves the draw again */
+static _Thread_local int t_spec, t_spec_failed;
+static _Thread_local const char* t_spec_why;
+void gpu_spec_begin(void) {
+    t_spec = 1;
+    t_spec_failed = 0;
+    t_spec_why = NULL;
+}
+int gpu_spec_end(const char** why) {
+    t_spec = 0;
+    if (why) *why = t_spec_why;
+    return !t_spec_failed;
+}
+int gpu_spec(void) { return t_spec; }
+int gpu_spec_failed(void) { return t_spec_failed; }
+void gpu_spec_fail(const char* why) {
+    if (!t_spec_failed) t_spec_why = why;
+    t_spec_failed = 1;
+}
 static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
     int all = 1;
     while (size) {
@@ -82,6 +103,11 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             /* a read none of whose bytes are the GPU's: own_stage copied them, through the mirror where a page is
                trapped */
             if (in && !own_stage(cpu, n, in, NULL, 0)) goto next;
+            if (t_spec) { /* the GPU holds some of the bytes: landing them is the renderer thread's */
+                gpu_spec_fail("a read of memory the GPU holds");
+                if (in) memset(in, 0, (size_t)n);
+                goto next;
+            }
             own_acquire(cpu, n);
         }
         if (in)
@@ -116,6 +142,10 @@ void gmem_need(u64 gva, u64 size) {
         !mem_pending(gva, size))
         return;
     if (!size) return;
+    if (t_spec) {
+        gpu_spec_fail("a read of results that wait to land");
+        return;
+    }
     if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && g_renderer->cs_mem_need)
         g_renderer->cs_mem_need(gva, size);
     if ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) ||
@@ -146,6 +176,11 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     /* a queued release's payload is known: the stream reads it without waiting for the work before it, as the console's
        GPU, in order, would find it there (one game's conditional rendering read report pairs this way, waiting for the
        GPU 60 times a second) */
+    if (t_spec) { /* a release's payload, or a result: the renderer thread's */
+        gpu_spec_fail("a read of a queued release or a result");
+        memset(dst, 0, (size_t)size);
+        return 0;
+    }
     if (atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && g_renderer->release_read) {
         int r = g_renderer->release_read(gva, dst, size);
         if (r > 0) return 0;
@@ -208,6 +243,10 @@ u8* gmem_ptr_untracked(u64 gva, u64 size) {
     if (!size) size = 1;
     gq_read_wait(gva, size);
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
+    if (own_any() && t_spec) {
+        gpu_spec_fail("a pointer to memory the GPU may hold");
+        return NULL;
+    }
     if (own_any()) own_acquire(cpu, size);
     return GP(cpu);
 }
