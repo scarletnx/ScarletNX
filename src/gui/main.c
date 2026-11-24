@@ -1067,6 +1067,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("Play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("Recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("Mods.")
+#define SAY_GAMES_OWN    SNX_TR_KEYS("Settings.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("Save states.")
 #ifdef SDL_PLATFORM_ANDROID
@@ -1155,6 +1156,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("M: mods.")
+#define SAY_GAMES_OWN     SNX_TR_KEYS("M: settings.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("B: AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
@@ -1205,6 +1207,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
+#define SAY_PAD_GAMES_OWN        SNX_TR_KEYS("L3: settings.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
 #define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW         SNX_TR_KEYS("A: pick a file. B: back.")
@@ -3581,6 +3584,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"play", GUI_ICON_PLAY},
                  {"recompile", GUI_ICON_HAMMER},
                  {"mods", GUI_ICON_PACKAGE_PLUS},
+                 {"settings", GUI_ICON_SLIDERS_HORIZONTAL},
                  {"AOT pack", GUI_ICON_PACKAGE},
                  {"save states", GUI_ICON_SAVE},
                  {"save", GUI_ICON_SAVE},
@@ -6736,19 +6740,19 @@ static void states_focus(App* app) {
         snprintf(app->message, sizeof app->message, "%s",
                  snx_tr("S lists the save states of a recompiled Switch game in focus."));
 }
-/* the game box's Settings: the focused recompiled Switch game's own Settings, Back to Games; else why not */
+/* the game box's Settings: the focused recompiled Switch or 3DS game's own Settings, Back to Games; else why not */
 static void settings_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
     const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
-    if (r && r->driver == GUI_SWITCH && r->prepared)
+    if (r && (r->driver == GUI_SWITCH || r->driver == GUI_3DS) && r->prepared)
         open_game_settings(app, r->path, r->name, false);
     else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
         open_game_settings(app, app->games.paths[index], app->games.shown[index], false);
     else
         snprintf(app->message, sizeof app->message, "%s",
-                 snx_tr("Settings of its own are a recompiled Switch game's, in focus."));
+                 snx_tr("Settings of its own are a recompiled Switch or 3DS game's, in focus."));
 }
 /* the box over the screen, as wide as its title or the longest row; a row each, ui.txt's scene States, the focused one
    among those shown (the box kept on the screen); the picture's place at its right, or under it, empty when neither
@@ -9559,13 +9563,25 @@ static bool games_play_focus(const App* app) {
     if (row < head) return (int)row < recent_shown(app);
     return index < app->games.count && !gui_games_heading(&app->games, index);
 }
+/* Games' focused row a made 3DS game, recent or of the page: M opens its own Settings, as it has no mods' box */
+static bool games_ctr_focus(const App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    if (row < head && (int)row < recent_shown(app)) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        return r->driver == GUI_3DS && r->prepared && !gui_is_cia(r->path);
+    }
+    return row >= head && index < app->games.count && !gui_games_heading(&app->games, index) &&
+           app->games_drivers[index] == GUI_3DS && !gui_is_cia(app->games.names[index]);
+}
 /* Games' keys the focused row takes, in parts, when it does something there: Play on a game that plays, R on a game,
-   M on a made Switch one */
+   M on a made Switch or 3DS one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
     if (games_play_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_PLAY : SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
+    if (games_ctr_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_OWN : SAY_GAMES_OWN);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
     if (mods)
         said_add(parts, n, pad ? SAY_PAD_GAMES_STATES : SAY_GAMES_STATES); /* its save states' box: S, a pad's X */
@@ -12159,8 +12175,20 @@ static void open_settings(App* app) {
     space_start(app);
 }
 /* ---- a game's own Settings (its boxes' Settings): the Settings screen on its picks file, <name>.picks beside its
-   .ini, which its runtime reads over the launcher's picks; each row Global until picked, Del back to Global, the
-   last group Reset to Global, asked first. Back from its groups goes where it was opened from ---- */
+   .ini, which its runtime reads over the launcher's picks; a Switch game's the Switch's settings, a 3DS game's its
+   console; each row Global until picked, Del back to Global, the last group Reset to Global, asked first. Back from
+   its groups goes where it was opened from ---- */
+/* the made game whose program is at path, of a console whose games have settings of their own: GUI_GAME_*, its folder
+   and its name, owned; 0 for a dump's, a package's or another console's. A 3DS game has no <name>_data folder */
+static int own_game(const char* path, char** folder, char** name) {
+    *folder = path && (gui_game_folder(path) || gui_game_program(path)) ? snx_dirname(path) : NULL;
+    *name = *folder ? aot_leaf(*folder) : NULL;
+    if (!*name) return 0;
+    SnxSystem system = snx_game_system(*folder, *name);
+    return system == SNX_SYSTEM_3DS                               ? GUI_GAME_3DS
+           : system == SNX_SYSTEM_SWITCH && gui_game_folder(path) ? GUI_GAME_SWITCH
+                                                                  : 0;
+}
 static void game_settings_close(App* app) {
     if (!app->own_picks) return;
     if ((app->game_settings.values && app->editor.object == (char*)app->game_settings.values) ||
@@ -12176,20 +12204,20 @@ static void game_settings_close(App* app) {
 }
 /* the game whose program is at program, named title, its Settings open; from_box: Back goes to its M box again */
 static void open_game_settings(App* app, const char* program, const char* title, bool from_box) {
-    char *folder = program && gui_game_folder(program) ? snx_dirname(program) : NULL,
-         *name = folder ? aot_leaf(folder) : NULL, *ini = NULL, old[sizeof app->message], unread[512];
-    if (name && snx_game_system(folder, name) == SNX_SYSTEM_SWITCH) ini = snx_game_ini(folder, name);
+    char *folder, *name, *ini = NULL, old[sizeof app->message], unread[512];
+    int console = own_game(program, &folder, &name);
+    if (console) ini = snx_game_ini(folder, name);
     free(folder);
     free(name);
-    if (!ini) { /* a dump's, a package's, another console's: no runtime of the Switch's reads its picks */
+    if (!ini) { /* a dump's, a package's, another console's: no runtime of its reads picks */
         snprintf(app->message, sizeof app->message,
-                 snx_tr("%s is no recompiled Switch game: only one has settings of its own"), title);
+                 snx_tr("%s is no recompiled Switch or 3DS game: only they have settings of their own"), title);
         say_failure(app, app->message);
         return;
     }
     settings_of(app); /* the list a game's rows are read from */
     game_settings_close(app);
-    if (gui_settings_read_game(&app->game_settings, app->settings_list ? app->settings_list : "")) {
+    if (gui_settings_read_console(&app->game_settings, app->settings_list ? app->settings_list : "", console)) {
         free(ini);
         snprintf(app->message, sizeof app->message, "%s", snx_tr("Out of memory"));
         say_failure(app, app->message);
@@ -17540,37 +17568,48 @@ static void clean_keys(App* app, const char* file, const char* unread, int faile
     snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
     gui_cleaned_add(&app->cleaned, !failed, file, what);
 }
-/* each game's own picks (gui_picks_files in ini_folders) holding keys no setting takes, how many keys in *keys; with
-   done, each written again without them, removed with no pick left, an entry each. None while the runtime has listed
-   no settings: every key would look old */
+/* the console of the game whose picks are at path, by the name they share with its folder: a 3DS game's is its title
+   ID, 0004 and 12 hex digits more (3ds/runtime/main.h's snx_ctr_title_name), where a Switch one starts 01 */
+static int picks_console(const char* path) {
+    const char* leaf = snx_path_leaf(path);
+    size_t i = 0;
+    while (i < 16 && snx_is_hex(leaf[i])) ++i;
+    return i == 16 && !strncmp(leaf, "0004", 4) && leaf[16] == '.' ? GUI_GAME_3DS : GUI_GAME_SWITCH;
+}
+/* each game's own picks (gui_picks_files in ini_folders) holding keys no setting of its console takes, how many keys
+   in *keys; with done, each written again without them, removed with no pick left, an entry each. None while the
+   runtime has listed no settings: every key would look old */
 static int clean_picks(App* app, GuiCleaned* done, int* keys) {
     char *folders[GUI_FOLDERS_MAX + 2], **paths, unread[1024], what[1100];
-    GuiSettings game = {0};
+    GuiSettings consoles[GUI_GAME_3DS + 1] = {0}; /* by GUI_GAME_*, 0 unused */
     int got = ini_folders(app, folders), n = got, i, files = 0, failed;
     size_t k, count;
     *keys = 0;
-    if (settings_of(app)->count <= app->settings.own ||
-        gui_settings_read_game(&game, app->settings_list ? app->settings_list : ""))
-        n = 0;
-    gui_settings_mark(&game);
+    for (i = GUI_GAME_SWITCH; i <= GUI_GAME_3DS; ++i) {
+        if (settings_of(app)->count <= app->settings.own ||
+            gui_settings_read_console(&consoles[i], app->settings_list ? app->settings_list : "", i))
+            n = 0;
+        gui_settings_mark(&consoles[i]);
+    }
     for (i = 0; i < n; ++i) {
         count = gui_picks_files(folders[i], &paths);
         for (k = 0; k < count; ++k) {
-            int stale = gui_settings_unread(&game, paths[k], unread, sizeof unread);
+            GuiSettings* game = &consoles[picks_console(paths[k])];
+            int stale = game->count ? gui_settings_unread(game, paths[k], unread, sizeof unread) : 0;
             if (!stale) continue;
             ++files;
             *keys += stale;
             if (!done) continue;
-            gui_settings_reset(&game, -1);
-            gui_settings_load(&game, paths[k], NULL, 0);
-            failed = gui_settings_changed(&game) ? gui_settings_save(&game, paths[k]) : remove(paths[k]) != 0;
+            gui_settings_reset(game, -1);
+            gui_settings_load(game, paths[k], NULL, 0);
+            failed = gui_settings_changed(game) ? gui_settings_save(game, paths[k]) : remove(paths[k]) != 0;
             snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
             gui_cleaned_add(done, !failed, paths[k], what);
         }
         snx_free_strings(paths, count);
     }
     for (i = 0; i < got; ++i) free(folders[i]);
-    gui_settings_free(&game);
+    for (i = GUI_GAME_SWITCH; i <= GUI_GAME_3DS; ++i) gui_settings_free(&consoles[i]);
     return files;
 }
 /* it done, each file an entry of app->cleaned, which shows over the screen; with own, each game's own picks too */
@@ -18714,7 +18753,7 @@ static int game_box_raw(const App* app, const char** path, int* driver) {
            gui_game_program(*path);
 }
 /* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
-   its keys have them; none for a row that is no game */
+   its keys have them, a made 3DS game's own Settings among them; none for a row that is no game */
 static void game_box_open(App* app) {
     bool mods = false;
     int n = 0, queued;
@@ -18730,6 +18769,7 @@ static void game_box_open(App* app) {
         const char* path;
         int driver;
         if (game_box_raw(app, &path, &driver)) {
+            if (driver == GUI_3DS) app->game_picks[n++] = SAY_GAME_SETTINGS;
             app->game_picks[n++] = SAY_GAME_EXPORT_SAVES;
             app->game_picks[n++] = SAY_GAME_IMPORT_SAVES;
         }
@@ -21252,11 +21292,10 @@ static int game_debug(App* app, const char* path, int picks, char* out, size_t s
     return n;
 }
 /* what the game at path (its program) has of its own, its picks and its box's GPU driver and Freedreno variables
-   (gui_settings_game_own): how many, said in out. None for a dump, a package or another console's game, whose
-   runtime reads no picks */
+   (gui_settings_game_own): how many, said in out. None for a dump, a package or a game of a console whose runtime
+   reads no picks (own_game) */
 static int game_own(const char* path, char* out, size_t size) {
-    char *folder = path && gui_game_folder(path) ? snx_dirname(path) : NULL, *name = folder ? aot_leaf(folder) : NULL;
-    char* ini = name && snx_game_system(folder, name) == SNX_SYSTEM_SWITCH ? snx_game_ini(folder, name) : NULL;
+    char *folder, *name, *ini = own_game(path, &folder, &name) ? snx_game_ini(folder, name) : NULL;
     int n = gui_settings_game_own(ini, out, size);
     free(ini);
     free(name);
@@ -21464,7 +21503,7 @@ done:
     free(f.name);
 }
 /* M on Games: the box of the focused game's updates, DLCs, mods and cheats, shown even when it has none of them for
-   its Add Mod and Add Cheats; else why not */
+   its Add Mod and Add Cheats; a made 3DS game's own Settings; else why not */
 static void mods_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
@@ -21472,6 +21511,10 @@ static void mods_focus(App* app) {
          game = row >= head && index < app->games.count && !gui_games_heading(&app->games, index); /* it has no path */
     const char *path = NULL, *title = NULL;
     char* folder = NULL;
+    if (games_ctr_focus(app)) {
+        settings_focus(app);
+        return;
+    }
     if (recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_SWITCH) {
         path = app->recent.game[recent_index(app, (int)row)].path;
         title = app->recent.game[recent_index(app, (int)row)].name;
@@ -23088,6 +23131,7 @@ static const struct {
                  {SNX_TR_KEY("AOT pack"), SDLK_B, 0, false},
                  {SNX_TR_KEY("M"), SDLK_M, 0, false},
                  {SNX_TR_KEY("Mods"), SDLK_M, 0, false},
+                 {SNX_TR_KEY("Settings"), SDLK_M, 0, false}, /* a finger's, on Games' 3DS game */
                  {SNX_TR_KEY("P"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folders"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folder"), SDLK_P, 0, false}, /* a finger's, on the Switch's Open screen */

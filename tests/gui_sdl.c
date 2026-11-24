@@ -6569,6 +6569,253 @@ static void missing_consoles(App* app, const char* dir) {
     free(moved);
     free(cia);
 }
+/* a runtime's list with the 3DS's Console among the settings of a Switch game and of other consoles */
+static char* ctr_settings(void) {
+    return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
+                      "3DS\tctr_model\tauto\ttext\t\t\tThe console the game runs on\tConsole\t"
+                      "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                      "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n");
+}
+/* the file at path holding text */
+static void fixture_text(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
+/* the box of the game in focus, its row of Settings, or -1 */
+static int game_settings_row(App* app) {
+    int i;
+    game_box_open(app);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_GAME && !strcmp(app->game_picks[0], "Play"));
+    for (i = 0; app->game_picks[i]; ++i)
+        if (!strcmp(app->game_picks[i], "Settings")) return i;
+    return -1;
+}
+/* A made 3DS game's own Settings: its Console alone, Global (with the launcher's) until Old or New 3DS is picked, then
+   kept in its picks beside its .ini at once, and Reset to Global; nothing of the Switch's nor another console's, as a
+   Switch game's has none of the 3DS's. M (L3, the foot's Settings on a phone) opens it on a listed and a recent game,
+   and so does its box's Settings, after Recompile; Back goes to Games, its row and the side panel saying its own. A
+   3DS dump and a Vita game have none, said; the launcher's Console goes to a run of the game under its own. Clean Old
+   Settings takes out of a 3DS game's picks what its rows do not take, and keeps its console */
+static void ctr_own_console(App* app, const char* dir) {
+    static const char* const name = "0004000000040000";
+    char *cia = snx_path_join(dir, "own console.cia"), *text, value[256], label[512], said[512];
+    char* ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+    char *folder, *program, *data, *game_ini, *picks, *absolute, *argv_file = snx_path_join(dir, "console argv");
+    GuiRecent recent_was = app->recent;
+    GuiGames was;
+    size_t size, index;
+    int i, way, row, item = app->menu.selected;
+    ncch_file(cia, 0x0004000000040000ull, "CTR-P-ABCD");
+    program = console_game(app, name, ini, &folder);
+    data = snx_format("%s/%s_data", folder, name); /* a 3DS game's folder has none */
+    assert(!snx_remove_tree(data));
+    game_ini = game_ini_of(program);
+    picks = snx_game_picks(game_ini);
+    absolute = snx_absolute(program);
+    snx_menu_settings = ctr_settings;
+    settings_forget(app);
+    assert(settings_of(app));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, name);
+    index = listed_at(app, name);
+    /* the foot's word for it, M's, L3's and a finger's */
+    assert(strstr(screen_said(app, true, said, sizeof said), "M: settings.") && !strstr(said, "M: mods."));
+    app->pad_driven = true;
+    assert(strstr(screen_said(app, true, said, sizeof said), "L3: settings."));
+    app->pad_driven = false;
+    i = hint_pick("Settings", 0, false);
+    assert(i >= 0 && hint_keys[i].key == SDLK_M && !hint_keys[i].mod);
+    for (way = 0; way < 4; ++way) { /* M and its box's Settings, listed, then recent */
+        if (way == 2) {
+            app->recent = (GuiRecent){0};
+            assert(!gui_recent_add(&app->recent, "/nonexistent/another game", GUI_SWITCH, 1) &&
+                   !gui_recent_add(&app->recent, absolute, GUI_3DS, 1));
+            recent_changed(app);
+            go_tab(app, GUI_TAB_GAMES);
+            list_games(app);
+            layout(app);
+            assert(recent_shown(app) == 2);
+            app->browser.page = app->browser.selected = 0;
+            assert(strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        }
+        render(app);
+        if (way & 1) {
+            row = game_settings_row(app);
+            if (way == 1) foot_shot(app, "3ds game box");
+            assert(row == 2 && !strcmp(app->game_picks[1], "Recompile") &&
+                   !strcmp(app->game_picks[3], "Export Saves") && !strcmp(app->game_picks[4], "Import Saves") &&
+                   (!app->game_picks[5] || !strcmp(app->game_picks[5], SAY_GAME_AOT)));
+            for (i = 0; i < row; ++i) key(app, SDLK_DOWN);
+            key(app, SDLK_RETURN);
+        } else
+            key(app, SDLK_M);
+        assert(!app->addons_shown && !app->picks_shown && app->editing && app->form == GUI_FORM_SETTINGS &&
+               app->own_picks && same_path(app->own_picks, picks) && screen_settings(app) == &app->game_settings);
+        /* its own group and Reset to Global, the console's alone */
+        assert(app->groups == 2 && !strcmp(app->group_keys[0].key, "3DS") &&
+               !strcmp(app->group_keys[1].key, "Reset to Global") && app->group_first[1] < 0 &&
+               app->game_settings.count == 1 && !snx_path_exists(picks));
+        key(app, SDLK_RETURN); /* 3DS */
+        assert(app->form == GUI_FORM_GROUP && app->editor.object == (char*)app->game_settings.values);
+        app->editor.row = 0;
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "Global (Auto [default])"));
+        if (!way) foot_shot(app, "3ds own console global");
+        key(app, SDLK_RIGHT);
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "Old 3DS") && !strcmp(gui_settings_value(&app->game_settings, "ctr_model"), "old"));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[3DS]\nctr_model=old\n"));
+        free(text);
+        key(app, SDLK_RIGHT);
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "New 3DS"));
+        if (!way) foot_shot(app, "3ds own console new");
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=new\n"));
+        free(text);
+        assert(strstr(shown_keys(app, label, sizeof label), "Del: Global."));
+        assert(game_own(program, value, sizeof value) == 1 && !strcmp(value, "ctr_model=new"));
+        key(app, SDLK_DELETE);
+        assert(!gui_settings_value(&app->game_settings, "ctr_model") && !snx_path_exists(picks));
+        assert(gui_settings_set(&app->game_settings, "ctr_model", "old"));
+        write_settings(app);
+        key(app, SDLK_ESCAPE);
+        key(app, SDLK_ESCAPE); /* Games again, the sliders on its row, its own in the side panel */
+        assert(!app->editing && !app->own_picks && !app->addons_shown && app->menu.view == GUI_LOAD_GAMES &&
+               snx_path_exists(picks));
+        if (way < 2) {
+            assert(app->games_own[index]);
+            game_label(app, &app->games, index, label, sizeof label);
+            assert(strstr(label, GUI_OWN_MARK));
+            focus_game(app, name);
+        } else
+            assert(app->recent_own[0]);
+        side_focus_update(app);
+        assert(!strcmp(app->own_focus, "ctr_model=old"));
+        if (!way) foot_shot(app, "3ds game own console");
+        assert(!remove(picks));
+        own_marks_read(app);
+    }
+    app->recent = recent_was;
+    recent_changed(app);
+    /* a Switch game's own has the Switch's, none of the 3DS's */
+    {
+        char *switch_folder = made_game(app, "unused", "a switch game"),
+             *played = program_in(switch_folder, "a switch game");
+        open_game_settings(app, played, "a switch game", false);
+        assert(app->editing && app->own_picks && app->groups == 2 && !strcmp(app->group_keys[0].key, "Display") &&
+               !strcmp(app->group_keys[1].key, "Reset to Global") && app->game_settings.count == 1);
+        key(app, SDLK_ESCAPE);
+        assert(!app->editing);
+        made_gone(app, switch_folder);
+        free(played);
+    }
+    /* a Vita game and a file that is no game have none: said with what does */
+    {
+        char *vita_folder, *played;
+        played = console_game(app, "PCSE00099", "[Game]\nsystem=vita\n", &vita_folder);
+        for (i = 0; i < 2; ++i) {
+            open_game_settings(app, i ? cia : played, i ? "a file" : "a vita game", false);
+            snprintf(value, sizeof value,
+                     "%s is no recompiled Switch or 3DS game: only they have settings of their own",
+                     i ? "a file" : "a vita game");
+            assert(!app->editing && !app->own_picks && !strcmp(app->message, value) && app->confirm.shown &&
+                   app->confirm.ask == GUI_ASK_ERROR);
+            key(app, SDLK_ESCAPE);
+            assert(!app->confirm.shown);
+        }
+        focus_game(app, "PCSE00099");
+        row = game_settings_row(app);
+        assert(row < 0);
+        key(app, SDLK_ESCAPE);
+        assert(!app->picks_shown);
+        app->message[0] = 0;
+        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        made_gone(app, vita_folder);
+        free(played);
+        list_games(app);
+    }
+    /* a 3DS dump in focus on Games: M says whose box it opens */
+    {
+        GuiBrowser browser_was = app->browser;
+        char *names[1] = {"own console.cia"}, *paths[1] = {cia};
+        size_t addons[1] = {0};
+        GuiGames one = {0};
+        int drivers[1] = {GUI_3DS}, *drivers_was = app->games_drivers;
+        was = app->games;
+        one.names = one.shown = names;
+        one.paths = paths;
+        one.addons = addons;
+        one.count = 1;
+        app->games = one;
+        app->games_drivers = drivers;
+        app->browser.count = 1;
+        app->browser.page = 0;
+        app->browser.selected = app->browser.head;
+        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        app->message[0] = 0;
+        mods_focus(app);
+        assert(!strcmp(app->message, "M opens the mods and cheats of a recompiled Switch game in focus.") &&
+               !app->editing);
+        app->games = was;
+        app->games_drivers = drivers_was;
+        app->browser = browser_was;
+    }
+    /* the launcher's Console and the game's run: passed, and marked as the launcher's, under the game's own; with none
+       picked no mark */
+    {
+        char* argv_got;
+        fixture_text(picks, "[3DS]\nctr_model=old\n");
+        app->menu.selected = GUI_3DS;
+        driver_will(argv_file, 0, "own console");
+        for (way = 0; way < 2; ++way) {
+            assert(gui_settings_set(&app->settings, "ctr_model", way ? "new" : "auto"));
+            app->menu.selected = GUI_3DS;
+            launch(app, snx_strdup(program), true);
+            argv_got = ran(app, 0);
+            assert(has_arg(argv_got, "--ctr-model=new", NULL) == way &&
+                   has_arg(argv_got, "--launcher-picks=1", NULL) == way);
+            free(argv_got);
+            leave_run(app);
+        }
+        driver_will(NULL, 0, NULL);
+        app->recent = recent_was;
+        recent_changed(app);
+        assert(!remove(picks));
+    }
+    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest, a Switch
+       game's keep the Switch's and lose the console */
+    {
+        GuiCleaned done = {0};
+        char* other = snx_path_join(app->games_dir, "a switch game.picks");
+        int keys_taken = 0;
+        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\n");
+        fixture_text(other, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n");
+        assert(clean_picks(app, &done, &keys_taken) == 2 && keys_taken == 2 && done.count == 2);
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
+               !strstr(text, "fullscreen"));
+        free(text);
+        assert((text = (char*)snx_read_file(other, &size)) && strstr(text, "fullscreen=1\n") &&
+               !strstr(text, "ctr_model"));
+        free(text);
+        gui_cleaned_free(&done);
+        assert(!remove(other) && !remove(picks));
+        free(other);
+    }
+    snx_menu_settings = NULL;
+    settings_forget(app);
+    assert(settings_of(app));
+    app->menu.selected = item;
+    made_gone(app, folder);
+    list_games(app);
+    assert(!remove(cia));
+    free(argv_file);
+    free(absolute);
+    free(picks);
+    free(game_ini);
+    free(data);
+    free(program);
+    free(ini);
+    free(cia);
+    puts("a 3DS game's own Settings: its Console, from M, its box, the recent row; a run's and a clean's");
+}
 /* the menu's message is want, the one it is said when not */
 static bool message_is(const App* app, const char* want) {
     if (!strcmp(app->message, want)) return true;
@@ -18169,6 +18416,7 @@ int main(int argc, char** argv) {
     relist_keeps_scroll(&app, temporary);
     missing_file(&app, temporary);
     missing_consoles(&app, temporary);
+    ctr_own_console(&app, temporary);
     locate_titles(&app, temporary);
     recompile_queue(&app);
     play_asked_said(&app, temporary);

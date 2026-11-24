@@ -97,7 +97,17 @@ static int has_mark(const char* column, const char* mark) {
         if ((c == column || c[-1] == ' ') && (!c[n] || c[n] == ' ')) return 1;
     return 0;
 }
-/* the rows of the runtime's list; with game, a game's own (gui_settings_read_game) */
+/* whether a game of console (GUI_GAME_*) has key of its own: a 3DS game its driver's few (snx_ctr_game_setting), a
+   Switch game every setting but another console's driver's */
+static int game_takes(int console, const char* key) {
+    static const char* const others[] = {"ctr_", "vita_", "linux_", "android_", "nds_"};
+    size_t i;
+    if (console == GUI_GAME_3DS) return snx_ctr_game_setting(key);
+    for (i = 0; i < sizeof others / sizeof *others; ++i)
+        if (!strncmp(key, others[i], strlen(others[i]))) return 0;
+    return 1;
+}
+/* the rows of the runtime's list; with game, a game's own, of that console (gui_settings_read_console) */
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
        game's, then the runtime's; a game's the runtime's alone */
@@ -147,6 +157,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         field[0] = line;
         while (f < 12 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue; /* not a setting: another line the runtime printed */
+        if (game && !game_takes(game, field[1])) continue;
         for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
@@ -189,6 +200,8 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
                 v->fallback = words[w];
                 v->word = w;
             }
+        if (values && v->word && game == GUI_GAME_3DS) /* its default is what Global gives, and no word of its own */
+            for (w = v->word; words[w]; ++w) words[w] = words[w + 1], values[w] = values[w + 1];
         if (values && v->word && game) /* a game's starts at Global, which every row has */
             v->word = 0;
         else if (values && v->word) { /* its default a word: no .ini's besides, which would be that value twice */
@@ -222,7 +235,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
     return 0;
 }
 int gui_settings_read(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 0); }
-int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 1); }
+int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, GUI_GAME_SWITCH); }
+int gui_settings_read_console(GuiSettings* s, const char* runtime, int console) {
+    return read_list(s, runtime, console);
+}
 void gui_settings_free(GuiSettings* s) {
     for (int i = 0; i < s->count; ++i) free(s->values[i].grown);
     free(s->keys);
@@ -914,10 +930,11 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
 /* argv's --key=value of each setting picked; with a driver's prefix, that driver's only: its tables' (keys that start
    with ctr_ or vita_), and for the 3DS the Switch's it takes too. A Switch run's (prefix NULL), the game's .ini at
    game_ini (NULL: none), are the launcher's picks for every game, said by --launcher-picks=1, under the game's own
-   picks, which the runtime reads; the recompile, which reads none, gets the game's own of its settings (given) */
+   picks, which the runtime reads; the recompile, which reads none, gets the game's own of its settings (given). So are
+   a 3DS run's, when one of them is a setting a 3DS game has of its own, which its driver reads */
 static size_t picked_options(GuiSettings* s, const char** argv, const char* prefix, const char* game_ini) {
     char* picks = !prefix && game_ini ? snx_game_picks(game_ini) : NULL;
-    int ctr = prefix && !strcmp(prefix, "ctr_");
+    int ctr = prefix && !strcmp(prefix, "ctr_"), over = !prefix; /* what goes over them, said: the game's own picks */
     size_t n = 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
@@ -925,9 +942,11 @@ static size_t picked_options(GuiSettings* s, const char** argv, const char* pref
         const char* value;
         if (!key || (prefix && strncmp(key, prefix, strlen(prefix)) && !(ctr && snx_ctr_shared_setting(key)))) continue;
         if (prefix && !strncmp(key, "nds_wfc", 7)) continue; /* the driver reads the launcher's own from settings.ini */
-        if ((value = prefix ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
+        if ((value = prefix ? picked(s, i) : given(s, i, picks)) == NULL) continue;
+        argv[n++] = option_of(s, i, value);
+        over = over || (ctr && snx_ctr_game_setting(key));
     }
-    if (n && !prefix) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    if (n && over) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
     free(picks);
     return n;
 }

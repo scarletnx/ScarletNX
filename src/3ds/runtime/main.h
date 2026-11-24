@@ -24,5 +24,8 @@ static inline bool snx_ctr_shared_setting(const char* key) {
            !strcmp(key, "vk_debug_hide_commands") || !strcmp(key, "volume") || !strcmp(key, "upscaler") ||
            !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing");
 }
+/* Whether key is a setting a 3DS game has of its own, in its picks (<title ID>.picks, common/utilities/game_ini.h),
+   over the launcher's for every game: its console. The launcher's Settings of the game have its rows alone */
+static inline bool snx_ctr_game_setting(const char* key) { return !strcmp(key, "ctr_model"); }
 
 #endif

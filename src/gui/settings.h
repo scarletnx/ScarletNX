@@ -57,8 +57,10 @@ typedef struct {
     int count;          /* in one block with the list the keys' names and help point into */
     int own;            /* the launcher's own rows and the recompiler's, first (their page's rows among them) */
     int game;           /* a game's own picks (gui_settings_read_game): none of the launcher's rows, every word row's
-                           first word Global, no pick */
+                           first word Global, no pick. The console it is of, GUI_GAME_*, 0 for the launcher's */
 } GuiSettings;
+/* the consoles whose games have picks of their own */
+enum { GUI_GAME_SWITCH = 1, GUI_GAME_3DS };
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
    values value=word between '|', where it does something when not on this system, what the build needs, slider for a
@@ -66,10 +68,14 @@ typedef struct {
    nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
-/* the rows of a game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
-   gui_settings_save read and write it: the runtime's alone, each with Global first, the value it starts with, which
-   no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
+/* the rows of a Switch game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
+   gui_settings_save read and write it: the runtime's alone, none of another console's driver, each with Global first,
+   the value it starts with, which no pick has and the launcher's picks then give (no plain row, no slider). As
+   gui_settings_read: 0, else nonzero */
 int gui_settings_read_game(GuiSettings* settings, const char* runtime);
+/* a game's of console (GUI_GAME_*): a 3DS game's, the settings it has of its own alone (3ds/runtime/main.h's
+   snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
+int gui_settings_read_console(GuiSettings* settings, const char* runtime, int console);
 void gui_settings_free(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
@@ -153,7 +159,8 @@ const char* gui_settings_value(const GuiSettings* settings, const char* key);
    at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char* game_ini, const char** argv);
 /* argv's --key=value for each of the 3DS driver's settings picked: its tables' (keys that start with ctr_) and the
-   Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory). Its count */
+   Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory); with one a game has of its own among
+   them (its console), --launcher-picks=1 after them, which puts the game's over it. Its count */
 size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
 /* argv's --key=value for each of the Vita driver's settings picked: its Debug page's (keys that start with vita_). Its
    count */
