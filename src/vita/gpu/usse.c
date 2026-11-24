@@ -265,9 +265,6 @@ static unsigned decode_write_mask(Bank dest, unsigned mask, bool f16) {
         r = mask & 3;
     return r;
 }
-static unsigned decode_modifier(unsigned mod) {
-    return mod == 1 ? F_NEG : mod == 2 ? F_ABS : mod == 3 ? F_NEG | F_ABS : 0;
-}
 static void swizzle4(uint8_t out[4], unsigned encoded) {
     for (unsigned i = 0; i < 4; ++i) out[i] = (uint8_t)((encoded >> (i * 3)) & 7);
 }
@@ -492,72 +489,6 @@ static void reset_repeats(T* t) {
 enum { O_SRC0, O_SRC1, O_SRC2, O_DEST };
 
 /* ---- the instructions: each a handler of its pattern's fields (usse.decode, arg_<pattern>) ---- */
-static unsigned popcount4(unsigned m) { return (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1); }
-
-/* VMAD (vec3/vec4 multiply-add with the GPI registers) */
-static bool vmad(T* t, const arg_VMAD* arg) {
-    int type = arg->opcode2 ? 2 : 1;
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
-    Operand src0 = {arg->gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32}, src2 = {arg->gpi1_n, B_INTERNAL, F_GPI, {0}, T_F32};
-    vec34_swizzle(src1.swizzle, arg->src1_swiz, arg->src1_swiz_ext, type);
-    vec34_swizzle(src0.swizzle, arg->gpi0_swiz, arg->gpi0_swiz_ext, type);
-    vec34_swizzle(src2.swizzle, arg->gpi1_swiz, arg->gpi1_swiz_ext, type);
-    src1.flags |= (arg->src1_abs ? F_ABS : 0) | (arg->src1_neg ? F_NEG : 0);
-    src0.flags |= (arg->gpi0_abs ? F_ABS : 0) | (arg->gpi0_neg ? F_NEG : 0);
-    src2.flags |= (arg->gpi1_abs ? F_ABS : 0) | (arg->gpi1_neg ? F_NEG : 0);
-    set_multiplier(t, 2, 2, 2, 4);
-    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
-        Value a = load(t, src0, arg->mask, repeat_offset(t, &src0, r, O_SRC0, (int)arg->repeat_mode));
-        Value b = load(t, src1, arg->mask, repeat_offset(t, &src1, r, O_SRC1, (int)arg->repeat_mode));
-        Value c = load(t, src2, arg->mask, repeat_offset(t, &src2, r, O_SRC2, (int)arg->repeat_mode));
-        Value result = {{0}, a.n, K_FLOAT};
-        for (unsigned i = 0; i < a.n; ++i) result.c[i] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], c.c[i]);
-        store(t, dest, result, arg->mask, repeat_offset(t, &dest, r, O_DEST, (int)arg->repeat_mode));
-    }
-    reset_repeat_multiplier(t);
-    return !t->failed;
-}
-
-/* V32NMAD and V16NMAD (alu.cpp: v32nmad, do_alu_op) */
-static bool vnmad(T* t, const arg_nmad* arg, bool f32) {
-    Type type = f32 ? T_F32 : T_F16;
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
-    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
-    src1.flags = decode_modifier(arg->src1_mod);
-    if (arg->src2_mod == 1) src2.flags = F_ABS;
-    dest.type = src1.type = src2.type = type;
-    swizzle4(src1.swizzle, arg->src1_swiz);
-    vec34_swizzle(src2.swizzle, arg->src2_swiz, false, 2);
-    unsigned source_mask = arg->alu == 7 ? 15 : arg->mask; /* a dot product reads all four */
-    Value a = load(t, src1, source_mask, 0), b = load(t, src2, source_mask, 0);
-    if (t->failed) return false;
-    Value r = {{0}, a.n, K_FLOAT};
-    for (unsigned i = 0; i < a.n; ++i) {
-        switch (arg->alu) {
-            case 0: r.c[i] = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]); break;
-            case 1: r.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, a.c[i], b.c[i]); break;
-            case 2: /* FRC: a - floor(b) */
-                r.c[i] = op2(t, SPV_OP_F_SUB, t->t_f32, a.c[i], ext1(t, t->t_f32, SPV_GLSL_FLOOR, b.c[i]));
-                break;
-            case 3: r.c[i] = op1(t, SPV_OP_DPDX, t->t_f32, a.c[i]); break;
-            case 4: r.c[i] = op1(t, SPV_OP_DPDY, t->t_f32, a.c[i]); break;
-            case 5: r.c[i] = ext2(t, t->t_f32, SPV_GLSL_F_MIN, a.c[i], b.c[i]); break;
-            case 6: r.c[i] = ext2(t, t->t_f32, SPV_GLSL_F_MAX, a.c[i], b.c[i]); break;
-            default: break;
-        }
-    }
-    if (arg->alu == 7) { /* DP: the sum of the products, in each masked component */
-        uint32_t sum = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], b.c[0]);
-        for (unsigned i = 1; i < a.n; ++i)
-            sum = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], sum);
-        r.n = popcount4(arg->mask);
-        for (unsigned i = 0; i < r.n; ++i) r.c[i] = sum;
-    }
-    store(t, dest, r, arg->mask, 0);
-    return !t->failed;
-}
 
 /* ---- the instructions ported second: the ALU (alu.cpp, ialu.cpp), tests (branch_cond.cpp), loads (data.cpp),
    dependent texture reads (texture.cpp) and the special ones (special.cpp) ---- */
@@ -573,306 +504,6 @@ static void store_predicate(T* t, unsigned n, uint32_t cond) {
     SPV_VOID(&t->e, SPV_OP_STORE, SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->bank[B_PRED], cu(t, n & 3)), cond);
 }
 static Value one_value(uint32_t c, int kind) { return (Value){{c}, 1, kind}; }
-
-static bool vmad2(T* t, const arg_VMAD2* arg) {
-    unsigned mask = arg->mask;
-    static const uint8_t swizzles[3][8][4] = {
-        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(Y, Z, X, W), S4(X, Y, W, W),
-         S4(Z, W, X, Y)},
-        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(X, Y, Y, Z), S4(Y, Y, W, W),
-         S4(W, Y, Z, W)},
-        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(X, Z, W, W), S4(X, X, Y, Z),
-         S4(X, Y, Z, Z)}};
-    Type type = arg->dat_fmt ? T_F16 : T_F32;
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, false, true, 7);
-    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, false, true, 7);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
-    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
-    mask = decode_write_mask(dest.bank, mask, arg->dat_fmt);
-    dest.type = src0.type = src1.type = src2.type = type;
-    memcpy(src0.swizzle, swizzles[0][arg->src0_swiz01 | arg->src0_swiz2 << 2], 4);
-    memcpy(src1.swizzle, swizzles[1][arg->src1_swiz01 | arg->src1_swiz2 << 2], 4);
-    memcpy(src2.swizzle, swizzles[2][arg->src2_swiz], 4);
-    if (arg->src0_abs) src0.flags |= F_ABS;
-    src1.flags = decode_modifier(arg->src1_mod), src2.flags = decode_modifier(arg->src2_mod);
-    Value a = load(t, src0, mask, 0), b = load(t, src1, mask, 0), c = load(t, src2, mask, 0);
-    if (t->failed) return false;
-    Value r = {{0}, a.n, K_FLOAT};
-    for (unsigned i = 0; i < a.n; ++i) r.c[i] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], c.c[i]);
-    store(t, dest, r, mask, 0);
-    return !t->failed;
-}
-
-/* VDP (a dot product with a GPI register). The destination stays, the write mask turns one component a repeat */
-static bool vdp(T* t, const arg_VDP* arg) {
-    unsigned mask = arg->mask;
-    static const uint8_t channels[8] = {SW_X, SW_Y, SW_Z, SW_W, SW_0, SW_1, SW_2, SW_H};
-    int type = arg->opcode2 ? 2 : 1;
-    unsigned source_mask = arg->opcode2 ? 15 : 7;
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
-    Operand src2 = {arg->gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32};
-    vec34_swizzle(src2.swizzle, arg->gpi0_swiz, false, type);
-    const int swizzle[4] = {arg->src1_swiz_x, arg->src1_swiz_y, arg->src1_swiz_z, arg->src1_swiz_w};
-    for (unsigned i = 0; i < 4; ++i) src1.swizzle[i] = channels[swizzle[i]];
-    src1.flags |= (arg->src1_neg ? F_NEG : 0) | (arg->src1_abs ? F_ABS : 0);
-    if (arg->gpi0_abs) src2.flags |= F_ABS;
-    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
-        Value a = load(t, src1, source_mask, repeat_offset(t, &src1, r, O_SRC1, (int)arg->repeat_mode));
-        Value b = load(t, src2, source_mask, repeat_offset(t, &src2, r, O_SRC2, (int)arg->repeat_mode));
-        if (t->failed) break;
-        uint32_t sum = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], b.c[0]);
-        for (unsigned i = 1; i < a.n; ++i) sum = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], sum);
-        store(t, dest, one_value(sum, K_FLOAT), mask, 0);
-        mask = ((mask << 1) | (mask >> 3)) & 15;
-    }
-    return !t->failed;
-}
-
-static void dual_swizzle(uint8_t out[4], unsigned swizzle, bool extended, bool vec4) {
-    static const uint8_t v4[2][16][4] = {
-        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(Y, Z, W, W),
-         S4(X, Y, Z, Z), S4(X, X, Y, Z), S4(X, Y, X, Y), S4(X, Y, W, Z), S4(Z, X, Y, W), S4(Z, W, Z, W),
-         S4(0, 0, 0, 0), S4(H, H, H, H), S4(1, 1, 1, 1), S4(2, 2, 2, 2)},
-        {S4(Y, Z, X, W), S4(Z, W, X, Y), S4(X, Z, W, Y), S4(Y, Y, W, W), S4(W, Y, Z, W), S4(W, Z, W, Z),
-         S4(X, Y, Z, X), S4(Z, Z, W, W), S4(X, W, Z, X), S4(Y, Y, Y, X), S4(Y, Y, Y, Z), S4(Z, W, Z, W),
-         S4(Y, Z, X, Z), S4(X, X, Y, Y), S4(X, Z, W, W), S4(X, Y, Z, 1)}};
-    static const uint8_t v3[2][16][4] = {
-        {S3(X, X, X), S3(Y, Y, Y), S3(Z, Z, Z), S3(W, W, W), S3(X, Y, Z), S3(Y, Z, W), S3(X, X, Y), S3(X, Y, X),
-         S3(Y, Y, X), S3(Y, Y, Z), S3(Z, X, Y), S3(X, Z, Y), S3(0, 0, 0), S3(H, H, H), S3(1, 1, 1), S3(2, 2, 2)},
-        {S3(X, Y, Y), S3(Y, X, Y), S3(X, X, Z), S3(Y, X, X), S3(X, Y, 0), S3(X, 1, 0), S3(X, Z, Y), S3(Y, Z, X),
-         S3(Z, Y, X), S3(Z, Z, Y), S3(X, Y, 1), SU, SU, SU, SU, SU}};
-    memcpy(out, vec4 ? v4[extended][swizzle & 15] : v3[extended][swizzle & 15], 4);
-}
-
-enum { DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE };
-typedef struct {
-    unsigned sources;
-    bool vector_load, vector_store;
-} DualInfo;
-static const DualInfo dual_info[14] = {
-    {3, true, true},  {2, true, false}, {1, true, false}, {2, true, true},  {2, true, true},
-    {1, true, true},  {1, false, false}, {1, false, false}, {3, false, false}, {2, false, false},
-    {2, false, false}, {2, false, false}, {1, false, false}, {1, false, false}};
-
-static bool dual_op1_layout(unsigned count, unsigned config, uint8_t out[3]) {
-    static const uint8_t layouts[3][4][3] = {
-        {{DUAL_UNIFIED, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_NONE, DUAL_NONE},
-         {DUAL_INTERNAL1, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL2, DUAL_NONE, DUAL_NONE}},
-        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE},
-         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_NONE, DUAL_NONE, DUAL_NONE}},
-        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2},
-         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_UNIFIED}, {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}}};
-    if (!count || count > 3 || config > 3) return false;
-    memcpy(out, layouts[count - 1][config], 3);
-    return out[0] != DUAL_NONE;
-}
-
-static bool dual_op2_layout(unsigned first_count, unsigned count, unsigned config, uint8_t out[3]) {
-    if (config > 3) return false;
-    out[1] = out[2] = DUAL_NONE;
-    if (first_count == 1) {
-        if (count == 1) {
-            out[0] = config == 0 ? DUAL_INTERNAL0 : DUAL_UNIFIED;
-            return true;
-        }
-        if (count == 2) {
-            static const uint8_t layouts[4][3] = {
-                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE},
-                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_UNIFIED, DUAL_NONE}};
-            memcpy(out, layouts[config], 3);
-            return true;
-        }
-        if (count == 3) {
-            static const uint8_t layouts[4][3] = {
-                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2},
-                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL1}};
-            memcpy(out, layouts[config], 3);
-            return true;
-        }
-    } else if (first_count == 2) {
-        if (count == 1 && config < 3) {
-            out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : DUAL_UNIFIED;
-            return true;
-        }
-        if (count == 2 && config < 3) {
-            static const uint8_t layouts[3][3] = {
-                {DUAL_INTERNAL0, DUAL_INTERNAL2, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_NONE},
-                {DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE}};
-            memcpy(out, layouts[config], 3);
-            return true;
-        }
-    } else if (first_count == 3 && count == 1) {
-        out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : config == 2 ? DUAL_INTERNAL2 : DUAL_UNIFIED;
-        return true;
-    }
-    return false;
-}
-
-static Operand dual_source(T* t, unsigned id, unsigned first_count, const arg_VDUAL* arg,
-                           Type type, bool vector_load) {
-    unsigned swizzle, number;
-    Operand op = {0, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
-    switch (id) {
-        case DUAL_UNIFIED:
-            op = decode_src12(t, arg->unified_store_slot_num, arg->unified_store_slot_bank, false, vector_load,
-                              vector_load ? 8 : 7);
-            dual_swizzle(op.swizzle, arg->unified_store_swiz, first_count < 2 && arg->gpi2_slot_num_bit_1,
-                         arg->comp_count_type);
-            if (first_count < 2 && arg->gpi2_slot_num_bit_0_or_unified_store_abs) op.flags |= F_ABS;
-            if (arg->unified_store_neg) op.flags |= F_NEG;
-            break;
-        case DUAL_INTERNAL0:
-            number = arg->gpi0_slot_num, swizzle = arg->gpi0_swiz;
-            op.num = number;
-            dual_swizzle(op.swizzle, swizzle, false, arg->comp_count_type);
-            break;
-        case DUAL_INTERNAL1:
-            number = arg->gpi1_slot_num, swizzle = arg->gpi1_swiz;
-            op.num = number;
-            dual_swizzle(op.swizzle, swizzle, arg->gpi1_swiz_ext, arg->comp_count_type);
-            if (arg->gpi1_neg) op.flags |= F_NEG;
-            break;
-        case DUAL_INTERNAL2:
-            op.num = first_count >= 2
-                         ? ((arg->gpi2_slot_num_bit_1 << 1) | arg->gpi2_slot_num_bit_0_or_unified_store_abs)
-                         : 2;
-            break;
-        default:
-            fail(t, "VDUAL source layout");
-            break;
-    }
-    op.type = type;
-    return op;
-}
-
-static Value dual_alu(T* t, unsigned code, Operand src[3], unsigned source_count, unsigned write_mask,
-                      unsigned comp_count_type) {
-    bool dot = code == 1 || code == 2;
-    unsigned source_mask = dual_info[code].vector_load ? (dot ? (comp_count_type ? 15 : 7) : write_mask) : 1;
-    Value a = load(t, src[0], source_mask, 0);
-    Value b = source_count > 1 ? load(t, src[1], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
-    Value c = source_count > 2 ? load(t, src[2], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
-    Value result = {{0}, a.n, K_FLOAT};
-    if (t->failed) return result;
-    switch (code) {
-        case 0:
-        case 8:
-            for (unsigned i = 0; i < a.n; ++i) {
-                uint32_t product = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
-                result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, product, c.c[i]);
-            }
-            break;
-        case 1:
-        case 2:
-            result = one_value(op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], code == 1 ? b.c[0] : a.c[0]), K_FLOAT);
-            for (unsigned i = 1; i < a.n; ++i)
-                result.c[0] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], code == 1 ? b.c[i] : a.c[i], result.c[0]);
-            break;
-        case 3:
-        case 10:
-        case 4:
-        case 9:
-        case 11:
-            for (unsigned i = 0; i < a.n; ++i) {
-                if (code == 3 || code == 10) result.c[i] = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
-                else if (code == 4 || code == 9) result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, a.c[i], b.c[i]);
-                else result.c[i] = op2(t, SPV_OP_F_SUB, t->t_f32, a.c[i], ext1(t, t->t_f32, SPV_GLSL_FLOOR, b.c[i]));
-            }
-            break;
-        case 5: result = a; break;
-        case 6:
-        case 7:
-        case 12:
-        case 13:
-            for (unsigned i = 0; i < a.n; ++i) {
-                if (code == 6) result.c[i] = ext1(t, t->t_f32, SPV_GLSL_INVERSE_SQRT, a.c[i]);
-                else if (code == 7) result.c[i] = op2(t, SPV_OP_F_DIV, t->t_f32, cf(t, 1), a.c[i]);
-                else if (code == 12) {
-                    uint32_t exp = ext1(t, t->t_f32, SPV_GLSL_EXP2, a.c[i]);
-                    result.c[i] = SPV(&t->e, SPV_OP_SELECT, t->t_f32, op1(t, SPV_OP_IS_NAN, t->t_bool, exp),
-                                      cf(t, 1), exp);
-                } else
-                    result.c[i] = ext1(t, t->t_f32, SPV_GLSL_LOG2, a.c[i]);
-            }
-            break;
-        default: fail(t, "VDUAL opcode %u", code); break;
-    }
-    return result;
-}
-
-/* The paired vector/scalar operations share their register reads and commit both destinations after evaluating them. */
-static bool vdual(T* t, const arg_VDUAL* arg) {
-    unsigned op1_code = ((!arg->comp_count_type && arg->op1_ext_vec3_or_has_w_vec4) << 3) | arg->op1;
-    unsigned op2_code = (arg->op2_ext << 3) | arg->op2;
-    if (op1_code >= 14 || !op2_code || op2_code >= 14) return fail(t, "VDUAL opcode");
-    const DualInfo op1_info = dual_info[op1_code], op2_info = dual_info[op2_code];
-    unsigned first_count = op1_info.sources;
-    bool unified_vector = (arg->prim_ustore && op1_info.vector_store) || (!arg->prim_ustore && op2_info.vector_store);
-    Type type = arg->type_f16 ? T_F16 : T_F32;
-
-    Operand internal_dest = {arg->prim_dest_num_gpi, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
-    Operand unified_dest =
-        decode_dest(t, arg->prim_dest_num, arg->prim_dest_bank, false, unified_vector, unified_vector ? 8 : 7);
-    unified_dest.type = type;
-    Operand op1_dest = arg->prim_ustore ? unified_dest : internal_dest;
-    Operand op2_dest = arg->prim_ustore ? internal_dest : unified_dest;
-
-    uint8_t layout1[3], layout2[3];
-    if (!dual_op1_layout(op1_info.sources, arg->src_config, layout1) ||
-        !dual_op2_layout(op1_info.sources, op2_info.sources, arg->src_config, layout2))
-        return fail(t, "VDUAL source layout");
-
-    unsigned fixed_mask = arg->write_mask_non_gpi | ((arg->comp_count_type && arg->op1_ext_vec3_or_has_w_vec4) << 3);
-    unsigned op1_mask = arg->prim_ustore ? (op1_dest.bank == B_INTERNAL ? (arg->comp_count_type ? 15 : 7)
-                                                              : op1_info.vector_store ? (arg->type_f16 ? 15 : 3)
-                                                                                      : (arg->type_f16 ? 3 : 1))
-                              : fixed_mask;
-    unsigned op2_mask = arg->prim_ustore ? fixed_mask
-                              : (op2_dest.bank == B_INTERNAL ? (arg->comp_count_type ? 15 : 7)
-                                                             : op2_info.vector_store ? (arg->type_f16 ? 15 : 3)
-                                                                                     : (arg->type_f16 ? 3 : 1));
-    Operand src1[3], src2[3];
-    for (unsigned i = 0; i < op1_info.sources; ++i)
-        src1[i] = dual_source(t, layout1[i], first_count, arg, type, op1_info.vector_load);
-    for (unsigned i = 0; i < op2_info.sources; ++i)
-        src2[i] = dual_source(t, layout2[i], first_count, arg, type, op2_info.vector_load);
-    if (t->failed) return false;
-
-    Value result1 = dual_alu(t, op1_code, src1, op1_info.sources, op1_mask, arg->comp_count_type);
-    Value result2 = dual_alu(t, op2_code, src2, op2_info.sources, op2_mask, arg->comp_count_type);
-    if (t->failed) return false;
-    store(t, op1_dest, result1, op1_mask, 0);
-    store(t, op2_dest, result2, op2_mask, 0);
-    return !t->failed;
-}
-
-/* VCOMP (the complex unit: one component's reciprocal, reciprocal square root, base 2 logarithm or exponential,
-   in each masked one): p s d y e n r a o b c m f t k g h w */
-static bool vcomp(T* t, const arg_VCOMP* arg) {
-    static const Type types[4] = {T_F32, T_F16, T_C10, T_UNK};
-    if (types[arg->dest_type] == T_UNK || types[arg->src_type] == T_UNK) return fail(t, "VCOMP with type 3");
-    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 8);
-    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 8);
-    src1.flags = decode_modifier(arg->src1_mod);
-    src1.type = types[arg->src_type], dest.type = types[arg->dest_type];
-    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
-        Value v = load(t, src1, 1u << arg->src_comp, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
-        if (t->failed) break;
-        uint32_t x = v.c[0];
-        switch (arg->op) {
-            case 0: x = op2(t, SPV_OP_F_DIV, t->t_f32, cf(t, 1), x); break;
-            case 1: x = ext1(t, t->t_f32, SPV_GLSL_INVERSE_SQRT, x); break;
-            case 2: x = ext1(t, t->t_f32, SPV_GLSL_LOG2, x); break;
-            default: /* exp2(NaN) is 1, as a game needs */
-                x = SPV(&t->e, SPV_OP_SELECT, t->t_f32, op1(t, SPV_OP_IS_NAN, t->t_bool, x), cf(t, 1),
-                        ext1(t, t->t_f32, SPV_GLSL_EXP2, x));
-                break;
-        }
-        store(t, dest, one_value(x, K_FLOAT), arg->mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
-    }
-    return !t->failed;
-}
 
 /* a rotate left of a 32-bit (or 16-bit) value */
 static uint32_t rotate_left(T* t, uint32_t x, uint32_t n, unsigned bits) {
@@ -1464,9 +1095,9 @@ enum { USSE_OPS(USSE_OP) };
 #include "usse_sail.inc"
 #pragma GCC diagnostic pop
 /* the instruction being translated, its root run */
-static void sail(T* t, int op) {
+static void sail(T* t, int op, const void* arg) {
     SgG g;
-    sgu_begin(&g, t, t->instr);
+    sgu_begin(&g, t, t->instr, arg);
     sgu_emit(&g, op);
 }
 
@@ -1484,15 +1115,15 @@ static void sail(T* t, int op) {
     }
 #define UNTRANSLATED(NAME)                                                                                             \
     static bool trans_##NAME(T* t, arg_##NAME* arg) { return (void)arg, untranslated(t, #NAME); }
-TRANS(VMAD2, true, vmad2(t, arg))
-TRANS(V32NMAD, true, vnmad(t, arg, true))
-TRANS(V16NMAD, true, vnmad(t, arg, false))
-TRANS(VMAD, true, vmad(t, arg))
-TRANS(VDP, true, vdp(t, arg))
-TRANS(VDUAL, true, vdual(t, arg))
-TRANS(VCOMP, true, vcomp(t, arg))
-TRANS(VMOV, true, sail(t, U_VMOV))
-TRANS(VPCK, true, sail(t, U_VPCK))
+TRANS(VMAD2, true, sail(t, U_VMAD2, arg))
+TRANS(V32NMAD, true, sail(t, U_V32NMAD, arg))
+TRANS(V16NMAD, true, sail(t, U_V16NMAD, arg))
+TRANS(VMAD, true, sail(t, U_VMAD, arg))
+TRANS(VDP, true, sail(t, U_VDP, arg))
+TRANS(VDUAL, true, sail(t, U_VDUAL, arg))
+TRANS(VCOMP, true, sail(t, U_VCOMP, arg))
+TRANS(VMOV, true, sail(t, U_VMOV, arg))
+TRANS(VPCK, true, sail(t, U_VPCK, arg))
 TRANS(VTST, true, vtst(t, arg))
 TRANS(VTSTMSK, true, vtstmsk(t, arg))
 TRANS(VBW, true, vbw(t, arg))
@@ -1509,15 +1140,15 @@ UNTRANSLATED(I8MAD2)
 TRANS(I32MAD2, true, i32mad2(t, arg))
 UNTRANSLATED(ILLEGAL27)
 TRANS(SMP, true, smp(t, arg))
-TRANS(PHAS, false, sail(t, U_PHAS))
-TRANS(NOP, false, sail(t, U_NOP))
-TRANS(BR, false, sail(t, U_BR)) /* translate_code makes the branches of the program's blocks */
-TRANS(SMLSI, false, sail(t, U_SMLSI))
-TRANS(SMBO, true, sail(t, U_SMBO))
+TRANS(PHAS, false, sail(t, U_PHAS, arg))
+TRANS(NOP, false, sail(t, U_NOP, arg))
+TRANS(BR, false, sail(t, U_BR, arg)) /* translate_code makes the branches of the program's blocks */
+TRANS(SMLSI, false, sail(t, U_SMLSI, arg))
+TRANS(SMBO, true, sail(t, U_SMBO, arg))
 TRANS(KILL, true, kill(t))
-TRANS(LIMM, true, sail(t, U_LIMM))
+TRANS(LIMM, true, sail(t, U_LIMM, arg))
 TRANS(DEPTHF, true, depthf(t, arg))
-TRANS(SPEC, false, sail(t, U_SPEC))
+TRANS(SPEC, false, sail(t, U_SPEC, arg))
 TRANS(VLDST, true, vldst(t, arg))
 
 /* one instruction: its handler, in an if when it is predicated. False when the program can't be translated */
