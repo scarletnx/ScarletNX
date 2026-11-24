@@ -43,6 +43,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
 /* ---- what mach_codegen.inc asks of the machine ---- */
 #define MG_EM EM_RISCV
+#define MG_ELF_FLAGS 0x5 /* RVC, the LP64D float ABI: LLVM's riscv64 objects' */
 #define MG_R_ABS64 SNX_RV_64
 #define MG_R_CALL SNX_RV_CALL_PLT
 #define MG_R_TAIL SNX_RV_CALL_PLT

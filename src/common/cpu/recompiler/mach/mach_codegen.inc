@@ -6,7 +6,8 @@
    below: the bytes of the ABI and the flow (the prologue, the jumps and their fixups, the calls, the entry's checks,
    the dispatch block, SVC, BRK and UNDEF, the pins' loads and stores) and the relocations of its objects. The
    machine also gives its AdvSIMD instructions (vec() and the vector helpers the structures' loads and stores take:
-   vread, vwrite, vzero, lane_get, lane_put, vdup), and these constants: MG_EM (its ELF machine), MG_R_ABS64 (an
+   vread, vwrite, vzero, lane_get, lane_put, vdup), and these constants: MG_EM (its ELF machine; MG_ELF_FLAGS, its
+   objects' e_flags, LLVM's for the host's ABI, 0 by default), MG_R_ABS64 (an
    absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry are in),
    the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32 takes the
    last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
@@ -16,6 +17,10 @@
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
    every block's start and end (or in their pins), so a block needs nothing of another's and a call nothing of its
    caller's */
+
+#ifndef MG_ELF_FLAGS
+#define MG_ELF_FLAGS 0
+#endif
 
 /* ---- the unit: its code, labels, relocations, symbols ---- */
 
@@ -1871,6 +1876,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     eh.e_ident[EI_VERSION] = EV_CURRENT;
     eh.e_type = ET_REL;
     eh.e_machine = MG_EM;
+    eh.e_flags = MG_ELF_FLAGS;
     eh.e_version = EV_CURRENT;
     eh.e_shoff = o.n;
     eh.e_ehsize = sizeof eh;
