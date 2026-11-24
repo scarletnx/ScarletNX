@@ -2893,7 +2893,7 @@ msgstr "默认"
 msgid "%d set"
 msgstr "已设 %d 个"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 msgid "None"
 msgstr "无"
 
@@ -3830,6 +3830,16 @@ msgstr "用户 %d 的新昵称未写入：%s"
 #, c-format
 msgid "User %d is %s now"
 msgstr "用户 %d 现在是 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a box an item, Enter turns it on or off"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no room for another item"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -6732,6 +6742,16 @@ msgstr "%s=%s 是旧的设置：%s 现在为 %s=%s"
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
 msgstr "%s=%s 是旧的设置，且不是 %s 的有效值：现在为 %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on, %d other"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on"
+msgstr ""
 
 #: src/gui/settings.c
 msgid "Mixed"

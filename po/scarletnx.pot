@@ -2890,7 +2890,7 @@ msgstr ""
 msgid "%d set"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 msgid "None"
 msgstr ""
 
@@ -3826,6 +3826,16 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "User %d is %s now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a box an item, Enter turns it on or off"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no room for another item"
 msgstr ""
 
 #: src/gui/main.c
@@ -6728,6 +6738,16 @@ msgstr ""
 #: src/gui/settings.c
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on, %d other"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on"
 msgstr ""
 
 #: src/gui/settings.c

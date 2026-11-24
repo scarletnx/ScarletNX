@@ -17,7 +17,7 @@
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
    page, which steps them together */
 enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
-#define GUI_SETTING_TEXT 192 /* a typed value's room: gamepad_map's whole map (pad_map.h) is 165 at most */
+#define GUI_SETTING_TEXT 512 /* a typed value's room: the longest of settings.txt's texts the launcher keeps */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
     char text[GUI_SETTING_TEXT];        /* a typed row's: empty, the .ini's. A page's and an All's: the value shown */
@@ -39,6 +39,10 @@ typedef struct {
        its words the common values, not every one): a number in its range (number 'i' or 'f', lo to hi), or a text */
     int custom, number, open;
     double lo, hi;
+    /* a row of boxes (the runtime's list's boxes): its items, their value, label and about, by item; the value (text)
+       is a set of them, a text's separated by commas or spaces, an int's the sum of their bits (number 'i') */
+    const char **item_value, **item_label, **item_about;
+    int items;
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
@@ -100,6 +104,15 @@ int gui_settings_knob(const GuiSettings* settings, int row);
    number's by 1, a float's by a quarter, or a twentieth where its range is 2 or less, as the game's menu steps it, onto
    that step's grid and stopping at its ends. 1 when it changed, 0 at an end or on another row */
 int gui_settings_step_number(GuiSettings* settings, int row, int step);
+/* A row of boxes: item i on in the value the row has, else in base, what it has none of its own (the launcher's for a
+   game's own, else NULL for the default); item i turned on or off in it, the row's own value then (one with nothing on
+   is no value: the default's, or the launcher's, again): 1 when it did. The items a value names that the row has not
+   are kept as they are */
+int gui_settings_item_on(const GuiSettings* settings, int row, int item, const char* base);
+int gui_settings_item_toggle(GuiSettings* settings, int row, int item, const char* base);
+/* what a row of boxes shows: how many of its items are on in value, "None" for none, and how many others the value
+   names that are none of them ("2 on, 1 other") */
+void gui_settings_items_said(const GuiSettings* settings, int row, const char* value, char* out, size_t size);
 /* an All's row stepped (-1 or 1, 0 for a select) with every row it steps: 1, else 0 */
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */
