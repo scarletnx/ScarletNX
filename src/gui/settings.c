@@ -924,6 +924,7 @@ static size_t picked_options(GuiSettings* s, const char** argv, const char* pref
         const char* key = s->values[i].key;
         const char* value;
         if (!key || (prefix && strncmp(key, prefix, strlen(prefix)) && !(ctr && snx_ctr_shared_setting(key)))) continue;
+        if (prefix && !strncmp(key, "nds_wfc", 7)) continue; /* the driver reads the launcher's own from settings.ini */
         if ((value = prefix ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
     }
     if (n && !prefix) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
@@ -942,3 +943,8 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, co
 }
 size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "ctr_", NULL); }
 size_t gui_settings_vita_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "vita_", NULL); }
+size_t gui_settings_linux_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "linux_", NULL); }
+size_t gui_settings_android_options(GuiSettings* s, const char** argv) {
+    return picked_options(s, argv, "android_", NULL);
+}
+size_t gui_settings_nds_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "nds_", NULL); }

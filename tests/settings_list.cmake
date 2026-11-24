@@ -131,6 +131,19 @@ foreach(row "\nVita/Debug\tvita_hle_trace\t0\tint\t0\t2\t" "\tImport trace\t0=Of
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
     endif()
 endforeach()
+# the Linux, Android and DS groups: each its driver's rows, the Debug page's after them
+foreach(row "\nLinux\tlinux_isolated\t0\tint\t0\t1\t" "\tIsolated\t0=Off|1=On\t\n"
+            "\nLinux\tlinux_root\t\ttext\t0\t0\t" "\tRoot folder\t\t\t\tfolder\n"
+            "\nLinux\tlinux_jit_cache\t1\tint\t0\t1\t"
+            "\nLinux/Debug\tlinux_strace\t0\tint\t0\t1\t"
+            "\nAndroid\tandroid_java_options\t\ttext\t0\t0\t" "\tJava options\t\t\n"
+            "\nAndroid/Debug\tandroid_jit_keep_ir\t\ttext\t0\t0\t" "\tJIT IR folder\t\t\t\tfolder\n"
+            "\nDS\tnds_aot\t1\tint\t0\t1\t" "\nDS/Debug\tnds_wav\t\ttext\t0\t0\t" "\tSound file\t\t\t\tsave\n")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
 foreach(key vita_script vita_press_len vita_shot_every)
     string(FIND "${list}" "\t${key}\t" at)
     if(NOT at LESS 0)

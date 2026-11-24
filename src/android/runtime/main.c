@@ -14,6 +14,7 @@
 #include "android/bridge/native.h"
 #include "android/bridge/hle_assets.h"
 #include "common/utilities/ini_lines.h"
+#include "snx_settings.h"
 #include "android/hwui/image.h"
 #include "android/hwui/render.h"
 #include "android/hwui/text.h"
@@ -76,6 +77,8 @@ static void usage(FILE* out) {
     "  --jit-verbose          Each unit the JIT compiles, before and after, with its time\n"
     "  --jit-keep-ir=DIR      The LLVM IR of each unit the JIT compiles, saved in DIR\n"
     "  --linker-verbose       Each native library and its load address\n"
+    "  --android-KEY=VALUE    A setting of the launcher's Settings > Android (docs/user/settings.md), the\n"
+    "                         same as the option above: the last given counts\n"
     "  --native-test LIB [SYMBOL...]\n"
     "                         Load an AArch64 library through the native bridge and call each function\n",
         out);
@@ -363,6 +366,54 @@ static const struct {
     {"--pick", "pick"},
 };
 
+/* the Android group's settings (settings.txt's g_android_ini and g_android_debug_ini) by their keys with a - for each
+   _, each what the option of its own here is, so the last given counts. The JVM's options it makes, -D and -J, which
+   are owned, go in options (room for the arguments and a text's words). 0 for another argument, 1 taken, -1 with why
+   said */
+static int android_setting(const char* arg, char** options, char** owned, size_t* option_count, size_t* owned_count,
+                           size_t room, bool* log_signals, bool* sample) {
+    char key[64], error[256];
+    const char* given = settings_arg(arg, key, sizeof key);
+    const IniOpt* o = given ? ini_find(g_android_ini, key) : NULL;
+    if (given && !o) o = ini_find(g_android_debug_ini, key);
+    if (!o) return 0;
+    if (ini_check(o, given, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        return -1;
+    }
+    ini_read(o, given);
+    if (!strcmp(key, "android_jit_opt")) {
+        if (strlen(g_settings.android_jit_level) != 1 || !bridge_set_optimization(g_settings.android_jit_level[0])) {
+            fprintf(stderr, "scarletnx-android: --android-jit-opt takes 0, 1, 2, 3, s or z, not %s\n", given);
+            return -1;
+        }
+    } else if (!strcmp(key, "android_log_level") &&
+               (strlen(g_settings.android_log_level) != 1 || !strchr("VDIWEA", g_settings.android_log_level[0]))) {
+        fprintf(stderr, "scarletnx-android: --android-log-level takes V, D, I, W, E or A, not %s\n", given);
+        return -1;
+    } else if (!strcmp(key, "android_java_options")) {
+        char* words = snx_strdup(g_settings.android_java_options);
+        for (char* w = words ? strtok(words, " ") : NULL; w && *option_count < room; w = strtok(NULL, " "))
+            if ((owned[*owned_count] = snx_strdup(w)) != NULL) options[(*option_count)++] = owned[(*owned_count)++];
+        free(words);
+    } else if (!strcmp(key, "android_log_level") || !strcmp(key, "android_trace_frames")) {
+        char* d = !strcmp(key, "android_log_level")
+                      ? snx_format("-Dsnx.android.log_level=%s", g_settings.android_log_level)
+                      : snx_format("-Dsnx.android.trace_frames=%s", g_settings.android_frame_trace ? "true" : "false");
+        if (d && *option_count < room) options[(*option_count)++] = owned[(*owned_count)++] = d;
+    } else if (!strcmp(key, "android_log_signals") || !strcmp(key, "android_sample")) {
+        *log_signals = g_settings.android_signal_log != 0;
+        *sample = g_settings.android_sample != 0;
+        signals_set_options(*log_signals, *sample);
+    } else if (!strcmp(key, "android_jit_verbose"))
+        bridge_set_verbose(g_settings.android_jit_messages != 0);
+    else if (!strcmp(key, "android_jit_keep_ir"))
+        bridge_set_keep_ir(g_settings.android_jit_ir[0] ? g_settings.android_jit_ir : NULL);
+    else if (!strcmp(key, "android_linker_verbose"))
+        linker_set_verbose(g_settings.android_linker_messages != 0);
+    return 1;
+}
+
 static void free_options(char** options, char** owned, size_t owned_count) {
     for (size_t k = 0; k < owned_count; ++k) free(owned[k]);
     free(owned);
@@ -372,8 +423,9 @@ static void free_options(char** options, char** owned, size_t owned_count) {
 int snx_android_main(int argc, char** argv) {
     const char *apk = NULL, *translate = NULL, *framework = NULL, *shot = NULL, *shot_frames = NULL;
     bool headless = false, log_signals = false, sample = false;
-    char** options = calloc((size_t)argc + 1, sizeof *options);
-    char** owned = calloc((size_t)argc + 1, sizeof *owned); /* the -D options made here, freed at the end */
+    const size_t room = (size_t)argc + 513; /* an argument's each, and android_java_options' words */
+    char** options = calloc(room + 1, sizeof *options);
+    char** owned = calloc(room + 1, sizeof *owned); /* the -D options made here, freed at the end */
     size_t option_count = 0, owned_count = 0;
     if (!options || !owned) {
         free(options);
@@ -420,6 +472,15 @@ int snx_android_main(int argc, char** argv) {
             java = true;
         }
         if (java) continue;
+        {
+            int taken =
+                android_setting(argv[i], options, owned, &option_count, &owned_count, room, &log_signals, &sample);
+            if (taken < 0) {
+                free_options(options, owned, owned_count);
+                return 2;
+            }
+            if (taken) continue;
+        }
         if ((value = value_of(argv[i], "--framework"))) {
             framework = value;
             continue;
@@ -479,7 +540,7 @@ int snx_android_main(int argc, char** argv) {
         }
     }
     /* the frames to save, for the Java side to keep presenting a still window until the last (snx.android.ui.Window) */
-    if (shot && option_count < (size_t)argc) {
+    if (shot && option_count < room) {
         char* d = snx_format("-Dsnx.android.shot_frames=%s", shot_frames ? shot_frames : "60");
         if (d) options[option_count++] = owned[owned_count++] = d;
     }

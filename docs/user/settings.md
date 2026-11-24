@@ -20,6 +20,9 @@
 * [Timed runs](#timed-runs)
 * [3DS driver](#3ds-driver)
 * [Vita driver](#vita-driver)
+* [Linux driver](#linux-driver)
+* [Android driver](#android-driver)
+* [DS driver](#ds-driver)
 * [Launch](#launch)
   * [LLVM Internals](#llvm-internals)
 * [GBA](#gba)
@@ -556,6 +559,55 @@ line and on no page.
 
 The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale the frame to the window, the
 launcher passing them, and the start says which run.
+
+## Linux driver
+
+`scarletnx-gnuabi --key=value` ([GNU ABI](../platforms/gnuabi/README.md)), a - for each `_` (`--linux-strace=1`). The
+launcher's Settings show them on the Linux group, the diagnostics on its Debug page, and pass each one picked to a Linux
+program's run, before its name. Each is what the option of its own is (`--strace`), and the last given counts.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `linux_isolated` | `0` | `1` is no host files and no variables of the host's: `/tmp` in memory, the program alone as `/program`, and `PATH` and `LANG` in its environment (`--isolated`) |
+| `linux_root` | empty | The guest's root (`-L DIR`, `--sysroot=DIR`): a guest path names its file when it has one, the host's otherwise, as with QEMU's `-L`. Empty: `linux/` in the data folder. `linux_isolated` takes none |
+| `linux_jit_cache` | `1` | `0` keeps no compiled code between runs (`--no-jit-cache`) |
+| `linux_jit_opt` | `2` | The JIT's LLVM optimization level, `0`, `1`, `2`, `3`, `s` or `z` (`--jit-opt=`, `-O`): `0` compiles several times faster |
+| `linux_host_page` | `0` | Works as a host whose pages have that many bytes, a power of two from the host's page to 1048576 (`--host-page=`); `0` the host's. Not on Windows, which works in 4096-byte pages and refuses another |
+| `linux_strace` | `0` | `1` writes each system call, its arguments and its result to stderr, with the process id (`--strace`) |
+| `linux_sample_pc` | `0` | `1` writes the guest's program counter to stderr once a second, which shows a loop with no system call (`--sample-pc`). Not on Windows |
+| `linux_verbose_jit` | `0` | `1` says what the JIT compiles (`--verbose-jit`) |
+
+## Android driver
+
+`scarletnx-android --key=value` ([Android apps](../platforms/android-apps/README.md)), a - for each `_`. The launcher's
+Settings show them on the Android group, the diagnostics on its Debug page, and pass each one picked to an Android app's
+run. Each is what the option of its own is, and the last given counts; the JDK is `java_home` ([Launch](#launch)).
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `android_jit_opt` | `2` | LLVM's optimization of the native code the JIT compiles, `0`, `1`, `2`, `3`, `s` or `z` (`--jit-opt=`, `-O`): `0` compiles several times faster, to test the JIT itself |
+| `android_java_options` | empty | Options for the JVM, a space between two, as `-J` gives one: `-Xmx2g` |
+| `android_log_level` | `D` | The least `android.util.Log` level printed, `V`, `D`, `I`, `W`, `E` or `A` (`--log-level=`); the least `Log.isLoggable` is true for too |
+| `android_trace_frames` | `0` | `1` writes each frame the app's windows make to stderr (`--trace-frames`) |
+| `android_log_signals` | `0` | `1` logs each guest signal action, send and delivery (`--log-signals`) |
+| `android_sample` | `0` | `1` writes, every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents (`--sample`) |
+| `android_jit_verbose` | `0` | `1` says each unit the JIT compiles, before and after, with its time (`--jit-verbose`) |
+| `android_jit_keep_ir` | empty | A folder that keeps the LLVM IR of each unit the JIT compiles, so one LLVM fails on can be compiled again by itself (`--jit-keep-ir=`) |
+| `android_linker_verbose` | `0` | `1` says each native library and its load address (`--linker-verbose`) |
+
+## DS driver
+
+`scarletnx-nds --key=value` ([DS](../platforms/nds/README.md)), a - for each `_`. The launcher's Settings show them on
+the DS group, the diagnostics on its Debug page, and pass each one picked to a DS game's run. Each is what the option of
+its own is (`--aot=0`), and the last given counts. The WFC service is the Online group's ([Online](#online)), which the
+driver reads from the launcher's `settings.ini` itself.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `nds_aot` | `1` | `0` compiles no module before a game with none starts: every block compiles as the run reaches it (a quick look at a game, `--aot=0`; a recompile does it later, from the hints) |
+| `nds_trace` | `0` | `1` says each register access and ARM7 request the board does not know (`--trace`), `2` each interrupt taken too |
+| `nds_wav` | empty | A WAV file that gets the run's sound, 16 bits stereo (`--wav=`) |
+| `nds_dump_ram` | empty | A file that gets `0x01FF8000` to `0x02FFFFFF` when the run ends (`--dump_ram=`) |
 
 ## Launch
 
