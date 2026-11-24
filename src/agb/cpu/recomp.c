@@ -9,6 +9,7 @@
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/platform/dl.h"
 #include <llvm-c/Core.h>
@@ -281,8 +282,8 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
    32-bit modules (module_arm.c), with the helpers they call (armlib.c), and linked by the backend's own linker, which
    exports each block's function by its name */
 static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    size_t count = recomp->count, object_size = 0, armlib_size = 0;
-    unsigned char *object = NULL, *armlib = NULL;
+    size_t count = recomp->count, object_size = 0;
+    unsigned char* object = NULL;
     char **names = (char**)calloc(count ? count : 1, sizeof(*names)), *library = snx_format("%s.so", recomp->base), *tmp = NULL;
     SnxIr* ir = NULL;
     LLVMModuleRef module = NULL;
@@ -334,10 +335,9 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         free(kept);
         if (failed) goto done;
     }
-    if (snx_ir_module_object(ir, module, recomp->opt, &object, &object_size, error, error_size) ||
-        snx_ir_armlib_object(recomp->opt, &armlib, &armlib_size, error, error_size))
-        goto done;
-    inputs[0].data = armlib, inputs[0].size = armlib_size, inputs[0].name = "armlib";
+    if (snx_ir_module_object(ir, module, recomp->opt, &object, &object_size, error, error_size)) goto done;
+    inputs[0].data = (unsigned char*)snx_armlib_object, inputs[0].size = (size_t)snx_armlib_object_size;
+    inputs[0].name = "armlib";
     inputs[1].data = object, inputs[1].size = object_size, inputs[1].name = "blocks";
     if (snx_link(inputs, 2, (const char* const*)names, count, snx_path_leaf(library), &linked, error, error_size))
         goto done;
@@ -356,7 +356,6 @@ done:
     free(library);
     free(tmp);
     free(object);
-    free(armlib);
     free(linked.data);
     if (module) LLVMDisposeModule(module);
     snx_ir_free(ir);

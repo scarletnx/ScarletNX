@@ -903,10 +903,6 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     return 0;
 }
 
-/* armlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed) */
-extern const unsigned char snx_armlib_bitcode[];
-extern const unsigned long snx_armlib_bitcode_size;
-
 static int library_object(const char* name, const unsigned char* bitcode, unsigned long bitcode_size, char opt,
                           unsigned char** data, size_t* size, char* error, size_t error_size) {
     static const char* const target_attributes[] = {"target-cpu", "target-features", "tune-cpu", "probe-stack"};
@@ -943,9 +939,6 @@ static int library_object(const char* name, const unsigned char* bitcode, unsign
 }
 int snx_ir_rtlib_object(char opt, unsigned char** data, size_t* size, char* error, size_t error_size) {
     return library_object("rtlib", snx_rtlib_bitcode, snx_rtlib_bitcode_size, opt, data, size, error, error_size);
-}
-int snx_ir_armlib_object(char opt, unsigned char** data, size_t* size, char* error, size_t error_size) {
-    return library_object("armlib", snx_armlib_bitcode, snx_armlib_bitcode_size, opt, data, size, error, error_size);
 }
 
 char* snx_ir_text(SnxIr* ir) { return LLVMPrintModuleToString(ir->mod); }

@@ -15,6 +15,7 @@
 #include "nx/loader/module_abi.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "nx/loader/module_x64.h"
 #include "snx_settings.h"
@@ -957,8 +958,8 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     SnxIr* ir = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
-    unsigned char *module_object = NULL, *armlib_object = NULL, *x64_object = NULL;
-    size_t module_size = 0, armlib_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
+    unsigned char *module_object = NULL, *x64_object = NULL;
+    size_t module_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
     Block* llvm = NULL;
     const char* exports[1];
     char error[1024], *tmp = NULL;
@@ -1081,13 +1082,10 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    if (snx_ir_armlib_object(build->opt, &armlib_object, &armlib_size, error, sizeof(error))) {
-        snx_error("LLVM backend: %s", error);
-        goto done;
-    }
     inputs = (SnxLinkInput*)snx_alloc((q.count + 3) * sizeof(*inputs));
-    inputs[n].data = armlib_object;
-    inputs[n].size = armlib_size;
+    /* the one the recompiler's build compiled (rtlib_object.h) */
+    inputs[n].data = (unsigned char*)snx_armlib_object;
+    inputs[n].size = (size_t)snx_armlib_object_size;
     inputs[n++].name = "armlib";
     inputs[n].data = module_object;
     inputs[n].size = module_size;
@@ -1123,7 +1121,6 @@ done:
     free(q.units);
     free(inputs);
     free(module_object);
-    free(armlib_object);
     free(x64_object);
     free(llvm);
     snx_native_arm_free(d.x64);
