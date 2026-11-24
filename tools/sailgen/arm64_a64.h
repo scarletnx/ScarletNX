@@ -3,70 +3,15 @@
 /* sailgen's arm64 back end, A64's part of its own (after mach_a64.h, which keeps the guest's registers, its memory and
    its branches): the floating point, the exclusives' stores, the LSE atomics, CRC32, the barriers and the ABI.
 
-   The floating point is the exact helpers' (x64_helpers.c's snx_x64_fp_*, cpu.h's soft float, which raise FPSR's
-   flags as FPProcessException does) for every operation: the host computes Arm's IEEE arithmetic itself, but only
-   under the guest's FPCR, which the runtime's own C would then run under too, so that is left for the code that
-   switches FPCR around the calls out. The exclusives and atomics are the host's own load-exclusive and
+   The floating point is the exact helpers' (mach_a64.h's SGX_FP_HELPERS) for every operation: the host computes
+   Arm's IEEE arithmetic itself, but only under the guest's FPCR, which the runtime's own C would then run under too,
+   so that is left for the code that switches FPCR around the calls out. The exclusives and atomics are the host's own load-exclusive and
    store-exclusive (or the LSE instruction), sequentially consistent as the LLVM back end's host atomics are: a
    store-exclusive is cpu.h's value-based monitor, a compare-and-swap from the value the load-exclusive read. The
    barriers are the guest's own DMB, DSB and ISB, and an acquire load and a release store a DMB beside them.
 
    The ABI is AAPCS64: the state's address comes in X0 and stays in X19 (the callee's, saved with X29 and X30 by the
    prologue), SP 16-aligned after the prologue's frame of spill slots, a call's result in X0 */
-
-/* ---- the floating point: the exact helpers ---- */
-
-static inline SgD sgx_fp_binary(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned op) {
-    SgD o[2] = {a, b};
-    return sgx_fp(g, "snx_x64_fp_binary", path, fpcr, o, 2, 1, a.w | op << 8, a.w);
-}
-static inline SgD sg_FPAdd(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_ADD); }
-static inline SgD sg_FPSub(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_SUB); }
-static inline SgD sg_FPMul(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_MUL); }
-static inline SgD sg_FPDiv(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_DIV); }
-static inline SgD sgx_fp_minmax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned minimum, unsigned numeric) {
-    SgD o[2] = {a, b};
-    return sgx_fp(g, "snx_x64_fp_minmax", path, fpcr, o, 2, 1, a.w | minimum << 8 | numeric << 9, a.w);
-}
-static inline SgD sg_FPMax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 0); }
-static inline SgD sg_FPMin(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 0); }
-static inline SgD sg_FPMaxNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 1); }
-static inline SgD sg_FPMinNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 1); }
-static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD fpcr) {
-    SgD o[3] = {addend, a, b};
-    return sgx_fp(g, "snx_x64_fp_fma", path, fpcr, o, 3, 1, a.w, a.w);
-}
-static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
-    return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | SNX_FP_SQRT << 8, a.w);
-}
-static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, int exact) {
-    return sgx_fp(g, "snx_x64_fp_round", path, fpcr, &a, 1, 1, a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)!!exact << 12,
-                  a.w);
-}
-static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long long to_bits) {
-    if (to_bits != 16 && to_bits != 32 && to_bits != 64) sg_fail("a conversion to a float of this width", to_bits, 0);
-    return sgx_fp(g, "snx_x64_fp_convert", path, fpcr, &op, 1, 1, op.w | (SnxU32)to_bits << 8, (unsigned)to_bits);
-}
-static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD fpcr) {
-    SgD o[2] = {a, b};
-    return sgx_fp(g, "snx_x64_fp_compare", path, fpcr, o, 2, 1, a.w | (SnxU32)!!signal << 8, 4);
-}
-static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
-                               long long width) {
-    if (rounding != SG_FP_ROUNDING_FPCR) sg_fail("FixedToFP in a mode of its own: the helper rounds as FPCR says", rounding, 0);
-    if (fbits < 0 || fbits > 64) sg_fail("FixedToFP of these fraction bits", fbits, 0);
-    return sgx_fp(g, "snx_x64_fp_from_int", path, fpcr, &op, 1, 1,
-                  op.w | (SnxU32)width << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17, (unsigned)width);
-}
-static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
-                               long long integer) {
-    if (rounding == SG_FP_ROUNDING_FPCR) sg_fail("FPToFixed in FPCR's mode: the helper takes the encoding's", rounding, 0);
-    if (integer != 32 && integer != 64) sg_fail("a conversion to an integer of this width", integer, 0);
-    if (fbits < 0 || fbits > 64) sg_fail("FPToFixed of these fraction bits", fbits, 0);
-    return sgx_fp(g, "snx_x64_fp_to_int", path, fpcr, &op, 1, 1,
-                  op.w | (SnxU32)integer << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17 | sgx_fp_rm(rounding) << 24,
-                  (unsigned)integer);
-}
 
 /* ---- the exclusives, the atomics and CRC32: the machine's inline sequences (SGX_K_MACHINE) ----
    Their inputs in fixed registers: the guest memory's base X2, the address X3, the values X4 and X5 (a CAS's expected

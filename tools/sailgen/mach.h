@@ -14,6 +14,25 @@
    condition code on the flags an instruction left, the selection's condition code for an Arm condition. */
 
 
+/* what a machine may say of itself (x64.h, arm64.h, risc.h), its default where it says nothing: the bits its
+   condition codes carry besides the Arm condition, which a flag's code takes from the selection that set the flags
+   (SGX_CC_EXTRA: risc.h's kind of virtual flags); a division of two operands whose divisor mach.h makes 1 where it is 0
+   or -1 under the most negative value (SGX_DIV_2OP, not x86's RDX:RAX); vector registers for values (SGX_HAS_VREGS:
+   without them a SIMD&FP register is two doublewords in general-purpose ones); the floating point all helpers'
+   (SGX_FP_HELPERS) */
+#ifndef SGX_CC_EXTRA
+#define SGX_CC_EXTRA(fsel) 0
+#endif
+#ifndef SGX_DIV_2OP
+#define SGX_DIV_2OP 0
+#endif
+#ifndef SGX_HAS_VREGS
+#define SGX_HAS_VREGS 1
+#endif
+#ifndef SGX_FP_HELPERS
+#define SGX_FP_HELPERS 0 /* mach_a64.h's exact helpers for all the floating point, not the machine's own code */
+#endif
+
 /* ---- the SSA of the block's instructions ---- */
 
 enum {
@@ -1422,7 +1441,7 @@ static inline SgD sgx_nzcv(SgX* x, int ins) {
 static inline int sgx_arm_flag_cc(const SgXSel* fsel, int f) {
     int j = fsel->flag_of[f];
     if (j < 0) return -1;
-    return (fsel->flag_neg >> f) & 1 ? sgx_flag_ncc[j] : sgx_flag_cc[j];
+    return ((fsel->flag_neg >> f) & 1 ? sgx_flag_ncc[j] : sgx_flag_cc[j]) | SGX_CC_EXTRA(fsel);
 }
 
 /* the machine's part, before an instruction makes flags it keeps for later (AddWithCarry's): what it would emit
@@ -1825,7 +1844,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r);
 static inline void sgx_spill_at(SgXAsm* a, int r, int at) {
     int v = a->owner[r], k;
     SgXV* vv = &a->x->v[v];
-    if (vv->slot < 0 && vv->xmm < 0 && a->next_call && at >= 0 && a->next_call[at] > vv->last)
+    if (SGX_HAS_VREGS && vv->slot < 0 && vv->xmm < 0 && a->next_call && at >= 0 && a->next_call[at] > vv->last)
         for (k = 0; k < SGX_NXREG; ++k) {
             if ((a->xreserved >> k & 1) || a->xowner[k] < 0 ||
                 (a->xowner[k] > 0 && a->x->v[a->xowner[k]].last >= at))
@@ -2616,6 +2635,8 @@ static inline SgI sg_i_div(SgCtx* g, SgI a, SgI b) {
     /* the machine's division is Arm's own: 0 for a divisor of 0, the dividend for the most negative over -1 */
     (void)d;
     q = s ? SGX_OP(x, sdiv, 64, av, bv) : SGX_OP(x, udiv, 64, av, bv);
+#elif SGX_DIV_2OP
+    q = s ? SGX_OP(x, sdiv, 64, av, d) : SGX_OP(x, udiv, 64, av, d);
 #else
     q = s ? SGX_OP(x, sdiv, 64, av, sg_d_asr(g, av, 63), d) : SGX_OP(x, udiv, 64, av, d);
 #endif

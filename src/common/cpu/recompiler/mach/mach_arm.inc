@@ -311,7 +311,12 @@ static void divide(SgCtx* g) {
 #else
     SgB zero = sg_d_is_zero(g, m);
     m = sg_d_select(g, zero, sgx_const(64, 1), m);
+#if SGX_DIV_2OP
+    /* the divisor 1 where it is 0 (the result 0 below); the most negative over -1 needs no care at 64 bits */
+    SgD q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, m);
+#else
     SgD q = u ? SGX_OP(x, udiv, 64, n, m) : SGX_OP(x, sdiv, 64, n, sg_d_asr(g, n, 63), m);
+#endif
     sg_GPR_write(g, (w >> 16) & 15, sg_d_select(g, zero, sgx_const(32, 0), sg_d_slice(g, q, 31, 0)));
 #endif
 }
