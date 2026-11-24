@@ -25,6 +25,7 @@ enum { RV_EM = 243, RV_R_64 = 2, RV_R_CALL_PLT = 19 };
 #define MG_ARM_MAKES()     1
 #define MG_ARM_FEATURES()  0u
 #define MG_ARM_EM          RV_EM
+#define MG_ARM_ELF_FLAGS   0x5 /* RVC, the LP64D float ABI */
 #define MG_ARM_CALL_RELOC  RV_R_CALL_PLT
 #define MG_ARM_R_TAIL      RV_R_CALL_PLT
 #define MG_ARM_R_ABS64     RV_R_64

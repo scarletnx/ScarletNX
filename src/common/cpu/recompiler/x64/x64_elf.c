@@ -40,6 +40,7 @@ struct SnxXElf {
     size_t nrels, cap_rels;
     int oom;
     unsigned machine; /* EM_X86_64 unless snx_xelf_set_machine said */
+    unsigned flags;   /* e_flags (snx_xelf_set_flags) */
 };
 
 static int room(Buf* b, size_t n) {
@@ -78,6 +79,7 @@ SnxXElf* snx_xelf_new(void) {
     return o;
 }
 void snx_xelf_set_machine(SnxXElf* o, unsigned machine) { o->machine = machine; }
+void snx_xelf_set_flags(SnxXElf* o, unsigned flags) { o->flags = flags; }
 void snx_xelf_free(SnxXElf* o) {
     size_t i;
     int k;
@@ -327,6 +329,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
         eh.e_ident[EI_VERSION] = EV_CURRENT;
         eh.e_type = ET_REL;
         eh.e_machine = (Elf64_Half)o->machine;
+        eh.e_flags = o->flags;
         eh.e_version = EV_CURRENT;
         eh.e_shoff = file.n;
         eh.e_ehsize = sizeof eh;

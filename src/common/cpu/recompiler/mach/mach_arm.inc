@@ -22,6 +22,10 @@
    that block a successor, the code jumps to it as chain_block's tail call does (reading the thread's poll first where
    it is at or before the block's start); anywhere else it returns, with R15 the next instruction's */
 
+#ifndef MG_ARM_ELF_FLAGS
+#define MG_ARM_ELF_FLAGS 0 /* the objects' e_flags (mach_codegen.inc's MG_ELF_FLAGS) */
+#endif
+
 /* the thread's: where a word the emitters can't make (bits.h's sg_fail) refuses the block, which LLVM makes, and why,
    for the caller */
 static _Thread_local struct {
@@ -1861,6 +1865,7 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     *size = 0;
     if (!o) return -1;
     snx_xelf_set_machine(o, MG_ARM_EM);
+    snx_xelf_set_flags(o, MG_ARM_ELF_FLAGS);
     mg_entry_exit_fn(o);
     qsort(c->made, c->nmade, sizeof *c->made, by_address);
     for (size_t i = 0; i < c->nmade; ++i) {
