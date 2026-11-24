@@ -172,6 +172,49 @@ int main(void) {
     path = snx_format("%s/broken/meta.json", dir);
     assert(!snx_write_file(path, "{\"name\": 1", 10));
     free(path);
+    /* the variables Mesa reads out of a set it knows: each a name a variable can have, its items value=Label~About with
+       no ';', ',' or space in a value, none twice; each preset's value of one is made of them; the flag ones listed as
+       rows of boxes, the one-name ones not */
+    {
+        int known = 0, flags = 0, lines = 0;
+        char *rows = gui_freedreno_list(), *c;
+        for (; gui_freedreno_known[known].name; ++known) {
+            const GuiFreedrenoKnown* k = &gui_freedreno_known[known];
+            const char* at = k->items;
+            assert(snx_freedreno_name_valid(k->name) && k->about && *k->about && gui_freedreno_find(k->name) == known);
+            flags += !k->one;
+            while (at) {
+                size_t v = strcspn(at, "=");
+                char token[64], one[68];
+                assert(v && v < sizeof token && strspn(at, "abcdefghijklmnopqrstuvwxyz0123456789_") == v);
+                assert(!strncmp(at + v + 1, at, v) && at[2 * v + 1] == '~'); /* its label is its value */
+                snprintf(token, sizeof token, "%.*s", (int)v, at);
+                snprintf(one, sizeof one, "|%s=", token);
+                assert(!strstr(at + 1, one)); /* once */
+                at = strchr(at, '|');
+                if (at) ++at;
+            }
+        }
+        assert(known == 5 && flags == 4 && gui_freedreno_find("FD_RD_DUMP_FRAMES") == -1);
+        for (c = rows; (c = strchr(c, '\n')) != NULL; ++c) ++lines;
+        assert(lines == flags && strstr(rows, "Freedreno\tTU_DEBUG\t\ttext\t0\t0\t") &&
+               strstr(rows, "|combine=combine~One file for every dump|") && !strstr(rows, "TU_AUTOTUNE_ALGO"));
+        free(rows);
+        for (i = 0; gui_freedreno_presets[i].name; ++i) {
+            SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
+            char why[200], token[64];
+            int count =
+                snx_freedreno_parse(gui_freedreno_presets[i].variables, vars, SNX_FREEDRENO_MAX, why, sizeof why);
+            for (int v = 0; v < count; ++v) {
+                int k = gui_freedreno_find(vars[v].name);
+                for (char* t = k < 0 ? NULL : strtok(vars[v].value, ","); t; t = strtok(NULL, ",")) {
+                    snprintf(token, sizeof token, "%s=", t);
+                    assert(!strncmp(gui_freedreno_known[k].items, token, strlen(token)) ||
+                           strstr(gui_freedreno_known[k].items, token)); /* a flag Mesa has */
+                }
+            }
+        }
+    }
     list = gui_gpu_drivers_list(dir, &n);
     assert(n == 3 && list);
     assert(!strcmp(list[0].id, "broken") && has(list[0].error, "not JSON near byte 10 of 10"));

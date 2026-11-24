@@ -3800,7 +3800,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     /* Freedreno Settings: Eden's presets first, Debug - CPU Memory applied; LD_PRELOAD refused; Save kept */
     app->editor.row = GUI_APP_FREEDRENO;
     key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 4 + 1);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 5 + 4 + 1);
     render(app);
     key(app, SDLK_RETURN); /* the first preset */
     assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "TU_DEBUG") &&
@@ -3808,16 +3808,16 @@ static void gpu_drivers(App* app, const char* temporary) {
            !strcmp(app->editor.note, "Preset 'Debug - CPU Memory' applied") && app->editor.dirty);
     { /* Clear All wants care: the warning colour (Save keeps what it did, Back none of it) */
         UiRowInfo all = {0};
-        assert(form_row_info(app, &app->editor, 9 + 1 + 3, form_labels(&app->editor), 0, &all) &&
+        assert(form_row_info(app, &app->editor, freedreno_typed_row(app) + 3, form_labels(&app->editor), 0, &all) &&
                strstr(all.label, "Clear All") && (all.attr & UI_ATTR_CAUTION));
     }
     snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "LD_PRELOAD");
     snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "/x.so");
-    freedreno_action(app, 9 + app->fd_count + 2, false); /* Add Variable */
+    freedreno_action(app, freedreno_typed_row(app) + 2, false); /* Add Variable */
     assert(app->fd_count == 1 && strstr(app->editor.note, "\"LD_PRELOAD\" is not one of Freedreno's variables"));
     snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "FD_RD_DUMP");
     snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "enable");
-    freedreno_action(app, 9 + app->fd_count + 2, false);
+    freedreno_action(app, freedreno_typed_row(app) + 2, false);
     assert(app->fd_count == 2 && !strcmp(app->editor.note, "Variable FD_RD_DUMP added") && !app->fd_form.name[0]);
     app->editor.row = gui_editor_rows(&app->editor) - 1; /* Save */
     key(app, SDLK_RETURN);
@@ -3829,7 +3829,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     app->editor.row = 9; /* TU_DEBUG's row: Del takes it out */
     key(app, SDLK_DELETE);
     assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "FD_RD_DUMP"));
-    app->editor.row = 9 + app->fd_count + 3; /* Clear All, then Save */
+    app->editor.row = freedreno_typed_row(app) + 3; /* Clear All, then Save */
     key(app, SDLK_RETURN);
     assert(!app->fd_count && !strcmp(app->editor.note, "All Freedreno variables cleared"));
     app->editor.row = gui_editor_rows(&app->editor) - 1;
@@ -3838,6 +3838,53 @@ static void gpu_drivers(App* app, const char* temporary) {
     kept = (char*)snx_read_file(app->app_file, &size);
     assert(kept && !strstr(kept, "freedreno_env"));
     free(kept);
+    /* a variable Mesa reads out of a set it knows: TU_DEBUG's flags are boxes of its own, kept by the form's Save with
+       a name Mesa may add left as it is; TU_AUTOTUNE_ALGO's one name is stepped, the driver's own (none) before its
+       first; another variable is a row under them, which a press takes out as before */
+    assert(freedreno_put(app, "TU_DEBUG", "sysmem,newer") && freedreno_put(app, "FD_RD_DUMP_FRAMES", "0-100"));
+    freedreno_show(app, 9);
+    assert(freedreno_typed_row(app) == 9 + 5 + 1 && !strcmp(app->fd_form.shown[9], "1 on, 1 other") &&
+           !strcmp(app->fd_form.shown[10], "None") && !strcmp(app->fd_keys[14].key, "FD_RD_DUMP_FRAMES"));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && app->box_fd && gui_editor_rows(&app->editor) == 38);
+    render(app);
+    key(app, SDLK_RETURN); /* startup, Mesa's first */
+    assert(!strcmp(freedreno_var(app, "TU_DEBUG")->value, "sysmem,newer,startup"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_FREEDRENO && app->editor.row == 9 && !app->box_fd && app->editor.dirty &&
+           !strcmp(app->fd_form.shown[9], "2 on, 1 other"));
+    app->editor.row = 9 + 4; /* TU_AUTOTUNE_ALGO */
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(freedreno_var(app, "TU_AUTOTUNE_ALGO")->value, "bandwidth") && app->editor.row == 9 + 4);
+    key(app, SDLK_LEFT);
+    assert(!freedreno_var(app, "TU_AUTOTUNE_ALGO"));
+    key(app, SDLK_LEFT);
+    assert(!strcmp(freedreno_var(app, "TU_AUTOTUNE_ALGO")->value, "prefer_gmem"));
+    key(app, SDLK_DELETE);
+    assert(!freedreno_var(app, "TU_AUTOTUNE_ALGO") && !strcmp(app->editor.note, "Variable TU_AUTOTUNE_ALGO removed"));
+    /* no room for another flag: said, the variable as it was */
+    assert(freedreno_put(app, "IR3_SHADER_DEBUG",
+                         "vs,tcs,tes,gs,fs,cs,internal,disasm,optmsgs,forces2en,nouboopt,nofp16,nocache,spillall,"
+                         "nopreamble,fullsync,fullnop,noearlypreamble,nodescprefetch,expandrpt,noaliastex,noaliasrt"));
+    freedreno_show(app, 9 + 1);
+    key(app, SDLK_RETURN);
+    app->editor.row = 22; /* asmroundtrip, which fits */
+    key(app, SDLK_RETURN);
+    assert(strstr(freedreno_var(app, "IR3_SHADER_DEBUG")->value, ",asmroundtrip"));
+    app->editor.row = 23; /* thread64, past a variable's 191 bytes */
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->editor.note, "IR3_SHADER_DEBUG has no room for another item") &&
+           !strstr(freedreno_var(app, "IR3_SHADER_DEBUG")->value, "thread64") && !strcmp(app->box_value[23], "Off") &&
+           !strcmp(app->box_value[22], "On"));
+    key(app, SDLK_ESCAPE);
+    app->editor.row = 9 + 5; /* FD_RD_DUMP_FRAMES: a press takes it out, as before */
+    key(app, SDLK_RETURN);
+    assert(!freedreno_var(app, "FD_RD_DUMP_FRAMES") && !strcmp(app->editor.note, "Variable FD_RD_DUMP_FRAMES removed"));
+    app->editor.row = freedreno_typed_row(app) + 3; /* Clear All, then Save */
+    key(app, SDLK_RETURN);
+    app->editor.row = gui_editor_rows(&app->editor) - 1;
+    key(app, SDLK_RETURN);
+    assert(!app->freedreno[0] && !app->editor.dirty);
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_FREEDRENO &&
            !strcmp(app->app_form.freedreno, "None"));

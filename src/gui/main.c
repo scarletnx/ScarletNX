@@ -310,7 +310,8 @@ typedef struct {
 } GuiBtForm;
 /* Freedreno Settings' values: the name and value typed, and each variable's value as its row shows it */
 #define GUI_FREEDRENO_PRESETS 16
-#define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + SNX_FREEDRENO_MAX + 4)
+#define GUI_FREEDRENO_KNOWN   8
+#define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + GUI_FREEDRENO_KNOWN + SNX_FREEDRENO_MAX + 4)
 typedef struct {
     char name[48], value[192];
     char shown[GUI_FREEDRENO_ROWS][200];
@@ -708,6 +709,9 @@ typedef struct App {
     char (*box_value)[32];
     char* box_base; /* the value the row has while it has none of its own: the launcher's for a game's, else NULL */
     int box_row, box_page; /* the setting, and the page its form returns to (-1 the group) */
+    GuiSettings fd_settings;   /* Freedreno Settings' flag variables as rows of boxes (gui_freedreno_list) */
+    bool box_fd;               /* the open form is one of those, else one of the Settings' */
+    bool fd_changed;           /* and it changed its variable, which Freedreno Settings' Save keeps */
     SDL_Gamepad* listened[16]; /* the controllers open meanwhile: a press comes only from an open one */
     int listened_count;
     bool theme_from_app;       /* the theme editor goes back to the App's rows */
@@ -6931,6 +6935,9 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
     else if (app->form == GUI_FORM_FREEDRENO)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
+    else if (app->form == GUI_FORM_BOXES && app->box_fd)
+        snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"),
+                 app->fd_settings.keys[app->box_row].key);
     else if (app->form == GUI_FORM_BOXES) { /* a setting's boxes */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
                  snx_tr(screen_settings(app)->keys[app->box_row].key));
@@ -11476,8 +11483,73 @@ static void covers_free(App* app) {
     app->cover_waiting = app->cover_failed_count = 0;
 }
 
-/* Freedreno Settings' rows: Eden's presets, a row a variable set (a press removes it, as Eden's delete does),
-   Variable Name and Variable Value typed, Add Variable, Clear All, then Save. How many before Save */
+/* the variable called name among Freedreno Settings', NULL for none */
+static SnxFreedrenoVar* freedreno_var(App* app, const char* name) {
+    for (int i = 0; i < app->fd_count; ++i)
+        if (!strcmp(app->fd_vars[i].name, name)) return &app->fd_vars[i];
+    return NULL;
+}
+/* name set to value, or taken out with "": 1, 0 where there is no room for it */
+static int freedreno_put(App* app, const char* name, const char* value) {
+    SnxFreedrenoVar* v = freedreno_var(app, name);
+    if (strlen(value) >= sizeof v->value) return 0;
+    if (!*value && v) { /* those after it a place up */
+        --app->fd_count;
+        memmove(v, v + 1, (size_t)(app->fd_vars + app->fd_count - v) * sizeof *v);
+        return 1;
+    }
+    if (!*value) return 1;
+    if (!v) {
+        if (app->fd_count == SNX_FREEDRENO_MAX) return 0;
+        v = &app->fd_vars[app->fd_count++];
+        snprintf(v->name, sizeof v->name, "%s", name);
+    }
+    snprintf(v->value, sizeof v->value, "%s", value);
+    return 1;
+}
+static int freedreno_presets(void) {
+    int n = 0;
+    while (gui_freedreno_presets[n].name) ++n;
+    return n;
+}
+static int freedreno_knowns(void) {
+    int n = 0;
+    while (gui_freedreno_known[n].name && n < GUI_FREEDRENO_KNOWN) ++n;
+    return n;
+}
+/* the i-th variable that is none of the known ones, as the rows list them: its place in fd_vars, -1 past the last */
+static int freedreno_other(const App* app, int i) {
+    for (int v = 0; v < app->fd_count; ++v)
+        if (gui_freedreno_find(app->fd_vars[v].name) < 0 && !i--) return v;
+    return -1;
+}
+/* Variable Name's row, after the presets, the known variables and the others: Variable Value, Add Variable and Clear
+   All after it */
+static int freedreno_typed_row(const App* app) {
+    int n = 0;
+    while (freedreno_other(app, n) >= 0) ++n;
+    return freedreno_presets() + freedreno_knowns() + n;
+}
+/* the row of boxes of the flag variable called name, -1 for none */
+static int freedreno_boxes(const App* app, const char* name) {
+    for (int r = 0; r < app->fd_settings.count; ++r)
+        if (app->fd_settings.values[r].items && !strcmp(app->fd_settings.values[r].key, name)) return r;
+    return -1;
+}
+/* known variable k's value as its row says it: how many flags are on, or its one name; None for the driver's own */
+static void freedreno_known_shown(App* app, int k, char* out, size_t size) {
+    const SnxFreedrenoVar* v = freedreno_var(app, gui_freedreno_known[k].name);
+    int row = v ? freedreno_boxes(app, v->name) : -1;
+    if (!v)
+        snprintf(out, size, "%s", snx_tr("None"));
+    else if (row >= 0)
+        gui_settings_items_said(&app->fd_settings, row, v->value, out, size);
+    else
+        snprintf(out, size, "%s", v->value);
+}
+/* Freedreno Settings' rows: Eden's presets, a row a variable Mesa reads out of a set it knows (its boxes, or its one
+   name stepped), a row another variable set (a press removes it, as Eden's delete does), Variable Name and Variable
+   Value typed, Add Variable, Clear All, then Save. How many before Save */
 static int freedreno_fill(App* app) {
     GuiFreedrenoForm* f = &app->fd_form;
     int r = 0, i;
@@ -11487,7 +11559,14 @@ static int freedreno_fill(App* app) {
                                                        : snx_tr("every variable cleared"));
         app->fd_keys[r] = page_row(snx_tr(gui_freedreno_presets[i].name), 0, 0, app->fd_about[r]);
     }
-    for (i = 0; i < app->fd_count; ++i, ++r) {
+    for (i = 0; i < freedreno_knowns(); ++i, ++r) {
+        freedreno_known_shown(app, i, f->shown[r], sizeof f->shown[r]);
+        snprintf(app->fd_about[r], sizeof app->fd_about[r], "%s", snx_tr(gui_freedreno_known[i].about));
+        app->fd_keys[r] =
+            page_row(gui_freedreno_known[i].name, offsetof(GuiFreedrenoForm, shown) + (size_t)r * sizeof f->shown[0],
+                     sizeof f->shown[0], app->fd_about[r]);
+    }
+    for (int other = 0; (i = freedreno_other(app, other)) >= 0; ++other, ++r) {
         snprintf(f->shown[r], sizeof f->shown[r], "%s", app->fd_vars[i].value[0] ? app->fd_vars[i].value : "\"\"");
         snprintf(app->fd_about[r], sizeof app->fd_about[r], snx_tr("%s=%s. A press removes it"), app->fd_vars[i].name,
                  app->fd_vars[i].value);
@@ -11544,6 +11623,11 @@ static void open_freedreno(App* app, const char* game, const char* title) {
     ini = game_ini_of(game);
     text = ini ? snx_ini_value(ini, "freedreno_env") : NULL;
     memset(&app->fd_form, 0, sizeof app->fd_form);
+    if (!app->fd_settings.keys) { /* the flag variables' boxes, the same for every open */
+        char* list = gui_freedreno_list();
+        if (!list || gui_settings_read(&app->fd_settings, list)) say_failure(app, snx_tr("Out of memory"));
+        free(list);
+    }
     app->fd_count = snx_freedreno_parse(ini ? (text ? text : "") : app->freedreno, app->fd_vars, SNX_FREEDRENO_MAX, why,
                                         sizeof why);
     freedreno_show(app, 0);
@@ -11562,14 +11646,40 @@ static void open_freedreno(App* app, const char* game, const char* title) {
     free(text);
     free(ini);
 }
+static void open_boxes(App* app, int row, int page);
+/* known variable k's row pressed (step 0) or stepped: its boxes, or the next of its names, the driver's own choice
+   (none) before its first */
+static void freedreno_known_press(App* app, int k, int step) {
+    const GuiFreedrenoKnown* known = &gui_freedreno_known[k];
+    const SnxFreedrenoVar* v = freedreno_var(app, known->name);
+    char names[16][48] = {""}; /* none, then its names */
+    int n = 1, now = 0;
+    if (!known->one) {
+        app->box_fd = true;
+        app->fd_changed = app->editor.dirty; /* what the form had changed before */
+        open_boxes(app, freedreno_boxes(app, known->name), -1);
+        return;
+    }
+    for (const char* c = known->items; c && n < (int)SDL_arraysize(names);
+         c = strchr(c, '|') ? strchr(c, '|') + 1 : NULL) {
+        snprintf(names[n], sizeof names[n], "%.*s", (int)strcspn(c, "="), c);
+        if (v && !strcmp(names[n], v->value)) now = n;
+        ++n;
+    }
+    now = (now + (step < 0 ? n - 1 : 1)) % n;
+    if (!freedreno_put(app, known->name, names[now]))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not added: the variables take %d at most"),
+                 SNX_FREEDRENO_MAX);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", known->name,
+                 names[now][0] ? names[now] : snx_tr("None"));
+}
 /* a Freedreno Settings row pressed: a preset applied in the place of the variables, a variable removed, the one typed
    added, every one cleared; Save keeps them, the launcher's in app.ini, a game's in its .ini (none: the launcher's) */
 static void freedreno_action(App* app, int r, bool save) {
     GuiFreedrenoForm* f = &app->fd_form;
-    int presets = 0, vars, i;
+    int presets = freedreno_presets(), known = presets + freedreno_knowns(), typed = freedreno_typed_row(app), i;
     char why[300], text[SNX_FREEDRENO_TEXT];
-    while (gui_freedreno_presets[presets].name) ++presets;
-    vars = presets;
     if (save) {
         char* ini = game_ini_of(app->drivers_game);
         int failed;
@@ -11599,12 +11709,15 @@ static void freedreno_action(App* app, int r, bool save) {
         app->fd_count = n < 0 ? 0 : n;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Preset '%s' applied"),
                  snx_tr(gui_freedreno_presets[r].name));
-    } else if (r < vars + app->fd_count) {
-        i = r - vars;
+    } else if (r < known) { /* its boxes, or its one name stepped, the driver's own choice first */
+        freedreno_known_press(app, r - presets, app->editor.step);
+        if (app->form == GUI_FORM_BOXES) return;
+    } else if (r < typed) {
+        i = freedreno_other(app, r - known);
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"), app->fd_vars[i].name);
         memmove(&app->fd_vars[i], &app->fd_vars[i + 1], (size_t)(app->fd_count - i - 1) * sizeof app->fd_vars[0]);
         --app->fd_count;
-    } else if (r == vars + app->fd_count + 2) { /* Add Variable */
+    } else if (r == typed + 2) { /* Add Variable */
         SnxFreedrenoVar add[SNX_FREEDRENO_MAX];
         if (!f->name[0]) {
             snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Variable name cannot be empty"));
@@ -11631,7 +11744,7 @@ static void freedreno_action(App* app, int r, bool save) {
         app->fd_count = i;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s added"), f->name);
         f->name[0] = f->value[0] = 0;
-    } else if (r == vars + app->fd_count + 3) { /* Clear All */
+    } else if (r == typed + 3) { /* Clear All */
         app->fd_count = 0;
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("All Freedreno variables cleared"));
     } else
@@ -11699,25 +11812,32 @@ static void boxes_close(App* app) {
     app->box_value = NULL;
     app->box_base = NULL;
 }
+/* the settings the open form's row is of: Freedreno Settings' flag variables, else the Settings screen's */
+static GuiSettings* boxes_of(App* app) { return app->box_fd ? &app->fd_settings : screen_settings(app); }
 /* the value the row of boxes has where it has none of its own: the launcher's for a game's own, else its default
    (NULL) */
 static char* boxes_base(App* app, int row) {
+    if (app->box_fd) return NULL;
     const char* key = screen_settings(app)->values[row].key;
     const char* value = app->own_picks ? gui_settings_value(&app->settings, key) : NULL;
     return value ? snx_strdup(value) : NULL;
 }
 static void boxes_values(App* app) {
-    GuiSettings* s = screen_settings(app);
+    GuiSettings* s = boxes_of(app);
     for (int i = 0; i < s->values[app->box_row].items; ++i)
         snprintf(app->box_value[i], sizeof app->box_value[0], "%s",
                  gui_settings_item_on(s, app->box_row, i, app->box_base) ? snx_tr("On") : snx_tr("Off"));
 }
 /* the form of the setting row, a page's row or the group's (page -1), its focus coming back to focus */
 static void open_boxes(App* app, int row, int page) {
-    GuiSettings* s = screen_settings(app);
+    GuiSettings* s = boxes_of(app);
     GuiSetting* v = &s->values[row];
     int i;
     boxes_close(app);
+    if (app->box_fd) { /* what the variable has now */
+        const SnxFreedrenoVar* var = freedreno_var(app, v->key);
+        snprintf(v->text, sizeof v->text, "%s", var ? var->value : "");
+    }
     app->box_base = boxes_base(app, row);
     app->box_keys = (GuiThemeKey*)snx_alloc((size_t)v->items * sizeof *app->box_keys);
     app->box_value = (char (*)[32])snx_alloc((size_t)v->items * sizeof *app->box_value);
@@ -11736,11 +11856,22 @@ static void open_boxes(App* app, int row, int page) {
 }
 /* item i of the open form turned on or off, the row's value kept at once */
 static void boxes_toggle(App* app, int i) {
-    GuiSettings* s = screen_settings(app);
-    char said[96];
-    if (gui_settings_item_toggle(s, app->box_row, i, app->box_base)) {
+    GuiSettings* s = boxes_of(app);
+    char said[96], was[GUI_SETTING_TEXT];
+    int done;
+    snprintf(was, sizeof was, "%s", s->values[app->box_row].text);
+    done = gui_settings_item_toggle(s, app->box_row, i, app->box_base);
+    if (done && app->box_fd) { /* the variable's, kept with the others by the form's Save; as it was without room */
+        done = freedreno_put(app, s->values[app->box_row].key, s->values[app->box_row].text);
+        if (done)
+            app->fd_changed = true;
+        else
+            snprintf(s->values[app->box_row].text, sizeof s->values[app->box_row].text, "%s", was);
+    } else if (done) {
         app->editor.dirty = true;
         keep_settings(app);
+    }
+    if (done) {
         boxes_values(app);
         gui_settings_items_said(s, app->box_row,
                                 s->values[app->box_row].text[0] ? s->values[app->box_row].text
@@ -11878,7 +12009,13 @@ static void leave_form(App* app) {
     device_stop(app);
     leave_editor(app);
     if (form == GUI_FORM_PAD) pad_close(app);
-    if (form == GUI_FORM_BOXES) { /* back to its setting's row, in its page or the group */
+    if (form == GUI_FORM_BOXES && app->box_fd) { /* Freedreno Settings again, on its variable */
+        int k = gui_freedreno_find(app->fd_settings.values[app->box_row].key);
+        app->box_fd = false;
+        boxes_close(app);
+        freedreno_show(app, freedreno_presets() + SDL_max(k, 0));
+        app->editor.dirty = app->fd_changed;
+    } else if (form == GUI_FORM_BOXES) { /* back to its setting's row, in its page or the group */
         int row = app->box_row, page = app->box_page;
         if (page >= 0)
             open_page(app, page);
@@ -13338,7 +13475,9 @@ static void editor_key(App* app, GuiKey key) {
         if (what != GUI_EDITOR_LEAVE) return;
     }
     if (app->form == GUI_FORM_FREEDRENO) { /* a preset, a variable, Add Variable or Clear All pressed; Save */
-        if (what == GUI_EDITOR_ACTION && !app->editor.step)
+        int known = freedreno_presets() + freedreno_knowns();
+        if (what == GUI_EDITOR_ACTION &&
+            (!app->editor.step || (app->editor.row >= freedreno_presets() && app->editor.row < known)))
             freedreno_action(app, app->editor.row, false);
         else if (what == GUI_EDITOR_SAVE)
             freedreno_action(app, app->editor.row, true);
@@ -13398,10 +13537,16 @@ static void editor_input(App* app, const SDL_Event* e) {
     }
     if (app->form == GUI_FORM_FREEDRENO && !app->editor.typing &&
         (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
-        int presets = 0;
-        while (gui_freedreno_presets[presets].name) ++presets;
-        if (app->editor.row >= presets && app->editor.row < presets + app->fd_count)
-            freedreno_action(app, app->editor.row, false);
+        int presets = freedreno_presets(), known = presets + freedreno_knowns(), row = app->editor.row;
+        if (row >= known && row < freedreno_typed_row(app))
+            freedreno_action(app, row, false);
+        else if (row >= presets && row < known) { /* the driver's own again */
+            freedreno_put(app, gui_freedreno_known[row - presets].name, "");
+            freedreno_show(app, row);
+            app->editor.dirty = true;
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"),
+                     gui_freedreno_known[row - presets].name);
+        }
         return;
     }
     /* Folders: Del puts a place back to its default or takes an Extra off, Ctrl+V gives the row the folder pasted */
@@ -24148,6 +24293,7 @@ static bool initialize(App* app, const char* self) {
 /* what the menu holds, let go; SDL itself left as it is (cleanup's) */
 static void forget(App* app) {
     boxes_close(app);
+    gui_settings_free(&app->fd_settings);
 #ifdef SDL_PLATFORM_ANDROID
     SDL_RemoveEventWatch(lifecycle, app);
     gui_android_ran(NULL); /* the run goes with the menu */

@@ -247,7 +247,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   on the setup's Last Run page ([Setup](#setup)). **Freedreno Settings** sets
   Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
-  first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
+  first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable Mesa reads out of a set it knows
+  (`TU_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`, `TU_AUTOTUNE_FLAGS`: Enter opens a box a flag; `TU_AUTOTUNE_ALGO`: Left
+  and Right step its names; Del leaves it to the driver), a row another variable set (a press, or Del, takes it out),
   **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.
   A name is capitals, digits and `_` starting `TU_`, `FD_` or `IR3_`. A game's box has both for that game alone.
 
