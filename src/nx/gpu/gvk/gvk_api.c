@@ -933,18 +933,49 @@ static void gvk_EnumerateInstanceVersion(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, VK_SUCCESS);
 }
 
+/* Vulkan 1.1 took these extensions in, and a driver lists them still: an engine written for 1.0 looks for their names and
+   not for the version (SDL's GPU API wants VK_KHR_get_physical_device_properties2 and VK_KHR_maintenance1). Their
+   commands are the core ones under a name with KHR at its end (proc_addr). Not the YCbCr conversion, whose feature is
+   off (guest_features) */
+#define EXT(N) {VK_KHR_##N##_EXTENSION_NAME, VK_KHR_##N##_SPEC_VERSION}
 static void gvk_EnumerateInstanceExtensionProperties(CPU* RESTRICT c, u64 entry) {
-    VkExtensionProperties e[] = {{VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION},
+    VkExtensionProperties e[] = {EXT(SURFACE),
                                  {"VK_NN_vi_surface", 1},
+                                 EXT(GET_PHYSICAL_DEVICE_PROPERTIES_2),
+                                 EXT(DEVICE_GROUP_CREATION),
+                                 EXT(EXTERNAL_MEMORY_CAPABILITIES),
+                                 EXT(EXTERNAL_SEMAPHORE_CAPABILITIES),
+                                 EXT(EXTERNAL_FENCE_CAPABILITIES),
                                  {VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION}};
-    ret_vk(c, put_list(c->x[1], c->x[2], e, debug_available() ? 3 : 2, sizeof *e));
+    u32 n = sizeof e / sizeof *e;
+    ret_vk(c, put_list(c->x[1], c->x[2], e, debug_available() ? n : n - 1, sizeof *e));
 }
 
 static void gvk_EnumerateDeviceExtensionProperties(CPU* RESTRICT c, u64 entry) {
     (void)entry;
-    VkExtensionProperties e[1] = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION}};
-    ret_vk(c, put_list(c->x[2], c->x[3], e, 1, sizeof *e));
+    static const VkExtensionProperties e[] = {
+        EXT(SWAPCHAIN),
+        EXT(MAINTENANCE1),
+        EXT(MAINTENANCE2),
+        EXT(MAINTENANCE3),
+        EXT(DEDICATED_ALLOCATION),
+        EXT(GET_MEMORY_REQUIREMENTS_2),
+        EXT(BIND_MEMORY_2),
+        EXT(DESCRIPTOR_UPDATE_TEMPLATE),
+        EXT(DEVICE_GROUP),
+        EXT(EXTERNAL_MEMORY),
+        EXT(EXTERNAL_SEMAPHORE),
+        EXT(EXTERNAL_FENCE),
+        EXT(MULTIVIEW),
+        EXT(RELAXED_BLOCK_LAYOUT),
+        EXT(SHADER_DRAW_PARAMETERS),
+        EXT(STORAGE_BUFFER_STORAGE_CLASS),
+        EXT(16BIT_STORAGE),
+        EXT(VARIABLE_POINTERS),
+    };
+    ret_vk(c, put_list(c->x[2], c->x[3], e, sizeof e / sizeof *e, sizeof *e));
 }
+#undef EXT
 
 static void gvk_EnumerateInstanceLayerProperties(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, put_list(c->x[0], 0, NULL, 0, sizeof(VkLayerProperties)));
@@ -4465,12 +4496,21 @@ static void gvk_QueuePresentKHR(CPU* RESTRICT c, u64 entry) {
 }
 
 /* ------------------------------------------------------------ the loader */
-/* the game's own export for name, where gvk implements it: a function it doesn't is said to be none */
+/* the game's own export for name, where gvk implements it: a function it doesn't is said to be none. The name of an
+   extension that Vulkan 1.1 took in is the core command's with KHR at its end */
 static void proc_addr(CPU* RESTRICT c, u64 name_at) {
     char name[128];
     u64 a = 0;
-    if (mem_user_string(name, name_at, sizeof name) > 0) {
+    int len = mem_user_string(name, name_at, sizeof name);
+    if (len > 0) {
         if (gvk_api_find(name)) a = gvk_export(name);
+        size_t n = strlen(name);
+        if (!a && n > 3 && !strcmp(name + n - 3, "KHR")) {
+            char core[sizeof name];
+            memcpy(core, name, n - 3);
+            core[n - 3] = 0;
+            if (gvk_api_find(core)) a = gvk_export(core);
+        }
         if (!a) LOG_LIMIT(64, "gvk: the game asked for %s, which isn't implemented: it is told there is none\n", name);
     }
     ret(c, a);
