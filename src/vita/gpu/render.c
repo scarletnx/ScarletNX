@@ -40,9 +40,10 @@ typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;
     /* where the device cannot import host memory the buffer is a host visible copy of the range instead. mirror is
-       its mapping (NULL when the range is imported in place), since and epoch the watch generation and epoch the copy
-       matches */
+       its mapping (NULL when the range is imported in place), [begin, end) what of the range it holds so far, since and
+       epoch the watch generation and epoch it matches */
     unsigned char* mirror;
+    uint32_t begin, end;
     uint64_t since, epoch;
 } Import;
 /* rows bytes of a copy the GPU writes, stride apart, stored to guest memory once the submission holding the write is
@@ -268,9 +269,9 @@ static void mirror_fill(const struct VitaRender* r, const Import* m, uint64_t be
 static void mirror_sync(const struct VitaRender* r, Import* m) {
     uint64_t now = vita_watch_epoch();
     if (!m->mirror || now == m->epoch) return;
-    uint64_t end = (uint64_t)m->address + m->size, page = vita_watch_page();
+    uint64_t end = m->end, page = vita_watch_page();
     bool settled = true; /* every page protected, or it can be written with no generation counted */
-    for (uint64_t at = m->address, next; at < end; at = next) {
+    for (uint64_t at = m->begin, next; at < end; at = next) {
         uint64_t stop = at; /* a run of pages written */
         for (next = at; next < end && stop == next;) {
             next = (next / page + 1) * page < end ? (next / page + 1) * page : end;
@@ -284,6 +285,22 @@ static void mirror_sync(const struct VitaRender* r, Import* m) {
     }
     m->since = now;
     m->epoch = settled ? now : UINT64_MAX;
+}
+/* The copy made to hold [address, address + size) too, and what lies between it and what it held. What is new to it is
+   copied whole: a page protected before, and not written since the watch began, looks unchanged */
+static void mirror_cover(const struct VitaRender* r, Import* m, uint32_t address, uint32_t size) {
+    uint32_t end = address + size, begin = m->begin, held = m->end;
+    if (!m->mirror || (address >= begin && end <= held)) return;
+    if (begin == held) begin = held = address; /* it held nothing */
+    uint32_t parts[2][2] = {{address < begin ? address : begin, begin}, {held, end > held ? end : held}};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (parts[i][0] == parts[i][1]) continue;
+        uint64_t since = vita_watch_protect(parts[i][0], parts[i][1] - parts[i][0]);
+        mirror_fill(r, m, parts[i][0], parts[i][1]);
+        if (m->begin == m->end) m->since = since;
+    }
+    m->begin = parts[0][0], m->end = parts[1][1];
+    m->epoch = UINT64_MAX;
 }
 /* the GPU writes rows of row bytes of the copy, stride apart, from address on. Its submission is the open recording's,
    which is the next one */
@@ -337,7 +354,7 @@ static void mirror_drain(struct VitaRender* r, uint64_t done, uint32_t only) {
     }
     r->writebacks = kept;
 }
-static bool mirror_range(struct VitaRender* r, uint32_t address, uint32_t size, Import* out) {
+static bool mirror_range(const struct VitaRender* r, uint32_t address, uint32_t size, Import* out) {
     VitaVk* v = r->vk;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size,
@@ -367,10 +384,7 @@ static bool mirror_range(struct VitaRender* r, uint32_t address, uint32_t size, 
         vkFreeMemory(v->device, m.memory, NULL);
         return false;
     }
-    /* whole: a page protected before, and not written since the watch began, looks unchanged to a new copy too */
     m.mirror = map;
-    m.since = vita_watch_protect(address, size);
-    memcpy(m.mirror, r->mem + address, size);
     *out = m;
     return true;
 }
@@ -414,15 +428,57 @@ static bool import_range(struct VitaRender* r, VitaProcess* p, uint32_t address,
     out->address = address, out->size = size;
     return true;
 }
+static bool holds(uint32_t base, uint32_t length, uint32_t address, uint32_t size) {
+    return address >= base && (uint64_t)address + size <= (uint64_t)base + length;
+}
+/* the import that holds [address, address + size), NULL for none */
+static Import* import_of(struct VitaRender* r, uint32_t address, uint32_t size) {
+    for (unsigned i = 0; i < IMPORTS; ++i) {
+        Import* m = &r->imports[i];
+        if (m->size && holds(m->address, m->size, address, size)) return m;
+    }
+    return NULL;
+}
+/* what a copy is of for [address, address + size): the memory block or the module's segment that holds it, so no two
+   copies hold the same memory */
+static void mirror_unit(const VitaProcess* p, uint32_t* address, uint32_t* size) {
+    for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
+        const VitaAllocation* a = &p->allocations[i];
+        if (!a->size || !holds(a->address, a->size, *address, *size)) continue;
+        *address = a->address, *size = a->size;
+        return;
+    }
+    for (unsigned i = 0; i < p->image.segment_count; ++i) {
+        const VitaSegment* g = &p->image.segment[i];
+        uint32_t length = (g->size + 0xfffu) & ~0xfffu; /* its pages, as vita_mapped takes it */
+        if (!holds(g->address, length, *address, *size)) continue;
+        *address = g->address, *size = length;
+        return;
+    }
+}
+/* whether a mapping other than the one at address is in the copy */
+static bool mirror_mapped(const VitaProcess* p, const Import* m, uint32_t address) {
+    for (unsigned i = 0; i < GXM_MAPPINGS; ++i) {
+        uint32_t at = p->gxm->mappings[i].address;
+        if (p->gxm->mappings[i].size && at != address && at >= m->address && at - m->address < m->size) return true;
+    }
+    return false;
+}
 void vita_render_map(VitaProcess* p, uint32_t address, uint32_t size) {
     struct VitaRender* r = render_of(p);
     if (!r) return;
-    for (unsigned i = 0; i < IMPORTS; ++i)
+    uint32_t base = address, length = size;
+    if (!r->vk->host_import) mirror_unit(p, &base, &length);
+    Import* m = r->vk->host_import ? NULL : import_of(r, base, length);
+    for (unsigned i = 0; i < IMPORTS && !m; ++i)
         if (!r->imports[i].size) {
-            if (!import_range(r, p, address, size, &r->imports[i]))
+            m = &r->imports[i];
+            if (!import_range(r, p, base, length, m)) {
                 once_value(r, 0, address, "the device cannot import guest memory at 0x%08" PRIx32, address);
-            return;
+                return;
+            }
         }
+    if (m) mirror_cover(r, m, address, size);
 }
 static void import_free(struct VitaRender* r, Import* m) {
     mirror_drain(r, UINT64_MAX, import_index(r, m)); /* the GPU is idle here */
@@ -441,32 +497,32 @@ void vita_render_unmap(VitaProcess* p, uint32_t address) {
     vita_vk_submit();
     vita_render_idle(p, true);
     if (rendering) rendering_resume(r, vita_vk_commands());
-    for (unsigned i = 0; i < IMPORTS; ++i)
-        if (r->imports[i].size && r->imports[i].address == address) import_free(r, &r->imports[i]);
+    for (unsigned i = 0; i < IMPORTS; ++i) {
+        Import* m = &r->imports[i];
+        if (!m->size) continue;
+        if (m->mirror ? address >= m->address && address - m->address < m->size && !mirror_mapped(p, m, address)
+                      : m->address == address)
+            import_free(r, m);
+    }
 }
 /* the buffer holding [address, address + size) and the address's offset there; a range the game didn't map for the
    GPU (a framebuffer the CPU drew) is imported whole, as its memory block */
 static const Import* buffer_of(struct VitaRender* r, VitaProcess* p, uint32_t address, uint32_t size, VkDeviceSize* at) {
-    for (unsigned i = 0; i < IMPORTS; ++i) {
-        Import* m = &r->imports[i];
-        if (m->size && address >= m->address && (uint64_t)address + size <= (uint64_t)m->address + m->size) {
-            mirror_sync(r, m);
-            *at = address - m->address;
-            return m;
-        }
-    }
-    for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
+    Import* m = import_of(r, address, size);
+    for (unsigned i = 0; i < VITA_ALLOCATIONS && !m; ++i) {
         const VitaAllocation* a = &p->allocations[i];
-        if (!a->size || address < a->address || (uint64_t)address + size > (uint64_t)a->address + a->size) continue;
-        for (unsigned j = 0; j < IMPORTS; ++j)
+        if (!a->size || !holds(a->address, a->size, address, size)) continue;
+        for (unsigned j = 0; j < IMPORTS && !m; ++j)
             if (!r->imports[j].size) {
                 if (!import_range(r, p, a->address, a->size, &r->imports[j])) return NULL;
-                mirror_sync(r, &r->imports[j]);
-                *at = address - a->address;
-                return &r->imports[j];
+                m = &r->imports[j];
             }
     }
-    return NULL;
+    if (!m) return NULL;
+    if (m->mirror && (address < m->begin || (uint64_t)address + size > m->end)) mirror_cover(r, m, m->address, m->size);
+    mirror_sync(r, m);
+    *at = address - m->address;
+    return m;
 }
 
 /* ---- images ---- */
