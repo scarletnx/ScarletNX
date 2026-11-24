@@ -45,6 +45,11 @@ uint32_t arm32_thread_self(void);
 uint32_t arm32_thread_id(void);
 void arm32_thread_stack(uint32_t* base, uint32_t* size);
 void arm32_thread_end(void);
+/* the calling thread's record, JNI state and shim CPU gone with the rest, as it ends: a thread of the JVM's has no
+   other end that the guest sees (bridge_on_thread_end) */
+void arm32_thread_gone(void);
+/* the shim's CPU for 64-bit handlers of the calling thread, gone as it ends (arm32_shim.c) */
+void arm32_shim_thread_end(void);
 /* the signals sent to the calling thread and not run yet, a bit for each (arm32_thread.c): the dispatch loop runs
    them between blocks with arm32_signals_run, which sets up each handler's frame from c */
 extern _Thread_local _Atomic uint32_t arm32_pending_signals;

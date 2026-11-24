@@ -3,7 +3,8 @@
 /* A 32-bit guest's copy of a Java array's elements (src/android/bridge/arm32_jni.c, included whole for its statics):
    the array is the 64-bit VM's, and can hold more bytes than the guest's 4 GiB window. Its size is then no 32 bits,
    where it wrapped to a small block that the whole array was copied into: no copy is made, as when the window is
-   full, and none of the array is read. A JNIEnv of the two functions the copy calls stands in for the VM */
+   full, and none of the array is read. A JNIEnv of the two functions the copy calls stands in for the VM. And the
+   arrays of a thread's references end with the thread */
 #include "android/bridge/arm32_jni.c"
 #include <assert.h>
 #include <stdio.h>
@@ -38,6 +39,10 @@ int main(void) {
     uint32_t copy = elements(&env, 'J', NULL, 0);
     assert(copy && g_t.reads == 1);
     arm32_free(copy);
+    /* the thread's end frees the arrays of its local references and frames */
+    assert(local_ref((jobject)(uintptr_t)&g_t) && t_locals.items);
+    arm32_jni_thread_end();
+    assert(!t_locals.items && !t_locals.capacity && !t_frames.marks);
     puts("android_arm32_jni_copy: ok");
     return 0;
 }

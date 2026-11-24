@@ -71,8 +71,12 @@ void arm32_jni_thread_end(void) {
     if (t_attached) (*j.vm)->DetachCurrentThread(j.vm);
     t_attached = false;
     t_env = NULL;
-    t_locals.count = 0;
-    t_frames.count = 0;
+    free(t_locals.items);
+    t_locals.items = NULL;
+    t_locals.count = t_locals.capacity = 0;
+    free(t_frames.marks);
+    t_frames.marks = NULL;
+    t_frames.count = t_frames.capacity = 0;
 }
 
 /* ---- references ---- */
