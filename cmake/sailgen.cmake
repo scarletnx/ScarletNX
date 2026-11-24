@@ -143,15 +143,13 @@ function(snx_sailgen_gpu target isa)
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
-# the machine back end's files sailgen copies at the top of a guest's emitters, in their order, before the guest's
-# own (tools/sailgen/README.md): MACHINE x64's, as paths in out, and the --backend arguments that name them in args
+# the machine back end's files sailgen copies at the top of a guest's emitters, in their order (tools/sailgen/README.md):
+# MACHINE's (x64, arm64) and GUEST's (a64, a32), the guest's part every machine shares before the machine's own, as
+# paths in out, and the --backend arguments that name them in args
 function(snx_sailgen_machine_backends machine guest out args)
     set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
-    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h")
-    if(EXISTS "${back}/mach_${guest}.h")
-        list(APPEND files "${back}/mach_${guest}.h")
-    endif()
-    list(APPEND files "${back}/${machine}_${guest}.h")
+    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h"
+              "${back}/mach_${guest}.h" "${back}/${machine}_${guest}.h")
     set(list "")
     foreach(file IN LISTS files)
         list(APPEND list --backend "${file}")

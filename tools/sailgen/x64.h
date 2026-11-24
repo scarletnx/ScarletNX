@@ -124,6 +124,11 @@ static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixe
 /* the state's address (RBX, the callee's), and a call's arguments after the state's (RDI) */
 #define SGX_BASE 3
 static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
+/* AArch32's calls' arguments after the state's (RSI, RDX, RCX, R8), and its exclusive store's address, value and the
+   memory's base (RSI, RDX, R10: mach_a32.h's SGX_A32_STREX) */
+static const signed char sgx_a32_args[4] = {6, 2, 1, 8};
+static const signed char sgx_a32_strex[3] = {6, 2, 10};
+#define SGX_A32_STREX_CLOBBER (1u << 1) /* RCX, its compare's */
 #define SGX_CARRY 0
 #define SGX_DIV_ARM 0
 /* x86's implicit <XMM0> operand (PBLENDVB's): a vector form's operand no field encodes is in XMM0 */

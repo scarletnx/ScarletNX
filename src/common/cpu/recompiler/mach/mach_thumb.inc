@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Included by x64_arm.c. Thumb blocks (the Cortex-A57's, what cpu/arm/llvm_thumb.inc's thumb_block makes): the 16-bit
-   instructions are sailgen's emitters of the AArch32 Sail (sg_decode_t16), their condition the IT block's while one is
-   open, as the Sail's CurrentCond has it; the 32-bit ones the Thumb decoder's shapes (thumb.c), made here over the same
-   SSA, and those that are an A32 instruction in another encoding its emitter's (TH_A32: an A32 word whose PC reads
-   Thumb's). ITSTATE is known as the block is made: it advances with each instruction, and an SVC, a BKPT or a block
-   that ends inside one leaves it in CPSR */
+/* Included by mach_arm.inc on the machines with Thumb blocks (MG_ARM_THUMB_BLOCK). Thumb blocks (the Cortex-A57's, what
+   cpu/arm/llvm_thumb.inc's thumb_block makes): the 16-bit instructions are sailgen's emitters of the AArch32 Sail
+   (sg_decode_t16), their condition the IT block's while one is open, as the Sail's CurrentCond has it; the 32-bit ones
+   the Thumb decoder's shapes (thumb.c), made here over the same SSA, and those that are an A32 instruction in another
+   encoding its emitter's (TH_A32: an A32 word whose PC reads Thumb's). ITSTATE is known as the block is made: it
+   advances with each instruction, and an SVC, a BKPT or a block that ends inside one leaves it in CPSR */
 
 /* R[r] as a Thumb operand: the PC reads as the instruction's address plus 4, unaligned (Align(PC, 4) of literals and ADR
    is tpcalign) */
@@ -318,7 +318,7 @@ static int thumb32(SgCtx* g, const SnxThumb* t) {
 static unsigned half_at(const unsigned char* code, size_t i) { return code[2 * i] | (unsigned)code[2 * i + 1] << 8; }
 
 /* the block's halfwords, until an instruction ends it: how many, and ITSTATE after the last (0 where none is open) */
-static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU32 pc, unsigned* it) {
+static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 pc, unsigned* it) {
     SgCtx* g = &c->g;
     SgX* x = &g->x;
     SgXBuf* b = &c->b;

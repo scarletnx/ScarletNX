@@ -566,7 +566,7 @@ CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (lo
 multiplies and divides, CLZ, REV, the extends and bitfields, MRS and MSR, the exclusives, the barriers, SVC, BKPT, the
 coprocessor's, the ARMv6 media and DSP ones, VFP and Advanced SIMD) are written in `x64_arm.c` over the same SSA. A
 Thumb block's 16-bit instructions are the Sail's (`sg_decode_t16`), whose conditions and flags follow ITSTATE, which is
-known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `x64_thumb.inc`, or the A32
+known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `mach_thumb.inc`, or the A32
 instruction of the same meaning whose emitter reads Thumb's PC. `sg_ITSTATE` and `sg_ITSTATE_set` carry it (IT sets the
 ones after it; an SVC, a BKPT and a block that ends inside an IT block leave it in CPSR). The VFP's scalar instructions keep their values in XMM
 registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`
