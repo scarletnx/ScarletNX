@@ -3969,7 +3969,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                               ${CMAKE_DL_LIBS})
         add_test(NAME arm_${m} COMMAND snx-test-arm-${m})
         add_test(NAME arm_${m}_spill COMMAND snx-test-arm-${m} --pool 3 --blocks 2000 --seed 2)
-        set_tests_properties(arm_${m} arm_${m}_spill PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        # VCVTB and VCVTT, from and to a single and a double, the half in the top of an S register or at its start: a
+        # big-endian host's word has it elsewhere, and some hosts load aligned words only
+        add_test(NAME arm_${m}_half COMMAND snx-test-arm-${m} --word eef21ae3 --word eeb21a44 --word eeb25be4
+                 --word eeb26b6f --word eef35ac2 --word eeb36a62 --word eef36bc3 --word eeb37bc3 --word eef37b42)
+        set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
 endif()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
