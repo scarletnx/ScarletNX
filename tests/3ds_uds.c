@@ -24,6 +24,11 @@
 #define BUFFER  0x300000u
 #define NET     0x300900u
 #define DATA    0x300b00u
+/* the longest a wait for a condition lasts before the test says what is missing: four times the 7.2 s a whole mode
+   takes at its slowest in CI (3ds_uds_relay, x86-64 AppImage), rounded up, so a machine that gives the room's and the
+   pumps' threads little time is late, not wrong. A wait that is met ends at once */
+#define WAIT_S  30
+#define WAIT_US (WAIT_S * 1000000)
 /* a request's answer: no transport error, and a result code of 0 */
 static void replied(SnxCtrProcess* p, const uint32_t* words, uint32_t result) {
     assert(!result);
@@ -47,11 +52,14 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
         assert(p->current_thread == snx_ctr_handle_object(p, worker));
         uint32_t worker_tls = p->cpu.state.cpu.tpidruro + 0x80;
         ctr_put(p, worker_tls, 0xfeedface);
-        int64_t deadline = snx_net_now_us() + 6000000;
+        int64_t deadline = snx_net_now_us() + WAIT_US;
         while (p->objects[caller].data.thread.wake_ns && snx_net_now_us() < deadline) {
             assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
             snx_net_sleep_us(1000);
         }
+        if (p->objects[caller].data.thread.wake_ns)
+            fprintf(stderr, "command %08x: the thread that waits for its answer was not woken in %d s\n", words[0],
+                    WAIT_S);
         assert(!p->objects[caller].data.thread.wake_ns);
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == caller);
@@ -208,39 +216,51 @@ typedef struct {
     _Atomic atomic_int stop;
     char pad[64];
     _Atomic atomic_int done;
+    _Atomic unsigned polls;
 } Pump;
 static void pump(void* context) {
     Pump* task = context;
     while (!atomic_load(&task->stop)) {
         snx_ctr_uds_poll(task->p);
+        atomic_fetch_add(&task->polls, 1);
         snx_net_sleep_us(1000);
     }
     atomic_store(&task->done, 1);
 }
-static void bind_channel(SnxCtrProcess* p, uint32_t h) {
-    uint32_t bind[] = {0x120100, 1, 8192, 7, 65535};
+static void bind_channel_as(SnxCtrProcess* p, uint32_t h, unsigned id, unsigned channel) {
+    uint32_t bind[] = {0x120100, id, 8192, channel, 65535};
     request(p, h, bind, 5);
     assert(ctr_word(p, CTR_COMMAND + 12));
 }
-static void send_data(SnxCtrProcess* p, uint32_t h, unsigned dest, const char* text) {
+static void bind_channel(SnxCtrProcess* p, uint32_t h) { bind_channel_as(p, h, 1, 7); }
+static void send_on(SnxCtrProcess* p, uint32_t h, unsigned dest, unsigned channel, const char* text) {
     unsigned size = (unsigned)strlen(text) + 1;
     assert(snx_ctr_write_ram(p->space, DATA, text, size) == SNX_CTR_MEM_OK);
-    uint32_t send[] = {0x170182, 1, dest, 7, (size + 3) / 4, size, 0, ((size + 3) & ~3u) << 14 | 5 << 10 | 2, DATA};
+    uint32_t send[] = {0x170182, 1, dest, channel, (size + 3) / 4, size, 0, ((size + 3) & ~3u) << 14 | 5 << 10 | 2,
+                       DATA};
     request(p, h, send, 9);
 }
+static void send_data(SnxCtrProcess* p, uint32_t h, unsigned dest, const char* text) { send_on(p, h, dest, 7, text); }
 static void receive_data(SnxCtrProcess* p, uint32_t h, unsigned source, const char* text) {
-    for (unsigned i = 0; i < 200; i++) {
-        snx_ctr_uds_poll(p);
-        snx_net_sleep_us(1000);
-    }
     ctr_put(p, CTR_COMMAND + 256, 256 << 14 | 2);
     ctr_put(p, CTR_COMMAND + 260, BUFFER);
     uint32_t pull[] = {0x1400c0, 1, 64, 4096};
-    request(p, h, pull, 4);
+    int64_t end = snx_net_now_us() + WAIT_US;
+    do {
+        snx_ctr_uds_poll(p);
+        snx_net_sleep_us(1000);
+        request(p, h, pull, 4);
+    } while (!ctr_word(p, CTR_COMMAND + 8) && snx_net_now_us() < end);
+    if (!ctr_word(p, CTR_COMMAND + 8))
+        fprintf(stderr, "\"%s\" did not come from node %u in %d s\n", text, source, WAIT_S);
     assert(ctr_word(p, CTR_COMMAND + 8) == strlen(text) + 1 && ctr_word(p, CTR_COMMAND + 12) == source);
     char actual[256];
     assert(snx_ctr_read_ram(p->space, BUFFER, actual, strlen(text) + 1) == SNX_CTR_MEM_OK);
     assert(!strcmp(actual, text));
+    for (unsigned i = 0; i < 200; i++) { /* what else would come, comes */
+        snx_ctr_uds_poll(p);
+        snx_net_sleep_us(1000);
+    }
     request(p, h, pull, 4);
     assert(!ctr_word(p, CTR_COMMAND + 8));
 }
@@ -288,12 +308,14 @@ static void join_failures(void) {
         scan[18] = event;
         scan[19] = 2048 << 4 | 12;
         scan[20] = BUFFER;
-        int64_t end = snx_net_now_us() + 2000000;
+        int64_t end = snx_net_now_us() + WAIT_US;
         do {
             request(p, handle, scan, 21);
             if (ctr_word(p, BUFFER + 8)) break;
             snx_net_sleep_us(1000);
         } while (snx_net_now_us() < end);
+        if (ctr_word(p, BUFFER + 8) != 1)
+            fprintf(stderr, "scenario %u: the host's network was not found in %d s\n", scenario, WAIT_S);
         assert(ctr_word(p, BUFFER + 8) == 1);
         assert(snx_ctr_write_ram(p->space, NET, state + 16, 264) == SNX_CTR_MEM_OK);
         assert(snx_ctr_write_ram(p->space, DATA, "wrong-pass", 10) == SNX_CTR_MEM_OK);
@@ -336,13 +358,15 @@ static void join_failures(void) {
         if (scenario == 1) { /* CLOSE before SYNC: own node ID is still zero. */
             uint8_t incoming[2048];
             SnxSockAddr source;
-            end = snx_net_now_us() + 2000000;
+            end = snx_net_now_us() + WAIT_US;
             int64_t size;
             do {
                 size = snx_socket_recv(socket, incoming, sizeof incoming, SNX_MSG_DONTWAIT, &source, NULL);
                 if (size >= 16 && incoming[5] == 2) break;
                 snx_net_sleep_us(1000);
             } while (snx_net_now_us() < end);
+            if (!(size == 88 && incoming[5] == 2))
+                fprintf(stderr, "scenario %u: the join did not reach the host in %d s\n", scenario, WAIT_S);
             assert(size == 88 && incoming[5] == 2);
             state[5] = 6;
             state[6] = state[7] = 0;
@@ -359,7 +383,7 @@ static void join_failures(void) {
         } else if (scenario == 4) {
             p->objects[caller].data.thread.dead = 1;
         }
-        end = snx_net_now_us() + 6000000;
+        end = snx_net_now_us() + WAIT_US;
         while (p->objects[caller].data.thread.wake_ns && snx_net_now_us() < end) {
             snx_ctr_uds_poll(p);
             if (scenario == 4) break;
@@ -490,12 +514,21 @@ int main(int argc, char** argv) {
         SnxSocket* socket = wire_socket(observer);
         uint8_t wire[2048];
         SnxSockAddr source;
-        int64_t end = snx_net_now_us() + 3000000, size;
+        int64_t end = snx_net_now_us() + WAIT_US, size;
+        unsigned seen = 0;
         do {
             size = snx_socket_recv(socket, wire, sizeof wire, SNX_MSG_DONTWAIT, &source, NULL);
+            if (size >= 0) ++seen;
             if (size == 952 && !memcmp(wire, "SNUD", 4) && wire[5] == 1) break;
             snx_net_sleep_us(1000);
         } while (snx_net_now_us() < end);
+        if (!(size == 952 && wire[5] == 1)) {
+            unsigned relayed, passes;
+            fake_room_work(room, &relayed, &passes);
+            fprintf(stderr,
+                    "no beacon in %d s: %u datagrams seen, %u polls of the host, %u relayed in %u room passes\n",
+                    WAIT_S, seen, atomic_load(&task.polls), relayed, passes);
+        }
         assert(size == 952 && wire[5] == 1);
         const uint8_t zero[32] = {0};
         assert(!memcmp(wire + 16 + 904, zero, sizeof zero));
@@ -519,14 +552,19 @@ int main(int argc, char** argv) {
     scanning[18] = event;
     scanning[19] = 2048 << 4 | 12;
     scanning[20] = BUFFER;
-    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+    unsigned scans = 0;
+    for (int64_t end = snx_net_now_us() + WAIT_US;;) {
         int64_t before = snx_net_now_us();
         request(client, client_h, scanning, 21);
         assert(snx_net_now_us() - before < 100000); /* never host-sleep for 300 ms */
         assert(snx_ctr_thread(client)->wake_ns > snx_ctr_now_ns());
-        if (ctr_word(client, BUFFER + 8)) break;
+        ++scans;
+        if (ctr_word(client, BUFFER + 8) || snx_net_now_us() >= end) break;
         snx_net_sleep_us(20000);
     }
+    if (ctr_word(client, BUFFER + 8) != 1)
+        fprintf(stderr, "no network found in %u scans over %d s: the host polled %u times\n", scans, WAIT_S,
+                atomic_load(&task.polls));
     assert(ctr_word(client, BUFFER + 8) == 1);
     uint8_t beacon[2048];
     unsigned bytes = ctr_word(client, BUFFER + 4);
@@ -557,12 +595,16 @@ int main(int argc, char** argv) {
     while (!atomic_load(&task.done)) snx_net_sleep_us(1000);
     /* Network probes must measure the whole peer round trip, including a
        deliberately delayed relay, and never reach the game's data channel. */
-    for (unsigned i = 0; i < 7000; ++i) {
+    int64_t rtt_end = snx_net_now_us() + WAIT_US;
+    do {
         snx_ctr_uds_poll(host);
         snx_ctr_uds_poll(client);
         snx_net_sleep_us(1000);
         if (snx_ctr_uds_rtt_ns(host) && snx_ctr_uds_rtt_ns(client)) break;
-    }
+    } while (snx_net_now_us() < rtt_end);
+    if (!snx_ctr_uds_rtt_ns(host) || !snx_ctr_uds_rtt_ns(client))
+        fprintf(stderr, "no round trip measured in %d s: host %.1f ms, client %.1f ms\n", WAIT_S,
+                snx_ctr_uds_rtt_ns(host) / 1000000.0, snx_ctr_uds_rtt_ns(client) / 1000000.0);
     assert(snx_ctr_uds_rtt_ns(host) && snx_ctr_uds_rtt_ns(client));
     if (delayed) {
         assert(snx_ctr_uds_rtt_ns(host) >= 240000000ull);
@@ -583,6 +625,9 @@ int main(int argc, char** argv) {
     receive_data(host, host_h, 2, "hello-host");
     /* A short compile stall must not discard reliable game inputs. This burst
        exceeds both the former 64-packet cap and the requested 8 KiB binding. */
+    ctr_put(client, CTR_COMMAND + 256, 256 << 14 | 2);
+    ctr_put(client, CTR_COMMAND + 260, BUFFER);
+    bind_channel_as(client, client_h, 2, 8);
     for (unsigned i = 0; i < 96; ++i) {
         char payload[128];
         memset(payload, 'x', sizeof payload);
@@ -592,14 +637,37 @@ int main(int argc, char** argv) {
         payload[127] = 0;
         send_data(host, host_h, 2, payload);
     }
-    for (unsigned i = 0; i < 500; ++i) {
+    /* the burst's end, on a channel of its own: the room keeps the order, so the 96 are in the queue when it comes, all
+       at once, which is what the queue must hold */
+    send_on(host, host_h, 2, 8, "burst-end");
+    uint32_t end_pull[] = {0x1400c0, 2, 64, 256};
+    int64_t burst_end = snx_net_now_us() + WAIT_US;
+    do {
+        snx_ctr_uds_poll(client);
+        snx_ctr_uds_poll(host);
+        snx_net_sleep_us(1000);
+        request(client, client_h, end_pull, 4);
+    } while (!ctr_word(client, CTR_COMMAND + 8) && snx_net_now_us() < burst_end);
+    int burst_ended = ctr_word(client, CTR_COMMAND + 8) != 0;
+    for (unsigned i = 0; burst_ended && i < 500; ++i) { /* what else would come, comes */
         snx_ctr_uds_poll(client);
         snx_ctr_uds_poll(host);
         snx_net_sleep_us(1000);
     }
-    ctr_put(client, CTR_COMMAND + 256, 256 << 14 | 2);
-    ctr_put(client, CTR_COMMAND + 260, BUFFER);
     uint32_t burst_pull[] = {0x1400c0, 1, 64, 256};
+    if (!burst_ended) {
+        unsigned came = 0, relayed = 0, passes = 0;
+        for (; came < 97; ++came) {
+            request(client, client_h, burst_pull, 4);
+            if (!ctr_word(client, CTR_COMMAND + 8)) break;
+        }
+        if (room) fake_room_work(room, &relayed, &passes);
+        fprintf(stderr,
+                "the burst's end did not come in %d s: %u of its 96 packets did, the room relayed %u datagrams in %u "
+                "passes\n",
+                WAIT_S, came, relayed, passes);
+    }
+    assert(burst_ended);
     for (unsigned i = 0; i < 96; ++i) {
         char expected[8], actual[128];
         snprintf(expected, sizeof expected, "%06u:", i);
@@ -632,7 +700,7 @@ int main(int argc, char** argv) {
     /* The delayed relay takes at least 120 ms to forward LEAVE. Wait for the
        observed node count, not 100 nominal 1 ms sleeps (which passed only on
        hosts whose sleep overshot enough). Keep failure bounded in wall time. */
-    int64_t disconnect_deadline = snx_net_now_us() + 3000000;
+    int64_t disconnect_deadline = snx_net_now_us() + WAIT_US;
     do {
         snx_ctr_uds_poll(host);
         request(host, host_h, status, 1);
@@ -640,6 +708,9 @@ int main(int argc, char** argv) {
         if ((ctr_word(host, CTR_COMMAND + 52) & 255) == 1) break;
         snx_net_sleep_us(1000);
     } while (snx_net_now_us() < disconnect_deadline);
+    if ((ctr_word(host, CTR_COMMAND + 52) & 255) != 1)
+        fprintf(stderr, "the host still has %u nodes %d s after the client's disconnect\n",
+                ctr_word(host, CTR_COMMAND + 52) & 255, WAIT_S);
     assert((ctr_word(host, CTR_COMMAND + 52) & 255) == 1);
     /* The scanning caller sleeps while another guest thread remains runnable. */
     uint32_t worker = 0;
