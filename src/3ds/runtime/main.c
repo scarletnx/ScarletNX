@@ -55,9 +55,9 @@ static void usage(FILE* out) {
     snx_cli_help(out, ctr_cli);
     fputs(
         "3DS options:\n"
-        "  --model old|new        The console to model. Without it, the one the game was played on before; on its\n"
-        "                         first run a New 3DS for a game that is New 3DS exclusive or asks for the New\n"
-        "                         3DS's 178 MiB memory mode, an Old 3DS for any other\n"
+        "  --model old|new        The console to model, over the setting ctr_model. Without either, the one the game\n"
+        "                         was played on before; on its first run a New 3DS for a game that is New 3DS\n"
+        "                         exclusive or asks for the New 3DS's 178 MiB memory mode, an Old 3DS for any other\n"
         "  --board-info           Print the board of the console --model names, and stop\n"
         "  --icon                 Write the game's SMDH icon as RGBA into --out DIR (icon.rgba, what Games draws),\n"
         "                         with -x and --data as the launcher asks for it\n"
@@ -901,6 +901,16 @@ int snx_ctr_main(int argc, char** argv) {
             return 2;
         } else
             input = arg;
+    }
+    /* the console the Settings' ctr_model picks, under --model: auto leaves the choice to the game's .ini and the rule */
+    if (!model_set && strcmp(g_settings.ctr_model, "auto")) {
+        if (strcmp(g_settings.ctr_model, "old") && strcmp(g_settings.ctr_model, "new")) {
+            fprintf(stderr, "scarletnx-3ds: ctr_model=%s is not auto, old or new\n", g_settings.ctr_model);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        model = !strcmp(g_settings.ctr_model, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
+        model_set = true;
     }
     /* the common options' values, --update's checked for room */
     const char *output = cli.value[SNX_CLI_OUTPUT], *outdir = cli.value[SNX_CLI_OUTDIR];

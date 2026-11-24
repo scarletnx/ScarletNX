@@ -67,6 +67,11 @@ def main():
     run(['--board-info', '--ctr-screen-layout=4', '--ctr-top-resolution=2', '--ctr-bottom-resolution=2'], 0,
         'Old 3DS\nARM11 cores: 2')
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
+    # the Settings' Console (ctr_model): a console under --model, auto the game's own choice, another word refused
+    run(['--ctr-model=new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
+    run(['--ctr-model=new', '--model', 'old', '--board-info'], 0, 'Old 3DS\nARM11 cores: 2')
+    run(['--ctr-model=auto', '--board-info'], 0, 'Old 3DS\nARM11 cores: 2')
+    run(['--ctr-model=other', '--board-info'], 2, 'scarletnx-3ds: ctr_model=other is not auto, old or new')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
     # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table

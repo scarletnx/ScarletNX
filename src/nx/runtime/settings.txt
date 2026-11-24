@@ -2285,9 +2285,20 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
-# ---- the 3DS driver's display ----
+# ---- the 3DS driver's console and display, the 3DS group's own rows ----
 
 table g_ctr_display_ini
+setting CTR model
+    key ctr_model
+    label Console
+    text 8
+    default auto
+    startup
+    words auto=Auto|old=Old 3DS|new=New 3DS
+    help The console a 3DS game runs on. Auto = the one it was played on before, which its .ini records (model=), and
+    help for its first run a New 3DS where the game is New 3DS exclusive or asks for the New 3DS's 178 MiB memory
+    help mode, else an Old 3DS. Old 3DS and New 3DS = that console, as --model old or new. Any other value stops the
+    help game, saying so
 setting CTR screen layout
     key ctr_screen_layout
     label Screen layout
