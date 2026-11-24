@@ -2798,6 +2798,10 @@ int vk_written_quick(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* the generations by guest address (addr_gens.h) of the pages under [host, host + len) into *gen: 1, or 0 where they
+   tell nothing (no host pointer, or a range too wide). They move when the tracking stamps one of those pages written,
+   which it does when it takes a scan in (vk_ww_take): take the range in first */
+int vk_ww_gen(const u8* host, u64 len, u32* gen);
 /* vk_written_since without its answer: the scans and changes over [host, host + len) taken in, so the stamps and the
    dirty bits of its pages are up to date. 0, or -1 where vk_written_since is -1. Under vk_lock */
 int vk_ww_take(const u8* host, u64 len);
@@ -3423,6 +3427,10 @@ enum {
 /* The headers that the texture memo checked again after a write tracking epoch (render.c tex_memo_unwritten): those
    on a page that the CPU wrote, and of those, the ones whose bytes changed, by pool */
 enum { VK_POOL_TIC_WRITTEN, VK_POOL_TSC_WRITTEN, VK_POOL_TIC_CHANGED, VK_POOL_TSC_CHANGED, VK_POOL_N };
+/* The texture memo's checks after a write tracking epoch (tex_memo_unwritten) and after a result added anywhere
+   (tex_memo_unpended): kept by the generations of the addresses the memo read (addr_gens.h), with no other check, or
+   checked as before (the generations moved, were not taken yet, or tell nothing) */
+enum { VK_GENS_HEADERS_KEPT, VK_GENS_HEADERS_CHECKED, VK_GENS_RESULTS_KEPT, VK_GENS_RESULTS_CHECKED, VK_GENS_N };
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
@@ -3438,7 +3446,7 @@ typedef struct {
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
-    u64 slot[VK_SLOT_N], pool[VK_POOL_N];
+    u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end

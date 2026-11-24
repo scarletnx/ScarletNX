@@ -4,6 +4,7 @@
    same guest pages meet, unmapped GPU pages cover nothing, a result removed leaves the pages others cover, and a
    mapping changed while a result is pending counts it at its new pages */
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/addr_gens.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include <stdarg.h>
@@ -134,6 +135,51 @@ static int bench_groups(void) {
     return failures != 0;
 }
 
+/* the generations by GPU address (vk/addr_gens.h) of one page at gva */
+static u32 gen_at(u64 gva) {
+    u32 g = 0;
+    check(addr_gens_read(ADDR_GENS_GPU, gva, 0x1000, &g), "a page's generations tell something");
+    return g;
+}
+/* The generations by GPU address that the pages' tables move (render.c's texture memo reads them): a result counted in
+   g_pend_any moves those of its GPU pages and their aliases, as it is added and as it is taken away, and not those of
+   other pages. A table outside g_pend_any moves none. A mapping change moves those of its pages. A range wider than
+   the table moves every range, and a read wider than the reads' limit tells nothing */
+static void check_addr_gens(void) {
+    static PendPages counted = {.also = &g_pend_any}, apart;
+    map(0x2000000, 0xA0000000ull, 0x100000); /* four granules of 256 KiB */
+    map(0x3000000, 0xA0040000ull, 0x1000);   /* an alias of the second granule's first page */
+    const u64 first = 0x2000000, second = 0x2040000, third = 0x2080000, alias = 0x3000000;
+    u32 a = gen_at(first), b = gen_at(second), c = gen_at(third), d = gen_at(alias);
+    pend_add(&counted, second, 0x1000, 1);
+    check(gen_at(second) != b && gen_at(alias) != d, "a result moves the generations of its pages and their aliases");
+    check(gen_at(first) == a && gen_at(third) == c, "and not those of the pages beside them");
+    b = gen_at(second), d = gen_at(alias);
+    pend_add(&counted, second, 0x1000, -1);
+    check(gen_at(second) != b && gen_at(alias) != d && gen_at(first) == a, "its removal moves them again");
+    check(pend_empty(&g_pend_any), "g_pend_any empty again");
+    b = gen_at(second);
+    pend_add(&apart, second, 0x1000, 1);
+    pend_add(&apart, second, 0x1000, -1);
+    check(gen_at(second) == b, "a table that g_pend_any doesn't count moves none");
+    map(third, 0xB0000000ull, 0x1000);
+    check(gen_at(third) != c && gen_at(first) == a, "a mapping change moves its pages' generations");
+    addr_gens_bump(ADDR_GENS_GPU, 0, 1ull << 40);
+    check(gen_at(first) != a, "a range wider than the table moves every range");
+    u32 g = 0;
+    check(!addr_gens_read(ADDR_GENS_GPU, 0, (u64)(ADDR_GENS_READ_MAX + 1) << ADDR_GENS_SHIFT, &g) &&
+              !addr_gens_read(ADDR_GENS_GPU, first, 0, &g),
+          "a read too wide, or of no bytes, tells nothing");
+    check(addr_gens_read(ADDR_GENS_CPU, 0x1000, 0x1000, &g), "the guest addresses' generations");
+    const u32 cpu = g;
+    addr_gens_bump(ADDR_GENS_CPU, 0x80000, 0x1000);
+    check(addr_gens_read(ADDR_GENS_CPU, 0x1000, 0x1000, &g) && g == cpu, "a guest write elsewhere moves none");
+    addr_gens_bump(ADDR_GENS_CPU, 0x1800, 8);
+    check(addr_gens_read(ADDR_GENS_CPU, 0x1000, 0x1000, &g) && g != cpu, "and one there moves them");
+    unmap(0x2000000, 0x100000);
+    unmap(0x3000000, 0x1000);
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--bench")) return bench_groups();
     /* tables that last, as the runtime's: none frees the leaves it makes */
@@ -248,8 +294,9 @@ int main(int argc, char** argv) {
     /* a range to the top of the address space ends there */
     check(!pend_hit(t, ~0ull - 0xFFF, ~0ull), "a range that would wrap");
     check_groups(t);
+    check_addr_gens();
     check(!warnings, "no answer of the GPU pages missed a result");
     if (failures) return 1;
-    printf("pending pages: aliases, holes, large ranges and removals\n");
+    printf("pending pages: aliases, holes, large ranges and removals, and the generations by address they move\n");
     return 0;
 }

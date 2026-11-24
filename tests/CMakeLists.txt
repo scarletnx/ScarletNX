@@ -4428,7 +4428,7 @@ add_executable(snx-test-vk-space vk_space.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk
 snx_test_target(snx-test-vk-space c23)
 target_include_directories(snx-test-vk-space PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME vk_space COMMAND snx-test-vk-space)
-add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
 snx_test_target(snx-test-pending-pages gnu23)
 target_link_libraries(snx-test-pending-pages PRIVATE scarletnx-filesystem Threads::Threads) # pend_lock's PMutex
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
@@ -4646,13 +4646,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                      "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/llvm-opt-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_opt.cmake")
         endif()
     endif()
-    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vulkan-release gnu23)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
     # the GPU mirror's bookkeeping on the CPU (gpu/vk/mirror.c), with no device
     add_executable(snx-test-mirror-landing mirror_landing.c tracy_stubs.c
-                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-mirror-landing gnu23)
     target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags)
     add_test(NAME mirror_landing COMMAND snx-test-mirror-landing)
