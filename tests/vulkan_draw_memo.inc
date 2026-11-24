@@ -629,13 +629,22 @@ static int memo_gens_cases(GpuChannel* channel) {
     vk_finish();
     vk_unlock();
     /* the CPU writes elsewhere, two times, each with an epoch: the second check of the headers is kept by the
-       generations, where the write tracking runs */
+       generations, where the write tracking runs and reports no write on the headers' page. With hot pages
+       (write_tracking_hot_pages=1), the cases before wrote that page often enough that it reads as written at each
+       scan for a while, and the headers are checked again, as they must be */
+    const u32 before = vk_ww_now();
     for (int k = 0; k < 2; k++) {
         gens_cpu_word(GENS_OTHER_CPU, 0x12345678u + (u32)k);
         CHECK(!gens_draw(channel, 191, "after a CPU write elsewhere", &d[k]));
         CHECK(!d[k].tex[VK_TEX_RESOLVED]);
     }
-    if (tracking) {
+    vk_lock();
+    const int header_quiet = vk_written_since(GP(header_cpu), 32, before) == 0;
+    vk_unlock();
+    if (tracking && !header_quiet)
+        puts("memo generations: the headers' page read as written (hot pages), so the second check was not asked to be "
+             "kept");
+    if (tracking && header_quiet) {
         if (!d[1].gens[VK_GENS_HEADERS_KEPT])
             fprintf(stderr, "memo generations: a second CPU write elsewhere was checked again (%llu checked)\n",
                     (unsigned long long)d[1].gens[VK_GENS_HEADERS_CHECKED]);
