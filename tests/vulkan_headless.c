@@ -3390,7 +3390,27 @@ static int check_dma_texture(void) {
                 same == t, (unsigned long long)(again - uploads), inside, copied, outside, corner);
     CHECK(same == t && again == uploads && inside == copied && outside == corner);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
-    puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference");
+    /* the texture's memory written back to what it was loaded from, by the runtime (a GPU-side write, as an engine's
+       or a pool filled again): the image takes memory's bytes again, the copy's lines gone from it. Its hash from
+       the load was no longer the image's once the lines went in */
+    static u8 first[0x4000];
+    for (u32 i = 0; i < sizeof first; i++) first[i] = (u8)((tex + i) * 37 + ((tex + i) >> 9) * 3 + 11);
+    const u32 before = snx_ld_le32(first + bl_offset(19 * 4, 21, 0, 256, 64, 0, 0));
+    CHECK(!gmem_write(ga, first, sizeof first));
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    vk_lock();
+    same = vk_tex_from_tic(tic);
+    inside = same ? dma_texel(same, 19, 21) : 0;
+    vk_unlock();
+    if (same != t || inside != before)
+        fprintf(stderr,
+                "dma into a texture: after its memory was written back, the same texture %d, texel (19, 21) %08x, "
+                "memory's %08x (the copy's line was %08x)\n",
+                same == t, inside, before, copied);
+    CHECK(same == t && inside == before && before != copied);
+    puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference, and "
+         "memory written back shows again");
     return 0;
 }
 /* A volume in a virtual pool, mapped a 64 KiB page at a time: 1664 KiB in blocks 1 GOB high and 16 deep, 13 GOBs a
