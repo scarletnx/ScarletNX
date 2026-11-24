@@ -291,6 +291,35 @@ extern u64 g_draws; /* the draws given to the renderer (gpu_draw), for the count
 /* the front end's draw and dispatch: what the front end counts and holds back is done here, on its side, and the
    renderer's call does only the renderer's work */
 void gpu_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+/* For a thread that resolves the next draw ahead of the renderer's side, while that side runs a draw (vk/prep.c):
+   the next record when it is a draw, applied to that thread's own copy of its state (gpu_ds_peek_draw, 0 for
+   none); the renderer's copy that one stands for (gpu_ds_canonical, ds itself for any other); whether the two hold
+   the same bytes (gpu_ds_ahead_same); the record the renderer's side runs now (gpu_ds_running) */
+int gpu_ds_peek_draw(const DsState** ds, DrawCall* dc, const void** record);
+const DsState* gpu_ds_canonical(const DsState* ds);
+int gpu_ds_ahead_same(const DsState* ds);
+const void* gpu_ds_running(void);
+/* batches of draws for a worker: the draw records after the running one (up to max, their count), each one's state
+   in the worker's copy (0 where the render enable skips it), and the count of them the worker drew */
+u32 gpu_ds_batch(const void** recs, u32 max);
+int gpu_ds_batch_draw(const void* rec, const DsState** ds, DrawCall* dc, DrawOwner** own);
+void gpu_ds_batch_done(u32 draws);
+/* draw_batches=2: the worker's copies taken now (the renderer's side runs records meanwhile), a record applied to them
+   but not drawn, the owners back to the renderer's side after the batch, and the call at the draw record where the
+   worker's draws start (rec) */
+void gpu_ds_batch_snapshot(const void* const* recs, u32 n);
+void gpu_ds_batch_apply(const void* rec);
+void gpu_ds_batch_end(void);
+u32 gpu_ds_record_owner(const void* rec); /* a draw record's owner (DsState.owner) */
+void gpu_ds_join_at(const void* rec, void (*fn)(void));
+/* A probe of a draw record's steps on the renderer's side: counter ticks at each mark of the draw being run (0 where it
+   didn't come there), summed by ds_run for each draw that reached them all. gpu_draw_marks_take: the sums since the
+   last take, and the draws */
+enum { DM_START, DM_APPLIED, DM_CALL, DM_LOCKED, DM_RENDER, DM_MAIN_DONE, DM_RENDER_DONE, DM_UNLOCKING, DM_UNLOCKED,
+       DM_N };
+extern u64 g_draw_marks[DM_N];
+u64 gpu_draw_marks_take(u64 sums[DM_N]);
+void gpu_ds_peek_log(void); /* the stats line of the records found after a draw */
 void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 void gpu_draw_texture(const DsState* ds, const DrawTexture* t);
 void gpu_discard(const DsState* ds, u32 targets);

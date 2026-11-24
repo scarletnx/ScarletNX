@@ -282,8 +282,11 @@ static void vkr_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o)
 }
 static void vkr_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     vk_lock();
+    g_draw_marks[DM_LOCKED] = __builtin_readcyclecounter();
     vk_render_draw(ds, dc, o);
+    g_draw_marks[DM_UNLOCKING] = __builtin_readcyclecounter();
     vk_unlock();
+    g_draw_marks[DM_UNLOCKED] = __builtin_readcyclecounter();
 }
 static u32 vkr_host_program(int stage, const u32* spirv, size_t words, const ShaderInfo* si) {
     vk_lock();

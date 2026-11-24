@@ -509,3 +509,6 @@ int main(void) {
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */
 void vk_pool_map_swapped(const Surf* t) { (void)t; }
+/* the split's lists (draw_batches=2): this test records into no list */
+void vk_shared_note(u32 which) { (void)which; }
+void vk_rec_list_flush(void) {}

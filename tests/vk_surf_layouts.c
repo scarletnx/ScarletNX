@@ -367,3 +367,12 @@ int main(void) {
     puts("vk_surf_layouts: ok");
     return 0;
 }
+/* the split's lists (draw_batches=2): this test records into no list */
+void vk_shared_note(u32 which) { (void)which; }
+int vk_rec_listing(void) { return 0; }
+void vk_rec_list_flush(void) {}
+void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) {
+    (void)arg;
+    (void)size;
+    (void)fn;
+}
