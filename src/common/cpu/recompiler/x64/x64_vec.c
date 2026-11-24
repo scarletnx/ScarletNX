@@ -791,6 +791,35 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* UADDLP, SADDLP: each pair of lanes added to a lane twice as wide */
+static int vaddlp(SgCtx* g, unsigned size, int a, int sign) {
+    unsigned e = 8u << size;
+    if (size == 1 && sign) return op2(g, &sgx_v_pmaddwd, a, vsplat(g, 1, 1));
+    if (size == 2) {
+        int hi = vshr(g, 3, a, 32, 0), lo = vand(g, a, vsplat(g, 3, 0xFFFFFFFFu));
+        if (sign) { /* PMULDQ by 1: the words of its even lanes sign extended */
+            lo = op2(g, &sgx_v_pmuldq, a, vsplat(g, 2, 1));
+            hi = op2(g, &sgx_v_pmuldq, hi, vsplat(g, 2, 1));
+        }
+        return vadd(g, 3, lo, hi);
+    }
+    return vadd(g, size + 1,
+                sign ? vshr(g, size + 1, vshl(g, size + 1, a, e), e, 1) : vand(g, a, vsplat(g, size + 1, sg_ones(e))),
+                vshr(g, size + 1, a, e, sign));
+}
+/* UADDLV, SADDLV: every lane's sum in the low 16 << size bits of the result, the rest of the register not cleared */
+static int vaddlv(SgCtx* g, unsigned size, int q, int a, int sign) {
+    if (size == 0) { /* the eights' sums (PSADBW); signed bytes by their sign flipped, 128 less each */
+        int r = op2(g, &sgx_v_psadbw, sign ? vxor(g, a, vsplat(g, 0, 0x80)) : a, vzero(g));
+        if (q) r = vadd(g, 3, r, sgx_v1(X, &sgx_v_pshufd, r, 0xEE));
+        return sign ? vsub(g, 3, r, kconst(g, 128u * (q ? 16 : 8), 0)) : r;
+    }
+    if (size == 1) return vreduce(g, 2, vaddlp(g, 1, a, sign), q ? 4 : 2, red_add, 0, 0);
+    { /* words: the two doublewords' sums */
+        int t = vadd(g, 3, vwiden(g, 2, a, 0, sign), vwiden(g, 2, a, 1, sign));
+        return vadd(g, 3, t, sgx_v1(X, &sgx_v_pshufd, t, 0xEE));
+    }
+}
 /* CLZ by lanes (bytes, halfwords, words): each byte's by nibbles (PSHUFB), then each half's where the upper is all 0 */
 static int vclz(SgCtx* g, unsigned size, int a) {
     int t = kconst(g, 0x0101010102020304ull, 0); /* clz of a nibble: 4 3 2 2 1 1 1 1 0 ... */
@@ -806,6 +835,11 @@ static int vclz(SgCtx* g, unsigned size, int a) {
     }
     return r;
 }
+/* a scalar result (element 0 of 8 << size bits) into V[d], the rest of the register cleared */
+static void vwrite_scalar(SgCtx* g, unsigned d, unsigned size, int r) {
+    sg__V_write(g, d, sgx_xval(128, sgx_xclear(X, r, 8u << size)));
+}
+
 /* ---- the instructions ---- */
 
 /* immh:immb's element size (the highest bit of immh) and shift: left (immh:immb - esize) or right (2 * esize -
@@ -1364,6 +1398,31 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         return 1;
     }
     case SNX_A64_OP_NOT_v: vwrite(g, rd, vnot(g, vread(g, rn)), q); return 1;
+    case SNX_A64_OP_UADDLV:
+    case SNX_A64_OP_SADDLV:
+        if (size == 3 || (size == 2 && !q)) return -1;
+        r = vaddlv(g, size, (int)q, vread(g, rn), insn->op == SNX_A64_OP_SADDLV);
+        vwrite_scalar(g, rd, size + 1, r);
+        return 1;
+    case SNX_A64_OP_UADDLP_v:
+    case SNX_A64_OP_SADDLP_v:
+    case SNX_A64_OP_UADALP_v:
+    case SNX_A64_OP_SADALP_v: {
+        int acc = insn->op == SNX_A64_OP_UADALP_v || insn->op == SNX_A64_OP_SADALP_v;
+        if (size == 3) return -1;
+        r = vaddlp(g, size, vread(g, rn), insn->op == SNX_A64_OP_SADDLP_v || insn->op == SNX_A64_OP_SADALP_v);
+        if (acc) r = vadd(g, size + 1, vread(g, rd), r);
+        vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_UHSUB_v:
+    case SNX_A64_OP_SHSUB_v: /* ((a ^ b) >> 1) - (~a & b) */
+        if (size == 3) return -1;
+        a = vread(g, rn);
+        b = vread(g, rm);
+        r = vshr(g, size, vxor(g, a, b), 1, insn->op == SNX_A64_OP_SHSUB_v);
+        vwrite(g, rd, vsub(g, size, r, vandn(g, a, b)), q);
+        return 1;
     case SNX_A64_OP_SRI_v:
     case SNX_A64_OP_SRI_s:
     case SNX_A64_OP_SLI_v:
@@ -1382,6 +1441,24 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, r, scalar ? 0 : q);
         return 1;
     }
+    case SNX_A64_OP_UADDL_v:
+    case SNX_A64_OP_SADDL_v:
+    case SNX_A64_OP_USUBL_v:
+    case SNX_A64_OP_SSUBL_v: {
+        int sign = insn->op == SNX_A64_OP_SADDL_v || insn->op == SNX_A64_OP_SSUBL_v;
+        int sub = insn->op == SNX_A64_OP_USUBL_v || insn->op == SNX_A64_OP_SSUBL_v;
+        if (size == 3) return -1;
+        a = vwiden(g, size, vread(g, rn), (int)q, sign);
+        b = vwiden(g, size, vread(g, rm), (int)q, sign);
+        vwrite(g, rd, sub ? vsub(g, size + 1, a, b) : vadd(g, size + 1, a, b), 1);
+        return 1;
+    }
+    case SNX_A64_OP_USUBW:
+    case SNX_A64_OP_SSUBW:
+        if (size == 3) return -1;
+        b = vwiden(g, size, vread(g, rm), (int)q, insn->op == SNX_A64_OP_SSUBW);
+        vwrite(g, rd, vsub(g, size + 1, vread(g, rn), b), 1);
+        return 1;
     case SNX_A64_OP_CLZ_v:
     case SNX_A64_OP_CLS_v:
         if (size == 3) return -1;
