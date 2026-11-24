@@ -22,6 +22,8 @@ typedef uint16_t Elf64_Section;
 #define EI_NIDENT   16
 #define EI_CLASS    4
 #define EI_DATA     5
+#define EI_VERSION  6
+#define EV_CURRENT  1
 #define ELFMAG      "\177ELF"
 #define SELFMAG     4
 #define ELFCLASS64  2
@@ -82,6 +84,7 @@ typedef struct {
 #define SHF_WRITE         0x1
 #define SHF_ALLOC         0x2
 #define SHF_EXECINSTR     0x4
+#define SHF_INFO_LINK     0x40
 #define SHF_TLS           0x400
 #define SHN_UNDEF         0
 #define SHN_ABS           0xfff1
@@ -102,12 +105,18 @@ typedef struct {
 #define STB_GLOBAL          1
 #define STB_WEAK            2
 #define STT_SECTION         3
+#define STV_DEFAULT         0
+#define STV_HIDDEN          2
 
 typedef struct {
     Elf64_Addr r_offset;
     Elf64_Xword r_info; /* symbol << 32 | type */
     Elf64_Sxword r_addend;
 } Elf64_Rela;
+typedef struct {
+    Elf64_Addr r_offset;
+    Elf64_Xword r_info;
+} Elf64_Rel;
 
 #define ELF64_R_SYM(info)       ((info) >> 32)
 #define ELF64_R_TYPE(info)      ((info) & 0xffffffffu)
