@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
@@ -231,7 +232,13 @@ static int page, focus, top; /* top: the first item showing */
 static OverlaySlot slots[OVERLAY_SLOTS_MAX];
 static int nslots = 1, slot_at, ask, slots_stale;
 /* what the question asks besides the OVERLAY_ codes it gives back: the on-screen controls put back */
-enum { ASK_RESET = -1, ASK_CLEAN = -2 };
+enum { ASK_RESET = -1, ASK_CLEAN = -2, ASK_RECORD = -3 };
+/* the Save states page's rows after the slots: player 1's input recorded to a slot and one played back (unattended.h),
+   then Back. The arrows choose the slot a row shows (0 none, else 1 to 9) and nothing happens before Enter takes it */
+enum { T_RECORD, T_REPLAY, T_BACK, T_COUNT };
+enum { TAS_SLOTS = 9 };
+static int tas_pick[2], tas_frames[TAS_SLOTS + 1]; /* the rows' choices; each slot's recording in frames, as the page
+                                                      opens and a row is taken: 0 none, -1 a file that is none */
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 /* the notifications showing, a line each, the oldest first (overlay_toast) */
 #define TOAST_KEY 64
@@ -303,12 +310,22 @@ static int shortcuts(void) {
     for (a = 0; a < HOTKEY_COUNT; ++a) n += hotkey_row(a) != NULL;
     return n;
 }
+/* row i of the Save states page as a T_ row, -1 for a slot's */
+static int tas_row(int i) { return page == PAGE_STATES && i >= nslots ? i - nslots : -1; }
+/* the slots of the recordings read and the rows' choices back to what runs now */
+static void tas_read(void) {
+    char why[200];
+    for (int s = 1; s <= TAS_SLOTS; ++s) tas_frames[s] = unattended_slot_frames(s, why, sizeof why);
+    tas_pick[T_RECORD] = unattended_recording();
+    tas_pick[T_REPLAY] = unattended_replaying();
+}
+static void tas_shown(int row, char* out, size_t n);
 static int items(void) {
     return page == PAGE_MAIN        ? main_count()
            : page == PAGE_SHORTCUTS ? shortcuts() + 1
            : page == PAGE_CONTROLS  ? C_COUNT
            : page == PAGE_PADS      ? P_COUNT
-           : page == PAGE_STATES    ? nslots + 1
+           : page == PAGE_STATES    ? nslots + T_COUNT
            : page == PAGE_SLOT      ? S_COUNT - !slot_at
            : page == PAGE_ASK       ? 2
            : page == PAGE_KEYS      ? keys_rows()
@@ -322,7 +339,10 @@ static void page_open(int p) {
     focus = top = 0;
     listening = 0;
     refused[0] = 0;
-    if (p == PAGE_STATES) slots_stale = 1;
+    if (p == PAGE_STATES) {
+        slots_stale = 1;
+        tas_read();
+    }
 }
 static _Atomic int display_percent = 100; /* set on the event thread, read by the renderer's */
 /* A screen of fingers, as the backend says (a phone's): an item's row is a finger's high at the least, the launcher's
@@ -550,8 +570,10 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_STATES) {
-        if (i == nslots) {
-            snprintf(text, size, "Back");
+        if (tas_row(i) >= 0) {
+            static const char* const tas_items[T_COUNT] = {"Record input", "Play input", "Back"};
+            snprintf(text, size, "%s", tas_items[tas_row(i)]);
+            if (tas_row(i) < T_BACK) tas_shown(tas_row(i), value, vsize);
             return;
         }
         if (i)
@@ -574,6 +596,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
                  : ask == OVERLAY_EXIT ? "Exit"
                  : ask == ASK_RESET    ? "Reset"
                  : ask == ASK_CLEAN    ? "Clean"
+                 : ask == ASK_RECORD   ? "Record"
                                        : "Delete");
         return;
     }
@@ -732,6 +755,60 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
                     p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
     }
 }
+/* what a T_ row says: what runs, and what its choice would do */
+static void tas_shown(int row, char* out, size_t n) {
+    int now = row == T_RECORD ? unattended_recording() : unattended_replaying(), pick = tas_pick[row];
+    if (!now && !pick)
+        snprintf(out, n, "Off");
+    else if (pick == now)
+        snprintf(out, n, row == T_RECORD ? "Slot %d, recording" : "Slot %d, playing", pick);
+    else if (!pick)
+        snprintf(out, n, "Off: Enter ends slot %d", now);
+    else
+        snprintf(out, n, row == T_RECORD && tas_frames[pick] != 0 ? "Slot %d, over its recording" : "Slot %d", pick);
+}
+/* a T_ row's choice a slot on (step), round 0 and 1 to TAS_SLOTS; a play's goes past the slots with no recording */
+static void tas_step(int row, int step) {
+    int at = tas_pick[row], n = TAS_SLOTS + 1;
+    do at = (at + (step < 0 ? n - 1 : 1)) % n;
+    while (row == T_REPLAY && at && tas_frames[at] <= 0 && at != tas_pick[row]);
+    tas_pick[row] = at;
+    changed();
+}
+/* a T_ row's slot set (0 ends it), what came of it said */
+static void tas_apply(int row, int slot) {
+    char why[200] = "", said[OVERLAY_COLS_MAX + 1];
+    int ok = row == T_RECORD ? unattended_record_from_menu(slot, why, sizeof why)
+                             : unattended_replay_from_menu(slot, why, sizeof why);
+    if (!ok)
+        snprintf(said, sizeof said, "%s", why);
+    else if (slot)
+        snprintf(said, sizeof said, row == T_RECORD ? "Recording to slot %d" : "Playing slot %d", slot);
+    else
+        snprintf(said, sizeof said, "%s", row == T_RECORD ? "Recording ended" : "Playing ended");
+    overlay_notice(MAIN_ICONS[M_STATES], said);
+    tas_read();
+    changed();
+}
+/* Enter on a T_ row: the slot it shows taken, or what runs ended. A recording over another is asked first */
+static void tas_take(int row) {
+    int now = row == T_RECORD ? unattended_recording() : unattended_replaying();
+    int to = tas_pick[row] == now ? 0 : tas_pick[row];
+    if (!to && !now) return;
+    if (row == T_RECORD && to && tas_frames[to] != 0) {
+        ask = ASK_RECORD;
+        page = PAGE_ASK;
+        focus = 1; /* Cancel */
+        top = 0;
+        return;
+    }
+    tas_apply(row, to);
+}
+static void tas_ask_done(void) {
+    page = PAGE_STATES;
+    focus = nslots + T_RECORD;
+    keep_in_view();
+}
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select, which steps up) */
 static int act(int i, int step) {
     const IniOpt* o = setting(i);
@@ -793,6 +870,13 @@ static int act(int i, int step) {
                                      : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
+    if (tas_row(i) >= 0 && tas_row(i) < T_BACK) {
+        if (step)
+            tas_step(tas_row(i), step);
+        else
+            tas_take(tas_row(i));
+        return OVERLAY_NONE;
+    }
     if (step) return OVERLAY_NONE;
     if (page == PAGE_SETTINGS && i < nentries) { /* an entry: its rows */
         entry_at = i;
@@ -830,6 +914,11 @@ static int act(int i, int step) {
         ini_clean_old();
         overlay_notice(MAIN_ICONS[M_CLEAN], said);
         page_open(PAGE_MAIN);
+        return OVERLAY_NONE;
+    }
+    if (page == PAGE_ASK && i == 0 && ask == ASK_RECORD) {
+        tas_ask_done();
+        tas_apply(T_RECORD, tas_pick[T_RECORD]);
         return OVERLAY_NONE;
     }
     if (page == PAGE_ASK && i == 0 && ask == ASK_RESET) {
@@ -883,7 +972,7 @@ void overlay_slots_set(const OverlaySlot* given, int n) {
     memcpy(slots, given, sizeof *slots * (size_t)nslots);
     for (i = nslots; i < n; ++i) free(given[i].thumb);
     if (slot_at >= nslots) slot_at = 0;
-    if (page == PAGE_STATES && focus > nslots) focus = nslots;
+    if (page == PAGE_STATES && focus > nslots + T_BACK) focus = nslots + T_BACK;
     slots_stale = 0;
     ++slots_gen;
     keep_in_view();
@@ -1696,6 +1785,9 @@ int overlay_back(void) {
     } else if (page == PAGE_ASK && ask == OVERLAY_EXIT) {
         page_open(PAGE_MAIN);
         focus = exit_row();
+    } else if (page == PAGE_ASK && ask == ASK_RECORD) {
+        tas_ask_done();
+        tas_read(); /* the choice back to what runs */
     } else if (page == PAGE_ASK && ask == ASK_CLEAN) {
         page_open(PAGE_MAIN);
         focus = main_row(M_CLEAN);
@@ -1785,6 +1877,8 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
     d->para[0].rgba = UI_SOFT;
     d->paras = 1;
+    if (page == PAGE_STATES && tas_row(focus) >= 0 && tas_row(focus) < T_BACK)
+        d->para[0].text = "Left and Right choose a slot, Enter takes it. The game waits while this page is open.";
     if (page_picked()) { /* with fingers, a tap on the line takes the focused row's pick out (overlay_tap) */
         d->para[1].text = fingers ? "*: set for this game alone. Tap here: the row in focus back to Global."
                                   : "*: set for this game alone. Y or Delete: back to Global.";
@@ -1823,6 +1917,12 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         snprintf(title, size / 2, "SCARLETNX  /  CLEAN OLD SETTINGS?");
         snprintf(pads, size / 2, "%d key%s this version does not use go from the game's .ini and its own picks.", n,
                  n == 1 ? "" : "s");
+    } else if (page == PAGE_ASK && ask == ASK_RECORD) {
+        snprintf(title, size / 2, "SCARLETNX  /  RECORD OVER SLOT %d?", tas_pick[T_RECORD]);
+        if (tas_frames[tas_pick[T_RECORD]] > 0)
+            snprintf(pads, size / 2, "Its recording, %d frames, is replaced.", tas_frames[tas_pick[T_RECORD]]);
+        else
+            snprintf(pads, size / 2, "Its file, which is no recording, is replaced.");
     } else if (page >= PAGE_SLOT) {
         char name[16];
         if (slot_at)
@@ -1907,6 +2007,8 @@ int overlay_tap(float x, float y, int sw, int sh) {
     /* a value's row: a tap on its last five columns (the right arrow's) steps it up, a tap anywhere left of them
        down */
     if (arrows(setting(focus))) return act(focus, col < at.cols - 5 ? -1 : 1);
+    /* Record input and Play input: a tap on the last five columns chooses the next slot, one anywhere else takes it */
+    if (tas_row(focus) >= 0 && tas_row(focus) < T_BACK && col >= at.cols - 5) return act(focus, 1);
     return act(focus, 0);
 }
 /* whether x, y lies on the open menu's panel on the picture overlay_place last had: a page, not the button map's or
