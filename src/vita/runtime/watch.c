@@ -186,25 +186,23 @@ bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since) {
     return false;
 }
 bool vita_watch_active(void) { return g_watch.state != NULL; }
-bool vita_watch_store(uint32_t address, const void* data, uint32_t size) {
-    uint64_t first, last;
-    const unsigned char* from = data;
-    if (!span(address, size, &first, &last)) return false;
-    lock();
-    uint64_t end = (uint64_t)address + size;
+/* the protected pages of [first, last] writable, or protected again. Their states stay */
+static void store_protection(uint64_t first, uint64_t last, bool writable) {
     for (uint64_t i = first; i <= last;) {
-        bool protected_run = atomic_load_explicit(&g_watch.state[i], memory_order_acquire) == PROTECTED;
-        uint64_t stop = i + 1;
-        while (stop <= last &&
-               (atomic_load_explicit(&g_watch.state[stop], memory_order_acquire) == PROTECTED) == protected_run)
-            ++stop;
-        uint64_t begin = i * g_watch.page > address ? i * g_watch.page : address;
-        uint64_t finish = stop * g_watch.page < end ? stop * g_watch.page : end;
-        if (protected_run) page_protect(i, stop - i, true);
-        memcpy(g_watch.base + begin, from + (begin - address), (size_t)(finish - begin));
-        if (protected_run) page_protect(i, stop - i, false);
-        i = stop;
+        uint64_t end = i;
+        while (end <= last && atomic_load_explicit(&g_watch.state[end], memory_order_acquire) == PROTECTED) ++end;
+        if (end > i) page_protect(i, end - i, writable);
+        i = end > i ? end : i + 1;
     }
+}
+bool vita_watch_store(uint32_t address, const void* data, uint32_t row, uint32_t stride, uint32_t rows) {
+    const unsigned char* from = data;
+    uint64_t first, last, size = rows ? (uint64_t)(rows - 1) * stride + row : 0;
+    if (size > UINT32_MAX || !span(address, (uint32_t)size, &first, &last)) return false;
+    lock();
+    store_protection(first, last, true);
+    for (size_t y = 0; y < rows; ++y) memcpy(g_watch.base + address + y * stride, from + y * stride, row);
+    store_protection(first, last, false);
     unlock();
     return true;
 }

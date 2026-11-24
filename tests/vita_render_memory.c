@@ -165,6 +165,76 @@ static void check_unmap(VitaProcess* p) {
     CHECK(!wrong(p, a + 0x8000, 0x2000, 2), "%u bytes written while the block was unmapped are old",
           (unsigned)wrong(p, a + 0x8000, 0x2000, 2));
 }
+/* a rectangle the GPU writes into a wider picture: the bytes between its rows are the CPU's, which writes them while
+   the transfer is in flight */
+static void check_gaps(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    fill(p, b, 0x4000, 4);
+    CHECK(copy(p, a + 0x800, b + 0x100, 16), "the transfer is refused"); /* up to the rectangle's first row */
+    CHECK(vita_render_transfer_copy(p, 16, 16, 4, a, 0, 0, 64, b, 4, 1, 256), "the rectangle is refused");
+    for (uint32_t y = 0; y < 16; ++y) fill(p, b + 0x100 + y * 256 + 16 + 64, 128, 5); /* right of each row */
+    finish(p);
+    CHECK(!wrong_from(p, b + 0x100, 16, 1, 0x800), "the bytes before the rectangle are not in guest memory");
+    uint32_t lost = 0, missing = 0;
+    for (uint32_t y = 0; y < 16; ++y) {
+        lost += wrong(p, b + 0x100 + y * 256 + 16 + 64, 128, 5);
+        missing += wrong_from(p, b + 0x100 + y * 256 + 16, 64, 1, y * 64);
+    }
+    CHECK(!missing, "%u bytes of the rectangle are not in guest memory", (unsigned)missing);
+    CHECK(!lost, "%u bytes the CPU wrote between the rectangle's rows are lost", (unsigned)lost);
+}
+/* more writes in one submission than a small table of them holds, the last one into another block */
+static void check_many(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true), c = block_make(p, BLOCK, true);
+    fill(p, a, 0x1000, 1);
+    fill(p, b, BLOCK, 4);
+    bool ok = true;
+    for (uint32_t i = 0; i < 600 && ok; ++i) ok = copy(p, a + (i & 63) * 16, b + i * 64, 16);
+    CHECK(ok && copy(p, a, c + 0x100, 0x200), "a transfer is refused");
+    for (uint32_t i = 0; i < 600; ++i)
+        fill(p, b + i * 64 + 32, 16, 5); /* between the writes, while they are in flight */
+    finish(p);
+    uint32_t missing = 0, lost = 0;
+    for (uint32_t i = 0; i < 600; ++i) {
+        missing += wrong_from(p, b + i * 64, 16, 1, (i & 63) * 16);
+        lost += wrong(p, b + i * 64 + 32, 16, 5);
+    }
+    CHECK(!missing, "%u bytes the GPU wrote are not in guest memory", (unsigned)missing);
+    CHECK(!lost, "%u bytes the CPU wrote between the GPU's writes are lost", (unsigned)lost);
+    CHECK(!wrong(p, c + 0x100, 0x200, 1), "the write into another block is not in guest memory");
+}
+/* a scene on a color surface of width x height, its rows stride pixels, nothing drawn: loaded and stored */
+static uint64_t scene(VitaProcess* p, uint32_t at, uint32_t width, uint32_t height, uint32_t stride, uint32_t type) {
+    GxmContext* c = &p->gxm->context;
+    p->gxm->targets[0] = (GxmTarget){.width = width, .height = height};
+    c->has_color = true, c->target = 0;
+    c->color = (GxmColorSurface){.width = width, .height = height, .stride = stride, .data = at, .type = type};
+    vita_render_begin_scene(p, c);
+    return vita_render_end_scene(p, c);
+}
+/* a depth surface stored at the scene's end: every sample the background's, in its rows alone */
+static void check_depth(VitaProcess* p) {
+    if (!vita_vk()->depth16_blit) return;
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    GxmContext* c = &p->gxm->context;
+    c->has_depth = true;
+    c->depth = (GxmDepthSurface){.control = GXM_DEPTH_D16 | GXM_DEPTH_FORCE_STORE | 64u << GXM_DEPTH_STRIDE_SHIFT,
+                                 .depth = b + 0x800,
+                                 .background_depth = 1.0f};
+    fill(p, b, 0x4000, 1);
+    scene(p, a, 48, 24, 48, GXM_COLOR_SURFACE_LINEAR);
+    for (uint32_t y = 0; y < 24; ++y) fill(p, b + 0x800 + y * 128 + 96, 32, 2);
+    finish(p);
+    uint32_t stored = 0, padding = 0;
+    for (uint32_t y = 0; y < 24; ++y) {
+        for (uint32_t x = 0; x < 48; ++x) stored += vita_read16(p, b + 0x800 + y * 128 + x * 2) != 0xffff;
+        padding += wrong(p, b + 0x800 + y * 128 + 96, 32, 2);
+    }
+    CHECK(!stored, "%u samples of the depth surface are not the background's", (unsigned)stored);
+    CHECK(!padding, "%u bytes of the depth's padding are not what the CPU wrote", (unsigned)padding);
+    CHECK(!wrong(p, b, 0x800, 1), "the bytes before the depth surface are wrong");
+}
 /* a decoded picture, whole and in its place */
 static void check_picture(VitaProcess* p) {
     uint32_t b = block_make(p, BLOCK, false), size = 32 * 16 * 3 / 2;
@@ -192,6 +262,9 @@ static const struct {
     {"chain", check_chain, false},
     {"serials", check_serials, false},
     {"unmap", check_unmap, false},
+    {"gaps", check_gaps, false},
+    {"many", check_many, false},
+    {"depth", check_depth, false},
     {"picture", check_picture, false},
 };
 
