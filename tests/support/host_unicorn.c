@@ -104,8 +104,19 @@ static void put_word(const Arch* a, unsigned char* p, uint32_t w) {
 
 const char* hostuc_name(HostUcArch arch) { return g_arch[arch].name; }
 
-static void* page_alloc(size_t size) {
-    void* p = mmap(NULL, (size + PAGE - 1) & ~(size_t)(PAGE - 1), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+void* hostuc_pages(size_t size) {
+    size_t bytes = (size + PAGE - 1) & ~(size_t)(PAGE - 1);
+    void* p;
+#ifdef MAP_FIXED_NOREPLACE
+    uint64_t at = 0x10000000, step = bytes > (1u << 24) ? bytes : 1u << 24;
+    for (; at + bytes <= 0x100000000ull; at += step) {
+        p = mmap((void*)(uintptr_t)at, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE, -1,
+                 0);
+        if (p == (void*)(uintptr_t)at) return p;
+        if (p != MAP_FAILED) munmap(p, bytes); /* a kernel without the flag takes it as a hint */
+    }
+#endif
+    p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     return p == MAP_FAILED ? NULL : p;
 }
 int hostuc_map(HostUc* u, void* p, size_t size) {
@@ -194,8 +205,8 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
             hostuc_free(u);
             return NULL;
         }
-        u->code = (unsigned char*)page_alloc(code_cap + PAGE);
-        u->stack = (unsigned char*)page_alloc(STACK_SIZE);
+        u->code = (unsigned char*)hostuc_pages(code_cap + PAGE);
+        u->stack = (unsigned char*)hostuc_pages(STACK_SIZE);
         if (!u->code || !u->stack || hostuc_map(u, u->code, code_cap + PAGE) || hostuc_map(u, u->stack, STACK_SIZE)) {
             hostuc_free(u);
             return NULL;
@@ -225,8 +236,8 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
             return NULL;
         }
     }
-    u->code = (unsigned char*)page_alloc(code_cap + PAGE);
-    u->stack = (unsigned char*)page_alloc(STACK_SIZE);
+    u->code = (unsigned char*)hostuc_pages(code_cap + PAGE);
+    u->stack = (unsigned char*)hostuc_pages(STACK_SIZE);
     if (!u->code || !u->stack || hostuc_map(u, u->code, code_cap + PAGE) || hostuc_map(u, u->stack, STACK_SIZE)) {
         hostuc_free(u);
         return NULL;
@@ -267,7 +278,7 @@ void hostuc_free(HostUc* u) {
 }
 
 void* hostuc_alloc(HostUc* u, size_t size) {
-    void* p = page_alloc(size);
+    void* p = hostuc_pages(size);
     if (!p || hostuc_map(u, p, size)) return NULL;
     return p;
 }

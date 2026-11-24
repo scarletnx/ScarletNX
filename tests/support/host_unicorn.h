@@ -38,6 +38,9 @@ void hostuc_free(HostUc* u);
 const char* hostuc_name(HostUcArch arch);
 /* the test's own memory of size bytes at p (page-aligned) mapped at its address: 0, -1 */
 int hostuc_map(HostUc* u, void* p, size_t size);
+/* page-aligned memory of size bytes (zeroed), NULL on failure: below 4 GiB where there is room, as Unicorn's MIPS64 raises
+   an exception for an LL or LLD of an address above it */
+void* hostuc_pages(size_t size);
 /* size bytes of page-aligned memory mapped at its own address (zeroed), NULL on failure */
 void* hostuc_alloc(HostUc* u, size_t size);
 /* native function fn under name (what an object's undefined symbol names): its trap's address. wide: fn returns
