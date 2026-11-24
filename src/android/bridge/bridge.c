@@ -434,6 +434,7 @@ void bridge_on_thread_end(void (*fn)(void)) {
 void bridge_thread_end(void) {
     size_t ends = atomic_load_explicit(&b.end_count, memory_order_acquire);
     for (size_t i = 0; i < ends; ++i) b.ends[i]();
+    hle_egl_thread_end();
     hle_android_thread_end();
     jni_thread_end();
     Thread* t = t_thread;
