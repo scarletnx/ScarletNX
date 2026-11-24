@@ -16,6 +16,7 @@ static struct {
     /* the device is chosen among those that import guest memory, then (copies) among all, which work on copies of it;
        skipped: a GPU was passed over for it, which is taken before a CPU that imports */
     bool copies, skipped;
+    const char* copy_why; /* why the device chosen last does not import it, NULL when it does */
     /* the presenter's copy of the framebuffer, which the window's rendering samples */
     VkImage frame;
     VkDeviceMemory frame_memory;
@@ -49,13 +50,19 @@ static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
 static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
     VkPhysicalDevice phys = c->phys;
-    v->host_import = snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    /* a driver that takes an import's pages again at each submission (extension_bans.txt) refuses it, EPERM on amdgpu,
+       while the watch has one of them write-protected (watch.c), as a scene's surface when it ends: nothing would be
+       drawn */
+    bool listed = snx_vk_choice_has(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool refuses = vk_ban("VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT", listed, ban_say) != 0;
+    v->host_import = !refuses && snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    g.copy_why = v->host_import ? NULL
+                 : refuses      ? "refuses work on imported memory while a page of it is write-protected"
+                                : "has no VK_EXT_external_memory_host to import the guest's memory";
     bool cpu = c->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
     if (!g.copies && (!v->host_import || (cpu && g.skipped))) {
         if (!cpu) g.skipped = true;
-        return snx_vk_choice_refuse(c, v->host_import ? "is a CPU, after a GPU that can work on copies"
-                                                      : "has no VK_EXT_external_memory_host to import the guest's "
-                                                        "memory");
+        return snx_vk_choice_refuse(c, g.copy_why ? g.copy_why : "is a CPU, after a GPU that can work on copies");
     }
     if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
@@ -198,9 +205,8 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
-    if (!v->host_import)
-        fprintf(stderr, "scarletnx-vita: %s has no VK_EXT_external_memory_host, guest memory is copied\n",
-                v->properties.deviceName);
+    if (g.copy_why)
+        fprintf(stderr, "scarletnx-vita: %s %s: guest memory is copied\n", v->properties.deviceName, g.copy_why);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 8192},

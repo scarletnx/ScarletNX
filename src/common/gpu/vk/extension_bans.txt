@@ -165,7 +165,7 @@ VK_EXT_custom_border_color | warn | turnip | * | any | * | crashed creating samp
 
 # Guest memory imported by its host pointer (uma.c's vk_uma_imports_dear: off copies vertices, indices and constant
 # buffers, and moves guest memory into dma-bufs where the system has them; a dispatch's storage ranges and what the GPU
-# writes stay imported)
+# writes stay imported; the Vita imports nothing, as amdgpu refuses a submission while an import is write-protected)
 VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT | off | radv | * | any | * | lists every buffer the device holds in each submission, and amdgpu looks up the pages of every user-pointer buffer in the list again: one game's battle map held about 90 imports, 270 MB, and its 380 submissions a present cost 0.2 ms each, 70% of a core (8.5 frames a second on a Radeon 890M, 14.9 with vertices and constant buffers copied) | ScarletNX 5e226ae990 (2026-11-14) | headless: | 2026-11-14 slower on a Radeon 890M | uma_copies=1
 VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT | off | amdvlk | * | any | * | runs on amdgpu, which looks up the pages of every user-pointer buffer of a submission again at each one, as RADV's line measured | ScarletNX 5e226ae990 (2026-11-14) | headless: | never | uma_copies=1
 VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT | off | amd-proprietary | * | linux | * | runs on amdgpu there, which looks up the pages of every user-pointer buffer of a submission again at each one, as RADV's line measured; its Windows driver has no amdgpu user pointers | ScarletNX 5e226ae990 (2026-11-14) | headless: | never | uma_copies=1
