@@ -761,7 +761,7 @@ static u32 direct_memory_collect(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH
     for (u32 k = 0; k < *count; k++) {
         if ((memh_at[k] & ~DIRECT_MEMH_LDG) == (u32)def) {
             if (memh_at[k] & DIRECT_MEMH_LDG) *saw_ldg = 1;
-            return SH_PROBE(k, 0, B(f->insn[def], 0, 8));
+            return SH_PROBE(def, 0, B(f->insn[def], 0, 8));
         }
     }
     u64 w = f->insn[def];
@@ -806,11 +806,26 @@ static u32 direct_memory_collect(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH
         default: return SH_PROBE_NONE;
     }
     if (*count >= SH_MEMH_MAX) return SH_PROBE_NONE;
-    u32 at = (*count)++;
-    memh_at[at] = (u32)def | (*saw_ldg ? DIRECT_MEMH_LDG : 0);
-    si->memh[at][0] = w;
-    si->memh[at][1] = 0;
-    return SH_PROBE(at, 0, reg);
+    memh_at[(*count)++] = (u32)def | (*saw_ldg ? DIRECT_MEMH_LDG : 0);
+    return SH_PROBE(def, 0, reg);
+}
+
+/* Whether the list's instructions, run alone in program order, leave one of them another value to read than the program
+   does: another one of the list writes the register between its writer and it */
+static int direct_memory_clobbered(const ShFlow* f, const u32 memh_at[SH_MEMH_MAX], u32 count) {
+    for (u32 k = 0; k < count; k++) {
+        u32 at = memh_at[k] & ~DIRECT_MEMH_LDG, id = f->op[at]->id;
+        if (id == O_MOV_C) continue;
+        u32 reads[2] = {B(f->insn[at], 8, 8), id == O_LDG ? B(f->insn[at], 8, 8) + 1 : B(f->insn[at], 20, 8)};
+        for (u32 r = 0; r < 2; r++) {
+            int def = direct_reaching_def(f, at, reads[r]);
+            for (u32 j = 0; j < count; j++) {
+                u32 other = memh_at[j] & ~DIRECT_MEMH_LDG;
+                if (def < 0 || (other > (u32)def && other < at && B(f->insn[other], 0, 8) == reads[r])) return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 /* A plain register copy is only an alias of the compacted definition. It adds no instruction for the evaluator. */
@@ -837,13 +852,35 @@ u32 shader_direct_memory_handle(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_
     u32 probe =
         def < 0 ? SH_PROBE_NONE
                 : direct_memory_collect(f, si, memh_at, count, (u32)def + 1, B(f->insn[def], 0, 8), 0, &saw_ldg);
-    if (probe == SH_PROBE_NONE || !saw_ldg) {
+    if (probe == SH_PROBE_NONE || !saw_ldg || direct_memory_clobbered(f, memh_at, *count)) {
         *count = start;
         si->nmemh = start ? start | SH_MEMH_DIRECT : 0;
         return SH_PROBE_NONE;
     }
     si->nmemh = *count | SH_MEMH_DIRECT;
     return probe;
+}
+
+/* The list in program order, once every handle's instructions are in it, and the slots' probes by their place there: the
+   evaluator runs it in order, and a register the program uses again holds each reader's value (the probes are by the
+   program's own index until then) */
+void shader_direct_memory_finish(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32 count, ShTex* textures,
+                                 int texture_count) {
+    for (u32 k = 1; k < count; k++) {
+        u32 v = memh_at[k], j = k;
+        for (; j && (memh_at[j - 1] & ~DIRECT_MEMH_LDG) > (v & ~DIRECT_MEMH_LDG); j--) memh_at[j] = memh_at[j - 1];
+        memh_at[j] = v;
+    }
+    for (u32 k = 0; k < count; k++) {
+        si->memh[k][0] = f->insn[memh_at[k] & ~DIRECT_MEMH_LDG];
+        si->memh[k][1] = 0;
+    }
+    for (int t = 0; t < texture_count; t++) {
+        if (!(textures[t].flags & SNX_TEX_MEMORY)) continue;
+        u32 k = 0;
+        while (k < count && (memh_at[k] & ~DIRECT_MEMH_LDG) != SH_PROBE_INSN(textures[t].cbuf_off)) k++;
+        textures[t].cbuf_off = SH_PROBE(k, 0, SH_PROBE_REG(textures[t].cbuf_off));
+    }
 }
 
 u32 shader_direct_memory_probe(const ShFlow* f, const ShaderInfo* si, const u32 memh_at[SH_MEMH_MAX], u32 use,
@@ -1937,7 +1974,7 @@ u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage,
    same LDC (bl2_off holds its instruction plus one, as no second read is kept). */
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
                                    u32 ldc) {
-    if ((u32)(t->flags & 0xF4) != indexed || t->bl_cbuf != bank) return 0;
+    if ((t->flags & SNX_TEX_MEMORY) || (u32)(t->flags & 0xF4) != indexed || t->bl_cbuf != bank) return 0;
     if (indexed) return t->bl2_off == ldc;
     return t->bl2 == (handle_count == 2) && (handle_count != 2 || (t->bl2_cbuf == bank2 && t->bl2_off == off2));
 }

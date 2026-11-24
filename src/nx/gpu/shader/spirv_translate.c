@@ -3071,6 +3071,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
 
     size_t case_index = 0;
+    shader_direct_memory_finish(flow, si, memh_at, nmemh, textures, texture_count);
     const Tr tr = {
         .si = si,
         .stage = stage,
