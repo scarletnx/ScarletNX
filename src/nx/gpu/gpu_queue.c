@@ -162,7 +162,10 @@ static void gq_timed_log(u64 presents) {
     g_gq_timed.tsc0 = tsc;
     g_gq_timed.ns0 = ns;
     if (tick_ns && presents) {
-        static const char* const kinds[] = {"write", "cb write", "release", "i2m", "call", "skip"};
+        /* one name for each kind, in the order of the enum: a kind with no name here would read past the table */
+        static const char* const kinds[] = {"write",         "cb write", "release", "release ticks", "release stamp",
+                                            "release stamp top", "i2m", "call", "skip"};
+        static_assert(sizeof kinds / sizeof *kinds == GQ_SKIP + 1, "a record kind has no name");
         char line[1400];
         int at = 0;
         for (u32 k = 0; k < 16 && at < (int)sizeof line - 120; k++) {
