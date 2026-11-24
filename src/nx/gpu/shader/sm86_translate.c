@@ -3374,11 +3374,13 @@ static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
 }
 static void texture(Ctx* c, const Sm86Insn* in) {
     /* a handle from memory (TEX and TLD4 with it in a uniform register) has its slot from memory_handles and none in
-       the operand list, as a constant buffer handle */
+       the operand list, as a constant buffer handle. A TEX.B's or a TLD4.B's handle is the first of list1, its slot
+       prepare_handles' or memory_handles' */
     int memory = in->op == SM86_TEX_U || in->op == SM86_TLD4_U;
-    int bindless = in->op == SM86_TEX_B, op = bindless || in->op == SM86_TEX_U ? SM86_TEX
-                                              : in->op == SM86_TLD4_U          ? SM86_TLD4
-                                                                               : in->op;
+    int bindless = in->op == SM86_TEX_B || in->op == SM86_TLD4_B;
+    int op = in->op == SM86_TEX_B || in->op == SM86_TEX_U    ? SM86_TEX
+             : in->op == SM86_TLD4_B || in->op == SM86_TLD4_U ? SM86_TLD4
+                                                              : in->op;
     u32 type, array, coords;
     if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
         fail(c, "%s dimension 6", sm86_ops[op].name);
@@ -3424,6 +3426,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     u32 coord = coord_vector(c, f, count);
     u32 next = n0 + (u32)bindless, level = 0, dref = 0, off_reg = SM86_RZ;
     int indexed = (c->si->tex[slot].flags & SNX_TEX_INDEXED) != 0;
+    if (indexed && op == SM86_TLD4 && shadow) {
+        /* sample_indexed_shadow compares one texel: a gather's four have no path here */
+        fail(c, "TLD4.B of a table of handles with a depth reference");
+        return;
+    }
     u32 element = indexed ? indexed_element(c, slot, c->handle[c->handle[c->cur].ldc - 1].var) : 0;
     if (lod_mode == 2 || lod_mode == 3) level = to_f(c, rd(c, regs[next++]));
     if (offset) {
@@ -6394,15 +6401,24 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     return i;
 }
 static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs);
-/* the register of a TEX.B's handle, the first of list1 (as prepare_handles finds it): RZ when it can't tell */
-static u32 tex_b_handle_reg(const Sm86Insn* in) {
-    u32 type, array, coords, regs[8], lod = sm86_field(in, 87, 3);
-    if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) return SM86_RZ;
-    u32 n0 = array + coords, n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + sm86_field(in, 78, 1);
-    return tex_operands(in, n0, n1, regs) ? regs[n0] : SM86_RZ;
+/* the values of a TEX.B's or a TLD4.B's list1 (nak_nir_lower_tex.c): the handle; TEX's LOD or bias and its offset
+   register, or TLD4's offset registers, one or two by its offset mode (bits 76-77; its bits 87-88 are the gather's
+   component, not a LOD mode); then the depth reference */
+static u32 tex_b_list1(const Sm86Insn* in) {
+    u32 lod = sm86_field(in, 87, 3);
+    u32 more = in->op == SM86_TLD4_B ? sm86_field(in, 76, 2) : (lod == 2 || lod == 3) + sm86_field(in, 76, 1);
+    return 1 + more + sm86_field(in, 78, 1);
 }
-/* the handle register of a TEX.B, or of a TXQ.B: its first source, the level in the register after it (NAK's OpTxq
-   with TexRef::Bindless) */
+/* the register of a TEX.B's or a TLD4.B's handle, the first of list1 (as prepare_handles finds it): RZ when it can't
+   tell */
+static u32 tex_b_handle_reg(const Sm86Insn* in) {
+    u32 type, array, coords, regs[8];
+    if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) return SM86_RZ;
+    u32 n0 = array + coords;
+    return tex_operands(in, n0, tex_b_list1(in), regs) ? regs[n0] : SM86_RZ;
+}
+/* the handle register of a TEX.B or a TLD4.B, or of a TXQ.B: its first source, the level in the register after it
+   (NAK's OpTxq with TexRef::Bindless) */
 static u32 handle_b_reg(const Sm86Insn* in) {
     return in->op == SM86_TXQ_B ? sm86_field(in, 24, 8) : tex_b_handle_reg(in);
 }
@@ -6428,7 +6444,7 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
         any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXD_U || op == SM86_TXQ_U ||
-               ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
+               ((op == SM86_TEX_B || op == SM86_TLD4_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
                 !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
     if (!any) return;
@@ -6450,7 +6466,7 @@ static void memory_handles(Ctx* c) {
         const Sm86Insn* in = &c->in[i];
         int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
                              op == SM86_TXD_U;
-        int b = op == SM86_TEX_B || op == SM86_TXQ_B;
+        int b = op == SM86_TEX_B || op == SM86_TLD4_B || op == SM86_TXQ_B;
         u32 reg = b ? handle_b_reg(in) : SM86_RZ;
         if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
         u32 ur = sm86_field(in, 40, 6), nmh = c->nmh, ndep = c->nmh_dep;
@@ -6482,7 +6498,7 @@ static void memory_handles(Ctx* c) {
             int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
             if (probe[i][0] == ~0u || query != (pass == 1)) continue;
             if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXD_U && !query &&
-                op != SM86_TEX_B)
+                op != SM86_TEX_B && op != SM86_TLD4_B)
                 continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
@@ -6542,16 +6558,17 @@ static void prepare_handles(Ctx* c) {
     memory_handles(c);
     for (u32 i = 0; i < c->n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
-        if (in->op != SM86_TEX_B || (c->handle && c->handle[i].slot)) continue; /* memory_handles' */
-        u32 type, array, coords, regs[8], lod = sm86_field(in, 87, 3);
+        if ((in->op != SM86_TEX_B && in->op != SM86_TLD4_B) || (c->handle && c->handle[i].slot))
+            continue; /* memory_handles' */
+        const char* name = sm86_ops[in->op].name;
+        u32 type, array, coords, regs[8];
         if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
-            fail(c, "TEX.B dimension 6");
+            fail(c, "%s dimension 6", name);
             return;
         }
-        u32 shadow = sm86_field(in, 78, 1), n0 = array + coords;
-        u32 n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + shadow;
+        u32 shadow = sm86_field(in, 78, 1), n0 = array + coords, n1 = tex_b_list1(in);
         if (!tex_operands(in, n0, n1, regs)) {
-            fail(c, "TEX.B with %u operands in the scalar form", n0 + n1);
+            fail(c, "%s with %u operands in the scalar form", name, n0 + n1);
             return;
         }
         if (!c->handle) c->handle = calloc((size_t)c->n + 1, sizeof *c->handle);
@@ -6565,7 +6582,7 @@ static void prepare_handles(Ctx* c) {
         const Sm86Insn* w = k >= 0 ? &c->in[k] : NULL;
         int slot = -1;
         if (!w) {
-            fail(c, "TEX.B whose handle R%u has no one writer", regs[n0]);
+            fail(c, "%s whose handle R%u has no one writer", name, regs[n0]);
         } else if (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) {
             slot = tex_slot(c, w->b.bank, w->b.value, type, array, shadow, 0);
         } else if (w->op == SM86_LDC && sm86_field(w, 73, 3) == 4 && !sm86_field(w, 78, 2)) {
@@ -6579,9 +6596,9 @@ static void prepare_handles(Ctx* c) {
                 if (!g_spirv_translate.texture_arrays || c->stage == ST_CS) {
                     /* a compute program's table doesn't come here: tex_b_cbuf_handle leaves its TEX.B to
                        memory_handles, which gives it a slot (the dispatch's element, or none) or fails the program */
-                    fail(c, "TEX.B of a table of handles, without texture arrays");
+                    fail(c, "%s of a table of handles, without texture arrays", name);
                 } else if (!handle_table_index(c, m, &stride, &base)) {
-                    fail(c, "TEX.B of a table of handles, indexed by %s",
+                    fail(c, "%s of a table of handles, indexed by %s", name,
                          mul ? sm86_ops[mul->op].name : "several writes");
                 } else {
                     /* the index of a FLO on a 32-bit mask */
@@ -6600,7 +6617,7 @@ static void prepare_handles(Ctx* c) {
                 }
             }
         } else {
-            fail(c, "TEX.B whose handle comes from %s", sm86_ops[w->op].name);
+            fail(c, "%s whose handle comes from %s", name, sm86_ops[w->op].name);
         }
         if (slot >= 0) c->handle[i].slot = (u32)slot + 1;
     }
