@@ -893,8 +893,13 @@ static void imp_let_go(u32 i) {
     int dead = m->dead;
     pm_unlock(&g_uma.lk);
     /* the writes in place still pending there land in its buffer first, which the move back copies; a dead one's pages
-       are other pages already, which waited for them (vk_uma_mapping_begin) */
+       are other pages already, and that change waited for those anywhere in it (vk_uma_mapping_begin, vk_uma_owning) */
     if (m->fd >= 0 && !dead) region_writes_land(m->cpu, m->cpu + m->size);
+    if (m->fd >= 0 && dead && region_writes_wait(m->cpu, m->cpu + m->size))
+        LOG_LIMIT(4,
+                  "vulkan: the region over guest memory %llx+%llx goes with writes in place pending: they land in its "
+                  "buffer alone, and memory keeps the bytes from before them\n",
+                  (unsigned long long)m->cpu, (unsigned long long)m->size);
     if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size)) != 0)
         WARN("vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d) until it is unmapped\n",
              (unsigned long long)m->cpu, (unsigned long long)m->size, r);
@@ -2006,15 +2011,16 @@ static void wait_out_why(const Out* o, int why) {
 }
 /* The writes in place pending in the regions over guest memory [lo, hi) done, before their pages change or move back:
    a region's buffer is the guest's memory until then, and its readers are waited for by nobody (quiesce), as the buffer
-   keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held) */
+   keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held). Those
+   anywhere in such a region, not only over [lo, hi): a page of it that changes takes the whole region with it
+   (pages_replaced), and its other pages move back with the bytes the buffer holds then (imp_let_go) */
 static const Out* region_writes_newest(u64 lo, u64 hi) {
     const Out* newest = NULL;
     if (!atomic_load_explicit(&g_uma_any, memory_order_relaxed)) return NULL;
     for (u32 i = 0; i < g_uma.nimp; i++) {
         const Imp* m = &g_uma.imp[i];
         if (m->fd < 0 || m->cpu >= hi || lo >= m->cpu + m->size) continue;
-        u64 a = m->cpu > lo ? m->cpu : lo, b = m->cpu + m->size < hi ? m->cpu + m->size : hi;
-        newest = newer_out(newest, newest_out(a, b - a));
+        newest = newer_out(newest, newest_out(m->cpu, m->size));
     }
     return newest;
 }

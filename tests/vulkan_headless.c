@@ -9035,6 +9035,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
         if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
+        if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
@@ -9067,7 +9068,8 @@ static int run_headless(int argc, char** argv) {
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
-                    "region_writes, region_merge, writes, atlas_pending, feedback, publish, dispatch, dispatch_open, "
+                    "region_writes, region_merge, region_trap, writes, atlas_pending, feedback, publish, dispatch, "
+                    "dispatch_open, "
                     "nvdec, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
@@ -9109,6 +9111,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
         CHECK(!check_uma_region_merge());
+        CHECK(!check_uma_region_trap());
         CHECK(!check_uma_pages_counts());
         CHECK(!check_uma_pages_producers());
         CHECK(!check_uma_pages_partial());
@@ -9392,6 +9395,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
     CHECK(!check_uma_region_merge());
+    CHECK(!check_uma_region_trap());
     CHECK(!check_uma_pages_counts());
     CHECK(!check_uma_pages_producers());
     CHECK(!check_uma_pages_partial());
