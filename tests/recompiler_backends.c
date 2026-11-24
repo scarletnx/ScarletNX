@@ -9,11 +9,12 @@
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
-         [--hook] [--words HEX...] [--ops OP...] [--refused]
+         [--hook] [--words HEX...] [--made] [--ops OP...] [--refused]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
+   --made: the back end must make --words' function (else, where LLVM makes it, there is nothing to compare)
    --ops OP...: every word of these ops of the decoder (llvm_qemu_words.c's samples, and each value of its small fields)
    is a function of its own with a RET, and the back end must make them all; they run from as many states as the rest,
    half of them with lanes of the values where an integer's or a float's arithmetic turns
@@ -642,7 +643,7 @@ static int list_refused(char** names, unsigned nnames) {
 
 int main(int argc, char** argv) {
     unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0;
-    int refused = 0;
+    int refused = 0, must_make = 0;
     char** ops = NULL;
     OpWord* opw = NULL;
     uint32_t words[SLOT];
@@ -667,6 +668,8 @@ int main(int argc, char** argv) {
             hook = 1;
         else if (!strcmp(argv[i], "--refused"))
             refused = 1;
+        else if (!strcmp(argv[i], "--made"))
+            must_make = 1;
         else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
             const char* name = argv[++i];
             if (strcmp(name, "switch") && strcmp(name, "android") && strcmp(name, "ounce") && strcmp(name, "max")) {
@@ -861,8 +864,8 @@ int main(int argc, char** argv) {
         ++failures;
         fprintf(stderr, "FAIL: the %s back end made %zu of the ops' %u words\n", native_name, made_native, functions);
         (void)list_refused(ops, nops);
-    } else if (!opw && made_native * 100 < (size_t)functions * NATIVE_MIN_MADE) {
-        fprintf(stderr, "FAIL: the %s back end made under %d%% of the functions\n", native_name, NATIVE_MIN_MADE);
+    } else if (!opw && made_native * 100 < (size_t)functions * (must_make ? 100 : NATIVE_MIN_MADE)) {
+        fprintf(stderr, "FAIL: the %s back end made %zu of the %u functions\n", native_name, made_native, functions);
         ++failures;
     }
     if (0) {
@@ -870,7 +873,7 @@ int main(int argc, char** argv) {
     printf("recompiler backends: %lu functions, the x86-64 back end made %lu\n",
            (unsigned long)snx_recompiled_functions(mx), (unsigned long)snx_recompiled_x64_functions(mx));
     /* a word the back end doesn't make is LLVM's on both sides: with --ops, and the random programs, it fails below */
-    if (!snx_x64_available() || (nwords && !snx_recompiled_x64_functions(mx))) {
+    if (!snx_x64_available() || (nwords && !must_make && !snx_recompiled_x64_functions(mx))) {
 #endif
         printf("recompiler backends: %s: nothing to compare\n",
                nwords ? "the back end leaves the function to LLVM" : "no x86-64 back end on this host");

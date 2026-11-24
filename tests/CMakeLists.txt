@@ -4049,6 +4049,10 @@ add_test(NAME recompiler_backends_div_divisor COMMAND snx-test-recompiler-backen
 # each of their tests
 add_test(NAME recompiler_backends_fp_pins COMMAND snx-test-recompiler-backends --states 600 --words d2800070 1e210800
          1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1)
+# SHA256H of a value that XMM0 holds and nothing reads after, where SHA256RNDS2 wants the message in XMM0 (on a host with
+# SHA-NI: elsewhere a helper makes the word, and the path does not run)
+add_test(NAME recompiler_backends_sha_xmm0 COMMAND snx-test-recompiler-backends --made --states 40 --words 4ea684a5
+         5e0640c5)
 # FMLA of a vector in a loop on a host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a cold
 # call always taken: its result stays in the destination's pin, past the pins' reload
 add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without 0x800 --states 40 --words
