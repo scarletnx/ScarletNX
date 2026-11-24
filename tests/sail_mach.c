@@ -120,6 +120,7 @@ u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 
 u64 snx_x64_crc32(u64 acc, u64 value, u32 desc);
+u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
 HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 
@@ -132,7 +133,7 @@ static u64 resolve(const char* sym) {
                  TRAP_FN(snx_x64_fp_minmax), TRAP_FN(snx_x64_fp_compare), TRAP_FN(snx_x64_fp_convert),
                  TRAP_FN(snx_x64_fp_round), TRAP_FN(snx_x64_fp_round_int), TRAP_FN(snx_x64_fp_to_int),
                  TRAP_FN(snx_x64_fp_from_int), TRAP_FN(snx_x64_fp_jcvt), TRAP_FN(snx_x64_fp_bfcvt),
-                 TRAP_FN(snx_x64_crc32), TRAP_FN(snx_x64_stxp)};
+                 TRAP_FN(snx_x64_crc32), TRAP_FN(snx_x64_stxp), TRAP_FN(snx_x64_estimate)};
     size_t i;
     if (!g_test.uc) return 0x1000; /* --dump's: no Unicorn, an address of the right size */
     if (!strcmp(sym, "snx_x64_casp")) return hostuc_native_wide(g_test.uc, sym, (void*)snx_x64_casp);

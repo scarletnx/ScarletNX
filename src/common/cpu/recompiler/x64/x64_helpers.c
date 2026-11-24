@@ -23,6 +23,7 @@ u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
+u64 snx_x64_estimate(u64 a, u32 sqrt);
 extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
@@ -187,6 +188,9 @@ void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void*
         v_sha1(&s, op, 0, 1, 2);
     memcpy(out, &s.v[0], 16);
 }
+
+/* URECPE, URSQRTE (sqrt) of a word */
+u64 snx_x64_estimate(u64 a, u32 sqrt) { return sqrt ? ursqrte32((u32)a) : urecpe32((u32)a); }
 
 /* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's
    SGX_M_CRC), RIP-relative from the code */

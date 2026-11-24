@@ -1124,6 +1124,79 @@ static int halves_shape(unsigned def, const unsigned* names, unsigned count, Hal
 static void let_bind(unsigned pattern, Val v, unsigned value_node, int lazy);
 static int lazy_let(unsigned pattern, unsigned value_node, unsigned scope);
 
+/* the + of two names somewhere in n? */
+static int adds_names(unsigned n, unsigned x, unsigned y) {
+    for (; n; n = N(n).next) {
+        if (N(n).kind == N_BINOP && !strcmp(name_of(n), "+") &&
+            ((is_name(N(n).a, x) && is_name(N(n).b, y)) || (is_name(N(n).a, y) && is_name(N(n).b, x))))
+            return 1;
+        if (adds_names(N(n).a, x, y) || adds_names(N(n).b, x, y) || adds_names(N(n).c, x, y) ||
+            adds_names(N(n).d, x, y))
+            return 1;
+    }
+    return 0;
+}
+/* do the halves' results join otherwise than as their +: by the case a match on a value known here picks (Reduce's op,
+   a floating-point one)? The parameters are bound */
+static int halves_join(unsigned def, const Halves* h) {
+    unsigned item, c, lo = N(bound_name(h->lo)).name, hi = N(bound_name(h->hi)).name;
+    for (item = N(g_parse.defs[def].body).a; item; item = N(item).next) {
+        Val s;
+        if (N(item).kind != N_MATCH) continue;
+        s = eval(N(item).a, 0);
+        if (s.bt != BT_CONST || (s.kind != K_ENUM && s.kind != K_INT) || s.huge) return 0;
+        for (c = N(item).b; c && !N(c).c; c = N(c).next) {
+            unsigned p = N(c).a;
+            if (N(p).kind == N_WILD || (N(p).kind == N_NUM && s.kind == K_INT && (long long)N(p).value == s.value) ||
+                (N(p).kind == N_ID && s.kind == K_ENUM && enum_member(name_of(p)) == s.value))
+                return !adds_names(N(c).b, lo, hi);
+        }
+        return 0;
+    }
+    return 0;
+}
+/* a call of a function of that shape whose halves' results another operation than + joins, on a machine whose back end
+   has no lanes: the elements, then what each two next to each other give, until one is left, as the Sail's calls give
+   it (the one of the low half first). Its body is walked once, for a pair, in the C loop that joins them */
+static Val halves_loop(unsigned n, unsigned def, Val* args, const Halves* h, Val size) {
+    unsigned item;
+    char e[16], c[16], k[16];
+    Val r = unit();
+    temp(e, sizeof e);
+    temp(c, sizeof c);
+    temp(k, sizeof k);
+    emit("SgD %s[64];\n", e);
+    emit("unsigned %s = (unsigned)((%s).w / (%s));\n", c, args[h->x].c, size.c);
+    emit("if (%s > 64) sg_fail(\"over 64 elements joined by halves\", %s, 64);\n", c, c);
+    emit("for (unsigned %s = 0; %s < %s; ++%s)\n", k, k, c, k);
+    emit("    %s[%s] = sg_d_slice(g, %s, (%s + 1) * (%s) - 1, %s * (%s));\n", e, k, args[h->x].c, k, size.c, k, size.c);
+    emit("for (; %s > 1; %s /= 2)\n", c, c);
+    emit("    for (unsigned %s = 0; %s < %s; %s += 2) {\n", k, k, c, k);
+    g_gen.indent += 2;
+    g_gen.halves = n; /* the match's case alone is walked */
+    for (item = N(g_parse.defs[def].body).a; item; item = N(item).next) {
+        if (item == h->base || item == h->half) continue;
+        if (item == h->hi || item == h->lo) {
+            bind(N(bound_name(item)).name, keep(val_c(K_BITS, BT_DYN, "%s[%s + %d]", e, k, item == h->hi)), -1, 0);
+            r = unit();
+            continue;
+        }
+        if (N(item).kind == N_LET && !N(item).c) {
+            Val value = eval(N(item).b, 0);
+            let_bind(N(item).a, value, N(item).b, lazy_let(N(item).a, N(item).b, N(item).next));
+            r = unit();
+            continue;
+        }
+        r = eval(item, !N(item).next);
+    }
+    if (r.kind != K_BITS) sg_fail(n, "%s gives other than bits", sg_str(g_parse.defs[def].name));
+    emit("%s[%s / 2] = %s;\n", e, k, raise(r, BT_DYN).c);
+    g_gen.halves = 0;
+    g_gen.indent -= 2;
+    emit("    }\n");
+    return keep(val_c(K_BITS, BT_DYN, "%s[0]", e));
+}
+
 /* a call of a function of that shape (halves_shape): the sum of x's elements. Its body is walked once for what joins
    the two halves' results, as a branch of a run-time if is, so it may change no state: the Sail runs it once for each
    pair of halves */
@@ -1151,6 +1224,15 @@ static Val halves_call(unsigned n, unsigned def, Val* args, unsigned count, cons
     w = lookup(sg_str(h->width));
     if (!w || w->var >= 0 || strcmp(w->val.c, width))
         sg_fail(n, "%s's base is not where %s is as wide as its bits", self, sg_str(h->width));
+    if (!backend_defines_function("sg_l_elem") && backend_defines_function("sg_d_reduce_add") &&
+        !g_gen.dynamic_branch && halves_join(def, h)) {
+        emit("/* %s: the elements joined by halves */\n", self);
+        r = halves_loop(n, def, args, h, size);
+        g_gen.frame = saved_frame;
+        g_gen.depth = base;
+        --g_gen.call_depth;
+        return r;
+    }
     emit("/* %s: the sum of the elements, from its halves */\n", self);
     if (backend_defines_function("sg_l_elem"))
         k = (unsigned)snprintf(g_gen.halves_sum, sizeof g_gen.halves_sum,

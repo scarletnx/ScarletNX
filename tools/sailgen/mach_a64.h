@@ -454,6 +454,48 @@ static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64
 static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
     return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
 }
+/* the reciprocals' estimates and steps, FMULX's product, FRECPX's exponent, and a conversion in a rounding of its own
+   (FCVTXN's, to odd): cpu.h's */
+static inline SgD sgx_fp_unary_of(SgCtx* g, SgB path, SgD a, SgD fpcr, unsigned op) {
+    return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | op << 8, a.w);
+}
+static inline SgD sgx_fp_binary_of(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned op) {
+    SgD o[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_binary", path, fpcr, o, 2, 1, a.w | op << 8, a.w);
+}
+static inline SgD sg_FPRecipEstimate(SgCtx* g, SgB path, SgD a, SgD fpcr) {
+    return sgx_fp_unary_of(g, path, a, fpcr, SNX_FP_RECPE);
+}
+static inline SgD sg_FPRSqrtEstimate(SgCtx* g, SgB path, SgD a, SgD fpcr) {
+    return sgx_fp_unary_of(g, path, a, fpcr, SNX_FP_RSQRTE);
+}
+static inline SgD sg_FPRecpX(SgCtx* g, SgB path, SgD a, SgD fpcr) {
+    return sgx_fp_unary_of(g, path, a, fpcr, SNX_FP_RECPX);
+}
+static inline SgD sg_FPMulX(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) {
+    return sgx_fp_binary_of(g, path, a, b, fpcr, SNX_FP_MULX);
+}
+static inline SgD sg_FPRecipStepFused(SgCtx* g, SgB path, SgD a, SgD b) {
+    return sgx_fp_binary_of(g, path, a, b, sg_FPCR_read(g), SNX_FP_RECPS);
+}
+static inline SgD sg_FPRSqrtStepFused(SgCtx* g, SgB path, SgD a, SgD b) {
+    return sgx_fp_binary_of(g, path, a, b, sg_FPCR_read(g), SNX_FP_RSQRTS);
+}
+static inline SgD sg_FPConvert(SgCtx* g, SgB path, SgD op, SgD fpcr, int rounding, long long to_bits) {
+    if (to_bits != 16 && to_bits != 32 && to_bits != 64) sg_fail("a conversion to a float of this width", to_bits, 0);
+    if (rounding < 0 || rounding > 5) sg_fail("a floating-point rounding the helpers do not take", rounding, 5);
+    return sgx_fp(g, "snx_x64_fp_convert", path, fpcr, &op, 1, 1,
+                  op.w | (SnxU32)to_bits << 8 | (SnxU32)(rounding + 1) << 16, (unsigned)to_bits);
+}
+/* URECPE, URSQRTE: of 32 bits, with no flags and no mode */
+static inline SgD sgx_estimate32(SgCtx* g, SgD a, int sqrt) {
+    SgD args[2];
+    args[0] = sg_d_zext(g, a, 64);
+    args[1] = sgx_const(32, (SnxU64)sqrt);
+    return sg_d_slice(g, sgx_call(g, "snx_x64_estimate", 0, 0, args, 2, 64), 31, 0);
+}
+static inline SgD sg_UnsignedRecipEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 0); }
+static inline SgD sg_UnsignedRSqrtEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 1); }
 /* ---- the floating point of a machine that has no inline code of its own for it (SGX_FP_HELPERS: arm64.h's,
    risc.h's): the exact helpers' for every operation, x64_helpers.c's snx_x64_fp_* (cpu.h's soft float, which raises
    FPSR's flags as FPProcessException does) ---- */
