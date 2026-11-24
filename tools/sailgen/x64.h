@@ -114,10 +114,15 @@ static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixe
 #define SGX_NXREG 16
 #define SGX_FIX 16
 #define SGX_MEMR(r) (16 + (r))
+#define SGX_POOLR SGX_RIP /* the constant pool's operand */
 #define SGX_XPIN 16
 #define SGX_RET 0
 #define SGX_RET2 2
 #define SGX_F_GPR (SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT)
+/* the flag a carry in is (ADC's CF: flag_of's index), and whether the division is Arm's (0: DIV and IDIV fault where
+   Arm's give 0 and the dividend, and mach.h keeps them from those divisors) */
+#define SGX_CARRY 0
+#define SGX_DIV_ARM 0
 /* the vector forms mach.h's front makes values with: a 16-byte load (of the pool) and store (of the state), a vector
    register made 0, a vector value's low 32 or 64 bits to a general-purpose register and back, its high doubleword
    to one (imm 1), a doubleword into one (imm its index) */
