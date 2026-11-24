@@ -478,6 +478,17 @@ static int festimate(SgCtx* g, unsigned sz, int n, int a, int sqrt) {
     return fcold(g, vany(g, bad, sz, n), r, a, 0, 0,
                  FDESC(2, sz, n) | (SnxU32)(sqrt ? SNX_FP_RSQRTE : SNX_FP_RECPE) << 12);
 }
+/* FRINTN, FRINTP, FRINTM, FRINTZ (rm 0-3: nearest even, plus, minus, zero), FRINTA (4, ties away): ROUNDPx's mode,
+   exact without the inexact flag; a NaN, a value FZ flushes and FRINTA's ties go cold */
+static int fround(SgCtx* g, unsigned sz, int n, int a, int rm) {
+    static const unsigned char imm[4] = {8, 10, 9, 11}; /* no exceptions: nearest, up, down, zero */
+    int r;
+    if (rm == 4) return fcold(g, sg_bool(g, 1), vzero(g), a, 0, 0, FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
+    r = sgx_v1(X, sz ? &sgx_v_roundpd : &sgx_v_roundps, a, imm[rm]);
+    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, 0, 0), vany(g, fnan(g, sz, a), sz, n)), r, a, 0, 0,
+                 FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
+}
+
 /* the FP instructions by lanes; 0 for the rest */
 static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
@@ -879,6 +890,19 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         r = fstep(g, sz, n, vread(g, rn), vread(g, rm), sqrt);
         break;
     }
+    case SNX_A64_OP_FRINTN_v:
+    case SNX_A64_OP_FRINTP_v:
+    case SNX_A64_OP_FRINTM_v:
+    case SNX_A64_OP_FRINTZ_v:
+    case SNX_A64_OP_FRINTA_v:
+        if (sz && !q) return -1;
+        r = fround(g, sz, n, vread(g, rn),
+                   insn->op == SNX_A64_OP_FRINTN_v   ? 0
+                   : insn->op == SNX_A64_OP_FRINTP_v ? 1
+                   : insn->op == SNX_A64_OP_FRINTM_v ? 2
+                   : insn->op == SNX_A64_OP_FRINTZ_v ? 3
+                                                     : 4);
+        break;
     default: return 0;
     }
     if (scalar)
