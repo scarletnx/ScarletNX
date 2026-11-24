@@ -6,8 +6,8 @@
    the rest written over the same SSA; the block ends where llvm.c's does, and the code it goes on to it reaches by a
    jump of its own where that is a block the caller names (the chaining nx/loader/module_arm.c gives LLVM's blocks).
    Each block is a function void name(SnxArmCPU*) of an ELF object, global and hidden as LLVM's blocks are, so the
-   two back ends' blocks call each other. A block with an instruction it doesn't make (Thumb, Advanced SIMD, the ARMv6
-   media, saturating and DSP multiply instructions) is refused: LLVM makes it */
+   two back ends' blocks call each other. A Thumb block is made the same way (snx_x64_thumb_block, what
+   cpu/arm/llvm_thumb.inc makes of it). A block with an instruction it doesn't make is refused: LLVM makes it */
 #ifndef SNX_RECOMPILER_X64_ARM_H
 #define SNX_RECOMPILER_X64_ARM_H
 
@@ -16,10 +16,10 @@
 
 typedef struct SnxX64Arm SnxX64Arm;
 
-/* the blocks the code may go on to directly after the block whose last instruction is word, at pc: their keys
-   (the address, bit 0 set for Thumb), at most 2, and how many. Only these are jumped to (their functions must be
-   in the link); any other block is reached by returning to the caller's loop */
-typedef size_t (*SnxX64ArmNext)(void* user, uint32_t pc, uint32_t word, uint32_t keys[2]);
+/* the blocks the code may go on to directly after the block at key (its address, bit 0 set for Thumb), which covers
+   units words or halfwords of the count it was given: their keys, at most 2, and how many. Only these are jumped to
+   (their functions must be in the link); any other block is reached by returning to the caller's loop */
+typedef size_t (*SnxX64ArmNext)(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]);
 
 /* 1 where this host runs the code and loads its objects (x86-64, ELF) */
 int snx_x64_arm_available(void);
@@ -32,6 +32,10 @@ void snx_x64_arm_free(SnxX64Arm* c);
    kept; snx_x64_arm_why says what) */
 int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                       size_t* consumed, SnxX64ArmNext next, void* user);
+/* the Thumb block at pc (halfword aligned), its code little-endian halfwords as guest memory holds it, as
+   snx_x64_arm_block (name NULL: T_<pc>), *consumed the halfwords it covers */
+int snx_x64_thumb_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                        size_t* consumed, SnxX64ArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_x64_arm_why(const SnxX64Arm* c);
 /* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
