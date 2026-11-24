@@ -7397,6 +7397,18 @@ msgstr ""
 msgid "in memory while the game runs: a game's Delete Old Caches deletes the old files"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "The code units' cache"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "units/ of the cache folder, every recompile's code units"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "held in memory while ScarletNX runs: deleting the folder frees its room"
+msgstr ""
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr "仅 macOS"

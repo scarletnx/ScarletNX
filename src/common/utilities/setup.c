@@ -81,7 +81,10 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      "A save's files in its folder itself", SNX_NOTICE_ALL},
     {SNX_TR_NOOP("The BC7 cache"), SNX_TR_NOOP("shader_cache/<id>.vkbc7 and <id>.vkbc7.idx, a file each game kept"),
      SNX_TR_NOOP("in memory while the game runs: a game's Delete Old Caches deletes the old files"),
-     "A game's `shader_cache/<id>.vkbc7`", SNX_NOTICE_ALL}};
+     "A game's `shader_cache/<id>.vkbc7`", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("The code units' cache"), SNX_TR_NOOP("units/ of the cache folder, every recompile's code units"),
+     SNX_TR_NOOP("held in memory while ScarletNX runs: deleting the folder frees its room"),
+     "`units/` of the cache folder", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

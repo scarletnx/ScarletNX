@@ -7397,6 +7397,18 @@ msgstr "shader_cache/<id>.vkbc7 e <id>.vkbc7.idx, um arquivo que cada jogo manti
 msgid "in memory while the game runs: a game's Delete Old Caches deletes the old files"
 msgstr "na memória enquanto o jogo roda: o Delete Old Caches de um jogo apaga os arquivos antigos"
 
+#: src/common/utilities/setup.c
+msgid "The code units' cache"
+msgstr "O cache de unidades de código"
+
+#: src/common/utilities/setup.c
+msgid "units/ of the cache folder, every recompile's code units"
+msgstr "units/ da pasta de cache, as unidades de código de cada recompilação"
+
+#: src/common/utilities/setup.c
+msgid "held in memory while ScarletNX runs: deleting the folder frees its room"
+msgstr "guardadas na memória enquanto o ScarletNX roda: apagar a pasta libera o espaço dela"
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr "Só macOS"
