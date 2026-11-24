@@ -266,6 +266,8 @@ int shader_direct_query_type(const ShFlow* f, int bindless, u32 bank, u32 off, u
 /* A compacted Maxwell memory-handle chain, and the probe of a use whose original definition it contains. */
 u32 shader_direct_memory_handle(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32* count, u32 use,
                                 u32 reg);
+void shader_direct_memory_finish(const ShFlow* f, ShaderInfo* si, u32 memh_at[SH_MEMH_MAX], u32 count, ShTex* textures,
+                                 int texture_count);
 u32 shader_direct_memory_probe(const ShFlow* f, const ShaderInfo* si, const u32 memh_at[SH_MEMH_MAX], u32 use,
                                u32 reg);
 u32* shader_untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg);
