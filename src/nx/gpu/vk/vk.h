@@ -2970,6 +2970,10 @@ int vk_ftz_native(void);
    the file is not this driver's (at the renderer's start only, before any translation) */
 void vk_hmma_pick(const char* cache_dir, const char* driver_tag);
 extern VkShaderStageFlags g_vk_subgroup_stages;
+/* the stages whose subgroups hold whole quads, of any size from 4 lanes, with shuffles: a fragment program's reads
+   inside its quad, where g_vk_subgroup_stages has not the stage. And the lanes of the device's subgroups */
+extern VkShaderStageFlags g_vk_quad_stages;
+extern u32 g_vk_subgroup_lanes;
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */

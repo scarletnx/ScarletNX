@@ -14,6 +14,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
+#include "nx/gpu/shader/warp_notes.h"
 #include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
@@ -183,6 +184,10 @@ typedef struct {
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
+    int lanes;                         /* what the stage's subgroups give (SM86_LANES_) */
+    int lone; /* the stage has no warp of 32 lanes: an invocation is one alone, lane 0 (lane_gate) */
+    ShNotes* notes; /* a compute program's, whose proof sm86_lone.c makes: NULL in others */
+    ShNotes lone_notes;
     /* a write of register cap_reg while cap_on is kept in cap_val (cap_n of them) instead of stored: the halves of a
        complementary pair (pair_partner), which become one select */
     int cap_on;
@@ -277,8 +282,12 @@ static void coop_demote(Ctx* c) {
     coop_flow(c);
     spv_emit_demote(&c->e);
 }
+static void note(Ctx* c, u32 variable, u32 write) {
+    if (c->notes) shader_note(c->notes, variable, write);
+}
 static u32 rd(Ctx* c, u32 r) {
     if (r >= SM86_RZ) return c->zero;
+    note(c, r, 0);
     coop_acc_take(c, r);
     return spv_emit_load(&c->e, c->t_u32, c->reg[r]);
 }
@@ -289,21 +298,31 @@ static void wr(Ctx* c, u32 r, u32 v) {
         return;
     }
     if (r < SM86_RZ) {
+        note(c, r, 1);
         coop_acc_take(c, r);
         c->coop_gen[r]++;
         spv_emit_store(&c->e, c->reg[r], v);
     }
 }
-static u32 urd(Ctx* c, u32 r) { return r >= SM86_URZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->ureg[r]); }
+static u32 urd(Ctx* c, u32 r) {
+    if (r >= SM86_URZ) return c->zero;
+    note(c, SM86_NOTE_UREG + r, 0);
+    return spv_emit_load(&c->e, c->t_u32, c->ureg[r]);
+}
 static void uwr(Ctx* c, u32 r, u32 v) {
-    if (r < SM86_URZ) { spv_emit_store(&c->e, c->ureg[r], v); }
+    if (r >= SM86_URZ) return;
+    note(c, SM86_NOTE_UREG + r, 1);
+    spv_emit_store(&c->e, c->ureg[r], v);
 }
 static u32 prd(Ctx* c, u32 p, u32 negate, int uniform) {
+    if (p < SM86_PT) note(c, (uniform ? SM86_NOTE_UPRED : SM86_NOTE_PRED) + p, 0);
     u32 v = p >= SM86_PT ? c->true_v : spv_emit_load(&c->e, c->t_bool, uniform ? c->upred[p] : c->pred[p]);
     return negate ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, v) : v;
 }
 static void pwr(Ctx* c, u32 p, u32 v, int uniform) {
-    if (p < SM86_PT) spv_emit_store(&c->e, uniform ? c->upred[p] : c->pred[p], v);
+    if (p >= SM86_PT) return;
+    note(c, (uniform ? SM86_NOTE_UPRED : SM86_NOTE_PRED) + p, 1);
+    spv_emit_store(&c->e, uniform ? c->upred[p] : c->pred[p], v);
 }
 /* the destination of an ALU instruction, a register or a uniform register */
 static void dwr(Ctx* c, const Sm86Insn* in, u32 v) {
@@ -3705,6 +3724,7 @@ static void surface(Ctx* c, const Sm86Insn* in) {
 }
 
 static u32 system_value(Ctx* c, u32 sr);
+static u32 native_lane(Ctx* c);
 
 /* ---- the warp's matrix instructions (HMMA, LDSM, MOVM), as the lanes of an invocation's own 32 of a subgroup of 32 or
    64 (NVIDIA's warp: lane l of it is the local invocation index's l % 32), each one's registers spread over the lanes
@@ -4618,6 +4638,7 @@ static void movm(Ctx* c, const Sm86Insn* in) {
 }
 /* the ballot of a predicate over the invocation's 32 lanes, on a subgroup of 32 or 64 */
 static u32 ballot32(Ctx* c, u32 pred) {
+    if (c->lone) return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, pred, cu(c, 1), c->zero); /* lane 0's bit */
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
     u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
@@ -4793,8 +4814,7 @@ static u32 system_value(Ctx* c, u32 sr) {
             }
             return cu(c, gs_vertices(c) << 16);
         case 0x00: /* LANEID */
-            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-            return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
+            return c->lone ? c->zero : native_lane(c);
         case 0x21:
         case 0x22:
         case 0x23: return builtin_vec3(c, &c->local_id, SPV_BUILT_IN_LOCAL_INVOCATION_ID, sr - 0x21);
@@ -4835,6 +4855,65 @@ static u32 system_value(Ctx* c, u32 sr) {
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
+/* ---- a stage with no warp of 32 lanes ----
+
+   A program reads its warp through VOTE, SHFL, MATCH, REDUX, the tensor core's instructions, LANEID and the lane masks.
+   Where the device's subgroups have not 32 lanes (lanes, sm86.h) a vertex, geometry or fragment program that reads one
+   runs each invocation as a warp whose only lane is lane 0, as the console runs a batch of one vertex or primitive: its
+   ballot is its own bit, SHFL keeps its own value, MATCH finds itself and a reduction is its value, which is the
+   console's for a lane alone or one out of range. A fragment's reads inside its quad keep the quad's lanes where the
+   subgroups hold whole quads. A compute program's warps are whole, so it is refused (lane_gate) */
+enum { LANE_NONE, LANE_PLACE, LANE_QUAD, LANE_WARP, LANE_MATRIX };
+/* a SHFL whose lanes are its own quad's: segments of 4 (c, an immediate, 0x1c03) */
+static int shfl_in_quad(const Sm86Insn* in) {
+    return (in->op == SM86_SHFL_II || in->op == SM86_SHFL_RI) && sm86_field(in, 40, 13) == 0x1c03;
+}
+/* what an instruction takes of the invocation's warp */
+static int lane_use(const Ctx* c, const Sm86Insn* in) {
+    switch (in->op) {
+        case SM86_VOTE:
+        case SM86_UVOTE:
+        case SM86_MATCH:
+        case SM86_REDUX: return LANE_WARP;
+        case SM86_SHFL_II:
+        case SM86_SHFL_RI:
+        case SM86_SHFL_IR:
+        case SM86_SHFL_RR: return c->stage == ST_FS && shfl_in_quad(in) ? LANE_QUAD : LANE_WARP;
+        case SM86_FSWZADD: return LANE_QUAD;
+        case SM86_HMMA:
+        case SM86_LDSM:
+        case SM86_MOVM: return LANE_MATRIX;
+        case SM86_S2R:
+        case SM86_S2UR: {
+            u32 sr = sm86_field(in, 72, 8);
+            return sr == 0 || (sr >= 0x38 && sr <= 0x3c) ? LANE_PLACE : LANE_NONE;
+        }
+        default: return LANE_NONE;
+    }
+}
+/* whether a SHFL reads real lanes: the warp's, or in a lone fragment its quad's */
+static int shfl_native(const Ctx* c, const Sm86Insn* in) { return !c->lone || (c->stage == ST_FS && shfl_in_quad(in)); }
+/* the lane of SHFL and FSWZADD: the device's where the program reads real lanes */
+static u32 native_lane(Ctx* c) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
+    return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
+}
+/* sets lone, or refuses the first instruction that reads what the stage has not */
+static void lane_gate(Ctx* c) {
+    if (c->stage == ST_TS || c->stage == ST_MS || (c->lanes & SM86_LANES_WARP)) return;
+    for (u32 i = 0; i < c->n; i++) {
+        const Sm86Insn* in = &c->in[i];
+        int use = lane_use(c, in);
+        if (use == LANE_NONE || (use == LANE_QUAD && c->stage == ST_FS && (c->lanes & SM86_LANES_QUAD))) continue;
+        if (use == LANE_MATRIX || use == LANE_QUAD) {
+            fail(c, "subgroup ballot/shuffle unavailable: %s at %x", sm86_ops[in->op].name, i * 16);
+            return;
+        }
+        c->lone = 1;
+    }
+    if (c->lone && c->stage == ST_CS) c->notes = &c->lone_notes;
+}
+
 /* A system register as a program reads it. A warp has 32 lanes, so its LANEID is below 32, and a program compares it
    with a bit of its ballots. A GPU may run 64 lanes in a stage whose subgroup size can't be asked for (a vertex program
    on RADV), each half a warp of its own here: its lane in that half. One game's culling programs let the highest lane
@@ -5114,7 +5193,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
     SgG g;
     if (c->fused && c->cur < c->n && &c->in[c->cur] == in && c->fused[c->cur]) return; /* a fusion before wrote it */
     sg86_begin(&g, c, in);
-    if (emit_fused(c, &g)) return;
+    if (!c->notes && emit_fused(c, &g)) return;
     if (!sg86_emit(&g, in->op)) fail(c, "%s", sm86_ops[in->op].name); /* an instruction sm86.sail does not say */
 }
 
@@ -6562,10 +6641,10 @@ static u32 pair_value(Ctx* c, const Sm86Insn* in, u32 i) {
     return c->cap_val;
 }
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
-    return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE);
+    return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE, SM86_LANES_WARP);
 }
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
-                       int can_flush) {
+                       int can_flush, int lanes) {
     /* the whole SM86 translation, with the clock read only when a client can take the plot */
     int trace = snx_tracy_enter();
     u64 t0 = trace ? plat_ns() : 0;
@@ -6608,6 +6687,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     }
     c->si = si;
     c->stage = stage;
+    c->lanes = lanes;
     c->sph = sph ? sph : zero_sph;
     c->in = insn;
     c->n = n;
@@ -6700,7 +6780,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     /* after the CALLs are inlined and before the passes that move instructions: the pairs of instructions that one
        operation takes the place of (fuse.c), whose spans the array moves invalidate. A pair whose second half a jump
        lands on (a BRA's target, a BRX's case, flow_sources' edges) stays two, as that jump runs the second alone */
-    {
+    /* a lone lane's proof reads what each instruction reads and writes of itself: no pair of two, no fused ones (notes) */
+    if (!c->failed) lane_gate(c);
+    if (!c->notes) {
         u32 nfuse = 0, kept = 0;
         FuseSpan* fuse = sm86_fuse_find(insn, n, &nfuse);
         if (fuse && !flow_sources(c)) fail(c, "out of memory");
@@ -6852,6 +6934,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             for (u32 i = se.body_start; i < se.body_end && !c->failed; i++) {
                 const Sm86Insn* in = &insn[i];
                 int always = sm86_always(in), never = sm86_never(in);
+                if (c->notes) c->notes->at = i + 1;
                 if (never) continue;
                 if (is_brx(in->op)) { /* the block's end: SHS_SWITCH takes the target's instruction */
                     u32 index = in->op == SM86_BRXU ? urd(c, sm86_field(in, 24, 6)) : rd(c, sm86_field(in, 24, 8));
@@ -6876,7 +6959,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                         wr(c, in->dst, spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, guard(c, in), b, pair_value_of[i]));
                     continue;
                 }
-                if (!always && in->op != SM86_EXIT) {
+                if (!always && in->op != SM86_EXIT && !c->notes) {
                     u32 j = pair_partner(insn, i, se.body_end);
                     if (j) {
                         pair_value_of[j] = pair_value(c, in, i);
@@ -6971,6 +7054,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         spv_emit_destroy(e);
     }
+    if (out && c->notes) {
+        /* the lone lane's answer, or the reason it is none: the words were written for nothing */
+        char why[sizeof si->first_unsupported];
+        if (!sm86_lone_gives(insn, n, &c->lone_notes, si, why, sizeof why)) {
+            free(out);
+            out = NULL;
+            *word_count = 0;
+            fail(c, "%s", why);
+        }
+    }
+    free(c->lone_notes.word);
     if (!out && si->unsupported) sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
     free(st);
     free(c->addr_key);

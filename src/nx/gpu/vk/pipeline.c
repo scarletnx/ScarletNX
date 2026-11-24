@@ -513,7 +513,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
 static int sm86_program(const u8* code, u32 max_bytes, Sm86Program* p) {
     return sm86_find_programs(code, max_bytes, p, 1) == 1;
 }
-static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words) {
+static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, int lanes) {
     Sm86Program p;
     u32 sph[SM86_SPH_BYTES / 4];
     if (!sm86_program(code, max_bytes, &p) || !p.complete) {
@@ -531,7 +531,7 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
         }
         for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
     }
-    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz);
+    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz, lanes);
 }
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
@@ -558,7 +558,11 @@ u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInf
                                             VK_SHADER_STAGE_TASK_BIT_EXT,
                                             VK_SHADER_STAGE_MESH_BIT_EXT};
     VkShaderStageFlagBits shader_stage = stages[stage];
-    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
+    /* a task or mesh program runs in pipelines that ask for subgroups of 32 (mesh_choose), or not at all */
+    int lanes = stage == ST_TS || stage == ST_MS || (g_vk_subgroup_stages & shader_stage) ? SM86_LANES_WARP
+                : g_vk_quad_stages & shader_stage                                        ? SM86_LANES_QUAD
+                                                                                          : 0;
+    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words, lanes)
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
                                                   g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
@@ -572,6 +576,12 @@ u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInf
         free(result);
         return NULL;
     }
+    /* a program that needs its warp's other lanes: this device's size, beside the 32 a warp has */
+    static const char g_warp_reason[] = "subgroup ballot/shuffle unavailable";
+    size_t said = strlen(si->first_unsupported);
+    if (!result && !strncmp(si->first_unsupported, g_warp_reason, sizeof g_warp_reason - 1))
+        snprintf(si->first_unsupported + said, sizeof si->first_unsupported - said, " (%u lanes of 32)",
+                 g_vk_subgroup_lanes);
     if (result) {
         const char* reason = vk_spirv_unavailable(result, *words);
         if (reason) {

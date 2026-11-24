@@ -169,6 +169,11 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static void sg_Int64(SgG* g) { u64_type(g->c); }
 [[maybe_unused]] static SgV sg_ProgramSr(SgG* g, int64_t sr) { return sg_v(program_sr(g->c, (u32)sr), SGT_U32); }
 [[maybe_unused]] static SgV sg_Ballot32(SgG* g, SgV p) { return sg_v(ballot32(g->c, p.id), SGT_U32); }
+[[maybe_unused]] static int sg_Lone(SgG* g) { return g->c->lone; }
+[[maybe_unused]] static int sg_ShflNative(SgG* g) { return shfl_native(g->c, g->in); }
+[[maybe_unused]] static SgV sg_NativeLane(SgG* g) {
+    return sg_v(g->c->lone ? native_lane(g->c) : system_value(g->c, 0), SGT_U32);
+}
 [[maybe_unused]] static int64_t sg_InsnIndex(SgG* g) { return g->c->cur; }
 [[maybe_unused]] static int64_t sg_Stage(SgG* g) { return g->c->stage; }
 [[maybe_unused]] static int sg_Passthrough(SgG* g) { return g->c->passthrough; }

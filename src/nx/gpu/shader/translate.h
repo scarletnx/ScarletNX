@@ -8,19 +8,12 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
+#include "nx/gpu/shader/warp_notes.h"
 #include <assert.h>
 #include <stdlib.h>
 
 enum { VAR_PRED = 255, VAR_FLAG = VAR_PRED + 7, VAR_COUNT = VAR_FLAG + 4 };
 
-/* The registers, predicates and flags each instruction reads and writes, noted as it is written (warp_idioms.c): a word
-   each, the instruction << 10 | the variable << 1 | 1 for a write. A guarded write's read of what it keeps is not one */
-typedef struct {
-    u32 *word, n, cap;
-    u32 at;   /* the instruction being written, 0 before the first */
-    int full; /* one did not fit in memory */
-} ShNotes;
-void shader_note(ShNotes* notes, u32 variable, u32 write);
 typedef struct {
     SpvEmitter emit;
     u32 u32_type, f32_type, f16_type, f64_type, bool_type, zero, true_value, false_value, glsl;
@@ -274,6 +267,9 @@ int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, in
    gives on the console, 0 with the reason in why. pop_targets: each SYNC, BRK and CONT's, NULL where they aren't known */
 int shader_lone_lane_gives(const ShFlow* f, const u32* pop_targets, const ShNotes* notes, const ShaderInfo* si,
                            char* why, size_t size);
+/* the same of a program in pseudo instructions (warp_notes.h, sm86_lone.c) */
+int shader_lone_lane_gives_pseudo(const ShFlow* f, const ShNotes* notes, const ShaderInfo* si, const ShLanePlan* plan,
+                                  char* why, size_t size);
 /* emit_int.c */
 u32 shader_vm_select(DirectCtx* c, u32 i32_type, u32 value, u32 select);
 u32 shader_video_operand(DirectCtx* c, u32 i32_type, u32 i64_type, u32 u64_type, u32 value, u32 select);
