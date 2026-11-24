@@ -41,6 +41,10 @@ static struct {
     int jumping;
     unsigned char* memory[3]; /* the LLVM side's, the x86-64 side's, the bytes both start from */
     unsigned sev, wfe;
+    /* what run allocates, which main frees after every one of its ways out */
+    u32 *rows, *words;
+    size_t (*offset)[2];
+    void* sequences;
 } g_test;
 
 static u64 rnd(void) {
@@ -306,10 +310,10 @@ static size_t check_fz_hot(void) {
     return failures;
 }
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
     unsigned states = 64, samples = 3, sequences = 4000, i, k;
     unsigned hosts[2];
-    u32 *rows = NULL, *words;
+    u32 *rows, *words;
     size_t count, n = 0, failures = 0, unmade = 0, compared = 0, bytes = 0, made = 0, plain_unmade = 0;
     unsigned char* code;
     size_t code_at = 0, code_cap = (size_t)1 << 26;
@@ -371,9 +375,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     /* the words: each row's samples, and each with Rd, Rn and Rm 31 */
-    count = lqd_row_words(samples, rnd, &rows);
-    words = (u32*)malloc(sizeof(u32) * (count * 8 + 1));
-    offset = malloc(sizeof *offset * (count * 8 + 1));
+    count = lqd_row_words(samples, rnd, &g_test.rows);
+    rows = g_test.rows;
+    words = g_test.words = (u32*)malloc(sizeof(u32) * (count * 8 + 1));
+    offset = g_test.offset = malloc(sizeof *offset * (count * 8 + 1));
     if (!words || !offset) return 1;
     for (i = 0; i < count; ++i) {
         static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
@@ -419,7 +424,6 @@ int main(int argc, char** argv) {
             }
         }
     }
-    free(rows);
     if (mprotect(code, code_cap, PROT_READ | PROT_EXEC)) {
         fprintf(stderr, "FAIL: the code can't be made executable\n");
         return 1;
@@ -508,6 +512,7 @@ int main(int argc, char** argv) {
         Seq* seq = (Seq*)malloc(sizeof(Seq) * sequences);
         size_t q, nseq = 0, steps = 0;
         if (!seq) return 1;
+        g_test.sequences = seq;
         if (mprotect(code, code_cap, PROT_READ | PROT_WRITE)) return 1;
         for (q = 0; q < sequences; ++q) {
             Seq* sq = &seq[nseq];
@@ -598,10 +603,17 @@ int main(int argc, char** argv) {
         }
         llvm_steps_end(&set);
         printf("sail_x64: %zu blocks of 2 to 4 words\n", nseq);
-        free(seq);
     }
     printf("sail_x64: %zu words made (%zu bytes of x86-64 on this host's features, %.1f a word; %zu of them not without "
            "BMI1, BMI2 and LZCNT), %zu runs, %zu failures (%zu words not made)\n",
            made, bytes, made ? (double)bytes / (double)made : 0.0, plain_unmade, compared, failures, unmade);
     return failures ? 1 : 0;
+}
+int main(int argc, char** argv) {
+    int rc = run(argc, argv);
+    free(g_test.rows);
+    free(g_test.words);
+    free(g_test.offset);
+    free(g_test.sequences);
+    return rc;
 }
