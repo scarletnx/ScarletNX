@@ -74,6 +74,19 @@ static void check_store(VitaProcess* p) {
     alarm(0);
 #endif
 }
+/* what each generation wrote, as pages, for the last 1024 of them */
+static void check_wrote(void) {
+    uint64_t page = plat_mem_page(), begin, end;
+    vita_watch_written(WATCH_ADDRESS + 0x100, 0x2000);
+    uint64_t now = vita_watch_epoch();
+    assert(vita_watch_wrote(now, &begin, &end));
+    assert(begin == WATCH_ADDRESS && end == WATCH_ADDRESS + (0x2100 + page - 1) / page * page);
+    assert(!vita_watch_wrote(now + 1, &begin, &end));
+    for (unsigned i = 0; i < 1024; ++i) vita_watch_written(WATCH_ADDRESS + 0x8000, 1);
+    assert(!vita_watch_wrote(now, &begin, &end));
+    for (unsigned i = 1; i <= 1024; ++i)
+        assert(vita_watch_wrote(now + i, &begin, &end) && begin == WATCH_ADDRESS + 0x8000 && end == begin + page);
+}
 
 int main(void) {
     VitaProcess* process = calloc(1, sizeof *process);
@@ -98,6 +111,7 @@ int main(void) {
     ((volatile unsigned char*)process->mem)[WATCH_ADDRESS] = 3;
     assert(process->mem[WATCH_ADDRESS] == 3);
     check_store(process);
+    check_wrote();
     vita_watch_free();
     plat_mem_release(process->mem, VITA_SPACE + 0x10000);
     free(process);

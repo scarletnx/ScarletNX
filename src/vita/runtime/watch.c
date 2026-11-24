@@ -17,12 +17,16 @@
 #endif
 
 enum { UNWATCHED, PROTECTED, WRITTEN };
+#define EVENTS 1024u /* the last generations whose pages are known */
 
 typedef struct {
     unsigned char* base;
     uint64_t page, pages;
     _Atomic unsigned char* state;
     _Atomic uint64_t* generation;
+    /* the pages generation g wrote, at g % EVENTS: its low 24 bits, the first page and the last (20 bits each, as
+       pages are 4 KiB or larger) */
+    _Atomic uint64_t* events;
     _Atomic uint64_t now;
     char now_pad[56];
     _Atomic int lock;
@@ -87,7 +91,12 @@ static bool span(uint32_t address, uint32_t size, uint64_t* first, uint64_t* las
     *first = address / g_watch.page, *last = ((uint64_t)address + size - 1) / g_watch.page;
     return *last < g_watch.pages;
 }
-static uint64_t next_generation(void) { return (atomic_fetch_add_explicit(&g_watch.now, 1, memory_order_acq_rel) + 1); }
+/* the generation that counts a write of the pages [first, last] */
+static uint64_t next_generation(uint64_t first, uint64_t last) {
+    uint64_t now = atomic_fetch_add_explicit(&g_watch.now, 1, memory_order_acq_rel) + 1;
+    atomic_store_explicit(&g_watch.events[now % EVENTS], now << 40 | first << 20 | last, memory_order_release);
+    return now;
+}
 
 bool vita_watch_init(VitaProcess* p) {
 #ifdef _WIN32
@@ -103,7 +112,7 @@ bool vita_watch_init(VitaProcess* p) {
     if (page <= 0) return false;
     g_watch.page = (uint64_t)page;
 #endif
-    if (!g_watch.page || VITA_SPACE % g_watch.page) {
+    if (g_watch.page < 4096 || VITA_SPACE % g_watch.page) {
         vita_watch_free();
         return false;
     }
@@ -114,17 +123,18 @@ bool vita_watch_init(VitaProcess* p) {
         return false;
     }
     size_t generation_offset = (page_count + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1);
-    if (page_count > (SIZE_MAX - generation_offset) / sizeof *g_watch.generation) {
+    if (page_count > (SIZE_MAX - generation_offset) / sizeof *g_watch.generation - EVENTS) {
         vita_watch_free();
         return false;
     }
-    size_t total = generation_offset + page_count * sizeof *g_watch.generation;
+    size_t total = generation_offset + (page_count + EVENTS) * sizeof *g_watch.generation;
     g_watch.state = calloc(1, total);
     if (!g_watch.state) {
         vita_watch_free();
         return false;
     }
     g_watch.generation = (_Atomic uint64_t*)(g_watch.state + generation_offset);
+    g_watch.events = g_watch.generation + page_count;
     g_watch.base = p->mem;
 #ifdef _WIN32
     /* run.c installs the crash handler first; this handler is inserted ahead of it. */
@@ -194,7 +204,7 @@ static void store_protection(uint64_t first, uint64_t last, bool writable) {
         uint64_t end = i;
         while (end <= last && atomic_load_explicit(&g_watch.state[end], memory_order_acquire) == PROTECTED) ++end;
         if (end > i && !page_protect(i, end - i, writable) && !writable) {
-            uint64_t now = next_generation();
+            uint64_t now = next_generation(i, end - 1);
             for (uint64_t k = i; k < end; ++k) {
                 atomic_store_explicit(&g_watch.generation[k], now, memory_order_release);
                 atomic_store_explicit(&g_watch.state[k], UNWATCHED, memory_order_release);
@@ -215,17 +225,24 @@ bool vita_watch_store(uint32_t address, const void* data, uint32_t row, uint32_t
     return true;
 }
 uint64_t vita_watch_epoch(void) { return atomic_load_explicit(&g_watch.now, memory_order_acquire); }
+bool vita_watch_wrote(uint64_t generation, uint64_t* begin, uint64_t* end) {
+    if (!g_watch.state) return false;
+    uint64_t event = atomic_load_explicit(&g_watch.events[generation % EVENTS], memory_order_acquire);
+    if (event >> 40 != (generation & 0xffffffu)) return false;
+    *begin = (event >> 20 & 0xfffffu) * g_watch.page, *end = ((event & 0xfffffu) + 1) * g_watch.page;
+    return true;
+}
 void vita_watch_written(uint32_t address, uint32_t size) {
     uint64_t first, last;
     if (!span(address, size, &first, &last)) return;
-    uint64_t now = next_generation();
+    uint64_t now = next_generation(first, last);
     for (uint64_t i = first; i <= last; ++i) atomic_store_explicit(&g_watch.generation[i], now, memory_order_release);
 }
 void vita_watch_release(uint32_t address, uint32_t size) {
     uint64_t first, last;
     if (!span(address, size, &first, &last)) return;
     lock();
-    uint64_t now = next_generation();
+    uint64_t now = next_generation(first, last);
     for (uint64_t i = first; i <= last;) {
         if (atomic_load_explicit(&g_watch.state[i], memory_order_acquire) != PROTECTED) {
             atomic_store_explicit(&g_watch.generation[i], now, memory_order_release);
@@ -267,7 +284,7 @@ bool vita_watch_fault(uintptr_t host) {
 #endif
     /* A second fault may be waiting here after another thread made the page writable. */
     if (state == PROTECTED) {
-        atomic_store_explicit(&g_watch.generation[i], next_generation(), memory_order_release);
+        atomic_store_explicit(&g_watch.generation[i], next_generation(i, i), memory_order_release);
         if (page_protect(i, 1, true))
             atomic_store_explicit(&g_watch.state[i], WRITTEN, memory_order_release);
         else

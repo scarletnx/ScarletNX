@@ -266,6 +266,23 @@ static void check_many(VitaProcess* p) {
     CHECK(!lost, "%u bytes the CPU wrote between the GPU's writes are lost", (unsigned)lost);
     CHECK(!wrong(p, c + 0x100, 0x200, 1), "the write into another block is not in guest memory");
 }
+/* a few pages written, more than the watch remembers one by one, and a range the system writes (a file read): the GPU
+   reads each */
+static void check_pages(VitaProcess* p) {
+    static const unsigned counts[] = {3, 2000, 1, 700, 40};
+    uint32_t size = 32 * BLOCK, a = block_make(p, size, true), b = block_make(p, size, true);
+    fill(p, a, size, 1);
+    for (unsigned n = 0; n < sizeof counts / sizeof *counts; ++n) {
+        for (uint32_t i = 0; i < counts[n]; ++i) fill(p, a + i * 7 % 2048 * 0x1000 + n * 16, 16, 2 + n);
+        if (n == 3) {
+            vita_watch_release(a + 0x100000, 0x200000);
+            fill(p, a + 0x100000, 0x200000, 9);
+        }
+        CHECK(copy(p, a, b, size), "pass %u: the transfer is refused", n);
+        finish(p);
+        CHECK(!memcmp(vita_ptr(p, a), vita_ptr(p, b), size), "pass %u: the GPU's copy differs", n);
+    }
+}
 /* two ranges of one block mapped apart, and a transfer across both: what the GPU wrote through one is read */
 static void check_straddle(VitaProcess* p) {
     uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, false);
@@ -448,6 +465,7 @@ static const struct {
     {"beside_quiet", check_beside_quiet, false},
     {"gaps", check_gaps, false},
     {"many", check_many, false},
+    {"pages", check_pages, false},
     {"straddle", check_straddle, false},
     {"again", check_again, false},
     {"submit", check_submit, false},

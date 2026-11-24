@@ -268,13 +268,12 @@ static void mirror_fill(const struct VitaRender* r, const Import* m, uint64_t be
         at += size;
     }
 }
-/* the copy brought up to date with the pages the CPU wrote since it was */
-static void mirror_sync(const struct VitaRender* r, Import* m) {
-    uint64_t now = vita_watch_epoch();
-    if (!m->mirror || now == m->epoch) return;
-    uint64_t end = m->end, page = vita_watch_page();
-    bool settled = true; /* every page protected, or it can be written with no generation counted */
-    for (uint64_t at = m->begin, next; at < end; at = next) {
+/* the pages of [begin, end) the CPU wrote since the copy was brought up to date, copied. False when one of them can be
+   written again with no generation counted: it was while this read it, or it can't be protected */
+static bool mirror_update(const struct VitaRender* r, const Import* m, uint64_t begin, uint64_t end) {
+    uint64_t page = vita_watch_page();
+    bool settled = true;
+    for (uint64_t at = begin, next; at < end; at = next) {
         uint64_t stop = at; /* a run of pages written */
         for (next = at; next < end && stop == next;) {
             next = (next / page + 1) * page < end ? (next / page + 1) * page : end;
@@ -286,6 +285,22 @@ static void mirror_sync(const struct VitaRender* r, Import* m) {
         mirror_fill(r, m, at, stop);
         if (vita_watch_changed((uint32_t)at, (uint32_t)(stop - at), since)) settled = false;
     }
+    return settled;
+}
+/* The copy brought up to date with the pages the CPU wrote since it was: those each generation since wrote, or every
+   page when the copy is not known to be up to date at any, or one of them is not known any more */
+static void mirror_sync(const struct VitaRender* r, Import* m) {
+    uint64_t now = vita_watch_epoch(), known = m->epoch;
+    if (!m->mirror || now == m->epoch) return;
+    bool settled = true;
+    while (known < now) {
+        uint64_t begin, end;
+        if (!vita_watch_wrote(known + 1, &begin, &end)) break;
+        ++known;
+        begin = begin > m->begin ? begin : m->begin, end = end < m->end ? end : m->end;
+        if (begin < end) settled = mirror_update(r, m, begin, end) && settled;
+    }
+    if (known != now) settled = mirror_update(r, m, m->begin, m->end);
     m->since = now;
     m->epoch = settled ? now : UINT64_MAX;
 }
