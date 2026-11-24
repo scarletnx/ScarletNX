@@ -961,6 +961,94 @@ static int pool_map_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* A header that NVN's nvnTexturePoolRegisterTexture writes between two draws, with no submission between them, as an
+   Ounce game's menus register a new texture at an index while the GPU thread replays the work before (nvn_object.c
+   register_texture). No write tracking epoch starts, so only the record of that write as a GPU-side one
+   (gpu_mem_written_cpu) tells the pool map: the record of the index must be cleared before the next compare. The
+   texture and sampler pools of the draws, as an NVN pool over their memory: texture A, the 2x1 R32F texture of 0 and
+   1, then texture B, the same over 1 and 1 */
+#include "gpu/nvn/nvn.hook.h"
+#define PMN_OBJECTS (MEMO_CPU + 0x3c000) /* the memory pool, the texture pool and the two textures' objects */
+static void pmn_texture(u64 at, u64 gpu) {
+    NvnTexture tex = {0};
+    tex.d.target = NVN_TEXTURE_TARGET_2D;
+    tex.d.format = NVN_FORMAT_R32F;
+    tex.d.levels = 1;
+    tex.d.width = 2;
+    tex.d.height = 1;
+    tex.d.depth = 1;
+    tex.gpu = gpu;
+    memcpy(GP(at), &tex, sizeof tex);
+}
+static int pool_map_nvn_case(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const int saved_map = g_settings.pool_map_shadow;
+    const u64 pool = PMN_OBJECTS, tp = PMN_OBJECTS + 0x100, a = PMN_OBJECTS + 0x200, b = PMN_OBJECTS + 0x300;
+    NvnPool mem = {0};
+    mem.memory = MEMO_CPU + (LIFE_POOL - MEMO_GPU);
+    mem.gpu = LIFE_POOL;
+    mem.size = 0x1000;
+    memcpy(GP(pool), &mem, sizeof mem);
+    CHECK(nvn_TexturePoolInitialize(NULL, tp, pool, 0, 2));
+    pmn_texture(a, LIFE_POOL + 0x400);
+    pmn_texture(b, LIFE_POOL + 0x800);
+    u8 texels[16] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    snx_st_le32(texels + 8, 0x3f800000);
+    snx_st_le32(texels + 12, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, 8));
+    CHECK(!gmem_write(LIFE_POOL + 0x800, texels + 8, 8));
+    CHECK(!life_headers(0, 0)); /* the sampler */
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    g_settings.pool_map_shadow = 1;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, a, 0);
+    vk_ww_new_epoch(); /* the game's submission */
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    vk_unlock();
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(!pending_draw(channel, px, &kept));
+    const int before = pm_valid(channel);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, b, 0); /* no submission: the same epoch */
+    const int after = pm_valid(channel);
+    PoolMapCounts c0, c1;
+    vk_pool_map_counts(&c0);
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_pool_map_counts(&c1);
+    u64 differ = 0;
+    for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+    if (!before || after || differ)
+        fprintf(stderr,
+                "pool map, a header NVN registers in the same epoch: valid %d before and %d after (expected 1 and 0), "
+                "%llu differences after (none expected)\n",
+                before, after, (unsigned long long)differ);
+    CHECK(before && !after && !differ);
+    g_settings.pool_map_shadow = saved_map;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    CHECK(!life_headers(0, 0));
+    u8 zero[8] = {0};
+    snx_st_le32(zero + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, zero, 8));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS pool map: a header NVN registers between two draws in one epoch clears its record");
+    return 0;
+}
+
 /* Inline constant blocks, as NVN's front end gives them (DsInline, its per-block generations DsState.inl_gen): the
    constant buffer program reads its color from slot 3, the fragment stage's bank 2 block. A draw's new base vertex
    moves every stage's bank 0 block and the inline generation, not bank 2: the next draw keeps bank 2's staged copy.
@@ -1474,6 +1562,7 @@ static int check_draw_memo(void) {
     CHECK(!memo_gens_cases(channel));
     CHECK(!over_target_cases(channel));
     CHECK(!pool_map_cases(channel));
+    CHECK(!pool_map_nvn_case(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
