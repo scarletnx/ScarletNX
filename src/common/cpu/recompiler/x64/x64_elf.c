@@ -50,7 +50,7 @@ static int room(Buf* b, size_t n) {
     return 0;
 }
 static void put(Buf* b, const void* data, size_t n) {
-    if (room(b, n)) return;
+    if (!n || room(b, n)) return; /* nothing to put: a buffer not made yet has no p to pass memcpy or memset */
     if (data) memcpy(b->p + b->n, data, n);
     else
         memset(b->p + b->n, 0, n);
