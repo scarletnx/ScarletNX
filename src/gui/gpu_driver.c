@@ -31,6 +31,111 @@ const GuiFreedrenoPreset gui_freedreno_presets[] = {
     {SNX_TR_NOOP("Performance - Default"), SNX_TR_NOOP("Clear all debug options for performance"), ""},
     {NULL, NULL, NULL}};
 
+/* as Mesa 26.2.6 has them: src/freedreno/vulkan/tu_util.cc and tu_autotune.cc, ir3/ir3_compiler.c (its MESA_DEBUG-only
+   ones left out) and common/freedreno_rd_output.c; what each does, where docs/envvars.rst or docs/drivers/freedreno.rst
+   says it */
+const GuiFreedrenoKnown gui_freedreno_known[] = {
+    {"TU_DEBUG", SNX_TR_NOOP("Turnip's flags"), 0,
+     "startup=startup~"
+     "|nir=nir~"
+     "|nobin=nobin~No hardware binning"
+     "|sysmem=sysmem~Draw to system memory"
+     "|gmem=gmem~Draw to the tiles (GMEM)"
+     "|forcebin=forcebin~Always hardware binning"
+     "|layout=layout~"
+     "|noubwc=noubwc~No UBWC compression"
+     "|nomultipos=nomultipos~"
+     "|nolrz=nolrz~No LRZ (the low resolution depth)"
+     "|nolrzfc=nolrzfc~No fast clear of LRZ"
+     "|perf=perf~"
+     "|perfc=perfc~VK_KHR_performance_query"
+     "|flushall=flushall~Every cache flushed before each draw, dispatch and blit"
+     "|syncdraw=syncdraw~The GPU waited for after each draw, dispatch and blit"
+     "|push_consts_per_stage=push_consts_per_stage~"
+     "|rast_order=rast_order~Rasterization order access forced"
+     "|unaligned_store=unaligned_store~Every GMEM store unaligned"
+     "|log_skip_gmem_ops=log_skip_gmem_ops~"
+     "|dynamic=dynamic~Old render passes made dynamic ones"
+     "|bos=bos~"
+     "|3d_load=3d_load~GMEM loaded by the 3D engine"
+     "|fdm=fdm~A fragment density map in every render pass"
+     "|noconform=noconform~"
+     "|rd=rd~"
+     "|hiprio=hiprio~"
+     "|noconcurrentresolves=noconcurrentresolves~No concurrent resolves"
+     "|noconcurrentunresolves=noconcurrentunresolves~No concurrent unresolves"
+     "|dumpas=dumpas~"
+     "|nobinmerging=nobinmerging~No merging of bins (for fragment density maps)"
+     "|perfcraw=perfcraw~Raw performance counters"
+     "|fdmoffset=fdmoffset~The fragment density map offset on, at 0"
+     "|check_cmd_buffer_status=check_cmd_buffer_status~Command buffers checked to be done as they are destroyed"
+     "|comm=comm~"
+     "|nofdm=nofdm~No fragment density map"
+     "|nocb=nocb~No concurrent binning"
+     "|forcecb=forcecb~Always concurrent binning"
+     "|computeroundrobin=computeroundrobin~"},
+    {"IR3_SHADER_DEBUG", SNX_TR_NOOP("The shader compiler's flags"), 0,
+     "vs=vs~Print vertex shaders"
+     "|tcs=tcs~Print tessellation control shaders"
+     "|tes=tes~Print tessellation evaluation shaders"
+     "|gs=gs~Print geometry shaders"
+     "|fs=fs~Print fragment shaders"
+     "|cs=cs~Print compute shaders"
+     "|internal=internal~Print the driver's own shaders"
+     "|disasm=disasm~Print the NIR and the disassembly"
+     "|optmsgs=optmsgs~The optimizer's messages"
+     "|forces2en=forces2en~s2en for texture samples"
+     "|nouboopt=nouboopt~UBOs not lowered to uniforms"
+     "|nofp16=nofp16~mediump not lowered to fp16"
+     "|nocache=nocache~No shader cache"
+     "|spillall=spillall~Spill as much as possible, to test the spiller"
+     "|nopreamble=nopreamble~No preamble pass"
+     "|fullsync=fullsync~(sy) and (ss) after each cat5 and cat6"
+     "|fullnop=fullnop~Nops before each instruction"
+     "|noearlypreamble=noearlypreamble~No early preambles"
+     "|nodescprefetch=nodescprefetch~No descriptor prefetch"
+     "|expandrpt=expandrpt~rptN instructions expanded"
+     "|noaliastex=noaliastex~No alias.tex"
+     "|noaliasrt=noaliasrt~No alias.rt"
+     "|asmroundtrip=asmroundtrip~Each shader disassembled, assembled again and compared"
+     "|thread64=thread64~Waves of 64 where there are"},
+    {"FD_RD_DUMP", SNX_TR_NOOP("The command stream's dumps"), 0,
+     "enable=enable~Dump the command stream of each submit"
+     "|combine=combine~One file for every dump"
+     "|full=full~Every buffer, for a replay"
+     "|trigger=trigger~A file that turns dumps on and off"},
+    {"TU_AUTOTUNE_FLAGS", SNX_TR_NOOP("What Turnip's choice of GMEM or system memory weighs"), 0,
+     "big_gmem=big_gmem~GMEM for render passes of many draws (for tests)"
+     "|tune_small=tune_small~Small render passes tuned too"
+     "|preempt_optimize=preempt_optimize~Less time that cannot be preempted, slower"},
+    {"TU_AUTOTUNE_ALGO", SNX_TR_NOOP("How Turnip chooses GMEM or system memory"), 1,
+     "bandwidth=bandwidth~By the bandwidth estimated (Mesa's default)"
+     "|profiled=profiled~By timings, over time"
+     "|profiled_imm=profiled_imm~By the first timings"
+     "|prefer_sysmem=prefer_sysmem~System memory but where GMEM is sure"
+     "|prefer_gmem=prefer_gmem~GMEM but where system memory is sure"},
+    {NULL, NULL, 0, NULL}};
+int gui_freedreno_find(const char* name) {
+    int i;
+    for (i = 0; gui_freedreno_known[i].name; ++i)
+        if (!strcmp(gui_freedreno_known[i].name, name)) return i;
+    return -1;
+}
+char* gui_freedreno_list(void) {
+    char* list = snx_strdup("");
+    int i;
+    for (i = 0; list && gui_freedreno_known[i].name; ++i) {
+        const GuiFreedrenoKnown* k = &gui_freedreno_known[i];
+        char* more = k->one ? NULL
+                            : snx_format("%sFreedreno\t%s\t\ttext\t0\t0\t%s\t%s\t%s\t\t\tboxes\n", list, k->name,
+                                         k->about, k->name, k->items);
+        if (k->one) continue;
+        free(list);
+        list = more;
+    }
+    return list;
+}
+
 /* a zip entry's name that is a file at the package's top: no folder, nothing hidden, no way out of it */
 static int top_file(const char* name) {
     return name[0] && name[0] != '.' && !strchr(name, '/') && !strchr(name, '\\') && !strchr(name, ':');

@@ -455,6 +455,26 @@ msgid "Clear all debug options for performance"
 msgstr "清除所有调试选项以提升性能"
 
 #: src/gui/gpu_driver.c
+msgid "Turnip's flags"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "The shader compiler's flags"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "The command stream's dumps"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "What Turnip's choice of GMEM or system memory weighs"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "How Turnip chooses GMEM or system memory"
+msgstr ""
+
+#: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s is not a zip (%s)"
 msgstr "未添加：%s 不是 zip（%s）"
@@ -2346,6 +2366,11 @@ msgstr "SCARLETNX  /  设置  /  FREEDRENO 设置"
 
 #: src/gui/main.c
 #, c-format
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "SCARLETNX  /  SETTINGS  /  %s"
 msgstr ""
 
@@ -3764,6 +3789,11 @@ msgstr "%s：没有自己的变量，使用启动器的"
 #: src/gui/main.c
 msgid "Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/freedreno.html). Save keeps them"
 msgstr "Mesa 的 Freedreno 和 Turnip 会在游戏启动时读取这些变量（docs.mesa3d.org/drivers/freedreno.html）。「保存」会保留它们"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: the variables take %d at most"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
