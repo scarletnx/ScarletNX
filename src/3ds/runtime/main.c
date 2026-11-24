@@ -55,8 +55,9 @@ static void usage(FILE* out) {
     snx_cli_help(out, ctr_cli);
     fputs(
         "3DS options:\n"
-        "  --model old|new        The console to model, over the setting ctr_model. Without either, the one the game\n"
-        "                         was played on before; on its first run a New 3DS for a game that is New 3DS\n"
+        "  --model old|new        The console to model, over the setting ctr_model and the game's own (ctr_model in\n"
+        "                         <title ID>.picks, its Settings in the launcher). Without any, the one the game was\n"
+        "                         played on before; on its first run a New 3DS for a game that is New 3DS\n"
         "                         exclusive or asks for the New 3DS's 178 MiB memory mode, an Old 3DS for any other\n"
         "  --board-info           Print the board of the console --model names, and stop\n"
         "  --icon                 Write the game's SMDH icon as RGBA into --out DIR (icon.rgba, what Games draws),\n"
@@ -496,6 +497,49 @@ static bool read_game_ini_model(const char* folder, char** source, SnxCtrModel* 
 static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model) {
     return read_game_ini_model(folder, source, model, NULL);
 }
+/* Where a run's console comes from: nothing given, the game's own pick, else what its .ini records or the rule; the
+   launcher's pick for every game, which the game's own goes over; auto on the command line, the record or the rule; or
+   a console there (--model, ctr_model), over all */
+typedef enum { CONSOLE_UNSAID, CONSOLE_LAUNCHER, CONSOLE_AUTO, CONSOLE_GIVEN } ConsoleFrom;
+/* The console of the game's own Settings, ctr_model in its picks (snx_game_picks), the last line's: true with it in
+   *model. Auto is none; another value, and picks that cannot be read, are said with what is kept, the launcher's
+   console (from, *model) or auto, and another key with its value, which the file keeps */
+static bool own_console(const char* folder, ConsoleFrom from, SnxCtrModel* model) {
+    char *full = snx_absolute(folder), *name = full ? last_part(full) : NULL;
+    char *beside = name ? snx_game_ini(full, name) : NULL, *picks = beside ? snx_game_picks(beside) : NULL;
+    const char* kept = from != CONSOLE_LAUNCHER ? "auto" : *model == SNX_CTR_OLD ? "old" : "new";
+    char *key, *value, *console = NULL, why[256];
+    SnxIni ini;
+    size_t size;
+    char* text = picks ? (char*)snx_read_file(picks, &size) : NULL;
+    if (!text && picks && snx_path_exists(picks))
+        fprintf(stderr, "settings: %s could not be read (%s): ctr_model keeps %s\n", picks,
+                snx_os_error(why, sizeof why), kept);
+    if (text) {
+        snx_ini_start(&ini, text);
+        while (snx_ini_next(&ini, &key, &value))
+            if (!strcmp(key, "ctr_model"))
+                console = value;
+            else
+                fprintf(stderr,
+                        "settings: %s=%s in %s is no setting a 3DS game's picks take: it is kept there and does "
+                        "nothing\n",
+                        key, value, picks);
+    }
+    bool own = console && (!strcmp(console, "old") || !strcmp(console, "new"));
+    if (own) {
+        *model = !strcmp(console, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
+        printf("Played on %s 3DS: the game's own Settings (ctr_model=%s in %s)\n",
+               *model == SNX_CTR_OLD ? "an Old" : "a New", console, picks);
+    } else if (console && strcmp(console, "auto"))
+        fprintf(stderr, "settings: ctr_model=%s in %s is not auto, old or new: it keeps %s\n", console, picks, kept);
+    free(text);
+    free(picks);
+    free(beside);
+    free(name);
+    free(full);
+    return own;
+}
 /* The console a game played for the first time runs on, when --model names none: a New 3DS for a title its icon data
    marks New 3DS exclusive, which an Old 3DS refuses, or whose ExHeader asks for the 178 MiB memory mode, which only a
    New 3DS has; else an Old 3DS. *why says what asked for a New 3DS, NULL for an Old 3DS */
@@ -711,7 +755,7 @@ static char* own_game(const char* argv0) {
 /* The game in its folder (owned) played as its copy of the runtime plays it: the game its .ini names, an extraction
    the folder holds, else the game itself read where it lies, with the update and DLCs its addons= checks. runtime is
    owned too */
-static int play_folder(char* folder, SnxCtrModel model, bool model_set, const char* repo, const char* argv0,
+static int play_folder(char* folder, SnxCtrModel model, ConsoleFrom from, const char* repo, const char* argv0,
                        const char* keys, uint64_t max_blocks, double seconds, uint64_t frames, bool headless,
                        const char* shot, bool recompile, bool extract_only, bool extract_container, uint32_t ipc_stubs,
                        char* runtime, const SnxCliRecompile* asked) {
@@ -727,7 +771,9 @@ static int play_folder(char* folder, SnxCtrModel model, bool model_set, const ch
         free(folder);
         return 1;
     }
-    if (!model_set) model = recorded;
+    if (from == CONSOLE_UNSAID || from == CONSOLE_AUTO) model = recorded;
+    if (!recompile && !extract_only && (from == CONSOLE_UNSAID || from == CONSOLE_LAUNCHER))
+        (void)own_console(folder, from, &model);
     if (holds_extraction(folder))
         extract_container = true;
     else if (!named) {
@@ -784,6 +830,7 @@ int snx_ctr_main(int argc, char** argv) {
     SnxCtrModel model = SNX_CTR_OLD;
     const char *input = NULL, *icon_out = NULL;
     bool info = false, positional = false, budget_set = false, model_set = false, icon = false;
+    bool launcher = false, model_key = false; /* the settings given are the launcher's; ctr_model is among them */
     uint64_t max_blocks = 0; /* no budget */
     uint32_t ipc_stubs = 0;  /* with ctr_auto_stub_ipc off, every unknown service command stops the run */
     SnxCtrBoard board;
@@ -855,6 +902,15 @@ int snx_ctr_main(int argc, char** argv) {
             }
             model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
             model_set = true;
+        } else if (!positional && !strncmp(arg, "--" SNX_LAUNCHER_PICKS "=", sizeof "--" SNX_LAUNCHER_PICKS)) {
+            /* the settings given are the launcher's picks for every game, which the game's own go over */
+            const char* value = arg + sizeof "--" SNX_LAUNCHER_PICKS;
+            if (strcmp(value, "0") && strcmp(value, "1")) {
+                fprintf(stderr, "scarletnx-3ds: --" SNX_LAUNCHER_PICKS "=%s is not 0 or 1\n", value);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            launcher = value[0] == '1';
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display, debug or run table (g_ctr_display_ini, g_ctr_debug_ini, g_ctr_run_ini, in
                src/nx/runtime/settings.txt), one of the Switch's the 3DS takes too (snx_ctr_shared_setting), or a
@@ -885,6 +941,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_audio_ini, key);
                 if (!o) o = ini_find(g_vk_extensions_ini, key);
                 map = !strcmp(key, "gamepad_map");
+                model_key = model_key || !strcmp(key, "ctr_model");
             }
             if (map)
                 snx_ctr_input_map(value);
@@ -902,7 +959,9 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
-    /* the console the Settings' ctr_model picks, under --model: auto leaves the choice to the game's .ini and the rule */
+    /* the console the Settings' ctr_model picks, under --model: auto leaves the choice to the game's own pick, its .ini
+       and the rule */
+    ConsoleFrom from = model_set ? CONSOLE_GIVEN : model_key && !launcher ? CONSOLE_AUTO : CONSOLE_UNSAID;
     if (!model_set && strcmp(g_settings.ctr_model, "auto")) {
         if (strcmp(g_settings.ctr_model, "old") && strcmp(g_settings.ctr_model, "new")) {
             fprintf(stderr, "scarletnx-3ds: ctr_model=%s is not auto, old or new\n", g_settings.ctr_model);
@@ -910,7 +969,7 @@ int snx_ctr_main(int argc, char** argv) {
             return 2;
         }
         model = !strcmp(g_settings.ctr_model, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
-        model_set = true;
+        from = launcher ? CONSOLE_LAUNCHER : CONSOLE_GIVEN;
     }
     /* the common options' values, --update's checked for room */
     const char *output = cli.value[SNX_CLI_OUTPUT], *outdir = cli.value[SNX_CLI_OUTDIR];
@@ -1022,7 +1081,7 @@ int snx_ctr_main(int argc, char** argv) {
         return 2;
     }
     if (folder)
-        return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, frames, headless, shot,
+        return play_folder(folder, model, from, repo, argv[0], keys, max_blocks, seconds, frames, headless, shot,
                            recompile, extract_only, extract_container, ipc_stubs, runtime, &asked);
     /* Do not let a host filename inject progress/launch banners into the GUI. */
     if (!visible_path(input) || (output && !visible_path(output)) || (outdir && !visible_path(outdir))) {
@@ -1091,8 +1150,8 @@ int snx_ctr_main(int argc, char** argv) {
                     input, addon_word(of, title), title, name, folder, input);
         } else if (!record_addon(folder, name, title, version, input)) {
             free(named);
-            return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, frames, headless,
-                               shot, recompile, extract_only, extract_container, ipc_stubs, runtime, &asked);
+            return play_folder(folder, model, from, repo, argv[0], keys, max_blocks, seconds, frames, headless, shot,
+                               recompile, extract_only, extract_container, ipc_stubs, runtime, &asked);
         }
         free(named);
         free(folder);
@@ -1122,7 +1181,10 @@ int snx_ctr_main(int argc, char** argv) {
         if (folder) move_old_folder(old, folder);
     }
     free(old);
-    if (folder && !model_set) {
+    SnxCtrModel own = model;
+    bool owned = folder && !recompile && !extract_only && (from == CONSOLE_UNSAID || from == CONSOLE_LAUNCHER) &&
+                 own_console(folder, from, &own);
+    if (folder && (from == CONSOLE_UNSAID || from == CONSOLE_AUTO)) {
         /* the console the game was played on before, when --model names none; for its first run, the one it asks for */
         char* recorded = NULL;
         bool named = false;
@@ -1130,12 +1192,13 @@ int snx_ctr_main(int argc, char** argv) {
         free(recorded);
         const char* why = NULL;
         if (!named) model = model_of(source, &why);
-        if (why) printf("Played on a New 3DS: %s (--model old to try an Old 3DS)\n", why);
+        if (why && !owned) printf("Played on a New 3DS: %s (--model old to try an Old 3DS)\n", why);
     }
     bool ready = folder && !extract_only && !snx_is_link(folder) && !snx_mkdirs(folder);
     /* the folder names the game the player picked, not the decrypted copy an encrypted one leaves in the cache: a
        launcher asks whether it already made a game from that dump, and the cache's path matches none. The .ini is
-       written on every run, so a game played again from another dump, or with another model, records it */
+       written on every run, so a game played again from another dump, or with another model, records it; the game's
+       own pick is not recorded, so the one it has without it is there once it is taken back */
     if (!folder || (ready && !write_game_ini(folder, input, model))) {
         snx_ctr_source_close(source);
         free(folder);
@@ -1180,8 +1243,8 @@ int snx_ctr_main(int argc, char** argv) {
         free(runtime);
         return status;
     }
-    status = play(readable, source, folder, model, max_blocks, seconds, frames, headless, shot, recompile, extract_only,
-                  extract_container, ipc_stubs, runtime, &asked);
+    status = play(readable, source, folder, owned ? own : model, max_blocks, seconds, frames, headless, shot, recompile,
+                  extract_only, extract_container, ipc_stubs, runtime, &asked);
     free(readable);
     free(runtime);
     return status;

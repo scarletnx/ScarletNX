@@ -852,13 +852,16 @@ A launch runs until the game exits or its window is closed, as a Switch game doe
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
 execute up to 32 instructions, so this is not a cycle or exact instruction budget.
 Each instruction still checks fetch, identity and permissions.
-`--model old|new` selects RAM backing, not a different ISA or compiler. Without it a
-game runs on the console its `.ini` names (`model=`), and on its first run on the one
-it asks for: a New 3DS when its SMDH marks it New 3DS exclusive (the flags at 0x2028,
-bit 12, which the Home Menu refuses on an Old 3DS) or its ExHeader names the New 3DS's
-178 MiB system mode (0x20D, mode 2), which only a New 3DS has; an Old 3DS otherwise,
-as a title that names the 124 MiB New 3DS mode runs on both. The run says so, and the
-`.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
+`--model old|new` selects RAM backing, not a different ISA or compiler. Without it, or
+`--ctr-model=` on the command line, a game runs on the console its own Settings pick
+(`ctr_model=` in `<title ID>.picks` beside its `.ini`), then on the launcher's for every
+game (`--ctr-model=` with `--launcher-picks=1`), then on the one its `.ini` names
+(`model=`), and on its first run on the one it asks for: a New 3DS when its SMDH marks
+it New 3DS exclusive (the flags at 0x2028, bit 12, which the Home Menu refuses on an
+Old 3DS) or its ExHeader names the New 3DS's 178 MiB system mode (0x20D, mode 2), which
+only a New 3DS has; an Old 3DS otherwise, as a title that names the 124 MiB New 3DS mode
+runs on both. The run says so, and the `.ini` keeps the choice, not the game's own pick.
+`--board-info` prints physical regions without allocating RAM.
 `--ipc-stubs L`, with `--ctr-auto-stub-ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
 `cfg`, `dsp`, `system`, `am`, `y2r`, `ldr`, `ir`, `irrst`, `mic`, `cam`, `csnd`) with
