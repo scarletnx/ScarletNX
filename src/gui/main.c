@@ -122,7 +122,8 @@ enum {
     GUI_FORM_DRIVERS,   /* Settings > App > GPU Drivers, or a game's own GPU driver */
     GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
     GUI_FORM_FETCH,     /* GPU Drivers > Download Driver */
-    GUI_FORM_BLUETOOTH  /* Controllers > Bluetooth: the Joy-Con 2 controllers (gui/bluetooth.h) */
+    GUI_FORM_BLUETOOTH, /* Controllers > Bluetooth: the Joy-Con 2 controllers (gui/bluetooth.h) */
+    GUI_FORM_BOXES      /* a setting of boxes (the runtime's list's boxes): a box an item */
 };
 /* Settings > User's values: who the games play as, then each user's nickname as it is typed and Mii (its place in
    the Mii database, common/utilities/mii_db.h) */
@@ -703,6 +704,10 @@ typedef struct App {
     int pad_map, pad_swap, pad_player; /* the button map's settings: its map's row and its swap's, for which player */
     int device_listen; /* a player's Controller row waiting for a press on the controller it takes, + 1; 0 for none */
     int key_listen;    /* a Shortcuts row waiting for the key it takes, its setting + 1; 0 for none */
+    GuiThemeKey* box_keys; /* a row of boxes' form: its items' rows, their On or Off, and the row (GUI_FORM_BOXES) */
+    char (*box_value)[32];
+    char* box_base; /* the value the row has while it has none of its own: the launcher's for a game's, else NULL */
+    int box_row, box_page; /* the setting, and the page its form returns to (-1 the group) */
     SDL_Gamepad* listened[16]; /* the controllers open meanwhile: a press comes only from an open one */
     int listened_count;
     bool theme_from_app;       /* the theme editor goes back to the App's rows */
@@ -6926,12 +6931,15 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
     else if (app->form == GUI_FORM_FREEDRENO)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
-    else if (app->form == GUI_FORM_BLUETOOTH && app->page >= 0) { /* Controllers' page */
+    else if (app->form == GUI_FORM_BOXES) { /* a setting's boxes */
+        snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
+                 snx_tr(screen_settings(app)->keys[app->box_row].key));
+        for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
+    } else if (app->form == GUI_FORM_BLUETOOTH && app->page >= 0) { /* Controllers' page */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
                  snx_tr(app->settings.keys[app->page].key));
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
-    }
-    else if (app->own_picks) { /* a game's own: its name, as its row says it */
+    } else if (app->own_picks) { /* a game's own: its name, as its row says it */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s"), app->game_title);
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
     } else
@@ -11681,6 +11689,70 @@ static void users_commit(App* app) {
     users_fill(app); /* the rows as users.ini says */
 }
 static void settings_reset_ask(App* app);
+static void keep_settings(App* app);
+/* ---- a setting of boxes: a box an item, On or Off, over the row's value (gui_settings_item_toggle) ---- */
+static void boxes_close(App* app) {
+    free(app->box_keys);
+    free(app->box_value);
+    free(app->box_base);
+    app->box_keys = NULL;
+    app->box_value = NULL;
+    app->box_base = NULL;
+}
+/* the value the row of boxes has where it has none of its own: the launcher's for a game's own, else its default
+   (NULL) */
+static char* boxes_base(App* app, int row) {
+    const char* key = screen_settings(app)->values[row].key;
+    const char* value = app->own_picks ? gui_settings_value(&app->settings, key) : NULL;
+    return value ? snx_strdup(value) : NULL;
+}
+static void boxes_values(App* app) {
+    GuiSettings* s = screen_settings(app);
+    for (int i = 0; i < s->values[app->box_row].items; ++i)
+        snprintf(app->box_value[i], sizeof app->box_value[0], "%s",
+                 gui_settings_item_on(s, app->box_row, i, app->box_base) ? snx_tr("On") : snx_tr("Off"));
+}
+/* the form of the setting row, a page's row or the group's (page -1), its focus coming back to focus */
+static void open_boxes(App* app, int row, int page) {
+    GuiSettings* s = screen_settings(app);
+    GuiSetting* v = &s->values[row];
+    int i;
+    boxes_close(app);
+    app->box_base = boxes_base(app, row);
+    app->box_keys = (GuiThemeKey*)snx_alloc((size_t)v->items * sizeof *app->box_keys);
+    app->box_value = (char (*)[32])snx_alloc((size_t)v->items * sizeof *app->box_value);
+    app->box_row = row;
+    app->box_page = page;
+    boxes_values(app);
+    for (i = 0; i < v->items; ++i)
+        app->box_keys[i] = page_row(v->item_label[i], (size_t)i * sizeof app->box_value[0], sizeof app->box_value[0],
+                                    v->item_about[i]);
+    gui_editor_form(&app->editor, app->box_keys, v->items, app->box_value, NULL);
+    app->editor.flat = true;
+    app->form = GUI_FORM_BOXES;
+    app->editing = true;
+    snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: a box an item, Enter turns it on or off"),
+             snx_tr(s->keys[row].key));
+}
+/* item i of the open form turned on or off, the row's value kept at once */
+static void boxes_toggle(App* app, int i) {
+    GuiSettings* s = screen_settings(app);
+    char said[96];
+    if (gui_settings_item_toggle(s, app->box_row, i, app->box_base)) {
+        app->editor.dirty = true;
+        keep_settings(app);
+        boxes_values(app);
+        gui_settings_items_said(s, app->box_row,
+                                s->values[app->box_row].text[0] ? s->values[app->box_row].text
+                                : app->box_base                 ? app->box_base
+                                : s->values[app->box_row].def   ? s->values[app->box_row].def
+                                                                : "",
+                                said, sizeof said);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[app->box_row].key), said);
+    } else
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s has no room for another item"),
+                 snx_tr(s->keys[app->box_row].key));
+}
 static void open_group(App* app, int g) {
     if (!g && !app->own_picks) {
         open_app(app, 0);
@@ -11806,7 +11878,16 @@ static void leave_form(App* app) {
     device_stop(app);
     leave_editor(app);
     if (form == GUI_FORM_PAD) pad_close(app);
-    if ((form == GUI_FORM_GROUP || form == GUI_FORM_PAD) && app->page >= 0) { /* a page: back to its row */
+    if (form == GUI_FORM_BOXES) { /* back to its setting's row, in its page or the group */
+        int row = app->box_row, page = app->box_page;
+        if (page >= 0)
+            open_page(app, page);
+        else
+            open_group(app, app->group);
+        app->editor.row = SDL_max(row_of(app, row), 0);
+        app->editing = true;
+        boxes_close(app);
+    } else if ((form == GUI_FORM_GROUP || form == GUI_FORM_PAD) && app->page >= 0) { /* a page: back to its row */
         int row = app->page;
         open_group(app, app->group);
         app->editor.row = SDL_max(row_of(app, row), 0);
@@ -12171,7 +12252,7 @@ static void write_settings(App* app) {
 /* a Settings pick, kept at once */
 static void keep_settings(App* app) {
     if ((app->form != GUI_FORM_GROUP && app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_PAD &&
-         app->form != GUI_FORM_USERS) ||
+         app->form != GUI_FORM_USERS && app->form != GUI_FORM_BOXES) ||
         !app->editor.dirty)
         return;
     app->editor.dirty = false;
@@ -13147,6 +13228,13 @@ static void editor_key(App* app, GuiKey key) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
     }
+    /* a row of boxes opens its form: a box an item */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        screen_settings(app)->values[setting_of(app, app->editor.row)].items) {
+        open_boxes(app, setting_of(app, app->editor.row), app->page);
+        return;
+    }
     /* a Shortcuts row takes the key pressed next, as the game's menu's page does */
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         app->editor.object == (char*)screen_settings(app)->values &&
@@ -13258,6 +13346,10 @@ static void editor_key(App* app, GuiKey key) {
             typed_keyboard(app); /* Variable Name's and Variable Value's dialog */
             return;
         }
+    }
+    if (app->form == GUI_FORM_BOXES) { /* an item pressed, or stepped */
+        if (what == GUI_EDITOR_ACTION) boxes_toggle(app, app->editor.row);
+        if (what != GUI_EDITOR_LEAVE) return;
     }
     if (what == GUI_EDITOR_SAVE && app->form == GUI_FORM_THEME) save_editor(app);
     keep_settings(app);
@@ -24055,6 +24147,7 @@ static bool initialize(App* app, const char* self) {
 }
 /* what the menu holds, let go; SDL itself left as it is (cleanup's) */
 static void forget(App* app) {
+    boxes_close(app);
 #ifdef SDL_PLATFORM_ANDROID
     SDL_RemoveEventWatch(lifecycle, app);
     gui_android_ran(NULL); /* the run goes with the menu */

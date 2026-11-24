@@ -2893,7 +2893,7 @@ msgstr "Padrões"
 msgid "%d set"
 msgstr "%d definidas"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 msgid "None"
 msgstr "Nenhuma"
 
@@ -3830,6 +3830,16 @@ msgstr "O novo apelido do usuário %d não foi gravado: %s"
 #, c-format
 msgid "User %d is %s now"
 msgstr "Usuário %d agora é %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a box an item, Enter turns it on or off"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no room for another item"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -6732,6 +6742,16 @@ msgstr "%s=%s está obsoleto: %s agora é %s=%s"
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
 msgstr "%s=%s está obsoleto e não é um valor de %s: agora %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on, %d other"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on"
+msgstr ""
 
 #: src/gui/settings.c
 msgid "Mixed"

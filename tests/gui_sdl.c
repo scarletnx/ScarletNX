@@ -1036,6 +1036,62 @@ static void shortcuts_capture(App* app) {
     leave_editor(app);
     settings_forget(app);
 }
+/* a setting of boxes (the runtime's list's boxes): its row says how many of its items are on, and Enter on it opens a
+   form with a row an item, On or Off, its about under it; Enter, Left and Right turn one on or off, the picks kept at
+   once; a name the row has not stays in its value; ESC comes back to the row in its group, with what it says now */
+static void boxes_form(App* app) {
+    static const char list[] = "Debug\tfirst\t0\tint\t0\t1\tFirst\tFirst\t0=Off|1=On\n"
+                               "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
+                               "libc=libc~the C library's|sync=sync~clocks and sleep\t\t\tboxes\n"
+                               "Debug\tfsr\t0\tint\t0\t255\tBits\tFSR inputs\t1=Jitter x|64=HDR input\t\t\tboxes\n";
+    int g, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Debug"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "hooks_off"));
+    app->editor.row = row;
+    render(app);
+    shows(app, "None [default]", yellow); /* focused */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && gui_editor_rows(&app->editor) == 2 && !app->editor.typing);
+    render(app);
+    shows(app, "sync", normal);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync") && picks_have(app, "hooks_off=sync") &&
+           !strcmp(app->box_value[1], "On") && !strcmp(app->editor.note, "Hook families off: 1 on"));
+    key(app, SDLK_UP);
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync,libc"));
+    key(app, SDLK_LEFT);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP && app->group == g && app->editor.row == row && !app->box_keys);
+    /* a name the row has not, kept through a box turned on */
+    assert(gui_settings_set(&app->settings, "hooks_off", "mine"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RETURN);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "mine,libc") &&
+           !strcmp(app->editor.note, "Hook families off: 1 on, 1 other"));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DELETE); /* the row back to its default, as any */
+    assert(!gui_settings_value(&app->settings, "hooks_off"));
+    /* an int's: the sum of its bits */
+    app->editor.row = row_of(app, setting_row(app, "fsr"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && !strcmp(gui_settings_value(&app->settings, "fsr"), "64"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP);
+    leave_editor(app);
+    settings_forget(app);
+}
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
    its A and B as its own swap says, else every player's; ESC comes back to the player's rows */
@@ -17570,6 +17626,7 @@ int main(int argc, char** argv) {
     }
     players_view(&app);
     shortcuts_capture(&app);
+    boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */

@@ -58,6 +58,32 @@ static const char** words_of(char* list, const char*** pool, const char*** value
     *pool += 2 * n + 5;
     return words;
 }
+/* a row of boxes' items, value=Label~About between '|', split in place: into v, its three arrays from *pool */
+static void items_of(char* list, const char*** pool, GuiSetting* v) {
+    int n = 1, i;
+    char* c;
+    for (c = list; *c; ++c) n += *c == '|';
+    v->item_value = *pool;
+    v->item_label = *pool + n;
+    v->item_about = *pool + 2 * n;
+    *pool += 3 * n;
+    for (i = 0, c = list; i < n; ++i) {
+        char *end = c + strcspn(c, "|"), *equals, *about;
+        if (*end) *end++ = 0;
+        v->item_value[i] = v->item_label[i] = c;
+        v->item_about[i] = "";
+        if ((about = strchr(c, '~')) != NULL) {
+            *about++ = 0;
+            v->item_about[i] = about;
+        }
+        if ((equals = strchr(c, '=')) != NULL) {
+            *equals = 0;
+            v->item_label[i] = equals + 1;
+        }
+        c = end;
+    }
+    v->items = n;
+}
 /* row i's words and values past the .ini's, the first: its values alone, its word the same value's */
 static void plain(GuiSettings* s, int i) {
     ++s->keys[i].words;
@@ -92,9 +118,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         n += *c == '\n' ? 3 : 0;
         bars += *c == '|';
     }
-    pool = 2 * bars + 7 * n; /* a row's words and values, 2 * words + 5 (words_of): a line's 3 rows hold the 5 */
-    if (n > (SIZE_MAX - size) / (sizeof *s->keys + sizeof *s->values + 5 * sizeof(char*)) ||
-        bars > (SIZE_MAX - size) / 4 / sizeof(char*)) {
+    /* a row's words and values, 2 * words + 5 (words_of), or its items' three (items_of): a line's 3 rows hold the 7 */
+    pool = 3 * bars + 10 * n;
+    if (n > (SIZE_MAX - size) / (sizeof *s->keys + sizeof *s->values + 10 * sizeof(char*)) ||
+        bars > (SIZE_MAX - size) / 6 / sizeof(char*)) {
         free(list);
         return 1;
     }
@@ -136,8 +163,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
             all->kind = GUI_SETTING_ALL;
             all->first = s->count;
         }
-        if (*field[8]) words = words_of(field[8], &free_words, &values, game);
+        int boxes = *field[8] && has_mark(field[11], "boxes");
+        if (*field[8] && !boxes) words = words_of(field[8], &free_words, &values, game);
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
+        if (boxes) items_of(field[8], &free_words, v);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
         v->number = field[3][0] == 'i' || field[3][0] == 'f' ? field[3][0] : 0;
@@ -145,7 +174,8 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         v->hi = strtod(field[5], NULL);
         v->only = *field[9] ? field[9] : NULL;
         v->needs_build = !strcmp(field[10], "needs-build");
-        if (!words && (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
+        if (!words && !boxes &&
+            (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
             GuiThemeKey* k = &s->keys[s->count - 1];
             k->numeric = 1;
             k->whole = field[3][0] == 'i';
@@ -426,6 +456,90 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
     free(text);
     return count;
 }
+/* the next word of *at, a set's separated by commas or spaces (or a sum's digits): its length, 0 at the end */
+static size_t set_word(const char** at) {
+    const char* c = *at + strspn(*at, ", \t");
+    size_t n = strcspn(c, ", \t");
+    *at = c;
+    return n;
+}
+/* the item of v the word word of n bytes names, -1 for none */
+static int item_of(const GuiSetting* v, const char* word, size_t n) {
+    int i;
+    for (i = 0; i < v->items; ++i)
+        if (strlen(v->item_value[i]) == n && !strncmp(v->item_value[i], word, n)) return i;
+    return -1;
+}
+/* what the row's set is: value, else base, else its default */
+static const char* set_value(const GuiSetting* v, const char* base) {
+    return v->text[0] ? v->text : base ? base : v->def ? v->def : "";
+}
+static int set_has(const GuiSetting* v, const char* value, int item) {
+    const char* c = value;
+    size_t n;
+    if (v->number) { /* a sum of bits */
+        long bit = strtol(v->item_value[item], NULL, 10);
+        return (strtol(value, NULL, 10) & bit) != 0;
+    }
+    for (; (n = set_word(&c)) != 0; c += n)
+        if (item_of(v, c, n) == item) return 1;
+    return 0;
+}
+int gui_settings_item_on(const GuiSettings* s, int row, int item, const char* base) {
+    const GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    return v && item >= 0 && item < v->items && set_has(v, set_value(v, base), item);
+}
+int gui_settings_item_toggle(GuiSettings* s, int row, int item, const char* base) {
+    GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    char text[GUI_SETTING_TEXT] = "", now[GUI_SETTING_TEXT];
+    const char* c;
+    size_t n, at = 0;
+    int on;
+    if (!v || item < 0 || item >= v->items || v->needs_build) return 0;
+    snprintf(now, sizeof now, "%s", set_value(v, base));
+    on = !set_has(v, now, item);
+    if (v->number) {
+        long sum = strtol(now, NULL, 10) ^ strtol(v->item_value[item], NULL, 10);
+        snprintf(text, sizeof text, "%ld", sum);
+    } else {
+        for (c = now; (n = set_word(&c)) != 0; c += n) { /* every word but this item's, as it was */
+            if (item_of(v, c, n) == item) continue;
+            if (at + n + 2 > sizeof text) return 0;
+            at += (size_t)snprintf(text + at, sizeof text - at, "%s%.*s", at ? "," : "", (int)n, c);
+        }
+        if (on) {
+            if (at + strlen(v->item_value[item]) + 2 > sizeof text) return 0; /* no room for another: nothing changes */
+            snprintf(text + at, sizeof text - at, "%s%s", at ? "," : "", v->item_value[item]);
+        }
+    }
+    /* nothing on is the default's or the launcher's again: no value of the row's own */
+    snprintf(v->text, sizeof v->text, "%s", !strcmp(text, v->number ? "0" : "") ? "" : text);
+    return 1;
+}
+void gui_settings_items_said(const GuiSettings* s, int row, const char* value, char* out, size_t size) {
+    const GuiSetting* v = &s->values[row];
+    int on = 0, others = 0, i;
+    size_t n;
+    const char* c = value;
+    if (v->number) {
+        long sum = strtol(value, NULL, 10), known = 0;
+        for (i = 0; i < v->items; ++i) known |= strtol(v->item_value[i], NULL, 10);
+        for (i = 0; i < v->items; ++i) on += (sum & strtol(v->item_value[i], NULL, 10)) != 0;
+        others = (sum & ~known) != 0;
+    } else
+        for (; (n = set_word(&c)) != 0; c += n) {
+            if (item_of(v, c, n) >= 0)
+                ++on;
+            else
+                ++others;
+        }
+    if (!on && !others)
+        snprintf(out, size, "%s", snx_tr("None"));
+    else if (others)
+        snprintf(out, size, snx_tr("%d on, %d other"), on, others);
+    else
+        snprintf(out, size, snx_tr("%d on"), on);
+}
 int gui_settings_step_number(GuiSettings* s, int row, int step) {
     const GuiThemeKey* k = row >= 0 && row < s->count ? &s->keys[row] : NULL;
     GuiSetting* v = k ? &s->values[row] : NULL;
@@ -526,6 +640,12 @@ void gui_settings_sync(GuiSettings* s) {
 }
 void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
     const GuiSetting* v = &s->values[row];
+    if (v->items) {
+        char said[64];
+        gui_settings_items_said(s, row, v->text[0] ? v->text : v->def ? v->def : "", said, sizeof said);
+        snprintf(out, size, "%s%s%s", said, picked(s, row) ? "" : " ", picked(s, row) ? "" : snx_tr("[default]"));
+        return;
+    }
     if (v->kind == GUI_SETTING_ALL && !strcmp(v->text, ".ini"))
         snprintf(out, size, "%s", snx_tr("[default]"));
     else if (v->kind == GUI_SETTING_ALL) /* the word its rows share, [default] while each is at its default */

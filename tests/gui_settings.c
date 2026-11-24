@@ -1200,6 +1200,57 @@ int main(int argc, char** argv) {
         assert(!gui_settings_step_number(&s, at(&s, "name"), 1)); /* a text is no number */
         gui_settings_free(&s);
     }
+    /* a row of boxes (the twelfth column's boxes): its items' labels and abouts, on or off in the row's value, a text's
+       separated by commas or spaces, an int's a sum of bits; a name the row has not kept where it is, said; an item
+       turned off leaves the others, and nothing on is no value, the default's */
+    {
+        static const char boxes[] =
+            "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
+            "libc=libc~the C library|sync=sync~clocks, and sleep|cond_var=cond_var~\t\t\tboxes\n"
+            "Debug\tfsr\t0\tint\t0\t255\tBits\tFSR inputs\t1=Jitter x|2=Jitter y|64=HDR input\t\t\tboxes\n"
+            "Debug\ttyped\t\ttext\t0\t0\tNo items\tTyped\t\n";
+        int h, f;
+        char said[64];
+        assert(!gui_settings_read(&s, boxes));
+        h = at(&s, "hooks_off");
+        f = at(&s, "fsr");
+        assert(s.values[h].items == 3 && !strcmp(s.values[h].item_value[1], "sync") &&
+               !strcmp(s.values[h].item_label[1], "sync") && !strcmp(s.values[h].item_about[1], "clocks, and sleep") &&
+               !strcmp(s.values[h].item_about[2], "") && s.values[f].items == 3 &&
+               !strcmp(s.values[f].item_label[2], "HDR input") && !strcmp(s.values[f].item_about[2], ""));
+        assert(s.values[at(&s, "typed")].items == 0 && s.keys[h].type == GUI_KEY_TEXT && !s.keys[f].numeric);
+        /* none on: the default, a box turned on is the row's own value, in the order turned on */
+        assert(!strcmp(on_screen(&s, "hooks_off"), "None [default]") && !gui_settings_item_on(&s, h, 0, NULL));
+        assert(gui_settings_item_toggle(&s, h, 2, NULL) && gui_settings_item_toggle(&s, h, 0, NULL) &&
+               !strcmp(gui_settings_value(&s, "hooks_off"), "cond_var,libc") && gui_settings_item_on(&s, h, 0, NULL) &&
+               !gui_settings_item_on(&s, h, 1, NULL));
+        assert(!strcmp(on_screen(&s, "hooks_off"), "2 on") && gui_settings_options(&s, 0, NULL, options) == 2 &&
+               !strcmp(options[0], "--hooks-off=cond_var,libc"));
+        /* spaces or commas between, a name the row has not kept and counted as another, a name's box turned off */
+        assert(gui_settings_set(&s, "hooks_off", "libc mine, sync"));
+        assert(gui_settings_item_on(&s, h, 0, NULL) && gui_settings_item_on(&s, h, 1, NULL));
+        assert(!strcmp(on_screen(&s, "hooks_off"), "2 on, 1 other"));
+        assert(gui_settings_item_toggle(&s, h, 0, NULL) && !strcmp(gui_settings_value(&s, "hooks_off"), "mine,sync") &&
+               gui_settings_item_toggle(&s, h, 1, NULL) && !strcmp(gui_settings_value(&s, "hooks_off"), "mine"));
+        assert(gui_settings_item_toggle(&s, h, 1, NULL) && gui_settings_item_toggle(&s, h, 1, NULL) &&
+               !strcmp(on_screen(&s, "hooks_off"), "0 on, 1 other"));
+        assert(gui_settings_set(&s, "hooks_off", "libc") && gui_settings_item_toggle(&s, h, 0, NULL) &&
+               !gui_settings_value(&s, "hooks_off") && !strcmp(on_screen(&s, "hooks_off"), "None [default]"));
+        /* an int's: bits, a bit past its items' kept */
+        assert(gui_settings_item_toggle(&s, f, 2, NULL) && !strcmp(gui_settings_value(&s, "fsr"), "64"));
+        assert(gui_settings_item_toggle(&s, f, 0, NULL) && !strcmp(gui_settings_value(&s, "fsr"), "65") &&
+               !strcmp(on_screen(&s, "fsr"), "2 on"));
+        assert(gui_settings_set(&s, "fsr", "129") && gui_settings_item_toggle(&s, f, 0, NULL) &&
+               !strcmp(gui_settings_value(&s, "fsr"), "128") && !strcmp(on_screen(&s, "fsr"), "0 on, 1 other"));
+        assert(gui_settings_set(&s, "fsr", "1") && gui_settings_item_toggle(&s, f, 0, NULL) &&
+               !gui_settings_value(&s, "fsr") && !gui_settings_item_toggle(&s, f, 3, NULL)); /* no such item */
+        /* a game's own: what it has of the launcher's, until a box of its own */
+        assert(gui_settings_item_on(&s, h, 1, "sync") && !gui_settings_item_on(&s, h, 1, NULL));
+        assert(gui_settings_item_toggle(&s, h, 0, "sync") && !strcmp(gui_settings_value(&s, "hooks_off"), "sync,libc"));
+        gui_settings_items_said(&s, h, "sync,libc", said, sizeof said);
+        assert(!strcmp(said, "2 on"));
+        gui_settings_free(&s);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }
