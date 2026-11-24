@@ -9,7 +9,7 @@
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
-         [--words HEX...]
+         [--hook] [--words HEX...]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7), as on a host that lacks them
    --target NAME: the guest's features, switch (the default) or android
@@ -18,7 +18,8 @@
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
    back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
    functions, runs under Unicorn (support/host_unicorn.c), the native side's memory and state mapped into it, the
-   helpers and the runtime's functions it calls trapped to this process's */
+   helpers and the runtime's functions it calls trapped to this process's. --hook makes it with every call through
+   CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
@@ -453,7 +454,8 @@ int main(int argc, char** argv) {
     struct snx_recompiled *mx = NULL, *ml = NULL;
     uint8_t *mem[2] = {0}, *data0 = NULL;
     uint64_t* hints = NULL;
-    int result = 1; /* every exit past the allocations frees them, so the sanitizers' leak check reads the test */
+    int result = 1, hook = 0; /* every exit past the allocations frees them, so the sanitizers' leak check reads the
+                                 test */
     RtAPI rt;
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
@@ -465,6 +467,8 @@ int main(int argc, char** argv) {
             snx_x64_without((unsigned)strtoul(argv[++i], NULL, 0));
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
+        else if (!strcmp(argv[i], "--hook"))
+            hook = 1;
         else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
             const char* name = argv[++i];
             if (strcmp(name, "switch") && strcmp(name, "android")) {
@@ -479,6 +483,7 @@ int main(int argc, char** argv) {
             functions = 1;
         }
     }
+    (void)hook;
     rows_init();
 #ifdef SNX_TEST_NATIVE
     HostUc* uc = hostuc_new(NATIVE_UC, (size_t)64 << 20);
@@ -570,6 +575,7 @@ int main(int argc, char** argv) {
             goto out;
         }
         made = (unsigned char*)calloc(cg.function_count + 1, 1);
+        cg.hook_direct_calls = hook;
         if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) {
             fprintf(stderr, "FAIL: the %s object: %s\n", native_name, error);
             goto out;

@@ -495,14 +495,14 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
    loader's table, where every global stays */
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
-    if (snx_native_available() && !s->config.hook_direct_calls && codegen->function_count) {
+    if (snx_native_available() && codegen->function_count) {
         /* the x86-64 back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
            split between two objects): LLVM otherwise */
         SnxNativeOptions options = {
             .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
         unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
         if (made) {
-            codegen->hook_direct_calls = 0;
+            codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
             codegen->direct_svc = s->config.direct_svc;
             int reused = 0;
             int rc = snx_native_cached_object(codegen, 0, codegen->function_count, &options, made, object, size,
