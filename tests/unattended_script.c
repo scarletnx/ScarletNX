@@ -294,6 +294,55 @@ static void tas(const char* dir) {
     for (s = 0; s <= 9; s++) remove(slot_file(s));
 }
 
+/* the menu's Save states page: its record and its replay, refused or started where it would not fatal, a read of the
+   same settings leaving its choice alone and a change of one taking over */
+static void menu(void) {
+    char why[200];
+    for (int s = 0; s <= 9; s++) remove(slot_file(s));
+    g_frames = 0;
+    CHECK(!unattended_recording() && !unattended_replaying(), "a slot in use before the menu's first");
+    CHECK(unattended_slot_frames(3, why, sizeof why) == 0 && !*why, "slot 3 has frames: \"%s\"", why);
+    CHECK(!unattended_record_from_menu(10, why, sizeof why) && strstr(why, "10 is not a slot"), "slot 10: \"%s\"", why);
+    /* record: a file at the next poll, the game's .ini read again as it was leaving it */
+    CHECK(unattended_record_from_menu(3, why, sizeof why) == 1 && unattended_recording() == 3, "record 3: \"%s\"", why);
+    CHECK(!got(slot_file(3)), "slot 3 had its file before a poll");
+    poll(5, 0x80, 1, 2, 3, 4);
+    CHECK(got(slot_file(3)) && strstr(g_text, "5:80:1,2,3,4"), "slot 3's line: \"%s\"", g_text);
+    CHECK(!*refused("input_record", "0") && unattended_recording() == 3, "a read as before ended the menu's record");
+    CHECK(!unattended_replay_from_menu(3, why, sizeof why) && strstr(why, "being recorded"), "replay 3: \"%s\"", why);
+    CHECK(unattended_record_from_menu(0, why, sizeof why) && !unattended_recording(), "end: \"%s\"", why);
+    CHECK(unattended_slot_frames(3, why, sizeof why) == 6, "slot 3's frames");
+    poll(6, 1, 0, 0, 0, 0);
+    /* replay: refused where it has nothing, is no recording, or the game is past its end, and given where not */
+    CHECK(!unattended_replay_from_menu(9, why, sizeof why) && strstr(why, "Slot 9 has no recording"),
+          "replay 9: \"%s\"", why);
+    put(slot_file(4), "5;1:0,0,0,0\n");
+    CHECK(unattended_slot_frames(4, why, sizeof why) == -1 && strstr(why, "no recording: line 1"), "slot 4: \"%s\"",
+          why);
+    CHECK(!unattended_replay_from_menu(4, why, sizeof why) && strstr(why, "slot 4's file is no recording"),
+          "replay 4: \"%s\"", why);
+    put(slot_file(4), "3:1:0,0,0,0\n");
+    CHECK(!unattended_replay_from_menu(4, why, sizeof why) &&
+              strstr(why, "Slot 4's recording ends at frame 3: the game is at frame 6"),
+          "replay 4 late: \"%s\"", why);
+    put(slot_file(4), "3:1:0,0,0,0\n20:2:5,5,5,5\n");
+    CHECK(unattended_replay_from_menu(4, why, sizeof why) == 1 && unattended_replaying() == 4, "replay 4: \"%s\"", why);
+    poll(20, 0x80, 0, 0, 0, 0);
+    CHECK(gave(2, 5, 5, 5, 5), GAVE);
+    CHECK(!unattended_record_from_menu(4, why, sizeof why) && strstr(why, "Slot 4 is playing"), "record 4: \"%s\"",
+          why);
+    CHECK(same(slot_file(4), "3:1:0,0,0,0\n20:2:5,5,5,5\n"), "slot 4 changed: \"%s\"", g_text);
+    poll(21, 0x80, 0, 0, 0, 0); /* past its end: the controls again */
+    CHECK(gave(0x80, 0, 0, 0, 0) && !unattended_replaying(), GAVE);
+    /* a setting that changes takes the run over, as it did before the menu */
+    CHECK(!*refused("input_record", "5") && unattended_recording() == 5, "input_record=5: \"%s\"", g_fatal);
+    poll(22, 1, 0, 0, 0, 0);
+    CHECK(unattended_record_from_menu(0, why, sizeof why) && !*refused("input_record", "5") && !unattended_recording(),
+          "a read as before started a record the menu had ended");
+    CHECK(!*refused("input_record", "0"), "input_record=0: \"%s\"", g_fatal);
+    for (int s = 0; s <= 9; s++) remove(slot_file(s));
+}
+
 int main(int argc, char** argv) {
     g_now = 1000000000ull;
     unattended_start();
@@ -373,6 +422,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     tas(argv[1]);
+    menu();
 
     /* last, as it starts the clock over: a press the backend looked at before the game started (during main.c's
        loading screen) is pressed again once unattended_start starts the game's clock, not used up before it */

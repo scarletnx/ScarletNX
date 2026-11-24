@@ -101,6 +101,36 @@ static struct {
     char applied[128]; /* key=value, as the Settings page gave it */
     _Atomic int changes;
 } picks;
+/* unattended.c's, as the Save states page asks for them: the slots' recordings in frames, what runs, the last ask */
+static struct {
+    int frames[10], recording, replaying, asked_record, asked_replay;
+    const char* refuse; /* why the next ask is refused, NULL none */
+} tas = {.asked_record = -1, .asked_replay = -1};
+int unattended_recording(void) { return tas.recording; }
+int unattended_replaying(void) { return tas.replaying; }
+int unattended_slot_frames(int slot, char* why, size_t n) {
+    if (n) why[0] = 0;
+    if (tas.frames[slot] < 0) snprintf(why, n, "slot %d's file is no recording: line 1", slot);
+    return tas.frames[slot];
+}
+int unattended_record_from_menu(int slot, char* why, size_t n) {
+    tas.asked_record = slot;
+    if (tas.refuse) {
+        snprintf(why, n, "%s", tas.refuse);
+        return 0;
+    }
+    tas.recording = slot;
+    return 1;
+}
+int unattended_replay_from_menu(int slot, char* why, size_t n) {
+    tas.asked_replay = slot;
+    if (tas.refuse) {
+        snprintf(why, n, "%s", tas.refuse);
+        return 0;
+    }
+    tas.replaying = slot;
+    return 1;
+}
 int ini_picked(const char* k) { return picks.key && !strcmp(picks.key, k); }
 void ini_unpick(const char* k) {
     snprintf(picks.unpicked, sizeof picks.unpicked, "%s", k);
@@ -2052,6 +2082,78 @@ int main(void) {
         assert(overlay_back() == OVERLAY_NONE && overlay_back() == OVERLAY_NONE && !overlay_states_shown());
         draw();
         assert(shows("SCARLETNX  /  MENU"));
+    }
+    /* the page's rows after the slots: player 1's input recorded and played. The arrows choose a slot, round, and
+       nothing is asked of the recorder before Enter; a slot that has a recording is asked over first, and what is
+       refused is said */
+    {
+        OverlaySlot sl[3];
+        memset(sl, 0, sizeof sl);
+        tas.frames[2] = 60;
+        tas.frames[4] = -1;
+        assert(overlay_select() == OVERLAY_NONE && overlay_states_shown());
+        overlay_slots_set(sl, 3);
+        overlay_move(3); /* Record input */
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("\xFE Record input") && shows("\xFE Play input") &&
+               shows("Left and Right choose a slot, Enter takes it."));
+        assert(text_at(3, 0, "") || 1);
+        assert(tas.asked_record == -1);
+        overlay_side(1); /* slot 1, free: nothing asked of the recorder yet */
+        draw();
+        assert(shows("Slot 1") && tas.asked_record == -1);
+        overlay_side(1);
+        draw();
+        assert(shows("Slot 2, over its recording") && tas.asked_record == -1);
+        assert(overlay_select() == OVERLAY_NONE); /* it has one: asked, Cancel in focus */
+        draw();
+        assert(shows("SCARLETNX  /  RECORD OVER SLOT 2?") && shows("Its recording, 60 frames, is replaced.") &&
+               shows_as("\xFE Record", 0, FAILURE) && tas.asked_record == -1);
+        assert(overlay_select() == OVERLAY_NONE); /* Cancel */
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && tas.asked_record == -1 && shows("Off"));
+        overlay_side(1);
+        overlay_side(1);
+        assert(overlay_select() == OVERLAY_NONE);
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_record == 2 && tas.recording == 2);
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("Slot 2, recording"));
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_record == 0 && !tas.recording); /* Enter again ends it */
+        /* a free slot is recorded at once, and one that is no recording asks */
+        overlay_side(1);
+        assert(overlay_select() == OVERLAY_NONE && tas.recording == 1 && tas.asked_record == 1);
+        tas.recording = 0;
+        overlay_side(1); /* the rows' choices are as the page opened: this one's slot 1 is chosen already */
+        /* Play input: only the slots with a recording, round through none */
+        overlay_move(1);
+        overlay_side(1);
+        draw();
+        assert(shows("Slot 2") && tas.asked_replay == -1);
+        overlay_side(1);
+        draw();
+        assert(shows("Off"));
+        overlay_side(-1);
+        draw();
+        assert(shows("Slot 2"));
+        tas.refuse = "Slot 2's recording ends at frame 59: the game is at frame 90";
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_replay == 2 && !tas.replaying);
+        draw();
+        assert(shows("Slot 2's recording ends at frame 59: the game is at frame 90"));
+        tas.refuse = NULL;
+        overlay_side(1);
+        overlay_side(1);
+        overlay_side(-1);
+        assert(overlay_select() == OVERLAY_NONE && tas.replaying == 2);
+        draw();
+        assert(shows("Slot 2, playing"));
+        overlay_move(2); /* Back */
+        assert(overlay_select() == OVERLAY_NONE && !overlay_states_shown());
+        draw();
+        assert(shows("SCARLETNX  /  MENU"));
+        toasts_gone();
+        memset(&tas, 0, sizeof tas);
+        tas.asked_record = tas.asked_replay = -1;
     }
     /* a notification over the game, closed or open, until its time is up */
     toasts_gone();

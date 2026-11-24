@@ -57,6 +57,8 @@ typedef struct {
     size_t next;     /* the first line whose frame no poll reached yet */
     int record_slot; /* 1 to 9, 0 none */
     int replay_slot;
+    int record_ini; /* what the settings' reads last gave: the menu's choice stays until one of them differs */
+    int replay_ini;
 } Tas;
 
 /* The file's state. The settings are g_settings' (settings.txt's g_unattended_ini): seconds (0: no time limit), frames,
@@ -317,11 +319,10 @@ static void tas_record_open(int frame) {
     tas_flush(frame);
 }
 
-void unattended_record_set(const IniOpt* o, const char* v) {
+/* the record ended, then slot's, when there is one */
+static void tas_record_to(int slot) {
     Tas* t = &g_unattended.tas;
-    int slot = tas_slot(o->key, v), frame = frames_now(), e;
-    if (slot == t->record_slot) return; /* the slot it records already */
-    tas_apart(slot, t->replay_slot);
+    int frame = frames_now(), e;
     if (t->record) {
         LOG("input_record: slot %d ends at frame %d\n", t->record_slot, frame);
         e = fclose(t->record) ? errno : 0;
@@ -331,14 +332,21 @@ void unattended_record_set(const IniOpt* o, const char* v) {
     t->record_slot = slot; /* its file is made at the next poll, tas_record_open */
 }
 
-void unattended_replay_set(const IniOpt* o, const char* v) {
+void unattended_record_set(const IniOpt* o, const char* v) {
+    Tas* t = &g_unattended.tas;
+    int slot = tas_slot(o->key, v);
+    if (slot == t->record_ini) return; /* the slot it records already, or the menu's choice since */
+    tas_apart(slot, t->replay_slot);
+    t->record_ini = slot;
+    tas_record_to(slot);
+}
+
+static void tas_play(int slot) {
     Tas* t = &g_unattended.tas;
     char path[sizeof g_exedir + sizeof g_exename + 64], msg[600];
     unsigned char* text;
     size_t size, max = 1, i;
-    int slot = tas_slot(o->key, v), frame = frames_now(), e, last = -1, ok;
-    if (slot == t->replay_slot) return; /* the slot it plays already, or played to its end */
-    tas_apart(t->record_slot, slot);
+    int frame = frames_now(), e, last = -1, ok;
     if (t->replay)
         LOG("input_replay: slot %d stops at frame %d, its last line's frame %d\n", t->replay_slot, frame,
             t->replay[t->lines - 1].frame);
@@ -375,6 +383,78 @@ void unattended_replay_set(const IniOpt* o, const char* v) {
         LOG("input_replay: %zu lines, frames %d to %d: player 1's input is neutral before frame %d and comes from "
             "the controls again at frame %d\n",
             t->lines, t->replay[0].frame, last, t->replay[0].frame, last + 1);
+}
+
+void unattended_replay_set(const IniOpt* o, const char* v) {
+    Tas* t = &g_unattended.tas;
+    int slot = tas_slot(o->key, v);
+    if (slot == t->replay_ini) return; /* the slot it plays already, or played to its end, or the menu's choice since */
+    tas_apart(t->record_slot, slot);
+    t->replay_ini = slot;
+    tas_play(slot);
+}
+
+int unattended_recording(void) { return g_unattended.tas.record_slot; }
+int unattended_replaying(void) { return g_unattended.tas.replay ? g_unattended.tas.replay_slot : 0; }
+int unattended_slot_frames(int slot, char* why, size_t n) {
+    char path[sizeof g_exedir + sizeof g_exename + 64], msg[600];
+    unsigned char* text;
+    size_t size, count = 0;
+    int last = -1, ok, e;
+    if (n) why[0] = 0;
+    tas_path(path, sizeof path, slot);
+    errno = 0;
+    text = snx_read_file(path, &size);
+    if (!text) {
+        e = errno;
+        if (e == ENOENT) return 0;
+        snprintf(why, n, "slot %d's file could not be read: %s", slot, strerror(e));
+        return -1;
+    }
+    ok = tas_lines((const char*)text, size, NULL, &count, &last, msg, sizeof msg);
+    free(text);
+    if (ok) return last + 1;
+    snprintf(why, n, "slot %d's file is no recording: %s", slot, msg);
+    return -1;
+}
+int unattended_record_from_menu(int slot, char* why, size_t n) {
+    Tas* t = &g_unattended.tas;
+    if (slot < 0 || slot > 9) {
+        snprintf(why, n, "%d is not a slot: 1 to 9, or 0 for none", slot);
+        return 0;
+    }
+    if (slot && slot == unattended_replaying()) {
+        snprintf(why, n, "Slot %d is playing: record to another slot", slot);
+        return 0;
+    }
+    if (slot != t->record_slot) tas_record_to(slot);
+    return 1;
+}
+int unattended_replay_from_menu(int slot, char* why, size_t n) {
+    Tas* t = &g_unattended.tas;
+    int frames, frame = frames_now();
+    if (slot < 0 || slot > 9) {
+        snprintf(why, n, "%d is not a slot: 1 to 9, or 0 for none", slot);
+        return 0;
+    }
+    if (slot && slot == t->record_slot) {
+        snprintf(why, n, "Slot %d is being recorded: end that first", slot);
+        return 0;
+    }
+    if (slot) {
+        frames = unattended_slot_frames(slot, why, n);
+        if (frames < 0) return 0;
+        if (!frames) {
+            snprintf(why, n, "Slot %d has no recording", slot);
+            return 0;
+        }
+        if (frames - 1 < frame) { /* it would end at once: the frames count from the game's start */
+            snprintf(why, n, "Slot %d's recording ends at frame %d: the game is at frame %d", slot, frames - 1, frame);
+            return 0;
+        }
+    }
+    if (slot != t->replay_slot || t->replay == NULL || !slot) tas_play(slot);
+    return 1;
 }
 
 void unattended_pad(u64* buttons, i32 st[4]) {
