@@ -17,7 +17,7 @@
 
    Built with SNX_TEST_ARM64 (snx-test-recompiler-arm64), the same programs hold the arm64 back end
    (src/common/cpu/recompiler/arm64) to LLVM on any host: its object, made for the program's functions, runs under
-   Unicorn (support/arm64_unicorn.c), the arm64 side's memory and state mapped into it, the helpers and the runtime's
+   Unicorn (support/host_unicorn.c), the arm64 side's memory and state mapped into it, the helpers and the runtime's
    functions it calls trapped to this process's */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
@@ -28,7 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 #ifdef SNX_TEST_ARM64
-#include "support/arm64_unicorn.h"
+#include "support/host_unicorn.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #endif
@@ -407,7 +407,7 @@ int main(int argc, char** argv) {
     }
     rows_init();
 #ifdef SNX_TEST_ARM64
-    ArmUc* uc = armuc_new((size_t)64 << 20);
+    HostUc* uc = hostuc_new(HOSTUC_ARM64, (size_t)64 << 20);
     CPU* ucpu = NULL;
     RtAPI* urt = NULL;
     uint64_t* udisp = NULL;
@@ -428,7 +428,7 @@ int main(int argc, char** argv) {
     (void)snx_recompiler_set_a64_target(rx, target), (void)snx_recompiler_set_a64_target(rl, target);
     mem[0] = (uint8_t*)calloc(1, MEMORY);
 #ifdef SNX_TEST_ARM64
-    mem[1] = (uint8_t*)armuc_alloc(uc, MEMORY);
+    mem[1] = (uint8_t*)hostuc_alloc(uc, MEMORY);
 #else
     mem[1] = (uint8_t*)calloc(1, MEMORY);
 #endif
@@ -500,26 +500,26 @@ int main(int argc, char** argv) {
             fprintf(stderr, "FAIL: the arm64 object: %s\n", error);
             goto out;
         }
-#define NATIVE(f) armuc_native(uc, #f, (void*)f)
+#define NATIVE(f) hostuc_native(uc, #f, (void*)f)
         NATIVE(snx_x64_fp_binary), NATIVE(snx_x64_fp_fma), NATIVE(snx_x64_fp_unary), NATIVE(snx_x64_fp_minmax);
         NATIVE(snx_x64_fp_compare), NATIVE(snx_x64_fp_convert), NATIVE(snx_x64_fp_round);
         NATIVE(snx_x64_fp_round_int), NATIVE(snx_x64_fp_to_int), NATIVE(snx_x64_fp_from_int), NATIVE(snx_x64_fp_jcvt);
         NATIVE(snx_x64_fp_bfcvt), NATIVE(snx_mrs), NATIVE(snx_msr), NATIVE(snx_ic_ivau);
 #undef NATIVE
-        if (object && armuc_load(uc, object, object_size, error, sizeof error)) {
+        if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {
             fprintf(stderr, "FAIL: loading the arm64 object: %s\n", error);
             goto out;
         }
         for (n = 0; n < cg.function_count; ++n) made_arm64 += made[n];
         printf("recompiler arm64: %zu functions, the arm64 back end made %zu (%zu bytes)\n", cg.function_count,
                made_arm64, object_size);
-        ucpu = (CPU*)armuc_alloc(uc, sizeof *ucpu);
-        urt = (RtAPI*)armuc_alloc(uc, sizeof *urt);
-        udisp = (uint64_t*)armuc_alloc(uc, (size_t)functions * SLOT * 8 + 8);
+        ucpu = (CPU*)hostuc_alloc(uc, sizeof *ucpu);
+        urt = (RtAPI*)hostuc_alloc(uc, sizeof *urt);
+        udisp = (uint64_t*)hostuc_alloc(uc, (size_t)functions * SLOT * 8 + 8);
         for (n = 0; n < functions; ++n) {
             char name[40];
             snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[n]);
-            udisp[(hints[n] - CODE) / 4] = armuc_symbol(uc, name);
+            udisp[(hints[n] - CODE) / 4] = hostuc_symbol(uc, name);
         }
         free(made), free(object);
         snx_codegen_free(&cg);
@@ -566,11 +566,11 @@ int main(int argc, char** argv) {
     rt.brk = on_brk;
 #ifdef SNX_TEST_ARM64
     memset(urt, 0, sizeof *urt);
-    urt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)armuc_native(uc, "undef", (void*)undef);
-    urt->svc = (void (*)(CPU*, u32))(uintptr_t)armuc_native(uc, "svc", (void*)on_svc);
-    urt->brk = (void (*)(CPU*, u64, u32))(uintptr_t)armuc_native(uc, "brk", (void*)on_brk);
-    urt->miss = (GuestFn)(uintptr_t)armuc_native(uc, "miss", (void*)on_miss);
-    urt->poll = (void (*)(CPU*))(uintptr_t)armuc_native(uc, "poll", (void*)on_poll);
+    urt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "undef", (void*)undef);
+    urt->svc = (void (*)(CPU*, u32))(uintptr_t)hostuc_native(uc, "svc", (void*)on_svc);
+    urt->brk = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "brk", (void*)on_brk);
+    urt->miss = (GuestFn)(uintptr_t)hostuc_native(uc, "miss", (void*)on_miss);
+    urt->poll = (void (*)(CPU*))(uintptr_t)hostuc_native(uc, "poll", (void*)on_poll);
 #endif
     for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
     for (i = 0; i < functions; ++i)
@@ -585,7 +585,7 @@ int main(int argc, char** argv) {
                 unsigned hops = 0;
                 char name[40];
                 snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[i]);
-                fn = armuc_symbol(uc, name);
+                fn = hostuc_symbol(uc, name);
                 if (!fn) break; /* not made: another back end's */
                 memcpy(mem[1] + DATA, data0, DATA_LEN);
                 *ucpu = start;
@@ -599,7 +599,7 @@ int main(int argc, char** argv) {
                 g_running = hints[i];
                 for (;;) {
                     uint64_t entry = ucpu->pc;
-                    if (armuc_call(uc, fn, (uint64_t)(uintptr_t)ucpu, entry, NULL)) {
+                    if (hostuc_call(uc, fn, (uint64_t)(uintptr_t)ucpu, entry, NULL)) {
                         ++failures;
                         fprintf(stderr, "FAIL: the function at %llx, state %u: the arm64 code stopped\n",
                                 (unsigned long long)hints[i], s);
@@ -654,7 +654,7 @@ out:
     snx_recompiled_free(mx);
     snx_recompiled_free(ml);
 #ifdef SNX_TEST_ARM64
-    armuc_free(uc);
+    hostuc_free(uc);
     mem[1] = NULL; /* Unicorn's mapping */
 #endif
     snx_recompiler_free(rx);

@@ -29,7 +29,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #if defined(SNX_TEST_ARM64)
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
-#include "support/arm64_unicorn.h"
+#include "support/host_unicorn.h"
 typedef SnxArm64Arm Back;
 #define back_(name) snx_arm64_arm_##name
 #define BACK_NAME   "arm64"
@@ -489,13 +489,13 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
 
 #if defined(SNX_TEST_ARM64)
 /* the arm64 object loaded into Unicorn, the helpers its blocks call its traps: each block's function in addr */
-static int load_uc(ArmUc* uc, unsigned char* object, size_t size, const Block* blocks, size_t count, SnxU64* addr) {
+static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* blocks, size_t count, SnxU64* addr) {
     char error[512] = "";
-    if (!armuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
-        !armuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
-        !armuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
-        !armuc_native(uc, "snx_arm_crypto", (void*)snx_arm_crypto) ||
-        armuc_load(uc, object, size, error, sizeof error)) {
+    if (!hostuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
+        !hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
+        !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
+        !hostuc_native(uc, "snx_arm_crypto", (void*)snx_arm_crypto) ||
+        hostuc_load(uc, object, size, error, sizeof error)) {
         fprintf(stderr, "FAIL: the arm64 object: %s\n", error);
         return 1;
     }
@@ -503,7 +503,7 @@ static int load_uc(ArmUc* uc, unsigned char* object, size_t size, const Block* b
         char name[16];
         if (!blocks[i].made) continue;
         snprintf(name, sizeof name, "B_%zu", i);
-        if (!(addr[i] = armuc_symbol(uc, name))) {
+        if (!(addr[i] = hostuc_symbol(uc, name))) {
             fprintf(stderr, "FAIL: the arm64 object has no %s\n", name);
             return 1;
         }
@@ -529,8 +529,8 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     char error[512], text[100];
 #if defined(SNX_TEST_ARM64)
     /* the arm64 code's world: the states in memory Unicorn maps at their own addresses */
-    ArmUc* uc = armuc_new(16u << 20);
-    RunState* s = uc ? (RunState*)armuc_alloc(uc, 2 * sizeof *s) : NULL;
+    HostUc* uc = hostuc_new(HOSTUC_ARM64, 16u << 20);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
 #else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
 #endif
@@ -539,7 +539,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
         fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
         free(laddr), free(xaddr);
 #if defined(SNX_TEST_ARM64)
-        if (uc) armuc_free(uc);
+        if (uc) hostuc_free(uc);
 #else
         free(s);
 #endif
@@ -639,7 +639,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
 #if defined(SNX_TEST_ARM64)
                 if (side) {
-                    if (armuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
+                    if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
                     continue;
                 }
 #endif
@@ -674,7 +674,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
         }
     }
 #if defined(SNX_TEST_ARM64)
-    armuc_free(uc);
+    hostuc_free(uc);
 #else
     free(s);
 #endif
@@ -1170,12 +1170,12 @@ int main(int argc, char** argv) {
     }
 #if defined(SNX_TEST_ARM64)
     {
-        ArmUc* probe = armuc_new(1u << 16);
+        HostUc* probe = hostuc_new(HOSTUC_ARM64, 1u << 16);
         if (!probe) {
             printf("SKIP: no Unicorn AArch64\n");
             return 77;
         }
-        armuc_free(probe);
+        hostuc_free(probe);
     }
     if (g_test.thumb || g_test.nhalves)
         return fprintf(stderr, "FAIL: --thumb %u, --halves of %zu: the arm64 back end makes no Thumb blocks yet\n",
