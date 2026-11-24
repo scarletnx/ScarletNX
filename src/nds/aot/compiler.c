@@ -6,6 +6,7 @@
 #include "nds/aot/nds_module.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/platform/file.h"
@@ -271,8 +272,7 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
     SnxIr* ir = NULL;
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
-    unsigned char* armlib = NULL;
-    size_t armlib_size = 0, hint_count = 0;
+    size_t hint_count = 0;
     char* staged = snx_format("%s.tmp", path);
     const char* exports[1] = {NDS_MODULE_SYMBOL};
     Entry* entries = NULL;
@@ -341,8 +341,7 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
     }
     qsort(work.made, work.made_count, sizeof *work.made, by_place);
     if (!index_object(ir, rom, work.made, work.made_count, &objects[1], error, error_size)) goto done;
-    if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
-    objects[0].data = armlib, objects[0].size = armlib_size;
+    objects[0].data = (unsigned char*)snx_armlib_object, objects[0].size = (size_t)snx_armlib_object_size;
     if (snx_link(objects, files, exports, 1, snx_path_leaf(path), &linked, error, error_size)) goto done;
     if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, path)) {
         char why[256];
@@ -356,7 +355,6 @@ done:
     if (objects)
         for (unsigned i = 1; i < files; ++i) free((void*)objects[i].data);
     free(objects);
-    free(armlib);
     free(linked.data);
     free(entries);
     free(work.made);

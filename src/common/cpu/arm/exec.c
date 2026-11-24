@@ -11,6 +11,7 @@
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -178,15 +179,10 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
        through cpu->rt, pointer calls that LLVM makes with r2 saved */
     if (e->loader) {
         SnxLinkInput armlib = {0};
-        unsigned char* object = NULL;
         armlib.name = "armlib";
-        if (snx_ir_armlib_object(BLOCK_OPT, &object, &armlib.size, error, error_size)) {
-            snx_arm_exec_free(e);
-            return NULL;
-        }
-        armlib.data = object;
+        armlib.data = (unsigned char*)snx_armlib_object; /* rtlib_object.h's */
+        armlib.size = (size_t)snx_armlib_object_size;
         int rc = snx_code_load(e->loader, &armlib, 1, NULL, 0, NULL, error, error_size);
-        free(object);
         if (rc) {
             snx_arm_exec_free(e);
             return NULL;
