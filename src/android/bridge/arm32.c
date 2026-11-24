@@ -5,6 +5,7 @@
    the loader of ELF32 ARM libraries */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/bridge.h"
 #include "android/bridge/hle_impl.h"
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/recompiler/llvm/elf_defs.h"
@@ -354,6 +355,7 @@ SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size) {
     t->cpu.r[13] = stack + stack_size - 16;
     t->cpu.tpidruro = tls;
     t_thread = t;
+    bridge_thread_has_state();
     return &t->cpu;
 }
 
@@ -640,6 +642,7 @@ bool arm32_init(char* error, size_t error_size) {
     s.exec = snx_arm_exec_new(error, error_size);
     if (!s.exec) return false;
     s.active = true;
+    bridge_on_thread_end(arm32_thread_gone);
     arm32_hle_init();
     return true;
 }

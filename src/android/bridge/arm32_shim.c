@@ -92,6 +92,10 @@ static CPU* cpu64(void) {
     if (!t_cpu && !(t_cpu = calloc(1, sizeof *t_cpu))) abort();
     return t_cpu;
 }
+void arm32_shim_thread_end(void) {
+    free(t_cpu);
+    t_cpu = NULL;
+}
 
 /* a 64-bit handler called with x0.. and v0.. as given, the result in x0 */
 static uint64_t call64(const HleSymbol* fn, const uint64_t* x, unsigned nx, const uint32_t* v, unsigned nv) {
