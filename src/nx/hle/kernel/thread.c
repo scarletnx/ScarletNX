@@ -296,13 +296,14 @@ static void core_unlock(void) {
    thread that holds one sees it here without the lock: the path of nearly every SVC's entry and exit. The one
    exception is a fault on memory the GPU holds (kthread_fault_lend), which only makes on_core -1: a thread that read
    its core here a moment before takes one again at its next poll. One lined up waits on its word, without the lock,
-   until a holder hands it a core */
+   until a holder hands it a core. A thread that just started is lined up already, or holds its core (kthread_start) */
 void core_enter(KThread* t) {
     int got = 1;
     if (!t || !kernel_emulated_cores()) return;
     if (atomic_load_explicit(&t->on_core, memory_order_acquire) < 0) {
         pm_lock(&g_host.thread.core_lk);
-        if (atomic_load_explicit(&t->on_core, memory_order_relaxed) < 0) got = core_take_nl(t);
+        got = atomic_load_explicit(&t->on_core, memory_order_relaxed);
+        got = got == -1 ? core_take_nl(t) : got >= 0;
         core_unlock();
         if (!got) core_await(t);
     }
@@ -728,6 +729,8 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
                    live + 1, THREAD_MAX);
     /* a slot's earlier thread may have ended inside an SVC, as a save state's load ends them where they stopped */
     atomic_store_explicit(&g_host.thread.handed[kt_ix(t) - 1], 0, memory_order_relaxed);
+    /* nor is its host thread's number this one's: this thread holds a core before it has a host thread */
+    atomic_store_explicit(&g_host.thread.host_tid[kt_ix(t) - 1], 0, memory_order_relaxed);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
     atomic_store_explicit(&t->arb_prio, prio, memory_order_relaxed);
@@ -815,14 +818,20 @@ static void thread_main(void* p) {
     guest_stats_thread_start(kt_ix(t));
     {
         char hint[16];
-        snprintf(hint, sizeof hint, "core %u", (unsigned)core_of(t));
+        pm_lock(&g_host.thread.core_lk); /* in line since kthread_start, it may be handed a core meanwhile */
+        int k = core_of(t);
+        pm_unlock(&g_host.thread.core_lk);
+        snprintf(hint, sizeof hint, "core %u", (unsigned)k);
         SNX_THREAD_NAME_HINT(t->name[0] ? t->name : "guest", hint);
     }
     atomic_fetch_add_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     thread_run(t, t->entry);
 }
 /* the host thread holds a reference from here until svc_exit_thread. The state is read and set in one hold of the
-   lock: of two StartThread calls on one handle, the second finds the thread started and gets InvalidState */
+   lock: of two StartThread calls on one handle, the second finds the thread started and gets InvalidState. The thread
+   takes its core, or its place in line, here, before its host thread runs: on the console it is ready as svcStartThread
+   returns, so one that beats the caller on the caller's core has run by then (svc_leave gives it the core), and a
+   holder it waits behind has moved to an idle core */
 u32 kthread_start(KThread* t) {
     int state;
     pm_lock(&g_host.kernel.klock);
@@ -833,6 +842,11 @@ u32 kthread_start(KThread* t) {
     kobj_ref(&t->o);
     LOGV("StartThread %llu entry=%llx prio=%d core=%d\n", (unsigned long long)t->id, (unsigned long long)t->entry,
          t->prio, t->core);
+    if (kernel_emulated_cores()) {
+        pm_lock(&g_host.thread.core_lk);
+        core_take_nl(t);
+        core_unlock();
+    }
     {
         size_t stack = (size_t)g_settings.thread_stack_mb << 20;
         if (plat_thread(thread_main, t, stack)) {
