@@ -44,7 +44,22 @@ if(BUILD_TESTING)
     set_tests_properties(shaderc_sm86_corpus PROPERTIES FIXTURES_SETUP shaderc_sm86)
     add_test(NAME shaderc_sm86 COMMAND $<TARGET_FILE:snx-shaderc> "${snx_shaderc_corpus}" --sm86)
     set_tests_properties(shaderc_sm86 PROPERTIES FIXTURES_REQUIRED shaderc_sm86 TIMEOUT 60
-        PASS_REGULAR_EXPRESSION "1 shaders: 1 translated, 0 unsupported, 0 failed")
+        PASS_REGULAR_EXPRESSION "2 shaders: 2 translated, 0 unsupported, 0 failed")
+    # the same through the texture table, and through the pool map in a storage buffer and by device address
+    # (ShCaps.pool_map), each module checked by the spirv-val that snx-shaderc runs from PATH, where there is one
+    find_program(SNX_SHADERC_SPIRV_VAL spirv-val)
+    if(SNX_SHADERC_SPIRV_VAL)
+        foreach(form "tex-table" "pool-map" "gbuf-address")
+            set(snx_form_args --${form})
+            if(form STREQUAL "gbuf-address")
+                set(snx_form_args --pool-map --gbuf-address)
+            endif()
+            add_test(NAME shaderc_sm86_${form} COMMAND $<TARGET_FILE:snx-shaderc> "${snx_shaderc_corpus}" --sm86
+                                                       --validate ${snx_form_args})
+            set_tests_properties(shaderc_sm86_${form} PROPERTIES FIXTURES_REQUIRED shaderc_sm86 TIMEOUT 60
+                PASS_REGULAR_EXPRESSION "2 shaders: 2 translated, 0 unsupported, 0 failed")
+        endforeach()
+    endif()
     add_executable(snx-test-shader-indexed-ms "${PROJECT_SOURCE_DIR}/tests/shader_indexed_ms.c")
     snx_test_target(snx-test-shader-indexed-ms gnu23)
     target_link_libraries(snx-test-shader-indexed-ms PRIVATE snx_shader)
