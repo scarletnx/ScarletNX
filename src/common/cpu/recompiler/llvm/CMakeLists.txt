@@ -198,3 +198,8 @@ target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rv64/rv64_arm.c")
 snx_sailgen_a64_risc(snx_llvm rv64)
 snx_sailgen_a32_risc(snx_llvm rv64)
+# and the powerpc64 back end (src/common/cpu/recompiler/ppc64), over LLVM's PowerPC records
+target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64_codegen.c"
+                               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/ppc64/ppc64_arm.c")
+snx_sailgen_a64_risc(snx_llvm ppc64)
+snx_sailgen_a32_risc(snx_llvm ppc64)

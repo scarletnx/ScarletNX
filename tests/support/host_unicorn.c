@@ -265,7 +265,8 @@ int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error
 }
 
 int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* result) {
-    uint64_t sp = (uint64_t)(uintptr_t)(u->stack + STACK_SIZE), lr = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
+    /* the stack's top less a caller's frame header (ELFv2's callee saves LR at 16(r1), in its caller's frame) */
+    uint64_t sp = (uint64_t)(uintptr_t)(u->stack + STACK_SIZE - 256), lr = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
     uc_err e;
     uc_reg_write(u->uc, u->a->args[0], &a0);
     uc_reg_write(u->uc, u->a->args[1], &a1);
