@@ -336,7 +336,7 @@ static inline SgD sg__V_read_bits(SgCtx* g, long long n, long long hi, long long
     SgX* x = sgx(g);
     if (n < 0 || n > 31) sg_fail("a SIMD&FP register this back end does not keep", n, 31);
     if (sgx_vpinned(g, n)) sgx_vpget(g, n);
-    if (!g->vx[n] && (g->vd[n][0] || g->vd[n][1])) {
+    if (!g->vx[n] && (g->vd[n][0] || g->vd[n][1] || !SGX_HAS_VREGS)) {
         if (lo == 0 && hi < 64) return sg_d_slice(g, sgx_vd_read(g, n, 0), hi, 0);
         if (lo == 64 && hi <= 127) return sg_d_slice(g, sgx_vd_read(g, n, 1), hi - 64, 0);
         if (lo == 0 && hi == 127) return sg_d_concat(g, sgx_vd_read(g, n, 1), sgx_vd_read(g, n, 0));
@@ -421,6 +421,65 @@ static inline void sg_FPToFixedJS(SgCtx* g, SgB path, SgD op, SgD fpcr, int is64
 static inline SgD sg_FPConvertBF__1(SgCtx* g, SgB path, SgD op, SgD fpcr) {
     return sgx_fp(g, "snx_x64_fp_bfcvt", path, fpcr, &op, 1, 0, 0, 16);
 }
+
+/* ---- the floating point of a machine that has no inline code of its own for it (SGX_FP_HELPERS: arm64.h's,
+   risc.h's): the exact helpers' for every operation, x64_helpers.c's snx_x64_fp_* (cpu.h's soft float, which raises
+   FPSR's flags as FPProcessException does) ---- */
+
+#if SGX_FP_HELPERS
+
+static inline SgD sgx_fp_binary(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned op) {
+    SgD o[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_binary", path, fpcr, o, 2, 1, a.w | op << 8, a.w);
+}
+static inline SgD sg_FPAdd(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_ADD); }
+static inline SgD sg_FPSub(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_SUB); }
+static inline SgD sg_FPMul(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_MUL); }
+static inline SgD sg_FPDiv(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_binary(g, path, a, b, fpcr, SNX_FP_DIV); }
+static inline SgD sgx_fp_minmax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr, unsigned minimum, unsigned numeric) {
+    SgD o[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_minmax", path, fpcr, o, 2, 1, a.w | minimum << 8 | numeric << 9, a.w);
+}
+static inline SgD sg_FPMax(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 0); }
+static inline SgD sg_FPMin(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 0); }
+static inline SgD sg_FPMaxNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 0, 1); }
+static inline SgD sg_FPMinNum(SgCtx* g, SgB path, SgD a, SgD b, SgD fpcr) { return sgx_fp_minmax(g, path, a, b, fpcr, 1, 1); }
+static inline SgD sg_FPMulAdd(SgCtx* g, SgB path, SgD addend, SgD a, SgD b, SgD fpcr) {
+    SgD o[3] = {addend, a, b};
+    return sgx_fp(g, "snx_x64_fp_fma", path, fpcr, o, 3, 1, a.w, a.w);
+}
+static inline SgD sg_FPSqrt(SgCtx* g, SgB path, SgD a, SgD fpcr) {
+    return sgx_fp(g, "snx_x64_fp_unary", path, fpcr, &a, 1, 1, a.w | SNX_FP_SQRT << 8, a.w);
+}
+static inline SgD sg_FPRoundInt(SgCtx* g, SgB path, SgD a, SgD fpcr, int rounding, int exact) {
+    return sgx_fp(g, "snx_x64_fp_round", path, fpcr, &a, 1, 1, a.w | sgx_fp_rm(rounding) << 8 | (SnxU32)!!exact << 12,
+                  a.w);
+}
+static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long long to_bits) {
+    if (to_bits != 16 && to_bits != 32 && to_bits != 64) sg_fail("a conversion to a float of this width", to_bits, 0);
+    return sgx_fp(g, "snx_x64_fp_convert", path, fpcr, &op, 1, 1, op.w | (SnxU32)to_bits << 8, (unsigned)to_bits);
+}
+static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD fpcr) {
+    SgD o[2] = {a, b};
+    return sgx_fp(g, "snx_x64_fp_compare", path, fpcr, o, 2, 1, a.w | (SnxU32)!!signal << 8, 4);
+}
+static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
+                               long long width) {
+    if (rounding != SG_FP_ROUNDING_FPCR) sg_fail("FixedToFP in a mode of its own: the helper rounds as FPCR says", rounding, 0);
+    if (fbits < 0 || fbits > 64) sg_fail("FixedToFP of these fraction bits", fbits, 0);
+    return sgx_fp(g, "snx_x64_fp_from_int", path, fpcr, &op, 1, 1,
+                  op.w | (SnxU32)width << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17, (unsigned)width);
+}
+static inline SgD sg_FPToFixed(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
+                               long long integer) {
+    if (rounding == SG_FP_ROUNDING_FPCR) sg_fail("FPToFixed in FPCR's mode: the helper takes the encoding's", rounding, 0);
+    if (integer != 32 && integer != 64) sg_fail("a conversion to an integer of this width", integer, 0);
+    if (fbits < 0 || fbits > 64) sg_fail("FPToFixed of these fraction bits", fbits, 0);
+    return sgx_fp(g, "snx_x64_fp_to_int", path, fpcr, &op, 1, 1,
+                  op.w | (SnxU32)integer << 8 | (SnxU32)!!uns << 16 | (SnxU32)fbits << 17 | sgx_fp_rm(rounding) << 24,
+                  (unsigned)integer);
+}
+#endif
 
 /* ---- the machine's inline sequences: inputs in fixed registers ---- */
 
