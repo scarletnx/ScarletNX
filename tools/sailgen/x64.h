@@ -126,6 +126,8 @@ static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixe
 static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
 #define SGX_CARRY 0
 #define SGX_DIV_ARM 0
+/* x86's implicit <XMM0> operand (PBLENDVB's): a vector form's operand no field encodes is in XMM0 */
+#define SGX_IMPLICIT_X0 1
 /* the vector forms mach.h's front makes values with: a 16-byte load (of the pool) and store (of the state), a vector
    register made 0, a vector value's low 32 or 64 bits to a general-purpose register and back, its high doubleword
    to one (imm 1), a doubleword into one (imm its index) */

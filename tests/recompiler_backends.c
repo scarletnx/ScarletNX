@@ -534,9 +534,8 @@ int main(int argc, char** argv) {
     }
     printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
 #ifdef SNX_TEST_ARM64
-    /* what it leaves to another back end: TBL and TBX of several registers, FCMP, FCCMP, FCSEL and the like */
-    if (made_arm64 * 10 < (size_t)functions * 8) {
-        fprintf(stderr, "FAIL: the arm64 back end made under 80%% of the functions\n");
+    if (made_arm64 * 10 < (size_t)functions * 9) {
+        fprintf(stderr, "FAIL: the arm64 back end made under 90%% of the functions\n");
         ++failures;
     }
     if (0) {

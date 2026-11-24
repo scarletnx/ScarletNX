@@ -2207,7 +2207,8 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
     unsigned heldg = 0, heldx = 0;
     int k, out = i->vout, outreg = -1, implicit = -1, base = -1, index = -1, isx = 0;
     for (k = 0; k < f->nops; ++k)
-        if (k != f->reg && k != f->rm && k != f->vvvv && ((f->xmask >> k) & 1)) implicit = k; /* x86's <XMM0> */
+        if (SGX_IMPLICIT_X0 && k != f->reg && k != f->rm && k != f->vvvv && ((f->xmask >> k) & 1))
+            implicit = k; /* x86's <XMM0>: a vector operand no field encodes */
     if (implicit >= 0 && i->in[implicit]) {
         int from = sgx_xin(a, i->in[implicit], at, 0);
         if (from != 0) {

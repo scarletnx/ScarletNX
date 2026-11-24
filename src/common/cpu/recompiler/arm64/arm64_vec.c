@@ -69,8 +69,9 @@ static int vdup(SgCtx* g, unsigned size, int a, int e) {
    (an accumulation's, an insertion's, a narrowing's second half: what it doesn't read costs a load at most); the
    rest of the register it leaves as the architecture says. Under the guest's FPCR in the host's, the host's FPSR
    ORed into the guest's after it (SGX_M_FPENTER, SGX_M_FPLEAVE), it computes what the guest's would, its exceptions'
-   flags and QC included. Not taken: a clause of a general-purpose register (UMOV, INS, FMOV, the conversions to and
-   from one), of the flags (FCMP, FCCMP, FCSEL), of TBL's and TBX's table of several registers, or of a feature
+   flags and QC included; FCMP's and FCCMP's flags the guest's NZCV, and FCCMP's and FCSEL's conditions on the guest's
+   flags in the host's (flags_into_host). Not taken: a clause of a general-purpose register (UMOV, INS, FMOV, the conversions to and
+   from one), or of a feature
    the host lacks (g_host_a64) */
 
 /* the clause of word: the first of the table whose fixed bits it has, -1 for none */
@@ -97,15 +98,37 @@ SGA_VE(pass) {
     sga_w(b, w);
 }
 static const SgXVForm sga_v_pass_f = {sga_v_pass, 0, 4, 0, 1, 2, 15, 0, NULL};
-/* FCMP and FCMPE: the word with Rn and Rm the registers r[0] and r[1]; it writes the flags alone */
+/* FCMP, FCMPE, FCCMP and FCCMPE: the word with Rn and Rm the registers r[0] and r[1] (but FCMP's with zero, imm's bit
+   36 and the word's 3); it writes the flags alone */
 SGA_VE(pcmp) {
     SnxU32 w = (SnxU32)imm;
     (void)cc;
     w = (w & ~(0x1Fu << 5)) | (SnxU32)r[0] << 5;
-    if (!(w >> 3 & 1)) w = (w & ~(0x1Fu << 16)) | (SnxU32)r[1] << 16; /* not the compare with zero */
+    if (!(imm >> 36 & 1) || !(w >> 3 & 1)) w = (w & ~(0x1Fu << 16)) | (SnxU32)r[1] << 16; /* not FCMP with zero */
     sga_w(b, w);
 }
 static const SgXVForm sga_v_pcmp_f = {sga_v_pcmp, 0, 2, 0, 1, 2, 3, 0, NULL};
+
+/* the host's flags the guest's NZCV: already, where the flags' origin is the last instruction to write the host's
+   (a compare just before); else PSTATE's four into bits 31-28 and MSR NZCV (SGX_M_SETNZCV) */
+static void flags_into_host(SgCtx* g) {
+    SgX* x = X;
+    SgD nzcv;
+    SgXIns* i;
+    int r;
+    if (g->origin >= 0 && x->flags_ins == g->origin) return;
+    nzcv = sg_d_concat(g, sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_N), sg_PSTATE_read(g, SG_PSTATE_Z)),
+                       sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_C), sg_PSTATE_read(g, SG_PSTATE_V)));
+    nzcv = sg_d_lsl(g, sg_d_zext(g, nzcv, 64), 28);
+    r = sgx_reg(x, &nzcv);
+    sgx_flags_clobbered(x);
+    i = sgx_append(x, SGX_K_MACHINE);
+    i->op = SGX_M_SETNZCV;
+    i->in[0] = r;
+    i->fsel = &sgx_sel_cmp_64[0];
+    x->flags_ins = x->n - 1;
+    g->origin = x->n - 1;
+}
 
 /* the host's FPCR the guest's from here: SGX_M_FPENTER, or none where the last floating-point word of the region left
    it so (its SGX_M_FPLEAVE dropped: nothing since calls out, reads FPSR or FPCR, or branches) */
@@ -137,9 +160,37 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgXIns* i;
     if (k < 0 || strcmp(sge_a64_table[k].family, "DataProcFPSIMD") || (insn->feature & ~g_host_a64)) return 0;
     name = sge_a64_table[k].name;
-    if (!strcmp(name, "fcmp_float") || !strcmp(name, "fcmpe_float")) {
-        /* the host's NZCV the guest's: PSTATE written from them, and a B.cond after it reads them (origin) */
+    if ((!strcmp(name, "tbl_advsimd") || !strcmp(name, "tbx_advsimd")) && (word >> 13 & 3)) {
+        /* a table of len + 1 registers from Rn, which the host's need not hold in a row: TBL (or TBX, of Vd) of the
+           first, then TBX of each next with the index 16 lower a register (an index out of a step's 16 bytes leaves
+           those bytes as they are, a lowered one below 16 wrapping past 240) */
+        unsigned len = word >> 13 & 3, q = word >> 30 & 1, t;
+        int idx = vread(g, rm), acc = name[2] == 'x' ? vread(g, rd) : 0, step[4] = {0, 0, 0, 0};
+        for (t = 0; t <= len; ++t) {
+            long long w = name[2] == 'x' || t ? sge_a64_tbx_advsimd(0, 0, 0, 0, q) : sge_a64_tbl_advsimd(0, 0, 0, 0, q);
+            int ix = idx;
+            if (t) {
+                SnxU64 k = 0x0101010101010101ull * (16 * t); /* 16t in every byte */
+                int sin[4] = {0, idx, sgx_xconst(X, k, k), 0};
+                ix = sgx_vins(X, &sga_v_pass_f, 0, 0, sin, (long long)sge_a64_sub_advsimd_simd(0, 0, 0, 0, 1) | 3ll << 32,
+                              0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+            }
+            step[0] = acc ? acc : vzero(g);
+            step[1] = vread(g, (rn + t) & 31);
+            step[2] = ix;
+            acc = sgx_vins(X, &sga_v_pass_f, 0, 1, step, w | 3ll << 32, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        }
+        sg__V_write(g, rd, sgx_xval(128, acc));
+        return 1;
+    }
+    if (!strcmp(name, "fcmp_float") || !strcmp(name, "fcmpe_float") || !strcmp(name, "fccmp_float") ||
+        !strcmp(name, "fccmpe_float")) {
+        /* the host's NZCV the guest's: PSTATE written from them, and a B.cond after it reads them (origin); FCCMP's
+           condition is on the guest's flags, in the host's first */
         int ins, cin[4] = {vread(g, rn), vread(g, rm), 0, 0};
+        if (name[2] == 'c') flags_into_host(g);
+        else
+            imm |= 1ll << 36; /* FCMP's bit 3: the compare with zero (FCCMP's is nzcv's) */
         fp_enter(g);
         sgx_vins(X, &sga_v_pcmp_f, -1, 0, cin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
         ins = X->flags_ins;
@@ -150,7 +201,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         return 1;
     }
     if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") || !strncmp(name, "fcmp", 4) ||
-        !strncmp(name, "fccmp", 5) || !strncmp(name, "fcsel", 5) || !strncmp(name, "umov", 4) ||
+        !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
         !strncmp(name, "smov", 4) || !strncmp(name, "fjcvtzs", 7))
         return 0;
     {
@@ -186,6 +237,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (imm >> 32 & 1) in[1] = vread(g, rn);
     if (imm >> 33 & 1) in[2] = vread(g, rm);
     if (imm >> 34 & 1) in[3] = vread(g, ra);
+    if (!strcmp(name, "fcsel_float")) flags_into_host(g); /* its condition the guest's flags' */
     fp_enter(g);
     r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     i = &X->ins[X->v[r].def];

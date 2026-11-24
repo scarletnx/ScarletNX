@@ -43,6 +43,8 @@ enum { SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_CS, SGX_ARM_CC, SGX_ARM_MI, SGX_ARM_PL, S
 #define SGX_F_GPR 0
 #define SGX_CARRY 2
 #define SGX_DIV_ARM 1
+/* no vector operand is implicit: every one is a field's */
+#define SGX_IMPLICIT_X0 0
 #define SGX_FRAME 31 /* SP, as a load's or a store's base */
 #define SGA_X16 16
 #define SGA_X17 17
