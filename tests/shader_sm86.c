@@ -2269,7 +2269,7 @@ static void test_ffma_fused(void) {
         put(code, fmul, x);
         ShaderInfo si = {0};
         size_t count = 0;
-        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE, SM86_LANES_WARP);
         CHECK(spv != NULL);
         u32 fmas = 0, bare = 0;
         for (size_t i = 5; spv && i < count && spv[i] >> 16; i += spv[i] >> 16) {
@@ -2309,7 +2309,7 @@ static void test_ftz_modes(const char* dir) {
         ShaderInfo si = {0};
         size_t count = 0;
         int mode, tests;
-        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, cases[k].can_flush);
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, cases[k].can_flush, SM86_LANES_WARP);
         CHECK(spv != NULL);
         if (!spv) continue;
         spv_ftz_counts(spv, count, &mode, &tests);
@@ -2335,7 +2335,7 @@ static void test_ftz_modes(const char* dir) {
         ShaderInfo si = {0};
         size_t count = 0;
         int mode, tests;
-        u32* spv = sm86_to_spirv_ftz(code, (n + 1) * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        u32* spv = sm86_to_spirv_ftz(code, (n + 1) * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE, SM86_LANES_WARP);
         CHECK(spv != NULL);
         if (spv) {
             spv_ftz_counts(spv, count, &mode, &tests);
@@ -7886,6 +7886,8 @@ static void test_brx_two_tables(const char* dir) {
     (void)dir;
 }
 
+#include "shader_sm86_lone.inc"
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -7991,6 +7993,9 @@ int main(int argc, char** argv) {
     test_coop_fused_only(dir);
     test_coop_cache();
     test_coop_cache_values(dir);
+    test_lone_lanes(dir);
+    test_lone_lanes_refused();
+    test_lone_stages();
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_rule();

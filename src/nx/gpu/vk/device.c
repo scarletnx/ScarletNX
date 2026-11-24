@@ -34,7 +34,8 @@
 int g_vk_preserve_infnan;
 int g_vk_preserve_infnan64;
 int g_vk_flush_denorm;
-VkShaderStageFlags g_vk_subgroup_stages;
+VkShaderStageFlags g_vk_subgroup_stages, g_vk_quad_stages;
+u32 g_vk_subgroup_lanes;
 
 VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
@@ -862,6 +863,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
     const int warp_operates = (subgroup.supportedOperations & warp_operations) == warp_operations;
     g_vk_subgroup_stages = subgroup.subgroupSize >= 32 && warp_operates ? subgroup.supportedStages : 0;
+    g_vk_quad_stages = subgroup.subgroupSize >= 4 &&
+                               (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT)
+                           ? subgroup.supportedStages
+                           : 0;
+    g_vk_subgroup_lanes = subgroup.subgroupSize;
     /* a driver that lists the stage and gives wrong ballot and shuffle results there (Turnip's geometry stage, as
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
