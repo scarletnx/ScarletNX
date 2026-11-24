@@ -4025,6 +4025,8 @@ add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends -
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
 set_tests_properties(recompiler_backends_lanes PROPERTIES TIMEOUT 600)
+# the exclusives whatever the fields they leave unused hold
+add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
 # host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
@@ -4049,6 +4051,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
         add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
+        # the exclusives whatever the fields they leave unused hold
+        add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
     endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
