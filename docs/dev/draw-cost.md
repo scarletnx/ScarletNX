@@ -209,6 +209,19 @@ The steps:
 3. The pages written only where they change.
 4. The texture slots' set and fs_key left out when nothing changed.
 
+Step 1 is in (`tex_events_shadow`). The events go into `addr_gens`, with a new space, `ADDR_GENS_WRITE`, for the
+GPU side's writes, the writes to targets, surfaces made or freed and pending storage images. A kept texture's
+generations are summed over every level and layer. Over the race route for 200 s, about 333 kept textures a present
+were claimed current, and no check contradicted a claim. About 13 a present were checked with nothing changed, from
+slots that ranges share. Two things it found:
+
+- Level 0's range alone (`rt_bytes`, which `vk_surf_guest_size` gives) missed the draws to the smaller levels of a
+  downsample chain. The texture memo asks its pending results and pending storage images over that same range
+  (`tex_memo_unpended`, `tex_memo_image_pending`). Whether a result pending over a texture's other levels reaches a
+  draw is not checked yet.
+- The streamed arrays of over 128 MiB have more granules than a read adds up (`ADDR_GENS_READ_MAX`). Step 2's
+  index of textures keeps a stamp for each texture, so the size of a texture costs nothing.
+
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
 thread, its largest phase. 18.1% came from one path: the import branch of `rt_watch` publishes every target drawn
