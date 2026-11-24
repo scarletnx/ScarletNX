@@ -13,7 +13,12 @@
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7), as on a host that lacks them
    --target NAME: the guest's features, switch (the default) or android
-   On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so */
+   On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so.
+
+   Built with SNX_TEST_ARM64 (snx-test-recompiler-arm64), the same programs hold the arm64 back end
+   (src/common/cpu/recompiler/arm64) to LLVM on any host: its object, made for the program's functions, runs under
+   Unicorn (support/arm64_unicorn.c), the arm64 side's memory and state mapped into it, the helpers and the runtime's
+   functions it calls trapped to this process's */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
@@ -22,6 +27,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef SNX_TEST_ARM64
+#include "support/arm64_unicorn.h"
+#include "common/cpu/recompiler/codegen.h"
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#endif
 
 #define CODE     0x10000u
 #define SLOT     16u          /* words a function has room for, its RET included */
@@ -339,6 +349,23 @@ static void undef(CPU* c, uint64_t pc, uint32_t word) {
     c->pc = STOP;
 }
 static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
+#ifdef SNX_TEST_ARM64
+/* the arm64 side's: a call no function takes (CALLDYN's miss) goes on at its target, which the run's loop finds */
+static void on_miss(CPU* c, uint64_t entry) { c->pc = entry; }
+static void on_poll(CPU* c) { (void)c; }
+u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+u64 snx_x64_fp_convert(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_round(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_round_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
+u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
+u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
+#endif
 static void on_brk(CPU* c, uint64_t pc, uint32_t imm) {
     (void)imm, (void)pc;
     c->pc = STOP;
@@ -379,6 +406,17 @@ int main(int argc, char** argv) {
         }
     }
     rows_init();
+#ifdef SNX_TEST_ARM64
+    ArmUc* uc = armuc_new((size_t)64 << 20);
+    CPU* ucpu = NULL;
+    RtAPI* urt = NULL;
+    uint64_t* udisp = NULL;
+    size_t made_arm64 = 0;
+    if (!uc) {
+        printf("recompiler arm64: no Unicorn AArch64: nothing to compare\n");
+        return 0;
+    }
+#endif
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     if (!rx || !rl) {
@@ -389,7 +427,11 @@ int main(int argc, char** argv) {
     snx_recompiler_set_backend(rl, 0);
     (void)snx_recompiler_set_a64_target(rx, target), (void)snx_recompiler_set_a64_target(rl, target);
     mem[0] = (uint8_t*)calloc(1, MEMORY);
+#ifdef SNX_TEST_ARM64
+    mem[1] = (uint8_t*)armuc_alloc(uc, MEMORY);
+#else
     mem[1] = (uint8_t*)calloc(1, MEMORY);
+#endif
     data0 = (uint8_t*)malloc(DATA_LEN);
     hints = (uint64_t*)malloc(functions * sizeof *hints);
     /* the program, in both memories: each function its words then RET */
@@ -425,27 +467,94 @@ int main(int argc, char** argv) {
     memcpy(mem[1], mem[0], MEMORY);
     {
         struct snx_code_range range = {CODE, mem[0] + CODE, (size_t)functions * SLOT * 4};
+#ifndef SNX_TEST_ARM64
         mx = snx_recompile_ranges(rx, &range, 1, hints, functions);
+#endif
         range.code = mem[1] + CODE;
         ml = snx_recompile_ranges(rl, &range, 1, hints, functions);
     }
+#ifdef SNX_TEST_ARM64
+    {
+        /* the program's functions as the arm64 back end's object, loaded into Unicorn, the code range's table
+           (CPU.disp) of their addresses there */
+        SnxCodegen cg;
+        SnxCodeImage view;
+        SnxNativeOptions options;
+        unsigned char *made = NULL, *object = NULL;
+        size_t object_size = 0, n;
+        char error[256];
+        memset(&view, 0, sizeof view);
+        memset(&options, 0, sizeof options);
+        view.image = mem[1] + CODE;
+        view.image_size = (size_t)functions * SLOT * 4;
+        view.base = CODE;
+        view.text_off = 0;
+        view.text_size = view.image_size;
+        if (snx_codegen_analyze(&cg, &view, 1, hints, functions, 1, 0)) {
+            fprintf(stderr, "FAIL: no functions found\n");
+            goto out;
+        }
+        made = (unsigned char*)calloc(cg.function_count + 1, 1);
+        if (snx_arm64_object(&cg, 0, cg.function_count, &options, SNX_ARM64_F_LSE | SNX_ARM64_F_CRC32, made, &object,
+                             &object_size, error, sizeof error) < 0) {
+            fprintf(stderr, "FAIL: the arm64 object: %s\n", error);
+            goto out;
+        }
+#define NATIVE(f) armuc_native(uc, #f, (void*)f)
+        NATIVE(snx_x64_fp_binary), NATIVE(snx_x64_fp_fma), NATIVE(snx_x64_fp_unary), NATIVE(snx_x64_fp_minmax);
+        NATIVE(snx_x64_fp_compare), NATIVE(snx_x64_fp_convert), NATIVE(snx_x64_fp_round);
+        NATIVE(snx_x64_fp_round_int), NATIVE(snx_x64_fp_to_int), NATIVE(snx_x64_fp_from_int), NATIVE(snx_x64_fp_jcvt);
+        NATIVE(snx_x64_fp_bfcvt), NATIVE(snx_mrs), NATIVE(snx_msr), NATIVE(snx_ic_ivau);
+#undef NATIVE
+        if (object && armuc_load(uc, object, object_size, error, sizeof error)) {
+            fprintf(stderr, "FAIL: loading the arm64 object: %s\n", error);
+            goto out;
+        }
+        for (n = 0; n < cg.function_count; ++n) made_arm64 += made[n];
+        printf("recompiler arm64: %zu functions, the arm64 back end made %zu (%zu bytes)\n", cg.function_count,
+               made_arm64, object_size);
+        ucpu = (CPU*)armuc_alloc(uc, sizeof *ucpu);
+        urt = (RtAPI*)armuc_alloc(uc, sizeof *urt);
+        udisp = (uint64_t*)armuc_alloc(uc, (size_t)functions * SLOT * 8 + 8);
+        for (n = 0; n < functions; ++n) {
+            char name[40];
+            snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[n]);
+            udisp[(hints[n] - CODE) / 4] = armuc_symbol(uc, name);
+        }
+        free(made), free(object);
+        snx_codegen_free(&cg);
+    }
+    if (!ml) {
+#else
     if (!mx || !ml) {
+#endif
         fprintf(stderr, "FAIL: recompiling: %s / %s\n", mx ? "" : snx_recompiler_error(rx),
                 ml ? "" : snx_recompiler_error(rl));
         goto out;
     }
     printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
+#ifdef SNX_TEST_ARM64
+    /* a function with an AdvSIMD data-processing word (a third of the words drawn) is not the arm64 back end's yet */
+    if (made_arm64 * 10 < (size_t)functions * 2) {
+        fprintf(stderr, "FAIL: the arm64 back end made under a fifth of the functions\n");
+        ++failures;
+    }
+    if (0) {
+#else
     printf("recompiler backends: %lu functions, the x86-64 back end made %lu\n",
            (unsigned long)snx_recompiled_functions(mx), (unsigned long)snx_recompiled_x64_functions(mx));
     if (!snx_recompiled_x64_functions(mx)) {
+#endif
         printf("recompiler backends: no x86-64 back end on this host: nothing to compare\n");
         result = 0;
         goto out;
     }
+#ifndef SNX_TEST_ARM64
     if (snx_recompiled_x64_functions(mx) * 10 < snx_recompiled_functions(mx) * 9) {
         fprintf(stderr, "FAIL: the x86-64 back end made under 90%% of the functions\n");
         ++failures;
     }
+#endif
     g_mem0 = mem[0];
 #ifdef SIGBUS
     signal(SIGBUS, on_fault);
@@ -456,14 +565,59 @@ int main(int argc, char** argv) {
     rt.undef = undef;
     rt.svc = on_svc;
     rt.brk = on_brk;
+#ifdef SNX_TEST_ARM64
+    memset(urt, 0, sizeof *urt);
+    urt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)armuc_native(uc, "undef", (void*)undef);
+    urt->svc = (void (*)(CPU*, u32))(uintptr_t)armuc_native(uc, "svc", (void*)on_svc);
+    urt->brk = (void (*)(CPU*, u64, u32))(uintptr_t)armuc_native(uc, "brk", (void*)on_brk);
+    urt->miss = (GuestFn)(uintptr_t)armuc_native(uc, "miss", (void*)on_miss);
+    urt->poll = (void (*)(CPU*))(uintptr_t)armuc_native(uc, "poll", (void*)on_poll);
+#endif
     for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
     for (i = 0; i < functions; ++i)
         for (s = 0; s < states; ++s) {
             CPU c[2], start;
             memset(&start, 0, sizeof start);
             start_state(&start, s);
+#ifdef SNX_TEST_ARM64
+            {
+                /* the arm64 side: F_<entry> under Unicorn, then the function of each pc a call left (a miss) */
+                uint64_t fn;
+                unsigned hops = 0;
+                char name[40];
+                snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[i]);
+                fn = armuc_symbol(uc, name);
+                if (!fn) break; /* not made: another back end's */
+                memcpy(mem[1] + DATA, data0, DATA_LEN);
+                *ucpu = start;
+                ucpu->mem = mem[1];
+                ucpu->rt = urt;
+                ucpu->x[30] = STOP;
+                ucpu->disp = (SNX_ATOMIC(GuestFn)*)(void*)udisp;
+                ucpu->code_lo = CODE;
+                ucpu->code_hi = CODE + (uint64_t)functions * SLOT * 4;
+                ucpu->pc = hints[i];
+                g_running = hints[i];
+                for (;;) {
+                    uint64_t entry = ucpu->pc;
+                    if (armuc_call(uc, fn, (uint64_t)(uintptr_t)ucpu, entry, NULL)) {
+                        ++failures;
+                        fprintf(stderr, "FAIL: the function at %llx, state %u: the arm64 code stopped\n",
+                                (unsigned long long)hints[i], s);
+                        break;
+                    }
+                    if (ucpu->pc == STOP || ++hops > 64 || ucpu->pc < CODE || ucpu->pc >= ucpu->code_hi) break;
+                    fn = udisp[(ucpu->pc - CODE) / 4];
+                    if (!fn) break;
+                }
+                c[1] = *ucpu;
+            }
+            for (k = 0; k < 1; ++k) {
+                struct snx_recompiled* m = ml;
+#else
             for (k = 0; k < 2; ++k) {
                 struct snx_recompiled* m = k ? mx : ml;
+#endif
                 memcpy(mem[k] + DATA, data0, DATA_LEN);
                 c[k] = start;
                 c[k].mem = mem[k];
@@ -500,6 +654,10 @@ done:
 out:
     snx_recompiled_free(mx);
     snx_recompiled_free(ml);
+#ifdef SNX_TEST_ARM64
+    armuc_free(uc);
+    mem[1] = NULL; /* Unicorn's mapping */
+#endif
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
     free(mem[0]), free(mem[1]), free(data0), free(hints);

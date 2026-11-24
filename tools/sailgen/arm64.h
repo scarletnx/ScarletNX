@@ -547,6 +547,11 @@ SGA_VE(ld16) {
         sga_fp_ldst(b, 1, 16, r[0], r[1] - 64, b->index, b->disp);
 }
 SGA_VE(st16) { (void)imm, (void)cc, sga_fp_ldst(b, 0, 16, r[1], r[0] - 64, b->index, b->disp); }
+/* LDR and STR of a D or S register (a load zeroing the rest of it) */
+SGA_VE(ld8) { (void)imm, (void)cc, sga_fp_ldst(b, 1, 8, r[0], r[1] - 64, b->index, b->disp); }
+SGA_VE(st8) { (void)imm, (void)cc, sga_fp_ldst(b, 0, 8, r[1], r[0] - 64, b->index, b->disp); }
+SGA_VE(ld4) { (void)imm, (void)cc, sga_fp_ldst(b, 1, 4, r[0], r[1] - 64, b->index, b->disp); }
+SGA_VE(st4) { (void)imm, (void)cc, sga_fp_ldst(b, 0, 4, r[1], r[0] - 64, b->index, b->disp); }
 /* MOVI Vd.2D, #0 */
 SGA_VE(zero) { (void)imm, (void)cc; sga_w(b, sge_a64_movi_advsimd(r[0], 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 1)); }
 /* FMOV between a general-purpose register and a vector one's low 32 or 64 bits (the rest of it made 0) */
@@ -577,8 +582,14 @@ SGA_VE(clear) {
         sga_w(b, sge_a64_dup_advsimd_elt_sisd(r[0], r[1], 1));
 }
 #define SGA_VF(name, n, xm) static const SgXVForm sgx_v_##name = {sga_v_##name, 0, n, 0, 1, 2, xm, 0, NULL};
+/* a store's register operand is 1 and its memory 0 (x86's MOVDQU m128, xmm), as mach.h's callers take a store */
+#define SGA_VFS(name, n, xm) static const SgXVForm sgx_v_##name = {sga_v_##name, 0, n, 1, 0, 2, xm, 0, NULL};
 SGA_VF(ld16, 2, 1)
-SGA_VF(st16, 2, 2)
+SGA_VFS(st16, 2, 2)
+SGA_VF(ld8, 2, 1)
+SGA_VFS(st8, 2, 2)
+SGA_VF(ld4, 2, 1)
+SGA_VFS(st4, 2, 2)
 SGA_VF(zero, 2, 1)
 SGA_VF(x2g32, 2, 2)
 SGA_VF(x2g64, 2, 2)
@@ -598,6 +609,10 @@ SGA_VF(clear, 2, 3)
 #define SGX_VF_G2X64 (&sgx_v_g2x64)
 #define SGX_VF_XHI2G (&sgx_v_xhi2g)
 #define SGX_VF_INS64 (&sgx_v_ins64)
+#define SGX_VF_LD8 (&sgx_v_ld8)
+#define SGX_VF_ST8 (&sgx_v_st8)
+#define SGX_VF_LD4 (&sgx_v_ld4)
+#define SGX_VF_ST4 (&sgx_v_st4)
 
 /* the state's address (X19, the callee's), and a call's arguments from the state's (X0) on */
 #define SGX_BASE 19

@@ -3920,6 +3920,19 @@ add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
 add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words
          0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
+# the arm64 back end against LLVM, function by function, its code under Unicorn on any host (where installed)
+if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+    add_executable(snx-test-recompiler-arm64 recompiler_backends.c llvm_qemu_words.c support/arm64_unicorn.c
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-recompiler-arm64)
+    snx_test_target(snx-test-recompiler-arm64 gnu23)
+    target_compile_definitions(snx-test-recompiler-arm64 PRIVATE SNX_TEST_ARM64=1)
+    target_include_directories(snx-test-recompiler-arm64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-recompiler-arm64 PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
+    snx_decodetree_a64(snx-test-recompiler-arm64)
+    add_test(NAME recompiler_arm64 COMMAND snx-test-recompiler-arm64)
+endif()
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
          d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61)
