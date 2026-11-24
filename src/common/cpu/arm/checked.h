@@ -7,14 +7,15 @@
 /* Separate opt-in ABI; SnxArmCPU and SNX_ARM_ABI are unchanged. Generated
    checked blocks take &state.cpu, NEVER a standalone SnxArmCPU. No flat memory
    pointer is read. The runtime serializes CPU, mappings, devices and callbacks. */
-#define SNX_ARM_CHECKED_ABI      1u
+/* 2: the words the native back ends' blocks move a transfer through */
+#define SNX_ARM_CHECKED_ABI      2u
 #define SNX_ARM_ACCESS_READ      1u
 #define SNX_ARM_ACCESS_WRITE     2u
 #define SNX_ARM_ACCESS_FETCH     3u
 /* One whole-instruction RAM transaction, not one combined MMIO access.
    Backends must reject MULTI on devices before causing any side effect. */
 #define SNX_ARM_ACCESS_MULTI     0x100u
-/* Optional ABI-1 RAM reservation transactions (ARM11 emission only). READ |
+/* Optional RAM reservation transactions (ARM11 emission only). READ |
    EXCLUSIVE loads bytes and installs a serialized bus-owned reservation. WRITE
    | EXCLUSIVE consumes bytes and atomically tests/consumes that reservation.
    Return 0 on store success, EXCLUSIVE_FAILED on reservation loss, otherwise
@@ -38,6 +39,8 @@ typedef struct {
     uint32_t abi;
     void* context;
     SnxArmAccess access;
+    uint32_t words[32]; /* a transfer's bytes, as the runtime library's calls keep them for a native block (arm.h's
+                           snx_arm_checked_access): nothing lives in them from one instruction to the next */
 } SnxArmCheckedCPU;
 _Static_assert(offsetof(SnxArmCheckedCPU, cpu) == 0, "checked CPU prefix");
 #endif

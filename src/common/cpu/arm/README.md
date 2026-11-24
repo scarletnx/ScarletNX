@@ -127,7 +127,8 @@ A fault reports `PREFETCH_ABORT`; a mismatch reports `CODE_CHANGED` before the
 stale instruction executes. These exits must return to the dispatcher. There
 is no automatic recompilation, block discovery or executable-module loader.
 
-Integer and supported ARM11 VFP transfers use bounded little-endian transaction buffers. Reads complete
+Integer and supported ARM11 VFP transfers use bounded little-endian transaction buffers (a native block's, the state's
+`words`, which the runtime library's `snx_arm_checked_access` fills and empties: ABI 2). Reads complete
 before register updates; stores commit before base/SP writeback. Paired and
 multiword accesses are whole-range RAM transactions and carry `ACCESS_MULTI`,
 which callbacks must reject on MMIO. This intentionally preflights all bytes,
@@ -135,7 +136,7 @@ not hardware partial-transfer behavior on abort. Ordinary aligned single MMIO
 accesses remain one callback, not byte-split accesses. Callers serialize CPU,
 permissions, mappings, callbacks and device/memory writes; concurrent code
 mutation and a concurrent multicore scheduler are not supported. ARM11 checked
-exclusives now use optional ABI-1 `READ|EXCLUSIVE` and `WRITE|EXCLUSIVE` RAM
+exclusives use optional `READ|EXCLUSIVE` and `WRITE|EXCLUSIVE` RAM
 transactions. The callback owns reservation metadata without modifying CPU
 state. A serialized, saturating board-wide write/mapping epoch rejects aliases,
 other-space/kernel writes and ABA changes. Unrelated writes may cause spurious

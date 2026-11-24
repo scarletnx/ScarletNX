@@ -10,7 +10,9 @@
 /* The runtime library's calls into the backend (arm.h's SnxArmRt): what generated code can't do itself is decided by
    the runtime running it, as A64 code calls RtAPI's undef. Linked into snx_arm_rt and every 32-bit game module */
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/checked.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 
 void snx_arm_undefined(SnxArmCPU* cpu, uint64_t word, uint64_t reason) {
     if (cpu->rt && cpu->rt->undefined) {
@@ -144,4 +146,44 @@ void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t instruction, uint64_t thumb
     else
         carry = wide ? multiply_carry_hi(lhs, rhs, accum_hi, is_signed) : multiply_carry_simple(rhs);
     cpu->cpsr = (cpu->cpsr & ~0x20000000u) | (carry ? 0x20000000u : 0); /* C, bit 29 */
+}
+
+/* ---- checked memory for the native back ends' blocks (arm.h), as llvm.c's bus_access makes it ---- */
+
+/* a transfer's bytes are guest order for the callback, the state's words numbers: a transfer narrower than a word is
+   its low bytes */
+static void checked_bytes(const SnxArmCheckedCPU* c, unsigned char* bytes, unsigned n) {
+    for (unsigned i = 0; i < n; ++i) bytes[i] = (unsigned char)(c->words[i / 4] >> 8 * (i % 4));
+}
+static void checked_words(SnxArmCheckedCPU* c, const unsigned char* bytes, unsigned n) {
+    for (unsigned i = 0; i < n; ++i) {
+        if (!(i % 4)) c->words[i / 4] = 0;
+        c->words[i / 4] |= (uint32_t)bytes[i] << 8 * (i % 4);
+    }
+}
+uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes) {
+    SnxArmCheckedCPU* c = (SnxArmCheckedCPU*)cpu;
+    unsigned char got[4] = {0};
+    if (c->access(c->context, SNX_ARM_ACCESS_FETCH, (uint32_t)pc, (uint32_t)bytes, got)) return SNX_ARM_PREFETCH_ABORT;
+    uint32_t w = bytes == 2 ? snx_ld_le16(got) : snx_ld_le32(got);
+    return w == (uint32_t)word ? 0 : SNX_ARM_CODE_CHANGED;
+}
+uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes) {
+    SnxArmCheckedCPU* c = (SnxArmCheckedCPU*)cpu;
+    unsigned char moved[sizeof c->words];
+    unsigned n = (unsigned)bytes;
+    int write = ((uint32_t)operation & 3) == SNX_ARM_ACCESS_WRITE;
+    if (write) checked_bytes(c, moved, n);
+    uint32_t status = c->access(c->context, (uint32_t)operation, (uint32_t)address, n, moved);
+    if (!status && !write) checked_words(c, moved, n);
+    return status;
+}
+uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes) {
+    int reserved =
+        cpu->exclusive_valid && cpu->exclusive_address == (uint32_t)address && cpu->exclusive_size == (uint32_t)bytes;
+    cpu->exclusive_valid = 0;
+    if (!reserved) return 1;
+    uint32_t status =
+        (uint32_t)snx_arm_checked_access(cpu, SNX_ARM_ACCESS_WRITE | SNX_ARM_ACCESS_EXCLUSIVE, address, bytes);
+    return !status ? 0 : status == SNX_ARM_EXCLUSIVE_FAILED ? 1 : 2;
 }

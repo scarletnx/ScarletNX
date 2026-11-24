@@ -6,7 +6,7 @@
 # snx_arm_native_modes(<machine> [<argument>...]): arm_<machine>_<mode> for each mode of snx-test-arm-<machine>, with
 # the arguments (how many blocks and states), and each again with three host registers, so that values spill
 function(snx_arm_native_modes machine)
-    foreach(mode a9 arm11 a57_hosted a9_hosted arm11_hosted)
+    foreach(mode a9 arm11 a57_hosted a9_hosted arm11_hosted a57_checked a9_checked arm11_checked)
         string(REGEX MATCH "^[^_]+" profile "${mode}")
         set(options --profile ${profile})
         if(mode MATCHES "_(hosted|checked)$")
@@ -26,6 +26,13 @@ function(snx_arm_native_modes machine)
             string(REPLACE "," "_" name "${halves}")
             add_test(NAME arm_x64_a9_own_base_${name}
                      COMMAND snx-test-arm-x64 --profile a9 --states 64 --halves ${halves})
+        endforeach()
+    endif()
+    # an empty Thumb PUSH and POP, which checked memory has no transaction of (UNDEFINED there); Thumb is x86-64's
+    if(machine STREQUAL "x64")
+        foreach(halfword b400 bc00)
+            add_test(NAME arm_x64_a57_checked_empty_${halfword}
+                     COMMAND snx-test-arm-x64 --memory checked --states 64 --halves ${halfword})
         endforeach()
     endif()
 endfunction()

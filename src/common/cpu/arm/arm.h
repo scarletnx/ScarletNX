@@ -84,6 +84,14 @@ void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
 /* The ARM7TDMI's C after a multiply that sets the flags, word the instruction (a Thumb MULS's halfword when thumb), its
    operands still in r[]: the carry out of its Booth multiplier, which the other profiles leave as it was */
 void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t word, uint64_t thumb);
+/* Checked memory (checked.h; cpu is a SnxArmCheckedCPU's) for the native back ends' blocks: the instruction of bytes
+   at pc fetched through the bus, 0 where it is word, else the exit it stops with (PREFETCH_ABORT, CODE_CHANGED); and
+   one transfer of bytes, its data in the state's words (a word's bytes guest order, a narrower one's in the low bits),
+   0 or the bus's fault. The store-exclusive does llvm.c's checked_exclusive: 0 where it took, 1 where it
+   lost, 2 a fault */
+uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes);
+uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes);
+uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 

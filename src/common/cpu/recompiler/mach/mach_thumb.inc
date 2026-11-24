@@ -289,6 +289,10 @@ static int tbranch(SgCtx* g, const SnxThumb* t) {
 
 /* a 32-bit Thumb instruction (llvm_thumb.inc's thumb_instruction, its 32-bit shapes): 1 where the block ends after it */
 static int thumb32(SgCtx* g, const SnxThumb* t) {
+    if (sgx_a32_checked(g) && t->shape == TH_TABLE) {
+        sgx_a32_trap(g, SNX_ARM_BACKEND_UNSUPPORTED);
+        return 1;
+    }
     switch (t->shape) {
         case TH_LOAD:
         case TH_STORE: return tldst(g, t);
@@ -345,6 +349,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
             g->next = (SnxU32)g->pc + 2;
             itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0; /* ITAdvance */
             g->it_after = itstate;
+            sgx_a32_fetch(g, hw1, 2);
             g->start = x->n;
             if (sg_decode_t16(g))
                 stop = g->branched || (g->undefined && g->skip < 0);
@@ -361,6 +366,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
                 g->word = len == 2 ? (SnxU32)hw1 | (SnxU32)hw2 << 16 : hw1;
                 g->next = (SnxU32)g->pc + 2 * (SnxU32)len;
                 g->it_after = 0;
+                sgx_a32_fetch(g, g->word, (unsigned)len * 2);
                 sg_undefined(g);
                 stop = 1;
             } else {
@@ -374,6 +380,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
                     itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0;
                 }
                 g->it_after = itstate;
+                sgx_a32_fetch(g, g->word, 4);
                 g->start = x->n;
                 if (cond != 14) sg_when(g, sgx_a32_condition(g, cond));
                 stop = thumb32(g, &t);

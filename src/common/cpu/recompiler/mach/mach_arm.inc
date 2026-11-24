@@ -94,8 +94,7 @@ MG_ARM* MG_ARM_API(new)(void) {
 }
 int MG_ARM_API(options)(MG_ARM* c, const SnxArmCodegenOptions* options) {
     if (!snx_arm_codegen_options_valid(options)) return -1;
-    if (options && (options->profile == SNX_ARM_PROFILE_ARM7TDMI || options->profile == SNX_ARM_PROFILE_ARM946E ||
-                    options->memory == SNX_ARM_MEMORY_CHECKED))
+    if (options && (options->profile == SNX_ARM_PROFILE_ARM7TDMI || options->profile == SNX_ARM_PROFILE_ARM946E))
         return -1;
     c->options = options ? *options : (SnxArmCodegenOptions){.abi = SNX_ARM_CODEGEN_OPTIONS_ABI};
     return 0;
@@ -487,6 +486,40 @@ static void exclusive(SgCtx* g) {
     }
 }
 
+/* llvm.c's checked_exclusive (the ARM11's on checked memory): the bus owns the reservation (checked.h), the CPU-local
+   address, size and valid are additional guards */
+static void checked_exclusive(SgCtx* g) {
+    SgX* x = sgx(g);
+    SnxU32 w = g->word;
+    unsigned op = (w >> 20) & 7, n = (w >> 16) & 15, d = (w >> 12) & 15, t = w & 15;
+    static const unsigned widths[] = {4, 8, 1, 2};
+    unsigned bytes = widths[op >> 1];
+    condition(g);
+    SgD addr = reg(g, n);
+    sgx_reg(x, &addr);
+    if (bytes > 1)
+        sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, addr, sgx_const(32, bytes - 1)))), SNX_ARM_ALIGNMENT,
+                     addr, 0);
+    if (op & 1) {
+        sgx_a32_checked_access(g, SNX_ARM_ACCESS_READ | SNX_ARM_ACCESS_EXCLUSIVE, addr, bytes);
+        SgD low = sgx_a32_word(g, 0, 32), value = sg_d_zext(g, low, 64);
+        if (bytes == 8) value = sg_d_concat(g, sgx_a32_word(g, 4, 32), low);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_value), 64, value);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_address), 32, addr);
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_size), 32, sgx_const(32, bytes));
+        sgx_a32_put(g, offsetof(SnxArmCPU, exclusive_valid), 32, sgx_const(32, 1));
+        sg_GPR_write(g, d, low);
+        if (bytes == 8) sg_GPR_write(g, d + 1, sg_d_slice(g, value, 63, 32));
+        return;
+    }
+    sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words), 32, reg(g, t));
+    if (bytes == 8) sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words) + 4, 32, reg(g, t + 1));
+    SgD status = sgx_a32_checked_call(g, "snx_arm_checked_strex", addr, sgx_const(32, bytes), 0);
+    sgx_reg(x, &status);
+    sgx_a32_exit(g, sg_d_eq(g, status, sgx_const(32, 2)), SNX_ARM_DATA_ABORT, addr, 0);
+    sg_GPR_write(g, d, status);
+}
+
 /* LDA, STL and their byte and halfword forms: a sequentially consistent access (a store then a full barrier, as the
    store-release the LLVM back end makes; a load then one where the machine's loads are no acquires) */
 static void acquire_release(SgCtx* g) {
@@ -835,11 +868,19 @@ static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
     int single = (v->flags & AV_PRE) && !(v->flags & AV_WB);
     SgD end = v->flags & AV_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
     SgD addr = single || (v->flags & AV_PRE) ? end : base;
+    int wide = !sgx_a32_checked(g); /* a doubleword at once */
     sgx_reg(sgx(g), &addr);
-    sgx_a32_bounds(g, addr, v->bytes, 4);
+    if (sgx_a32_checked(g))
+        sgx_a32_transfer(g, addr, v->bytes, 4, !(v->flags & AV_LOAD), 1);
+    else
+        sgx_a32_bounds(g, addr, v->bytes, 4);
     for (unsigned i = 0, step; i < v->bytes; i += step) {
-        step = !((v->d + i) & 7) && i + 8 <= v->bytes ? 8 : 4;
-        if (v->flags & AV_LOAD)
+        step = wide && !((v->d + i) & 7) && i + 8 <= v->bytes ? 8 : 4;
+        if (!wide && (v->flags & AV_LOAD))
+            vset(g, v->d + i, 32, sgx_a32_read(g, addr, 4, (int)i, 0));
+        else if (!wide)
+            sgx_a32_write(g, addr, 4, (int)i, vbits(g, v->d + i, 32), 0);
+        else if (v->flags & AV_LOAD)
             vset(g, v->d + i, step * 8, sgx_a32_load(g, addr, (int)step, (int)i));
         else
             sgx_a32_store(g, addr, (int)step, (int)i, vbits(g, v->d + i, step * 8));
@@ -1631,6 +1672,13 @@ static void vfp(SgCtx* g) {
    goes on; a kind this back end doesn't make refuses the block */
 static int instruction(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
+    if (sgx_a32_checked(g) &&
+        (kind == SNX_A32_ACQUIRE_RELEASE ||
+         ((kind == SNX_A32_VECTOR || kind == SNX_A32_EXCLUSIVE) && g->profile != SNX_ARM_PROFILE_ARM11))) {
+        condition(g);
+        sgx_a32_trap(g, SNX_ARM_BACKEND_UNSUPPORTED);
+        return 1;
+    }
     switch (kind) {
         case SNX_A32_SINGLE:
         case SNX_A32_EXTRA: return memory(g, kind);
@@ -1645,7 +1693,12 @@ static int instruction(SgCtx* g, SnxA32Kind kind) {
         case SNX_A32_BITFIELD:
         case SNX_A32_MRS:
         case SNX_A32_MSR: return miscellaneous(g, kind);
-        case SNX_A32_EXCLUSIVE: exclusive(g); return 0;
+        case SNX_A32_EXCLUSIVE:
+            if (sgx_a32_checked(g))
+                checked_exclusive(g);
+            else
+                exclusive(g);
+            return 0;
         case SNX_A32_ACQUIRE_RELEASE: acquire_release(g); return 0;
         case SNX_A32_CLREX:
             condition(g);
@@ -1720,6 +1773,7 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
+        sgx_a32_fetch(g, w, 4);
         g->start = x->n;
         /* the Sail's clauses' (their condition and their end their own), else the emitters here */
         int stop = sg_decode_a32(g) ? g->branched || (g->undefined && g->skip < 0)
@@ -1737,6 +1791,23 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
 #include "common/cpu/recompiler/mach/mach_thumb.inc"
 #endif
 
+/* checked memory's entry (llvm.c's memory_entry): the state the bus's, of this ABI */
+static void checked_entry(SgCtx* g) {
+    SgX* x = sgx(g);
+    static const struct {
+        size_t at;
+        unsigned w;
+    } field[2] = {{offsetof(SnxArmCheckedCPU, abi), 32}, {offsetof(SnxArmCheckedCPU, access), 64}};
+    for (int k = 0; k < 2; ++k) {
+        SgXIns* l = sgx_append(x, SGX_K_LOAD);
+        l->w = (unsigned char)field[k].w;
+        l->disp = (int)field[k].at;
+        l->def = sgx_vreg(x, x->n - 1, field[k].w);
+        SgD v = sgx_val(field[k].w, l->def);
+        SgB bad = k ? sg_d_is_zero(g, v) : sg_b_not(g, sg_d_eq(g, v, sgx_const(32, SNX_ARM_CHECKED_ABI)));
+        sgx_a32_exit(g, bad, SNX_ARM_BAD_ENTRY, sgx_const(32, SNX_ARM_CHECKED_ABI), 1);
+    }
+}
 /* one block into c->b, A32 or (thumb) Thumb: its size, 0 where refused (t_mach_arm.why says why) */
 static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 pc, int thumb, size_t* consumed,
                     MG_ARM_NEXT succ, void* user) {
@@ -1792,6 +1863,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     flush(c);
     g->e_written = 0;
     mg_prologue(c, pc, &bad);
+    if (sgx_a32_checked(g)) checked_entry(g);
 #ifdef MG_ARM_THUMB_BLOCK
     units = thumb ? thumb_code(c, code, count, pc, &itstate) : arm_code(c, code, count, pc);
 #else
