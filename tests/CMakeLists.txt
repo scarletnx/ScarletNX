@@ -4128,7 +4128,8 @@ foreach(family IN ITEMS
         "sm;SM3PARTW1;SM3PARTW2;SM3SS1;SM3TT1A;SM3TT1B;SM3TT2A;SM3TT2B;SM4E;SM4EKEY"
         "matrices;SMMLA;UMMLA;USMMLA;USDOT_v;USDOT_vi;SUDOT_vi;BFDOT_v;BFDOT_vi;BFMLAL_v;BFMLAL_vi;BFMMLA;BFCVTN_v;BFCVT_s"
         "fhm;FMLAL_v;FMLAL2_v;FMLSL_v;FMLSL2_v;FMLAL_vi;FMLAL2_vi;FMLSL_vi;FMLSL2_vi"
-        "complex;FCADD_90;FCADD_270;FCMLA_v;FCMLA_vi;FRINT32X_v;FRINT32Z_v;FRINT64X_v;FRINT64Z_v;FRINT32X_s;FRINT32Z_s;FRINT64X_s;FRINT64Z_s;FJCVTZS")
+        "complex;FCADD_90;FCADD_270;FCMLA_v;FCMLA_vi;FRINT32X_v;FRINT32Z_v;FRINT64X_v;FRINT64Z_v;FRINT32X_s;FRINT32Z_s;FRINT64X_s;FRINT64Z_s;FJCVTZS"
+        "newer;FCVTAS_g_simd;FCVTAU_g_simd;FCVTMS_g_simd;FCVTMU_g_simd;FCVTNS_g_simd;FCVTNU_g_simd;FCVTPS_g_simd;FCVTPU_g_simd;FCVTZS_g_simd;FCVTZU_g_simd;SCVTF_simd;UCVTF_simd;FAMAX;FAMIN;LUTI2_1b;LUTI2_1h;LUTI4_1b;LUTI4_2h")
     list(POP_FRONT family name)
     set(backends backends)
     if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
@@ -4145,6 +4146,11 @@ foreach(family IN ITEMS
             set_tests_properties(recompiler_${m}_past_${name} PROPERTIES TIMEOUT 900)
         endif()
     endforeach()
+endforeach()
+# the tags' loads and stores, which LLVM's back end has
+foreach(m IN LISTS backends)
+    add_test(NAME recompiler_${m}_past_tags COMMAND snx-test-recompiler-${m} --target max --states 16 --ops STG STZG ST2G
+             STZ2G STGP LDG)
 endforeach()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
 # run under Unicorn (loongarch64's in support/la64_interp.c)

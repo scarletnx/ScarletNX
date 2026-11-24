@@ -916,6 +916,152 @@ static int call_or_stub(Unit* u, SnxU64 target, int tail) {
 }
 #endif
 
+/* bits hi..lo of a SIMD&FP register */
+static SgD vbits(SgCtx* g, unsigned n, unsigned hi, unsigned lo) {
+    return sg_d_slice(g, sg__V_read_bits(g, n, 127, 0), hi, lo);
+}
+/* v9.5's and v9.6's, which the Sail (v9.4) has no clause of: FEAT_FPRCVT's conversions between a SIMD&FP register's
+   integer and its float, FEAT_FAMINMAX's extremes of the magnitudes, FEAT_LUT's tables of 2- and 4-bit numbers. 1 made,
+   0 not one of them */
+static int newer(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    static const signed char fp_size[4] = {32, 64, 0, 16};
+    SgCtx* g = u->g;
+    const SnxA64Args* a = &insn->args;
+    unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31, e, n, bits;
+    unsigned isize = word >> 31 ? 64 : 32, fsize = (unsigned)fp_size[word >> 22 & 3];
+    SgD r, table;
+    int round, uns = 0;
+    switch (insn->op) {
+    case SNX_A64_OP_UCVTF_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_SCVTF_simd:
+        r = vbits(g, rn, isize - 1, 0);
+        r = sg_FixedToFP(g, 0, r, 0, uns, sg_FPCR_read(g), SG_FP_ROUNDING_FPCR, fsize);
+        sg__V_write(g, rd, sg_d_zext(g, r, 128));
+        return 1;
+    case SNX_A64_OP_FCVTNU_g_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_FCVTNS_g_simd: round = 0; break;
+    case SNX_A64_OP_FCVTPU_g_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_FCVTPS_g_simd: round = 1; break;
+    case SNX_A64_OP_FCVTMU_g_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_FCVTMS_g_simd: round = 2; break;
+    case SNX_A64_OP_FCVTZU_g_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_FCVTZS_g_simd: round = 3; break;
+    case SNX_A64_OP_FCVTAU_g_simd: uns = 1; /* fallthrough */
+    case SNX_A64_OP_FCVTAS_g_simd: round = 4; break;
+    case SNX_A64_OP_FAMAX:
+    case SNX_A64_OP_FAMIN:
+        bits = 8u << a->esz;
+        r = sg_d_empty(128);
+        for (e = 0; e < (a->q ? 128 : 64) / bits; ++e) {
+            SgD o[2] = {vbits(g, rn, (e + 1) * bits - 1, e * bits), vbits(g, rm, (e + 1) * bits - 1, e * bits)};
+            for (n = 0; n < 2; ++n) { /* the magnitudes, but a NaN's sign is its own */
+                SgD m = sg_d_and(g, o[n], sgx_const(bits, sg_ones(bits - 1)));
+                SnxU64 inf = sg_ones(bits - 1) & ~sg_ones(bits == 64 ? 52 : bits == 32 ? 23 : 10);
+                SgB nan = sgx_d_ult(g, sgx_const(64, inf), sg_d_zext(g, m, 64));
+                o[n] = sg_d_select(g, nan, sg_d_zext(g, o[n], 64), sg_d_zext(g, m, 64));
+                o[n] = sg_d_slice(g, o[n], bits - 1, 0);
+            }
+            /* no operand is flushed, whatever FPCR.FZ and FZ16 hold */
+            table = sg_d_and(g, sg_FPCR_read(g), sgx_const(64, ~(SnxU64)(1u << 24 | 1u << 19)));
+            table = sgx_fp(g, "snx_x64_fp_minmax", 0, table, o, 2, 1,
+                           bits | (SnxU32)(insn->op == SNX_A64_OP_FAMIN) << 8, bits);
+            sg_d_set_slice(g, &r, (e + 1) * bits - 1, e * bits, table);
+        }
+        sg__V_write(g, rd, r);
+        return 1;
+    case SNX_A64_OP_LUTI2_1b:
+    case SNX_A64_OP_LUTI2_1h:
+    case SNX_A64_OP_LUTI4_1b:
+    case SNX_A64_OP_LUTI4_2h: {
+        unsigned by = insn->op == SNX_A64_OP_LUTI2_1b || insn->op == SNX_A64_OP_LUTI2_1h ? 2 : 4; /* a number's bits */
+        unsigned at;
+        bits = insn->op == SNX_A64_OP_LUTI2_1b || insn->op == SNX_A64_OP_LUTI4_1b ? 8 : 16;
+        n = 128 / bits;
+        at = (unsigned)a->idx * n * by; /* the segment of Vm */
+        table = vbits(g, rn, 127, 0);
+        if (insn->op == SNX_A64_OP_LUTI4_2h) table = sg_d_concat(g, vbits(g, (rn + 1) & 31, 127, 0), table);
+        r = sg_d_empty(128);
+        for (e = 0; e < n; ++e) {
+            SgI i = sg_i_uint(g, vbits(g, rm, at + (e + 1) * by - 1, at + e * by));
+            sg_d_set_slice(g, &r, (e + 1) * bits - 1, e * bits, sg_d_elem_dyn(g, table, i, bits));
+        }
+        sg__V_write(g, rd, r);
+        return 1;
+    }
+    default: return 0;
+    }
+    r = sg_FPToFixed(g, 0, vbits(g, rn, fsize - 1, 0), 0, uns, sg_FPCR_read(g), round, isize);
+    sg__V_write(g, rd, sg_d_zext(g, r, 128));
+    return 1;
+}
+
+/* FEAT_CMPBR's: CB<cc> of two registers (CBB<cc>'s and CBH<cc>'s low byte or halfword), or of one and a 6-bit
+   integer */
+static void compare_branch(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    /* the comparisons sgx_d_cmp64 has: == != < <= > >=; the ones cc names, of registers and of an integer */
+    static const signed char reg[8] = {4, 5, 4, 5, 0, 0, 0, 1}, imm[8] = {4, 2, 4, 2, 0, 0, 0, 1};
+    SgCtx* g = u->g;
+    unsigned cc = word >> 21 & 7, bits;
+    int is_signed = cc < 2, by_reg = insn->op == SNX_A64_OP_CB_cond;
+    SgD a = xzr_or(g, word & 31), b;
+    bits = by_reg ? 8u << insn->args.esz : word >> 31 ? 64 : 32;
+    a = sg_d_slice(g, a, bits - 1, 0);
+    b = by_reg ? sg_d_slice(g, xzr_or(g, word >> 16 & 31), bits - 1, 0) : sgx_const(bits, word >> 15 & 63);
+    a = is_signed ? sg_d_sext(g, a, 64) : sg_d_zext(g, a, 64);
+    b = is_signed ? sg_d_sext(g, b, 64) : sg_d_zext(g, b, 64);
+    g->taken = sgx_d_cmp64(g, by_reg ? reg[cc] : imm[cc], a, b, !is_signed);
+    g->branched = 1;
+}
+
+/* instructions past the guests' CPUs that are others', or nothing, where EL0 runs: 1 made, -1 UNDEF, 0 the Sail's (of
+   g->word). No allocation tag is kept (FEAT_MTE): STG and ST2G only move their base, the zeroing forms clear their
+   16-byte granules too, LDG gives a tag of 0 and STGP stores its pair, as ir_ldst.c's; the forms of many tags are
+   EL1's */
+static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    const SnxA64Args* a = &insn->args;
+    SnxU64 offset = (SnxU64)(int64_t)a->imm;
+    SgD base, address;
+    int k, bytes = 0;
+    switch (insn->op) {
+    /* PSTATE.DIT, SSBS and TCO change nothing this CPU keeps */
+    case SNX_A64_OP_MSR_i_DIT:
+    case SNX_A64_OP_MSR_i_SBSS:
+    case SNX_A64_OP_MSR_i_TCO: return 1;
+    /* a speculation barrier is a whole one, and DSB's nXS form is DSB */
+    case SNX_A64_OP_SB:
+    case SNX_A64_OP_DSB_nXS: g->word = 0xD5033F9Fu; return 0;
+    /* waits that may end at any time: YIELD */
+    case SNX_A64_OP_WFET:
+    case SNX_A64_OP_WFIT: g->word = 0xD503203Fu; return 0;
+    /* no guarded control stack and no streaming mode, and the array forms of the tags are EL1's */
+    case SNX_A64_OP_MSR_i_SVCR:
+    case SNX_A64_OP_GCSSTR:
+    case SNX_A64_OP_LDGM:
+    case SNX_A64_OP_STGM:
+    case SNX_A64_OP_STZGM: return -1;
+    case SNX_A64_OP_LDG:
+        if (a->rt != 31)
+            sg_GPR_write(g, a->rt, sg_d_and(g, sg_GPR_read(g, a->rt), sgx_const(64, ~((SnxU64)15 << 56))));
+        return 1;
+    case SNX_A64_OP_STGP: offset <<= 4; bytes = -1; break;
+    case SNX_A64_OP_STZG: bytes = 16; break;
+    case SNX_A64_OP_STZ2G: bytes = 32; break;
+    case SNX_A64_OP_STG:
+    case SNX_A64_OP_ST2G: break;
+    default: return newer(u, insn, word);
+    }
+    base = sg_GPR_read(g, a->rn);
+    address = a->p ? base : sg_d_add_int(g, base, (long long)offset);
+    if (bytes < 0) {
+        sg_GuestMemWrite(g, address, 8, 0, xzr_or(g, (unsigned)a->rt));
+        sg_GuestMemWrite(g, sg_d_add_int(g, address, 8), 8, 0, xzr_or(g, (unsigned)a->rt2));
+    }
+    for (k = 0; k < bytes; k += 8) sg_GuestMemWrite(g, sg_d_add_int(g, address, k), 8, 0, sgx_const(64, 0));
+    if (a->w) sg_GPR_write(g, a->rn, a->p ? sg_d_add_int(g, base, (long long)offset) : address);
+    return 1;
+}
+
 /* u->f can't be made, for its instruction u->at (its count: for no instruction's): said, once a function, with what it
    becomes */
 static void no_code(Unit* u) {
@@ -990,6 +1136,11 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (v < 0) goto undef;
             if (v) break;
         }
+        if (insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE) {
+            int v = past_guests(u, &insn, word);
+            if (v < 0) goto undef;
+            if (v) break;
+        }
         if (insn.op == SNX_A64_OP_LDXR || insn.op == SNX_A64_OP_LDXP || insn.op == SNX_A64_OP_STXR) {
             /* the fields the encoding wants all ones, which the Sail's decode reads so and the processor ignores: Rt2
                of a single's, Rs of a load's */
@@ -1020,7 +1171,9 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         terminal = 1;
         break;
     case SNX_A64_FLOW_BC:
-        if (!sg_decode(g) || x->unmade || !g->branched) return 0;
+        if (insn.op == SNX_A64_OP_CB_cond || insn.op == SNX_A64_OP_CB_cond_imm) compare_branch(u, &insn, word);
+        else if (!sg_decode(g) || x->unmade || !g->branched)
+            return 0;
         target = snx_a64_branch_target(&insn, address);
         if (g->taken) {
             /* the region goes on past the JCC: what the block knows (its registers' values, the flags, constants)
