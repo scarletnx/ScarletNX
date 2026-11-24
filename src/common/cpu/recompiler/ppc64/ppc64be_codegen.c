@@ -4,5 +4,6 @@
 #define PPC_BE 1
 #define snx_ppc64_available snx_ppc64be_available
 #define snx_ppc64_object snx_ppc64be_object
+#define snx_ppc64_desc snx_ppc64be_desc
 #include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
 #include "ppc64_codegen.c"

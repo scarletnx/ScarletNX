@@ -373,6 +373,15 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
     rk_mv(b, d, MIPS_RA);
     return at;
 }
+/* rk_literal where there's no frame (a module descriptor's functions): ra, which its BAL writes, kept in at around
+   it */
+static inline size_t rk_leaf_literal(SgXBuf* b, int d) {
+    size_t at;
+    rk_mv(b, RK_S1, MIPS_RA);
+    at = rk_literal(b, d);
+    rk_mv(b, MIPS_RA, RK_S1);
+    return at;
+}
 /* a call by the object's relocation: the callee's absolute address in the code (R_MIPS_64: the place this gives)
    loaded into t9; a tail call keeps ra, the caller's, in RK_S1 around the BAL */
 static inline size_t rk_call_reloc(SgXBuf* b) {

@@ -65,6 +65,10 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
+/* the module descriptor's functions (native.h's SnxNativeDesc) */
+#define MG_DESC snx_ppc64_desc
+#define MG_DESC_NAME PPC_BE ? "ppc64" : "ppc64le"
+#include "common/cpu/recompiler/mach/risc_desc.inc"
 
 int snx_ppc64_available(void) {
 #if defined(__powerpc64__) && defined(__ELF__) && defined(__BYTE_ORDER__) &&                                          \

@@ -59,4 +59,38 @@ const char* snx_native_arm_why(const SnxNativeArm* c);
 int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks);
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from);
 int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
+
+/* An AOT module descriptor's few functions in a RISC machine's code (mach/risc_desc.inc, each one's code generator),
+   for nx/loader/module_x64.c, which writes the data and puts each function in: its code and its literals'
+   relocations (an address of 8 bytes, the machine's abs64, of sym + addend at the code's byte at), the object's
+   machine, e_flags and byte order the machine's. Each 0, -1 out of room */
+typedef struct {
+    unsigned char code[1024];
+    size_t size;
+    struct {
+        size_t at;
+        const char* sym;
+        long long addend;
+    } rel[4];
+    int nrel;
+} SnxNativeFn;
+typedef struct SnxNativeDesc {
+    const char* name;
+    unsigned em, elf_flags, abs64;
+    int big;
+    /* a function returning &sym */
+    int (*returns)(SnxNativeFn* f, const char* sym);
+    /* snx_module(): ENT_ADDR[i] = base + ENT_OFF[i], ENT_PTR[i] = FNS[ENT_FN[i]] for count entries, then &MOD;
+       ENT_FN fn_at bytes past ENT_OFF and ENT_PTR ptr_at past ENT_ADDR (their tables', one after the other) */
+    int (*module_fn)(SnxNativeFn* f, size_t count, uint64_t base, size_t fn_at, size_t ptr_at);
+    /* snx_import_dyn(c, e): CPU.disp's function for e where e is in [code_lo, code_hi) and aligned, else
+       c->rt->miss, tail called with c and e */
+    int (*import_dyn)(SnxNativeFn* f);
+    /* a tail call of IMPORT_FN[index] (the pointer read when it runs) */
+    int (*import_stub)(SnxNativeFn* f, size_t index);
+} SnxNativeDesc;
+/* the host's RISC machine's (NULL on x86-64 and arm64, whose module_x64.c writes itself, or with none); a machine's
+   by its back end's name ("riscv64", "ppc64le"...) for the tests, NULL for none */
+const SnxNativeDesc* snx_native_desc(void);
+const SnxNativeDesc* snx_native_desc_named(const char* name);
 #endif

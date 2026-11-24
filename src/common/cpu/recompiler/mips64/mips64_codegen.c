@@ -66,6 +66,10 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
+/* the module descriptor's functions (native.h's SnxNativeDesc) */
+#define MG_DESC snx_mips64_desc
+#define MG_DESC_NAME MIPS_BE ? "mips64" : "mips64el"
+#include "common/cpu/recompiler/mach/risc_desc.inc"
 
 int snx_mips64_available(void) {
 #if defined(__mips64) && defined(__ELF__) && defined(__BYTE_ORDER__) &&                                              \

@@ -59,6 +59,10 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
+/* the module descriptor's functions (native.h's SnxNativeDesc) */
+#define MG_DESC snx_la64_desc
+#define MG_DESC_NAME "loongarch64"
+#include "common/cpu/recompiler/mach/risc_desc.inc"
 
 int snx_la64_available(void) {
 #if defined(__loongarch64) && defined(__ELF__)

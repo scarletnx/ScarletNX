@@ -235,6 +235,8 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
     sgx_imm(b, 0, 8);
     return at;
 }
+/* rk_literal where there's no frame (a module descriptor's functions): the link as it was */
+static inline size_t rk_leaf_literal(SgXBuf* b, int d) { return rk_literal(b, d); }
 /* a function's frame: ra, s0, s1 and (pinned) s2-s11 saved, s0 the caller's sp, s1 the state; then sp -= the slots'
    room, LUI and ADDIW of t6 patched (rk_fn_patch_frame; the place this gives); the epilogue gives sp back from s0 */
 static inline size_t rk_fn_prologue(SgXBuf* b, int pinned) {

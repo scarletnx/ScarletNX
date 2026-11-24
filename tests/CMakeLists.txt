@@ -3972,6 +3972,16 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(arm_${m} arm_${m}_spill PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
 endif()
+# an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
+# run under Unicorn (loongarch64's in support/la64_interp.c)
+if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+    add_executable(snx-test-module-desc module_desc.c support/host_unicorn.c support/la64_interp.c)
+    snx_test_target(snx-test-module-desc gnu23)
+    target_include_directories(snx-test-module-desc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-module-desc PRIVATE snx_driver_llvm snx_driver snx_llvm "${SNX_UNICORN_LIBRARY}"
+                          ${CMAKE_DL_LIBS})
+    add_test(NAME module_desc COMMAND snx-test-module-desc)
+endif()
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
          d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61)

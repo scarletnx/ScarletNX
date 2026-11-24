@@ -371,6 +371,8 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
     }
     return at;
 }
+/* rk_literal where there's no frame (a module descriptor's functions): the link as it was */
+static inline size_t rk_leaf_literal(SgXBuf* b, int d) { return rk_literal(b, d); }
 /* a call by the object's relocation: the callee's absolute address in the code (R_390_64, the place this gives)
    loaded into r1 and called with BASR; a tail call's jumps (the epilogue's r14 the caller's, kept) */
 static inline size_t rk_call_reloc(SgXBuf* b) {
