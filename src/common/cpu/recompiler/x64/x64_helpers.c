@@ -235,8 +235,12 @@ u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2) {
     return stxp(c, M, a, 3, v1, v2);
 }
 /* CASP of doublewords at a: the old pair (low, high), the desired stored where it was the expected. The pair is read
-   by snx_cas128 (a compare-and-swap of what was read with itself), so the old value is one atomic snapshot */
-unsigned __int128 snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
+   by snx_cas128 (a compare-and-swap of what was read with itself), so the old value is one atomic snapshot. The low one
+   is in the first result register on either byte order, where an __int128's is in the second of a big-endian one */
+typedef struct {
+    u64 lo, hi;
+} SnxX64Pair;
+SnxX64Pair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
     u8* M = c->mem;
     u64* p = (u64*)MP(a);
     for (;;) {
@@ -245,6 +249,6 @@ unsigned __int128 snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
         u64 o0 = SNX_GUEST64(r0), o1 = SNX_GUEST64(r1);
         int match = o0 == e0 && o1 == e1;
         if (snx_cas128(c, p, o0, o1, match ? d0 : o0, match ? d1 : o1)) /* its values the guest's */
-            return (unsigned __int128)o1 << 64 | o0;
+            return (SnxX64Pair){o0, o1};
     }
 }

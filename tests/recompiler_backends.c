@@ -88,7 +88,7 @@
 #endif
 u64 snx_x64_crc32(u64 acc, u64 value, u32 desc);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
-unsigned __int128 snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
+HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 #endif
 
 #define CODE     0x10000u

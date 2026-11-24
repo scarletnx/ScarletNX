@@ -128,7 +128,7 @@ int hostuc_map(HostUc* u, void* p, size_t size) {
    function of fewer ignoring the rest), its result into the result register (both halves of a wide one); the trap's
    return goes back */
 typedef uint64_t (*Native)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-typedef unsigned __int128 (*NativeWide)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+typedef HostUcPair (*NativeWide)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) {
     HostUc* u = (HostUc*)user;
     unsigned k = (unsigned)((address - (uint64_t)(uintptr_t)u->trap) / 16), i;
@@ -145,10 +145,9 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
         }
     swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
-        unsigned __int128 w = ((NativeWide)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
-        uint64_t hi = (uint64_t)(w >> 64);
-        r = (uint64_t)w;
-        uc_reg_write(uc, u->a->result[1], &hi);
+        HostUcPair w = ((NativeWide)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
+        r = w.lo;
+        uc_reg_write(uc, u->a->result[1], &w.hi);
     } else
         r = ((Native)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
     swap(u);
@@ -166,8 +165,8 @@ static int la_trap(La64* c, void* user) {
         return -1;
     }
     if (u->wide[k]) {
-        unsigned __int128 w = ((NativeWide)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
-        c->r[4] = (uint64_t)w, c->r[5] = (uint64_t)(w >> 64);
+        HostUcPair w = ((NativeWide)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
+        c->r[4] = w.lo, c->r[5] = w.hi;
     } else
         c->r[4] = ((Native)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
     c->pc = c->r[1];

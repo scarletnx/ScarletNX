@@ -58,7 +58,7 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
     unsigned w = expected.w;
     if (w == 128) {
         /* CASP of doublewords: snx_x64_casp(state, address, expected, desired), the old pair in SGX_RET and SGX_RET2
-           (its unsigned __int128); a call (the caller-saved registers spilled around it) */
+           (its SnxX64Pair); a call (the caller-saved registers spilled around it) */
         const signed char fix[5] = {sgx_arg_regs[1], sgx_arg_regs[2], sgx_arg_regs[3], sgx_arg_regs[4],
                                     sgx_arg_regs[5]};
         SgD in[5], lo;
