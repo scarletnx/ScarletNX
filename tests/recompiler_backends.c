@@ -48,52 +48,42 @@
 #if defined(SNX_TEST_ARM64)
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #define NATIVE_UC HOSTUC_ARM64
-#define NATIVE_MIN_MADE 90 /* percent of the functions the back end must make */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_arm64_object(cg, 0, (cg)->function_count, options, SNX_ARM64_F_ALL & ~g_without, made, object, size, error,    \
                      sizeof error)
 #elif defined(SNX_TEST_LA64)
 #include "common/cpu/recompiler/la64/la64_codegen.h"
 #define NATIVE_UC HOSTUC_LA64
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_la64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_PPC64BE)
 #include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
 #define NATIVE_UC HOSTUC_PPC64
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_ppc64be_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_S390X)
 #include "common/cpu/recompiler/s390x/s390x_codegen.h"
 #define NATIVE_UC HOSTUC_S390X
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_s390x_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_MIPS64BE)
 #include "common/cpu/recompiler/mips64/mips64be_codegen.h"
 #define NATIVE_UC HOSTUC_MIPS64
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_mips64be_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_MIPS64)
 #include "common/cpu/recompiler/mips64/mips64_codegen.h"
 #define NATIVE_UC HOSTUC_MIPS64EL
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_mips64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_PPC64)
 #include "common/cpu/recompiler/ppc64/ppc64_codegen.h"
 #define NATIVE_UC HOSTUC_PPC64LE
-#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_ppc64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #else
 #include "common/cpu/recompiler/rv64/rv64_codegen.h"
 #define NATIVE_UC HOSTUC_RV64
-/* the Advanced SIMD clauses sailgen doesn't make yet for a machine without vector registers (a64_risc.roots) leave
-   their functions to LLVM */
-#define NATIVE_MIN_MADE 50
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_rv64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #endif
@@ -884,7 +874,7 @@ int main(int argc, char** argv) {
         ++failures;
         fprintf(stderr, "FAIL: the %s back end made %zu of the ops' %u words\n", native_name, made_native, functions);
         (void)list_refused(ops, nops);
-    } else if (!opw && made_native * 100 < (size_t)functions * (must_make ? 100 : NATIVE_MIN_MADE)) {
+    } else if ((!nwords || must_make) && made_native < functions) {
         fprintf(stderr, "FAIL: the %s back end made %zu of the %u functions\n", native_name, made_native, functions);
         ++failures;
     }
@@ -906,8 +896,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FAIL: the x86-64 back end made %lu of the ops' %lu words\n",
                 (unsigned long)snx_recompiled_x64_functions(mx), (unsigned long)snx_recompiled_functions(mx));
         (void)list_refused(ops, nops);
-    } else if (snx_recompiled_x64_functions(mx) * 10 < snx_recompiled_functions(mx) * 9) {
-        fprintf(stderr, "FAIL: the x86-64 back end made under 90%% of the functions\n");
+    } else if (!nwords && snx_recompiled_x64_functions(mx) < snx_recompiled_functions(mx)) {
+        fprintf(stderr, "FAIL: the x86-64 back end made %lu of the %lu functions\n",
+                (unsigned long)snx_recompiled_x64_functions(mx), (unsigned long)snx_recompiled_functions(mx));
         ++failures;
     }
 #endif
