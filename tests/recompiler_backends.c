@@ -570,7 +570,8 @@ int main(int argc, char** argv) {
         view.base = CODE;
         view.text_off = 0;
         view.text_size = view.image_size;
-        if (snx_codegen_analyze(&cg, &view, 1, hints, functions, 1, 0)) {
+        if (snx_codegen_analyze(&cg, &view, 1, hints, functions, 1,
+                                target == SNX_RECOMPILER_A64_ANDROID ? SNX_A64_TARGET_ANDROID : SNX_A64_TARGET_SWITCH)) {
             fprintf(stderr, "FAIL: no functions found\n");
             goto out;
         }
