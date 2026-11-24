@@ -468,15 +468,16 @@ void snx_x64_without(unsigned features) {
     atomic_store_explicit(&g_x64_codegen.without, features & ~(unsigned)X64_BASELINE, memory_order_relaxed);
 }
 
-/* CPUID's BMI1, BMI2 and LZCNT (ABM) */
+/* CPUID's BMI1, BMI2, SHA and LZCNT (ABM) */
 static unsigned host_features(void) {
     unsigned a, b, c, d, f = 0;
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
     if (b & (1u << 3)) f |= SGX_F_BMI1;
     if (b & (1u << 8)) f |= SGX_F_BMI2;
+    if (b & (1u << 29)) f |= SGX_F_SHA;
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
     if (c & (1u << 5)) f |= SGX_F_LZCNT;
-    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT; the VEX forms' (AVX, FMA, F16C) where the system
+    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT, AES; the VEX forms' (AVX, FMA, F16C) where the system
        keeps the YMM state (OSXSAVE, and XCR0's SSE and AVX bits) */
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
     if (c & 1u) f |= SGX_F_SSE3;
@@ -485,6 +486,7 @@ static unsigned host_features(void) {
     if (c & (1u << 19)) f |= SGX_F_SSE41;
     if (c & (1u << 20)) f |= SGX_F_SSE42;
     if (c & (1u << 23)) f |= SGX_F_POPCNT;
+    if (c & (1u << 25)) f |= SGX_F_AES;
     if ((c & (1u << 27)) && (c & (1u << 28))) {
         unsigned lo, hi;
         __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));

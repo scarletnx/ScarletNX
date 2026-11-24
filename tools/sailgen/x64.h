@@ -51,7 +51,8 @@ static inline void sgx_modrm(SgXBuf* b, int reg, int rm) {
 /* the host's features a candidate may need (CPUID's), SgX.features */
 enum {
     SGX_F_BMI1 = 1, SGX_F_BMI2 = 2, SGX_F_LZCNT = 4, SGX_F_SSE3 = 8, SGX_F_SSSE3 = 16, SGX_F_SSE41 = 32,
-    SGX_F_SSE42 = 64, SGX_F_PCLMUL = 128, SGX_F_F16C = 256, SGX_F_POPCNT = 512, SGX_F_AVX = 1024, SGX_F_FMA = 2048
+    SGX_F_SSE42 = 64, SGX_F_PCLMUL = 128, SGX_F_F16C = 256, SGX_F_POPCNT = 512, SGX_F_AVX = 1024, SGX_F_FMA = 2048,
+    SGX_F_AES = 4096, SGX_F_SHA = 8192
 };
 
 #include "x64_isel.inc"

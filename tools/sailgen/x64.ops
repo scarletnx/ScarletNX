@@ -450,6 +450,13 @@ enc pmovzxbw PMOVZXBW xmm1, xmm2/m64
 enc pmovzxwd PMOVZXWD xmm1, xmm2/m64
 enc pmovzxdq PMOVZXDQ xmm1, xmm2/m64
 enc pclmulqdq PCLMULQDQ xmm1, xmm2/m128, imm8
+enc aesenc AESENC xmm1, xmm2/m128
+enc aesenclast AESENCLAST xmm1, xmm2/m128
+enc aesdeclast AESDECLAST xmm1, xmm2/m128
+enc aesimc AESIMC xmm1, xmm2/m128
+enc sha256rnds2 SHA256RNDS2 xmm1, xmm2/m128, <XMM0>
+enc sha256msg1 SHA256MSG1 xmm1, xmm2/m128
+enc sha256msg2 SHA256MSG2 xmm1, xmm2/m128
 enc addss ADDSS xmm1, xmm2/m32
 enc addsd ADDSD xmm1, xmm2/m64
 enc addps ADDPS xmm1, xmm2/m128
