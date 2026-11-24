@@ -109,7 +109,95 @@ static void vk_took(void) {
         plat_wake_word(&g_vk_baton);
     }
 }
+/* The resolving thread runs under the renderer thread's hold, which that thread keeps while it waits (vk/prep.c):
+   its own takes of the lock nest in it. A take there means that its work needs the lock for itself, which it can't
+   have: the resolve fails, and the renderer thread does the draw's resolve again */
+static _Thread_local int t_vklent;
+void vk_lock_lend(int on) {
+    t_vklent = on;
+    t_vkdepth = on ? 2 : 0; /* never 1: what the outermost hold does at its end stays the renderer thread's */
+}
+/* The share lock (draw_batches=2, share_wrap.h): while a run is split, the renderer thread and the worker each take
+   it around each call into the other files of the renderer, which are written for one thread. Recursive on the
+   thread that holds it. While no run is split it does nothing: the renderer thread is alone */
+/* on lines of their own: each take reads g_vk_share_on, and g_share_taken moves between the cores */
+alignas(64) _Atomic int g_vk_share_on;
+static alignas(64) _Atomic int g_share_taken;
+static _Thread_local u32 t_share_depth, t_share_held;
+static _Thread_local u64 t_share_at; /* the counter when this thread took it */
+/* the counts of each side (0 the renderer thread, 1 the worker: vk_render_slot): takes, takes that waited, the ticks
+   waited and held, and for each wrapped function (share_wrap.h's number) its takes and ticks waited. Each side writes
+   only its own, on cache lines of its own, with a relaxed load and store and no locked add: a take must not move a
+   line of counts between the two cores, as it did when both sides added to one count. The log's thread reads them
+   and keeps what it read last, so nothing resets them under their writer */
+#define SHARE_FNS 256
+enum { SH_TAKES, SH_WAITED, SH_WAIT, SH_HOLD, SH_N };
+static struct {
+    alignas(64) _Atomic u64 c[SH_N];
+    _Atomic u64 fn[SHARE_FNS][2];
+} g_share_stats[2];
+static u64 g_share_read[2][SH_N], g_share_fn_read[SHARE_FNS][2]; /* the log's thread's */
+static _Thread_local u32 t_share_fn = SHARE_FNS; /* the function of the next take: none */
+static void share_add(_Atomic u64* c, u64 v) {
+    atomic_store_explicit(c, atomic_load_explicit(c, memory_order_relaxed) + v, memory_order_relaxed);
+}
+void vk_share_active(int on) { atomic_store_explicit(&g_vk_share_on, on, memory_order_seq_cst); }
+void vk_share_lock_at(u32 fn) {
+    t_share_fn = fn;
+    vk_share_lock();
+}
+void vk_share_fn_times(u32 fn, u64* takes, u64* wait) {
+    u64 now[2];
+    for (u32 k = 0; k < 2; k++)
+        now[k] = atomic_load_explicit(&g_share_stats[0].fn[fn][k], memory_order_relaxed) +
+                 atomic_load_explicit(&g_share_stats[1].fn[fn][k], memory_order_relaxed);
+    *takes = now[0] - g_share_fn_read[fn][0];
+    *wait = now[1] - g_share_fn_read[fn][1];
+    g_share_fn_read[fn][0] = now[0];
+    g_share_fn_read[fn][1] = now[1];
+}
+void vk_share_lock(void) {
+    if (t_share_depth++) return;
+    if (!atomic_load_explicit(&g_vk_share_on, memory_order_acquire)) return;
+    const u64 t0 = __builtin_readcyclecounter();
+    int waited = 0;
+    while (atomic_exchange_explicit(&g_share_taken, 1, memory_order_acquire)) {
+        waited = 1;
+        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) __builtin_ia32_pause();
+    }
+    t_share_at = __builtin_readcyclecounter();
+    typeof(g_share_stats[0])* const st = &g_share_stats[vk_render_slot() != 0];
+    if (t_share_fn < SHARE_FNS) {
+        share_add(&st->fn[t_share_fn][0], 1);
+        share_add(&st->fn[t_share_fn][1], t_share_at - t0);
+        t_share_fn = SHARE_FNS;
+    }
+    share_add(&st->c[SH_TAKES], 1);
+    share_add(&st->c[SH_WAITED], (u64)waited);
+    share_add(&st->c[SH_WAIT], t_share_at - t0);
+    t_share_held = 1;
+}
+void vk_share_unlock(void) {
+    if (--t_share_depth) return;
+    if (!t_share_held) return;
+    t_share_held = 0;
+    share_add(&g_share_stats[vk_render_slot() != 0].c[SH_HOLD], __builtin_readcyclecounter() - t_share_at);
+    atomic_store_explicit(&g_share_taken, 0, memory_order_release);
+}
+void vk_share_times(u32 side, u64* takes, u64* waited, u64* wait, u64* hold) {
+    u64* const out[SH_N] = {takes, waited, wait, hold};
+    for (u32 k = 0; k < SH_N; k++) {
+        const u64 now = atomic_load_explicit(&g_share_stats[side].c[k], memory_order_relaxed);
+        *out[k] = now - g_share_read[side][k];
+        g_share_read[side][k] = now;
+    }
+}
 void vk_lock(void) {
+    if (t_vklent == 1) { /* 2: a batch worker's, which may take it (render.c's batches) */
+        gpu_spec_fail("vk_lock");
+        LOG_LIMIT(8, "vulkan: draw_prep: a resolve ahead took vk_lock from vk_lock%+lld\n",
+                  (long long)((intptr_t)(uintptr_t)__builtin_return_address(0) - (intptr_t)(uintptr_t)&vk_lock));
+    }
     if (!t_vkdepth++) {
         uintptr_t site = (uintptr_t)__builtin_return_address(0);
         int got = !atomic_load_explicit(&g_vk_baton, memory_order_acquire) && pm_trylock(&g_vklock);

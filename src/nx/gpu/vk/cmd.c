@@ -624,7 +624,18 @@ static void cbs_add(VkCommandPool pool, VkCommandBuffer** cbs, u32* count, u32 n
     *count += n;
 }
 u64 g_vk_cb_grows_waited;
+static VkCommandBuffer cmd_locked(void);
 VkCommandBuffer vk_cmd(void) {
+    /* a split run (draw_batches=2) records into the command buffer begun at the split, and nothing submits until
+       its join: both sides take it with no lock */
+    const Frame* f = &g_fr[g_cur];
+    if (vk_share_on() && f->recording) return f->cbs[f->icb];
+    vk_share_lock();
+    VkCommandBuffer cb = cmd_locked();
+    vk_share_unlock();
+    return cb;
+}
+static VkCommandBuffer cmd_locked(void) {
     Frame* f = &g_fr[g_cur];
     g_cmd_uses++;
     if (!f->recording) {
@@ -1081,6 +1092,7 @@ u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem)
 
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off)
 {
+    vk_shared_note(10);
 	return stage_alloc(size, align, buf, off, NULL, 1);
 }
 
@@ -1089,6 +1101,7 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off)
  * snapshots in host memory; stable buffers get their own device-local copies. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 {
+    vk_shared_note(11);
 	return stage_alloc(size, align, buf, off, NULL, 0);
 }
 

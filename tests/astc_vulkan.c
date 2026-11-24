@@ -2633,3 +2633,8 @@ int main(int argc, char** argv) {
        runtime. Process exit releases these rather than testing a new teardown. */
     return 0;
 }
+/* the split's share lock (draw_batches=2): this test runs no split */
+_Atomic int g_vk_share_on;
+void vk_shared_note(u32 which) { (void)which; }
+void vk_share_lock(void) {}
+void vk_share_unlock(void) {}

@@ -892,6 +892,8 @@ void vk_compute_mem_need(u64 a, u64 n) {
     vk_unlock();
 }
 u64 vk_compute_adds(void) { return atomic_load_explicit(&g_pages.adds, memory_order_relaxed); }
+/* vk_compute_pending for a caller under vk_lock, or under the renderer thread's hold that it borrows (prep.c) */
+int vk_compute_pending_held(u64 a, u64 n) { return pend_hit(&g_pages, a, n); }
 int vk_compute_pending(u64 a, u64 n) {
     int hit;
     vk_lock();
