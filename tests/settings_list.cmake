@@ -108,7 +108,8 @@ if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # 
 endif()
 # the 3DS driver's debug settings, on the 3DS group's Debug page with their names (the launcher passes each one picked
 # to a 3DS game's run); its scripted input, a run's own, on no page
-foreach(row "\n3DS/Debug\tctr_hooks\t1\tint\t0\t1\t" "\tIPC hooks\t0=Off|1=On\t\n"
+foreach(row "\n3DS\tctr_model\tauto\ttext\t" "\tConsole\tauto=Auto|old=Old 3DS|new=New 3DS\t\n"
+            "\n3DS/Debug\tctr_hooks\t1\tint\t0\t1\t" "\tIPC hooks\t0=Off|1=On\t\n"
             "\n3DS/Debug\tctr_stand_in\t1\tint\t0\t2\t" "\tStand-in shaders\t0=Off|1=On|2=Every draw\t\n"
             "\n3DS/Debug\tctr_auto_stub_ipc\t1\tint\t0\t1\t")
     string(FIND "${list}" "${row}" at)
