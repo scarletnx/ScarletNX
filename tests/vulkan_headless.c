@@ -7886,6 +7886,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_cross_stage_alias.inc"
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
+#include "vulkan_compute_lone_lane.inc"
 #include "vulkan_memory_release.inc"
 #include "vulkan_descriptor_heaps.inc"
 #include "vulkan_link_presents.inc"
@@ -8755,6 +8756,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cross_stage_image_alias();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
+        else if (!strcmp(name, "compute_lone_lane"))
+            result = check_compute_lone_lane();
         else if (!strcmp(name, "fragment_flow_lod"))
             result = check_fragment_flow_lod();
         else if (!strcmp(name, "fragment_quad"))
@@ -9305,6 +9308,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shared_clamp());
     CHECK(!check_shared_spill());
     CHECK(!check_compute_arena_count());
+    CHECK(!check_compute_lone_lane());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
