@@ -3,7 +3,9 @@
 /* sceGxm's scenes on the host's Vulkan device (vk.h). The memory the game maps for the GPU (sceGxmMapMemory) is
    imported as buffers: a scene's color surface is an image loaded from its memory when the scene begins and stored
    back when it ends, vertices and indices are read where the game wrote them, textures are copied from their memory
-   once a scene, all on the GPU. Each program becomes a SPIR-V shader (usse.h) at its first draw. The uniform buffers
+   once a scene, all on the GPU. Where the device can't import it, each buffer is a copy of a memory block: the pages
+   the game wrote are copied in before the GPU reads them, what the GPU wrote goes back once its submission is done.
+   Each program becomes a SPIR-V shader (usse.h) at its first draw. The uniform buffers
    a draw reads are copied into a staging ring of the submission's, as the console's reserved ring space is the
    game's to reuse once the draw is made. A scene is submitted when it ends, and the next is recorded while the GPU
    draws it: the game waits for a scene's notifications (hle/gxm.c writes them once its submission is done) before it
@@ -355,7 +357,7 @@ static void mirror_drain(struct VitaRender* r, uint64_t done, uint32_t only) {
     }
     r->writebacks = kept;
 }
-static bool mirror_range(const struct VitaRender* r, uint32_t address, uint32_t size, Import* out) {
+static bool mirror_range(struct VitaRender* r, uint32_t address, uint32_t size, Import* out) {
     VitaVk* v = r->vk;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size,
@@ -371,9 +373,11 @@ static bool mirror_range(const struct VitaRender* r, uint32_t address, uint32_t 
     ai.memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                                                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    if (ai.memoryTypeIndex == UINT32_MAX)
+    if (ai.memoryTypeIndex == UINT32_MAX) {
+        once(r, 25, "the device has no cached memory the CPU shares with it: what the GPU writes is read back slowly");
         ai.memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     void* map = NULL;
     if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &m.memory) != VK_SUCCESS) {
         vkDestroyBuffer(v->device, m.buffer, NULL);
@@ -475,7 +479,11 @@ void vita_render_map(VitaProcess* p, uint32_t address, uint32_t size) {
         if (!r->imports[i].size) {
             m = &r->imports[i];
             if (!import_range(r, p, base, length, m)) {
-                once_value(r, 0, address, "the device cannot import guest memory at 0x%08" PRIx32, address);
+                if (r->vk->host_import)
+                    once_value(r, 0, address, "the device cannot import guest memory at 0x%08" PRIx32, address);
+                else
+                    once_value(r, 0, address, "the device has no room for a copy of guest memory at 0x%08" PRIx32,
+                               address);
                 return;
             }
         }

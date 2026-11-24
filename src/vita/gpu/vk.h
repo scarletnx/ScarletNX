@@ -10,7 +10,8 @@
 
 /* The Vita's Vulkan device (vk.c), which the renderer and the presenter share, as the 3DS driver's (3ds/gpu/vk): the
    guest's memory the GPU uses is imported as buffers (VK_EXT_external_memory_host), so surfaces, vertices, textures and
-   the shown framebuffer are read and written in place on the GPU and nothing of them is copied by the CPU. Work is
+   the shown framebuffer are read and written in place on the GPU and nothing of them is copied by the CPU. A device
+   without it works on copies of the memory, which the CPU keeps (render.c). Work is
    recorded into a command buffer until it is submitted, a few submissions in flight, each with a serial */
 /* a scene is one submission and the display's copy another, so a game with several passes a frame fills the slots
    within one: the host thread waits for the oldest submission when it begins the next recording, and a slot more lets
