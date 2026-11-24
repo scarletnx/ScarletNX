@@ -211,6 +211,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
 int gui_settings_read(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 0); }
 int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 1); }
 void gui_settings_free(GuiSettings* s) {
+    for (int i = 0; i < s->count; ++i) free(s->values[i].grown);
     free(s->keys);
     memset(s, 0, sizeof *s);
 }
@@ -455,6 +456,56 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
     }
     free(text);
     return count;
+}
+int gui_settings_add_words(GuiSettings* s, int row, const char* const* values, int count) {
+    GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    const char **words, **grown;
+    char now[GUI_SETTING_TEXT];
+    size_t bytes = 0, at;
+    int base, n, i, k;
+    char* text;
+    if (!v || !v->open || s->keys[row].type != GUI_KEY_WORD || !v->values) return 0;
+    words = (const char**)s->keys[row].words;
+    for (base = 0; words[base]; ++base) {}
+    if (v->custom) --base; /* its last, kept in its place after the others */
+    if (v->grown) base = v->base;
+    snprintf(now, sizeof now, "%s", v->word || v->plain ? v->values[v->word] : "");
+    for (i = 0; i < count; ++i) bytes += strlen(values[i]) + 1;
+    /* its words and its values, each with the custom one's slot and the NULL, then the values' text */
+    at = 2 * ((size_t)base + (size_t)count + 2);
+    grown = (const char**)malloc(at * sizeof *grown + bytes);
+    if (!grown) return 0;
+    text = (char*)(grown + at);
+    for (i = 0; i < base; ++i) {
+        grown[i] = words[i];
+        grown[base + count + 2 + i] = v->values[i];
+    }
+    for (n = base, i = 0; i < count; ++i) {
+        for (k = v->plain ? 0 : 1; k < n; ++k) /* past the .ini's or Global's, which has no value */
+            if (!strcmp(grown[base + count + 2 + k], values[i])) break;
+        if (k < n || !*values[i] || strlen(values[i]) >= sizeof v->text) continue;
+        strcpy(text, values[i]);
+        grown[n] = grown[base + count + 2 + n] = text;
+        text += strlen(text) + 1;
+        ++n;
+    }
+    for (i = n; i < base + count + 2; ++i) grown[i] = grown[base + count + 2 + i] = NULL;
+    free(v->grown);
+    v->grown = grown;
+    v->base = base;
+    s->keys[row].words = grown;
+    v->values = grown + base + count + 2;
+    if (v->word || v->plain) { /* the same value, a word now or the custom one again */
+        int was = v->word;
+        v->custom = 0;
+        for (k = v->plain ? 0 : 1; k < n && strcmp(v->values[k], now); ++k) {}
+        if (k < n)
+            v->word = k;
+        else if (!set_custom(s, row, now))
+            v->word = was < n ? was : 0;
+    } else
+        v->custom = 0;
+    return 1;
 }
 /* the next word of *at, a set's separated by commas or spaces (or a sum's digits): its length, 0 at the end */
 static size_t set_word(const char** at) {

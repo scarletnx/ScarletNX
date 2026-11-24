@@ -43,6 +43,10 @@ typedef struct {
        is a set of them, a text's separated by commas or spaces, an int's the sum of their bits (number 'i') */
     const char **item_value, **item_label, **item_about;
     int items;
+    /* an open row's words with more the launcher found itself (gui_settings_add_words), in one block of its own, NULL
+       for none; how many words it had before them */
+    const char** grown;
+    int base;
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
@@ -104,6 +108,10 @@ int gui_settings_knob(const GuiSettings* settings, int row);
    number's by 1, a float's by a quarter, or a twentieth where its range is 2 or less, as the game's menu steps it, onto
    that step's grid and stopping at its ends. 1 when it changed, 0 at an end or on another row */
 int gui_settings_step_number(GuiSettings* settings, int row, int step);
+/* row, an open one of words, with count values more after its own, each its own word (the recording devices by name):
+   the ones it has already left out, in the place of those a call before added. Its value stays what it is, a word of
+   them now where one is. 1, else 0 for another row or out of memory */
+int gui_settings_add_words(GuiSettings* settings, int row, const char* const* values, int count);
 /* A row of boxes: item i on in the value the row has, else in base, what it has none of its own (the launcher's for a
    game's own, else NULL for the default); item i turned on or off in it, the row's own value then (one with nothing on
    is no value: the default's, or the launcher's, again): 1 when it did. The items a value names that the row has not

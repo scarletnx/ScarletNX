@@ -3860,6 +3860,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Recording devices cannot be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: a box an item, Enter turns it on or off"
 msgstr ""
 
