@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The PICA200 instructions vk/vsgen.c emits from Sail (sailgen --gpu, pica.sail): "op FN OPCODE..." runs execute_FN
+# for each of the opcodes (vsgen.c's PICA_OPS, P_<NAME>, one per pattern of gpu/pica.decode), their place in the line
+# its Form()
+prefix sgp
+static Field Form Pattern DestVar
+op ARITH P_ADD P_MUL P_FLR P_MAX P_MIN P_MOV
+op EXP P_EX2 P_LG2
+op DP3 P_DP3
+op DOT4 P_DP4 P_DPH P_DPHI
+op RCP P_RCP P_RSQ
+op MOVA P_MOVA
+op SETCMP P_SGE P_SGEI P_SLT P_SLTI
+op CMP P_CMP
+op MAD P_MAD P_MADI
+op UNTRANSLATED_ARITH P_DST P_LITP P_DSTI
+op NOP P_NOP P_EMIT P_SETEMIT
+op END P_END
+op BREAK P_BREAK P_BREAKC
+op JMPC P_JMPC
+op JMPU P_JMPU
+op CALL P_CALL
+op CALLC P_CALLC
+op CALLU P_CALLU
+op IFC P_IFC
+op IFU P_IFU
+op LOOP P_LOOP

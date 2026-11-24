@@ -33,6 +33,9 @@ target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
 snx_decodetree(snx_ctr_gpu OUTPUT decode-pica.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/pica.decode"
                OPTIONS --static-decode=decode_pica)
+# and what each instruction computes, which sailgen's GPU mode writes from gpu/sail/pica.sail (cmake/sailgen.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+snx_sailgen_gpu(snx_ctr_gpu pica DIR "${CMAKE_CURRENT_SOURCE_DIR}/gpu/sail")
 # snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings) gpu/vk/device.c reads; a linker that reads each
 # archive once (GNU ld) needs it after snx_ctr_gpu
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings
