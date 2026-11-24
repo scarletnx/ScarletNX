@@ -513,8 +513,9 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
             stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             access = VK_ACCESS_2_MEMORY_READ_BIT;
         }
-        /* a hosted target's view is its host's, whose image its uses share (docs/dev/one-image.md): the splice sends
-           the use there */
+        /* the share lock (draw_batches=2) only for the first look at s: the rest is this thread's view. A hosted
+           target's view is its host's, whose image its uses share (docs/dev/one-image.md): the splice sends the use
+           there */
         Surf* v = s->host ? s->host : s;
         int i = sv_find(v);
         if (i < 0) {
@@ -524,9 +525,11 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
             }
             i = (int)t_sv.n++;
             t_sv.v[i].s = v;
+            vk_share_lock();
             t_sv.v[i].layout = v->layout;
             t_sv.v[i].stage = v->stage;
             t_sv.v[i].access = v->access;
+            vk_share_unlock();
         }
         const int same = t_sv.v[i].layout == layout && !surf_access_writes(access) &&
                          !surf_access_writes(t_sv.v[i].access);
@@ -544,7 +547,9 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         vk_rec_defer(surf_use_splice, &u, sizeof u);
         return;
     }
+    vk_share_lock();
     surf_use_now(cb, s, layout, stage, access, 1);
+    vk_share_unlock();
 }
 static void surf_use_now(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                          VkAccessFlags2 access, int pass_ends) {
