@@ -85,8 +85,9 @@ val FDdy : bits(32) -> bits(32)
 /* ---- integers that keep their type: a translator whose words are each an i32 or a u32 (the USSE's operands, as
    their register's type reads them) makes an operation of the operands' own type, no bitcast; the Sail chooses a
    signed or an unsigned comparison ---- */
-/* the i32 of this value */
+/* the i32 and the u32 of this value */
 val SConst : int -> bits(32)
+val UConst : int -> bits(32)
 val IAddT : (bits(32), bits(32)) -> bits(32)
 val ISubT : (bits(32), bits(32)) -> bits(32)
 val IMulT : (bits(32), bits(32)) -> bits(32)
