@@ -625,6 +625,7 @@ reference: with no margin every pixel is judged
 reference: with the clamp off a primitive past a depth plane is clipped, with it on kept
 reference: z of -1, -0.5, 0 and 0.5 are depths 0, 0.25, 0.5 and 0.75 from minus one
 sched: a thread behind a spinning one moves to an idle core of its mask
+sched: a thread started at a better priority on the caller's core runs before svcStartThread returns
 sched: a thread that becomes ready at a better priority takes the core from one spinning
 sched: svcSleepThread(0) leaves the thread on its core
 sched: the inherited priority passes down a chain of owners
