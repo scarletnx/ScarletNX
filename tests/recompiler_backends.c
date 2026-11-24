@@ -9,7 +9,8 @@
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
-         [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused]
+         [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
+         [--qemu QEMU RUNNER DIR]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
@@ -20,6 +21,10 @@
    half of them with lanes of the values where an integer's or a float's arithmetic turns
    --refused: each of the target's ops that has words the back end leaves to LLVM, how many of its words, and stops
    there, failing where there is one
+   --qemu: with --ops, their words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a
+   folder for its files) rather than to LLVM's, which lacks what no guest's CPU has; not loads nor stores
+   --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
+   alone, with an exact helper's call, and leaves, and the first of those, and stops there
    On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
@@ -31,6 +36,7 @@
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
+#include "qemu_ref/qemu_ref.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/utilities/common.h"
@@ -546,6 +552,8 @@ static OpWord* op_words(char** ops, unsigned nops, int variants, size_t* count) 
         if (!name || (ops && k == nops)) continue;
         /* CNTPCT's and CNTVCT's time is another in each run */
         if (variants && ((w & ~31u) == 0xD53BE020u || (w & ~31u) == 0xD53BE040u)) continue;
+        /* a load's or store's base is an address, which the link register, RET's, is not */
+        if (variants && (w >> 5 & 31) == 30 && (!strncmp(name, "LD", 2) || !strncmp(name, "ST", 2))) continue;
         list[j++] = (OpWord){name, w};
         /* a system word's fields are no registers: DC ZVA of another would write anywhere */
         if (!variants || (w & 0xFFC00000u) == 0xD5000000u) continue;
@@ -562,8 +570,9 @@ static OpWord* op_words(char** ops, unsigned nops, int variants, size_t* count) 
     return list;
 }
 
-/* how many of the functions at hints (each a word and a RET) of the code at CODE the back end makes; -1 an error */
-static long made_count(uint8_t* code, size_t size, uint64_t* hints, size_t count) {
+/* how many of the functions at hints (each a word and a RET) of the code at CODE the back end makes; -1 an error.
+   *helped (where not NULL): the object calls one of the exact helpers (x64_helpers.c) */
+static long made_count(uint8_t* code, size_t size, uint64_t* hints, size_t count, int* helped) {
     SnxCodegen cg;
     SnxCodeImage view = {0};
     SnxNativeOptions options = {0};
@@ -586,6 +595,11 @@ static long made_count(uint8_t* code, size_t size, uint64_t* hints, size_t count
     for (n = 0; total >= 0 && n < cg.function_count; ++n) total += made[n];
     /* what the analysis gave no function is not refused */
     if (total >= 0) total += (long)count - (long)cg.function_count;
+    for (n = 0; helped && n + 8 <= object_size; ++n)
+        if (!memcmp(object + n, "snx_x64_", 8)) {
+            *helped = 1;
+            break;
+        }
     free(made), free(object);
     snx_codegen_free(&cg);
     return total;
@@ -606,7 +620,7 @@ static int list_refused(char** names, unsigned nnames) {
             at[n] = CODE + n * 8;
         }
         ++ops;
-        made = made_count(code, n * 8, at, n);
+        made = made_count(code, n * 8, at, n, NULL);
         if (made < 0) {
             fprintf(stderr, "FAIL: %s: not recompiled\n", list[i].op);
             bad = 1;
@@ -618,7 +632,7 @@ static int list_refused(char** names, unsigned nnames) {
                 put32(code, 0, list[k].word);
                 put32(code, 4, 0xD65F03C0u);
                 at[0] = CODE;
-                if (made_count(code, 8, at, 1) == 0) {
+                if (made_count(code, 8, at, 1, NULL) == 0) {
                     first = list[k].word;
                     break;
                 }
@@ -635,7 +649,88 @@ static int list_refused(char** names, unsigned nnames) {
     return bad || left;
 }
 
+/* --coverage: each of the target's ops, how many of its words the back end makes with no helper, with one, and
+   leaves */
+static int list_coverage(void) {
+    size_t count, i, j;
+    OpWord* list = op_words(NULL, 0, 0, &count);
+    uint8_t code[8];
+    uint64_t at = CODE;
+    for (i = 0; i < count; i = j) {
+        unsigned n[3] = {0, 0, 0};
+        uint32_t first = 0;
+        for (j = i; j < count && !strcmp(list[j].op, list[i].op); ++j) {
+            int helped = 0;
+            long made;
+            put32(code, 0, list[j].word);
+            put32(code, 4, 0xD65F03C0u);
+            made = made_count(code, sizeof code, &at, 1, &helped);
+            if (made < 0) return 1;
+            if (!made && !n[2]) first = list[j].word;
+            ++n[made ? helped : 2];
+        }
+        printf("%s\t%u\t%u\t%u\t%08x\n", list[i].op, n[0], n[1], n[2], first);
+    }
+    free(list);
+    return 0;
+}
+
+/* each word's end states under QEMU (how: its path, the runner's, a folder) from the starts, states of each; 0 or -1 */
+static int qemu_ends(const OpWord* words, size_t count, unsigned states, const CPU* starts, CPU* ends,
+                     char* const* how) {
+    enum { BATCH = 2048 };
+    SnxQrefBatch batch = {0};
+    size_t total = count * states, done, k;
+    int result = -1;
+    char error[512];
+    for (done = 0; done < total; done += BATCH) {
+        size_t n = total - done < BATCH ? total - done : BATCH;
+        snx_qref_clear(&batch);
+        for (k = 0; k < n; ++k) {
+            const CPU* s = &starts[done + k];
+            SnxQrefCase c;
+            unsigned r;
+            snx_qref_case_init(&c);
+            for (r = 0; r < 31; ++r) c.state.x[r] = s->x[r];
+            c.state.sp = s->x[31];
+            c.state.nzcv = (uint32_t)s->n << 31 | (uint32_t)s->z << 30 | (uint32_t)s->cf << 29 | (uint32_t)s->vf << 28;
+            c.state.fpcr = s->fpcr;
+            c.state.fpsr = s->fpsr;
+            for (r = 0; r < 32; ++r) c.state.v[r][0] = s->v[r].d[0], c.state.v[r][1] = s->v[r].d[1];
+            if (snx_qref_add(&batch, &c, &words[(done + k) / states].word, 1, NULL, 0) < 0) goto out;
+        }
+        if (snx_qref_run(&batch, how[0], how[1], "max", how[2], error, sizeof error)) {
+            fprintf(stderr, "FAIL: QEMU: %s\n", error);
+            goto out;
+        }
+        for (k = 0; k < n; ++k) {
+            const SnxQrefResult* q = &batch.results[k];
+            CPU* e = &ends[done + k];
+            unsigned r;
+            *e = starts[done + k];
+            if (q->outcome == SNX_QREF_UNDEF) continue; /* undef's: the state as it was */
+            if (q->outcome != SNX_QREF_NEXT) {
+                fprintf(stderr, "FAIL: QEMU: %s %08x ends another way (%u)\n", words[(done + k) / states].op,
+                        words[(done + k) / states].word, (unsigned)q->outcome);
+                goto out;
+            }
+            for (r = 0; r < 31; ++r) e->x[r] = q->state.x[r];
+            e->x[31] = q->state.sp;
+            e->n = q->state.nzcv >> 31, e->z = q->state.nzcv >> 30 & 1;
+            e->cf = q->state.nzcv >> 29 & 1, e->vf = q->state.nzcv >> 28 & 1;
+            e->fpcr = q->state.fpcr, e->fpsr = q->state.fpsr;
+            for (r = 0; r < 32; ++r) e->v[r].d[0] = q->state.v[r][0], e->v[r].d[1] = q->state.v[r][1];
+        }
+    }
+    result = 0;
+out:
+    snx_qref_free(&batch);
+    return result;
+}
+
 int main(int argc, char** argv) {
+    char** qemu = NULL;
+    CPU *starts = NULL, *ends = NULL; /* --qemu's */
     unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0;
     int refused = 0, must_make = 0;
     char** ops = NULL;
@@ -671,6 +766,12 @@ int main(int argc, char** argv) {
             refused = 1;
         else if (!strcmp(argv[i], "--made"))
             must_make = 1;
+        else if (!strcmp(argv[i], "--coverage"))
+            refused = 2;
+        else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
+            qemu = argv + i + 1;
+            i += 3;
+        }
         else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
             const char* name = argv[++i];
             if (strcmp(name, "switch") && strcmp(name, "android") && strcmp(name, "ounce") && strcmp(name, "max")) {
@@ -704,7 +805,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 #endif
-        return list_refused(ops, nops);
+        return refused == 2 ? list_coverage() : list_refused(ops, nops);
     }
     if (g_features == SNX_A64_TARGET_OUNCE) {
         fprintf(stderr, "--target ounce: snx_recompiler.h has no such target to compare with: only with --refused\n");
@@ -924,12 +1025,30 @@ int main(int argc, char** argv) {
     };
 #endif
     for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
+    if (qemu) {
+        if (!opw) {
+            fprintf(stderr, "--qemu: only with --ops\n");
+            goto out;
+        }
+        starts = (CPU*)calloc((size_t)functions * states, sizeof *starts);
+        ends = (CPU*)calloc((size_t)functions * states, sizeof *ends);
+        for (i = 0; i < functions; ++i)
+            for (s = 0; s < states; ++s) {
+                ops_state(&starts[(size_t)i * states + s], s);
+                starts[(size_t)i * states + s].x[30] = STOP;
+            }
+        if (qemu_ends(opw, functions, states, starts, ends, qemu)) goto out;
+    }
     for (i = 0; i < functions; ++i)
         for (s = 0; s < states; ++s) {
             CPU c[2], start;
             memset(&start, 0, sizeof start);
-            if (opw) ops_state(&start, s);
-            else
+            if (qemu) start = starts[(size_t)i * states + s];
+            else if (opw) {
+                ops_state(&start, s);
+                if (!strncmp(opw[i].op, "LD", 2) || !strncmp(opw[i].op, "ST", 2)) /* any register an address */
+                    for (k = 0; k < 32; ++k) start.x[k] = DATA + 0x6000u + (rnd() % 0x4000u & ~15ull);
+            } else
                 start_state(&start, s);
 #ifdef SNX_TEST_NATIVE
             {
@@ -982,6 +1101,11 @@ int main(int argc, char** argv) {
                 g_running = hints[i];
                 snx_recompiled_run(m, &c[k], hints[i], STOP);
             }
+            if (qemu) {
+                c[0] = ends[(size_t)i * states + s];
+                c[0].pc = c[1].pc; /* RET's, which a word that writes x30 moves */
+                memcpy(mem[0] + DATA, data0, DATA_LEN);
+            }
             c[0].mem = c[1].mem = NULL;
             c[0].disp = c[1].disp = NULL;
             if (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, DATA_LEN)) {
@@ -1012,6 +1136,6 @@ out:
 #endif
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
-    free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw);
+    free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw), free(starts), free(ends);
     return result;
 }

@@ -13,8 +13,10 @@
    process's C share every pointer, and a call out (a helper by its name, the runtime's RtAPI functions) goes to a page
    of traps whose hook calls the native function with the registers' arguments.
      snx-test-sail-MACH [--states N] [--samples N] [--sequences N] [--pool N] [--target NAME] [--verbose] [--ops OP...]
-                        [--dump WORD...]
+                        [--qemu QEMU RUNNER DIR] [--dump WORD...]
    --target: the guest's features, ounce (the default) or max
+   --qemu: the words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a folder for
+   its files) rather than to LLVM's steps, which lack what no guest's CPU has; not loads nor stores
    --ops: the words of these ops of the decoder alone, and no sequences
    --dump prints the words' block as hex bytes for a disassembler (llvm-mc --disassemble -triple=MACH) */
 #include "sail_mach_emit.h"
@@ -22,6 +24,7 @@
 #define SNX_TEST_SWAP_CPU 1
 #include "support/swap_state.h"
 #include "llvm_steps.h"
+#include "qemu_ref/qemu_ref.h"
 #include "llvm_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include <setjmp.h>
@@ -245,7 +248,90 @@ static void start_state(CPU* start, unsigned s, RtAPI* rt) {
     start->pc = 0x1000;
 }
 
+/* the words under QEMU (how: its path, the runner's, a folder) and by the machine's code, from the same states: how
+   many differ. The runs made are added to *compared */
+static size_t against_qemu(const u32* words, const size_t* offset, unsigned char* code, size_t n, unsigned states,
+                           char* const* how, RtAPI* rt, size_t* compared) {
+    enum { BATCH = 2048 };
+    SnxQrefBatch batch = {0};
+    CPU* starts = (CPU*)malloc(sizeof *starts * BATCH);
+    size_t total = n * states, done, k, failures = 0;
+    char error[512];
+    if (!starts) return 1;
+    for (done = 0; done < total; done += BATCH) {
+        size_t count = total - done < BATCH ? total - done : BATCH;
+        snx_qref_clear(&batch);
+        for (k = 0; k < count; ++k) {
+            SnxQrefCase c;
+            CPU* s = &starts[k];
+            unsigned r;
+            start_state(s, (unsigned)((done + k) % states), rt);
+            snx_qref_case_init(&c);
+            for (r = 0; r < 31; ++r) c.state.x[r] = s->x[r];
+            c.state.sp = s->x[31];
+            c.state.nzcv = (u32)s->n << 31 | (u32)s->z << 30 | (u32)s->cf << 29 | (u32)s->vf << 28;
+            c.state.fpcr = s->fpcr;
+            c.state.fpsr = s->fpsr;
+            for (r = 0; r < 32; ++r) c.state.v[r][0] = s->v[r].d[0], c.state.v[r][1] = s->v[r].d[1];
+            if (snx_qref_add(&batch, &c, &words[(done + k) / states], 1, NULL, 0) < 0) {
+                fprintf(stderr, "FAIL: a case QEMU's runner has no room for\n");
+                ++failures;
+                goto out;
+            }
+        }
+        if (snx_qref_run(&batch, how[0], how[1], "max", how[2], error, sizeof error)) {
+            fprintf(stderr, "FAIL: QEMU: %s\n", error);
+            ++failures;
+            goto out;
+        }
+        for (k = 0; k < count; ++k) {
+            const SnxQrefResult* q = &batch.results[k];
+            u32 word = words[(done + k) / states];
+            CPU end = starts[k];
+            unsigned r, undef, differs;
+            u64 next;
+            end.mem = g_test.memory[1] + MEMORY_ZERO;
+            g_test.undef = 0;
+            next = run(code + offset[(done + k) / states], &end);
+            undef = g_test.undef;
+            ++*compared;
+            differs = undef != (q->outcome == SNX_QREF_UNDEF);
+            if (!undef) {
+                u32 nzcv = (u32)end.n << 31 | (u32)end.z << 30 | (u32)end.cf << 29 | (u32)end.vf << 28;
+                differs |= q->outcome != SNX_QREF_NEXT || next != 0x1004 || end.x[31] != q->state.sp ||
+                           end.fpsr != q->state.fpsr || end.fpcr != q->state.fpcr || nzcv != q->state.nzcv;
+                for (r = 0; r < 31; ++r) differs |= end.x[r] != q->state.x[r];
+                for (r = 0; r < 32; ++r)
+                    differs |= end.v[r].d[0] != q->state.v[r][0] || end.v[r].d[1] != q->state.v[r][1];
+            }
+            if (!differs) continue;
+            ++failures;
+            fprintf(stderr, "FAIL: %s %08x: the %s code's result is not QEMU's (its outcome %u)\n", op_name(word),
+                    (unsigned)word, hostuc_name(SAIL_MACH_UC), (unsigned)q->outcome);
+            if (g_test.verbose) {
+                for (r = 0; r < 31; ++r)
+                    if (end.x[r] != q->state.x[r])
+                        fprintf(stderr, "  x%u: start %llx qemu %llx native %llx\n", r,
+                                (unsigned long long)starts[k].x[r], (unsigned long long)q->state.x[r],
+                                (unsigned long long)end.x[r]);
+                for (r = 0; r < 32; ++r)
+                    if (end.v[r].d[0] != q->state.v[r][0] || end.v[r].d[1] != q->state.v[r][1])
+                        fprintf(stderr, "  v%u: qemu %016llx:%016llx native %016llx:%016llx\n", r,
+                                (unsigned long long)q->state.v[r][1], (unsigned long long)q->state.v[r][0],
+                                (unsigned long long)end.v[r].d[1], (unsigned long long)end.v[r].d[0]);
+                fprintf(stderr, "  fpsr: qemu %08x native %08x; fpcr %08x\n", (unsigned)q->state.fpsr,
+                        (unsigned)end.fpsr, (unsigned)starts[k].fpcr);
+            }
+        }
+    }
+out:
+    snx_qref_free(&batch);
+    free(starts);
+    return failures;
+}
+
 int main(int argc, char** argv) {
+    char** qemu = NULL;
     unsigned states = 64, samples = 3, sequences = 2000, i, k, nops = 0;
     char** ops = NULL;
     u32 *rows = NULL, *words;
@@ -278,6 +364,9 @@ int main(int argc, char** argv) {
                 return 2;
             }
             g_test.target = !strcmp(name, "max") ? snx_a64_features(SNX_A64_TARGET_MAX) : SNX_A64_TARGET_OUNCE;
+        } else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
+            qemu = argv + i + 1;
+            i += 3;
         } else if (!strcmp(argv[i], "--ops") && i + 1 < (unsigned)argc) {
             ops = argv + i + 1;
             while (i + 1 < (unsigned)argc && argv[i + 1][0] != '-') ++i, ++nops;
@@ -293,7 +382,7 @@ int main(int argc, char** argv) {
             return 0;
         } else {
             fprintf(stderr, "usage: snx-test-sail-%s [--states N] [--samples N] [--sequences N] [--pool N] "
-                            "[--target NAME] [--verbose] [--ops OP...] [--dump WORD...]\n",
+                            "[--target NAME] [--verbose] [--ops OP...] [--qemu QEMU RUNNER DIR] [--dump WORD...]\n",
                     hostuc_name(SAIL_MACH_UC));
             return 2;
         }
@@ -357,6 +446,15 @@ int main(int argc, char** argv) {
         if (i < n) continue;
         ++failures;
         fprintf(stderr, "FAIL: --ops: the %s back end makes no word of %s\n", hostuc_name(SAIL_MACH_UC), ops[k]);
+    }
+    if (qemu) {
+        for (i = 0, k = 0; i < n; ++i)
+            if (!is_ldst(words[i])) offset[k] = offset[i], words[k++] = words[i];
+        hostuc_changed(g_test.uc, code, code_cap);
+        failures += against_qemu(words, offset, code, k, states, qemu, &rt, &compared);
+        printf("sail_%s: %u words, %zu runs against QEMU, %zu failures (%zu words not made)\n",
+               hostuc_name(SAIL_MACH_UC), k, compared, failures, unmade);
+        return failures != 0;
     }
     if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
         fprintf(stderr, "FAIL: %s\n", error);
