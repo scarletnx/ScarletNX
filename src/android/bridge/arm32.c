@@ -62,10 +62,17 @@ static struct {
     _Atomic unsigned range_count;
 } s = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
+enum { THREAD_CACHE = 1024 };
 typedef struct {
     SnxArmCPU cpu;
     uint32_t stack, stack_size;
     uint32_t tls; /* 64 slots: 0 itself, 1 the thread's id, 2 errno */
+    /* the blocks of code outside the libraries that it ran last (dyn_block): good while the generation is the one they
+       were kept at. Not in the thread-locals, which every thread of the process would carry 16 KiB of */
+    struct {
+        uint32_t key, generation;
+        SnxArmBlock fn;
+    } cache[THREAD_CACHE];
 } Thread;
 static _Thread_local Thread* t_thread;
 /* the signals sent to this thread and not run yet (arm32_thread.c): the dispatch loop runs them between blocks */
@@ -411,15 +418,11 @@ typedef struct DynPage {
     uint32_t count, capacity;
     struct DynPage* next;
 } DynPage;
-enum { DYN_BUCKETS = 4096, DYN_MAX_BYTES = 1024, THREAD_CACHE = 1024 };
+enum { DYN_BUCKETS = 4096, DYN_MAX_BYTES = 1024 };
 static struct {
     DynPage* buckets[DYN_BUCKETS];
     _Atomic uint32_t generation;
 } dyn;
-static _Thread_local struct {
-    uint32_t key, generation;
-    SnxArmBlock fn;
-} t_dyn[THREAD_CACHE];
 
 static DynPage* dyn_page(uint32_t page, bool make) {
     DynPage** at = &dyn.buckets[(page * 2654435761u >> 20) % DYN_BUCKETS];
@@ -437,7 +440,9 @@ static DynPage* dyn_page(uint32_t page, bool make) {
 static SnxArmBlock dyn_block(uint32_t pc, int thumb) {
     uint32_t key = pc | (uint32_t)thumb, slot = (key >> 1) % THREAD_CACHE;
     uint32_t generation = atomic_load_explicit(&dyn.generation, memory_order_acquire);
-    if (t_dyn[slot].key == key && t_dyn[slot].generation == generation && t_dyn[slot].fn) return t_dyn[slot].fn;
+    Thread* t = t_thread; /* the dispatch loop's, which made its CPU first */
+    if (t->cache[slot].key == key && t->cache[slot].generation == generation && t->cache[slot].fn)
+        return t->cache[slot].fn;
     pthread_mutex_lock(&s.lock);
     SnxArmBlock fn = NULL;
     DynPage* p = dyn_page(pc >> 12, true);
@@ -460,9 +465,9 @@ static SnxArmBlock dyn_block(uint32_t pc, int thumb) {
     generation = atomic_load_explicit(&dyn.generation, memory_order_relaxed);
     pthread_mutex_unlock(&s.lock);
     if (fn) {
-        t_dyn[slot].key = key;
-        t_dyn[slot].generation = generation;
-        t_dyn[slot].fn = fn;
+        t->cache[slot].key = key;
+        t->cache[slot].generation = generation;
+        t->cache[slot].fn = fn;
     }
     return fn;
 }
