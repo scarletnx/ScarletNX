@@ -7911,6 +7911,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
 #include "vulkan_cube_take.inc"
+#include "vulkan_rt_stride.inc"
 #include "vulkan_texture_quiet_other.inc"
 #include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
@@ -8801,6 +8802,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_quiet_alias();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
+        else if (!strcmp(name, "rt_stride"))
+            result = check_rt_stride();
         else if (!strcmp(name, "cube_take_frames"))
             result = check_cube_take_frames();
         else if (!strcmp(name, "texture_quiet"))
@@ -9328,6 +9331,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_bands());
     CHECK(!check_rt_superseded());
     CHECK(!check_rt_aside());
+    CHECK(!check_rt_stride());
     CHECK(!check_so_note());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());

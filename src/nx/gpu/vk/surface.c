@@ -2419,7 +2419,8 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
         from->f.depth || to->f.depth || !from->f.raw || !to->f.raw || from->f.bpp != to->f.bpp || from->w != to->w ||
         from->h != to->h || from->sw != to->sw || from->sh != to->sh || from->bl != to->bl || from->bh != to->bh ||
         from->bd != to->bd || from->pitch != to->pitch || from->layers != to->layers ||
-        from->layer_size != to->layer_size || from->volume || to->volume || from->msaa != to->msaa)
+        (from->layers != 1 && from->layer_size != to->layer_size) || from->volume || to->volume ||
+        from->msaa != to->msaa)
         return 0;
     const int open = vk_render_begun();
     vk_render_end();
@@ -2506,6 +2507,17 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             s->bh == bh && s->pitch == pitch && s->layers == layers && s->layer_size == layer_size && s->bd == bd &&
             s->volume == volume && s->msaa == msaa && !parked)
             parked = s;
+    /* The same target parked here, whose single layer only its padding differed in. The copy that names a target
+       knows its pixels but not the stride the game laid its layer out in, so it asks for the least one: without this
+       it makes a second target at the address, where its pixels arrive that no draw and no texture looks at, and the
+       draw's target stays parked with the pixels it had (a minimap's terrain, every frame). Of those parked, the one
+       with the greatest stride, so that naming it with a smaller one never lowers what the game laid out */
+    if (!parked && layers == 1 && !volume)
+        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
+            if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl &&
+                s->bh == bh && s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa &&
+                (!parked || s->layer_size > parked->layer_size))
+                parked = s;
     for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt) {
             rt_pages(s, -1);
@@ -2523,6 +2535,8 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         surf_changed(gva);
         rt_pages(parked, 1);
         vk_rt_note_read(parked);
+        /* named with more padding than it was parked with: it keeps the greater, as the one holding the address does */
+        if (parked->layer_size < layer_size) parked->layer_size = layer_size;
         rt_take_pixels(parked, cur, cur_fresh);
         return parked;
     }

@@ -1,0 +1,110 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* One target per address, where the two paths that name it know different strides (surface.c rt_create_).
+   - A 2D copy names a target by its guest address, its size and its format, and nothing of the stride of its single
+     layer: blit2d's vk_rt passes no layer size, which becomes the least that holds the pixels, while the draw that
+     made the target gave the stride the game laid out. When another shape has parked that target, the copy must take
+     it back instead of making a second target at the address. A second one takes the copy's pixels where no draw and
+     no texture looks, which is how a minimap lost its terrain every frame.
+   - The same target in another format class (sRGB over UNORM) takes the pixels of the one it parks (rt_take_pixels).
+     Its single layer's stride is padding, not part of the pixels: one path's stride must not keep the other from
+     taking them, or the target starts blank where memory has nothing.
+   Lavapipe and a discrete GPU differ in nothing here: this is the renderer's own bookkeeping, no pixel leaves its
+   image but for the readback that asks what a target holds */
+#define RSTR_W       64u
+#define RSTR_H       64u
+#define RSTR_BH      4u /* 16 GOBs of 8 rows: a row of 64 RGBA8 pixels is one GOB */
+#define RSTR_TILE    (RSTR_BH << 4)
+#define RSTR_FMT     0xD5u  /* A8B8G8R8 UNORM */
+#define RSTR_FMT_ALT 0xD6u  /* A8B8G8R8 sRGB: another format class of the same bytes */
+#define RSTR_STRIDE  0x100000ull /* more than a 64 by 64 layer of that format holds: its padding alone */
+#define RSTR_SPAN    0x20000u
+#define RSTR_CPU     (HEAP_BASE + 0x3e000000)
+#define RSTR_GVA     0xaa0000000ull
+#define RSTR_RED     0xFF0000FFu
+#define RSTR_GREEN   0xFF00FF00u
+/* the 64 by 64 target at gva, its single layer laid out in stride (0: the least the pixels need) */
+static Surf* rstr_target(u64 gva, u32 fmt, u64 stride) {
+    return vk_rt_array(gva, RSTR_W, RSTR_H, fmt, RSTR_TILE, 0, 1, stride, 0, DS_MSAA_1X1);
+}
+/* another shape at gva: it takes the address and parks what held it */
+static Surf* rstr_other(u64 gva) { return vk_rt_array(gva, 32, 32, RSTR_FMT, RSTR_TILE, 0, 1, RSTR_STRIDE, 0, DS_MSAA_1X1); }
+/* every pixel of t cleared to colour, as a draw does: on the GPU, the newest write the target has (vk_lock held) */
+static void rstr_clear(Surf* t, u32 colour) {
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkClearColorValue c = {.float32 = {(float)(colour & 255) / 255.0f, (float)(colour >> 8 & 255) / 255.0f,
+                                       (float)(colour >> 16 & 255) / 255.0f, (float)(colour >> 24) / 255.0f}};
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    rec_CmdClearColorImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
+    vk_surf_wrote(t);
+    vk_rt_drawn(t);
+}
+static int check_rt_stride(void) {
+    CHECK(mem_map(RSTR_CPU, RSTR_SPAN, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(RSTR_GVA, RSTR_CPU, RSTR_SPAN);
+    /* guest bytes no target on the GPU holds: what a target reads that loaded itself from memory, 0x40404040 a pixel */
+    memset(GP(RSTR_CPU), 0x40, RSTR_SPAN);
+    g_renderer->mem_may_have_changed();
+
+    vk_lock();
+    Surf* t = rstr_target(RSTR_GVA, RSTR_FMT, RSTR_STRIDE);
+    CHECK(t);
+    rstr_clear(t, RSTR_RED);
+    Surf* other = rstr_other(RSTR_GVA);
+    CHECK(other && other != t && (t->gva >> 63));
+    /* the 2D copy's call, which knows no stride: the target the draw made has to come back */
+    Surf* back = vk_rt(RSTR_GVA, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
+    vk_unlock();
+    if (!back || back != t || (back->gva >> 63)) {
+        fprintf(stderr,
+                "a 2D copy named the 64x64 target at %llx that the draw made, its single layer laid out in stride "
+                "%llu: %p came back, not %p, %s\n",
+                (unsigned long long)RSTR_GVA, (unsigned long long)RSTR_STRIDE, (void*)back, (void*)t,
+                back && back == t ? "and it is left parked" : "and the draw's target is still parked");
+        return 1;
+    }
+    u32 got = ct_texel(t, 0, 0);
+    if (got != RSTR_RED) {
+        fprintf(stderr,
+                "a 2D copy took back the target at %llx that the draw left red: a texel reads %08x, not %08x\n",
+                (unsigned long long)RSTR_GVA, got, RSTR_RED);
+        return 1;
+    }
+
+    /* the same target in another format class, whose single layer the copy's path laid out in the least stride */
+    const u64 gva = RSTR_GVA + 0x10000;
+    vk_lock();
+    Surf* unorm = rstr_target(gva, RSTR_FMT, 0);
+    CHECK(unorm);
+    rstr_clear(unorm, RSTR_GREEN);
+    const u64 least = unorm->layer_size;
+    Surf* srgb = rstr_target(gva, RSTR_FMT_ALT, RSTR_STRIDE);
+    vk_unlock();
+    if (least == RSTR_STRIDE) {
+        fprintf(stderr, "the least stride of a 64x64 layer of format %x is %llu: the case has no second stride\n",
+                RSTR_FMT, (unsigned long long)least);
+        return 1;
+    }
+    if (!srgb || srgb == unorm || !(unorm->gva >> 63)) {
+        fprintf(stderr, "format %x at %llx did not take the address of format %x: %p came back, not a new target, and "
+                        "%p is parked %d\n",
+                RSTR_FMT_ALT, (unsigned long long)gva, RSTR_FMT, (void*)srgb, (void*)unorm, !!(srgb && unorm->gva >> 63));
+        return 1;
+    }
+    got = ct_texel(srgb, 0, 0);
+    if (got != RSTR_GREEN) {
+        fprintf(stderr,
+                "the target in format %x at %llx took the address of the one in format %x, strides %llu and %llu: a "
+                "texel reads %08x, not the %08x the other one held\n",
+                RSTR_FMT_ALT, (unsigned long long)gva, RSTR_FMT, (unsigned long long)least,
+                (unsigned long long)RSTR_STRIDE, got, RSTR_GREEN);
+        return 1;
+    }
+
+    CHECK(mem_unmap(RSTR_CPU, RSTR_SPAN) == 0);
+    puts("render targets named with only their stride different: one target per address, and the pixels moved over "
+         "when another format class takes the address");
+    return 0;
+}
