@@ -318,6 +318,9 @@ void gpu_ds_join_at(const void* rec, void (*fn)(void));
 enum { DM_START, DM_APPLIED, DM_CALL, DM_LOCKED, DM_RENDER, DM_MAIN_DONE, DM_RENDER_DONE, DM_UNLOCKING, DM_UNLOCKED,
        DM_N };
 extern u64 g_draw_marks[DM_N];
+/* a mark's ticks, where the draw_timing setting is on (0, no mark, where it is off). The file that uses it includes
+   nx/runtime/options.h */
+#define DRAW_MARK() (g_settings.draw_timing ? __builtin_readcyclecounter() : 0)
 u64 gpu_draw_marks_take(u64 sums[DM_N]);
 void gpu_ds_peek_log(void); /* the stats line of the records found after a draw */
 void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
