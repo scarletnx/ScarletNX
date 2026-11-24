@@ -1741,6 +1741,101 @@ static void test_shared_no_uniform(const char* dir) {
 }
 
 /* the program code (n instructions) of stage, with header sph, translated and run once in env: 1 when it ran */
+/* The pool map (ShCaps.pool_map, shader.h's SH_MAP_*): a fragment program's TEX of the handle at c[3][0x40], with the
+   texture table, takes its view and sampler slots from the map, not from the draw's texture words. Handle 5 | 3 << 20:
+   TIC record 5's 2D view slot (77) and TSC record 3's plain sampler slot (9), or with the depth compare its compare
+   one (10). A handle past a pool's limit takes the null slots (0). The map in the storage buffer at SNX_TABLE_MAP from
+   the word the per-draw block names, and by device address (a module spirv-val checks, as the evaluator reads no
+   addresses). The draw's texture words hold other slots, which none of these reads */
+static void test_pool_map(const char* dir) {
+    const ShCaps saved = g_spirv_translate;
+    g_spirv_translate.cb_windows = 1;
+    g_spirv_translate.tex_table = 1;
+    g_spirv_translate.table_set = 5;
+    g_spirv_translate.pool_map = 1;
+    static const struct {
+        u32 handle, shadow, image, sampler;
+    } cases[] = {{5 | 3u << 20, 0, 77, 9}, {5 | 3u << 20, 1, 77, 10}, {300 | 3u << 20, 0, 0, 0}, {5 | 300u << 20, 0, 0, 0}};
+    static u32 map[4096];
+    memset(map, 0, sizeof map);
+    const u32 tic_dir = 4, tsc_dir = 8, tic_page = 16, tsc_page = tic_page + 256 * SH_MAP_TIC_WORDS;
+    map[SH_MAP_TIC_DIR] = tic_dir;
+    map[SH_MAP_TSC_DIR] = tsc_dir;
+    map[tic_dir] = tic_page;
+    map[tsc_dir] = tsc_page;
+    map[tic_page + 5 * SH_MAP_TIC_WORDS + SH_MAP_CLASS_2D / 2] = 77 | 88u << 16; /* 2D, and 2D array */
+    map[tsc_page + 3 * SH_MAP_TSC_WORDS] = 9 | 10u << 16;
+    for (u32 k = 0; k < sizeof cases / sizeof *cases; k++) {
+        u8 code[5 * 16] = {0};
+        Word tex = tex_offset();
+        set(&tex, 32, 8, 255); /* no offset register */
+        set(&tex, 76, 1, 0);
+        set(&tex, 54, 5, 3); /* c[3][0x40] */
+        if (cases[k].shadow) set(&tex, 78, 1, 1); /* the depth compare, its reference in R5 */
+        put(code, 0, mov_imm(4, f2u(0.5f)));
+        put(code, 1, mov_imm(5, f2u(0.5f)));
+        put(code, 2, tex);
+        put(code, 3, exit_insn());
+        put(code, 4, bra(4, 4, 7, 0));
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = translate_fs(code, 5, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) break;
+        CHECK(si.tex_table & SH_TEX_TABLE_MAP);
+        if (!k) CHECK(keep_module(dir, "pool_map", spv, count));
+        SpvEvalEnv env = {0};
+        static u32 window[256], cb3[32], words[256];
+        memset(window, 0, sizeof window);
+        memset(cb3, 0, sizeof cb3);
+        for (u32 w = 0; w < 256; w++) words[w] = 1234 | 567u << SNX_TABLE_SAMPLER_SHIFT; /* the draw's words: unread */
+        env.ubo[SNX_VKB_DRAW] = window;
+        env.ubo_words[SNX_VKB_DRAW] = 256;
+        env.push[0] = 0;
+        window[SH_DRAW_MAP] = 0;       /* the map from word 0 of its buffer */
+        window[SH_DRAW_MAP + 2] = 255; /* the pools' limits */
+        window[SH_DRAW_MAP + 3] = 255;
+        cb3[0x40 / 4] = cases[k].handle;
+        env.ubo[SNX_VKB_CB + 3] = cb3;
+        env.ubo_words[SNX_VKB_CB + 3] = 32;
+        env.ubo[SNX_TABLE_MAP] = map;
+        env.ubo_words[SNX_TABLE_MAP] = 4096;
+        env.ubo[SNX_VKB_TEXWORDS] = words;
+        env.ubo_words[SNX_VKB_TEXWORDS] = 256;
+        env.element[0] = env.element[1] = 0xdead;
+        const char* why = spv_eval(spv, count, &env);
+        /* the image table at binding 0 of the table's set, the samplers' at binding 1. The evaluator takes no depth
+           compare sample, which comes after both elements are taken */
+        int ok = (!why || cases[k].shadow) && env.element[0] == cases[k].image && env.element[1] == cases[k].sampler;
+        if (!ok)
+            fprintf(stderr, "pool map, handle %08x%s: %s; image slot %u and sampler slot %u, expected %u and %u\n",
+                    cases[k].handle, cases[k].shadow ? " (depth compare)" : "", why ? why : "ran", env.element[0],
+                    env.element[1], cases[k].image, cases[k].sampler);
+        CHECK(ok);
+        free(spv);
+    }
+    /* by device address: the module, for spirv-val */
+    g_spirv_translate.gbuf_address = 1;
+    {
+        u8 code[5 * 16] = {0};
+        Word tex = tex_offset();
+        set(&tex, 32, 8, 255);
+        set(&tex, 76, 1, 0);
+        set(&tex, 54, 5, 3);
+        put(code, 0, mov_imm(4, f2u(0.5f)));
+        put(code, 1, mov_imm(5, f2u(0.5f)));
+        put(code, 2, tex);
+        put(code, 3, exit_insn());
+        put(code, 4, bra(4, 4, 7, 0));
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = translate_fs(code, 5, &si, &count);
+        CHECK(spv != NULL && (si.tex_table & SH_TEX_TABLE_MAP));
+        if (spv) CHECK(keep_module(dir, "pool_map_address", spv, count));
+        free(spv);
+    }
+    g_spirv_translate = saved;
+}
 static int run_stage(int stage, const u8* code, u32 n, const u32* sph, SpvEvalEnv* env) {
     ShaderInfo si = {0};
     size_t count = 0;
@@ -7910,6 +8005,7 @@ int main(int argc, char** argv) {
     test_root_tables(dir);
     test_texel_offsets(dir);
     test_minmax_samples(dir);
+    test_pool_map(dir);
     test_global_flow(dir);
     test_fswzadd(dir);
     test_lane_masks(dir);
