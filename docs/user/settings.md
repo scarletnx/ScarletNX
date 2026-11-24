@@ -511,7 +511,9 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 
 ## 3DS driver
 
-`scarletnx-3ds --key=value` ([3DS](../platforms/3ds/README.md)), in no section of the game's `.ini`.
+`scarletnx-3ds --key=value` ([3DS](../platforms/3ds/README.md)). The launcher's Settings show them in the 3DS group,
+the screens' rows on it and the others on its Debug page, and pass each one picked to a 3DS game's run. `ctr_script`
+alone is a run's own, given on the command line (`--script=` too) and on no page.
 
 | Key | Default | Effect |
 | --- | --- | --- |

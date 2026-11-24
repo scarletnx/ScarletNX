@@ -106,6 +106,20 @@ endif()
 if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # a page after its section's others
     message(FATAL_ERROR "scarletnx --settings lists a page's settings before its section's last")
 endif()
+# the 3DS driver's debug settings, on the 3DS group's Debug page with their names (the launcher passes each one picked
+# to a 3DS game's run); its scripted input, a run's own, on no page
+foreach(row "\n3DS/Debug\tctr_hooks\t1\tint\t0\t1\t" "\tIPC hooks\t0=Off|1=On\t\n"
+            "\n3DS/Debug\tctr_stand_in\t1\tint\t0\t2\t" "\tStand-in shaders\t0=Off|1=On|2=Every draw\t\n"
+            "\n3DS/Debug\tctr_auto_stub_ipc\t1\tint\t0\t1\t")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
+string(FIND "${list}" "\tctr_script\t" at)
+if(NOT at LESS 0)
+    message(FATAL_ERROR "scarletnx --settings lists ctr_script, a 3DS run's scripted input")
+endif()
 # a game's HDR output, off until asked for, and the paper white and the peak it is told: the launcher's Settings and
 # a game's menu show them (gpu/vk/hdr_swapchain.c, hle/services/gsv.c)
 foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\t\n"
