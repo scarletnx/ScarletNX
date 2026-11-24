@@ -52,6 +52,7 @@ typedef struct {
     int open;    /* a text whose words are its common values (ini.h's INI_OPEN) */
     char* steps; /* an int's values the menus offer, '|' between (ini.h's IniOpt steps), NULL for every step */
     char* boxes; /* the source of its items (ini.h's INI_BOXES): words, bans, families or commands */
+    char* path;  /* a text that is a path (ini.h's INI_PATH): folder, file or save, the picker it takes */
     int perf;    /* changes how fast the game runs where the player can't see it (ini.h's INI_PERF) */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
@@ -682,6 +683,10 @@ static void read_spec(const char* path) {
             if (strcmp(rest, "words") && strcmp(rest, "bans") && strcmp(rest, "families") && strcmp(rest, "commands"))
                 fail(number, "boxes %s: the items are words, bans, families or commands", rest);
             s->boxes = dup(rest);
+        } else if (!strcmp(word, "path")) {
+            if (strcmp(rest, "folder") && strcmp(rest, "file") && strcmp(rest, "save"))
+                fail(number, "path %s: a path is a folder, a file, or save (a file to write)", rest);
+            s->path = dup(rest);
         } else if (!strcmp(word, "steps")) {
             s->steps = steps_of(rest, number);
         } else if (!strcmp(word, "perf")) {
@@ -716,6 +721,7 @@ static void read_spec(const char* path) {
         if (s->steps && (s->type != T_INT || s->slider))
             fail(s->line, "%s: steps takes an int, not a slider (whose steps are its words')", s->name);
         if (s->steps) steps_in_range(s);
+        if (s->path && (s->type != T_TEXT || s->boxes)) fail(s->line, "%s: path takes a text, not boxes", s->name);
         if (s->boxes && s->type == T_FLOAT)
             fail(s->line, "%s: boxes takes an int or a text, a float is no set", s->name);
         if (s->boxes && (s->slider || s->steps || s->open))
@@ -1263,6 +1269,11 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         if (s->slider) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_SLIDER", at ? " | " : "");
         if (s->open) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_OPEN", at ? " | " : "");
         if (s->boxes && s->words) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_BOXES", at ? " | " : "");
+        if (s->path)
+            at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PATH_%s", at ? " | " : "",
+                           !strcmp(s->path, "folder") ? "FOLDER"
+                           : !strcmp(s->path, "file") ? "FILE"
+                                                      : "SAVE");
         if (s->perf || scope_of_setting(s) == S_VULKAN || scope_of_setting(s) == S_LLVM)
             at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PERF", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);

@@ -877,6 +877,10 @@ typedef struct App {
     GuiWatch watch;
     bool recent_all;        /* every recent game shows, not GUI_RECENT_SHOWN and a row for the rest */
     Uint32 picked_folder;   /* the event a folder from the system's picker comes back as */
+    Uint32 path_picked;     /* a path setting's picker's answer (path_answer) */
+    char path_key[64];      /* the setting it was opened for, and whose: the game's picks, "" the launcher's */
+    char* path_own;
+    bool path_typed;        /* a picker could not open: the path rows are typed from then on, as it said */
     Uint32 pack_picked;     /* and a folder of NCAs to pack (Pack extracted as dXCI/dNSP) */
     char* pack_folder;      /* that folder, asked NSP or XCI (GUI_ASK_PACK) */
     SDL_Texture* preview;   /* the editor's: the menu or a run drawn in its theme, at 1x */
@@ -9294,7 +9298,7 @@ static void SDLCALL folder_picked(void* userdata, const char* const* files, int 
     SDL_zero(e);
     e.type = *(const Uint32*)userdata;
     e.user.code = files == NULL; /* an error, which SDL_GetError names */
-    e.user.data1 = files && files[0] ? SDL_strdup(files[0]) : NULL;
+    e.user.data1 = files && files[0] && *files[0] ? SDL_strdup(files[0]) : NULL; /* SDL's zenity cancels with "" */
     e.user.data2 = files ? NULL : SDL_strdup(SDL_GetError());
     SDL_PushEvent(&e);
 }
@@ -11828,6 +11832,121 @@ static void mic_words(App* app, int group) {
     SDL_free(ids);
     if (on) SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
+/* ---- a path setting (settings.txt's path): Enter opens the system's picker, a folder's, a file's or a save dialog's,
+   its answer an app->path_picked event; Ctrl+V and a drop give it a path too, Del takes it off ---- */
+/* row is a path, which a paste or a drop may give */
+static bool path_takes(const App* app, int row) {
+    const GuiSetting* v = row >= 0 && row < screen_settings(app)->count ? &screen_settings(app)->values[row] : NULL;
+    return v && v->path && !v->needs_build;
+}
+/* row's value is picked with the system's dialog: not on iOS, whose picker's answer a later run cannot open, nor once
+   one could not open */
+static bool path_picks(const App* app, int row) {
+    const GuiSetting* v = &screen_settings(app)->values[row];
+    if (!path_takes(app, row) || app->path_typed) return false;
+#ifdef SDL_PLATFORM_IOS
+    return false;
+#else
+    return v->path != 0;
+#endif
+}
+/* the note the Settings show, or the launcher's message where the Settings are closed */
+static void path_say(App* app, const char* label, const char* what) {
+    if (app->editing && app->form == GUI_FORM_GROUP)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", label, what);
+    else
+        snprintf(app->message, sizeof app->message, "%s: %s", label, what);
+}
+/* row's picker could not open: why, and what Enter does now */
+static void path_failed(App* app, int row, const char* why) {
+    char said[sizeof app->editor.note - 64];
+    app->path_typed = true;
+    snprintf(said, sizeof said, snx_tr("the picker could not open: %s. Enter now types the path"), why);
+    path_say(app, snx_tr(screen_settings(app)->keys[row].key), said);
+    say_failure(app, said);
+}
+/* path given to row (picked, pasted or dropped), kept as the other settings are; one that does not fit is refused,
+   the row keeping what it has */
+static void path_take(App* app, int row, const char* path) {
+    GuiSettings* s = screen_settings(app);
+    char said[2 * GUI_SETTING_TEXT];
+    if (gui_settings_set(s, s->values[row].key, path)) {
+        app->editor.dirty = true;
+        write_settings(app);
+        app->editor.dirty = false;
+        snprintf(said, sizeof said, "%s", path);
+    } else {
+        char now[GUI_SETTING_TEXT];
+        setting_shown(app, row, now, sizeof now);
+        snprintf(said, sizeof said, snx_tr("takes a path of up to %d bytes, not %s: it keeps %s"), GUI_SETTING_TEXT - 1,
+                 path, now);
+    }
+    path_say(app, snx_tr(s->keys[row].key), said);
+}
+/* Enter on row: its picker, over the value it has */
+static void path_pick(App* app, int row) {
+    GuiSettings* s = screen_settings(app);
+    const GuiSetting* v = &s->values[row];
+    const char* own = app->own_picks ? app->own_picks : "";
+    char why[sizeof app->editor.note - 64] = "", *location = NULL;
+    bool opened = true;
+    if (!app->path_picked) app->path_picked = SDL_RegisterEvents(1);
+    if (!app->path_picked) {
+        path_failed(app, row, SDL_GetError());
+        return;
+    }
+    free(app->path_own);
+    app->path_own = snx_strdup(own);
+    snprintf(app->path_key, sizeof app->path_key, "%s", v->key);
+    if (gui_settings_value(s, v->key) && *gui_settings_value(s, v->key))
+        location = snx_strdup(gui_settings_value(s, v->key));
+    else if (v->path == 's') { /* a file to write, named after its setting in Documents */
+        const char* home = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
+        if (!home) home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+        if (home) location = snx_path_join(home, v->key);
+    }
+    /* its answer comes as an event even when it cannot open, which says why */
+#ifdef SDL_PLATFORM_ANDROID /* SDL has no folder picker there: the system's own, through the app */
+    if (v->path == 'd') opened = gui_android_pick_folder(folder_picked, &app->path_picked, why, sizeof why) != 0;
+#else
+    if (v->path == 'd') SDL_ShowOpenFolderDialog(folder_picked, &app->path_picked, app->window, location, false);
+#endif
+    else if (v->path == 'f')
+        SDL_ShowOpenFileDialog(folder_picked, &app->path_picked, app->window, NULL, 0, location, false);
+    else
+        SDL_ShowSaveFileDialog(folder_picked, &app->path_picked, app->window, NULL, 0, location);
+    free(location);
+    if (!opened) path_failed(app, row, why);
+}
+/* the picker's answer: the path, none, or why it could not open; and the settings it was opened for may have closed */
+static void path_answer(App* app, const char* picked, const char* error, bool failed) {
+    const char* own = app->own_picks ? app->own_picks : "";
+    int row = setting_row(app, app->path_key);
+    bool same = app->path_own && !strcmp(app->path_own, own);
+    if (failed && same && row >= 0)
+        path_failed(app, row, error ? error : snx_tr("no reason given"));
+    else if (row < 0 || !same) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s not changed to %s: its settings were closed while the picker was open"), app->path_key,
+                 picked ? picked : snx_tr("none"));
+    } else if (picked) {
+        char* path = gui_document_path(picked); /* Android's document by its path */
+        if (path)
+            path_take(app, row, path);
+        else {
+            char said[sizeof app->editor.note - 64];
+            snprintf(said, sizeof said, snx_tr("not changed: %s is not a folder or file of this device's storage"),
+                     picked);
+            path_say(app, snx_tr(screen_settings(app)->keys[row].key), said);
+        }
+        free(path);
+    } else
+        path_say(app, snx_tr(screen_settings(app)->keys[row].key),
+                 screen_settings(app)->values[row].path == 'd' ? snx_tr("No folder was picked.")
+                                                               : snx_tr("No file was picked."));
+    free(app->path_own);
+    app->path_own = NULL;
+}
 /* ---- a setting of boxes: a box an item, On or Off, over the row's value (gui_settings_item_toggle) ---- */
 static void boxes_close(App* app) {
     free(app->box_keys);
@@ -13391,6 +13510,13 @@ static void editor_key(App* app, GuiKey key) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
     }
+    /* a path's row opens the system's picker; typed where a picker answers with no path, or could not open */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        path_picks(app, setting_of(app, app->editor.row))) {
+        path_pick(app, setting_of(app, app->editor.row));
+        return;
+    }
     /* a row of boxes opens its form: a box an item */
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         app->editor.object == (char*)screen_settings(app)->values &&
@@ -13573,6 +13699,20 @@ static void editor_input(App* app, const SDL_Event* e) {
             snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"),
                      gui_freedreno_known[row - presets].name);
         }
+        return;
+    }
+    /* a path's row: Ctrl+V gives it the path pasted */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing && e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) &&
+        !e->key.repeat && path_takes(app, setting_of(app, app->editor.row))) {
+        char* clipboard = SDL_GetClipboardText();
+        char* path = gui_drop_path(clipboard ? clipboard : "", true);
+        if (path)
+            path_take(app, setting_of(app, app->editor.row), path);
+        else
+            path_say(app, snx_tr(screen_settings(app)->keys[setting_of(app, app->editor.row)].key),
+                     snx_tr("Paste one local path"));
+        free(path);
+        SDL_free(clipboard);
         return;
     }
     /* Folders: Del puts a place back to its default or takes an Extra off, Ctrl+V gives the row the folder pasted */
@@ -23867,6 +24007,17 @@ static void event_take(App* app, const SDL_Event* e) {
         free(path);
         return;
     }
+    if ((e->type == SDL_EVENT_DROP_FILE || e->type == SDL_EVENT_DROP_TEXT) && app->editing &&
+        app->form == GUI_FORM_GROUP && path_takes(app, setting_of(app, app->editor.row))) {
+        char* path = gui_drop_path(e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
+        if (path)
+            path_take(app, setting_of(app, app->editor.row), path);
+        else
+            path_say(app, snx_tr(screen_settings(app)->keys[setting_of(app, app->editor.row)].key),
+                     snx_tr("Drop one local path"));
+        free(path);
+        return;
+    }
     if (e->type == SDL_EVENT_DROP_FILE || e->type == SDL_EVENT_DROP_TEXT) {
         drop(app, e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
         return; /* SDL3 owns the event's data, unlike SDL2. */
@@ -23932,6 +24083,12 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     /* the folder picker's answer: a folder, none, or why it could not open */
+    if (app->path_picked && e->type == app->path_picked) {
+        path_answer(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
+        return;
+    }
     if (app->picked_folder && e->type == app->picked_folder) {
         char* error = (char*)e->user.data2;
         int place = app->place_row;
@@ -24318,6 +24475,7 @@ static bool initialize(App* app, const char* self) {
 }
 /* what the menu holds, let go; SDL itself left as it is (cleanup's) */
 static void forget(App* app) {
+    free(app->path_own);
     boxes_close(app);
     gui_settings_free(&app->fd_settings);
 #ifdef SDL_PLATFORM_ANDROID

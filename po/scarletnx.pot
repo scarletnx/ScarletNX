@@ -3865,6 +3865,30 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "the picker could not open: %s. Enter now types the path"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "takes a path of up to %d bytes, not %s: it keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s not changed to %s: its settings were closed while the picker was open"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "not changed: %s is not a folder or file of this device's storage"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No folder was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: a box an item, Enter turns it on or off"
 msgstr ""
 
@@ -4202,6 +4226,10 @@ msgid "%s: %s is its highest"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Paste one local path"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Paste one local folder's path"
 msgstr ""
 
@@ -4458,10 +4486,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "No user written: %s"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No folder was picked."
 msgstr ""
 
 #: src/gui/main.c
@@ -6299,6 +6323,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Drop one local folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Drop one local path"
 msgstr ""
 
 #: src/gui/main.c

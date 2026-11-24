@@ -50,6 +50,9 @@
 #                         int's value one bit), bans (the keys of the extension bans, --bans), families (the hook
 #                         families, --hooks), commands (the vulkan table's extensions' device commands, --vk-registry);
 #                         without that file the row is typed
+#     path folder|file|save
+#                         a text that is a path (ini.h's INI_PATH_): the launcher picks it with the system's dialog, a
+#                         folder's, a file's that is read, or a save dialog's for one that is written
 #     open                a text whose words are its common values, not every one (ini.h's INI_OPEN): the launcher
 #                         keeps a value none of them is, shown as itself
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
@@ -1527,6 +1530,7 @@ setting IR dump PC
 setting IR branch profile
     key ir_branch_profile
     text 1024
+    path file
     default ""
     startup
     recompile
@@ -1741,6 +1745,7 @@ setting GPU hook trace words
 setting Shader corpus
     key shader_corpus
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
@@ -1748,6 +1753,7 @@ setting Shader corpus
 setting Pipeline stats
     key pipeline_stats
     text 1024
+    path save
     default ""
     startup
     help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline, and of each
@@ -1758,6 +1764,7 @@ setting Pipeline stats
 setting GL call census
     key gl_call_census
     text 1024
+    path save
     default ""
     startup
     help A TSV file that gets, for a game that draws through its own OpenGL driver, each GL function it calls: the
@@ -1767,6 +1774,7 @@ setting GL call census
 setting ASTC dump
     key astc_dump
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
@@ -1775,6 +1783,7 @@ setting ASTC dump
 setting SM86 dump
     key sm86_dump
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of
@@ -2111,6 +2120,7 @@ setting Vulkan memory budget
 setting RenderDoc captures
     key renderdoc
     text 1024
+    path save
     default ""
     startup
     help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): the capture
@@ -2184,6 +2194,7 @@ setting Tracy port
 setting Tracy capture tool
     key tracy_capture_tool
     text 1024
+    path file
     default ""
     startup
     help The tracy-capture to start: a path, or a name on PATH. Empty: beside the runtime, then on PATH
@@ -2501,6 +2512,7 @@ setting Vita shader corpus
     label Shader corpus
     key vita_shader_corpus
     text 1024
+    path folder
     default ""
     help A folder the Vita runtime writes each GXP program it translates to, with what it was translated for, as
     help <hash>.gxp: tools/snx_vita_usse.c translates such a folder again (the game's own code: keep it local)
@@ -2693,6 +2705,7 @@ setting Extract game container
 setting Java home
     key java_home
     text 192
+    path folder
     help The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows).
     help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
 

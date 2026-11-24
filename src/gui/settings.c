@@ -198,6 +198,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         /* the twelfth column's marks: slider, its default a step as the runtime's list makes it, and open */
         v->slider = v->plain && has_mark(field[11], "slider");
         v->open = has_mark(field[11], "open");
+        v->path = has_mark(field[11], "folder") ? 'd'
+                  : has_mark(field[11], "file") ? 'f'
+                  : has_mark(field[11], "save") ? 's'
+                                                : 0;
         if (page) {
             link->count = s->count - link->first;
             all->count = s->count - all->first;

@@ -238,6 +238,25 @@ int main(void) {
         char list[512];
         assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
     }
+    /* a path's row (INI_PATH): its marks folder, file or save, after the others where it has one */
+    {
+        static char t[16];
+        static const IniOpt rows[] = {
+            {"corpus", "", "Keeps", INI_TEXT, INI_PATH_FOLDER, t, 0, 0, NULL, "Corpus", NULL, 0, 0, sizeof t, NULL},
+            {"in", "", "Reads", INI_TEXT, INI_PATH_FILE | INI_STARTUP, t, 0, 0, NULL, "In", NULL, 0, 0, sizeof t, NULL},
+            {"out", "", "Writes", INI_TEXT, INI_PATH_SAVE | INI_NEEDS_BUILD, t, 0, 0, NULL, "Out", NULL, 0, 0, sizeof t,
+             NULL},
+            {"jdk", "", "A JDK", INI_TEXT, INI_PATH_FOLDER | INI_OPEN, t, 0, 0, NULL, "JDK", "=Ours", 0, 0, sizeof t,
+             NULL},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
+        static const IniSection sections[] = {{"Debug", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        static const char want[] = "Debug\tcorpus\t\ttext\t0\t0\tKeeps\tCorpus\t\t\t\tfolder\n"
+                                   "Debug\tin\t\ttext\t0\t0\tReads\tIn\t\t\t\tfile\n"
+                                   "Debug\tout\t\ttext\t0\t0\tWrites\tOut\t\t\tneeds-build\tsave\n"
+                                   "Debug\tjdk\t\ttext\t0\t0\tA JDK\tJDK\t=Ours\t\t\topen folder\n";
+        char list[512];
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
+    }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
     {
