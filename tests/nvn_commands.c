@@ -1024,6 +1024,22 @@ int main(void) {
         nvn_CommandBufferEndRecording(&cpu, cbv);
         g_nvn.loader.api = api;
     }
+
+    /* an Ounce game binds 17 vertex attributes: the bind is recorded with all of them (it was dropped past 16) */
+    {
+        const u64 cbv = 0x4f000, attribs = 0x4f800;
+        Walk w;
+        for (u32 i = 0; i < 17; i++) gw32(attribs + 4 * i, 0x100u + i);
+        nvn_CommandBufferInitialize(&cpu, cbv, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbv, 1, 0x2f800, 0x400);
+        nvn_CommandBufferBeginRecording(&cpu, cbv);
+        nvn_CommandBufferBindVertexAttribState(&cpu, cbv, 17, attribs);
+        walk(nvn_CommandBufferEndRecording(&cpu, cbv), &w);
+        check(w.n == 1 && w.op[0] == OP_BIND_VATTR &&
+                  snx_ld_le32(GP(w.at[0] + 8 + offsetof(NvnPBindVAttr, count))) == 17 &&
+                  snx_ld_le32(GP(w.at[0] + 8 + offsetof(NvnPBindVAttr, st) + 4 * 16)) == 0x110,
+              "a bind of 17 vertex attributes is recorded whole");
+    }
     if (failures) return 1;
     puts("nvn_commands: ok");
     return 0;
