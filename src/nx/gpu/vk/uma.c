@@ -77,8 +77,9 @@
      UMA: an import made for it would take its pages from write tracking, and a sparse texture a copy feeds would load
      again whole instead of the pages written (Liz, #1079). A host without traps has no owner to give the span: the
      publish makes the import there where it takes no page from write tracking (a dma-buf region's pages stay
-     watched, and a host that tracks no writes has none to lose), and lands the result at once everywhere else, told
-     to write tracking as the GPU's write (vk_ww_land).
+     watched, a host pointer's where the host's own answer says so, vk_uma_watch_probe, and a host that tracks no
+     writes has none to lose), and lands the result at once everywhere else, told to write tracking as the GPU's
+     write (vk_ww_land).
    - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
@@ -135,7 +136,9 @@ typedef struct {
        of it; fd -1 for an import of guest memory where it is */
     int fd;
     void* handle;
-    int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
+    /* a dma-buf region (imp_make_dmabuf), or a host pointer's import where the probe passed (vk_uma_watch_probe): the
+       driver leaves the CPU's page table alone, and scans watch it */
+    int tracked;
     u32 rid;     /* its table of pages (Rgn) while it is in the table, 0 for none */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
@@ -1565,7 +1568,9 @@ static u32 imp_get(u64 cpu, u64 len) {
     /* the driver takes the pages for writing, and refuses those a scan protected (write tracking by protection,
        write_tracking=1 or a host without userfaultfd's): they open for the import, and close once it is in the table,
        whose pages the scans leave alone from then on (vk_uma_import_in) */
-    const int opened = !g_uma.migrate;
+    /* not where the scans watch a host pointer's import (vk_uma_watch_probe): the driver took protected pages there,
+       and opened they would read as written, every one of the windows, a write nobody made */
+    const int opened = !g_uma.migrate && !g_uma.watched;
     if (opened) plat_ww_open(GP(lo), hi - lo);
     const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
                       : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
@@ -1575,6 +1580,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         fail(lo, hi, why);
         return ~0u; /* the imports there stay */
     }
+    if (!g_uma.migrate) m.tracked = g_uma.watched; /* a host pointer's, where the scans go on watching its pages */
     vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (imp_destroy forgets) */
     g_uma.imports++;
     g_uma.import_bytes += hi - lo;
@@ -2077,12 +2083,14 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
     /* The import that holds the range, or one made for it (bind) where that takes no page from write tracking: a
-       dma-buf region, whose pages the scans watch as before (Imp.tracked), or a host that tracks no writes. Anywhere
-       else a new import's pages leave the scans (vk_uma_import_in), and every cache over its windows that asked
-       write tracking compares contents from then on: a sparse volume a copy fed loaded all its 1.7 MB again for 64
-       bytes copied into one tile, where it loads the tile's 8 KiB block (Liz, #1079). 0 there: the caller owns the
-       span, or lands it on a host without traps (owned.c's own_publish) */
-    if (!vk_uma() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && vk_ww_tracks()) || !bind(cpu, len, 1, &ib, &io))
+       dma-buf region, whose pages the scans watch as before (Imp.tracked), a host pointer where the host showed the
+       scans can watch its import too (vk_uma_watch_probe), or a host that tracks no writes. Anywhere else a new
+       import's pages leave the scans (vk_uma_import_in), and every cache over its windows that asked write tracking
+       compares contents from then on: a sparse volume a copy fed loaded all its 1.7 MB again for 64 bytes copied into
+       one tile, where it loads the tile's 8 KiB block (Liz, #1079). 0 there: the caller owns the span, or lands it on
+       a host without traps (owned.c's own_publish) */
+    if (!vk_uma() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && !g_uma.watched && vk_ww_tracks()) ||
+        !bind(cpu, len, 1, &ib, &io))
         return 0;
     /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
     SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");

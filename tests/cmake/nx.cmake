@@ -460,6 +460,26 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
         PASS_REGULAR_EXPRESSION "a publish over memory no import held makes its import"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the host taken as one whose probe passed (SNX_TEST_UMA_WATCHED, which no CI driver is): the publish makes its
+    # import, the scans go on watching it, the copy into a sparse volume's tile still loads the tile's block alone and
+    # the cube's stored level leaves its pieces out
+    add_test(NAME vulkan_headless_notraps_watched COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watched_protection
+        COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    add_test(NAME vulkan_headless_notraps_watched_sparse_volume COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watched_cube_take COMMAND snx-test-vulkan -H --memory-traps=2)
+    set_tests_properties(vulkan_headless_notraps_watched_cube_take PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_NVN_CASE=cube_take"
+        PASS_REGULAR_EXPRESSION "PASS cube take"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_notraps_watched vulkan_headless_notraps_watched_protection PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_UMA_ONLY=publish_notraps"
+        PASS_REGULAR_EXPRESSION "a publish over memory no import held makes its import"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_notraps_watched_sparse_volume PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_NVN_CASE=sparse_volume"
+        PASS_REGULAR_EXPRESSION "sparse volume: a tile mapped, written by the CPU or by DMA shows in the next frame"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # and what a new import over tracked pages cost there: a copy into a tile of a sparse volume loads the tile's
     # block again, not the volume, and a cube's stored level leaves its pieces out of the load
     add_test(NAME vulkan_headless_notraps_sparse_volume COMMAND snx-test-vulkan -H --memory-traps=2)

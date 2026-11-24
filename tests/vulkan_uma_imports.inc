@@ -21,10 +21,10 @@ static int uma_skip(void) {
     return 1;
 }
 /* whether a publish over memory no import holds makes one here (vk_uma_publish): on a host without traps, where the
-   import takes no page from write tracking */
+   import takes no page from write tracking (a region, a host pointer the scans can watch, or no tracking at all) */
 static int uma_publish_imports(void) {
     vk_lock();
-    int makes = !own_traps() && (vk_uma_through_dmabuf() || !vk_ww_tracks());
+    int makes = !own_traps() && (vk_uma_through_dmabuf() || vk_uma_watched() || !vk_ww_tracks());
     vk_unlock();
     return makes;
 }
@@ -956,6 +956,12 @@ static int check_uma_publish_notraps(void) {
         gmmu_map(src, src_cpu, 0x10000);
         memset(GP(UMA_NT), 0xa0, 0x1000);
         memset(GP(src_cpu), 0xa2, 0x1000);
+        /* the window's other pages as a cache with a baseline has them: taken in, nothing written since */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(UMA_NT), 0x200000, 0);
+        const u32 since = vk_ww_now();
+        vk_unlock();
         u64 adds = vk_uma_writes(), waits = vk_uma_out_waits();
         CHECK(!uma_dma(UMA_GNT + 0x100, src + 0x100));
         int owned = own_lookup(UMA_NT + 0x100, 256, NULL, 0) != 0;
@@ -968,6 +974,18 @@ static int check_uma_publish_notraps(void) {
         vk_finish();
         vk_unlock();
         CHECK(GP(UMA_NT)[0x100] == 0xa2 && GP(UMA_NT)[0x1ff] == 0xa2 && GP(UMA_NT)[0x200] == 0xa0);
+        /* an import the scans watch (vk_uma_watched) leaves the pages beside the copy's as they were: none reads as
+           written for the import having been made over it (opened for the driver, every protected page did) */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        const int beside = vk_written_since(GP(UMA_NT + 0x1000), 0x1ff000, since);
+        vk_unlock();
+        if (vk_uma_watched() && beside)
+            fprintf(stderr,
+                    "publish without traps, into a watched import: the window's pages beside the copy's are told %d "
+                    "(0: nothing wrote them)\n",
+                    beside);
+        CHECK(!vk_uma_watched() || !beside);
         CHECK(mem_unmap(UMA_NT, 0x200000) == 0);
         if (makes ? !imported || owned || !added || waited : imported || owned || added || !there)
             fprintf(stderr,

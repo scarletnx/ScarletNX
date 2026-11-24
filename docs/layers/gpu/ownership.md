@@ -363,7 +363,12 @@ What the GPU writes goes there too:
   without UMA: an import made for the result would take its pages from write tracking, and a sparse texture a copy
   feeds would then load again whole instead of the pages written. A host without traps has no owner to give the span:
   there the publish makes the import where it takes no page from write tracking (a dma-buf region, whose pages stay
-  watched, or a host that tracks no writes), and lands the result at once everywhere else.
+  watched, or a host that tracks no writes), and lands the result at once everywhere else. A host pointer's import is
+  one of those where the host itself shows it at start (`vk_uma_watch_probe`): pages a scan protected are imported,
+  the GPU copies in them in two submissions and the CPU writes after each, and the scans must find the CPU's writes
+  and none of the GPU's. Such a host's imports stay under the scans (`Imp.tracked`), every one of them, and the log says
+  `vulkan: write tracking watches a host pointer's import here`; where it fails the line names what failed (a
+  software rasterizer's copies are the CPU's own writes; amdgpu takes a user pointer's pages again for a submission).
 
 Guest memory is imported with `VK_EXT_external_memory_host` in pieces. An import covers the 2 MiB windows that a range
 touches, clipped to mapped guest memory. Imports never overlap: a range across two imports makes one import of their

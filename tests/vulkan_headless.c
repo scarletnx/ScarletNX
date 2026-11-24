@@ -7679,7 +7679,8 @@ static int check_uma_page_changes(void) {
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66);
     /* write tracking leaves an imported page alone: amdgpu takes it again, writable, at each submission, which a scan
        reports as a CPU write. It can't tell there, and still tells the pages beside it, whose memset above is taken in
-       before the baseline: a write counts from the scan that finds it */
+       before the baseline: a write counts from the scan that finds it. Where the host showed the scans can watch a
+       host pointer's import (vk_uma_watched) they tell there too: the copy only read the page, nothing wrote it */
     vk_unlock();
     g_renderer->mem_may_have_changed();
     vk_lock();
@@ -7694,9 +7695,11 @@ static int check_uma_page_changes(void) {
     int imported = vk_written_since(GP(UMA_E), 0x1000, before),
         beside = vk_written_since(GP(UMA_E) + 0x8000, 0x1000, before);
     vk_unlock();
-    if (imported != -1 || beside == 1)
-        fprintf(stderr, "write tracking since the baseline: %d on the imported page, %d beside it\n", imported, beside);
-    CHECK(imported == -1 && beside != 1);
+    const int told = vk_uma_watched() ? 0 : -1;
+    if (imported != told || beside == 1)
+        fprintf(stderr, "write tracking since the baseline: %d on the imported page (%d here), %d beside it\n",
+                imported, told, beside);
+    CHECK(imported == told && beside != 1);
     CHECK(mem_unmap(UMA_E, 0x10000) == 0);
     printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one a DMA copy writes "
            "stays, one dropped goes with an unmap, and write tracking leaves an imported page alone\n");
