@@ -607,11 +607,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # the appimage job's build and test tools, without the AppImage's
+      # the appimage job's build and test tools, without the AppImage's (poppler, as there, for the x86-64 back end)
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
