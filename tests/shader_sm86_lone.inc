@@ -510,6 +510,30 @@ static void test_lone_lanes_refused(void) {
     }
 }
 
+/* a program of the longest length the proof takes, and one instruction more, which the reason counts */
+static void test_lone_length(void) {
+    enum { MOST = 12280 };
+    u8* code = calloc(MOST + 1, 16);
+    CHECK(code != NULL);
+    if (!code) return;
+    for (u32 n = MOST; n <= MOST + 1; n++) {
+        ShaderInfo si = {0};
+        size_t count = 0;
+        char reason[64];
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        put(code, 0, ll_voteu(7));
+        for (u32 i = 1; i + 1 < n; i++) put(code, i, mov_imm(0, i));
+        put(code, n - 1, exit_insn());
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_EMULATE, 0);
+        snprintf(reason, sizeof reason, "unavailable: %u instructions, at most %u", n, (u32)MOST);
+        const int good = n == MOST ? spv && count : !spv && si.unsupported && strstr(si.first_unsupported, reason);
+        CHECK(good);
+        if (!good) fprintf(stderr, "lone lanes, %u instructions: %s\n", n, spv ? "translated" : si.first_unsupported);
+        free(spv);
+    }
+    free(code);
+}
+
 /* the stages a lone lane runs in with no proof: a fragment or vertex program that votes, finds itself or reduces has no
    subgroup operation, and gives what the console gives a lane alone; a fragment's reads inside its quad keep its lanes
    where the subgroups hold quads and are refused where they do not; and what no stage does without a warp is refused */
