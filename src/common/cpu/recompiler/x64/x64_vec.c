@@ -754,6 +754,19 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     unsigned q = word >> 30 & 1, sz = word >> 22 & 1, rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
     int n = sz ? 2 : q ? 4 : 2, r, scalar = 0;
     switch (insn->op) {
+    case SNX_A64_OP_FMUL_si:
+    case SNX_A64_OP_FMLA_si:
+    case SNX_A64_OP_FMLS_si: {
+        unsigned h = word >> 11 & 1, l = word >> 21 & 1;
+        int e = sz ? (int)h : (int)(h << 1 | l), m;
+        if (sz && l) return -1;
+        scalar = n = 1;
+        m = sgx_v1(X, &sgx_v_pshufd, vread(g, rm), sz ? (e ? 0xEE : 0x44) : (unsigned)e * 0x55);
+        if (insn->op == SNX_A64_OP_FMUL_si) r = fbinary(g, SNX_FP_MUL, sz, 1, vread(g, rn), m);
+        else
+            r = ffma(g, sz, 1, vread(g, rd), vread(g, rn), m, insn->op == SNX_A64_OP_FMLS_si);
+        break;
+    }
     case SNX_A64_OP_FADDP_v:
     case SNX_A64_OP_FMAXP_v:
     case SNX_A64_OP_FMINP_v:
