@@ -919,8 +919,10 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
     if (v->op == AV_FROUND) param |= (SnxU32)v->imm << 24 | v->aux;
     unsigned inwidth = v->op == AV_ITOF ? v->aux : width, xo = unary ? v->m : v->n;
     SgD xv = inwidth == 16 ? vhalf(g, xo) : hot ? vxmm(g, xo, inwidth) : vbits(g, xo, inwidth);
+    /* a unary operation's second operand is one no one reads: its first, as a load of it at width may not be aligned (a
+       double from an S register) */
     SgD yv = (v->op == AV_FCMP || v->op == AV_FCMPE) && v->aux ? sgx_const(width, 0)
-             : width == 16                                     ? xv
+             : unary                                           ? xv
              : hot                                             ? vxmm(g, v->m, width)
                                                                : vbits(g, v->m, width);
     /* the destination, which the multiply-accumulates add to, and which fp_call hands the helper for every operation
