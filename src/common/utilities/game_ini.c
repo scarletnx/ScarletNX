@@ -49,8 +49,22 @@ static int game_line(const char* line, const char* end) {
     while (end > line && (end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) end--;
     return end - line == 6 && !strncmp(line, "[Game]", 6);
 }
+/* text's n bytes in path's place, through tmp beside it: NULL, else what could not be done and the system's reason.
+   Owned */
+static char* replace_text(const char* path, const char* tmp, const char* text, size_t n) {
+    char reason[512], *why;
+    if (snx_write_file(tmp, text, n))
+        why = snx_format("%s cannot be written (%s)", tmp, snx_os_error(reason, sizeof reason));
+    else if (plat_replace_file(tmp, path))
+        why = snx_format("%s cannot be moved over it (%s)", tmp, snx_os_error(reason, sizeof reason));
+    else
+        return NULL;
+    snx_remove_tree(tmp);
+    return why;
+}
 int snx_ini_record(const char* path, const char* key, const char* value) {
-    char *dir = snx_dirname(path), *tmp = snx_format("%s.tmp", path), *out = NULL, *text, *copy, *had;
+    char *dir = snx_dirname(path), *tmp = snx_format("%s.tmp", path), *out = NULL, *text, *copy, *had, *why;
+    char reason[512];
     const char *line, *end, *next;
     size_t size = 0, n = 0, len = strlen(key) + strlen(value);
     int placed = 0, rc = 0;
@@ -89,10 +103,10 @@ int snx_ini_record(const char* path, const char* key, const char* value) {
     }
     free(text);
     if (!placed) n += (size_t)sprintf(out + n, "%s[Game]\n%s=%s\n", n ? "\n" : "", key, value);
-    if (snx_mkdirs(dir) || snx_write_file(tmp, out, n) || plat_replace_file(tmp, path)) {
-        snx_remove_tree(tmp);
-        rc = snx_error("cannot record %s=%s in %s", key, value, path);
-    }
+    why = snx_mkdirs(dir) ? snx_format("%s cannot be made (%s)", dir, snx_os_error(reason, sizeof reason))
+                          : replace_text(path, tmp, out, n);
+    if (why) rc = snx_error("cannot record %s=%s in %s: %s", key, value, path, why);
+    free(why);
 done:
     free(dir);
     free(tmp);
@@ -114,7 +128,7 @@ int snx_ini_has(const char* path, const char* key) {
 }
 int snx_ini_drop(const char* path, const char* key) {
     size_t size = 0, n = 0;
-    char *text = (char*)snx_read_file(path, &size), *out, *tmp;
+    char *text = (char*)snx_read_file(path, &size), *out, *tmp, *why = NULL;
     const char *line, *end, *next;
     int dropped = 0, rc = 0;
     if (!text) return snx_path_exists(path) ? snx_error("cannot read %s to take %s= out of it", path, key) : 0;
@@ -130,10 +144,9 @@ int snx_ini_drop(const char* path, const char* key) {
         n += (size_t)(next - line);
     }
     tmp = snx_format("%s.tmp", path);
-    if (dropped && (snx_write_file(tmp, out, n) || plat_replace_file(tmp, path))) {
-        snx_remove_tree(tmp);
-        rc = snx_error("cannot take %s= out of %s", key, path);
-    }
+    if (dropped) why = replace_text(path, tmp, out, n);
+    if (why) rc = snx_error("cannot take %s= out of %s: %s", key, path, why);
+    free(why);
     free(tmp);
     free(out);
     free(text);
