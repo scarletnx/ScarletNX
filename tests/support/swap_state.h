@@ -45,8 +45,9 @@ static inline void snx_test_swap_cpu(CPU* c) {
 static inline void snx_test_swap_rt(RtAPI* r) { snx_test_swap_u64s(r, sizeof *r / 8); }
 #endif
 
-#ifdef SNX_TEST_SWAP_ARM /* cpu/arm/arm.h's SnxArmCPU */
+#ifdef SNX_TEST_SWAP_ARM /* cpu/arm/arm.h's SnxArmCPU, checked.h's SnxArmCheckedCPU */
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/checked.h"
 static inline void snx_test_swap_arm(SnxArmCPU* c) {
     for (int k = 0; k < 16; ++k) snx_test_sw32(&c->r[k]);
     snx_test_sw32(&c->cpsr), snx_test_sw32(&c->exit), snx_test_sw32(&c->syndrome);
@@ -56,6 +57,11 @@ static inline void snx_test_swap_arm(SnxArmCPU* c) {
     snx_test_sw32(&c->tpidrurw), snx_test_sw32(&c->tpidruro), snx_test_sw32(&c->fpscr);
     snx_test_swap_u64s(c->d, 32);
     snx_test_sw64((void*)&c->rt);
+}
+static inline void snx_test_swap_checked(SnxArmCheckedCPU* c) {
+    snx_test_swap_arm(&c->cpu);
+    snx_test_sw32(&c->abi);
+    snx_test_sw64((void*)&c->context), snx_test_sw64((void*)&c->access);
 }
 #endif
 

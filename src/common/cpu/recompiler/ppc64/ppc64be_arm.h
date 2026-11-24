@@ -6,6 +6,7 @@
 #ifndef SNX_RECOMPILER_PPC64BE_ARM_H
 #define SNX_RECOMPILER_PPC64BE_ARM_H
 
+#include "common/cpu/arm/codegen.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,6 +22,9 @@ int snx_ppc64be_arm_available(void);
 /* a compiler of its own for one thread (NULL out of memory, or where unavailable) */
 SnxPpc64beArm* snx_ppc64be_arm_new(void);
 void snx_ppc64be_arm_free(SnxPpc64beArm* c);
+/* what the next blocks are made for (cpu/arm/codegen.h; NULL the Cortex-A57 on flat memory, as a new compiler's): 0, or
+   -1 for options no block compiler takes */
+int snx_ppc64be_arm_options(SnxPpc64beArm* c, const SnxArmCodegenOptions* options);
 /* the A32 block at pc, its code as guest memory holds it (little-endian words, count of them at most: the block
    compiler's limit, 65536, at most; read as far as the block goes), as the function name (NULL: A_<pc> in eight hex
    digits, as module_arm.c names blocks): 1 with *consumed the words it covers, 0 where it can't make it (nothing

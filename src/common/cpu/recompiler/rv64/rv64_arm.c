@@ -50,6 +50,10 @@ enum { RV_EM = 243, RV_R_32_PCREL = 57, RV_R_CALL_PLT = 19 };
 int snx_rv64_arm_available(void) { return 0; }
 SnxRv64Arm* snx_rv64_arm_new(void) { return NULL; }
 void snx_rv64_arm_free(SnxRv64Arm* c) { (void)c; }
+int snx_rv64_arm_options(SnxRv64Arm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_rv64_arm_block(SnxRv64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxRv64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

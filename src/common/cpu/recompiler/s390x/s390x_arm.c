@@ -53,6 +53,10 @@ enum { ZS_EM = 22, ZS_R_PC64 = 23 };
 int snx_s390x_arm_available(void) { return 0; }
 SnxS390xArm* snx_s390x_arm_new(void) { return NULL; }
 void snx_s390x_arm_free(SnxS390xArm* c) { (void)c; }
+int snx_s390x_arm_options(SnxS390xArm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_s390x_arm_block(SnxS390xArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxS390xArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

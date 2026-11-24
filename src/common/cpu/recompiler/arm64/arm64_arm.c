@@ -192,6 +192,10 @@ int snx_arm64_arm_entry(MG_ARM* c, uint32_t key) {
 int snx_arm64_arm_available(void) { return 0; }
 SnxArm64Arm* snx_arm64_arm_new(void) { return NULL; }
 void snx_arm64_arm_free(SnxArm64Arm* c) { (void)c; }
+int snx_arm64_arm_options(SnxArm64Arm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_arm64_arm_block(SnxArm64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                         size_t* consumed, SnxArm64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

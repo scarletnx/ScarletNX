@@ -50,6 +50,10 @@ enum { LA_EM = 258, LA_R_64_PCREL = 109, LA_R_CALL36 = 110 };
 int snx_la64_arm_available(void) { return 0; }
 SnxLa64Arm* snx_la64_arm_new(void) { return NULL; }
 void snx_la64_arm_free(SnxLa64Arm* c) { (void)c; }
+int snx_la64_arm_options(SnxLa64Arm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_la64_arm_block(SnxLa64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxLa64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

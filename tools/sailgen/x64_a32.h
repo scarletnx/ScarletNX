@@ -74,6 +74,33 @@ static inline void sgx_a32_state_imm(SgXBuf* b, size_t disp, SnxU32 v) {
     sgx_a32_state(b, 0, 0xC7, 0, disp);
     sgx_imm(b, (long long)v, 4);
 }
+/* a 32-bit constant in a host register */
+static inline void sgx_a32_movi(SgXBuf* b, int reg, SnxU32 v) {
+    if (reg >= 8) sgx_byte(b, 0x41);
+    sgx_byte(b, (unsigned char)(0xB8 | (reg & 7))); /* mov r32, imm32 */
+    sgx_imm(b, (long long)v, 4);
+}
+/* a call of the runtime library's sym, the state its first argument */
+static inline void sgx_a32_call_out(SgXAsm* a, SgXBuf* b, const char* sym) {
+    sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
+    if (a->reloc) {
+        sgx_byte(b, 0xE8); /* call rel32, which the object's relocation fills */
+        a->reloc(a->machine, b->n, sym, -4);
+        sgx_imm(b, 0, 4);
+    } else {
+        SnxU64 to = a->resolve ? a->resolve(sym) : 0;
+        if (!to) sg_fail("a helper nothing resolves", 0, 0);
+        sgx_bytes(b, "48 B8"); /* mov rax, imm64; call rax */
+        sgx_imm(b, (long long)to, 8);
+        sgx_bytes(b, "FF D0");
+    }
+}
+/* the block's return where the backend's call set an exit */
+static inline void sgx_a32_leave(SgCtx* g, SgXBuf* b) {
+    sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exit)); /* cmp dword [rbx + exit], 0 */
+    sgx_byte(b, 0);
+    sgx_a32_jcc(g, b, 5, g->ret);
+}
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     SgXIns* i = &a->x->ins[at];
@@ -109,20 +136,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             return;
         }
         case SGX_A32_FENCE: sgx_bytes(b, "0F AE F0"); return; /* mfence */
-        case SGX_A32_CALL:
-            sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
-            if (a->reloc) {
-                sgx_byte(b, 0xE8); /* call rel32, which the object's relocation fills */
-                a->reloc(a->machine, b->n, i->sym, -4);
-                sgx_imm(b, 0, 4);
-            } else {
-                SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
-                if (!to) sg_fail("a helper nothing resolves", 0, 0);
-                sgx_bytes(b, "48 B8"); /* mov rax, imm64; call rax */
-                sgx_imm(b, (long long)to, 8);
-                sgx_bytes(b, "FF D0");
-            }
-            return;
+        case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
             /* llvm.c's exclusive(): the reservation's address and size checked and the monitor cleared, then a
            compare-and-swap of the value the load-exclusive read: status 0 where it took, 1 otherwise */
@@ -151,15 +165,9 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             sgx_a32_patch32(b, done);
             return;
         }
-        case SGX_A32_CHECK:
-            sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exit)); /* cmp dword [rbx + exit], 0 */
-            sgx_byte(b, 0);
-            sgx_a32_jcc(g, b, 5, g->ret);
-            return;
+        case SGX_A32_CHECK: sgx_a32_leave(g, b); return;
         case SGX_A32_UNDEF_END:
-            sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exit)); /* cmp dword [rbx + exit], 0 */
-            sgx_byte(b, 0);
-            sgx_a32_jcc(g, b, 5, g->ret);                                      /* jne: the backend stopped there */
+            sgx_a32_leave(g, b);                                               /* the backend stopped there */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, (SnxU32)i->imm); /* else R15 = the next instruction */
             sgx_a32_jmp(g, b, g->ret);
             return;

@@ -9,9 +9,12 @@
    instruction's ConditionHolds reads as the condition code the selection derived (sg_condition_origin), until
    something needs CPSR in memory (a branch out of the region: a condition's skip, an exit, a call, the region's end).
 
-   The flat guest memory of the block compiler's FLAT mode (llvm.h): an access whose bytes pass min(mem_size, 2^32) is
-   a DATA_ABORT exit, R15 the instruction's, the syndrome its address, as llvm.c's bounds() makes it; a store clears
-   the exclusive monitor where it overlaps the reservation (llvm.c's store_monitor), on a cold path. The condition of
+   The guest's CPU and its memory are the block's options (codegen.h): the profile's ArchVersion for the Sail, and how
+   an access reaches guest memory, as llvm.c's transfer_begin, readmem, writemem and transfer_commit have it.
+   - Flat memory: an access whose bytes pass min(mem_size, 2^32) is a DATA_ABORT exit, R15 the instruction's, the
+     syndrome its address, as llvm.c's bounds() makes it; a store clears the exclusive monitor where it overlaps the
+     reservation (llvm.c's store_monitor), on a cold path.
+   The condition of
    an instruction (ConditionPassed) is a jump past it, made where it first changes something (sg_when's deferred
    skip), so a clause that hands its word on (sg_see) has emitted nothing but what nothing reads. The machine's
    AArch32 part writes the jumps to labels, the machine instructions (SGX_A32_*) and the exits' and the monitor's
@@ -19,6 +22,7 @@
    instructions the Sail has no clause for, the block's end and its chaining */
 
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/codegen.h"
 #include <stddef.h>
 
 static_assert(offsetof(SnxArmCPU, syndrome) == offsetof(SnxArmCPU, exit) + 4, "exit and syndrome cleared by one store");
@@ -31,6 +35,13 @@ typedef struct {
     signed char reg, pc_kept;
     SnxU32 syndrome, pc;
 } SgA32Exit;
+/* a way out of the block the machine's AArch32 part does not write itself (the block compiler's, mach_arm.inc): where
+   undefined, the backend's (snx_arm_undefined of the word, for the reason) and R15 = next where it set no exit */
+typedef struct {
+    int label, undefined;
+    unsigned reason;
+    SnxU32 word, pc, next;
+} SgA32Out;
 /* a store's check of the exclusive monitor that found it armed: its cold path, the address's register and the bytes,
    and where the hot code goes on */
 typedef struct {
@@ -89,6 +100,11 @@ struct SgCtx {
        to its base register */
     unsigned pair;
     SnxU32 offset;
+    /* the block's options (codegen.h) */
+    SnxArmProfile profile;
+    SnxArmMemoryMode memory;
+    SgA32Out* outs;
+    int nouts, cap_outs;
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
@@ -117,10 +133,13 @@ static inline int sgx_dead_words(SnxU64 dead, SnxU32 vdead, unsigned short* word
 
 /* ---- what the block compiler decides ---- */
 
-/* the guest's architecture version (arm.sail's ArchVersion): the Cortex-A57's, the one profile this back end makes */
+/* the guest's architecture version (arm.sail's ArchVersion): the block's profile's */
 static inline long long sg_ArchVersion(SgCtx* g) {
-    (void)g;
-    return 8;
+    switch (g->profile) {
+        case SNX_ARM_PROFILE_ARM11: return 6;
+        case SNX_ARM_PROFILE_A9: return 7;
+        default: return 8;
+    }
 }
 /* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): the block's until the instruction selects the other */
 static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->thumb ? 2 : 1; }
@@ -295,7 +314,10 @@ enum {
     SGX_A32_STREX,   /* the exclusive store: address, value, memory's base in sgx_a32_strex's registers, imm bytes;
                         the status in SGX_RET */
     SGX_A32_UNDEF_END, /* after snx_arm_undefined: R15 = imm where it set no exit, then the block's return */
-    SGX_A32_CHECK      /* after a call of the backend's: the block's return where it set an exit */
+    SGX_A32_CHECK,     /* after a call of the backend's: the block's return where it set an exit */
+    /* the block compiler's own (mach_arm.inc's sgx_machine_op), on every machine: */
+    SGX_A32_OUT /* to a new way out (SgA32Out) on cc: kv[0] the word, imm its reason + 1; kv[1] the instruction's
+                          address, and the next one's from bit 32 */
 };
 
 /* a machine instruction, after the fields written are stored: whatever it does may leave the region (a jump, an exit)
@@ -372,16 +394,27 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
 }
 /* R15 = v */
 static inline void sgx_a32_pc(SgCtx* g, SgD v) { sgx_a32_put(g, offsetof(SnxArmCPU, r) + 60, 32, v); }
-/* UNDEFINED: the backend's to run or stop at (llvm.c's trap): snx_arm_undefined(state, word, SNX_ARM_UNDEFINED) with
-   R15 the instruction's; its exit returns, else the block goes on at the next instruction (x64_arm.c ends it there) */
+/* UNDEFINED, or an instruction the block cannot run (reason): the backend's to run or stop at (llvm.c's trap):
+   snx_arm_undefined(state, word, reason) with R15 the instruction's; its exit returns, else the block ends with R15 the
+   next instruction's */
 static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs, int result);
-static inline void sg_undefined(SgCtx* g) {
+static inline void sgx_a32_trap(SgCtx* g, unsigned reason) {
     sgx_a32_commit(g);
     sgx_a32_pc(g, sgx_const(32, (SnxU32)g->pc));
-    SgD args[2] = {sgx_const(32, g->word), sgx_const(32, SNX_ARM_UNDEFINED)};
+    SgD args[2] = {sgx_const(32, g->word), sgx_const(32, reason)};
     sgx_a32_call(g, "snx_arm_undefined", args, 2, 0);
     sgx_a32_machine(g, SGX_A32_UNDEF_END, 1)->imm = g->next;
     g->undefined = 1;
+}
+static inline void sg_undefined(SgCtx* g) { sgx_a32_trap(g, SNX_ARM_UNDEFINED); }
+/* sgx_a32_trap where bad holds (llvm.c's require of an exit of the backend's), the block going on otherwise */
+static inline void sgx_a32_trap_on(SgCtx* g, SgB bad, unsigned reason) {
+    SgX* x = sgx(g);
+    if (x->b[bad].kind == SGX_B_CONST && !x->b[bad].v) return;
+    SgXIns* i = sgx_a32_on(g, SGX_A32_OUT, bad);
+    i->imm = reason + 1;
+    i->kv[0] = g->word;
+    i->kv[1] = (SnxU32)g->pc | (SnxU64)g->next << 32;
 }
 /* a Thumb ITSTATE in CPSR: [1:0] in bits 26:25, [7:2] in 15:10 (SG_IT_BITS) */
 #define SG_IT_BITS 0x0600FC00u
@@ -403,7 +436,7 @@ static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
 }
 static inline void sg_AArch32_CallSupervisor(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_SVC, imm); }
 static inline void sg_AArch32_SoftwareBreakpoint(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_BREAKPOINT, imm); }
-/* the ARM7TDMI's MULS's carry and its trace: neither is the Cortex-A57's */
+/* the ARM7TDMI's MULS's carry and its trace: a profile this back end makes no block of */
 static inline void sg_MultiplyCarry(SgCtx* g) { sg_fail("the ARM7TDMI's multiply carry", (long long)g->word, 0); }
 static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) {
     (void)g;
@@ -526,13 +559,39 @@ static inline void sgx_a32_monitor(SgCtx* g, SgD address, unsigned bytes) {
     i->in[0] = r;
     i->imm = bytes;
 }
-/* a multiple transfer's range, checked before its first access (arm.sail's GuestTransfer): word aligned on the
-   Cortex-A57 */
+/* ---- an instruction's transfer: begun (its range and alignment checked), moved, ended ---- */
+
+/* llvm.c's transfer_begin: bytes at address, of one instruction (multi: more than one register's).
+   alignment 1 for none */
+static inline void sgx_a32_transfer(SgCtx* g, SgD address, unsigned bytes, unsigned alignment, int store, int multi) {
+    (void)store, (void)multi;
+    sgx_reg(sgx(g), &address);
+    sgx_a32_bounds(g, address, bytes, alignment);
+}
+/* a single load of bytes (1, 2 or 4) of the transfer, disp bytes into it, to 32 bits */
+static inline SgD sgx_a32_read(SgCtx* g, SgD address, int bytes, int disp, int sign) {
+    SgD v = sgx_a32_load(g, address, bytes, disp);
+    if (bytes == 4) return v;
+    return sign ? sg_d_sext(g, v, 32) : sg_d_zext(g, v, 32);
+}
+/* a multiple transfer's word, disp bytes into it */
+static inline SgD sgx_a32_read_list(SgCtx* g, SgD address, int disp) { return sgx_a32_load(g, address, 4, disp); }
+/* the low bytes of value (32 bits) stored, disp bytes into the transfer; the exclusive monitor's check is the caller's
+   (sgx_a32_written) */
+static inline void sgx_a32_write(SgCtx* g, SgD address, int bytes, int disp, SgD value, int list) {
+    (void)list;
+    sgx_a32_store(g, address, bytes, disp, bytes < 4 ? sg_d_slice(g, value, 8 * bytes - 1, 0) : value);
+}
+/* a store's end: the monitor's one check for its bytes (their range overlaps the reservation exactly where one of its
+   words does) */
+static inline void sgx_a32_written(SgCtx* g, SgD address, unsigned bytes) { sgx_a32_monitor(g, address, bytes); }
+
+/* a multiple transfer's range, checked before its first access (arm.sail's GuestTransfer): word aligned */
 static inline void sg_GuestTransfer(SgCtx* g, SgD address, long long bytes, int write) {
     sgx_a32_commit(g);
     if (g->group) sg_fail("a second multiple transfer in one instruction", (long long)g->word, 0);
     sgx_reg(sgx(g), &address);
-    sgx_a32_bounds(g, address, (unsigned)bytes, 4);
+    sgx_a32_transfer(g, address, (unsigned)bytes, 4, write, 1);
     g->group = 1;
     g->group_write = write;
     g->group_start = address;
@@ -547,7 +606,7 @@ static inline SgD sg_GuestRead(SgCtx* g, SgD address, long long size, int aligne
     (void)aligned;
     sgx_a32_commit(g);
     if (size != 1 && size != 2 && size != 4) sg_fail("a guest read of this size", size, 0);
-    if (!g->group) sgx_a32_bounds(g, address, (unsigned)size, 1);
+    if (!g->group) sgx_a32_transfer(g, address, (unsigned)size, 1, 0, 0);
     return sgx_a32_load(g, address, (int)size, 0);
 }
 static inline SgD sg_GuestReadHalfwordV4(SgCtx* g, SgD address, int sign) {
@@ -559,10 +618,16 @@ static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int alig
     (void)aligned;
     sgx_a32_commit(g);
     if (size != 1 && size != 2 && size != 4) sg_fail("a guest write of this size", size, 0);
-    if (!g->group) sgx_a32_bounds(g, address, (unsigned)size, 1);
     sgx_reg(sgx(g), &address);
-    sgx_a32_store(g, address, (int)size, 0, value);
-    sgx_a32_monitor(g, address, (unsigned)size);
+    if (g->group) {
+        sgx_a32_store(g, address, (int)size, 0, value);
+        sgx_a32_monitor(g, address, (unsigned)size);
+        return;
+    }
+    sgx_a32_transfer(g, address, (unsigned)size, 1, 1, 0);
+    value.w = 32; /* the low bytes of the register they are in */
+    sgx_a32_write(g, address, (int)size, 0, value, 0);
+    sgx_a32_written(g, address, (unsigned)size);
 }
 
 /* ---- conditions for the instructions the Sail has no clause for (ConditionPassed, as the Sail's) ---- */

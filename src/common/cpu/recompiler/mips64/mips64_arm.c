@@ -56,6 +56,10 @@ enum { MIPS_EM = 8, MIPS_R_PC32 = 248 };
 int snx_mips64_arm_available(void) { return 0; }
 SnxMips64Arm* snx_mips64_arm_new(void) { return NULL; }
 void snx_mips64_arm_free(SnxMips64Arm* c) { (void)c; }
+int snx_mips64_arm_options(SnxMips64Arm* c, const SnxArmCodegenOptions* options) {
+    (void)c, (void)options;
+    return -1;
+}
 int snx_mips64_arm_block(SnxMips64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxMips64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

@@ -48,6 +48,26 @@ static inline void sgx_a32_state_imm(SgXBuf* b, size_t off, SnxU32 v) {
     rk_li(b, RK_S2, v);
     sgx_a32_state(b, 0, 4, RK_S2, off);
 }
+/* a 32-bit constant in a host register */
+static inline void sgx_a32_movi(SgXBuf* b, int reg, SnxU32 v) { rk_li(b, reg, v); }
+/* a call of the runtime library's sym, the state its first argument */
+static inline void sgx_a32_call_out(SgXAsm* a, SgXBuf* b, const char* sym) {
+    rk_mv(b, sgx_arg_regs[0], SGX_BASE);
+    if (a->reloc) {
+        size_t lit = rk_call_reloc(b);
+        a->reloc(a->machine, lit, sym, 0);
+    } else {
+        SnxU64 to = a->resolve ? a->resolve(sym) : 0;
+        if (!to) sg_fail("a helper nothing resolves", 0, 0);
+        rk_li(b, RK_SA, to);
+        rk_call_reg(b, RK_SA);
+    }
+}
+/* the block's return where the backend's call set an exit */
+static inline void sgx_a32_leave(SgCtx* g, SgXBuf* b) {
+    sgx_a32_state(b, 1, 4, RK_S1, offsetof(SnxArmCPU, exit));
+    risc_a32_jreg(g, b, 1, RK_S1, g->ret);
+}
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     SgXIns* i = &a->x->ins[at];
@@ -83,18 +103,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             return;
         }
         case SGX_A32_FENCE: rk_fence(b); return;
-        case SGX_A32_CALL:
-            rk_mv(b, sgx_arg_regs[0], SGX_BASE);
-            if (a->reloc) {
-                size_t lit = rk_call_reloc(b);
-                a->reloc(a->machine, lit, i->sym, 0);
-            } else {
-                SnxU64 to = a->resolve ? a->resolve(i->sym) : 0;
-                if (!to) sg_fail("a helper nothing resolves", 0, 0);
-                rk_li(b, RK_SA, to);
-                rk_call_reg(b, RK_SA);
-            }
-            return;
+        case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
             /* llvm.c's exclusive(): the monitor disarmed, its address and size checked, then a compare-and-swap of the
                value the load-exclusive read at the access's size: SGX_RET 0 where it took, 1 otherwise. The address,
@@ -168,13 +177,9 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             sgx_a32_bind(g, b, done);
             return;
         }
-        case SGX_A32_CHECK: /* the block's return where the backend set an exit */
-            sgx_a32_state(b, 1, 4, RK_S1, offsetof(SnxArmCPU, exit));
-            risc_a32_jreg(g, b, 1, RK_S1, g->ret);
-            return;
+        case SGX_A32_CHECK: sgx_a32_leave(g, b); return;
         case SGX_A32_UNDEF_END:
-            sgx_a32_state(b, 1, 4, RK_S1, offsetof(SnxArmCPU, exit));
-            risc_a32_jreg(g, b, 1, RK_S1, g->ret);                              /* the backend stopped there */
+            sgx_a32_leave(g, b);                                               /* the backend stopped there */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, (SnxU32)i->imm); /* else R15 = the next instruction */
             sgx_a32_jmp(g, b, g->ret);
             return;

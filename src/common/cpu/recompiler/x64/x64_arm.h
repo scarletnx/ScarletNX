@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The x86-64 back end's AArch32 blocks (x64_arm.c): what the block compiler cpu/arm/llvm.h makes of an A32 block on
-   the Cortex-A57 with flat memory (its snx_arm_llvm_block, a 32-bit NX program's), made without LLVM. The data
+   any of its profiles and memory modes (snx_arm_llvm_block_ex, the options' below), made without LLVM. The data
    processing and branches are sailgen's x86-64 emitters of the AArch32 Sail (a32_x64.inc, the same roots as LLVM's),
    the rest written over the same SSA; the block ends where llvm.c's does, and the code it goes on to it reaches by a
    jump of its own where that is a block the caller names (the chaining nx/loader/module_arm.c gives LLVM's blocks).
@@ -11,6 +11,7 @@
 #ifndef SNX_RECOMPILER_X64_ARM_H
 #define SNX_RECOMPILER_X64_ARM_H
 
+#include "common/cpu/arm/codegen.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,6 +27,9 @@ int snx_x64_arm_available(void);
 /* a compiler of its own for one thread (NULL out of memory, or where unavailable) */
 SnxX64Arm* snx_x64_arm_new(void);
 void snx_x64_arm_free(SnxX64Arm* c);
+/* what the next blocks are made for (cpu/arm/codegen.h; NULL the Cortex-A57 on flat memory, as a new compiler's): 0, or
+   -1 for options no block compiler takes */
+int snx_x64_arm_options(SnxX64Arm* c, const SnxArmCodegenOptions* options);
 /* the A32 block at pc, its code as guest memory holds it (little-endian words, count of them at most: the block
    compiler's limit, 65536, at most; read as far as the block goes), as the function name (NULL: A_<pc> in eight hex
    digits, as module_arm.c names blocks): 1 with *consumed the words it covers, 0 where it can't make it (nothing
