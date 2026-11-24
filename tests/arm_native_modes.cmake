@@ -6,7 +6,7 @@
 # snx_arm_native_modes(<machine> [<argument>...]): arm_<machine>_<mode> for each mode of snx-test-arm-<machine>, with
 # the arguments (how many blocks and states), and each again with three host registers, so that values spill
 function(snx_arm_native_modes machine)
-    foreach(mode a9 arm11)
+    foreach(mode a9 arm11 a57_hosted a9_hosted arm11_hosted)
         string(REGEX MATCH "^[^_]+" profile "${mode}")
         set(options --profile ${profile})
         if(mode MATCHES "_(hosted|checked)$")
