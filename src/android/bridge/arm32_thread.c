@@ -1118,15 +1118,21 @@ HANDLER(s_raise) {
     run_signals();
     R(0) = 0;
 }
-/* a signal to a thread by its id: 0, or -errno */
+/* a signal to a thread by its id, as tkill(2): 0, or -errno. No thread is ESRCH whatever the signal, and signal 0 asks
+   for the thread alone */
 static int32_t send_tid(uint32_t tid, uint32_t sig) {
-    if (sig >= NSIG_) return -L_EINVAL;
+    if ((int32_t)tid <= 0) return -L_EINVAL;
     pthread_mutex_lock(&th.lock);
     ThreadInfo* t = by_tid(tid);
-    if (t && t->done) t = NULL;
-    if (t && sig) send_to(t, sig);
+    int32_t r = !t || t->done ? -L_ESRCH : sig >= NSIG_ ? -L_EINVAL : 0;
+    if (!r && sig) send_to(t, sig);
     pthread_mutex_unlock(&th.lock);
-    return t ? 0 : -L_ESRCH;
+    return r;
+}
+/* as tgkill(2): the thread is of the process tgid, so of this one */
+static int32_t send_tgid(uint32_t tgid, uint32_t tid, uint32_t sig) {
+    if ((int32_t)tgid <= 0 || (int32_t)tid <= 0) return -L_EINVAL;
+    return tgid == (uint32_t)getpid() ? send_tid(tid, sig) : -L_ESRCH;
 }
 HANDLER(s_pthread_kill) {
     UNUSED;
@@ -1140,6 +1146,12 @@ HANDLER(s_pthread_kill) {
 HANDLER(s_tkill) {
     UNUSED;
     int32_t r = send_tid(R(0), R(1));
+    if (r) arm32_set_errno_linux(-r);
+    R(0) = r ? UINT32_MAX : 0;
+}
+HANDLER(s_tgkill) {
+    UNUSED;
+    int32_t r = send_tgid(R(0), R(1), R(2));
     if (r) arm32_set_errno_linux(-r);
     R(0) = r ? UINT32_MAX : 0;
 }
@@ -1241,7 +1253,7 @@ uint32_t arm32_syscall(uint32_t number, const uint32_t a[6]) {
     case 20: return (uint32_t)getpid();   /* getpid */
     case 158: sched_yield(); return 0;    /* sched_yield */
     case 238: return (uint32_t)send_tid(a[0], a[1]); /* tkill */
-    case 268: return (uint32_t)send_tid(a[1], a[2]); /* tgkill */
+    case 268: return (uint32_t)send_tgid(a[0], a[1], a[2]); /* tgkill */
     case 240: return (uint32_t)futex(a[0], a[1], a[2], a[3]);
     case 263: { /* clock_gettime(clock, ts) */
         struct timespec ts;
@@ -1373,6 +1385,7 @@ const Arm32Symbol arm32_thread_symbols[] = {
     A("kill", s_kill, 0),
     A("raise", s_raise, 0),
     A("tkill", s_tkill, 0),
+    A("tgkill", s_tgkill, 0),
     A("setjmp", j_setjmp, 0),
     A("_setjmp", j_setjmp, 0),
     A("sigsetjmp", j_sigsetjmp, 0),
