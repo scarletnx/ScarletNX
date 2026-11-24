@@ -20,6 +20,7 @@ static struct {
         float stats[4];
         u32 gen;
     } laid; /* what the quads are laid out for; gen 0: nothing yet */
+    float box[4]; /* the list as laid out, while rows > 0 */
     SnxUiQuad q[HUD_QUADS];
     int n;
     u32 version;
@@ -127,6 +128,15 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale, const float* 
         }
     }
     g_hud.rows = rows;
+    g_hud.box[0] = x;
+    g_hud.box[1] = y;
+    g_hud.box[2] = w;
+    g_hud.box[3] = (float)rows * ch + ch / 2;
+}
+int hud_box_drawn(float box[4]) {
+    if (!g_hud.debug[0] || !g_hud.rows) return 0;
+    memcpy(box, g_hud.box, sizeof g_hud.box);
+    return 1;
 }
 void hud_draw(SnxUiList* l, const int safe[4], int scale, const float* stats, u64 now_ms) {
     float none[4] = {0};

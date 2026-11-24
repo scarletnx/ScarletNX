@@ -22,4 +22,7 @@ int hud_debug_set(const char* text);
    rows past the room the picture has under it give theirs to one that says how many more there are. Nothing for
    none. Under ui_lock */
 void hud_draw(SnxUiList* l, const int safe[4], int scale, const float* stats, u64 now_ms);
+/* the list as hud_draw last laid it out, with its margin (x, y, w, h into box), which a notification keeps clear of
+   (overlay.h); 0 with box as it was when there is none. Under ui_lock */
+int hud_box_drawn(float box[4]);
 #endif

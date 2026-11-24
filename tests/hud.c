@@ -80,7 +80,7 @@ int main(void) {
     /* none: nothing, and the same list again is no change */
     assert(!hud_debug_set(""));
     l = drawn(wide, 1, NULL);
-    assert(l.n == 0);
+    assert(l.n == 0 && !hud_box_drawn(box));
     assert(hud_debug_set(list) && !hud_debug_set(list));
     /* no stats' box: at the top's middle, half a line under the safe area's top; the title, then a row each, its key
        at the left and its value at the right, a setting with no value its key alone */
@@ -88,6 +88,10 @@ int main(void) {
     assert(rows(&l, 1, box, text) == 5);
     assert(box[0] + box[2] / 2 == (float)wide[0] + (float)wide[2] / 2 && box[1] == (float)wide[1] + 8);
     assert(box[3] == 5 * 16 + 8);
+    { /* the box the notifications keep clear of is that, and none once the list is empty */
+        float at[4];
+        assert(hud_box_drawn(at) && !memcmp(at, box, sizeof at));
+    }
     assert(!strcmp(text[0], row_of(HUD_DEBUG_TITLE, "")));
     assert(!strcmp(text[1], row_of("log", "2")) && !strcmp(text[2], row_of("vk_validation", "1")));
     assert(!strcmp(text[3], row_of("shader_corpus", "")) && !strcmp(text[4], row_of("gdbstub", "")));
