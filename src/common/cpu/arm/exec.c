@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* AArch32 blocks compiled while a program runs: each block is emitted into a module of the executor's LLVM context,
-   compiled to an object with its target machine (snx_ir_module_object) and loaded into a code arena by the runtime
-   JIT's loader (code_loader.c), as the A64 JIT's units are. The objects call the runtime library's helpers, which the
+/* AArch32 blocks compiled while a program runs: each block is an object of this host's own block compiler
+   (recompiler/mach/native.h), of any profile and memory mode, loaded into a code arena by the runtime JIT's loader
+   (code_loader.c), as the A64 JIT's units are. LLVM, made when first needed, makes what that compiler refuses, and
+   everything on a host without one: the block is emitted into a module of the executor's LLVM context and compiled to
+   an object with its target machine (snx_ir_module_object). The objects call the runtime library's helpers, which the
    loader is given by name: no MCJIT, and no symbols the program must export. On PowerPC64 the helpers are the 32-bit
    modules' own (armlib.c), loaded into the arena first, as library.c's arena_load loads rtlib.c with the A64 code:
    the arena has one TOC, which a direct call into the runtime's copies (another TOC) would leave behind */
@@ -12,9 +14,11 @@
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* a block's -O level, the A64 JIT's default */
 #define BLOCK_OPT '0'
@@ -24,10 +28,13 @@ typedef struct {
     SnxArmBlock fn;
 } CachedBlock;
 struct SnxArmExec {
-    SnxIr* ir; /* the context and target machine every block's module is made with */
+    SnxNativeArm* native; /* the host's own block compiler, NULL where it has none */
+    SnxIr* ir; /* the context and target machine every LLVM block's module is made with, made for the first of them */
     SnxCodeLoader* loader;
     CachedBlock* blocks; /* open addressing, a power of two slots, at most half full */
     size_t count, capacity, compiles;
+    size_t refused; /* the blocks the native compiler did not make, and why the last of them */
+    char why[96];
     SnxArmProfile profile; /* the one snx_arm_exec_block compiles for, A57 unless set */
 };
 
@@ -97,29 +104,79 @@ SnxArmBlock snx_arm_exec_compile(SnxArmExec* e, const void* code, size_t count, 
     SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, profile, (SnxArmMemoryMode)memory, 0, 0};
     return snx_arm_exec_compile_ex(e, code, count, pc, thumb, &options, consumed);
 }
-SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* e, const void* code, size_t count, uint32_t pc, int thumb,
-                                    const SnxArmCodegenOptions* options, size_t* consumed) {
-    size_t size = 0;
-    char name[48], error[512];
-    *consumed = 0;
-    /* a name of its own each time: the same pc compiles again when its code changes */
-    snprintf(name, sizeof name, "a32_%08x_%d_%zu", pc, thumb, e->compiles++);
+/* the block's object as name, made by the host's own compiler: 1, or 0 with why in e->why where there is none or it
+   refuses the block */
+static int native_object(SnxArmExec* e, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
+                         const SnxArmCodegenOptions* options, size_t* consumed, unsigned char** object, size_t* size) {
+    if (!e->native) return 0;
+    if (snx_native_arm_options(e->native, options)) {
+        snprintf(e->why, sizeof e->why, "options no block compiler takes");
+        return 0;
+    }
+    /* it reads the code as guest memory holds it, little-endian, and the caller's are host integers */
+    const unsigned char* bytes = (const unsigned char*)code;
+    unsigned char* swapped = NULL;
+    if (SNX_HOST_BE) {
+        bytes = swapped = (unsigned char*)malloc(count * (thumb ? 2 : 4));
+        if (!swapped) {
+            snprintf(e->why, sizeof e->why, "out of memory");
+            return 0;
+        }
+        for (size_t i = 0; i < count; ++i)
+            if (thumb)
+                snx_st_le16(swapped + i * 2, ((const uint16_t*)code)[i]);
+            else
+                snx_st_le32(swapped + i * 4, ((const uint32_t*)code)[i]);
+    }
+    int made = thumb ? snx_native_thumb_block(e->native, name, bytes, count, pc, consumed, NULL, NULL)
+                     : snx_native_arm_block(e->native, name, bytes, count, pc, consumed, NULL, NULL);
+    free(swapped);
+    if (!made) {
+        snprintf(e->why, sizeof e->why, "%s", snx_native_arm_why(e->native));
+        return 0;
+    }
+    if (snx_native_arm_object(e->native, object, size, NULL)) {
+        snprintf(e->why, sizeof e->why, "out of memory");
+        return 0;
+    }
+    return 1;
+}
+/* the block's object as name, LLVM's: 0, -1 */
+static int llvm_object(SnxArmExec* e, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
+                       const SnxArmCodegenOptions* options, size_t* consumed, unsigned char** object, size_t* size) {
+    char error[512];
+    if (!e->ir) {
+        if (snx_ir_init(error, sizeof error)) return -1;
+        if (!(e->ir = snx_ir_new_jit("a32exec", BLOCK_OPT, error, sizeof error))) return -1;
+    }
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ir->ctx);
     LLVMSetTarget(module, LLVMGetTarget(e->ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(e->ir->mod));
     LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, (const uint16_t*)code, count, pc, consumed, options)
                             : snx_arm_llvm_block_ex(module, name, (const uint32_t*)code, count, pc, consumed, options);
-    unsigned char* object = NULL;
-    int rc = fn ? snx_ir_module_object(e->ir, module, BLOCK_OPT, &object, &size, error, sizeof error) : -1;
+    int rc = fn ? snx_ir_module_object(e->ir, module, BLOCK_OPT, object, size, error, sizeof error) : -1;
     LLVMDisposeModule(module);
-    if (rc) return NULL;
+    return rc;
+}
+SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* e, const void* code, size_t count, uint32_t pc, int thumb,
+                                    const SnxArmCodegenOptions* options, size_t* consumed) {
+    size_t size = 0;
+    char name[24], error[512]; /* a native block's name is of 23 characters at most */
+    unsigned char* object = NULL;
+    *consumed = 0;
+    /* a name of its own each time: the same pc compiles again when its code changes */
+    snprintf(name, sizeof name, "a32_%zx", e->compiles++);
+    if (!native_object(e, name, code, count, pc, thumb, options, consumed, &object, &size)) {
+        ++e->refused;
+        if (llvm_object(e, name, code, count, pc, thumb, options, consumed, &object, &size)) return NULL;
+    }
     SnxLinkInput input;
     const char* names[1] = {name};
     SnxU64 address = 0;
     input.data = object;
     input.size = size;
     input.name = name;
-    rc = snx_code_load(e->loader, &input, 1, names, 1, &address, error, sizeof error);
+    int rc = snx_code_load(e->loader, &input, 1, names, 1, &address, error, sizeof error);
     free(object);
     return rc || !address ? NULL : (SnxArmBlock)(uintptr_t)address;
 }
@@ -166,14 +223,18 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
     char ignored[512]; /* for a caller that wants no reason: the loader writes one whatever its size */
     if (!error_size) error = ignored, error_size = sizeof ignored;
     error[0] = 0;
-    if (snx_ir_init(error, error_size)) return NULL;
     SnxArmExec* e = calloc(1, sizeof *e);
     if (!e) {
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
-    e->ir = snx_ir_new_jit("a32exec", BLOCK_OPT, error, error_size);
-    if (e->ir) e->loader = snx_code_loader_new(0, error, error_size);
+    if (snx_native_arm_available() && !(e->native = snx_native_arm_new())) {
+        snprintf(error, error_size, "out of memory for the %s back end's block compiler", snx_native_name());
+        snx_arm_exec_free(e);
+        return NULL;
+    }
+    snprintf(e->why, sizeof e->why, "no native back end on this host");
+    e->loader = snx_code_loader_new(0, error, error_size);
 #if defined(__powerpc64__)
     /* the helpers blocks call, loaded into the arena, whose globals they resolve to. They reach the runtime only
        through cpu->rt, pointer calls that LLVM makes with r2 saved */
@@ -192,6 +253,12 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
 #else
     /* the runtime library's functions blocks call (simd.h, arm.h), by the names the block compiler declares */
     if (!e->loader || snx_code_define(e->loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
+        snx_code_define(e->loader, "snx_arm_fp_x64", (SnxU64)(uintptr_t)snx_arm_fp_x64) ||
+        snx_code_define(e->loader, "snx_arm_io_read", (SnxU64)(uintptr_t)snx_arm_io_read) ||
+        snx_code_define(e->loader, "snx_arm_io_write", (SnxU64)(uintptr_t)snx_arm_io_write) ||
+        snx_code_define(e->loader, "snx_arm_checked_fetch", (SnxU64)(uintptr_t)snx_arm_checked_fetch) ||
+        snx_code_define(e->loader, "snx_arm_checked_access", (SnxU64)(uintptr_t)snx_arm_checked_access) ||
+        snx_code_define(e->loader, "snx_arm_checked_strex", (SnxU64)(uintptr_t)snx_arm_checked_strex) ||
         snx_code_define(e->loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
         snx_code_define(e->loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
         snx_code_define(e->loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||
@@ -205,10 +272,15 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
 }
 
 void snx_arm_exec_set_profile(SnxArmExec* e, SnxArmProfile profile) { e->profile = profile; }
+size_t snx_arm_exec_refused(const SnxArmExec* e, const char** why) {
+    if (why) *why = e->why;
+    return e->refused;
+}
 void snx_arm_exec_free(SnxArmExec* e) {
     if (!e) return;
     snx_code_loader_free(e->loader);
-    snx_ir_free(e->ir);
+    snx_native_arm_free(e->native);
+    if (e->ir) snx_ir_free(e->ir);
     free(e->blocks);
     free(e);
 }

@@ -7,8 +7,11 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 ## Files and API
 
 - `arm.h`: separate, versioned `SnxArmCPU` state and exit reasons, the backend's `SnxArmRt`, plus the Thumb decode model.
-- `codegen.h`: what a block is made for (`SnxArmCodegenOptions`: the profile, the memory mode, the ARM7TDMI's trace), whichever compiler makes it.
-- `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults for no backend.
+- `codegen.h`: what a block is made for (`SnxArmCodegenOptions`: the profile, the memory mode, the ARM7TDMI's trace),
+  whichever compiler makes it.
+- `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults
+  for no backend, and the native back ends' accesses through the bus hook (`snx_arm_io_read`, `snx_arm_io_write`) and
+  checked memory's callback (`snx_arm_checked_access`).
 - `a32.c` and `thumb.c`: the A32 and Thumb decoders. QEMU's `a32.decode`, `a32-uncond.decode`, `t32.decode` and
   `t16.decode` (`decode/`, LGPL-2.1-or-later) sort a word into its instruction, through the decoders that
   `tools/decodetree` generates from them (`cmake/decodetree.cmake`). Each instruction's `trans_` function gives its
@@ -67,7 +70,10 @@ SnxArmCodegenOptions options = {
 snx_arm_llvm_block_ex(module, name, words, count, pc, &consumed, &options);
 ```
 
-ISA and memory mode are independent. NULL options preserve the original API.
+ISA and memory mode are independent. NULL options preserve the original API. The native back ends
+(`recompiler/mach/mach_arm.inc`, `tools/sailgen/README.md`) take the same options through their `_arm_options`
+(`snx_native_arm_options` the host's), and make what these blocks are without LLVM; `exec.c` compiles a program's
+blocks with the host's as it runs and asks LLVM for those it refuses alone.
 
 `SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
 have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
