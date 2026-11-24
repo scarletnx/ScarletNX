@@ -79,6 +79,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         int go = sgx_a32_label(g);
         add_rel(c, rk_literal(b, RK_S1), "snx_arm_poll_offset", MG_ARM_R_LITERAL, 0);
         rk_literal_value(b, RK_S1, RK_S1, RK_SA);
+        rk_ldst(b, 1, 8, 0, RK_S1, RK_S1, -1, 0);
         rk_ldst(b, 1, 4, 0, RK_S1, SGX_BASE, RK_S1, 0);
         arm_jreg(c, 0, RK_S1, go);
         if (!public) sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, key & ~1u);
