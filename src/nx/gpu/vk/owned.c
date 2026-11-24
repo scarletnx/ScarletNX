@@ -935,9 +935,18 @@ static void lander_queue(u64 addr, u64 size, VkOwnRes* r, u64 value) {
     }
     pm_unlock(&g_lander.lk);
 }
+/* a landing's bytes where they go: through the mirror for an owner's (own.c tells write tracking of them, its landed
+   hook), or with here, under vk_lock, into guest memory itself for a publish no owner could take (own_publish on a
+   host without traps), which write tracking is told of as it happens (vk_ww_land) */
+static void land_bytes(u8* dst, const u8* src, u64 size, int here) {
+    if (here)
+        vk_ww_land((u64)(dst - g_mem), src, size);
+    else
+        memcpy(dst, src, size);
+}
 /* under vk_lock: the ranges landed from their results' early copies, when each has a valid one whose submission is
    done. 0, with nothing copied, when one hasn't */
-static int early_land(const OwnRange* r, u8* const* dst, u32 n) {
+static int early_land(const OwnRange* r, u8* const* dst, u32 n, int here) {
     u64 done = 0;
     for (u32 k = 0; k < n; k++) {
         const VkOwnRes* res = (const VkOwnRes*)r[k].res;
@@ -952,7 +961,7 @@ static int early_land(const OwnRange* r, u8* const* dst, u32 n) {
         const VkOwnRes* res = (const VkOwnRes*)r[k].res;
         if (!VK_OK(vk_devmem_invalidate(res->early_mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read an early copy of a GPU result");
-        memcpy(dst[k], res->early_ptr + (r[k].res_off - res->early_off), r[k].size);
+        land_bytes(dst[k], res->early_ptr + (r[k].res_off - res->early_off), r[k].size, here);
     }
     g_owned.early_hits++;
     return 1;
@@ -1074,7 +1083,7 @@ static u64 land_submit(LandSlot* s, const LandCtx* c, const Piece* pc, u32 np, u
     return value;
 }
 /* with vk_lock or without it: the copy done, its bytes where the pieces go */
-static void land_finish(const LandSlot* s, u64 value, const Piece* pc, u32 np, u64 total) {
+static void land_finish(const LandSlot* s, u64 value, const Piece* pc, u32 np, u64 total, int here) {
     gpu_wait_note("GPU-owned memory readback", 0);
     int ok = vk_host_wait(&g_owned.done, value);
     gpu_wait_note(NULL, 0);
@@ -1082,15 +1091,15 @@ static void land_finish(const LandSlot* s, u64 value, const Piece* pc, u32 np, u
         vk_checkpoint_dump("device lost");
     }
     if (!ok || !VK_OK(vk_devmem_invalidate(s->mem, 0, total))) fatal("vulkan: could not complete ownership readback");
-    for (u32 j = 0; j < np; j++) memcpy(pc[j].dst, s->ptr + pc[j].at, pc[j].size);
+    for (u32 j = 0; j < np; j++) land_bytes(pc[j].dst, s->ptr + pc[j].at, pc[j].size, here);
 }
-/* own.c's land: every copy waited for under vk_lock */
-static void own_land(const OwnRange* r, u8* const* dst, u32 n, int by) {
+/* every copy waited for under vk_lock; here: into guest memory itself (land_bytes) */
+static void land_now(const OwnRange* r, u8* const* dst, u32 n, int by, int here) {
     u64 cap = g_vk.alloc_cap / 4, done = 0;
     u32 i = 0;
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
-    if (early_land(r, dst, n)) {
+    if (early_land(r, dst, n, here)) {
         land_note(r, n, by);
         vk_unlock();
         return;
@@ -1101,11 +1110,13 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n, int by) {
         Piece pc[LAND_PIECES];
         u32 np;
         u64 total = land_gather(r, dst, n, &i, &done, cap, pc, &np);
-        land_finish(s, land_submit(s, &c, pc, np, total), pc, np, total);
+        land_finish(s, land_submit(s, &c, pc, np, total), pc, np, total, here);
     }
     land_slot_put(s);
     vk_unlock();
 }
+/* own.c's land */
+static void own_land(const OwnRange* r, u8* const* dst, u32 n, int by) { land_now(r, dst, n, by, 0); }
 /* a landing's copy submitted and not waited for yet (own_land_start), for own_land_end */
 typedef struct {
     LandSlot* s;
@@ -1121,7 +1132,7 @@ static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
     LandCopy* h = n <= LAND_PIECES && all <= cap ? (LandCopy*)malloc(sizeof *h) : NULL;
     if (h) { /* landed from an early copy: nothing for own_land_end */
         vk_lock();
-        int early = early_land(r, dst, n);
+        int early = early_land(r, dst, n, 0);
         if (early) land_note(r, n, by);
         vk_unlock();
         if (early) {
@@ -1148,7 +1159,7 @@ static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n, int by) {
 static void own_land_end(void* handle) {
     LandCopy* h = (LandCopy*)handle;
     SNX_ZONE_V(z, "vk own land end", h->np);
-    land_finish(h->s, h->value, h->pc, h->np, h->total);
+    land_finish(h->s, h->value, h->pc, h->np, h->total, 0);
     land_slot_put(h->s);
     free(h);
 }
@@ -1244,7 +1255,13 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
        owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
        owners of the bytes go: they are written over whole */
-    if (in_place && vk_uma_held(cpu, size)) {
+    /* Over an import, the result is copied there on the GPU with no owner and no trap, which is what vk_uma_held asks.
+       It answered false for every span that had none, and on a host with no traps there is nothing below to own it: the
+       span landed as own_land's readback, waiting for the queue to drain before the CPU needs one byte of it. Such a
+       host asks vk_uma_publish, which makes the import where that takes no page from write tracking, and lands the
+       span below where it would. A host with traps keeps the owner its pages give: the guard asks for it first, as
+       before */
+    if (in_place && (!own_traps() || vk_uma_held(cpu, size))) {
         own_drop(cpu, size);
         if (vk_uma_publish(cpu, size, r->buf, off)) {
             SNX_ZONE_TEXT(z, "UMA holds %llu bytes, copied into its import", (unsigned long long)size);
@@ -1277,7 +1294,8 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     o.res = r;
     o.res_off = off;
     d = GP(cpu);
-    own_land(&o, &d, 1, OWN_BY_RUNTIME);
+    /* into guest memory itself, as the GPU's write and not the CPU's */
+    land_now(&o, &d, 1, OWN_BY_RUNTIME, 1);
 }
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }
 void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 0); }

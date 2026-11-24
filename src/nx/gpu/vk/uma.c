@@ -75,7 +75,11 @@
      (the GPU reads it in place) is copied there on the GPU, in stream order, a write in place like the shaders'
      (vk_uma_publish): not GPU-owned or trapped, and the import stays. Elsewhere it is published GPU-owned as without
      UMA: an import made for it would take its pages from write tracking, and a sparse texture a copy feeds would load
-     again whole instead of the pages written (Liz, #1079).
+     again whole instead of the pages written (Liz, #1079). A host without traps has no owner to give the span: the
+     publish makes the import there where it takes no page from write tracking (a dma-buf region's pages stay
+     watched, a host pointer's where the host's own answer says so, vk_uma_watch_probe, and a host that tracks no
+     writes has none to lose), and lands the result at once everywhere else, told to write tracking as the GPU's
+     write (vk_ww_land).
    - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
@@ -132,7 +136,9 @@ typedef struct {
        of it; fd -1 for an import of guest memory where it is */
     int fd;
     void* handle;
-    int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
+    /* a dma-buf region (imp_make_dmabuf), or a host pointer's import where the probe passed (vk_uma_watch_probe): the
+       driver leaves the CPU's page table alone, and scans watch it */
+    int tracked;
     u32 rid;     /* its table of pages (Rgn) while it is in the table, 0 for none */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
@@ -280,6 +286,8 @@ typedef struct {
        while no_wait is on, and counts in would_wait the imports it did not make or let go for that. regions moves at
        each import or chunk made or gone, never set back: the group's buffers are one region's while it holds */
     int no_wait;
+    VkUmaWatch watch; /* what the probe found (vk_uma_watch_probe) */
+    int watched;      /* and its verdict: write tracking can watch a host pointer's import here */
     u64 would_wait, regions;
     /* the programs whose dispatches go to the GPU at once (vk_uma_read_soon): open addressing, 0 for a free slot */
     u64 soon[UMA_SOON_N];
@@ -1560,7 +1568,9 @@ static u32 imp_get(u64 cpu, u64 len) {
     /* the driver takes the pages for writing, and refuses those a scan protected (write tracking by protection,
        write_tracking=1 or a host without userfaultfd's): they open for the import, and close once it is in the table,
        whose pages the scans leave alone from then on (vk_uma_import_in) */
-    const int opened = !g_uma.migrate;
+    /* not where the scans watch a host pointer's import (vk_uma_watch_probe): the driver took protected pages there,
+       and opened they would read as written, every one of the windows, a write nobody made */
+    const int opened = !g_uma.migrate && !g_uma.watched;
     if (opened) plat_ww_open(GP(lo), hi - lo);
     const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
                       : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
@@ -1570,6 +1580,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         fail(lo, hi, why);
         return ~0u; /* the imports there stay */
     }
+    if (!g_uma.migrate) m.tracked = g_uma.watched; /* a host pointer's, where the scans go on watching its pages */
     vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (imp_destroy forgets) */
     g_uma.imports++;
     g_uma.import_bytes += hi - lo;
@@ -2071,7 +2082,16 @@ int vk_uma_none_why(u64 cpu, u64 len) {
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
-    if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    /* The import that holds the range, or one made for it (bind) where that takes no page from write tracking: a
+       dma-buf region, whose pages the scans watch as before (Imp.tracked), a host pointer where the host showed the
+       scans can watch its import too (vk_uma_watch_probe), or a host that tracks no writes. Anywhere else a new
+       import's pages leave the scans (vk_uma_import_in), and every cache over its windows that asked write tracking
+       compares contents from then on: a sparse volume a copy fed loaded all its 1.7 MB again for 64 bytes copied into
+       one tile, where it loads the tile's 8 KiB block (Liz, #1079). 0 there: the caller owns the span, or lands it on
+       a host without traps (owned.c's own_publish) */
+    if (!vk_uma() || (!vk_uma_held(cpu, len) && !g_uma.dmabuf && !g_uma.watched && vk_ww_tracks()) ||
+        !bind(cpu, len, 1, &ib, &io))
+        return 0;
     /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
     SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");
     SNX_ZONE_VALUE(z, len);
@@ -2162,6 +2182,93 @@ static void gpu_wrote(u64 cpu, u64 n) {
     atomic_store_explicit(&g_uma.hz_done, done, memory_order_relaxed);
     if (write_pages_since(&g_uma.live, done, cpu, n))
         atomic_fetch_add_explicit(&g_uma.hazards, 1, memory_order_relaxed);
+}
+
+/* Whether write tracking can go on watching guest pages a host pointer's import holds, asked of the host itself: a
+   driver that takes the pages again for a submission (amdgpu's user pointers) undoes a scan's protection, and one
+   whose copies are the CPU's own (a software rasterizer) has its writes read as the game's. A dma-buf region needs no
+   asking (Imp.tracked). On pages of the kernel region, which no game maps and no cache reads: a scan, the import with
+   nothing opened for it, a copy on the GPU within the import, the CPU's write, a second copy that reads that write,
+   the CPU's write again, each followed by a scan. Everything is tried, so the log names all of it */
+const char* vk_uma_watch_verdict(const VkUmaWatch* w) {
+    return !w->ran            ? "the probe did not run"
+           : !w->scanned      ? "the scan does not answer for the probe's pages"
+           : !w->imported     ? "the driver refuses pages a scan has protected"
+           : !w->import_quiet ? "the import itself reads as a write"
+           : !w->gpu_landed   ? "a copy on the GPU into the import is not in guest memory once its submission is done"
+           : !w->gpu_quiet    ? "a copy on the GPU into the import reads as a write of the CPU's"
+           : !w->cpu_found    ? "the CPU's write after a submission is not found"
+           : !w->gpu_reads    ? "a second submission does not read what the CPU wrote"
+           : !w->gpu_quiet2   ? "a second submission reads as a write of the CPU's"
+           : !w->cpu_found2   ? "the CPU's write after a second submission is not found"
+           : w->looks != 6    ? "the probe did not look after each step"
+                              : NULL;
+}
+int vk_uma_watched(void) { return g_uma.watched; }
+const VkUmaWatch* vk_uma_watch(void) { return &g_uma.watch; }
+void vk_uma_watch_set(const VkUmaWatch* w) {
+    g_uma.watch = *w;
+    g_uma.watched = !vk_uma_watch_verdict(w);
+}
+/* what a scan of the probe's pages says now: 1 written since the scan before, 0 not, -1 no answer */
+static int watch_look(VkUmaWatch* w, u64 s, u64 n) {
+    w->looks++;
+    return vk_ww_scan_now(s, n);
+}
+/* 64 bytes copied within import m on the GPU, from its byte from to its byte to, and waited for */
+static void watch_copy(const Imp* m, u64 from, u64 to) {
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier_by(VK_BAR_UMA, cb);
+    VkBufferCopy c = {from, to, 64};
+    rec_CmdCopyBuffer(cb, m->buf, m->buf, 1, &c);
+    vk_all_barrier_by(VK_BAR_UMA, cb);
+    vk_finish();
+}
+void vk_uma_watch_probe(void) {
+    VkUmaWatch w = {0};
+    /* where the answer is used: vk_uma_publish's import on a host without traps, of a host pointer, with write
+       tracking on. A host that traps owns the span instead, and a region's pages are watched as they are */
+    if (!vk_uma() || g_uma.migrate || own_traps() || !mem_reserved()) return;
+    vk_lock();
+    if (!vk_ww_tracks()) {
+        vk_unlock();
+        return;
+    }
+    /* two whole pages of the import's alignment within four of the kernel's */
+    const u64 a = g_uma.align > plat_vm_page() ? g_uma.align : plat_vm_page(), size = 4 * a;
+    const u64 at = kmem_alloc(size, MS_KERNEL, PERM_RW), s = (at + a - 1) & ~(a - 1);
+    u8* p = GP(s);
+    Imp m;
+    w.ran = 1;
+    for (u32 i = 0; i < 64; i++) p[i] = (u8)(0xc0 + i);
+    w.scanned = watch_look(&w, s, 2 * a) >= 0;
+    if (w.scanned && imp_make(&m, s, 2 * a, p)) {
+        w.imported = 1;
+        w.import_quiet = watch_look(&w, s, 2 * a) == 0;
+        watch_copy(&m, 0, 64);
+        w.gpu_landed = !memcmp(p + 64, p, 64);
+        w.gpu_quiet = watch_look(&w, s, 2 * a) == 0;
+        p[a] = 0x5a; /* on the second page */
+        w.cpu_found = watch_look(&w, s, 2 * a) == 1;
+        watch_copy(&m, a, 128);
+        w.gpu_reads = p[128] == 0x5a;
+        w.gpu_quiet2 = watch_look(&w, s, 2 * a) == 0;
+        p[1] = 0xa5;
+        w.cpu_found2 = watch_look(&w, s, 2 * a) == 1;
+        m.tracked = 1; /* nothing of it to tell write tracking */
+        imp_destroy(&m);
+    }
+    vk_unlock();
+    mem_unmap(at, size);
+    vk_uma_watch_set(&w);
+    const char* why = vk_uma_watch_verdict(&w);
+    LOG("vulkan: write tracking %s a host pointer's import here%s%s (the probe: scanned %d, imported %d, its import "
+        "quiet %d; a GPU copy in guest memory %d and quiet %d, the CPU's write found %d; a second copy read it %d and "
+        "quiet %d, the CPU's write found %d): a publish over memory no import holds %s\n",
+        why ? "can't watch" : "watches", why ? ": " : "", why ? why : "", w.scanned, w.imported, w.import_quiet,
+        w.gpu_landed, w.gpu_quiet, w.cpu_found, w.gpu_reads, w.gpu_quiet2, w.cpu_found2,
+        why ? "lands in guest memory" : "is copied there in place, through an import made for it");
 }
 
 void vk_uma_init(void) {

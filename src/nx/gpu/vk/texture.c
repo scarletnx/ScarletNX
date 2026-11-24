@@ -2444,6 +2444,10 @@ int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32
         vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         rec_CmdCopyBufferToImage(cb, buf, t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &r);
+        /* no longer the image's: a check by contents loads all of it. Left as it was, memory written back to what the
+           hash was of (a pool's page filled again with its first texels) read as the image's, and the copy's rows
+           stayed in it */
+        t->hash = 0;
         hit[n++] = t;
     }
     return n;

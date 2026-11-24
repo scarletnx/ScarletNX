@@ -9,6 +9,7 @@
    - a write after a draw recorded its upload and before its submission
    - the runtime's own writes: a system call's, a decommit's, a GPU engine's, a landing's
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
+   - a result landed with no owner (no memory traps): the GPU's write, not the CPU's
    - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
    - what the caches check by contents where the tracking answers for them: a texture over several pieces of guest
      memory, a buffer rewritten with its own bytes, a pending result's original bytes
@@ -521,6 +522,123 @@ static int check_wt_owned(void) {
     CHECK(mem_unmap(cpu, size) == 0);
     puts(
         "write tracking: the CPU's write over a GPU-owned range reaches a texture, the landing's bytes beside it stay");
+    return 0;
+}
+
+/* a 64 by 64 RGBA8 storage image at gva cleared to color on the GPU and published, as a dispatch's tail does (compute.c) */
+static int wt_store(u64 gva, u32 color) {
+    NvnTexture v = {0};
+    u32 tic[8];
+    v.d.target = NVN_TEXTURE_TARGET_2D;
+    v.d.format = NVN_FORMAT_RGBA8;
+    v.d.levels = 1;
+    v.d.width = v.d.height = 64;
+    v.d.depth = 1;
+    v.gpu = gva;
+    CHECK(nvn_tic_encode(&v, NULL, 0, 0, tic));
+    Surf* s = vk_tex_from_tic_storage(tic);
+    CHECK(s);
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkClearColorValue rgba = {.float32 = {(float)(color & 255) / 255.0f, (float)(color >> 8 & 255) / 255.0f,
+                                          (float)(color >> 16 & 255) / 255.0f, (float)(color >> 24) / 255.0f}};
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    rec_CmdClearColorImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &rgba, 1, &all);
+    vk_surf_wrote(s);
+    if (!vk_surf_publish(s))
+        vk_surf_flush(s, NULL);
+    else
+        vk_surf_stored(s);
+    return 0;
+}
+/* A result published where no owner can take it (a host without traps, memory_traps=2) lands at once, through guest
+   memory itself. That write is the GPU's: no baseline is told of it, while what the CPU wrote on the landing's first
+   and last page before it, with no scan between, and over its bytes after it, still is. Then as a probe's storage
+   cases meet it: a storage image stored and published, an upload landed over its memory, and the image stored again,
+   whose texels memory must hold (the landing taken for the CPU's write, the second store's publish kept memory's
+   older bytes over them) */
+static int check_wt_landed_here(void) {
+    const u64 cpu = WT_CPU + 17 * WT_LEAF, gva = WT_GVA + 0x11000000, size = 0x10000;
+    const u64 at = cpu + 0x1100, len = 0x2000; /* part of page 1, page 2, part of page 3 */
+    const u64 image = cpu + 0x8000, image_gva = gva + 0x8000, image_len = 0x4000;
+    if (own_traps()) {
+        printf("skip: a landing with no owner needs a host without traps (memory_traps=2)\n");
+        return 0;
+    }
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    if (!wt_tracking(cpu)) {
+        vk_unlock();
+        printf("skip: a landing's pages need write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        return 0;
+    }
+    CHECK(vk_written_since(GP(cpu), size, 0) >= 0);
+    u32 since = vk_ww_now();
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(vk_written_since(GP(cpu), size, since) == 0);
+    vk_unlock();
+    memset(GP(cpu + 0x3800), 0x33, 0x100); /* the CPU, on the landing's last page beside its bytes */
+    vk_lock();
+    VkOwnRes* owner = vk_own_res_new(len, VK_OWN_BY_DRAW);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, (u32)len, 0x42));
+    vk_own_publish_owned(at, len, owner, 0);
+    int owned = own_lookup(at, len, NULL, 0) != 0;
+    int there = all_bytes(GP(at), (u32)len, 0x42) && GP(at)[-1] == 0x11 && GP(at + len)[0] == 0x11 &&
+                all_bytes(GP(cpu + 0x3800), 0x100, 0x33);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int told[4];
+    for (u32 i = 0; i < 4; i++) told[i] = vk_written_since(GP(cpu + i * 0x1000), 0x1000, since);
+    u32 after = vk_ww_now();
+    vk_unlock();
+    GP(at)[0x10] = 0x55; /* the CPU, over the landing's bytes on page 1 */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int later[2] = {vk_written_since(GP(cpu + 0x1000), 0x1000, after),
+                    vk_written_since(GP(cpu + 0x2000), 0x1000, after)};
+    vk_unlock();
+    if (owned || !there || told[0] || told[1] || told[2] || told[3] != 1 || later[0] != 1 || later[1])
+        fprintf(stderr,
+                "landed here: owned %d, the bytes there %d; pages 0 to 3 told written %d %d %d %d (0 0 0 1: the CPU "
+                "wrote page 3 alone); after the CPU wrote page 1 over the landing: page 1 %d, page 2 %d (1 0)\n",
+                owned, there, told[0], told[1], told[2], told[3], later[0], later[1]);
+    CHECK(!owned && there && !told[0] && !told[1] && !told[2] && told[3] == 1 && later[0] == 1 && !later[1]);
+    /* a storage image stored, an upload landed over its memory, the image stored again */
+    vk_lock();
+    CHECK(!wt_store(image_gva, 0xff0000ffu));
+    vk_unlock();
+    guest_done(image, image_len);
+    CHECK(snx_ld_le32(GP(image)) == 0xff0000ffu);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    owner = vk_own_res_new(image_len, VK_OWN_BY_DRAW);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, (u32)image_len, 0x42));
+    vk_own_publish_owned(image, image_len, owner, 0);
+    gpu_mem_written_by(image_gva, image_len, GPU_WRITE_DMA, 0, 0);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    CHECK(snx_ld_le32(GP(image)) == 0x42424242u);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(!wt_store(image_gva, 0xff00ff00u));
+    vk_unlock();
+    guest_done(image, image_len);
+    u32 stored = snx_ld_le32(GP(image));
+    if (stored != 0xff00ff00u)
+        fprintf(stderr, "landed here: a store after an upload landed left %08x in memory, stored ff00ff00\n", stored);
+    CHECK(mem_unmap(cpu, size) == 0);
+    CHECK(stored == 0xff00ff00u);
+    puts("write tracking: a landing with no owner is the GPU's write, the CPU's writes beside and over it its own, and "
+         "a store after it reaches memory");
     return 0;
 }
 
@@ -1240,6 +1358,7 @@ static const struct {
     {"record_submit", check_wt_record_submit},
     {"runtime_writes", check_wt_runtime_writes},
     {"owned", check_wt_owned},
+    {"landed_here", check_wt_landed_here},
     {"alias", check_wt_alias},
     {"shared", check_wt_shared},
     {"mixed_leaf", check_wt_mixed_leaf},
@@ -1287,8 +1406,8 @@ static int check_write_tracking(void) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, landed_order, two_consumers, concurrent, record_submit, "
                 "runtime_writes, "
-                "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
-                "hot_rt_take_in, pieces, sampled or compares\n",
+                "owned, landed_here, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, "
+                "hot_same_frame, hot_rt_take_in, pieces, sampled or compares\n",
                 only);
         return 2;
     }

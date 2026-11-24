@@ -3390,7 +3390,27 @@ static int check_dma_texture(void) {
                 same == t, (unsigned long long)(again - uploads), inside, copied, outside, corner);
     CHECK(same == t && again == uploads && inside == copied && outside == corner);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
-    puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference");
+    /* the texture's memory written back to what it was loaded from, by the runtime (a GPU-side write, as an engine's
+       or a pool filled again): the image takes memory's bytes again, the copy's lines gone from it. Its hash from
+       the load was no longer the image's once the lines went in */
+    static u8 first[0x4000];
+    for (u32 i = 0; i < sizeof first; i++) first[i] = (u8)((tex + i) * 37 + ((tex + i) >> 9) * 3 + 11);
+    const u32 before = snx_ld_le32(first + bl_offset(19 * 4, 21, 0, 256, 64, 0, 0));
+    CHECK(!gmem_write(ga, first, sizeof first));
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    vk_lock();
+    same = vk_tex_from_tic(tic);
+    inside = same ? dma_texel(same, 19, 21) : 0;
+    vk_unlock();
+    if (same != t || inside != before)
+        fprintf(stderr,
+                "dma into a texture: after its memory was written back, the same texture %d, texel (19, 21) %08x, "
+                "memory's %08x (the copy's line was %08x)\n",
+                same == t, inside, before, copied);
+    CHECK(same == t && inside == before && before != copied);
+    puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference, and "
+         "memory written back shows again");
     return 0;
 }
 /* A volume in a virtual pool, mapped a 64 KiB page at a time: 1664 KiB in blocks 1 GOB high and 16 deep, 13 GOBs a
@@ -7679,7 +7699,8 @@ static int check_uma_page_changes(void) {
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66);
     /* write tracking leaves an imported page alone: amdgpu takes it again, writable, at each submission, which a scan
        reports as a CPU write. It can't tell there, and still tells the pages beside it, whose memset above is taken in
-       before the baseline: a write counts from the scan that finds it */
+       before the baseline: a write counts from the scan that finds it. Where the host showed the scans can watch a
+       host pointer's import (vk_uma_watched) they tell there too: the copy only read the page, nothing wrote it */
     vk_unlock();
     g_renderer->mem_may_have_changed();
     vk_lock();
@@ -7694,9 +7715,11 @@ static int check_uma_page_changes(void) {
     int imported = vk_written_since(GP(UMA_E), 0x1000, before),
         beside = vk_written_since(GP(UMA_E) + 0x8000, 0x1000, before);
     vk_unlock();
-    if (imported != -1 || beside == 1)
-        fprintf(stderr, "write tracking since the baseline: %d on the imported page, %d beside it\n", imported, beside);
-    CHECK(imported == -1 && beside != 1);
+    const int told = vk_uma_watched() ? 0 : -1;
+    if (imported != told || beside == 1)
+        fprintf(stderr, "write tracking since the baseline: %d on the imported page (%d here), %d beside it\n",
+                imported, told, beside);
+    CHECK(imported == told && beside != 1);
     CHECK(mem_unmap(UMA_E, 0x10000) == 0);
     printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one a DMA copy writes "
            "stays, one dropped goes with an unmap, and write tracking leaves an imported page alone\n");
@@ -8558,6 +8581,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(!hidden);
     }
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    /* the host taken as one whose probe passed (vk_uma_watch_probe), which no driver here is: the checks of what a
+       publish does with a watched import run all the same */
+    if (getenv("SNX_TEST_UMA_WATCHED")) vk_uma_watch_set(&(VkUmaWatch){1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 6});
     CHECK(!check_vk12_way());
     if (pipeline_probe) {
         int result = probe_pipeline_compile(pipeline_probe, pipeline_probe_disable);
@@ -8799,6 +8825,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_quiet_other();
         else if (!strcmp(name, "texture_quiet_alias"))
             result = check_texture_quiet_alias();
+        else if (!strcmp(name, "sparse_volume"))
+            result = check_sparse_volume();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "cube_take_frames"))
@@ -9040,6 +9068,10 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
+        if (!strcmp(name, "publish_open") && ++ran) CHECK(!check_uma_publish_open());
+        if (!strcmp(name, "watch_verdict") && ++ran) CHECK(!check_uma_watch_verdict());
+        if (!strcmp(name, "watch_probe") && ++ran) CHECK(!check_uma_watch_probe());
+        if (!strcmp(name, "publish_notraps") && ++ran) CHECK(!check_uma_publish_notraps());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
@@ -9093,6 +9125,10 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_nvdec());
+        CHECK(!check_uma_publish_open());
+        CHECK(!check_uma_watch_verdict());
+        CHECK(!check_uma_watch_probe());
+        CHECK(!check_uma_publish_notraps());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_dispatch_open());
         CHECK(!check_uma_texture_pending());
@@ -9372,6 +9408,10 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_nvdec());
+    CHECK(!check_uma_publish_open());
+    CHECK(!check_uma_watch_verdict());
+    CHECK(!check_uma_watch_probe());
+    CHECK(!check_uma_publish_notraps());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_dispatch_open());
     CHECK(!check_uma_texture_pending());

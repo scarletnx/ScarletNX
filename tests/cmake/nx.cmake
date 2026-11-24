@@ -435,6 +435,71 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk-memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a publish over memory no import holds, as a host without traps takes it (memory_traps=2 makes one of this host):
+    # the span lands at once, with no import, where one would take its pages from write tracking. Every CI host traps,
+    # so without this entry the case runs only where a developer's host has no traps
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_notraps.ini" "[Debug]\nmemory_traps=2\n")
+    add_test(NAME vulkan_headless_notraps COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_notraps.ini")
+    set_tests_properties(vulkan_headless_notraps PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan in place, publish_notraps"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # what the probe finds on this host as one without traps (vk_uma_watch_probe): whether write tracking can watch a
+    # host pointer's import, with the host's own tracking and with page protection
+    add_test(NAME vulkan_headless_notraps_watch COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watch_protection COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    set_tests_properties(vulkan_headless_notraps_watch vulkan_headless_notraps_watch_protection PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_ONLY=watch_probe"
+        PASS_REGULAR_EXPRESSION "watch probe: scanned"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the same where the host tracks no writes either: an import takes no page from write tracking there, and the
+    # publish makes it
+    add_test(NAME vulkan_headless_notraps_untracked COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=2)
+    set_tests_properties(vulkan_headless_notraps_untracked PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
+        PASS_REGULAR_EXPRESSION "a publish over memory no import held makes its import"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the host taken as one whose probe passed (SNX_TEST_UMA_WATCHED, which no CI driver is): the publish makes its
+    # import, the scans go on watching it, the copy into a sparse volume's tile still loads the tile's block alone and
+    # the cube's stored level leaves its pieces out
+    add_test(NAME vulkan_headless_notraps_watched COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watched_protection
+        COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    add_test(NAME vulkan_headless_notraps_watched_sparse_volume COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_watched_cube_take COMMAND snx-test-vulkan -H --memory-traps=2)
+    set_tests_properties(vulkan_headless_notraps_watched_cube_take PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_NVN_CASE=cube_take"
+        PASS_REGULAR_EXPRESSION "PASS cube take"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_notraps_watched vulkan_headless_notraps_watched_protection PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_UMA_ONLY=publish_notraps"
+        PASS_REGULAR_EXPRESSION "a publish over memory no import held makes its import"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_notraps_watched_sparse_volume PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_WATCHED=1;SNX_TEST_NVN_CASE=sparse_volume"
+        PASS_REGULAR_EXPRESSION "sparse volume: a tile mapped, written by the CPU or by DMA shows in the next frame"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # and what a new import over tracked pages cost there: a copy into a tile of a sparse volume loads the tile's
+    # block again, not the volume, and a cube's stored level leaves its pieces out of the load
+    add_test(NAME vulkan_headless_notraps_sparse_volume COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_cube_take COMMAND snx-test-vulkan -H --memory-traps=2)
+    set_tests_properties(vulkan_headless_notraps_sparse_volume PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_NVN_CASE=sparse_volume"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_notraps_cube_take PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_NVN_CASE=cube_take"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a result landed where no owner can take it, as a host without traps lands every publish over memory no import
+    # holds: write tracking takes the landing as the GPU's write (tests/vulkan_write_tracking.inc's landed_here), with
+    # the host's own tracking and with page protection, the pair macOS has
+    add_test(NAME vulkan_headless_notraps_landing COMMAND snx-test-vulkan -H --memory-traps=2)
+    add_test(NAME vulkan_headless_notraps_landing_protection
+        COMMAND snx-test-vulkan -H --memory-traps=2 --write-tracking=1)
+    set_tests_properties(vulkan_headless_notraps_landing vulkan_headless_notraps_landing_protection PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=landed_here"
+        PASS_REGULAR_EXPRESSION "write tracking: a landing with no owner is the GPU's write"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with the guest memory that draws read kept by page in sparse buffers, and what draws write to
     # guest memory kept there too (gpu/vk/pagespace.c). A device without sparse buffers or write tracking runs the
     # checks as before

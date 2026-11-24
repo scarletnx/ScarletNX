@@ -20,6 +20,14 @@ static int uma_skip(void) {
                                    : "no traps (memory_traps): a publish lands at once");
     return 1;
 }
+/* whether a publish over memory no import holds makes one here (vk_uma_publish): on a host without traps, where the
+   import takes no page from write tracking (a region, a host pointer the scans can watch, or no tracking at all) */
+static int uma_publish_imports(void) {
+    vk_lock();
+    int makes = !own_traps() && (vk_uma_through_dmabuf() || vk_uma_watched() || !vk_ww_tracks());
+    vk_unlock();
+    return makes;
+}
 /* a GPU result of size bytes of value, its writes recorded */
 static VkOwnRes* uma_owner(u64 size, u8 value) {
     VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
@@ -662,7 +670,7 @@ static int check_uma_feedback(void) {
 /* An engine's result (the copy engine's here) over memory the GPU reads in place, which an import holds, is published
    in place: copied there on the GPU in stream order, not GPU-owned or trapped, the import kept, and a CPU read after it
    waits for the submit. Over memory no import holds it stays GPU-owned where the host traps, and no import is made
-   for it (one would take its pages from write tracking) */
+   for it where one would take its pages from write tracking (uma_publish_imports) */
 #define UMA_P  (HEAP_BASE + 0x3600000)
 #define UMA_GP 0x4de000000ull
 #define UMA_N  (HEAP_BASE + 0x3c00000) /* no import over it */
@@ -710,17 +718,19 @@ static int check_uma_publish(void) {
     CHECK(GP(UMA_P)[0x100] == 0xa1 && GP(UMA_P)[0x1ff] == 0xa1 && GP(UMA_P)[0x200] == 0xa0);
     CHECK(GP(UMA_N)[0x100] == 0xa1 && GP(UMA_N)[0x1ff] == 0xa1 && GP(UMA_N)[0x200] == 0xa0);
     CHECK(mem_unmap(UMA_P, 0x200000) == 0 && mem_unmap(UMA_N, 0x200000) == 0);
-    if (!held || owned || !imported || landed || owned_n != own_traps() || imported_n)
+    const int makes = uma_publish_imports();
+    if (!held || owned || !imported || landed || owned_n != own_traps() || imported_n != makes)
         fprintf(
             stderr,
             "publish: over an import (held %d): owned %d, imported %d, %llu landings; elsewhere: owned %d, imported "
             "%d\n",
             held, owned, imported, (unsigned long long)landed, owned_n, imported_n);
     CHECK(held && !owned && imported && !landed);
-    CHECK(owned_n == own_traps() && !imported_n);
+    CHECK(owned_n == own_traps() && imported_n == makes);
     printf("in place: an engine's result over an import copied there on the GPU, nothing GPU-owned; elsewhere owned "
-           "(traps %s), no import made for it\n",
-           own_traps() ? "on" : "off");
+           "(traps %s), %s\n",
+           own_traps() ? "on" : "off",
+           makes ? "an import made for it, which takes no page from write tracking" : "no import made for it");
     return 0;
 }
 
@@ -802,6 +812,201 @@ static int check_uma_nvdec(void) {
                 held, owned, there ? "in" : "not in", got ? "let go during its wait" : "not let go in 5 s of its wait");
     CHECK(held && !owned && there && got);
     printf("in place: a video picture is in guest memory when its write returns, vk_lock let go during its wait\n");
+    return 0;
+}
+
+/* A result published over an import while a rendering pass is open: the pass ends and the copy is recorded in place,
+   as with none open. Turned away for the open pass, the span got an owner where the host traps, whose trap waits for
+   the GPU and lets go of the import (vk_uma_owning), and a readback of its own where it doesn't */
+static int check_uma_publish_open(void) {
+    u8 bytes[256];
+    VkBuffer r;
+    u64 ro;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    ch->id = 146;
+    CHECK(mem_map(UMA_P, 0x200000, MS_NORMAL, PERM_RW) == 0 && mem_map(UMA_N, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GP, UMA_P, 0x200000);
+    gmmu_map(UMA_GN, UMA_N, 0x200000);
+    memset(GP(UMA_P), 0xa0, 0x1000);
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GP + 0x100, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    VkOwnRes* owner = uma_owner(256, 0xa3);
+    CHECK(owner && vk_uma_held(UMA_P + 0x100, 256));
+    vk_unlock();
+    /* a 64 by 64 target cleared, its pass left open */
+    u32* reg = ch->r3d;
+    const float blue[4] = {0, 0, 1, 1};
+    reg[0x487] = 1;
+    reg[0x200] = (u32)(UMA_GN >> 32);
+    reg[0x201] = (u32)UMA_GN;
+    reg[0x202] = 64;
+    reg[0x203] = 64;
+    reg[0x204] = 0xD5;
+    reg[0x205] = 0;
+    reg[0x206] = 1;
+    reg[0x207] = 0;
+    memcpy(&reg[0x360], blue, sizeof blue);
+    engine_clear(ch, 15 << 2);
+    vk_lock();
+    int open = vk_render_begun();
+    u64 adds = vk_uma_writes(), lands = own_landings();
+    vk_own_publish(UMA_P + 0x100, 256, owner, 0);
+    int ended = !vk_render_begun(), owned = own_lookup(UMA_P + 0x100, 256, NULL, 0) != 0,
+        imported = vk_uma_imports(UMA_P, 0x200000) != 0;
+    u64 added = vk_uma_writes() - adds, landed = own_landings() - lands;
+    vk_own_res_unref(owner);
+    vk_unlock();
+    CHECK(!gmem_read(UMA_GP + 0x100, bytes, sizeof bytes));
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa3);
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    CHECK(mem_unmap(UMA_P, 0x200000) == 0 && mem_unmap(UMA_N, 0x200000) == 0);
+    free(ch);
+    if (!open || !ended || owned || !imported || !added || landed)
+        fprintf(stderr,
+                "publish with a pass open (%d): the pass ended %d, owned %d, imported %d, %llu in-place writes, %llu "
+                "landings\n",
+                open, ended, owned, imported, (unsigned long long)added, (unsigned long long)landed);
+    CHECK(open && ended && !owned && imported && added && !landed);
+    printf("in place: a result published over an import with a rendering pass open ends the pass, copied on the GPU\n");
+    return 0;
+}
+
+/* The probe's verdict (vk_uma_watch_verdict): write tracking can watch a host pointer's import only where the host
+   showed everything, each thing missing has a reason of its own, and the first one missing is the one said */
+static int check_uma_watch_verdict(void) {
+    const VkUmaWatch good = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 6}, none = {.ran = 1}, saved = *vk_uma_watch();
+    const char* why[sizeof good];
+    static_assert(sizeof good == 11, "a byte for each thing the probe looks at, and its count of looks");
+    CHECK(!vk_uma_watch_verdict(&good));
+    for (u32 k = 0; k < sizeof good; k++) {
+        VkUmaWatch w = good;
+        memcpy((u8*)&w + k, &(u8){0}, 1);
+        why[k] = vk_uma_watch_verdict(&w);
+        if (!why[k]) fprintf(stderr, "watch verdict: without its item %u the import is still taken as watched\n", k);
+        CHECK(why[k]);
+        for (u32 j = 0; j < k; j++) CHECK(strcmp(why[j], why[k]));
+    }
+    CHECK(vk_uma_watch_verdict(&none) == why[1]); /* the first thing missing */
+    vk_uma_watch_set(&good);
+    int on = vk_uma_watched();
+    VkUmaWatch last = good;
+    last.cpu_found2 = 0;
+    vk_uma_watch_set(&last);
+    int off = vk_uma_watched();
+    vk_uma_watch_set(&saved);
+    CHECK(on && !off && vk_uma_watched() == !vk_uma_watch_verdict(&saved));
+    printf("watch verdict: an import is watched only where the host showed it all, each thing missing has a reason\n");
+    return 0;
+}
+/* What the probe found on this host (vk_uma_watch_probe, at the renderer's start): it runs where its answer is used, a
+   host without traps that imports host pointers and tracks writes, and its verdict is the state the publish reads.
+   On lavapipe the import is the pointer itself and the copies are the CPU's own writes, so everything holds but the
+   two quiets after a copy: the GPU's writes read as the game's, and no import is watched */
+static int check_uma_watch_probe(void) {
+    const VkUmaWatch* w = vk_uma_watch();
+    vk_lock();
+    const int tracks = vk_ww_tracks();
+    vk_unlock();
+    if (getenv("SNX_TEST_UMA_WATCHED")) {
+        printf("skip: SNX_TEST_UMA_WATCHED set the host's answer\n");
+        return 0;
+    }
+    if (!vk_uma() || vk_uma_through_dmabuf() || own_traps() || !tracks) {
+        CHECK(!w->ran && !vk_uma_watched());
+        printf("skip: the probe runs on a host without traps that imports host pointers and tracks writes\n");
+        return 0;
+    }
+    const char* why = vk_uma_watch_verdict(w);
+    printf("watch probe: scanned %d, imported %d, import quiet %d, GPU copy landed %d, quiet %d, CPU write found %d, "
+           "second copy read it %d, quiet %d, CPU write found %d: %s%s\n",
+           w->scanned, w->imported, w->import_quiet, w->gpu_landed, w->gpu_quiet, w->cpu_found, w->gpu_reads,
+           w->gpu_quiet2, w->cpu_found2, why ? "not watched, " : "watched", why ? why : "");
+    CHECK(w->ran && vk_uma_watched() == !why);
+    if (g_vk.driver_id == VK_DRIVER_ID_MESA_LLVMPIPE) {
+        const VkUmaWatch lavapipe = {1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 6};
+        CHECK(!memcmp(w, &lavapipe, sizeof lavapipe));
+    }
+    /* amdgpu takes a user pointer's pages again for each submission (uma.c): the import and the copies read as writes
+       where the kernel tracks them, and it refuses pages that page protection holds */
+    if (g_vk.driver_id == VK_DRIVER_ID_MESA_RADV) CHECK(why && (!w->imported || (!w->import_quiet && !w->gpu_quiet2)));
+    return 0;
+}
+
+/* A host without traps has nothing to own a publish with: the span over memory no import held fell through to
+   own_land's readback, which waits for the queue to drain before the CPU needs a byte of it. Where an import takes no
+   page from write tracking (uma_publish_imports) the publish asks bind for it, which makes it, so the copy is recorded
+   on the GPU like the one over an import and the CPU's read waits in vk_uma_mem_need: nothing is GPU-owned and nothing
+   lands. Everywhere else it lands as before, with no import: the bytes are in memory when the copy returns */
+#define UMA_NT  (HEAP_BASE + 0x3e00000) /* no import over it, and no trap to own it with */
+#define UMA_GNT 0x4e6000000ull
+static int check_uma_publish_notraps(void) {
+    const u64 src = 0x4e7000000ull, src_cpu = HEAP_BASE + 0x730000; /* in the first heap mapping */
+    u8 bytes[256];
+    if (vk_uma() && !own_traps()) {
+        const int makes = uma_publish_imports();
+        CHECK(mem_map(UMA_NT, 0x200000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(UMA_GNT, UMA_NT, 0x200000);
+        gmmu_map(src, src_cpu, 0x10000);
+        memset(GP(UMA_NT), 0xa0, 0x1000);
+        memset(GP(src_cpu), 0xa2, 0x1000);
+        /* the window's other pages as a cache with a baseline has them: taken in, nothing written since */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(UMA_NT), 0x200000, 0);
+        const u32 since = vk_ww_now();
+        vk_unlock();
+        u64 adds = vk_uma_writes(), waits = vk_uma_out_waits();
+        CHECK(!uma_dma(UMA_GNT + 0x100, src + 0x100));
+        int owned = own_lookup(UMA_NT + 0x100, 256, NULL, 0) != 0;
+        u32 imported = vk_uma_imports(UMA_NT, 0x200000);
+        u64 added = vk_uma_writes() - adds, waited = vk_uma_out_waits() - waits;
+        int there = GP(UMA_NT)[0x100] == 0xa2 && GP(UMA_NT)[0x1ff] == 0xa2; /* a landing's, before any wait */
+        CHECK(!gmem_read(UMA_GNT + 0x100, bytes, sizeof bytes));
+        for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa2);
+        vk_lock();
+        vk_finish();
+        vk_unlock();
+        CHECK(GP(UMA_NT)[0x100] == 0xa2 && GP(UMA_NT)[0x1ff] == 0xa2 && GP(UMA_NT)[0x200] == 0xa0);
+        /* an import the scans watch (vk_uma_watched) leaves the pages beside the copy's as they were: none reads as
+           written for the import having been made over it (opened for the driver, every protected page did) */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        const int beside = vk_written_since(GP(UMA_NT + 0x1000), 0x1ff000, since);
+        vk_unlock();
+        if (vk_uma_watched() && beside)
+            fprintf(stderr,
+                    "publish without traps, into a watched import: the window's pages beside the copy's are told %d "
+                    "(0: nothing wrote them)\n",
+                    beside);
+        CHECK(!vk_uma_watched() || !beside);
+        CHECK(mem_unmap(UMA_NT, 0x200000) == 0);
+        if (makes ? !imported || owned || !added || waited : imported || owned || added || !there)
+            fprintf(stderr,
+                    "publish without traps, where an import %s: imports %u, owned %d, %llu in-place writes, %llu "
+                    "waits, the bytes in memory at once %d\n",
+                    makes ? "takes no page from write tracking" : "would take its pages from write tracking", imported,
+                    owned, (unsigned long long)added, (unsigned long long)waited, there);
+        if (makes) {
+            CHECK(imported && !owned && added && !waited);
+            printf("no traps: a publish over memory no import held makes its import and copies there on the GPU (%u "
+                   "imports, %llu in-place writes, %llu waits)\n",
+                   imported, (unsigned long long)added, (unsigned long long)waited);
+        } else {
+            CHECK(!imported && !owned && !added && there);
+            printf("no traps: a publish over memory no import held lands at once where an import would take its pages "
+                   "from write tracking (no import, no in-place write)\n");
+        }
+        return 0;
+    }
+    printf("skip: %s\n", !vk_uma() ? "guest memory is copied on this device (vk_memory)"
+                                   : "traps: a publish owns the span (check_uma_publish)");
     return 0;
 }
 
