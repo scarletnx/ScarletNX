@@ -679,7 +679,7 @@ msgstr "Mods."
 #: src/gui/main.c
 #, snx-keys
 msgid "Settings."
-msgstr ""
+msgstr "Configurações."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -951,7 +951,7 @@ msgstr "M: mods."
 #: src/gui/main.c
 #, snx-keys
 msgid "M: settings."
-msgstr ""
+msgstr "M: configurações."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1199,7 +1199,7 @@ msgstr "L3: mods."
 #: src/gui/main.c
 #, snx-keys
 msgid "L3: settings."
-msgstr ""
+msgstr "L3: configurações."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2324,7 +2324,7 @@ msgstr "S lista os save states de um jogo de Switch recompilado em foco."
 
 #: src/gui/main.c
 msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
-msgstr ""
+msgstr "Configurações próprias são de um jogo de Switch ou 3DS recompilado, em foco."
 
 #: src/gui/main.c
 #, c-format
@@ -3957,7 +3957,7 @@ msgstr "%s não tem espaço para outro item"
 #: src/gui/main.c
 #, c-format
 msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
-msgstr ""
+msgstr "%s não é um jogo de Switch ou 3DS recompilado: só eles têm configurações próprias"
 
 #: src/gui/main.c
 #, c-format
