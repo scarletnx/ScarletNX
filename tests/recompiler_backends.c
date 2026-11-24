@@ -305,7 +305,18 @@ static const char* const k_vec_ops[] = {
     "FCVTZU_vf", "SCVTF_vf", "UCVTF_vf", "FCVTL_v", "FCVTN_v", "SCVTF_f", "UCVTF_f", "FCVTZS_f", "FCVTZU_f",
     "CMEQ0_s", "CMGT0_s", "CMGE0_s", "CMLE0_s", "CMLT0_s", "SQADD_v", "UQADD_v", "SQSUB_v", "UQSUB_v", "SQXTN_v",
     "UQXTN_v", "SQXTUN_v", "SQSHRN_v", "UQSHRN_v", "SQSHRUN_v", "SQDMULH_v", "SQRDMULH_v", "SQDMULH_vi",
-    "SQRDMULH_vi", "SQSHL_v", "ADDP_s", NULL};
+    "SQRDMULH_vi", "SQSHL_v", "ADDP_s", "NOT_v", "EXT_d", "UADDLV", "SADDLV", "UADDLP_v", "SADDLP_v", "UADALP_v",
+    "SADALP_v", "SHSUB_v", "UHSUB_v", "SRI_v", "SRI_s", "SLI_v", "SLI_s", "SRSHR_v", "URSHR_v", "SRSRA_v", "URSRA_v",
+    "SRSHR_s", "URSHR_s", "SRSRA_s", "URSRA_s", "RSHRN_v", "UADDL_v", "SADDL_v", "USUBL_v", "SSUBL_v", "USUBW", "SSUBW",
+    "UABD_v", "SABD_v", "UABA_v", "SABA_v", "UABDL_v", "SABDL_v", "UABAL_v", "SABAL_v", "CLZ_v", "CLS_v", "ADD_s",
+    "SUB_s", "CMEQ_s", "CMGT_s", "CMGE_s", "CMHI_s", "CMHS_s", "CMTST_s", "SQADD_s", "UQADD_s", "SQSUB_s", "UQSUB_s",
+    "SQXTN_s", "UQXTN_s", "SQXTUN_s", "SQSHRN_si", "UQSHRN_si", "SQSHRUN_si", "SQRSHRN_v", "UQRSHRN_v", "SQRSHRUN_v",
+    "SQRSHRN_si", "UQRSHRN_si", "SQRSHRUN_si", "PMULL_p64", "FMUL_si", "FMLA_si", "FMLS_si", "FADDP_v", "FMAXP_v",
+    "FMINP_v", "FMAXNMP_v", "FMINNMP_v", "FADDP_s", "FMAXP_s", "FMINP_s", "FMAXNMP_s", "FMINNMP_s", "FMAXV_s",
+    "FMINV_s", "FMAXNMV_s", "FMINNMV_s", "FRECPE_v", "FRECPE_s", "FRSQRTE_v", "FRSQRTE_s", "FRECPS_v", "FRECPS_s",
+    "FRSQRTS_v", "FRSQRTS_s", "FRINTN_v", "FRINTP_v", "FRINTM_v", "FRINTZ_v", "FRINTA_v", "AESE", "AESD", "AESMC",
+    "AESIMC", "SHA1C", "SHA1P", "SHA1M", "SHA1SU0", "SHA1H", "SHA1SU1", "SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
+    NULL};
 static uint32_t* g_rows;
 static size_t g_nrows;
 static uint64_t rnd_for_rows(void) { return rnd(); }
