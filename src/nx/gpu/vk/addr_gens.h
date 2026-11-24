@@ -12,12 +12,15 @@
    (and its tables), and for the pages whose mapping changes. Its writers hold vk_lock and pend_lock, so a bump there
    is a load and a store.
    ADDR_GENS_CPU: by guest address (the offset of a host pointer into guest memory). The write tracking (buffer.c)
-   bumps it when it stamps pages written, on the scanner thread or on a check's thread. */
+   bumps it when it stamps pages written, on the scanner thread or on a check's thread.
+   ADDR_GENS_WRITE: by GPU address, with tex_events_shadow on (render.c tex_events_on): each GPU-side write once the
+   write record has published it (maxwell3d.c's write watch by GPU address), each draw to a render target, and each
+   surface made or freed in the surface table, over their ranges. */
 #ifndef SNX_VK_ADDR_GENS_H
 #define SNX_VK_ADDR_GENS_H
 #include "common/cpu/aarch64/cpu.h"
 
-enum { ADDR_GENS_GPU, ADDR_GENS_CPU, ADDR_GENS_SPACES };
+enum { ADDR_GENS_GPU, ADDR_GENS_CPU, ADDR_GENS_WRITE, ADDR_GENS_SPACES };
 #define ADDR_GENS_SHIFT    18   /* 256 KiB granules */
 #define ADDR_GENS_SLOTS    8192 /* a power of two */
 #define ADDR_GENS_READ_MAX 512  /* granules a read adds up at most (128 MiB): past them it tells nothing */
