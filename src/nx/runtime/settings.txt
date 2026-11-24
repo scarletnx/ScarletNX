@@ -2325,16 +2325,19 @@ setting CTR bottom resolution
     help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
     help is scaled to its window
 
-# ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
+# ---- the 3DS driver's debug settings (scarletnx-3ds --key=value), the 3DS section's Debug page: the launcher passes
+# each picked to a 3DS game's run, as every ctr_ setting ----
 
 table g_ctr_debug_ini
 setting CTR IPC trace
+    label IPC trace
     key ctr_ipc_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each service request the 3DS game sends, its service and header, in the order sent
 setting CTR hooks
+    label IPC hooks
     key ctr_hooks
     int 0 1
     default 1
@@ -2343,6 +2346,7 @@ setting CTR hooks
     help sends their requests to the services without the TLS command buffer and the SVC, and runs a GX command at the
     help SDK's enqueue (aot/ctr_hook.h); 0 = the game's code makes every request
 setting CTR SVC trace
+    label SVC trace
     key ctr_svc_trace
     int 0 2
     default 0
@@ -2350,6 +2354,7 @@ setting CTR SVC trace
     help 1 = logs each SVC the 3DS game makes that answers a failure (r0 with its top bit set), 2 = every SVC, with
     help the thread, its pc and r0 to r3 before and after
 setting CTR stand in
+    label Stand-in shaders
     key ctr_stand_in
     int 0 2
     default 1
@@ -2359,12 +2364,14 @@ setting CTR stand in
     help environment as it goes, where they draw it as its own would, instead of being skipped; 0 skips it; 2 draws
     help every draw they draw with them, to test them
 setting CTR GPU trace
+    label GPU trace
     key ctr_gpu_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
 setting CTR UDS trace
+    label Local wireless trace
     key ctr_uds_trace
     int 0 1
     default 0
@@ -2372,6 +2379,7 @@ setting CTR UDS trace
     help 1 = logs each local wireless packet of the 3DS game that goes through an Eden room (sent, received,
     help delivered): its direction, the time, its size and its first 96 bytes in hex
 setting CTR run-time compile trace
+    label Run-time compile trace
     key ctr_jit_trace
     int 0 1
     default 0
@@ -2379,6 +2387,7 @@ setting CTR run-time compile trace
     help 1 = logs each block the 3DS runtime compiles while the game runs (the static module lacked it), Thumb ones
     help with the pc's low bit set as the hints file writes them
 setting CTR answer unknown commands
+    label Answer unknown commands
     key ctr_auto_stub_ipc
     int 0 1
     default 1
@@ -2386,6 +2395,11 @@ setting CTR answer unknown commands
     help 1 = a command of a 3DS service the runtime doesn't know answers success, and a service it doesn't have is a
     help stand-in that answers each command so (each logged the first time), as auto_stub_ipc does for a Switch game;
     help 0 = the run stops at the first, saying which, except for the services --ipc-stubs names
+
+# ---- a 3DS run's scripted input (scarletnx-3ds --key=value), in no section: a run's own, as the unattended
+# runs' are, never written back nor listed ----
+
+table g_ctr_run_ini
 setting CTR script
     key ctr_script
     text 4096
@@ -2563,7 +2577,7 @@ section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section Audio: g_audio_ini
-section 3DS: g_ctr_display_ini
+section 3DS: g_ctr_display_ini, g_ctr_debug_ini/Debug
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player, g_joycon2_ini/Bluetooth    backend

@@ -1038,6 +1038,7 @@ int main(int argc, char** argv) {
                                   "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
                                   "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
+                                  "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
                                   "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\n"
                                   "Graphics\tshadows\t1\tint\t0\t1\tShadow maps\tShadows\t0=Off|1=On\n"
                                   "Graphics\tanisotropy\t0\tint\t0\t16\tSharper\tAnisotropic filtering\t\n"
@@ -1064,6 +1065,10 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
         assert(gui_settings_set(&s, "volume", "50"));
+        /* a row of the 3DS group's Debug page, passed as its screens' are */
+        assert(gui_settings_ctr_options(&s, options) == 14 && gui_settings_set(&s, "ctr_hooks", "0") &&
+               gui_settings_ctr_options(&s, options) == 15 && !strcmp(options[3], "--ctr-hooks=0") &&
+               gui_settings_set(&s, "ctr_hooks", "1"));
         assert(gui_settings_ctr_options(&s, options) == 14 && !strcmp(options[0], "--fullscreen=1") &&
                !strcmp(options[1], "--ctr-separate-windows=1") && !strcmp(options[2], "--ctr-top-resolution=2") &&
                !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&

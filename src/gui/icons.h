@@ -133,6 +133,7 @@ static inline unsigned gui_page_icon(const char* page) {
            : !strcmp(page, "Buttons")           ? GUI_ICON_LAYOUT_GRID
            : !strcmp(page, "Button map")        ? GUI_ICON_GAMEPAD_DIRECTIONAL
            : !strcmp(page, "Bluetooth")         ? GUI_ICON_WIFI
+           : !strcmp(page, "Debug")             ? GUI_ICON_BUG /* a console's own, as the Debug group */
                                                 : GUI_ICON_NONE;
 }
 #endif

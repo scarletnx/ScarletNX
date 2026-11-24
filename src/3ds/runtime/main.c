@@ -68,8 +68,9 @@ static void usage(FILE* out) {
         "                         success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                         cfg, dsp, system, am, y2r, ldr, ir, irrst, mic, cam, csnd. Given more than once, the\n"
         "                         lists add up\n"
-        "  --KEY=VALUE            A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini\n"
-        "                         in src/nx/runtime/settings.txt): --ctr-screen-layout=4 puts each screen in a\n"
+        "  --KEY=VALUE            A setting of the 3DS display, debug or run table (g_ctr_display_ini,\n"
+        "                         g_ctr_debug_ini, g_ctr_run_ini in src/nx/runtime/settings.txt; the launcher's\n"
+        "                         3DS group and its Debug page): --ctr-screen-layout=4 puts each screen in a\n"
         "                         window of its own, --ctr-top-resolution=2 and --ctr-bottom-resolution=2 render\n"
         "                         them at twice the console's, --ctr-ipc-trace=1 logs each service request,\n"
         "                         --ctr-jit-trace=1 each block compiled while the game runs, --ctr-auto-stub-ipc=0\n"
@@ -810,7 +811,7 @@ int snx_ctr_main(int argc, char** argv) {
             return common < 0 ? 2 : 0;
         }
         if (common == SNX_CLI_SCRIPT)
-            ini_read(ini_find(g_ctr_debug_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
+            ini_read(ini_find(g_ctr_run_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
             ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
         else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot-threads= is: the last given counts */
@@ -855,7 +856,7 @@ int snx_ctr_main(int argc, char** argv) {
             model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
-            /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
+            /* a setting of the 3DS display, debug or run table (g_ctr_display_ini, g_ctr_debug_ini, g_ctr_run_ini, in
                src/nx/runtime/settings.txt), one of the Switch's the 3DS takes too (snx_ctr_shared_setting), or a
                Vulkan extension's (vk_ext_*, g_vk_extensions_ini), --key=value, its key's _ a - or not. gamepad_map
                is the input's to read: its row's setter keeps the map for a Switch game's pads */
@@ -874,6 +875,7 @@ int snx_ctr_main(int argc, char** argv) {
             } else if (value) {
                 o = ini_find(g_ctr_display_ini, key);
                 if (!o) o = ini_find(g_ctr_debug_ini, key);
+                if (!o) o = ini_find(g_ctr_run_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
