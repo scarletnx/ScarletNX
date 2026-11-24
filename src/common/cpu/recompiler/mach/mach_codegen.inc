@@ -312,6 +312,7 @@ static void v_store(SgCtx* g, unsigned t, SgD address, int bytes) {
 /* LDR, STR (immediate: unsigned offset, unscaled, pre- and post-index; register offset; literal), LDP, STP, LDNP,
    STNP of the SIMD&FP registers, B to Q */
 static int fp_ldst(Unit* u, SnxU32 word, SnxU64 pc) {
+    if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
     SgCtx* g = u->g;
     unsigned rt = word & 31, rn = word >> 5 & 31;
     if ((word & 0x3F000000u) == 0x1C000000u) { /* LDR (literal) */
@@ -417,6 +418,7 @@ static int expand_imm(unsigned op, unsigned cmode, unsigned imm8, SnxU64* out) {
 
 /* MOVI, MVNI, ORR and BIC (vector, immediate), FMOV (vector, immediate) of singles and doubles */
 static int simd_imm(Unit* u, SnxU32 word) {
+    if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
     SgCtx* g = u->g;
     unsigned rd = word & 31, q = word >> 30 & 1, op = word >> 29 & 1, cmode = word >> 12 & 15, o2 = word >> 11 & 1;
     unsigned imm8 = (word >> 16 & 7) << 5 | (word >> 5 & 31);
@@ -450,6 +452,7 @@ static int simd_imm(Unit* u, SnxU32 word) {
 /* SCVTF, UCVTF (vector, integer), FCVTZS, FCVTZU (vector, integer) of a scalar single or double (AdvSIMD scalar
    two-register misc): the integer in the SIMD&FP register, of the float's width, converted by the same helpers */
 static int simd_scalar_cvt(Unit* u, SnxU32 word) {
+    if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
     SgCtx* g = u->g;
     unsigned rd = word & 31, rn = word >> 5 & 31, sz = word >> 22 & 1, w = sz ? 64 : 32, uns = word >> 29 & 1;
     SgD n, r;
@@ -503,6 +506,7 @@ static unsigned imm5_esize(unsigned imm5, unsigned* idx) {
 
 /* UMOV, SMOV, DUP (element: scalar and vector), DUP (general), INS (general), INS (element): the AdvSIMD copies */
 static int simd_copy(Unit* u, SnxU32 word) {
+    if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
     SgCtx* g = u->g;
     unsigned rd = word & 31, rn = word >> 5 & 31, imm5 = word >> 16 & 31, q = word >> 30 & 1, idx, esize;
     if ((word & 0x9FE08400u) != 0x0E000400u && (word & 0xDFE08400u) != 0x5E000400u) return 0;
@@ -676,6 +680,7 @@ static void vstore(SgCtx* g, SgD address, int r, int bytes) {
 
 /* 1 made, 0 not one of these, -1 UNDEF */
 static int struct_ldst(Unit* u, SnxU32 word) {
+    if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
     SgCtx* g = u->g;
     unsigned q = word >> 30 & 1, l = word >> 22 & 1, post = word >> 23 & 1, rm = word >> 16 & 31;
     unsigned rn = word >> 5 & 31, rt = word & 31, size = word >> 10 & 3;
