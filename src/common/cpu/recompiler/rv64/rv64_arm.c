@@ -16,7 +16,7 @@
 
 #if !defined(_WIN32)
 /* the ELF RISC-V relocations the blocks have (the RISC-V ELF psABI's numbers) */
-enum { RV_EM = 243, RV_R_64 = 2, RV_R_CALL_PLT = 19 };
+enum { RV_EM = 243, RV_R_32_PCREL = 57, RV_R_CALL_PLT = 19 };
 #define MG_ARM_INC         "a32_rv64.inc"
 #define MG_ARM             SnxRv64Arm
 #define MG_ARM_NEXT        SnxRv64ArmNext
@@ -28,7 +28,7 @@ enum { RV_EM = 243, RV_R_64 = 2, RV_R_CALL_PLT = 19 };
 #define MG_ARM_ELF_FLAGS   0x5 /* RVC, the LP64D float ABI */
 #define MG_ARM_CALL_RELOC  RV_R_CALL_PLT
 #define MG_ARM_R_TAIL      RV_R_CALL_PLT
-#define MG_ARM_R_ABS64     RV_R_64
+#define MG_ARM_R_LITERAL   RV_R_32_PCREL
 #define MG_ARM_ENTRY_EXIT  "snx_rv64_a32_entry_exit"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a FENCE after it */
 #define MG_ARM_FP_HOT      0

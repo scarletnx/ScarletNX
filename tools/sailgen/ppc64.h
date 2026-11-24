@@ -338,8 +338,9 @@ static inline void rk_jump_reg(SgXBuf* b, int r) {
     ppc_w(b, sge_ppc64_bctr());
 }
 static inline void rk_ret(SgXBuf* b) { ppc_w(b, sge_ppc64_blr()); }
-/* d = the address of an 8-byte absolute address in the code (BL over it, the link its address: LR is the frame's,
-   saved); the place of its relocation */
+/* d = the address of 8 bytes in the code (BL over them, the link their address: LR is the frame's, saved), a symbol's
+   distance from them (R_PPC64_REL64; a module's code holds no address, which would be a text relocation); the place
+   of their relocation */
 static inline size_t rk_literal(SgXBuf* b, int d) {
     size_t at;
     ppc_w(b, sge_ppc64_bl(3)); /* 12 bytes on */
@@ -357,12 +358,17 @@ static inline size_t rk_leaf_literal(SgXBuf* b, int d) {
     ppc_w(b, sge_ppc64_mtlr(RK_S1));
     return at;
 }
-/* a call by the object's relocation: the callee's absolute address in the code (R_PPC64_ADDR64: the place this
-   gives), loaded into r12 and called through CTR; no veneer, which would want a TOC in r2. A tail call keeps LR, the
-   caller's, in RK_S1 around the BL that finds the address */
+/* d = the address the literal at lit (rk_literal's d) stands for, t a scratch (d, where lit isn't) */
+static inline void rk_literal_value(SgXBuf* b, int d, int lit, int t) {
+    rk_ldst(b, 1, 8, 0, t, lit, -1, 0);
+    rk_add(b, d, lit, t, 1);
+}
+/* a call by the object's relocation: the callee's distance from a literal (R_PPC64_REL64: the place this gives), made
+   its address in r12 and called through CTR; no veneer, which would want a TOC in r2. A tail call keeps LR, the
+   caller's, in RK_S1 around the BL that finds the literal */
 static inline size_t rk_call_reloc(SgXBuf* b) {
     size_t at = rk_literal(b, RK_SA);
-    rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
+    rk_literal_value(b, RK_SA, RK_SA, RK_S2);
     rk_call_reg(b, RK_SA);
     return at;
 }
@@ -371,7 +377,7 @@ static inline size_t rk_tail_reloc(SgXBuf* b) {
     ppc_w(b, sge_ppc64_mflr(RK_S1));
     at = rk_literal(b, RK_SA);
     ppc_w(b, sge_ppc64_mtlr(RK_S1));
-    rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
+    rk_literal_value(b, RK_SA, RK_SA, RK_S2);
     rk_jump_reg(b, RK_SA);
     return at;
 }

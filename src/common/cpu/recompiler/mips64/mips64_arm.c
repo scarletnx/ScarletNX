@@ -22,7 +22,7 @@
 #define RK_BIG_ENDIAN MIPS_BE
 #define MG_ARM_ELF_BIG MIPS_BE
 /* the ELF MIPS64 relocation the blocks have (n64's number) */
-enum { MIPS_EM = 8, MIPS_R_64 = 18 };
+enum { MIPS_EM = 8, MIPS_R_PC32 = 248 };
 #define MG_ARM_INC         "a32_mips64.inc"
 #define MG_ARM             SnxMips64Arm
 #define MG_ARM_NEXT        SnxMips64ArmNext
@@ -32,9 +32,9 @@ enum { MIPS_EM = 8, MIPS_R_64 = 18 };
 #define MG_ARM_FEATURES()  0u
 #define MG_ARM_EM          MIPS_EM
 #define MG_ARM_ELF_FLAGS   0x80000007u /* MIPS64r2, PIC, CPIC, NOREORDER */
-#define MG_ARM_CALL_RELOC  MIPS_R_64
-#define MG_ARM_R_TAIL      MIPS_R_64
-#define MG_ARM_R_ABS64     MIPS_R_64
+#define MG_ARM_CALL_RELOC  MIPS_R_PC32
+#define MG_ARM_R_TAIL      MIPS_R_PC32
+#define MG_ARM_R_LITERAL   MIPS_R_PC32
 #define MG_ARM_ENTRY_EXIT  "snx_mips_a32_entry_exit"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a SYNC after it */
 #define MG_ARM_FP_HOT      0

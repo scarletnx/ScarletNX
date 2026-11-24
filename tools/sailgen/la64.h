@@ -246,8 +246,9 @@ static inline int rk_patch_call(SgXBuf* b, size_t at, size_t to) {
     la_word_put(b, at + 4, sge_la64_jirl(jirl & 31, (jirl >> 5) & 31, (SnxU32)((d - (hi << 18)) >> 2) & 0xffff));
     return 0;
 }
-/* d = the address of an 8-byte absolute address in the code (its relocation's place, which this gives): PCADDI d of
-   it and B past it, the literal 8-aligned */
+/* d = the address of 8 bytes in the code (their relocation's place, which this gives), a symbol's distance from them
+   (R_LARCH_64_PCREL; a module's code holds no address, which would be a text relocation): PCADDI d of them and B past
+   them, 8-aligned */
 static inline size_t rk_literal(SgXBuf* b, int d) {
     size_t at;
     if ((b->n + 8) % 8) la_w(b, sge_la64_andi(LA_ZERO, LA_ZERO, 0));
@@ -259,6 +260,11 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
 }
 /* rk_literal where there's no frame (a module descriptor's functions): the link as it was */
 static inline size_t rk_leaf_literal(SgXBuf* b, int d) { return rk_literal(b, d); }
+/* d = the address the literal at lit (rk_literal's d) stands for, t a scratch (d, where lit isn't) */
+static inline void rk_literal_value(SgXBuf* b, int d, int lit, int t) {
+    rk_ldst(b, 1, 8, 0, t, lit, -1, 0);
+    rk_add(b, d, lit, t, 1);
+}
 /* a function's frame: ra, fp and s0-s8 stored below sp (ADDI.D sp of their room first), fp the frame's anchor, s0
    the state; then sp less the slots' room (LU12I.W and ORI of t8 patched: rk_fn_patch_frame, the place this gives).
    The epilogue takes sp back from fp */

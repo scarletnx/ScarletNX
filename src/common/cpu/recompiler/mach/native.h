@@ -62,8 +62,9 @@ int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
 
 /* An AOT module descriptor's few functions in a RISC machine's code (mach/risc_desc.inc, each one's code generator),
    for nx/loader/module_x64.c, which writes the data and puts each function in: its code and its relocations (of sym +
-   addend at the code's byte at; type 0 an address of 8 bytes, the machine's abs64), the object's machine, e_flags and
-   byte order the machine's. Each 0, -1 out of room */
+   addend at the code's byte at; type 0 a literal's, the machine's literal), the object's machine, e_flags and byte order
+   the machine's. The code holds no address of the module's (abs64, the data's): a text relocation, which the linker
+   refuses. Each 0, -1 out of room */
 typedef struct {
     unsigned char code[1024];
     size_t size;
@@ -77,7 +78,7 @@ typedef struct {
 } SnxNativeFn;
 typedef struct SnxNativeDesc {
     const char* name;
-    unsigned em, elf_flags, abs64;
+    unsigned em, elf_flags, abs64, literal;
     int big;
     /* a function returning &sym */
     int (*returns)(SnxNativeFn* f, const char* sym);

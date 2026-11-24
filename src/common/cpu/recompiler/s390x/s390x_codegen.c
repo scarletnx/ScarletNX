@@ -5,8 +5,8 @@
 
    The function's ABI is GuestFn's under the s390x ELF ABI: the state in r2, kept in r13, the entry in r3
    (SGX_FN_TARGET); r6-r15 saved (s390x.h's frame), no register left to pin a guest register in. The object is ELF
-   s390x, big-endian: a call's and snx_stale's absolute address an R_390_64 in the code, loaded by LARL and LG and
-   called with BASR */
+   s390x, big-endian: a call's and snx_stale's literal in the code is a distance (R_390_PC64), loaded by LARL and LG
+   and added to its place, called with BASR */
 #include "common/cpu/recompiler/s390x/s390x_codegen.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/elf_object.h"
@@ -47,8 +47,9 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 #define MG_EM EM_S390
 #define MG_ELF_FLAGS 0
 #define MG_R_ABS64 SNX_390_64
-#define MG_R_CALL SNX_390_64
-#define MG_R_TAIL SNX_390_64
+#define MG_R_LITERAL SNX_390_PC64
+#define MG_R_CALL MG_R_LITERAL
+#define MG_R_TAIL MG_R_LITERAL
 #define SGX_FN_TARGET 3 /* r3 */
 static const signed char mg_pin_hosts[1] = {-1}; /* none (s390x.h) */
 #define MG_NPINS 0

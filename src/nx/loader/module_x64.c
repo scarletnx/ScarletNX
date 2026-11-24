@@ -56,7 +56,7 @@ static void desc_put(SnxXElf* o, const char* name, int flags, const SnxNativeFn*
     snx_xelf_symbol(o, name, SNX_ELF_TEXT, at, f->size, flags | SNX_ELF_FUNC);
     for (int k = 0; k < f->nrel; ++k)
         snx_xelf_reloc(o, SNX_ELF_TEXT, at + f->rel[k].at, f->rel[k].sym,
-                       f->rel[k].type ? f->rel[k].type : g_desc->abs64, f->rel[k].addend);
+                       f->rel[k].type ? f->rel[k].type : g_desc->literal, f->rel[k].addend);
 }
 static SnxXElf* desc_new(const SnxNativeDesc* d) {
     SnxXElf* o = snx_xelf_new();

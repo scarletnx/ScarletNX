@@ -9,7 +9,7 @@
    data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
-         [--hook] [--words HEX...] [--made] [--ops OP...] [--refused]
+         [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
@@ -26,7 +26,8 @@
    back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
    functions, runs under Unicorn (support/host_unicorn.c), the native side's memory and state mapped into it, the
    helpers and the runtime's functions it calls trapped to this process's. --hook makes it with every call through
-   CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function */
+   CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function; --jit makes it a JIT unit, its
+   functions its table's */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
@@ -40,6 +41,7 @@
 #if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||          \
     defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X)
 #define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/llvm/elf_object.h"
 #include "support/host_unicorn.h"
 #define SNX_TEST_SWAP_CPU 1
 #include "support/swap_state.h"
@@ -654,6 +656,9 @@ int main(int argc, char** argv) {
     int result = 1, hook = 0; /* every exit past the allocations frees them, so the sanitizers' leak check reads the
                                  test */
     RtAPI rt;
+#ifdef SNX_TEST_NATIVE
+    int jit = 0;
+#endif
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc)
@@ -666,6 +671,10 @@ int main(int argc, char** argv) {
             verbose = 1;
         else if (!strcmp(argv[i], "--hook"))
             hook = 1;
+#ifdef SNX_TEST_NATIVE
+        else if (!strcmp(argv[i], "--jit"))
+            jit = 1;
+#endif
         else if (!strcmp(argv[i], "--refused"))
             refused = 1;
         else if (!strcmp(argv[i], "--made"))
@@ -818,6 +827,8 @@ int main(int argc, char** argv) {
         }
         made = (unsigned char*)calloc(cg.function_count + 1, 1);
         cg.hook_direct_calls = hook;
+        options.jit = jit;
+        options.table_name = "UNIT_TABLE";
         if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) {
             fprintf(stderr, "FAIL: the %s object: %s\n", native_name, error);
             goto out;
@@ -846,6 +857,13 @@ int main(int argc, char** argv) {
             char name[40];
             snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[n]);
             udisp[(hints[n] - CODE) / 4] = hostuc_symbol(uc, name);
+        }
+        /* a JIT unit's functions are its table's, in the codegen's order */
+        if (jit) {
+            const uint64_t* table = (const uint64_t*)(uintptr_t)hostuc_symbol(uc, "UNIT_TABLE");
+            for (n = 0; table && n < cg.function_count; ++n)
+                udisp[(cg.functions[n].start - CODE) / 4] =
+                    object[EI_DATA] == snx_elf_host_data() ? table[n] : snx_bswap64(table[n]);
         }
         free(made), free(object);
         snx_codegen_free(&cg);

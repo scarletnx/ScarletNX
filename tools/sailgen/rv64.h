@@ -226,8 +226,9 @@ static inline int rk_patch_call(SgXBuf* b, size_t at, size_t to) {
     rv_word_put(b, at + 4, sge_rv64_jalr((jalr >> 7) & 31, (jalr >> 15) & 31, rv_i12(lo)));
     return 0;
 }
-/* d = the address of an 8-byte absolute address in the code (its relocation's place, which this gives): JAL d over
-   it, the link its address */
+/* d = the address of a word in the code (its relocation's place, which this gives), a symbol's distance from it
+   (R_RISCV_32_PCREL; a module's code holds no address, which would be a text relocation): JAL d over it, the link its
+   address */
 static inline size_t rk_literal(SgXBuf* b, int d) {
     size_t at;
     rv_w(b, sge_rv64_jal((SnxU32)d, 6)); /* 12 bytes on */
@@ -237,6 +238,11 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
 }
 /* rk_literal where there's no frame (a module descriptor's functions): the link as it was */
 static inline size_t rk_leaf_literal(SgXBuf* b, int d) { return rk_literal(b, d); }
+/* d = the address the literal at lit (rk_literal's d) stands for, t a scratch (d, where lit isn't) */
+static inline void rk_literal_value(SgXBuf* b, int d, int lit, int t) {
+    rk_ldst(b, 1, 4, 1, t, lit, -1, 0);
+    rk_add(b, d, lit, t, 1);
+}
 /* a function's frame: ra, s0, s1 and (pinned) s2-s11 saved, s0 the caller's sp, s1 the state; then sp -= the slots'
    room, LUI and ADDIW of t6 patched (rk_fn_patch_frame; the place this gives); the epilogue gives sp back from s0 */
 static inline size_t rk_fn_prologue(SgXBuf* b, int pinned) {

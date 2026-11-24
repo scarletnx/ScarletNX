@@ -353,8 +353,9 @@ static inline void rk_call_reg(SgXBuf* b, int r) {
 }
 static inline void rk_jump_reg(SgXBuf* b, int r) { zs_w(b, sge_s390x_bcr(15, U(r))); }
 static inline void rk_ret(SgXBuf* b) { rk_jump_reg(b, ZS_LINK); }
-/* d = the address of an 8-byte absolute address in the code (its relocation's place, which this gives): LARL of it
-   and BRC past it, the literal 8-aligned (NOPR's two bytes before it where it isn't) */
+/* d = the address of 8 bytes in the code (their relocation's place, which this gives), a symbol's distance from them
+   (R_390_PC64; a module's code holds no address, which would be a text relocation): LARL of them and BRC past them,
+   8-aligned (NOPR's two bytes before them where they aren't) */
 static inline size_t rk_literal(SgXBuf* b, int d) {
     size_t larl = b->n, brc, at;
     zs_w(b, sge_s390x_larl(U(d), 0));
@@ -374,17 +375,22 @@ static inline size_t rk_literal(SgXBuf* b, int d) {
 }
 /* rk_literal where there's no frame (a module descriptor's functions): the link as it was */
 static inline size_t rk_leaf_literal(SgXBuf* b, int d) { return rk_literal(b, d); }
-/* a call by the object's relocation: the callee's absolute address in the code (R_390_64, the place this gives)
-   loaded into r1 and called with BASR; a tail call's jumps (the epilogue's r14 the caller's, kept) */
+/* d = the address the literal at lit (rk_literal's d) stands for, t a scratch (d, where lit isn't) */
+static inline void rk_literal_value(SgXBuf* b, int d, int lit, int t) {
+    rk_ldst(b, 1, 8, 0, t, lit, -1, 0);
+    rk_add(b, d, lit, t, 1);
+}
+/* a call by the object's relocation: the callee's distance from a literal (R_390_PC64, the place this gives), made its
+   address in r1 and called with BASR; a tail call's jumps (the epilogue's r14 the caller's, kept) */
 static inline size_t rk_call_reloc(SgXBuf* b) {
     size_t at = rk_literal(b, RK_SA);
-    rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
+    rk_literal_value(b, RK_SA, RK_SA, ZS_R0);
     rk_call_reg(b, RK_SA);
     return at;
 }
 static inline size_t rk_tail_reloc(SgXBuf* b) {
     size_t at = rk_literal(b, RK_SA);
-    rk_ldst(b, 1, 8, 0, RK_SA, RK_SA, -1, 0);
+    rk_literal_value(b, RK_SA, RK_SA, ZS_R0);
     rk_jump_reg(b, RK_SA);
     return at;
 }
