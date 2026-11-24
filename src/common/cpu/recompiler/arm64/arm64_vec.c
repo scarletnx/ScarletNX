@@ -97,6 +97,36 @@ SGA_VE(pass) {
     sga_w(b, w);
 }
 static const SgXVForm sga_v_pass_f = {sga_v_pass, 0, 4, 0, 1, 2, 15, 0, NULL};
+/* FCMP and FCMPE: the word with Rn and Rm the registers r[0] and r[1]; it writes the flags alone */
+SGA_VE(pcmp) {
+    SnxU32 w = (SnxU32)imm;
+    (void)cc;
+    w = (w & ~(0x1Fu << 5)) | (SnxU32)r[0] << 5;
+    if (!(w >> 3 & 1)) w = (w & ~(0x1Fu << 16)) | (SnxU32)r[1] << 16; /* not the compare with zero */
+    sga_w(b, w);
+}
+static const SgXVForm sga_v_pcmp_f = {sga_v_pcmp, 0, 2, 0, 1, 2, 3, 0, NULL};
+
+/* the host's FPCR the guest's from here: SGX_M_FPENTER, or none where the last floating-point word of the region left
+   it so (its SGX_M_FPLEAVE dropped: nothing since calls out, reads FPSR or FPCR, or branches) */
+static void fp_enter(SgCtx* g) {
+    SgX* x = X;
+    int i;
+    for (i = x->n - 1; i >= 0; --i) {
+        SgXIns* s = &x->ins[i];
+        if (s->dead) continue;
+        if (s->kind == SGX_K_MACHINE && s->op == SGX_M_FPLEAVE) {
+            s->dead = 1;
+            return;
+        }
+        if (s->kind == SGX_K_MACHINE || s->kind == SGX_K_UNDEF || s->kind == SGX_K_COLD || s->kind == SGX_K_RET)
+            break;
+        if ((s->kind == SGX_K_LOAD || s->kind == SGX_K_STORE) &&
+            (s->disp == (int)offsetof(CPU, fpsr) || s->disp == (int)offsetof(CPU, fpcr)))
+            break;
+    }
+    sgx_simple(g, SGX_M_FPENTER);
+}
 
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
@@ -107,6 +137,18 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgXIns* i;
     if (k < 0 || strcmp(sge_a64_table[k].family, "DataProcFPSIMD") || (insn->feature & ~g_host_a64)) return 0;
     name = sge_a64_table[k].name;
+    if (!strcmp(name, "fcmp_float") || !strcmp(name, "fcmpe_float")) {
+        /* the host's NZCV the guest's: PSTATE written from them, and a B.cond after it reads them (origin) */
+        int ins, cin[4] = {vread(g, rn), vread(g, rm), 0, 0};
+        fp_enter(g);
+        sgx_vins(X, &sga_v_pcmp_f, -1, 0, cin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        ins = X->flags_ins;
+        X->ins[ins].side = 1;
+        X->ins[ins].fsel = &sgx_sel_cmp_64[0]; /* the identity of Arm's flags as the host's */
+        sgx_simple(g, SGX_M_FPLEAVE);
+        sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
+        return 1;
+    }
     if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") || !strncmp(name, "fcmp", 4) ||
         !strncmp(name, "fccmp", 5) || !strncmp(name, "fcsel", 5) || !strncmp(name, "umov", 4) ||
         !strncmp(name, "smov", 4) || !strncmp(name, "fjcvtzs", 7))
@@ -144,7 +186,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (imm >> 32 & 1) in[1] = vread(g, rn);
     if (imm >> 33 & 1) in[2] = vread(g, rm);
     if (imm >> 34 & 1) in[3] = vread(g, ra);
-    sgx_simple(g, SGX_M_FPENTER);
+    fp_enter(g);
     r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     i = &X->ins[X->v[r].def];
     i->side = 1; /* its FPSR flags, though nothing reads its value */
