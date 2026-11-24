@@ -206,7 +206,7 @@ int main(void) {
     assert(!strcmp(e.text, "ab\xC3\xA9"));
     gui_editor_erase(&e);
     assert(!strcmp(e.text, "ab"));
-    for (r = 0; r < 100; ++r) gui_editor_type(&e, "z");
+    for (r = 0; r < (int)sizeof e.text + 20; ++r) gui_editor_type(&e, "z"); /* past the room */
     assert(strlen(e.text) == sizeof e.text - 1);
     /* a character the room has not all of stays out whole: two bytes left take the a with a tilde, not U+83DC's three
        (an input method's Chinese), and of "ab" and U+83DC the room keeps "ab" */
