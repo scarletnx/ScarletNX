@@ -130,6 +130,13 @@ int hostuc_map(HostUc* u, void* p, size_t size) {
    return goes back */
 typedef uint64_t (*Native)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 typedef HostUcPair (*NativeWide)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+/* the call's type is not the function's: the function sanitizer's check of it is off, as arm_x64.c's run_block's */
+[[clang::no_sanitize("function")]] static uint64_t call_native(void* fn, const uint64_t* a) {
+    return ((Native)fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+[[clang::no_sanitize("function")]] static HostUcPair call_wide(void* fn, const uint64_t* a) {
+    return ((NativeWide)fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+}
 static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) {
     HostUc* u = (HostUc*)user;
     unsigned k = (unsigned)((address - (uint64_t)(uintptr_t)u->trap) / 16), i;
@@ -146,11 +153,11 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
         }
     swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
-        HostUcPair w = ((NativeWide)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
+        HostUcPair w = call_wide(u->fn[k], a);
         r = w.lo;
         uc_reg_write(uc, u->a->result[1], &w.hi);
     } else
-        r = ((Native)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
+        r = call_native(u->fn[k], a);
     swap(u);
     uc_reg_write(uc, u->a->result[0], &r);
 }
@@ -166,10 +173,10 @@ static int la_trap(La64* c, void* user) {
         return -1;
     }
     if (u->wide[k]) {
-        HostUcPair w = ((NativeWide)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
+        HostUcPair w = call_wide(u->fn[k], &c->r[4]);
         c->r[4] = w.lo, c->r[5] = w.hi;
     } else
-        c->r[4] = ((Native)u->fn[k])(c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[9]);
+        c->r[4] = call_native(u->fn[k], &c->r[4]);
     c->pc = c->r[1];
     return 1;
 }
