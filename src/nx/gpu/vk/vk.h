@@ -1473,8 +1473,13 @@ typedef struct {
     u64 covered;          /* of those, the surfaces that a batch covered, or that the next pass's batch covers */
     u64 compute;          /* of those, readers in compute alone, which no pass's batch comes before */
     u64 full;             /* writes not listed: the list was full */
+    u64 dropped;          /* reader barriers a draw left out, which a batch covers (vk_surf_read_covered) */
 } VkWriterCounts;
 void vk_surf_writer_counts(VkWriterCounts* c);
+/* With the pool map: whether a draw's sample of s needs no barrier of its own, as a batch at the writer covers s's
+   last write, one recorded already or the pass's that the draw begins; s's stages then hold the sample's, which a
+   later write waits for. 0 where the draw makes the barrier itself (vk_surf_use) */
+int vk_surf_read_covered(Surf* s);
 /* vk_surf_use's barriers between these two in one barrier call, at the end: for uses of different surfaces that
    nothing is recorded between (a pass's targets, a copy's two surfaces) */
 void vk_surf_batch_begin(void);
@@ -2361,6 +2366,13 @@ int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const
                    u32* words);
 /* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
 void vk_table_forget_view(VkImageView view);
+/* The pool map's use of the table (ShCaps.pool_map): image slot 0 and sampler slot 0 kept for the null texture and
+   the default sampler (vk_table_reserve_null, at the table's start, before any slot is given), written by
+   vk_table_null once; and a slot a draw took through the map, which keeps it from going back to the free stack while
+   frames in flight read it (vk_table_touch) */
+void vk_table_reserve_null(void);
+int vk_table_null(VkImageView view, VkSampler sampler);
+void vk_table_touch(u32 image_slot);
 /* An image slot a program declares whose header is empty (word 0 zero: no format, nothing bound there): a 1x1 storage
    image of zeros, its format by the slot's kind (ShaderInfo.img[].kind), viewed as type (2D, 2D array or 3D) in
    *view. The caller makes it ready for its stage (vk_surf_use, layout GENERAL) and writes nothing of it back. NULL

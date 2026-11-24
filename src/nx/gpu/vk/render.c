@@ -470,22 +470,35 @@ static struct {
     u8* data;               /* the draw's block, NULL for a draw that reads none */
     u32 at;                 /* where the block starts in the window, in 16-byte units */
 } g_draw_block;
+/* The draw's pool map (pool_map_gpu.c, ShCaps.pool_map): whether a stage that reads it got one (state 1, -1 for none,
+   0 not asked yet), its address and header, and the bits of each stage's plain slots (the vertex stage's, then the
+   fragment stage's) that take their texture words, all of them until a slot takes the map */
+static struct {
+    int state;
+    u64 address;
+    u32 header;
+    u64 own[2];
+} g_map_draw;
+/* the bytes of a draw's block: the push constants' words, and with the pool map its words (SH_DRAW_MAP) */
+static u32 draw_block_bytes(void) { return g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP : SH_PUSH_BYTES_TABLE; }
 static int draw_block_take(void) {
     VkBuffer b;
     u64 o;
     g_draw_block.data = NULL;
-    u8* data = vk_stage(SH_PUSH_BYTES_TABLE, 16, &b, &o);
+    g_map_draw.state = 0;
+    g_map_draw.own[0] = g_map_draw.own[1] = ~0ull;
+    u8* data = vk_stage(draw_block_bytes(), 16, &b, &o);
     if (!data) return 0;
     const u64 frame = vk_frame_id() + 1;
     if (g_draw_block.b != b || g_draw_block.frame != frame || o < g_draw_block.base ||
-        o + SH_PUSH_BYTES_TABLE > g_draw_block.base + g_draw_block.range) {
+        o + draw_block_bytes() > g_draw_block.base + g_draw_block.range) {
         const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
         const u64 align = l->minStorageBufferOffsetAlignment > 16 ? l->minStorageBufferOffsetAlignment : 16;
         const u64 size = vk_stage_buffer_size(b), base = o / align * align;
         u64 reach = size > base ? size - base : 0;
         if (reach > SNX_DRAW_WINDOW) reach = SNX_DRAW_WINDOW; /* what the programs declare */
         if (reach > l->maxStorageBufferRange) reach = l->maxStorageBufferRange;
-        if (o + SH_PUSH_BYTES_TABLE > base + reach) return 0;
+        if (o + draw_block_bytes() > base + reach) return 0;
         g_draw_block.b = b;
         g_draw_block.base = base;
         g_draw_block.range = reach;
@@ -1510,16 +1523,18 @@ void vk_render_stats_log(void) {
     memo_miss_log(presents);
     fs_count_log(n, w, presents);
     vk_pool_map_log(presents);
-    if (g_settings.writer_barriers && g_vk.has_unified_layouts) {
+    vk_pool_gpu_log(presents);
+    if ((g_settings.writer_barriers || g_spirv_translate.pool_map) && g_vk.has_unified_layouts) {
         static VkWriterCounts was;
         VkWriterCounts c;
         vk_surf_writer_counts(&c);
         LOG("vulkan: barriers at the writer, a present: %.1f surfaces in %.1f batches; of today's %.1f reader barriers "
-            "after a write, %.1f covered by a batch, earlier or at the next pass, %.1f in compute alone; %.1f writes not "
-            "listed (the list full)\n",
+            "after a write, %.1f covered by a batch, earlier or at the next pass, %.1f in compute alone, %.1f left out of "
+            "draws; %.1f writes not listed (the list full)\n",
             (double)(c.batched - was.batched) / (double)presents, (double)(c.batches - was.batches) / (double)presents,
             (double)(c.readers - was.readers) / (double)presents, (double)(c.covered - was.covered) / (double)presents,
-            (double)(c.compute - was.compute) / (double)presents, (double)(c.full - was.full) / (double)presents);
+            (double)(c.compute - was.compute) / (double)presents, (double)(c.dropped - was.dropped) / (double)presents,
+            (double)(c.full - was.full) / (double)presents);
         was = c;
     }
     LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
@@ -4194,6 +4209,18 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     /* a program of the texture table: each plain slot's word, in place of its descriptor */
     const int table = s->si.tex_table && g_spirv_translate.tex_table && shader_vk_set(s->stage) < 2;
     u32* words = rec + tex_at; /* after the global buffers' part, and a fetching vertex program's attributes */
+    /* a program that reads the pool map (ShCaps.pool_map): the draw's map at its first such stage, and the slots that
+       learn their records after the table gives them their words */
+    const int mapped = table && (s->si.tex_table & SH_TEX_TABLE_MAP) && (s->stage == ST_VS || s->stage == ST_FS) &&
+                       g_draw_block.data;
+    const int own_at = s->stage == ST_VS ? 0 : 1;
+    if (mapped && !g_map_draw.state)
+        g_map_draw.state = vk_pool_gpu_draw(ds->bind.tex_pool, ds->bind.tex_max, ds->bind.smp_pool, ds->bind.smp_max,
+                                            &g_map_draw.address, &g_map_draw.header)
+                               ? 1
+                               : -1;
+    u64 learn = 0;
+    u32 learn_cls[SH_MAXTEX], learn_handle[SH_MAXTEX];
     VkImageView tviews[SH_MAXTEX];
     VkImageLayout tlayouts[SH_MAXTEX];
     VkSampler tsamplers[SH_MAXTEX];
@@ -4338,9 +4365,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             layout = VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
-        else if (view)
-            vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else {
+        else if (view) {
+            /* with the pool map, a read whose surface's write a batch at the writer covers takes no barrier of its own
+               (vk_surf_written_flush) */
+            if (!g_spirv_translate.pool_map || !vk_surf_read_covered(t))
+                vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        } else {
             const char* why = t ? vk_tex_view_refusal(t, want) : NULL;
             if (why)
                 LOG_LIMIT(4,
@@ -4375,6 +4405,36 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         if (!smp) return VK_NULL_HANDLE;
         if (table) {
             tviews[i] = view, tlayouts[i] = layout, tsamplers[i] = smp; /* their words after the loop */
+            const ShTex* orig = &s->si.tex[i];
+            if (mapped && !(orig->flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)) && !orig->bl2) {
+                /* a plain slot, which the program reads through the map unless its bit says otherwise */
+                const u32 cls = (orig->flags & 2) ? (orig->array ? SH_MAP_CLASS_MS_ARRAY : SH_MAP_CLASS_MS)
+                                : orig->type == 2 ? SH_MAP_CLASS_3D
+                                : orig->type == 3 ? (orig->array ? SH_MAP_CLASS_CUBE_ARRAY : SH_MAP_CLASS_CUBE)
+                                                  : (orig->array ? SH_MAP_CLASS_2D_ARRAY : SH_MAP_CLASS_2D);
+                const int why = g_map_draw.state != 1 ? VK_POOL_GPU_NONE
+                                : (handle & 0xFFFFFu) > ds->bind.tex_max || ((handle >> 20) & 0xFFFu) > ds->bind.smp_max
+                                    ? VK_POOL_GPU_PAST
+                                : (s->si.tex_dc_color_mask >> i & 1) ? VK_POOL_GPU_COMPARE
+                                : !own_view || predrawn || layout != VK_IMAGE_LAYOUT_GENERAL ? VK_POOL_GPU_VIEW
+                                                                                            : VK_POOL_GPU_MAP;
+                u32 slot = 0;
+                if (why == VK_POOL_GPU_MAP && vk_pool_gpu_take(handle, cls, orig->shadow != 0, view, smp, &slot)) {
+                    vk_table_touch(slot); /* no frame in flight's slot goes back to the free stack */
+                    g_map_draw.own[own_at] &= ~(1ull << i);
+                    tviews[i] = VK_NULL_HANDLE; /* no word: the map gives the slot */
+                    vk_pool_gpu_count(VK_POOL_GPU_MAP);
+                    continue;
+                }
+                vk_pool_gpu_count(why == VK_POOL_GPU_MAP ? VK_POOL_GPU_MISS : why);
+                g_map_draw.own[own_at] |= 1ull << i;
+                if (why == VK_POOL_GPU_MAP) {
+                    learn |= 1ull << i;
+                    learn_cls[i] = cls;
+                    learn_handle[i] = handle;
+                }
+            } else if (mapped)
+                vk_pool_gpu_count(VK_POOL_GPU_HANDLE);
             continue;
         }
         u32 b = SNX_VKB_TEX + i;
@@ -4390,6 +4450,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
         if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
+        /* the slots whose records did not hold their view and sampler: the records hold them for the draws after */
+        for (u64 m = learn; m; m &= m - 1) {
+            const int i = (int)snx_ctz64(m);
+            vk_pool_gpu_learn(learn_handle[i], learn_cls[i], s->si.tex[i].shadow != 0, tviews[i], tsamplers[i],
+                              words[i] & (SNX_TABLE_IMAGES - 1), words[i] >> SNX_TABLE_SAMPLER_SHIFT);
+        }
         if (recorded && !addressed && !fetch) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         rec_n = tex_at + (u32)nt;
     }
@@ -7993,6 +8059,22 @@ retry:
            block starts in its window (the vec4 that the programs declare at byte 0) */
         memcpy(block, pc, SH_PUSH_BYTES_TABLE);
         snx_le32_array(block, SNX_DRAW_WORDS); /* read by the device little-endian */
+        if (g_spirv_translate.pool_map) { /* the map's words: the empty map where the draw has none */
+            u64 address = g_map_draw.address;
+            u32 header = g_map_draw.header;
+            if (g_map_draw.state != 1) address = vk_pool_gpu_empty(&header);
+            const u32 tex_max = ds->bind.tex_max > 0xFFFFF ? 0xFFFFF : ds->bind.tex_max,
+                      smp_max = ds->bind.smp_max > 0xFFF ? 0xFFF : ds->bind.smp_max;
+            const u32 w[8] = {(u32)address,
+                              (u32)(address >> 32),
+                              header,
+                              tex_max | smp_max << 20,
+                              (u32)g_map_draw.own[0],
+                              (u32)(g_map_draw.own[0] >> 32),
+                              (u32)g_map_draw.own[1],
+                              (u32)(g_map_draw.own[1] >> 32)};
+            for (u32 k = 0; k < 8; k++) snx_st_le32(block + SH_PUSH_BYTES_TABLE + 4 * k, w[k]);
+        }
         const u32 at[4] = {block_at, 0, 0, 0};
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
     } else

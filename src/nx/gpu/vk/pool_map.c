@@ -325,6 +325,7 @@ void vk_pool_map_swapped(const Surf* t) {
     if (t) queue_event(t, VK_NULL_HANDLE);
 }
 void vk_pool_map_view_gone(VkImageView v) {
+    vk_pool_gpu_view_gone(v);
     if (v) queue_event(NULL, v);
 }
 void vk_pool_map_counts(PoolMapCounts* c) { *c = g_pool.n; }

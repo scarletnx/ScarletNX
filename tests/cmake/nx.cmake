@@ -312,6 +312,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_writer_storage PROPERTIES TIMEOUT 120
         ENVIRONMENT "SNX_TEST_NVN_CASE=writer_storage;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the pool map that Ounce programs read (tests/vulkan_pool_map.inc), the renderer started with the SM86 frontend
+    # and the setting on, under the validation layer with its synchronization checks when it is installed
+    add_test(NAME vulkan_pool_map COMMAND snx-test-vulkan -H --vk-validation=1 --pool-map=1)
+    set_tests_properties(vulkan_pool_map PROPERTIES TIMEOUT 300
+        ENVIRONMENT "SNX_TEST_SM86_TABLE=1;SNX_TEST_NVN_CASE=pool_map;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR" SKIP_REGULAR_EXPRESSION "SKIP pool map")
     # a write log in host memory comes back from its pool clear (tests/vulkan_wlog_clear.inc): the unref clears the
     # windows its readers found, and reads the flags past them
     add_test(NAME vulkan_wlog_clear COMMAND snx-test-vulkan -H)

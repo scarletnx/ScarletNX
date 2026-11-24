@@ -7823,6 +7823,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_texture_quiet_other.inc"
 #include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
+#include "vulkan_pool_map.inc"
 #include "vulkan_astc_kind.inc"
 
 /* hmma_mode at the renderer's start (vk/hmma_pick.c), on this device: 1 to 5 take that way; Auto with no file of the
@@ -8441,6 +8442,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(start_log);
         t_plat.log_redirect = start_log;
     }
+    /* SNX_TEST_SM86_TABLE=1: the renderer starts with the SM86 frontend, and takes the texture table where the device
+       has it, for the cases of Ounce programs that read it alone (vulkan_pool_map.inc) */
+    if (getenv("SNX_TEST_SM86_TABLE")) g_shader_sm86 = 1;
     video_init("Headless Vulkan fixture", "");
     if (start_log) {
         t_plat.log_redirect = NULL;
@@ -8662,6 +8666,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cross_stage_image_alias();
         else if (!strcmp(name, "writer_storage"))
             result = check_writer_storage();
+        else if (!strcmp(name, "pool_map")) /* with SNX_TEST_SM86_TABLE=1 and --pool-map=1 (vulkan_pool_map.inc) */
+            result = check_pool_map_draws();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
         else if (!strcmp(name, "fragment_flow_lod"))
