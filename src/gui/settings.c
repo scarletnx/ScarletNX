@@ -426,6 +426,23 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
     free(text);
     return count;
 }
+int gui_settings_step_number(GuiSettings* s, int row, int step) {
+    const GuiThemeKey* k = row >= 0 && row < s->count ? &s->keys[row] : NULL;
+    GuiSetting* v = k ? &s->values[row] : NULL;
+    double now, to;
+    char text[64];
+    if (!k || k->type != GUI_KEY_TEXT || !k->numeric || v->needs_build) return 0;
+    now = strtod(v->text[0] ? v->text : v->def ? v->def : "0", NULL);
+    if (k->whole)
+        to = now + (step < 0 ? -1 : 1);
+    else
+        to = ini_float_step(now, k->lo, k->hi, step);
+    to = to < k->lo ? k->lo : to > k->hi ? k->hi : to;
+    if (to == now) return 0;
+    snprintf(text, sizeof text, k->whole ? "%.0f" : "%g", to);
+    snprintf(v->text, sizeof v->text, "%s", text);
+    return 1;
+}
 /* row's steps, its words: 0 for a row that is no slider's */
 static int steps(const GuiSettings* s, int row) {
     int n = 0;
