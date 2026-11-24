@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
             if (graphics)
                 for (u32 w = 0; w < SM86_SPH_BYTES / 4; w++) sph[w] = snx_ld_le32(code + found[0].header + 4 * w);
             spv = sm86_to_spirv_ftz(code + found[0].code, found[0].size, stage, graphics ? sph : NULL, &info, &words,
-                                    flush); /* size counts from code */
+                                    flush, SM86_LANES_WARP); /* size counts from code */
         } else
             spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
         free(code);
