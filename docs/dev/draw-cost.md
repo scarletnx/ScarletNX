@@ -7,6 +7,7 @@
 * [Where the time goes](#where-the-time-goes)
 * [Measure first](#measure-first)
 * [The work](#the-work)
+  * [What the items are worth after item 8, on the desktop](#what-the-items-are-worth-after-item-8-on-the-desktop)
 * [Memory on the GPU](#memory-on-the-gpu)
 * [Out of scope](#out-of-scope)
 
@@ -141,6 +142,25 @@ What is left:
 - A host pointer import still gets a publish at each release. A driver that imports guest memory that way (where
   dma-bufs are not cheaper) gains nothing yet.
 - The save thumbnail of commit 12f8977cd, in its own game.
+
+### What the items are worth after item 8, on the desktop
+
+A perf profile of the race of 2026-11-23 (the GPU thread, 30 s, after commits 73e87dc43 to 7332d0e99), the share of
+the GPU thread that each item could take at most:
+
+| Item | Its part of the profile | Share |
+| --- | --- | --- |
+| 1 | `vk_uma_read`'s stamps of each binding in place (bindings already bind in place there) | 6.4% |
+| 2 | `cb_get` and `cb_window_place` | 7.1% |
+| 3 | the texture memo's checks: `tex_memo_unwritten`, `tex_memo_unpended`, `vk_tex_recheck` | about 3% |
+| 4 | the program key (the shader hashes) and the texture handles | about 1% each |
+| 5 | the GPU mirror's logs, folds and harvest | under 1% |
+| 7 | `fs_key` (7.9%) and most of `stage_set_` (20.1%) | up to about 25% |
+
+The lock calls are 13.5% across them all. The largest named one is `vk_uma_import_in` from the write tracking
+(`ww_scan_free`, 2.0 to 2.5%): it takes `g_uma.lk` for each piece a scan reads, where on that host every import is a
+dma-buf region that the scans watch anyway. So on that host item 7 is the one large item left, and items 3, 4 and 5
+are small.
 
 ## Memory on the GPU
 
