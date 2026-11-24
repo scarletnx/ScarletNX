@@ -68,7 +68,7 @@ void snx_native_arm_free(SnxNativeArm* c);
 int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options);
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user);
-/* the Thumb block at pc, where the host's back end makes them (x86-64's); refused elsewhere */
+/* the Thumb block at pc, its code little-endian halfwords, *consumed the halfwords it covers */
 int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                            size_t* consumed, SnxNativeArmNext next, void* user);
 const char* snx_native_arm_why(const SnxNativeArm* c);

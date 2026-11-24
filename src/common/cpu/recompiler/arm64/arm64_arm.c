@@ -67,10 +67,10 @@ static int mg_patch_frame(MG_ARM* c) {
     sgx_patch_frame(&c->a);
     return 0;
 }
-/* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear; then exit and syndrome cleared), on
-   X0, before the frame; where a check fails, a jump to bad (entry_exit). Then the entry the block's own jumps from
-   another of the arm64 back end's take (X and the block's name), past them: X19 the state, the frame. A hosted block's
-   entry is that one alone (codegen.h) */
+/* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear, a Thumb block's T set and its ITSTATE 0;
+   then exit and syndrome cleared), on X0, before the frame; where a check fails, a jump to bad (entry_exit). Then the
+   entry the block's own jumps from another of the arm64 back end's take (X and the block's name), past them: X19 the
+   state, the frame. A hosted block's entry is that one alone (codegen.h) */
 static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
@@ -81,8 +81,14 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
         sga_w(b, sge_a64_subs_addsub_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* CMP W16, W17 */
         sgx_a32_jcc(g, b, 1, *bad);                                             /* B.NE */
         sga_ldst(b, 1, 4, SGA_X16, 0, -1, (int)offsetof(SnxArmCPU, cpsr));
-        sga_movi(b, SGA_X17, SNX_ARM_T | SNX_ARM_E, 0);
-        sga_w(b, sge_a64_ands_log_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* TST W16, W17 */
+        if (g->thumb) { /* of T, E and ITSTATE's bits, T alone: AND W16, W16, W17; CMP W16, #T */
+            sga_movi(b, SGA_X17, SNX_ARM_T | SNX_ARM_E | SG_IT_BITS, 0);
+            sga_w(b, sge_a64_and_log_shift(SGA_X16, SGA_X16, 0, SGA_X17, 0, 0));
+            sga_w(b, sge_a64_subs_addsub_imm(SGA_ZR, SGA_X16, SNX_ARM_T, 0, 0));
+        } else {
+            sga_movi(b, SGA_X17, SNX_ARM_T | SNX_ARM_E, 0);
+            sga_w(b, sge_a64_ands_log_shift(SGA_ZR, SGA_X16, 0, SGA_X17, 0, 0)); /* TST W16, W17 */
+        }
         sgx_a32_jcc(g, b, 1, *bad);
         sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, exit));
         sga_ldst(b, 0, 4, SGA_ZR, 0, -1, (int)offsetof(SnxArmCPU, syndrome));
@@ -94,14 +100,14 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     sga_w(b, sge_a64_orr_log_shift(SGX_BASE, SGA_ZR, 0, 0, 0, 1));        /* MOV X19, X0 */
     frame(c, 0);
 }
-/* where a check of the entry failed: W1 the block's address, W2 its first word, and snx_a64_a32_entry_exit (the
-   object's own, which sets the exit) */
+/* where a check of the entry failed: W1 the block's address, W2 its first word (a Thumb block's halfword), and
+   snx_a64_a32_entry_exit or snx_a64_thumb_entry (the object's own, which set the exit) */
 static void mg_entry_exit(MG_ARM* c, SnxU32 pc, SnxU32 first, int bad) {
     SgXBuf* b = &c->b;
     sgx_a32_bind(&c->g, b, bad);
     sga_movi(b, 1, pc, 0);
     sga_movi(b, 2, first, 0);
-    add_rel(c, b->n, "snx_a64_a32_entry_exit", A64_JUMP26, 0);
+    add_rel(c, b->n, c->g.thumb ? "snx_a64_thumb_entry" : "snx_a64_a32_entry_exit", A64_JUMP26, 0);
     sga_w(b, sge_a64_b_uncond(0));
 }
 /* the frame given back and X19, X29 and X30 the caller's */
@@ -154,7 +160,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
 /* snx_a64_a32_entry_exit(state X0, the block's address W1, its first word W2), each object's own, where a block's
    entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address; else
    CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
-static void mg_entry_exit_fn(SnxXElf* o) {
+static void entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
     unsigned char code[64];
     b.p = code;
@@ -176,6 +182,49 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     sga_w(&b, sge_a64_ret(30));
     size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
     snx_xelf_symbol(o, "snx_a64_a32_entry_exit", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+}
+/* snx_a64_thumb_entry(state X0, the block's address W1, its first halfword W2), where a Thumb block's entry check failed
+   (llvm_thumb.inc's, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY with the
+   halfword; ITSTATE in CPSR, IT_ENTRY with it; else (E) ENDIAN_UNSUPPORTED with the halfword */
+static void thumb_entry_exit_fn(SnxXElf* o) {
+    SgXBuf b = {0};
+    unsigned char code[96];
+    b.p = code;
+    b.cap = sizeof code;
+    sga_ldst(&b, 1, 4, SGA_X16, 0, -1, (int)(offsetof(SnxArmCPU, r) + 60));
+    sga_w(&b, sge_a64_eor_log_shift(SGA_X16, SGA_X16, 0, 1, 0, 0)); /* EOR W16, W16, W1 */
+    size_t wrong = b.n;
+    sga_w(&b, sge_a64_cbnz(SGA_X16, 0, 0));
+    sga_ldst(&b, 1, 4, SGA_X16, 0, -1, (int)offsetof(SnxArmCPU, cpsr));
+    sga_movi(&b, SGA_X17, SNX_ARM_BAD_ENTRY, 0);
+    sga_w(&b, sge_a64_ubfm(1, SGA_X16, 5, 5, 0, 0)); /* UBFX W1, W16, #5 (T), #1 */
+    size_t clear = b.n;
+    sga_w(&b, sge_a64_cbz(1, 0, 0));
+    sga_w(&b, sge_a64_ubfm(1, SGA_X16, 26, 25, 0, 0));        /* UBFX W1, W16, #25, #2 */
+    sga_w(&b, sge_a64_ubfm(SGA_X16, SGA_X16, 15, 10, 0, 0));  /* UBFX W16, W16, #10, #6 */
+    sga_w(&b, sge_a64_orr_log_shift(1, 1, 2, SGA_X16, 0, 0)); /* ORR W1, W1, W16, LSL #2 */
+    sga_movi(&b, SGA_X17, SNX_ARM_ENDIAN_UNSUPPORTED, 0);
+    size_t none = b.n;
+    sga_w(&b, sge_a64_cbz(1, 0, 0));
+    sga_movi(&b, SGA_X17, SNX_ARM_IT_ENTRY, 0);
+    sga_w(&b, sge_a64_orr_log_shift(2, SGA_ZR, 0, 1, 0, 0)); /* MOV W2, W1 */
+    sga_a32_put(&b, clear, (long long)(b.n - clear) / 4, SGA_FIX_BCOND);
+    sga_a32_put(&b, none, (long long)(b.n - none) / 4, SGA_FIX_BCOND);
+    sga_ldst(&b, 0, 4, SGA_X17, 0, -1, (int)offsetof(SnxArmCPU, exit));
+    sga_ldst(&b, 0, 4, 2, 0, -1, (int)offsetof(SnxArmCPU, syndrome));
+    sga_w(&b, sge_a64_ret(30));
+    sga_a32_put(&b, wrong, (long long)(b.n - wrong) / 4, SGA_FIX_BCOND);
+    sga_movi(&b, SGA_X17, SNX_ARM_BAD_ENTRY, 0);
+    sga_ldst(&b, 0, 4, SGA_X17, 0, -1, (int)offsetof(SnxArmCPU, exit));
+    sga_ldst(&b, 0, 4, 1, 0, -1, (int)offsetof(SnxArmCPU, syndrome));
+    sga_w(&b, sge_a64_ret(30));
+    if (b.n > b.cap) sg_fail("the Thumb entry's exit past its room", (long long)b.n, (long long)b.cap);
+    size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
+    snx_xelf_symbol(o, "snx_a64_thumb_entry", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+}
+static void mg_entry_exit_fn(SnxXElf* o) {
+    entry_exit_fn(o);
+    thumb_entry_exit_fn(o);
 }
 int snx_arm64_arm_entry(MG_ARM* c, uint32_t key) {
     SgXBuf b = {0};
@@ -204,6 +253,10 @@ int snx_arm64_arm_block(SnxArm64Arm* c, const char* name, const unsigned char* c
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
     *consumed = 0;
     return 0;
+}
+int snx_arm64_arm_thumb_block(SnxArm64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                              size_t* consumed, SnxArm64ArmNext next, void* user) {
+    return snx_arm64_arm_block(c, name, code, count, pc, consumed, next, user);
 }
 const char* snx_arm64_arm_why(const SnxArm64Arm* c) {
     (void)c;

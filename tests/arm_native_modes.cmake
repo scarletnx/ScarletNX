@@ -20,15 +20,13 @@ function(snx_arm_native_modes machine)
         set_tests_properties(arm_${machine}_${mode} arm_${machine}_${mode}_spill
                              PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()
-    # a store with writeback into the register it stores, which the Cortex-A9 takes and the A57 does not (profile.c);
-    # Thumb is x86-64's
-    if(machine STREQUAL "x64")
-        foreach(halves f841,1d04 f801,1d04 f821,1d04 f841,1b04)
-            string(REPLACE "," "_" name "${halves}")
-            add_test(NAME arm_x64_a9_own_base_${name}
-                     COMMAND snx-test-arm-x64 --profile a9 --states 64 --halves ${halves})
-        endforeach()
-    endif()
+    # a Thumb store with writeback into the register it stores, which the Cortex-A9 takes and the A57 does not (profile.c)
+    foreach(halves f841,1d04 f801,1d04 f821,1d04 f841,1b04)
+        string(REPLACE "," "_" name "${halves}")
+        add_test(NAME arm_${machine}_a9_own_base_${name}
+                 COMMAND snx-test-arm-${machine} --profile a9 --states 64 --halves ${halves})
+        set_tests_properties(arm_${machine}_a9_own_base_${name} PROPERTIES SKIP_RETURN_CODE 77)
+    endforeach()
     # what random words hardly are: the ARM946E's LDM with writeback of its base alone, of the base first and of it last
     add_test(NAME arm_${machine}_arm946e_ldm_base
              COMMAND snx-test-arm-${machine} --profile arm946e --states 64 --word e8b10002 --word e9b10002
@@ -44,11 +42,10 @@ function(snx_arm_native_modes machine)
     add_test(NAME arm_${machine}_arm7tdmi_trace_long
              COMMAND snx-test-arm-${machine} --profile arm7tdmi --trace --states 64 --word ${long}00000291)
     set_tests_properties(arm_${machine}_arm7tdmi_trace_long PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-    # an empty Thumb PUSH and POP, which checked memory has no transaction of (UNDEFINED there); Thumb is x86-64's
-    if(machine STREQUAL "x64")
-        foreach(halfword b400 bc00)
-            add_test(NAME arm_x64_a57_checked_empty_${halfword}
-                     COMMAND snx-test-arm-x64 --memory checked --states 64 --halves ${halfword})
-        endforeach()
-    endif()
+    # an empty Thumb PUSH and POP, which checked memory has no transaction of (UNDEFINED there)
+    foreach(halfword b400 bc00)
+        add_test(NAME arm_${machine}_a57_checked_empty_${halfword}
+                 COMMAND snx-test-arm-${machine} --memory checked --states 64 --halves ${halfword})
+        set_tests_properties(arm_${machine}_a57_checked_empty_${halfword} PROPERTIES SKIP_RETURN_CODE 77)
+    endforeach()
 endfunction()

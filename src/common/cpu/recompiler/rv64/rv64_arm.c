@@ -30,6 +30,7 @@ enum { RV_EM = 243, RV_R_32_PCREL = 57, RV_R_CALL_PLT = 19 };
 #define MG_ARM_R_TAIL      RV_R_CALL_PLT
 #define MG_ARM_R_LITERAL   RV_R_32_PCREL
 #define MG_ARM_ENTRY_EXIT  "snx_rv64_a32_entry_exit"
+#define MG_ARM_THUMB_ENTRY "snx_rv64_thumb_entry"
 #define MG_ARM_LOAD_FENCE  1 /* a load is no acquire: a FENCE after it */
 #define MG_ARM_FP_HOT      0
 
@@ -59,6 +60,10 @@ int snx_rv64_arm_block(SnxRv64Arm* c, const char* name, const unsigned char* cod
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
     *consumed = 0;
     return 0;
+}
+int snx_rv64_arm_thumb_block(SnxRv64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                             size_t* consumed, SnxRv64ArmNext next, void* user) {
+    return snx_rv64_arm_block(c, name, code, count, pc, consumed, next, user);
 }
 const char* snx_rv64_arm_why(const SnxRv64Arm* c) {
     (void)c;

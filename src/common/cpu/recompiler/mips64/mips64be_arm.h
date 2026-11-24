@@ -31,6 +31,10 @@ int snx_mips64be_arm_options(SnxMips64beArm* c, const SnxArmCodegenOptions* opti
    kept; snx_mips64be_arm_why says what) */
 int snx_mips64be_arm_block(SnxMips64beArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                       size_t* consumed, SnxMips64beArmNext next, void* user);
+/* the Thumb block at pc (halfword aligned), its code little-endian halfwords, as snx_mips64be_arm_block (name NULL:
+   T_<pc>), *consumed the halfwords it covers */
+int snx_mips64be_arm_thumb_block(SnxMips64beArm* c, const char* name, const unsigned char* code, size_t count,
+                                 uint32_t pc, size_t* consumed, SnxMips64beArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_mips64be_arm_why(const SnxMips64beArm* c);
 /* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.

@@ -9,6 +9,7 @@
 #define snx_ppc64_arm_free snx_ppc64be_arm_free
 #define snx_ppc64_arm_options   snx_ppc64be_arm_options
 #define snx_ppc64_arm_block snx_ppc64be_arm_block
+#define snx_ppc64_arm_thumb_block snx_ppc64be_arm_thumb_block
 #define snx_ppc64_arm_why snx_ppc64be_arm_why
 #define snx_ppc64_arm_object snx_ppc64be_arm_object
 #define snx_ppc64_arm_limit snx_ppc64be_arm_limit

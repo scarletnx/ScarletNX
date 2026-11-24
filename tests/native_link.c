@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The objects a native back end writes for an AOT module, on any host: the guest functions of a small program (a call,
    a tail call, a loop, a branch through a register, a stale check, a helper's call), its module descriptor, and two
-   chained A32 blocks with theirs. None may have an absolute address in its code: the linker refuses one in a read-only
+   chained blocks of each AArch32 state with theirs. None may have an absolute address in its code: the linker refuses one in a read-only
    section (link_elf.c), since a shared object would need a text relocation there. The little-endian machines' objects
    are then linked into a module (snx_link), which the recompiler would write; a host whose linker writes no ELF says
    so, and the objects are still checked */
@@ -35,6 +35,7 @@
 
 #define CODE  0x8000000ull
 #define ARM   0x200000u
+#define THUMB 0x200101u /* a Thumb block's key: its address with bit 0 set */
 #define WORDS 0x100
 
 static struct {
@@ -100,13 +101,14 @@ typedef struct {
     int little;
     int (*functions)(SnxCodegen* codegen, const SnxNativeOptions* options, unsigned char* made, unsigned char** object,
                      size_t* size, char* error, size_t error_size);
-    int (*arm)(const uint32_t* code, size_t count, unsigned char** object, size_t* size, const char** why);
+    int (*arm)(const uint32_t* code, size_t count, const uint16_t* half, size_t halves, unsigned char** object,
+               size_t* size, const char** why);
 } Back;
 static size_t arm_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
-    (void)user, (void)units, (void)count;
-    if (key != ARM) return 0;
-    keys[0] = ARM; /* BNE, back to the block's start: past the thread's poll */
-    keys[1] = ARM + 8;
+    (void)user, (void)count;
+    if (key != ARM && key != THUMB) return 0;
+    keys[0] = key; /* BNE, back to the block's start: past the thread's poll */
+    keys[1] = key + (uint32_t)units * (key & 1 ? 2 : 4);
     return 2;
 }
 /* a machine's two functions, over its back end's */
@@ -116,9 +118,10 @@ static size_t arm_next(void* user, uint32_t key, size_t units, size_t count, uin
         return snx_##m##_object(codegen, 0, codegen->function_count, options, __VA_ARGS__ made, object, size, error,   \
                                 error_size);                                                                           \
     }                                                                                                                  \
-    static int arm_##m(const uint32_t* code, size_t count, unsigned char** object, size_t* size, const char** why) {   \
+    static int arm_##m(const uint32_t* code, size_t count, const uint16_t* half, size_t halves,                        \
+                       unsigned char** object, size_t* size, const char** why) {                                       \
         T* c = snx_##m##_arm_new();                                                                                    \
-        size_t consumed = 0, at = 0, made = 0;                                                                         \
+        size_t consumed = 0, at = 0, thumb = 0, made = 0;                                                              \
         *why = "no compiler";                                                                                          \
         if (!c) return -1;                                                                                             \
         *why = "refused";                                                                                              \
@@ -130,7 +133,15 @@ static size_t arm_next(void* user, uint32_t key, size_t units, size_t count, uin
             }                                                                                                          \
             at += consumed;                                                                                            \
         }                                                                                                              \
-        int rc = at < count || snx_##m##_arm_object(c, object, size, &made);                                           \
+        while (at == count && thumb < halves) {                                                                        \
+            if (!snx_##m##_arm_thumb_block(c, NULL, (const unsigned char*)(half + thumb), halves - thumb,              \
+                                           (THUMB & ~1u) + (uint32_t)thumb * 2, &consumed, arm_next, NULL)) {          \
+                *why = snx_##m##_arm_why(c);                                                                           \
+                break;                                                                                                 \
+            }                                                                                                          \
+            thumb += consumed;                                                                                         \
+        }                                                                                                              \
+        int rc = at < count || thumb < halves || snx_##m##_arm_object(c, object, size, &made);                         \
         snx_##m##_arm_free(c);                                                                                         \
         return rc;                                                                                                     \
     }
@@ -209,23 +220,24 @@ static void module(const Back* back, SnxCodegen* cg, const unsigned char* object
 static void arm(const Back* back) {
     /* SUBS R0, R0, #1; BNE the block; then ADD R1, R1, #1; BX LR */
     static const uint32_t code[4] = {0xE2500001u, 0x1AFFFFFDu, 0xE2811001u, 0xE12FFF1Eu};
+    static const uint16_t half[4] = {0x3801u, 0xD1FDu, 0x3101u, 0x4770u}; /* the same in T16 */
     unsigned char *object = NULL, *descriptor = NULL;
     size_t size = 0, descriptor_size = 0;
     const char* why = NULL;
     char error[256] = "";
-    if (back->arm(code, 4, &object, &size, &why)) {
-        FAIL("%s: the A32 blocks: %s", back->name, why);
+    if (back->arm(code, 4, half, 4, &object, &size, &why)) {
+        FAIL("%s: the AArch32 blocks: %s", back->name, why);
         free(object);
         return;
     }
-    if (relocations(back->name, "the A32 blocks", object, size, 0) < 0)
-        FAIL("%s: the A32 blocks' object is not one", back->name);
+    if (relocations(back->name, "the AArch32 blocks", object, size, 0) < 0)
+        FAIL("%s: the AArch32 blocks' object is not one", back->name);
     const SnxNativeDesc* desc = snx_native_desc_named(back->name);
     SnxProgram* loaded = (SnxProgram*)calloc(1, sizeof *loaded);
     SnxCodegenOptions options = {0};
-    const SnxU32 keys[2] = {ARM, ARM + 8};
+    const SnxU32 keys[4] = {ARM, ARM + 8, THUMB, THUMB + 4};
     if (desc && loaded &&
-        snx_x64_arm_descriptor_for(desc, loaded, &options, keys, 2, &descriptor, &descriptor_size, error, sizeof error))
+        snx_x64_arm_descriptor_for(desc, loaded, &options, keys, 4, &descriptor, &descriptor_size, error, sizeof error))
         FAIL("%s: the A32 descriptor: %s", back->name, error);
     else if (desc && loaded) {
         if (relocations(back->name, "the A32 descriptor", descriptor, descriptor_size, 0) < 0)

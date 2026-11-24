@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 or
    SNX_TEST_RV64 the arm64 or riscv64 back end's (run under Unicorn: snx-test-arm-arm64, -rv64, without the hot paths'
-   witnesses, the chain and Thumb), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
+   witnesses and the chain), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
    module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in
    one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
@@ -897,12 +897,8 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
             break;
         }
         b->consumed = lc;
-#if defined(SNX_TEST_NATIVE)
-        b->made = back_(block)(x64, name, code_of(b), b->n, b->pc, &xc, NULL, NULL);
-#else
-        b->made = b->thumb ? snx_x64_thumb_block(x64, name, code_of(b), b->n, b->pc, &xc, NULL, NULL)
+        b->made = b->thumb ? back_(thumb_block)(x64, name, code_of(b), b->n, b->pc, &xc, NULL, NULL)
                            : back_(block)(x64, name, code_of(b), b->n, b->pc, &xc, NULL, NULL);
-#endif
         if (!b->made) {
             SnxA32Kind k = b->thumb ? SNX_A32_UNDEFINED : decode(b->words[0]);
             block_text(b, text, sizeof text);
@@ -1367,8 +1363,8 @@ static int run_chains(Back* x64) {
         SnxU64 addr = 0;
         if (k->thumb && !thumb2() && k->code[1] == 0xbf) continue;
         snprintf(name, sizeof name, "%c_%08x", k->thumb ? 'T' : 'A', PC);
-        int made = k->thumb ? snx_x64_thumb_block(x64, NULL, k->code, k->units, PC, &consumed, chain_next, NULL) &&
-                                  snx_x64_thumb_block(x64, NULL, k->code + k->units * unit, 1,
+        int made = k->thumb ? back_(thumb_block)(x64, NULL, k->code, k->units, PC, &consumed, chain_next, NULL) &&
+                                  back_(thumb_block)(x64, NULL, k->code + k->units * unit, 1,
                                                       PC + (uint32_t)(k->units * unit), &consumed, chain_next, NULL)
                             : back_(block)(x64, NULL, k->code, k->units, PC, &consumed, chain_next, NULL) &&
                                   back_(block)(x64, NULL, k->code + k->units * unit, 1,
@@ -1467,6 +1463,8 @@ static int run_vrshl_witness(Back* x64) {
     return 0;
 }
 
+#endif
+
 /* ---- Thumb's witnesses: the entry's checks (thumb_block's), and the accesses the block compilers don't agree on
    without care ---- */
 
@@ -1536,11 +1534,22 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
     unsigned char *lobj = NULL, *xobj = NULL;
     size_t lsize = 0, xsize = 0;
     SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
+#if defined(SNX_TEST_NATIVE)
+    HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
+    if (s) hostuc_swapper(uc, swap_arm, &s[1].cpu);
+#else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
+#endif
     char error[512];
     if (!blocks || !laddr || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for the %zu Thumb witnesses\n", count);
-        free(blocks), free(laddr), free(xaddr), free(s);
+        free(blocks), free(laddr), free(xaddr);
+#if defined(SNX_TEST_NATIVE)
+        if (uc) hostuc_free(uc);
+#else
+        free(s);
+#endif
         LLVMDisposeModule(module);
         return 1;
     }
@@ -1555,13 +1564,14 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
         memcpy(b->half, thumb_cases[i].half, sizeof thumb_cases[i].half);
         snprintf(name, sizeof name, "B_%zu", i);
         if (!snx_thumb_llvm_block(module, name, b->half, b->n, PC, &consumed) ||
-            !(b->made = snx_x64_thumb_block(x64, name, code_of(b), b->n, PC, &xconsumed, NULL, NULL))) {
+            !(b->made = back_(thumb_block)(x64, name, code_of(b), b->n, PC, &xconsumed, NULL, NULL))) {
             fprintf(stderr, "FAIL: the Thumb witness %s: a back end refused it: %s\n", thumb_cases[i].what,
                     back_(why)(x64));
             return 1;
         }
         if (consumed != xconsumed) {
-            fprintf(stderr, "FAIL: the Thumb witness %s: LLVM's block takes %zu halfwords, the x86-64 back end's %zu\n",
+            fprintf(stderr,
+                    "FAIL: the Thumb witness %s: LLVM's block takes %zu halfwords, the " BACK_NAME " back end's %zu\n",
                     thumb_cases[i].what, consumed, xconsumed);
             ++failures;
         }
@@ -1569,7 +1579,11 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
     if (snx_ir_module_object(ir, module, '0', &lobj, &lsize, error, sizeof error) ||
         back_(object)(x64, &xobj, &xsize, NULL) || !(lloader = new_loader(error, sizeof error)) ||
         !(xloader = new_loader(error, sizeof error)) || load(lloader, lobj, lsize, "LLVM", blocks, count, 0, laddr) ||
+#if defined(SNX_TEST_NATIVE)
+        load_uc(uc, xobj, xsize, blocks, count, xaddr)) {
+#else
         load(xloader, xobj, xsize, BACK_NAME, blocks, count, 1, xaddr)) {
+#endif
         fprintf(stderr, "FAIL: the Thumb witnesses' objects: %s\n", error);
         return 1;
     }
@@ -1583,6 +1597,12 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
                 s[side].cpu.cpsr = w->set & CPSR_SET ? w->cpsr : s[side].cpu.cpsr | SNX_ARM_T;
                 if (w->set & R15_SET) s[side].cpu.r[15] = w->r15;
                 if (w->set & REGS_SET) s[side].cpu.r[0] = w->r0, s[side].cpu.r[1] = w->r1;
+#if defined(SNX_TEST_NATIVE)
+                if (side) {
+                    if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
+                    continue;
+                }
+#endif
                 run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
             }
             const char* why = differs(&s[0], &s[1]);
@@ -1598,13 +1618,17 @@ static int run_thumb_witnesses(SnxIr* ir, Back* x64) {
            "failures\n",
            count, failures);
     g_test.failures += failures;
-    free(s), free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
+#if defined(SNX_TEST_NATIVE)
+    hostuc_free(uc);
+#else
+    free(s);
+#endif
+    free(lobj), free(xobj), free(laddr), free(xaddr), free(blocks);
     snx_code_loader_free(lloader);
     snx_code_loader_free(xloader);
     LLVMDisposeModule(module);
     return 0;
 }
-#endif
 
 /* ---- a block that goes on to its own start: past the thread's poll, the word at snx_arm_poll_offset from the state,
    which the module's variable holds. Set, the block returns there, R15 its start; clear, it loops */
@@ -1615,19 +1639,22 @@ typedef struct {
 } PollState;
 static size_t poll_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
     (void)user, (void)units, (void)count;
-    if (key != PC) return 0;
-    keys[0] = PC;
+    if ((key & ~1u) != PC) return 0;
+    keys[0] = key; /* itself, T set or not */
     return 1;
 }
-static int run_poll_chain(Back* x64) {
+/* thumb: a Thumb block's, entered with T set */
+static int run_poll_chain(Back* x64, int thumb) {
     static const uint32_t words[2] = {0xE2500001u, 0x1AFFFFFDu}; /* SUBS R0, R0, #1; BNE the block */
+    static const uint16_t halves[2] = {0x3801u, 0xD1FDu};        /* the same in T16 */
     unsigned char* object = NULL;
     size_t consumed = 0, size = 0, failures = 0;
     char error[512] = "", name[16];
     SnxU64 addr = 0;
     int rc = 1;
-    snprintf(name, sizeof name, "A_%08x", PC);
-    if (!back_(block)(x64, NULL, (const unsigned char*)words, 2, PC, &consumed, poll_next, NULL) ||
+    snprintf(name, sizeof name, "%c_%08x", thumb ? 'T' : 'A', PC);
+    if (!(thumb ? back_(thumb_block)(x64, NULL, (const unsigned char*)halves, 2, PC, &consumed, poll_next, NULL)
+                : back_(block)(x64, NULL, (const unsigned char*)words, 2, PC, &consumed, poll_next, NULL)) ||
         back_(object)(x64, &object, &size, NULL)) {
         fprintf(stderr, "FAIL: the poll's block: %s\n", back_(why)(x64));
         return 1;
@@ -1669,7 +1696,7 @@ static int run_poll_chain(Back* x64) {
         *t = (PollState){0};
         t->cpu.r[0] = 5;
         t->cpu.r[15] = PC;
-        t->cpu.cpsr = 0x10u;
+        t->cpu.cpsr = 0x10u | (thumb ? SNX_ARM_T : 0);
         t->poll = (uint32_t)set;
 #if defined(SNX_TEST_NATIVE)
         if (hostuc_call(uc, addr, (uint64_t)(uintptr_t)&t->cpu, 0, NULL)) {
@@ -1680,14 +1707,15 @@ static int run_poll_chain(Back* x64) {
 #else
         run_block(addr, &t->cpu);
 #endif
-        uint32_t r0 = set ? 4 : 0, r15 = set ? PC : PC + 8;
+        uint32_t r0 = set ? 4 : 0, r15 = set ? PC : thumb ? PC + 4 : PC + 8;
         if (t->cpu.exit != SNX_ARM_OK || t->cpu.r[0] != r0 || t->cpu.r[15] != r15) {
             fprintf(stderr, "FAIL: the poll's block, the poll %s: exit %u, R0 %u, R15 %08x; wanted R0 %u, R15 %08x\n",
                     set ? "set" : "clear", t->cpu.exit, t->cpu.r[0], t->cpu.r[15], r0, r15);
             ++failures;
         }
     }
-    printf("a block back to its start past the thread's poll, set and clear: %zu failures\n", failures);
+    printf("a%s block back to its start past the thread's poll, set and clear: %zu failures\n",
+           thumb ? " Thumb" : "n A32", failures);
     g_test.failures += failures;
     rc = 0;
 done:
@@ -1714,9 +1742,7 @@ int main(int argc, char** argv) {
     SnxIr* ir = NULL;
     g_test.states = 16;
     g_test.blocks = 6000;
-#if !defined(SNX_TEST_NATIVE)
     g_test.thumb = 4000;
-#endif
     g_test.features = ~0u;
     g_test.seed = 0xa32;
     g_test.options.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
@@ -1804,11 +1830,6 @@ int main(int argc, char** argv) {
         }
         hostuc_free(probe);
     }
-    if (g_test.thumb || g_test.nhalves)
-        return fprintf(stderr,
-                       "FAIL: --thumb %u, --halves of %zu: the " BACK_NAME " back end makes no Thumb blocks yet\n",
-                       g_test.thumb, g_test.nhalves),
-               2;
 #else
     if (!back_(available)()) {
         printf("SKIP: no " BACK_NAME " back end on this host\n");
@@ -1841,18 +1862,20 @@ int main(int argc, char** argv) {
 #if defined(SNX_TEST_NATIVE)
     back_(limit)(x64, g_test.pool, ~0u);
     size_t done = 0;
-    if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64)) ++g_test.failures;
+    for (int thumb = 0; thumb < 2; ++thumb)
+        if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
 #else
     back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
     /* the witnesses are the Cortex-A57's on flat memory */
     if (plain && !g_test.nonly && !g_test.nhalves && run_witnesses(ir, x64)) ++g_test.failures;
     if (plain && !g_test.nonly && !g_test.nhalves && run_endian_chain(x64)) ++g_test.failures;
-    if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64)) ++g_test.failures;
+    for (int thumb = 0; thumb < 2; ++thumb)
+        if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
     if (plain && !g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
-    if (plain && !g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
     if (!plain && !g_test.nonly && !g_test.nhalves && run_chains(x64)) ++g_test.failures;
 #endif
+    if (plain && !g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
     if (g_test.nhalves) {
         blocks[0].thumb = 1;
         blocks[0].n = g_test.nhalves;

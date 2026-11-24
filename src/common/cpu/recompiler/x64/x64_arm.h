@@ -6,7 +6,7 @@
    the rest written over the same SSA; the block ends where llvm.c's does, and the code it goes on to it reaches by a
    jump of its own where that is a block the caller names (the chaining nx/loader/module_arm.c gives LLVM's blocks).
    Each block is a function void name(SnxArmCPU*) of an ELF object, global and hidden as LLVM's blocks are, so the
-   two back ends' blocks call each other. A Thumb block is made the same way (snx_x64_thumb_block, what
+   two back ends' blocks call each other. A Thumb block is made the same way (snx_x64_arm_thumb_block, what
    cpu/arm/llvm_thumb.inc makes of it). A block with an instruction it doesn't make is refused: LLVM makes it */
 #ifndef SNX_RECOMPILER_X64_ARM_H
 #define SNX_RECOMPILER_X64_ARM_H
@@ -38,8 +38,8 @@ int snx_x64_arm_block(SnxX64Arm* c, const char* name, const unsigned char* code,
                       size_t* consumed, SnxX64ArmNext next, void* user);
 /* the Thumb block at pc (halfword aligned), its code little-endian halfwords as guest memory holds it, as
    snx_x64_arm_block (name NULL: T_<pc>), *consumed the halfwords it covers */
-int snx_x64_thumb_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
-                        size_t* consumed, SnxX64ArmNext next, void* user);
+int snx_x64_arm_thumb_block(SnxX64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                            size_t* consumed, SnxX64ArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_x64_arm_why(const SnxX64Arm* c);
 /* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
