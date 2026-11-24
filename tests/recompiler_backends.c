@@ -649,14 +649,15 @@ int main(int argc, char** argv) {
     rt.svc = on_svc;
     rt.brk = on_brk;
 #ifdef SNX_TEST_NATIVE
-    memset(urt, 0, sizeof *urt);
-    urt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "undef", (void*)undef);
-    urt->svc = (void (*)(CPU*, u32))(uintptr_t)hostuc_native(uc, "svc", (void*)on_svc);
-    urt->brk = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "brk", (void*)on_brk);
-    urt->miss = (GuestFn)(uintptr_t)hostuc_native(uc, "miss", (void*)on_miss);
-    urt->poll = (void (*)(CPU*))(uintptr_t)hostuc_native(uc, "poll", (void*)on_poll);
-    urt->cas128 = (uint32_t (*)(uint64_t*, uint64_t, uint64_t, uint64_t, uint64_t))(uintptr_t)hostuc_native(
-        uc, "cas128", (void*)snx_runtime_cas128);
+    *urt = (RtAPI){
+        .undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "undef", (void*)undef),
+        .svc = (void (*)(CPU*, u32))(uintptr_t)hostuc_native(uc, "svc", (void*)on_svc),
+        .brk = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "brk", (void*)on_brk),
+        .miss = (GuestFn)(uintptr_t)hostuc_native(uc, "miss", (void*)on_miss),
+        .poll = (void (*)(CPU*))(uintptr_t)hostuc_native(uc, "poll", (void*)on_poll),
+        .cas128 = (uint32_t (*)(uint64_t*, uint64_t, uint64_t, uint64_t, uint64_t))(uintptr_t)hostuc_native(
+            uc, "cas128", (void*)snx_runtime_cas128),
+    };
 #endif
     for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
     for (i = 0; i < functions; ++i)
