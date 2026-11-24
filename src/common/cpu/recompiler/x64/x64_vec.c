@@ -791,6 +791,21 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* CLZ by lanes (bytes, halfwords, words): each byte's by nibbles (PSHUFB), then each half's where the upper is all 0 */
+static int vclz(SgCtx* g, unsigned size, int a) {
+    int t = kconst(g, 0x0101010102020304ull, 0); /* clz of a nibble: 4 3 2 2 1 1 1 1 0 ... */
+    int hi = vand(g, vshr(g, 1, a, 4, 0), vsplat(g, 0, 15)), lo = vand(g, a, vsplat(g, 0, 15));
+    int r = vadd(g, 0, op2(g, &sgx_v_pshufb, t, hi), vand(g, op2(g, &sgx_v_pshufb, t, lo), veq(g, 0, hi, vzero(g))));
+    if (size >= 1) {
+        int up = vshr(g, 1, r, 8, 0), low = vand(g, r, vsplat(g, 1, 0xFF));
+        r = vadd(g, 1, up, vand(g, low, veq(g, 1, up, vsplat(g, 1, 8))));
+    }
+    if (size >= 2) {
+        int up = vshr(g, 2, r, 16, 0), low = vand(g, r, vsplat(g, 2, 0xFFFF));
+        r = vadd(g, 2, up, vand(g, low, veq(g, 2, up, vsplat(g, 2, 16))));
+    }
+    return r;
+}
 /* ---- the instructions ---- */
 
 /* immh:immb's element size (the highest bit of immh) and shift: left (immh:immb - esize) or right (2 * esize -
@@ -1112,6 +1127,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, vzip(g, kind, size, q, vread(g, rn), vread(g, rm)), 1);
         return 1;
     }
+    case SNX_A64_OP_EXT_d:
     case SNX_A64_OP_EXT_q: {
         int idx[16], i, imm4 = (int)(word >> 11 & 15), len = q ? 16 : 8;
         if (!q && imm4 >= 8) return -1;
@@ -1347,6 +1363,36 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, r, q);
         return 1;
     }
+    case SNX_A64_OP_NOT_v: vwrite(g, rd, vnot(g, vread(g, rn)), q); return 1;
+    case SNX_A64_OP_SRI_v:
+    case SNX_A64_OP_SRI_s:
+    case SNX_A64_OP_SLI_v:
+    case SNX_A64_OP_SLI_s: {
+        unsigned sz, left, right;
+        int scalar = insn->op == SNX_A64_OP_SRI_s || insn->op == SNX_A64_OP_SLI_s;
+        int left_in = insn->op == SNX_A64_OP_SLI_v || insn->op == SNX_A64_OP_SLI_s;
+        SnxU64 ones;
+        if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar) || (scalar && sz != 3)) return -1;
+        ones = sg_ones(8u << sz);
+        a = vread(g, rn);
+        /* the bits of the destination the shift leaves alone: its low left (SLI) or its top right (SRI) */
+        ones = left_in ? (left ? sg_ones(left) : 0) : ones & ~(right < (8u << sz) ? ones >> right : 0);
+        r = left_in ? vshl(g, sz, a, left) : vshr(g, sz, a, right, 0);
+        r = vor(g, r, vand(g, vread(g, rd), vsplat(g, sz, ones)));
+        vwrite(g, rd, r, scalar ? 0 : q);
+        return 1;
+    }
+    case SNX_A64_OP_CLZ_v:
+    case SNX_A64_OP_CLS_v:
+        if (size == 3) return -1;
+        a = vread(g, rn);
+        if (insn->op == SNX_A64_OP_CLS_v) { /* the bits like the sign, less the sign: those of a ^ (its sign spread) */
+            a = vclz(g, size, vxor(g, a, vshr(g, size, a, (8u << size) - 1, 1)));
+            vwrite(g, rd, vsub(g, size, a, vsplat(g, size, 1)), q);
+            return 1;
+        }
+        vwrite(g, rd, vclz(g, size, a), q);
+        return 1;
     default: return 0;
     }
 }
