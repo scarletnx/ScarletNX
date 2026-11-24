@@ -45,6 +45,9 @@ keeps audits and measurements as they were taken.
 - [Coverage](dev/coverage.md): which of the runtime's code edenprobe, the tests and a game run, and the paths none of them reach
 - [Status and roadmap](dev/roadmap.md): what is next
 - [The CPU cost of a draw](dev/draw-cost.md): the plan to cut the GPU thread's work for each draw
+- [A draw-level fast path](dev/draw-fast-path.md): what a draw keeps from the draw before, the phases of a draw, and part D's measured ceilings
+- [Parallel draw preparation](dev/parallel-draw-prep.md): the next draw resolved on a second thread (built behind `draw_prep`), and why it lost time
+- [Parallel draw batches](dev/parallel-draw-batches.md): a design for setting up whole batches of draws on worker threads
 - [Contributing](../CONTRIBUTING.md): game data, checks, commits and pull requests
 
 ## Guest platforms

@@ -118,14 +118,10 @@ typedef struct {
         } xfb;
     } call;
 } DsRecord;
-/* the renderer's side: the record into its copy, then the renderer's call */
-static void ds_run(const void* arg, u64 bytes) {
-    DsRecord r;
-    memcpy(&r, arg, sizeof r);
-    const u8* p = (const u8*)arg + sizeof r;
-    DsState* c = &g_ds_copy[r.slot].copy;
-    DrawOwner* own = &g_ds_copy[r.slot].own;
-    if (r.fresh) *own = (DrawOwner){0};
+/* the record's groups, chunks and ranges into the copy c, which holds the slot's state from before the record: the
+   bytes after them (the inline indices) */
+static const u8* ds_apply(DsState* c, const DsRecord* rp, const u8* p) {
+    const DsRecord r = *rp;
     for (u32 g = 0; g < DS_GENS; g++)
         if (r.groups >> g & 1) {
             size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
@@ -159,6 +155,35 @@ static void ds_run(const void* arg, u64 bytes) {
     }
     c->owner = r.owner;
     memcpy(c->gen, r.gen, sizeof c->gen);
+    return p;
+}
+/* the record a draw of the renderer's side runs (gpu_ds_running): its payload, for the resolve made ahead of it */
+/* a call the renderer's side makes at a draw record before it looks at it (the join of a worker's batch) */
+static const void* g_ds_join_at;
+static void (*g_ds_join_fn)(void);
+static u32 g_ds_skip; /* the next draw records whose draws a worker drew (gpu_ds_batch_done) */
+static const void* g_ds_running;
+u64 g_draw_marks[DM_N];
+static u64 g_draw_mark_sums[DM_N], g_draw_mark_n;
+u64 gpu_draw_marks_take(u64 sums[DM_N]) {
+    memcpy(sums, g_draw_mark_sums, sizeof g_draw_mark_sums);
+    const u64 n = g_draw_mark_n;
+    memset(g_draw_mark_sums, 0, sizeof g_draw_mark_sums);
+    g_draw_mark_n = 0;
+    return n;
+}
+const void* gpu_ds_running(void) { return g_ds_running; }
+/* the renderer's side: the record into its copy, then the renderer's call */
+static void ds_run(const void* arg, u64 bytes) {
+    memset(g_draw_marks, 0, sizeof g_draw_marks);
+    g_draw_marks[DM_START] = __builtin_readcyclecounter();
+    DsRecord r;
+    memcpy(&r, arg, sizeof r);
+    DsState* c = &g_ds_copy[r.slot].copy;
+    DrawOwner* own = &g_ds_copy[r.slot].own;
+    if (r.fresh) *own = (DrawOwner){0};
+    const u8* p = ds_apply(c, &r, (const u8*)arg + sizeof r);
+    g_draw_marks[DM_APPLIED] = __builtin_readcyclecounter();
     /* a render enable of the 3D engine is decided on this side (maxwell/engines.c): its draws and clears are skipped
        while it turns them off, and they take its predicate */
     u32 pred = r.pred;
@@ -168,6 +193,15 @@ static void ds_run(const void* arg, u64 bytes) {
     if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) fatal("gpu: a draw record is short\n");
     /* an owner's draws off: its draws, clears, textures and discards are skipped, as the front ends skipped them
        when they decided. A discard waits for no predicate: the draws it would keep may run */
+    if (arg == g_ds_join_at) { /* a worker's batch starts here: its list goes in first (gpu_ds_join_at) */
+        g_ds_join_at = NULL;
+        g_ds_join_fn();
+    }
+    /* a draw a worker drew in its batch (gpu_ds_batch_done), skipped or not: its record is applied above */
+    if (r.kind == DR_DRAW && g_ds_skip) {
+        g_ds_skip--;
+        return;
+    }
     if (off == 1 && r.kind != DR_XFB) return;
     if (r.kind == DR_DISCARD && pred) return;
     switch (r.kind) {
@@ -176,7 +210,20 @@ static void ds_run(const void* arg, u64 bytes) {
             if (dc.shading_rate == GPU_RATE_LAST) dc.shading_rate = g_rate_last;
             /* the words after the groups: their offset is a multiple of 4, which a u32 needs */
             if (dc.indexed == 3) dc.inline_indices = r.indices ? (const u32*)(const void*)p : NULL;
+            g_ds_running = arg;
+            g_draw_marks[DM_CALL] = __builtin_readcyclecounter();
             g_renderer->draw(c, &dc, own);
+            g_ds_running = NULL;
+            {
+                const u64 end = __builtin_readcyclecounter();
+                int all = 1;
+                for (int k = 0; k < DM_N; k++) all &= g_draw_marks[k] != 0;
+                if (all) {
+                    g_draw_mark_n++;
+                    for (int k = 1; k < DM_N; k++) g_draw_mark_sums[k] += g_draw_marks[k] - g_draw_marks[k - 1];
+                    g_draw_mark_sums[0] += end - g_draw_marks[DM_UNLOCKED]; /* the record's end, in slot 0 */
+                }
+            }
             break;
         }
         case DR_CLEAR: g_renderer->clear(c, &r.call.c, own); break;
@@ -305,8 +352,143 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
         }
     }
 }
+/* The resolving thread's copies of the renderer's side's states (gpu_ds_peek_draw), in the same slots: each a state
+   that the next record has not changed yet on the renderer's side. It takes from the renderer's copy each group whose
+   generation is not its own, then the next record's groups, as ds_run does. The renderer's side does not change
+   its copies while it waits in a draw's run, where this thread reads them */
+static DsState g_ds_ahead[DS_COPIES];
+static DsState g_ds_batch[DS_COPIES]; /* a worker's copies, for its batches (gpu_ds_batch_draw) */
+static DrawOwner g_ds_batch_own[DS_COPIES]; /* and of the owners, which its draws change (gpu_ds_batch_end) */
+const DsState* gpu_ds_canonical(const DsState* ds) {
+    if (ds >= g_ds_ahead && ds < g_ds_ahead + DS_COPIES) return &g_ds_copy[ds - g_ds_ahead].copy;
+    if (ds >= g_ds_batch && ds < g_ds_batch + DS_COPIES) return &g_ds_copy[ds - g_ds_batch].copy;
+    return ds;
+}
+int gpu_ds_peek_draw(const DsState** ds, DrawCall* dc, const void** record) {
+    u64 bytes = 0;
+    const void* arg = gq_peek_call(ds_run, &bytes);
+    if (!arg || bytes < sizeof(DsRecord)) return 0;
+    DsRecord r;
+    memcpy(&r, arg, sizeof r);
+    if (r.kind != DR_DRAW || r.slot >= DS_COPIES) return 0;
+    DsState* c = &g_ds_ahead[r.slot];
+    const DsState* from = &g_ds_copy[r.slot].copy;
+    if (!r.fresh)
+        for (u32 g = 0; g < DS_GENS; g++)
+            if (c->gen[g] != from->gen[g] || !from->gen[g]) {
+                size_t n = g_ds_group_at[g + 1] - g_ds_group_at[g];
+                memcpy((u8*)c + g_ds_group_at[g], (const u8*)from + g_ds_group_at[g], n);
+                c->gen[g] = from->gen[g];
+            }
+    const u8* p = ds_apply(c, &r, (const u8*)arg + sizeof r);
+    if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) return 0;
+    *dc = r.call.dc;
+    if (dc->shading_rate == GPU_RATE_LAST) dc->shading_rate = g_rate_last;
+    if (dc->indexed == 3) dc->inline_indices = r.indices ? (const u32*)(const void*)p : NULL;
+    *ds = c;
+    *record = arg;
+    return 1;
+}
+void gpu_ds_peek_log(void) { gq_peek_log(ds_run); }
+/* Batches of draws for a worker (vk/render.c, docs/dev/parallel-draw-batches.md). gpu_ds_batch: the draw records
+   that follow the one the renderer's side runs, up to max, the first record that is not a draw ending them. A worker
+   then takes each in order (gpu_ds_batch_draw): its own copy of the record's state (g_ds_batch), taken from the
+   renderer's copy once a batch for each slot and then changed by each record, as ds_run changes the renderer's. And
+   the renderer's side passes over the draws the worker drew (gpu_ds_batch_done), with their records still applied to
+   its copy */
+static u32 g_ds_batch_synced; /* the slots taken from the renderer's copy in this batch */
+u32 gpu_ds_batch(const void** recs, u32 max) {
+    u64 sizes[64];
+    if (max > 64) max = 64;
+    const u32 n = gq_peek_calls(ds_run, recs, sizes, max);
+    u32 k = 0;
+    for (; k < n; k++) {
+        DsRecord r;
+        if (sizes[k] < sizeof r) break;
+        memcpy(&r, recs[k], sizeof r);
+        if (r.kind != DR_DRAW || r.slot >= DS_COPIES || r.fresh || r.reload) break;
+    }
+    g_ds_batch_synced = 0;
+    return k;
+}
+/* the worker's copies of a slot's state and owner, taken from the renderer's side once a batch: only the groups whose
+   generation differs, as gpu_ds_peek_draw takes them. The worker's copy got the same records as the renderer's, so a
+   group with the same generation holds the same bytes. A whole copy of each slot cost about 13 us a split */
+static void ds_batch_sync(u32 slot) {
+    if (g_ds_batch_synced >> slot & 1) return;
+    DsState* const c = &g_ds_batch[slot];
+    const DsState* const from = &g_ds_copy[slot].copy;
+    c->owner = from->owner; /* the one field outside the groups */
+    for (u32 g = 0; g < DS_GENS; g++)
+        if (c->gen[g] != from->gen[g] || !from->gen[g]) {
+            memcpy((u8*)c + g_ds_group_at[g], (const u8*)from + g_ds_group_at[g],
+                   g_ds_group_at[g + 1] - g_ds_group_at[g]);
+            c->gen[g] = from->gen[g];
+        }
+    g_ds_batch_own[slot] = g_ds_copy[slot].own;
+    g_ds_batch_synced |= 1u << slot;
+}
+/* draw_batches=2: the copies of the slots the records use, taken now on the renderer's side, before it runs the records
+   after the running one (the worker runs at the same time) */
+void gpu_ds_batch_snapshot(const void* const* recs, u32 n) {
+    gq_keep(); /* the worker reads the records that this side runs first: the front end must not put over them */
+    g_ds_batch_synced = 0;
+    for (u32 i = 0; i < n; i++) {
+        DsRecord r;
+        memcpy(&r, recs[i], sizeof r);
+        ds_batch_sync(r.slot);
+    }
+}
+/* a record before the worker's draws: applied to its copies, not drawn */
+void gpu_ds_batch_apply(const void* arg) {
+    DsRecord r;
+    memcpy(&r, arg, sizeof r);
+    ds_batch_sync(r.slot);
+    (void)ds_apply(&g_ds_batch[r.slot], &r, (const u8*)arg + sizeof r);
+}
+/* the owners the worker's draws changed (the capture's counters), back to the renderer's side */
+u32 gpu_ds_record_owner(const void* rec) {
+    DsRecord r;
+    memcpy(&r, rec, sizeof r);
+    return r.owner;
+}
+void gpu_ds_batch_end(void) {
+    gq_keep_end();
+    for (u32 slot = 0; slot < DS_COPIES; slot++)
+        if (g_ds_batch_synced >> slot & 1) g_ds_copy[slot].own = g_ds_batch_own[slot];
+}
+void gpu_ds_join_at(const void* rec, void (*fn)(void)) {
+    g_ds_join_at = rec;
+    g_ds_join_fn = fn;
+}
+int gpu_ds_batch_draw(const void* arg, const DsState** ds, DrawCall* dc, DrawOwner** own) {
+    DsRecord r;
+    memcpy(&r, arg, sizeof r);
+    DsState* c = &g_ds_batch[r.slot];
+    ds_batch_sync(r.slot);
+    const u8* p = ds_apply(c, &r, (const u8*)arg + sizeof r);
+    u32 pred = r.pred;
+    const int off = gpu_render_state(r.owner, &pred);
+    DrawOwner* o = &g_ds_batch_own[r.slot];
+    o->pred = pred;
+    o->xfb_reload = (u8)(o->xfb_reload | r.reload);
+    if (off == 1) return 0;
+    *dc = r.call.dc;
+    if (dc->shading_rate == GPU_RATE_LAST) dc->shading_rate = g_rate_last;
+    if (dc->indexed == 3) dc->inline_indices = r.indices ? (const u32*)(const void*)p : NULL;
+    *ds = c;
+    *own = o;
+    return 1;
+}
+void gpu_ds_batch_done(u32 draws) { g_ds_skip = draws; }
+int gpu_ds_ahead_same(const DsState* ds) {
+    const DsState* c = gpu_ds_canonical(ds);
+    return c == ds || !memcmp(c, ds, sizeof *ds);
+}
+static void calls_named(void);
 void gpu_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     if (!g_renderer->draw) return;
+    calls_named();
     /* a draw predicated on the GPU (gpu.h render_pred) counts too: whether it runs isn't known here without the wait
        the predicate is there to avoid, and the counters made up from this (maxwell/engines.c counter_report) only
        stand in for what the console counts, growing with the work given */
@@ -415,6 +597,17 @@ static void call_run(const void* arg, u64 bytes) {
         case RC_MEM_CHANGED: g_renderer->mem_may_have_changed(); break;
         default: g_renderer->render_predicate_drop(c.a); break;
     }
+}
+/* the names of this file's queued calls, for the stats line of the records' time (gq_name) */
+static void calls_named(void) {
+    static int done;
+    if (done++) return;
+    static const char* const draws[] = {"draw", "clear", "texture", "discard", "xfb"};
+    static const char* const calls[] = {"barrier", "stream incr", "stream end", "ready", "stream run",
+                                        "samples reset", "samples enable", "mem seen", "mem changed",
+                                        "predicate drop"};
+    gq_name(ds_run, "draw state", draws, 5);
+    gq_name(call_run, "renderer call", calls, 10);
 }
 static void call_queue(u32 op, u32 a, u32 b) {
     RendererCall c = {op, a, b};

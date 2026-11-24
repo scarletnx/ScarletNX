@@ -390,6 +390,66 @@ int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
 void vk_lock_log(void);  /* the contended waits since the last report, by where the holder took it */
 int vk_lock_held(void);  /* this thread holds vk_lock */
+void vk_lock_lend(int on);
+/* the share lock of split runs (draw_batches=2, share_wrap.h): on while a run is split, and each call's take */
+void vk_share_active(int on);
+/* this thread's record of the shading rate state bound in the command buffer is gone: the next draw binds it */
+void vk_vrs_forget(void);
+/* a run is split now: inline, as each wrapped call of share_wrap.h reads it first and calls straight through while
+   it is off. Its writer is vk_share_active (device.c) */
+extern _Atomic int g_vk_share_on;
+static inline int vk_share_on(void) { return atomic_load_explicit(&g_vk_share_on, memory_order_acquire); }
+void vk_share_lock(void);
+void vk_share_unlock(void);
+/* a take for the wrapped function fn (share_wrap.h), counted for it, and its counts since the last call */
+void vk_share_lock_at(u32 fn);
+void vk_share_fn_times(u32 fn, u64* takes, u64* wait);
+/* the share lock's takes of a side (0 the renderer thread, 1 the worker) since the last call: all of them, those that
+   waited, and the ticks waited and held */
+void vk_share_times(u32 side, u64* takes, u64* waited, u64* wait, u64* hold);
+int vk_query_open(void); /* a samples-passed query segment is open (query.c) */ /* this thread runs under another's hold of vk_lock, which waits for it (prep.c) */
+/* the draw preparation thread (prep.c): on, the function it runs for each kick, a kick from the renderer thread, and
+   the join (1: the work ran, 0: taken back before it began), the counts since the last call */
+int vk_prep_on(void);
+void vk_prep_init(void (*ahead)(void));
+int vk_prep_kick(void);
+/* a probe (render.c): a shared function's call from a batch's draws, which a worker would make at the same time as the
+   renderer thread */
+void vk_shared_note(u32 which);
+void vk_prep_join_wait(void); /* waits for the work of vk_prep_kick_work, however late the thread takes it */
+int vk_prep_kick_work(void (*work)(void)); /* a batch of draws on the thread (render.c), vk_lock lent to it */
+int vk_prep_join(void);
+void vk_prep_counts(u64* kicks, u64* cancels);
+/* A worker's command list (record.c): from vk_rec_list_begin to vk_rec_list_end (0 when the list failed), the calling
+   thread's commands go into the list, not the ring. vk_rec_list_splice puts a finished list into the ring, on the thread
+   that records into the ring, in the order of the lists' batches */
+typedef struct VkRecList VkRecList;
+VkRecList* vk_rec_list_new(void);
+void vk_rec_list_begin(VkRecList* l);
+int vk_rec_list_end(void);
+void vk_rec_list_splice(const VkRecList* l);
+u64 vk_rec_list_bytes(const VkRecList* l);
+/* A call that chooses by the order of all earlier work (barriers, passes): from a thread with a list, it goes into the
+   list and the renderer thread runs it at the splice, at its place; else it runs now. arg's size bytes are copied.
+   vk_rec_listing: this thread records into a list */
+typedef void (*VkDeferFn)(const void* arg);
+void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size);
+int vk_rec_listing(void);
+struct Surf;
+/* this thread's list so far into the ring, its deferred calls run, in their order: the renderer thread waits (batches in
+   turn). Nothing without a list */
+void vk_rec_list_flush(void);
+/* this thread's list runs while the ring's producer records (draw_batches=2): it never goes into the ring on its own */
+void vk_rec_list_parallel(int on);
+/* a surface's layout as this thread sees it (a worker's view of its batch, else the surface's own); the view's reset at a
+   batch's start; and the list put into the ring before a surface in the view is made over, loaded again or freed */
+VkImageLayout vk_surf_layout(const struct Surf* s);
+void vk_surf_view_reset(void);
+void vk_surf_before_reset(const struct Surf* s);
+/* the slot of the per-draw memos this thread uses (render.c's RC_SLOTS): 0 but on a batch's worker */
+#define VK_RC_SLOTS 4
+u32 vk_render_slot(void);
+void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait); /* in counter ticks */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
    the work ends */
@@ -1088,7 +1148,7 @@ u64 vk_rec_set_binds(void);
 /* Runs of direct draws that one Vulkan call could take (record.c), counted with vk_draw_runs=1 since the start: the
    draws, and for each key the runs they fall in and the longest since the last log. Key 0: nothing recorded between
    two draws. Key 1: the index buffer's offset alone. Key 2: descriptors, push constants and vertex buffer offsets too */
-#define VK_REC_RUN_KEYS 3
+#define VK_REC_RUN_KEYS 5
 typedef struct {
     u64 draws, runs[VK_REC_RUN_KEYS], longest[VK_REC_RUN_KEYS];
 } VkRecRuns;
@@ -1420,6 +1480,8 @@ typedef struct Surf {
         u32 keyed;
         u64 key[VK_TEX_MAX_LEVELS][2];
     } bc7;
+    /* the batch probe (render.c): the present and the batch of the last guest draw that wrote it */
+    u64 probe_frame, probe_batch;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
@@ -1446,7 +1508,7 @@ Surf* vk_rt_snapshot(Surf* rt, int pixels);
 /* a draw wrote rt: when it sampled a copy of rt (a crop or a snapshot), the copy stands for rt with that draw's writes
    as well */
 void vk_rt_copy_drawn(Surf* rt);
-extern u64 g_vk_drawing; /* the draw being recorded (render.c render_draw), counted from 1; 0 outside one */
+extern _Thread_local u64 g_vk_drawing; /* the draw being recorded (render.c render_draw), counted from 1; 0 outside one */
 Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
@@ -2670,6 +2732,9 @@ enum {
 /* the aliasing draws so far: those given the atlas and its pages, those bound in place, and each fallback's why */
 void vk_buf_alias_counts(u64* atlas, u64* pages, u64* inplace, u64 why[VK_ALIAS_N]);
 void vk_buf_writable_abort(void);
+void vk_ww_view(int* streaming, u32* epoch);   /* this thread's view of the write epoch (vk_ww_stream) */
+void vk_ww_view_set(int streaming, u32 epoch); /* the same view on another thread (prep.c) */
+int vk_buf_writable_none(void); /* the draw being set up has no write waiting for its commit */
 void vk_buf_writable_commit(void);
 /* the commits that left the host a result to read so far (pending in staging, or an output reused): a dispatch whose
    commit moved it staged one */
@@ -3236,6 +3301,7 @@ void vk_compute_before_write(u64 gva, u64 size);     /* gpu.c's g_gpu_before_wri
 void vk_compute_mem_need(u64 a, u64 n);              /* a read of [a, a + n): land results there first */
 void vk_compute_mem_need_map(u64 a, u64 n);          /* the GMMU changes [a, a + n): land results there first */
 int vk_compute_pending(u64 a, u64 n);                /* a pending result covers a guest page of [a, a + n) */
+int vk_compute_pending_held(u64 a, u64 n);           /* the same, vk_lock held or borrowed (prep.c) */
 /* compute results recorded so far (pending_pages adds): a check without a hit holds while this is unchanged */
 u64 vk_compute_adds(void);
 /* a pending compute result covering [gva, gva + len): the arena buffer and offset to read it from on the GPU */

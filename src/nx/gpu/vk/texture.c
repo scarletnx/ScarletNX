@@ -1310,6 +1310,7 @@ static void tex_drawn(Surf* t, int drawn) {
 /* t's image as img (memory mem, bytes bytes) of format fmt, in UNDEFINED or (copied) TRANSFER_DST_OPTIMAL: the old one
    and its views go once the frames that sample them are done */
 static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat fmt, int copied) {
+    vk_surf_before_reset(t);
     for (int i = 0; i < t->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, t->sv[i].v, VK_NULL_HANDLE);
     t->nsv = 0;
     if (t->present) vk_defer_image(VK_NULL_HANDLE, 0, t->present, VK_NULL_HANDLE); /* the old image's */
@@ -1478,7 +1479,7 @@ void vk_tex_later_frame(void) {
             continue;
         }
         /* whole: in the RGBA8 image's place, in the layout that one was sampled in */
-        const VkImageLayout was = t->layout;
+        const VkImageLayout was = vk_surf_layout(t);
         const VkPipelineStageFlags2 stage = t->stage;
         const VkAccessFlags2 access = t->access;
         g_later.stats.made++;
@@ -1524,7 +1525,7 @@ static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u64* by
     if (was_info.tag) vk_mem_track(mem, was_info.tag - 1);
     vk_devmem_info(mem, &info);
     *bytes = info.size;
-    const VkImageLayout was = t->layout;
+    const VkImageLayout was = vk_surf_layout(t);
     const VkPipelineStageFlags2 stage = t->stage;
     const VkAccessFlags2 access = t->access;
     /* an image in UNDEFINED holds nothing to copy */
@@ -1627,7 +1628,7 @@ static VkBuffer sparse_scratch(VkCommandBuffer cb) {
 static void sparse_copy_out(VkCommandBuffer cb, SparseMove* m, const SparseMove* sp, u32 nsp, VkBuffer scratch) {
     u32 first = 0;
     while (first < nsp && sp[first].t != m->t) first++;
-    m->was = first < nsp ? sp[first].was : m->t->layout;
+    m->was = first < nsp ? sp[first].was : vk_surf_layout(m->t);
     m->stage = first < nsp ? sp[first].stage : m->t->stage;
     m->access = first < nsp ? sp[first].access : m->t->access;
     m->copied = m->was != VK_IMAGE_LAYOUT_UNDEFINED; /* an image in UNDEFINED holds nothing to copy */
@@ -1815,7 +1816,7 @@ static u64 g_sys_out, g_sys_back, g_sys_bytes;
 void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes) { *out = g_sys_out, *back = g_sys_back, *bytes = g_sys_bytes; }
 static int tex_moves(const Surf* t) {
     return t->img && t->mem && !t->sparse && !t->bricks && !t->msaa && !t->f.depth && !t->f.stencil && !t->is_rt &&
-           !t->crop && !t->bc7.queued && !t->kind_want && t->layout != VK_IMAGE_LAYOUT_UNDEFINED && t->upload_valid;
+           !t->crop && !t->bc7.queued && !t->kind_want && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED && t->upload_valid;
 }
 /* t's image moved by `want` on the frame's command buffer (a rendering pass open ends): tex_move */
 static int tex_move_now(Surf* t, const DevMemWant* want, u64* bytes) {
@@ -2052,7 +2053,7 @@ static int kind_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
     t->bc7_later = 0;
     vk_astc_forget(t, ~0u);
     /* in the old image's place, in the layout that one was sampled in */
-    const VkImageLayout was = t->layout;
+    const VkImageLayout was = vk_surf_layout(t);
     const VkPipelineStageFlags2 stage = t->stage;
     const VkAccessFlags2 access = t->access;
     tex_image_swap(t, img, mem, bytes, to, 1);
@@ -2509,6 +2510,7 @@ static u32 level_layout(const Surf* t, u32 l, u32* lbh, u32* lbd) {
    share of a stack's range, resident_order), and the levels from the mip tail on the rest of the layer. tex_upload binds a brick or a mip tail where memory maps any of its bytes. An ASTC one's tile is the
    device's block where it is held as BC7 and its footprint is 4x4: 64x64 blocks of 16 bytes either way */
 static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
+    vk_surf_before_reset(t);
     const VkFmt* f = &t->f;
     const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
     VkResidentShape s;
@@ -2986,7 +2988,7 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
    through the grass, which stayed put on the screen as the camera moved. Its lighting read the corners of targets
    drawn since their copies were made, and parts of the frame took the lighting of earlier frames in rectangles. So
    a copy is made again when a draw that sampled none of it wrote the target since */
-u64 g_vk_drawing;
+_Thread_local u64 g_vk_drawing; /* each thread's draw (draw_batches=2) */
 /* the copy c of rt that the draw being recorded samples (copy_read) */
 static Surf* copy_read(Surf* rt, Surf* c) {
     if (c && c != rt && g_vk_drawing) {
@@ -2996,7 +2998,7 @@ static Surf* copy_read(Surf* rt, Surf* c) {
     return c;
 }
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
-    if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
+    if (!rt || vk_surf_layout(rt) == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
     return copy_read(rt, rt_copy(rt, rt->w, rt->h, NULL, VK_RT_COPY_FEEDBACK, pixels, 1));
 }
 /* every write of the draw that sampled it (a color attachment, then its programmable blend): a write outside any draw
@@ -4081,7 +4083,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
     Surf* rt = type == 6 ? NULL : vk_rt_find(gva);
     /* a texture of several levels isn't the target (its other levels are other targets' memory, a mip chain drawn level
        by level): loaded from memory */
-    if (rt && rt->layout != VK_IMAGE_LAYOUT_UNDEFINED && f.bw == 1 && (!f.conv || f.depth) && type != 2 && rt->w >= w &&
+    if (rt && vk_surf_layout(rt) != VK_IMAGE_LAYOUT_UNDEFINED && f.bw == 1 && (!f.conv || f.depth) && type != 2 && rt->w >= w &&
         rt->h >= h && (d == 1 || type == 1 || type == 7) && levels == 1 && rt->msaa == msaa) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
@@ -4109,7 +4111,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
                 goto texture_from_memory;
             }
             vk_rt_note_read(rt);
-            if (rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
+            if (vk_surf_layout(rt) == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
             /* Crops are sampling snapshots, without storage usage or a guest layout for publishing writes: a
                storage image is the target itself when its pixels lie where the target's do, a smaller header of the
                same rows too (dynamic resolution writes a frame's corner of it, which its samples' crops then take
@@ -4341,6 +4343,7 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
 }
 
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil) {
+    vk_shared_note(14);
     return tex_view(s, type, srgb, map, stencil, s->levels, 0);
 }
 
@@ -4520,6 +4523,7 @@ static VkSamplerAddressMode wrap(u32 m) {
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
+    vk_shared_note(15);
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
     enum { TAB = 4096, MAX = 3072 };
@@ -5114,7 +5118,7 @@ static void tex_take_drawn(Surf* t) {
 /* What the textures looked up since the last call were, as bits beside vk_buf_sources': 256 one with no memory of its
    own (sparse, or bound in pieces), 512 one whose memory is not in the GPU's heap, 1024 a 3D one. Kept only with
    vk_checkpoints, whose report of a stopped GPU names them for the draw it stopped in (record.c) */
-static u32 g_tex_tags;
+static _Thread_local u32 g_tex_tags; /* each thread's draws' */
 u32 vk_tex_tags(void) {
     u32 s = g_tex_tags;
     g_tex_tags = 0;
@@ -5147,8 +5151,31 @@ Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
     tex_take_drawn(t);
     return t;
 }
+/* vk_tex_recheck for a resolve ahead of the renderer thread (prep.c): only the quiet check, which reads, and a
+   texture that has nothing to take from the targets over it. Anything more fails the resolve, and the renderer
+   thread checks the texture itself */
+static Surf* tex_recheck_ahead(Surf* t) {
+    int why = 0;
+    if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) &&
+        vk_compute_pending_held(t->gva, t->layer_size * t->layers)) {
+        gpu_spec_fail("a texture under compute results");
+        return t;
+    }
+    if (!t->quiet || !t->upload_valid || t->bc7_reread || !quiet_own(t, t->gva, &why)) {
+        gpu_spec_fail("a texture to check in full");
+        return t;
+    }
+    g_tex_checks.checks++;
+    g_tex_checks.quiet++;
+    if (!(!t->is_rt && !(t->f.conv && !t->f.depth)) || (t->take_gen == vk_rt_take_gen() && t->take_wgen == t->wgen))
+        return t;
+    gpu_spec_fail("a texture to take from a target");
+    return t;
+}
 Surf* vk_tex_recheck(Surf* t) {
+    vk_shared_note(13);
     g_tex_checks.rechecks++;
+    if (gpu_spec()) return tex_recheck_ahead(t);
     if (atomic_load_explicit(&g_cs_any, memory_order_relaxed)) vk_compute_mem_need(t->gva, t->layer_size * t->layers);
     t = tex_check(t, t->gva);
     tex_take_drawn(t);
