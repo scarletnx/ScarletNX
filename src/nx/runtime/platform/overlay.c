@@ -2068,7 +2068,6 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, const f
     if (y + h > (float)sh) {
         right = 1;
         y = ch;
-        if (debug && boxes_meet((const float[4]){(float)sw - cw - w, y, w, h}, debug)) y = debug[1] + debug[3] + ch / 2;
     }
     for (i = 0; i < ntoasts; ++i) {
         float at = right ? (float)sw - cw - toast_width(i, cw) : x, row = y + (float)i * ch;
