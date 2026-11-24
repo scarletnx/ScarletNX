@@ -808,6 +808,159 @@ static int over_target_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* The pool map in shadow mode (vk/pool_map.c, pool_map_shadow): the texture program's draws fill the record of TIC
+   index 0, which stays valid and agrees with each resolve after it. Each event clears it, and the next draw fills it
+   again: the CPU writes the header between two draws, the GPU writes it back, the texture's image is swapped, a view
+   of the record is destroyed, and the target that a record's texture crops is drawn again. Pixels as without the map,
+   and no difference, in each run, the second with draw_state_check=1 */
+#include "nx/gpu/vk/pool_map.h"
+/* whether the record of TIC index 0 of the draws' texture pool is valid now (the events taken in first) */
+static int pm_valid(GpuChannel* channel) {
+    vk_lock();
+    const int valid = vk_pool_map_valid(channel->ds.bind.tex_pool, 0);
+    vk_unlock();
+    return valid;
+}
+/* one draw of the texture program: its pixel's red against want */
+static int pm_draw(GpuChannel* channel, u8 want, const char* what) {
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    if (px[0] + 2 < want || px[0] > want + 2)
+        fprintf(stderr, "pool map, %s: red %u, expected %u\n", what, px[0], want);
+    CHECK(px[0] + 2 >= want && px[0] <= want + 2);
+    return 0;
+}
+/* event cleared the record of TIC index 0: valid after two draws, not valid after event, valid after the next draw */
+#define PM_CLEARS(what, want, ...)                                                                                      \
+    do {                                                                                                               \
+        CHECK(!pm_draw(channel, want, what));                                                                          \
+        CHECK(!pm_draw(channel, want, what));                                                                          \
+        const int before_event = pm_valid(channel);                                                                    \
+        __VA_ARGS__;                                                                                                   \
+        const int after_event = pm_valid(channel);                                                                     \
+        if (!before_event || after_event)                                                                              \
+            fprintf(stderr, "pool map, %s: valid %d before the event and %d after it (expected 1 and 0)\n", what,      \
+                    before_event, after_event);                                                                        \
+        CHECK(before_event && !after_event);                                                                           \
+    } while (0)
+/* every view of the texture tic names destroyed, as the end of its frame destroys them (vk_image_view_destroy) */
+static void pm_views_gone(const u32* tic) {
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    for (int i = 0; t && i < t->nsv; i++) vk_pool_map_view_gone(t->sv[i].v);
+    vk_unlock();
+}
+static void pm_swapped(const u32* tic) {
+    vk_lock();
+    vk_pool_map_swapped(vk_tex_from_tic(tic));
+    vk_unlock();
+}
+static int pool_map_cases(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const int saved_check = g_settings.draw_state_check, saved_map = g_settings.pool_map_shadow;
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        g_settings.pool_map_shadow = 1;
+        vk_lock();
+        vk_pool_map_forget();
+        vk_unlock();
+        CHECK(!life_headers(0, 0)); /* the 2x1 R32F texture of 0 and 1: red 0.75 */
+        u8 texels[8] = {0};
+        snx_st_le32(texels + 4, 0x3f800000);
+        CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+        vk_ww_new_epoch();
+        vk_lock();
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        vk_unlock();
+        PoolMapCounts c0, c1;
+        vk_pool_map_counts(&c0);
+        u32 tic[8], tic_one[8];
+        life_tic(tic, 0);
+        life_tic(tic_one, 1);
+        /* the CPU writes the header between two draws (its red read as one) */
+        PM_CLEARS("the CPU writes the header", 191, {
+            for (u32 i = 0; i < 8; i++) snx_st_le32(GP(MEMO_CPU + (LIFE_POOL - MEMO_GPU)) + i * 4, tic_one[i]);
+            vk_ww_new_epoch();
+        });
+        /* the GPU writes it back */
+        PM_CLEARS("the GPU writes the header", 255, CHECK(!life_headers(0, 0)));
+        /* the texture's image swapped, and a view of the record destroyed */
+        PM_CLEARS("the image swapped", 191, pm_swapped(tic));
+        PM_CLEARS("a view destroyed", 191, pm_views_gone(tic));
+        CHECK(!pm_draw(channel, 191, "after the events"));
+        CHECK(!pm_draw(channel, 191, "after the events"));
+        vk_pool_map_counts(&c1);
+        u64 differ = 0;
+        for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+        if (differ || c1.agree - c0.agree < 5)
+            fprintf(stderr, "pool map%s: %llu agreed (5 or more expected), %llu differed (none expected)\n",
+                    check ? " with draw_state_check=1" : "", (unsigned long long)(c1.agree - c0.agree),
+                    (unsigned long long)differ);
+        CHECK(!differ && c1.agree - c0.agree >= 5);
+        /* a texture over a target (a copy of it in another format), and the target drawn again */
+        u32 over[8];
+        u8 bytes[32];
+        life_tic(over, 0);
+        over[1] = (u32)OVER_TARGET;
+        over[2] = (u32)(OVER_TARGET >> 32) | 3u << 21;
+        over[4] = (MEMO_SIDE - 1) | 1u << 23;
+        over[5] = (MEMO_SIDE - 1) | 1u << 31;
+        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, over[i]);
+        CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+        vk_ww_new_epoch();
+        vk_lock();
+        rt_clear(channel, OVER_TARGET, MEMO_SIDE, MEMO_SIDE, 0, 1);
+        vk_unlock();
+        vk_release_submit();
+        vk_lock();
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        vk_unlock();
+        u8 px[4];
+        int kept;
+        CHECK(!pending_draw(channel, px, &kept));
+        const u8 crop_red = px[0];
+        PM_CLEARS("the cropped target drawn again", crop_red, {
+            vk_lock();
+            over_bind(channel, OVER_TARGET);
+            r[0x851] = MEMO_GREEN;
+            channel->r3d_dirty = ~0u;
+            mx_draw_state_sync(channel);
+            DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+            vk_render_draw(&channel->ds, &call, &channel->owner);
+            vk_render_end();
+            over_bind(channel, MEMO_GPU + 0x20000);
+            vk_unlock();
+            vk_release_submit();
+        });
+        vk_pool_map_counts(&c0);
+        CHECK(!pending_draw(channel, px, &kept));
+        vk_pool_map_counts(&c1);
+        differ = 0;
+        for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+        CHECK(!differ);
+        CHECK(pm_valid(channel));
+    }
+    g_settings.draw_state_check = saved_check;
+    g_settings.pool_map_shadow = saved_map;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    CHECK(!life_headers(0, 0));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS pool map: a record of a texture pool agrees with each resolve while valid, and a header written by the "
+         "CPU or the GPU, an image swap, a view destroyed and a cropped target drawn again each clear it");
+    return 0;
+}
+
 /* Inline constant blocks, as NVN's front end gives them (DsInline, its per-block generations DsState.inl_gen): the
    constant buffer program reads its color from slot 3, the fragment stage's bank 2 block. A draw's new base vertex
    moves every stage's bank 0 block and the inline generation, not bank 2: the next draw keeps bank 2's staged copy.
@@ -1320,6 +1473,7 @@ static int check_draw_memo(void) {
     CHECK(!compute_pending_cases(channel));
     CHECK(!memo_gens_cases(channel));
     CHECK(!over_target_cases(channel));
+    CHECK(!pool_map_cases(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
