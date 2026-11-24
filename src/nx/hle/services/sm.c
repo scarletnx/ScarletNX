@@ -43,40 +43,40 @@ static SvcObj* sm_stand_in(const char* name) { return svcobj_new(stand_in_name(n
    for one called a function there that is not native yet, and a stand-in would give its SDK objects with nothing
    behind them. A program with no SDK, which opens them itself as libnx does, has no function to answer in: the
    runtime keeps no second, IPC copy of these services for it */
-static const char* const g_native_only[][2] = {
-    {"fsp-srv", "nn::fs (nn/fs.c)"},
-    {"fsp-pr", "nn::fs (nn/fs.c)"},
-    {"fsp-ldr", "nn::fs (nn/fs.c)"},
-    {"time:u", "nn::time (nn/time.c)"},
-    {"time:a", "nn::time (nn/time.c)"},
-    {"time:s", "nn::time (nn/time.c)"},
-    {"time:r", "nn::time (nn/time.c)"},
-    {"time:su", "nn::time (nn/time.c)"},
-    {"pl:u", "nn::pl (nn/pl.c)"},
-    {"pl:s", "nn::pl (nn/pl.c)"},
-    {"pctl", "nn::pctl (nn/pctl.c)"},
-    {"pctl:a", "nn::pctl (nn/pctl.c)"},
-    {"pctl:s", "nn::pctl (nn/pctl.c)"},
-    {"pctl:r", "nn::pctl (nn/pctl.c)"},
-    {"nsd:u", "nn::nsd (nn/nsd.c)"},
-    {"nsd:a", "nn::nsd (nn/nsd.c)"},
-    {"ngc:u", "nn::ngc (nn/ngc.c)"},
-    {"ngct:u", "nn::ngc (nn/ngc.c)"},
-    {"prepo:u", "nn::prepo (nn/prepo.c)"},
-    {"prepo:s", "nn::prepo (nn/prepo.c)"},
-    {"prepo:m", "nn::prepo (nn/prepo.c)"},
-    {"prepo:a", "nn::prepo (nn/prepo.c)"},
-    {"prepo:a2", "nn::prepo (nn/prepo.c)"},
-    {"audout:u", "nn::audio (nn/audio.c)"},
-    {"audout:a", "nn::audio (nn/audio.c)"},
-    {"audout:d", "nn::audio (nn/audio.c)"},
-    {"audren:u", "nn::audio (nn/audio_renderer.c)"},
-    {"audren:a", "nn::audio (nn/audio_renderer.c)"},
-    {"audren:d", "nn::audio (nn/audio_renderer.c)"},
-    {"hwopus", "nn::codec (nn/codec.c)"},
-    {"audin:u", "nn::audio (nn/audio.c)"},
-    {"audin:a", "nn::audio (nn/audio.c)"},
-    {"audin:d", "nn::audio (nn/audio.c)"},
+static const char* const g_native_only[][3] = {
+    {"fsp-srv", "nn::fs (nn/fs.c)", "nn_fs"},
+    {"fsp-pr", "nn::fs (nn/fs.c)", "nn_fs"},
+    {"fsp-ldr", "nn::fs (nn/fs.c)", "nn_fs"},
+    {"time:u", "nn::time (nn/time.c)", "nn_time"},
+    {"time:a", "nn::time (nn/time.c)", "nn_time"},
+    {"time:s", "nn::time (nn/time.c)", "nn_time"},
+    {"time:r", "nn::time (nn/time.c)", "nn_time"},
+    {"time:su", "nn::time (nn/time.c)", "nn_time"},
+    {"pl:u", "nn::pl (nn/pl.c)", "nn_pl"},
+    {"pl:s", "nn::pl (nn/pl.c)", "nn_pl"},
+    {"pctl", "nn::pctl (nn/pctl.c)", "nn_pctl"},
+    {"pctl:a", "nn::pctl (nn/pctl.c)", "nn_pctl"},
+    {"pctl:s", "nn::pctl (nn/pctl.c)", "nn_pctl"},
+    {"pctl:r", "nn::pctl (nn/pctl.c)", "nn_pctl"},
+    {"nsd:u", "nn::nsd (nn/nsd.c)", "nn_nsd"},
+    {"nsd:a", "nn::nsd (nn/nsd.c)", "nn_nsd"},
+    {"ngc:u", "nn::ngc (nn/ngc.c)", "nn_ngc"},
+    {"ngct:u", "nn::ngc (nn/ngc.c)", "nn_ngc"},
+    {"prepo:u", "nn::prepo (nn/prepo.c)", "nn_prepo"},
+    {"prepo:s", "nn::prepo (nn/prepo.c)", "nn_prepo"},
+    {"prepo:m", "nn::prepo (nn/prepo.c)", "nn_prepo"},
+    {"prepo:a", "nn::prepo (nn/prepo.c)", "nn_prepo"},
+    {"prepo:a2", "nn::prepo (nn/prepo.c)", "nn_prepo"},
+    {"audout:u", "nn::audio (nn/audio.c)", "nn_audio_out"},
+    {"audout:a", "nn::audio (nn/audio.c)", "nn_audio_out"},
+    {"audout:d", "nn::audio (nn/audio.c)", "nn_audio_out"},
+    {"audren:u", "nn::audio (nn/audio_renderer.c)", "nn_audio_renderer"},
+    {"audren:a", "nn::audio (nn/audio_renderer.c)", "nn_audio_renderer"},
+    {"audren:d", "nn::audio (nn/audio_renderer.c)", "nn_audio_renderer"},
+    {"hwopus", "nn::codec (nn/codec.c)", "nn_codec_hwopus"},
+    {"audin:u", "nn::audio (nn/audio.c)", "nn_audio_in"},
+    {"audin:a", "nn::audio (nn/audio.c)", "nn_audio_in"},
+    {"audin:d", "nn::audio (nn/audio.c)", "nn_audio_in"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];
@@ -87,11 +87,16 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
         if (!strcmp(s, g_native_only[i][0])) {
             char missed[640];  /* what the hooks did not take for the game's SDK version, which may be why */
             char unread[1024]; /* a 32-bit game's SDK that no declaration was read in, which is why */
+            char off[384];     /* the setting that turns its native functions off, which is why */
+            hook_off_text(off, sizeof off, g_native_only[i][2]);
             hook_missed_text(missed, sizeof missed);
             hook_unread_text(unread, sizeof unread);
             /* the SDK function that asked is in the calls of the thread that sent this request */
             WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
             kernel_dump_threads();
+            if (*off)
+                fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
+                      g_native_only[i][1], off);
             if (*unread)
                 fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
                       g_native_only[i][1], unread);
