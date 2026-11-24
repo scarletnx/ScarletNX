@@ -138,4 +138,9 @@ static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
 #define SGX_VF_G2X64 (&sgx_v_movq_xr)
 #define SGX_VF_XHI2G (&sgx_v_pextrq)
 #define SGX_VF_INS64 (&sgx_v_pinsrq)
+/* a SIMD&FP register's 8 or 4 bytes to or from memory, its rest zeroed by the load (MOVQ, MOVD) */
+#define SGX_VF_LD8 (&sgx_v_movq_ld)
+#define SGX_VF_ST8 (&sgx_v_movq_st)
+#define SGX_VF_LD4 (&sgx_v_movd_xr)
+#define SGX_VF_ST4 (&sgx_v_movd_rx)
 
