@@ -3686,6 +3686,14 @@ target_compile_definitions(snx-test-module-abi-arm PRIVATE SNX_TEST_MODULE_ARM)
 add_executable(snx-test-runtime-module-abi module_abi.c)
 snx_test_target(snx-test-runtime-module-abi c23)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
+# what each thread of the runtime pays of its stack for thread-local storage: a table a back end keeps there is paid for
+# each back end (the sanitizers' runtime keeps its own there)
+add_test(NAME runtime_tls_self COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime_tls.py" --self-test)
+if(NOT SNX_TEST_SANITIZERS)
+    add_test(NAME runtime_tls COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime_tls.py"
+             $<TARGET_FILE:scarletnx>)
+    set_tests_properties(runtime_tls PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
 # Amberlith (edenprobe before 1.0.0; docs/dev/edenprobe.md) as CI runs it, with no FPS limit, against its baseline,

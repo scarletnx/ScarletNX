@@ -116,6 +116,20 @@ typedef struct {
     int v;  /* SGX_B_CONST: 0 or 1; SGX_B_REG: the virtual register; SGX_B_CC: the instruction whose flags */
 } SgXBool;
 
+typedef struct {
+    unsigned w;
+    int v;     /* the virtual register holding bits [0, min(w, 64)), 0 for the constant k */
+    SnxU64 k;
+    int vh;    /* w > 64: the one of bits [64, w), 0 for the constant kh */
+    SnxU64 kh;
+    int inv;   /* the value is NOT of v's (not made yet) */
+    int wide;  /* bits past 64 this back end doesn't make (CRC32's operands as the Sail concatenates them, which the
+                  lowered builtin doesn't read): an error where something reads them */
+    int nzcv;  /* NZCV not made yet: the instruction whose flags are them, + 1 */
+    int x;     /* the value is the low w bits of this XMM virtual register (the bits above unknown): floating point and
+                  vectors, which the operations of general-purpose registers take out of it first (sgx_flat) */
+} SgD;
+
 #define SGX_MAXI 4096
 #define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
 /* the guest's (x64_a64.h's): the state's words masks of dead registers and flags (dead) and V registers (vdead) name,
@@ -123,6 +137,8 @@ typedef struct {
 static inline int sgx_dead_words(SnxU64 dead, SnxU32 vdead, unsigned short* words);
 #define SGX_MAXV 8192
 #define SGX_MAXB 4096
+#define SGX_MAXDW 8
+#define SGX_WIDE 256
 
 typedef struct {
     SgXIns ins[SGX_MAXI];
@@ -140,29 +156,25 @@ typedef struct {
     SnxU64 end_dead; /* the guest's state nothing reads past the region's end (sgx_dead_words' mask), for the store
                         pass; 0 for none known */
     SnxU32 end_vdead; /* and its V registers */
+    /* ---- the emitters' and the passes' own scratch, here and not a thread's, as every back end a program holds has its
+       own ---- */
+    /* values over 128 bits (two SIMD&FP registers concatenated, TBL's four, up to 512 bits): their doublewords, the
+       lowest first, an SgD's wide - 1 indexing them; a ring, as they live for an instruction's emission */
+    SgD wide[SGX_WIDE][SGX_MAXDW];
+    unsigned nwide;
+    /* a few recent values, for one made again (each is checked against the instruction that made it, which a new region
+       has replaced): vector forms of registers alone, the pool's loads, sums of two registers */
+    int vec_seen[16], pool_seen[8], sum_seen[8];
+    unsigned vec_next, pool_next, sum_next;
+    /* sgx_optimize's: what is read, of values and of flags; the state's words a later store covers, marked by now */
+    unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
+    unsigned stamp[SGX_STATE_WORDS], now;
+    int next_call[SGX_MAXI + 1]; /* sgx_assemble_region's (SgXAsm's) */
 } SgX;
 
 typedef int SgB;
 
-typedef struct {
-    unsigned w;
-    int v;     /* the virtual register holding bits [0, min(w, 64)), 0 for the constant k */
-    SnxU64 k;
-    int vh;    /* w > 64: the one of bits [64, w), 0 for the constant kh */
-    SnxU64 kh;
-    int inv;   /* the value is NOT of v's (not made yet) */
-    int wide;  /* bits past 64 this back end doesn't make (CRC32's operands as the Sail concatenates them, which the
-                  lowered builtin doesn't read): an error where something reads them */
-    int nzcv;  /* NZCV not made yet: the instruction whose flags are them, + 1 */
-    int x;     /* the value is the low w bits of this XMM virtual register (the bits above unknown): floating point and
-                  vectors, which the operations of general-purpose registers take out of it first (sgx_flat) */
-} SgD;
 
-/* values over 128 bits (two SIMD&FP registers concatenated, TBL's four, up to 512 bits): their doublewords, the lowest
-   first, an SgD's wide - 1 indexing them; a ring, as they live for an instruction's emission */
-#define SGX_MAXDW 8
-static _Thread_local SgD sgx_wtab[256][SGX_MAXDW];
-static _Thread_local unsigned sgx_nwtab;
 
 /* an integer known only when the guest runs: its value modulo 2^64 (v, an SgD of 64 bits: what gen.c's (x).v reads),
    or not made yet: the product of a and b (UMULH's, SMULH's high half), or x MOD 2^m (a shift's amount, which the
@@ -262,12 +274,10 @@ enum { SGX_VM_NONE, SGX_VM_GUEST, SGX_VM_STATE, SGX_VM_POOL };
    is out: a store, kept though nothing reads it. The result's virtual register (0 for none) */
 /* an SSE form of registers alone already made in the region with the same inputs and immediate: its value (a few
    recent ones, each checked against the instruction that made it, which a new region has replaced) */
-static _Thread_local int sgx_vcse_seen[16];
-static _Thread_local unsigned sgx_vcse_next;
 static inline int sgx_vcse_find(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm) {
     int k, j;
     for (k = 0; k < 16; ++k) {
-        int v = sgx_vcse_seen[k], d;
+        int v = x->vec_seen[k], d;
         SgXIns* s;
         if (v <= 0 || v >= x->nv) continue;
         d = x->v[v].def;
@@ -333,7 +343,7 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
         return 0;
     }
     i->def = (f->xmask >> out & 1) ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
-    if (mode == SGX_VM_NONE && tied >= 0 && in) sgx_vcse_seen[sgx_vcse_next++ & 15] = i->def;
+    if (mode == SGX_VM_NONE && tied >= 0 && in) x->vec_seen[x->vec_next++ & 15] = i->def;
     return i->def;
 }
 /* f of registers only: result operand 0 (tied: the two-operand SSE forms), the operands' registers a, b, c */
@@ -350,13 +360,11 @@ static inline int sgx_v1(SgX* x, const SgXVForm* f, int b, long long imm) {
 static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi) {
     /* the region's loads of the pool, a few: one a constant (a value it holds is checked against the instruction that
        made it, which a new region has replaced) */
-    static _Thread_local int seen[8];
-    static _Thread_local unsigned next;
     int k, v;
     if (!lo && !hi) return sgx_vins(x, SGX_VF_ZERO, 0, -1, NULL, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     for (k = 0; k < 8; ++k) {
         int d;
-        v = seen[k];
+        v = x->pool_seen[k];
         if (v <= 0 || v >= x->nv) continue;
         d = x->v[v].def;
         if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_VEC && x->ins[d].mrip && x->ins[d].def == v &&
@@ -364,7 +372,7 @@ static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi) {
             return v;
     }
     v = sgx_vins(x, SGX_VF_LD16, 0, 0, NULL, 0, 1, SGX_VM_POOL, 0, 0, 0, lo, hi);
-    seen[next++ & 7] = v;
+    x->pool_seen[x->pool_next++ & 7] = v;
     return v;
 }
 
@@ -633,7 +641,7 @@ static inline void sgx_dws(SgCtx* g, SgD a, SgD* out) {
     sgx_flat(sgx(g), &a);
     if (a.wide) {
         int inv = a.inv;
-        memcpy(out, sgx_wtab[a.wide - 1], n * sizeof *out);
+        memcpy(out, sgx(g)->wide[a.wide - 1], n * sizeof *out);
         if (inv) {
             for (k = 0; k < n; ++k) out[k] = sg_d_not(g, out[k]);
             if (a.w % 64) out[n - 1] = sg_d_zext(g, sg_d_slice(g, out[n - 1], a.w % 64 - 1, 0), 64);
@@ -677,8 +685,8 @@ static inline SgD sgx_of_dws(SgCtx* g, unsigned w, SgD* dw) {
         return r;
     }
     {
-        unsigned slot = sgx_nwtab++ % 256;
-        memcpy(sgx_wtab[slot], dw, n * sizeof *dw);
+        unsigned slot = sgx(g)->nwide++ % SGX_WIDE;
+        memcpy(sgx(g)->wide[slot], dw, n * sizeof *dw);
         r.wide = (int)slot + 1;
         return r;
     }
@@ -969,11 +977,9 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
     {
         /* a sum of two registers the region made already (an address a load and a store both take): that value */
         if (!sub && a.v && b.v && !a.inv && !b.inv && !(sgx_is_const(&a) || sgx_is_const(&b))) {
-            static _Thread_local int seen[8];
-            static _Thread_local unsigned next;
             int k;
             for (k = 0; k < 8; ++k) {
-                int v = seen[k], d;
+                int v = x->sum_seen[k], d;
                 if (v <= 0 || v >= x->nv) continue;
                 d = x->v[v].def;
                 if (d >= 0 && d < x->n && x->ins[d].kind == SGX_K_SEL && x->ins[d].def == v &&
@@ -987,7 +993,7 @@ static inline SgD sgx_addsub(SgCtx* g, SgD a, SgD b, int sub) {
             }
             r = SGX_OP(x, lea, pw, a, b);
             if (r.v) {
-                seen[next++ & 7] = r.v;
+                x->sum_seen[x->sum_next++ & 7] = r.v;
                 x->v[r.v].op = SGX_C_SUM;
                 x->v[r.v].cw = (unsigned char)pw;
                 x->v[r.v].src = a.v;
@@ -1710,8 +1716,7 @@ static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
 /* the instructions nothing reads are dropped; one whose result nothing reads but whose flags something does becomes
    its flags-only form (SUBS's result to the zero register: CMP) */
 static inline void sgx_optimize(SgX* x) {
-    /* the thread's scratch, the region's part cleared (no allocation a region) */
-    static _Thread_local unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
+    unsigned char *vlive = x->vlive, *flive = x->flive; /* the region's part cleared */
     int i, k;
     memset(vlive, 0, (size_t)x->nv + 1);
     memset(flive, 0, (size_t)x->n + 1);
@@ -1720,13 +1725,12 @@ static inline void sgx_optimize(SgX* x) {
        twice. One pass backward, each 4-byte word of the state marked while a later store covers it (a load of it, a
        vector access of the state, a call or the machine's own instruction ends every mark) */
     {
-        static _Thread_local unsigned stamp[SGX_STATE_WORDS];
-        static _Thread_local unsigned now = 1;
+        unsigned *stamp = x->stamp, now = x->now;
         SnxU64 pset = 0; /* the pinned host registers a later PSET writes */
         unsigned short dw[200];
         int ndw, e;
         if (++now == 0) {
-            memset(stamp, 0, sizeof stamp);
+            memset(stamp, 0, sizeof x->stamp);
             now = 1;
         }
         /* past the end: what nothing reads is as good as overwritten */
@@ -1763,7 +1767,7 @@ static inline void sgx_optimize(SgX* x) {
                 ndw = sgx_dead_words(s->kv[1], (SnxU32)s->kv[0], dw);
                 for (e = 0; e < ndw; ++e) keep[e] = stamp[dw[e]] == now;
                 if (++now == 0) {
-                    memset(stamp, 0, sizeof stamp);
+                    memset(stamp, 0, sizeof x->stamp);
                     now = 1;
                 }
                 for (e = 0; e < ndw; ++e)
@@ -1774,7 +1778,7 @@ static inline void sgx_optimize(SgX* x) {
             if (s->kind == SGX_K_UNDEF || s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD ||
                 (s->kind == SGX_K_VEC && s->mstate)) {
                 if (++now == 0) {
-                    memset(stamp, 0, sizeof stamp);
+                    memset(stamp, 0, sizeof x->stamp);
                     now = 1;
                 }
                 if (s->kind != SGX_K_VEC) pset = 0; /* the machine's own flush the pinned registers */
@@ -1814,6 +1818,7 @@ static inline void sgx_optimize(SgX* x) {
             stamp[w0] = now;
             if (nw == 2) stamp[w0 + 1] = now;
         }
+        x->now = now;
     }
     for (i = x->n - 1; i >= 0; --i) {
         SgXIns* s = &x->ins[i];
@@ -2493,10 +2498,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         x->v[i].pinned = 0;
     }
     sgx_optimize(x);
-    {
-        static _Thread_local int next_call[SGX_MAXI + 1];
-        a->next_call = next_call;
-    }
+    a->next_call = x->next_call;
     a->next_call[x->n] = x->n;
     for (i = x->n - 1; i >= 0; --i)
         a->next_call[i] = !x->ins[i].dead && (x->ins[i].calls || x->ins[i].kind == SGX_K_MACHINE) ? i : a->next_call[i + 1];
