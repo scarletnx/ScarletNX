@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c) against the AArch32 block compiler's LLVM
-   ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, not
-   what LLVM's optimizer makes of it: the same words consumed, and the same results from the same random states.
+   ones (snx_arm_llvm_block, which module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which
+   LLVM 22's -O2 makes otherwise in one case (VRSHL's witness, below): the same words consumed, and the same results
+   from the same random states.
      snx-test-arm-x64 [--blocks N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--dump]
    Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
-   release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED), under AL half of the time and any
+   release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED, ARMv6's and ARMv7's DSP and media
+   instructions, VFP and Advanced SIMD: its data processing, its element and structure loads and stores, the lane moves
+   and the crypto rounds), under AL half of the time and any
    condition otherwise: one word alone, or two to six in a row (the block ending where one ends it). Both back ends make
    it, x64_arm.c's ELF object and LLVM's are loaded by the code loader, and each block runs from --states random states
    (registers into 64 KiB of guest memory of random bytes or anywhere, NZCV, Q and GE random, the exclusive monitor
@@ -20,6 +23,7 @@
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/x64/x64_arm.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -121,6 +125,11 @@ static const Class classes[] = {
     {"VMRS, VMSR", 0x0fef0fffu, 0x0ee10a10u, SNX_A32_VECTOR, 1},
     {"VFP data processing", 0x0f000e10u, 0x0e000a00u, SNX_A32_VECTOR, 8},
     {"VSEL, VMINNM, VMAXNM, VRINT, VCVT", 0xff000e10u, 0xfe000a00u, SNX_A32_VECTOR, 1},
+    /* Advanced SIMD: its data processing (the crypto rounds among them), its element and structure loads and stores,
+       and the lane moves between core registers and D registers */
+    {"Advanced SIMD data processing", 0xfe000000u, 0xf2000000u, SNX_A32_VECTOR, 10},
+    {"VLD1-4, VST1-4", 0xff100000u, 0xf4000000u, SNX_A32_VECTOR, 4},
+    {"VMOV lane and core, VDUP", 0x0f000f10u, 0x0e000b10u, SNX_A32_VECTOR, 2},
 };
 #define CLASSES (sizeof classes / sizeof *classes)
 
@@ -139,18 +148,6 @@ static uint32_t word_of(const Class* c) {
             if (((x >> (40 + 3 * f)) & 7) == 0) w |= 15u << at[f] & ~c->mask;
         }
         if (snx_a32_decode(w) != c->kind) continue;
-        if (c->kind == SNX_A32_VECTOR) {
-            /* the scalar VFP the back end makes: no Advanced SIMD, no half-precision conversion, no byte or halfword
-               lane (LLVM's, by design) */
-            SnxArmVector v;
-            snx_arm_vector_decode(w, &v);
-            if ((v.flags & AV_SIMD) || v.op == AV_STRUCT || v.op == AV_CRYPTO || (v.op == AV_IMM && v.aux) ||
-                ((v.op == AV_CORE || v.op == AV_DUP) && v.width != 32) ||
-                (v.op == AV_FCVT && (v.width == 16 || v.aux == 16)) ||
-                (v.op != AV_MEM && v.op != AV_CORE && v.op != AV_CORE_PAIR && v.op != AV_STATUS && v.op != AV_DUP &&
-                 v.op != AV_IMM && v.op != AV_MOV && (v.op < AV_FADD || v.op > AV_FSELECT)))
-                continue;
-        }
         return w;
     }
     fprintf(stderr, "FAIL: no word of class %s found\n", c->name);
@@ -541,6 +538,20 @@ static const Witness witnesses[] = {
     {"LDM R1, {R2-R5} a word past", 0xe891003cu, 0x10u, 0, 0, 0, 0, MEM_SIZE - 12},
     {"VLDR D0, [R1] of the last two words", 0xed910b00u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 8},
     {"VLDR D0, [R1] a word past", 0xed910b00u, 0x10u, 0, 0, 0, 0, MEM_SIZE - 4},
+    /* Advanced SIMD's saturations of the most negative lanes, which random lanes rarely are, and the permutations */
+    {"VQDMULH.S16 D0, D1, D2 of -32768 by -32768", 0xf2110b02u, 0x10u, 0, 0x80008000800021c3ull, 0x80007fff8000a5a5ull,
+     0, 0},
+    {"VQDMULH.S32 D0, D1, D2 of -2^31 by -2^31", 0xf2210b02u, 0x10u, 0, 0x8000000080000000ull, 0x800000007fffffffull, 0,
+     0},
+    {"VQRDMULH.S16 D0, D1, D2 of -32768 by -32768", 0xf3110b02u, 0x10u, 0, 0x8000800080000001ull, 0x8000ffff80008000ull,
+     0, 0},
+    {"VQDMULL.S32 Q0, D1, D2 of -2^31 by -2^31", 0xf2a10d02u, 0x10u, 0, 0x8000000080000000ull, 0x8000000012345678ull, 0,
+     0},
+    {"VQDMLAL.S32 Q0, D2, D2 past either end", 0xf2a20902u, 0x10u, 1, 0x7ffffffffffffffcull, 0x0000000280000000ull, 0,
+     0},
+    {"VZIP.8 D0, D1", 0xf3b20181u, 0x10u, 0x0706050403020100ull, 0x1716151413121110ull, 0, 0, 0},
+    {"VUZP.8 D0, D1", 0xf3b20101u, 0x10u, 0x0706050403020100ull, 0x1716151413121110ull, 0, 0, 0},
+    {"VTRN.8 D0, D1", 0xf3b20081u, 0x10u, 0x0706050403020100ull, 0x1716151413121110ull, 0, 0, 0},
 };
 
 static int run_witnesses(SnxIr* ir, SnxX64Arm* x64) {
@@ -699,6 +710,63 @@ static int run_endian_chain(SnxX64Arm* x64) {
     return 0;
 }
 
+/* VRSHL.S8 by the Arm ARM: (x + 2^(n-1)) >> n for a shift of -n, x << s for one of s, the lane's low 8 bits; past 9
+   to the right every lane's sum is below 2^n, so 0 as at 9 */
+static uint8_t rshl8(int8_t x, int8_t s) {
+    if (s >= 0) return s >= 8 ? 0 : (uint8_t)((unsigned)(uint8_t)x << s);
+    unsigned n = (unsigned)(-(int)s);
+    if (n > 9) n = 9;
+    return (uint8_t)snx_asr64((uint64_t)((long long)x + (1ll << (n - 1))), n);
+}
+/* VRSHL.S8 Q6, Q14, Q3 against rshl8, not LLVM: each lane's shift 0, +-1, -8 and -9, 7 and 8, -128 and 127, and a lane
+   that shifts by 0 beside one that shifts by -128 in one doubleword, which LLVM 22 at -O2 gives the other's (its lane
+   shifted right by 1) */
+static int run_vrshl_witness(SnxX64Arm* x64) {
+    static const uint32_t word[1] = {0xf206c56cu};
+    static const int8_t shift[16] = {0, -1, 1, -8, -9, 7, 8, 127, -128, 3, -2, 0, -7, 0, 0, -128};
+    static const int8_t value[16] = {0x67, -27, 127, -128, 1, -1, 64, -64, 100, -100, 3, -3, 0x22, 0x67, 0x40, -27};
+    unsigned char* object = NULL;
+    size_t consumed = 0, size = 0, failures = 0;
+    char error[512] = "", name[16];
+    snprintf(name, sizeof name, "A_%08x", PC);
+    SnxCodeLoader* loader = NULL;
+    if (!snx_x64_arm_block(x64, NULL, (const unsigned char*)word, 1, PC, &consumed, NULL, NULL) ||
+        snx_x64_arm_object(x64, &object, &size, NULL) || !(loader = new_loader(error, sizeof error))) {
+        fprintf(stderr, "FAIL: VRSHL's witness: %s%s\n", snx_x64_arm_why(x64), error);
+        return 1;
+    }
+    SnxLinkInput input = {.data = object, .size = size, .name = "vrshl"};
+    const char* names[1] = {name};
+    SnxU64 addr = 0;
+    RunState* s = (RunState*)malloc(sizeof *s);
+    if (!s || snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
+        fprintf(stderr, "FAIL: VRSHL's witness's object: %s\n", error);
+        free(s), free(object);
+        snx_code_loader_free(loader);
+        return 1;
+    }
+    start(s, 1);
+    s->cpu.cpsr = 0x10u;
+    for (unsigned i = 0; i < 16; ++i) {
+        unsigned byte = i % 8 * 8;
+        s->cpu.d[6 + i / 8] = (s->cpu.d[6 + i / 8] & ~(0xffull << byte)) | (uint64_t)(uint8_t)shift[i] << byte;
+        s->cpu.d[28 + i / 8] = (s->cpu.d[28 + i / 8] & ~(0xffull << byte)) | (uint64_t)(uint8_t)value[i] << byte;
+    }
+    run_block(addr, &s->cpu);
+    for (unsigned i = 0; i < 16; ++i) {
+        uint8_t got = (uint8_t)(s->cpu.d[12 + i / 8] >> (i % 8 * 8)), want = rshl8(value[i], shift[i]);
+        if (got != want) {
+            fprintf(stderr, "FAIL: VRSHL.S8 of %d by %d: %02x, the Arm ARM's %02x\n", value[i], shift[i], got, want);
+            ++failures;
+        }
+    }
+    printf("VRSHL.S8 by the Arm ARM, 16 lanes: %zu failures\n", failures);
+    g_test.failures += failures;
+    free(s), free(object);
+    snx_code_loader_free(loader);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     char error[512];
     SnxIr* ir = NULL;
@@ -748,6 +816,7 @@ int main(int argc, char** argv) {
     size_t done = 0;
     if (!g_test.nonly && run_witnesses(ir, x64)) ++g_test.failures;
     if (!g_test.nonly && run_endian_chain(x64)) ++g_test.failures;
+    if (!g_test.nonly && run_vrshl_witness(x64)) ++g_test.failures;
     if (g_test.nonly) {
         for (size_t i = 0; i < g_test.nonly; ++i) {
             blocks[i].words[0] = g_test.only[i];
