@@ -10,7 +10,7 @@
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR]
+         [--qemu QEMU RUNNER DIR] [--programs]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
@@ -23,6 +23,8 @@
    there, failing where there is one
    --qemu: with --ops, their words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a
    folder for its files) rather than to LLVM's, which lacks what no guest's CPU has; not loads nor stores
+   --programs: what LLVM's back end and QEMU's one word don't show, as C says it: FEAT_CMPBR's compare and branch,
+   FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
    On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so.
@@ -99,6 +101,8 @@ u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
+void snx_x64_set(CPU* c, u64 a, u64 size, u64 value);
+void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
 HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 #endif
@@ -545,7 +549,7 @@ static OpWord* op_words(char** ops, unsigned nops, int variants, size_t* count) 
         0xD50B7534};
     const size_t nsystem = sizeof system / sizeof *system;
     uint32_t* all;
-    size_t n = lqd_row_words(6, rnd_for_rows, &all), i, j = 0, k;
+    size_t n = variants ? lqd_row_words(6, rnd_for_rows, &all) : lqd_all_row_words(6, rnd_for_rows, &all), i, j = 0, k;
     OpWord* list = (OpWord*)malloc((3 * (n + nsystem) + 1) * sizeof *list);
     for (i = 0; i < n + nsystem; ++i) {
         uint32_t w = i < n ? all[i] : system[i - n], v;
@@ -678,6 +682,113 @@ static int list_coverage(void) {
     return 0;
 }
 
+/* --programs: CB<cc>, CBB<cc> and CBH<cc> of x1 and x2 and of x1 and an integer, over an ADD; SET's and CPY's three, of
+   x9, x10 and x11; LDCLRP, LDSETP and SWPP of x1 and x2 at x20. The words after each one's first in more, 0 for none */
+static OpWord* programs(size_t* count, uint32_t (**more)[2]) {
+    static const unsigned ccs[] = {0, 1, 2, 3, 6, 7}, integers[] = {0, 1, 31, 32, 63};
+    static const struct {
+        const char* op;
+        uint32_t w, step;
+    } moves[] = {{"SETP", 0x19C00400u, 0x4000u}, {"SETGP", 0x1DC00400u, 0x4000u}, {"CPYFP", 0x19000400u, 0x400000u},
+                 {"CPYP", 0x1D000400u, 0x400000u}};
+    static const struct {
+        const char* op;
+        uint32_t w;
+    } pairs[] = {{"LDCLRP", 0x19201000u}, {"LDSETP", 0x19203000u}, {"SWPP", 0x19208000u}};
+    OpWord* list = (OpWord*)malloc(sizeof *list * 96);
+    uint32_t (*rest)[2] = calloc(96, sizeof *rest);
+    unsigned c, k;
+    size_t n = 0;
+    for (c = 0; c < 6; ++c) {
+        uint32_t w = 0x74000000u | ccs[c] << 21 | 2u << 16 | 2u << 5 | 1u;
+        list[n++] = (OpWord){"CB_cond", w};
+        list[n++] = (OpWord){"CB_cond", w | 1u << 31};
+        list[n++] = (OpWord){"CB_cond", w | 2u << 14};
+        list[n++] = (OpWord){"CB_cond", w | 3u << 14};
+        for (k = 0; k < 5; ++k)
+            list[n++] = (OpWord){"CB_cond_imm",
+                                 0x75000000u | (k & 1) << 31 | ccs[c] << 21 | integers[k] << 15 | 2u << 5 | 1u};
+    }
+    for (k = 0; k < n; ++k) rest[k][0] = 0x91000400u; /* ADD x0, x0, #1 */
+    for (k = 0; k < 4; ++k) {
+        uint32_t w = moves[k].w | 10u << 16 | 11u << 5 | 9u;
+        rest[n][0] = w + moves[k].step, rest[n][1] = w + 2 * moves[k].step;
+        list[n++] = (OpWord){moves[k].op, w};
+    }
+    for (k = 0; k < 8; ++k) { /* the second and the third alone, where the first did not do it all */
+        static const uint32_t alone[8] = {0x19C04400u, 0x19C08400u, 0x1DC04400u, 0x1DC08400u,
+                                          0x19400400u, 0x19800400u, 0x1D400400u, 0x1D800400u};
+        list[n++] = (OpWord){k < 4 ? "SETM" : "CPYM", alone[k] | 10u << 16 | 11u << 5 | 9u};
+    }
+    for (k = 0; k < 12; ++k) { /* with and without acquire (bit 23) and release (22), an ADD before it */
+        rest[n][0] = pairs[k / 4].w | (k & 3) << 22 | 2u << 16 | 20u << 5 | 1u;
+        list[n++] = (OpWord){pairs[k / 4].op, 0x91000400u};
+    }
+    *count = n;
+    *more = rest;
+    return list;
+}
+/* does a CB branch, of these x1 and x2 */
+static int branch_taken(uint32_t w, uint64_t a, uint64_t b) {
+    unsigned cc = w >> 21 & 7, bits;
+    int64_t sa, sb;
+    if (w >> 24 & 1) bits = w >> 31 ? 64 : 32, b = w >> 15 & 63;
+    else
+        bits = w >> 31 ? 64 : (w >> 14 & 3) == 2 ? 8 : (w >> 14 & 3) == 3 ? 16 : 32;
+    if (bits < 64) a &= (1ull << bits) - 1, b &= (1ull << bits) - 1;
+    sa = (int64_t)(a << (64 - bits)), sb = (int64_t)(b << (64 - bits)); /* their signs at the top: the same order */
+    switch (cc) {
+    case 0: return sa > sb;
+    case 1: return w >> 24 & 1 ? sa < sb : sa >= sb;
+    case 2: return a > b;
+    case 3: return w >> 24 & 1 ? a < b : a >= b;
+    case 6: return a == b;
+    default: return a != b;
+    }
+}
+
+/* --programs: the writes of another thread to come between a pair's read and its compare and swap */
+static unsigned g_between;
+#ifdef SNX_TEST_NATIVE
+static typeof(snx_x64_casp(NULL, 0, 0, 0, 0, 0)) casp_between(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
+    if (g_between) --g_between, c->mem[a] ^= 0x10;
+    return snx_x64_casp(c, a, e0, e1, d0, d1);
+}
+#endif
+/* what a program makes of the state and of the memory, written by another thread first where between */
+static void program_end(const OpWord* p, CPU* c, uint8_t* mem, int between) {
+    uint64_t d = c->x[9], s = c->x[10], n = c->x[11], lo, hi;
+    if (between) mem[c->x[20]] ^= 0x10;
+    if (!strncmp(p->op, "CB", 2)) c->x[0] += !branch_taken(p->word, c->x[1], c->x[2]);
+    else if (!strcmp(p->op, "SETM") || !strcmp(p->op, "CPYM")) {
+        /* the second one alone: Xn below 0 so many bytes still to do before Xd and Xs, above 0 a backward copy's */
+        uint64_t left = (int64_t)n < 0 ? 0 - n : n, before = (int64_t)n < 0 ? left : 0;
+        if (p->op[0] == 'S') memset(mem + d - before, (int)(s & 255), left);
+        else
+            memmove(mem + d - before, mem + s - before, left);
+        c->x[11] = 0;
+    } else if (!strncmp(p->op, "SET", 3)) {
+        memset(mem + d, (int)(s & 255), n);
+        c->x[9] = d + n, c->x[11] = 0;
+        c->n = c->z = c->cf = c->vf = 0;
+    } else if (!strncmp(p->op, "CPY", 3)) {
+        int back = p->op[3] == 'P' && d > s && d < s + n;
+        memmove(mem + d, mem + s, n);
+        c->x[9] = back ? d : d + n, c->x[10] = back ? s : s + n, c->x[11] = 0;
+        c->n = c->z = c->cf = c->vf = 0;
+    } else {
+        memcpy(&lo, mem + c->x[20], 8), memcpy(&hi, mem + c->x[20] + 8, 8);
+        uint64_t a = c->x[1], b = c->x[2];
+        c->x[0] += 1, c->x[1] = lo, c->x[2] = hi;
+        if (p->op[2] == 'C') lo &= ~a, hi &= ~b;
+        else if (p->op[0] == 'L')
+            lo |= a, hi |= b;
+        else
+            lo = a, hi = b;
+        memcpy(mem + c->x[20], &lo, 8), memcpy(mem + c->x[20] + 8, &hi, 8);
+    }
+}
+
 /* each word's end states under QEMU (how: its path, the runner's, a folder) from the starts, states of each; 0 or -1 */
 static int qemu_ends(const OpWord* words, size_t count, unsigned states, const CPU* starts, CPU* ends,
                      char* const* how) {
@@ -735,7 +846,8 @@ int main(int argc, char** argv) {
     char** qemu = NULL;
     CPU *starts = NULL, *ends = NULL; /* --qemu's */
     unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0;
-    int refused = 0, must_make = 0;
+    int refused = 0, must_make = 0, branches = 0;
+    uint32_t (*more)[2] = NULL; /* --programs' words after the first */
     char** ops = NULL;
     OpWord* opw = NULL;
     uint32_t words[SLOT];
@@ -771,6 +883,8 @@ int main(int argc, char** argv) {
             must_make = 1;
         else if (!strcmp(argv[i], "--coverage"))
             refused = 2;
+        else if (!strcmp(argv[i], "--programs"))
+            branches = 1;
         else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
             qemu = argv + i + 1;
             i += 3;
@@ -838,6 +952,11 @@ int main(int argc, char** argv) {
         int target = g_features == SNX_A64_TARGET_ANDROID ? SNX_RECOMPILER_A64_ANDROID : SNX_RECOMPILER_A64_MAX;
         (void)snx_recompiler_set_a64_target(rx, target), (void)snx_recompiler_set_a64_target(rl, target);
     }
+    if (branches) {
+        size_t count;
+        opw = programs(&count, &more);
+        functions = (unsigned)count;
+    }
     if (nops) {
         size_t count, n;
         opw = op_words(ops, nops, 1, &count);
@@ -864,7 +983,10 @@ int main(int argc, char** argv) {
     /* the program, in both memories: each function its words then RET */
     for (i = 0; i < functions; ++i) {
         uint64_t at = CODE + (uint64_t)i * SLOT * 4;
-        unsigned n = opw ? 1 : nwords ? nwords : 1 + pick(SLOT - 2);
+        unsigned n = branches ? 1 + (more[i][0] != 0) + (more[i][1] != 0)
+                     : opw    ? 1
+                     : nwords ? nwords
+                              : 1 + pick(SLOT - 2);
         hints[i] = at;
         /* a quarter of them a loop: MOVZ x16, #1-3, the words, SUBS x16, x16, #1, B.NE back to the first word (x16
            no word writes); a branch forward in the words may leave it early */
@@ -875,8 +997,8 @@ int main(int argc, char** argv) {
             put32(mem[0], at + 4 * (n - 1), 0x54000001u | ((0x80000u - (n - 2)) & 0x7FFFF) << 5); /* B.NE word 1 */
         }
         for (k = loop ? 1 : 0; k < (loop ? n - 2 : n); ++k) {
-            uint32_t w = opw ? opw[i].word : nwords ? words[k] : word();
-            if (!nwords && k + 1 < n && !pick(6)) {
+            uint32_t w = branches && k ? more[i][k - 1] : opw ? opw[i].word : nwords ? words[k] : word();
+            if (!nwords && !opw && k + 1 < n && !pick(6)) {
                 /* a branch forward over 1 to 3 words (to the RET at the most, to a loop's SUBS: past it the loop
                    wouldn't end): labels, and what is dead at them */
                 unsigned end = loop ? n - 2 : n, skip = 1 + pick(end - k < 4 ? end - k : 3), r = lo();
@@ -936,7 +1058,8 @@ int main(int argc, char** argv) {
         NATIVE(snx_x64_fp_bfcvt), NATIVE(snx_mrs), NATIVE(snx_msr), NATIVE(snx_ic_ivau);
         NATIVE(snx_x64_crc32), NATIVE(snx_x64_stxp), NATIVE(snx_x64_aes), NATIVE(snx_x64_estimate);
         NATIVE(snx_x64_half), NATIVE(snx_x64_bfdot), NATIVE(snx_x64_sm4_box);
-        hostuc_native_wide(uc, "snx_x64_casp", (void*)snx_x64_casp);
+        NATIVE(snx_x64_set), NATIVE(snx_x64_copy);
+        hostuc_native_wide(uc, "snx_x64_casp", (void*)casp_between);
 #undef NATIVE
         if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {
             fprintf(stderr, "FAIL: loading the %s object: %s\n", native_name, error);
@@ -1046,12 +1169,26 @@ int main(int argc, char** argv) {
     for (i = 0; i < functions; ++i)
         for (s = 0; s < states; ++s) {
             CPU c[2], start;
+            unsigned between = branches && (opw[i].op[0] == 'L' || !strcmp(opw[i].op, "SWPP"));
+            g_between = between;
             memset(&start, 0, sizeof start);
             if (qemu) start = starts[(size_t)i * states + s];
             else if (opw) {
                 ops_state(&start, s);
-                if (!strncmp(opw[i].op, "LD", 2) || !strncmp(opw[i].op, "ST", 2)) /* any register an address */
+                if (!branches && (!strncmp(opw[i].op, "LD", 2) || !strncmp(opw[i].op, "ST", 2))) /* any register's */
                     for (k = 0; k < 32; ++k) start.x[k] = DATA + 0x6000u + (rnd() % 0x4000u & ~15ull);
+                if (!strcmp(opw[i].op, "LDG") && (opw[i].word & 31) != (opw[i].word >> 5 & 31))
+                    start.x[opw[i].word & 31] |= rnd() << 56; /* a tag to take away */
+                if (branches && s % 4 == 1) start.x[2] = start.x[1]; /* equal */
+                if (branches && s % 4 == 2) /* near the integers */
+                    start.x[1] = rnd() % 66 - 1, start.x[2] = rnd() % 66 - 1;
+                if (branches) {
+                    start.x[9] = DATA + 0x1000 + rnd() % 0x200, start.x[10] = DATA + 0x1000 + rnd() % 0x200;
+                    start.x[11] = s % 5 ? rnd() % 0x180 : 0;
+                    if (opw[i].op[3] == 'M' && (s & 1 || opw[i].op[0] == 'S')) start.x[11] = 0 - start.x[11];
+                    start.x[20] = DATA + 0x2000 + (rnd() % 0x400 & ~15ull);
+                }
+                if (branches && s % 4 == 3) start.x[1] &= 0xFF, start.x[2] = start.x[1] ^ 0x80; /* a byte's sign */
             } else
                 start_state(&start, s);
 #ifdef SNX_TEST_NATIVE
@@ -1105,6 +1242,12 @@ int main(int argc, char** argv) {
                 g_running = hints[i];
                 snx_recompiled_run(m, &c[k], hints[i], STOP);
             }
+            if (branches) {
+                c[0] = start;
+                c[0].rt = c[1].rt, c[0].pc = c[1].pc, c[0].x[30] = c[1].x[30];
+                memcpy(mem[0] + DATA, data0, DATA_LEN);
+                program_end(&opw[i], &c[0], mem[0], between && !g_between);
+            }
             if (qemu) {
                 c[0] = ends[(size_t)i * states + s];
                 c[0].pc = c[1].pc; /* RET's, which a word that writes x30 moves */
@@ -1124,6 +1267,12 @@ int main(int argc, char** argv) {
                     if (w == 0xD65F03C0u) break;
                 }
                 fprintf(stderr, "%s\n", memcmp(mem[0] + DATA, mem[1] + DATA, DATA_LEN) ? " (memory differs)" : "");
+                if (verbose && opw) { /* what its Rn and Rm held */
+                    unsigned rn = opw[i].word >> 5 & 31, rm = opw[i].word >> 16 & 31;
+                    fprintf(stderr, "  from v%u %016llx:%016llx v%u %016llx:%016llx\n", rn,
+                            (unsigned long long)start.v[rn].d[1], (unsigned long long)start.v[rn].d[0], rm,
+                            (unsigned long long)start.v[rm].d[1], (unsigned long long)start.v[rm].d[0]);
+                }
                 if (verbose) report(&c[0], &c[1]);
                 if (failures > 40) goto done;
             }
@@ -1141,5 +1290,6 @@ out:
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
     free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw), free(starts), free(ends);
+    free(more);
     return result;
 }

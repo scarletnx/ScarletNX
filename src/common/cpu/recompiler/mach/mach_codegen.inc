@@ -1013,11 +1013,82 @@ static void compare_branch(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     g->branched = 1;
 }
 
+/* FEAT_LSE128's LDCLRP, LDSETP and SWPP: CASP's loop, the pair read until no other write came between */
+static void pair_atomic(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 address) {
+    SgCtx* g = u->g;
+    unsigned rt = word & 31, rn = word >> 5 & 31, rt2 = word >> 16 & 31;
+    int again = new_label(u);
+    SgD base, old, value, next, got;
+    flush_to(u, address);
+    bind(u, again);
+    base = sg_GPR_read(g, rn);
+    old = sg_d_concat(g, sg_GuestMemRead(g, sg_d_add_int(g, base, 8), 8, 0), sg_GuestMemRead(g, base, 8, 0));
+    value = sg_d_concat(g, sg_GPR_read(g, rt2), sg_GPR_read(g, rt));
+    next = insn->op == SNX_A64_OP_LDCLRP   ? sg_d_and(g, old, sg_d_not(g, value))
+           : insn->op == SNX_A64_OP_LDSETP ? sg_d_or(g, old, value)
+                                           : value;
+    got = sg_GuestCompareSwap(g, base, old, next);
+    jump_if(u, sg_b_not(g, sg_d_eq(g, got, old)), again, address);
+    sg_GPR_write(g, rt, sg_d_slice(g, got, 63, 0));
+    sg_GPR_write(g, rt2, sg_d_slice(g, got, 127, 64));
+}
+
+/* FEAT_MOPS's SET and CPY: option A (PSTATE.C 0), the whole of it in the first of the three instructions, as it may be;
+   the other two do what Xn still holds, nothing after it. A copy that must go backward leaves Xd and Xs as they were */
+static int memory_op(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned rd = word & 31, rn = word >> 5 & 31, rs = word >> 16 & 31;
+    SgD d, s, n, args[3], zero = sgx_const(64, 0);
+    SgB back;
+    int set = 0, first = 0;
+    switch (insn->op) {
+    case SNX_A64_OP_SETP:
+    case SNX_A64_OP_SETGP: first = 1; /* fallthrough */
+    case SNX_A64_OP_SETM:
+    case SNX_A64_OP_SETE:
+    case SNX_A64_OP_SETGM:
+    case SNX_A64_OP_SETGE: set = 1; break;
+    case SNX_A64_OP_CPYP:
+    case SNX_A64_OP_CPYFP: first = 1; break;
+    case SNX_A64_OP_CPYM:
+    case SNX_A64_OP_CPYE:
+    case SNX_A64_OP_CPYFM:
+    case SNX_A64_OP_CPYFE: break;
+    default: return 0;
+    }
+    d = sg_GPR_read(g, rd);
+    n = sg_GPR_read(g, rn);
+    s = xzr_or(g, rs);
+    if (first) {
+        SgD most = sgx_const(64, set ? 0x7FFFFFFFFFFFFFFFull : 0x007FFFFFFFFFFFFFull);
+        n = sg_d_select(g, sgx_d_ult(g, most, n), most, n);
+        /* backward: Xd past Xs and before its end */
+        back = sg_bool(g, 0);
+        if (insn->op == SNX_A64_OP_CPYP) back = sg_b_and(g, sgx_d_ult(g, s, d), sgx_d_ult(g, sg_d_sub(g, d, s), n));
+        args[0] = d, args[1] = set ? n : s, args[2] = set ? s : n;
+        sgx_call(g, set ? "snx_x64_set" : "snx_x64_copy", 0, 1, args, 3, 0);
+        sg_GPR_write(g, rd, sg_d_select(g, back, d, sg_d_add(g, d, n)));
+        if (!set) sg_GPR_write(g, rs, sg_d_select(g, back, s, sg_d_add(g, s, n)));
+        sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_const(4, 0));
+    } else {
+        /* Xn below 0: so many bytes before Xd (and Xs); above, a copy backward's, from Xd (and Xs) on */
+        SgB forward = sgx_d_cmp64(g, 2, n, zero, 0);
+        SgD left = sg_d_select(g, forward, sg_d_sub(g, zero, n), n);
+        SgD to = sg_d_select(g, forward, sg_d_add(g, d, n), d);
+        args[0] = to;
+        args[1] = set ? left : sg_d_select(g, forward, sg_d_add(g, s, n), s);
+        args[2] = set ? s : left;
+        sgx_call(g, set ? "snx_x64_set" : "snx_x64_copy", 0, 1, args, 3, 0);
+    }
+    sg_GPR_write(g, rn, zero);
+    return 1;
+}
+
 /* instructions past the guests' CPUs that are others', or nothing, where EL0 runs: 1 made, -1 UNDEF, 0 the Sail's (of
    g->word). No allocation tag is kept (FEAT_MTE): STG and ST2G only move their base, the zeroing forms clear their
    16-byte granules too, LDG gives a tag of 0 and STGP stores its pair, as ir_ldst.c's; the forms of many tags are
    EL1's */
-static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
+static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 address_of) {
     SgCtx* g = u->g;
     const SnxA64Args* a = &insn->args;
     SnxU64 offset = (SnxU64)(int64_t)a->imm;
@@ -1049,7 +1120,10 @@ static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_STZ2G: bytes = 32; break;
     case SNX_A64_OP_STG:
     case SNX_A64_OP_ST2G: break;
-    default: return newer(u, insn, word);
+    case SNX_A64_OP_LDCLRP:
+    case SNX_A64_OP_LDSETP:
+    case SNX_A64_OP_SWPP: pair_atomic(u, insn, word, address_of); return 1;
+    default: return memory_op(u, insn, word) || newer(u, insn, word);
     }
     base = sg_GPR_read(g, a->rn);
     address = a->p ? base : sg_d_add_int(g, base, (long long)offset);
@@ -1143,7 +1217,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (v) break;
         }
         if (insn.feature & ~(SnxU64)SNX_A64_TARGET_OUNCE) {
-            int v = past_guests(u, &insn, word);
+            int v = past_guests(u, &insn, word, address);
             if (v < 0) goto undef;
             if (v) break;
         }
