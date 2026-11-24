@@ -1622,6 +1622,11 @@ static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4
         prepare_screen_game_drew();
         ui_unlock();
     }
+    if (src && overlay_settings_waiting()) { /* the settings off their default, named from the game's first frame */
+        ui_lock();
+        overlay_settings_start(plat_ns());
+        ui_unlock();
+    }
     SnxHdrFrame hdr = {0};
     show(src, &hdr, w, h, 0, 1, 0, 0, 0);
     atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
