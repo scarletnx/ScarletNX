@@ -1824,7 +1824,8 @@ setting Dynamic constant buffers
     help that move most are dynamic uniform buffers: their offsets go with the bind of the set, not in it, so a draw
     help whose constant buffers moved can keep its set. The device's limit on dynamic uniform buffers caps how many.
     help The game's moves of each constant buffer are kept in its shader cache when it closes (<game>.vkcbmoves), and
-    help the next start chooses from them. 0 = every constant buffer is a plain uniform buffer
+    help the next start chooses from them. 0 = every constant buffer is a plain uniform buffer. On Android it stays
+    help off for now: Turnip keeps dynamic buffers in the descriptor set the runtime takes for a fifth (#2780)
 setting Indirect copies
     key vk_copy_indirect
     int 0 1
