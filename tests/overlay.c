@@ -2147,7 +2147,7 @@ int main(void) {
         assert(overlay_select() == OVERLAY_NONE && tas.replaying == 2);
         draw();
         assert(shows("Slot 2, playing"));
-        overlay_move(2); /* Back */
+        overlay_move(1); /* Back */
         assert(overlay_select() == OVERLAY_NONE && !overlay_states_shown());
         draw();
         assert(shows("SCARLETNX  /  MENU"));
