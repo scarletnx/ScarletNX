@@ -53,6 +53,10 @@ static const Arch g_arch[] = {
                        EM_MIPS, 0x03E00008u,
                        {UC_MIPS_REG_4, UC_MIPS_REG_5, UC_MIPS_REG_6, UC_MIPS_REG_7, UC_MIPS_REG_8, UC_MIPS_REG_9},
                        {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC, 1},
+    [HOSTUC_S390X] = {"s390x", UC_ARCH_S390X, UC_MODE_BIG_ENDIAN, UC_CPU_S390X_Z196, EM_S390,
+                      0x07FE07FEu, /* br r14, twice: the 2-byte return in each half of a word */
+                      {UC_S390X_REG_R2, UC_S390X_REG_R3, UC_S390X_REG_R4, UC_S390X_REG_R5, UC_S390X_REG_R6, -1},
+                      {UC_S390X_REG_R2, UC_S390X_REG_R3}, UC_S390X_REG_R15, UC_S390X_REG_R14, UC_S390X_REG_PC, 1},
 };
 /* MIPS's virtual TLB: every address its own */
 static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
@@ -131,7 +135,14 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
     uint64_t a[6], r;
     (void)size;
     if (k >= u->ntraps || (address & 15)) return;
-    for (i = 0; i < 6; ++i) uc_reg_read(uc, u->a->args[i], &a[i]);
+    for (i = 0; i < 6; ++i)
+        if (u->a->args[i] >= 0) uc_reg_read(uc, u->a->args[i], &a[i]);
+        else { /* s390x's sixth: its stack slot, 160 past the stack pointer */
+            uint64_t sp;
+            uc_reg_read(uc, u->a->sp, &sp);
+            memcpy(&a[i], (const void*)(uintptr_t)(sp + 160), 8);
+            if (u->a->big) a[i] = __builtin_bswap64(a[i]);
+        }
     swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
         unsigned __int128 w = ((NativeWide)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
@@ -216,6 +227,13 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     u->cap = code_cap;
     u->trap = u->code + code_cap;
     for (k = 0; k < PAGE / 4; ++k) put_word(u->a, u->trap + 4 * k, u->a->ret);
+    if (arch == HOSTUC_S390X) {
+        /* 64-bit addressing (the PSW mask's EA and BA bits, 31 and 32 of its big-endian numbering) */
+        uint64_t pswm = 0;
+        uc_reg_read(u->uc, UC_S390X_REG_PSWM, &pswm);
+        pswm |= 1ull << 32 | 1ull << 31;
+        uc_reg_write(u->uc, UC_S390X_REG_PSWM, &pswm);
+    }
     if (arch == HOSTUC_MIPS64EL || arch == HOSTUC_MIPS64) {
         uc_hook tlb;
         for (k = 1; k < PAGE / 4; k += 2) memset(u->trap + 4 * k, 0, 4); /* each jr's delay slot a nop */

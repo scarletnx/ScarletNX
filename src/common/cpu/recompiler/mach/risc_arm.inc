@@ -7,6 +7,13 @@
    relocations (MG_ARM_R_TAIL, MG_ARM_R_ABS64) and the exit function's symbol (MG_ARM_ENTRY_EXIT, at most 23
    characters). The VFP's arithmetic is snx_arm_fp's, its helper */
 
+/* the scratch registers of the code before the frame (the entry checks, the exit function, an entry stub): the
+   sequences' own, or the machine's where those are the callee's or the link (s390x's) */
+#ifndef RK_ENTRY_S1
+#define RK_ENTRY_S1 RK_S1
+#define RK_ENTRY_S2 RK_S2
+#endif
+
 /* every operation snx_arm_fp's (its helper's) */
 static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, SgD xv, SgD yv, SgD zv) {
     return fp_helper(g, op, width, param, xv, yv, zv);
@@ -25,16 +32,16 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     SgXBuf* b = &c->b;
     int s = sgx_arg_regs[0];
     *bad = sgx_a32_label(&c->g);
-    rk_ldst(b, 1, 4, 0, RK_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
-    rk_li(b, RK_S2, pc);
-    rk_xor(b, RK_S1, RK_S1, RK_S2);
-    arm_jreg(c, 1, RK_S1, *bad);
-    rk_ldst(b, 1, 4, 0, RK_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
-    rk_andi(b, RK_S1, RK_S1, SNX_ARM_T | SNX_ARM_E);
-    arm_jreg(c, 1, RK_S1, *bad);
-    rk_li(b, RK_S2, 0);
-    rk_ldst(b, 0, 4, 0, RK_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
-    rk_ldst(b, 0, 4, 0, RK_S2, s, -1, (int)offsetof(SnxArmCPU, syndrome));
+    rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
+    rk_li(b, RK_ENTRY_S2, pc);
+    rk_xor(b, RK_ENTRY_S1, RK_ENTRY_S1, RK_ENTRY_S2);
+    arm_jreg(c, 1, RK_ENTRY_S1, *bad);
+    rk_ldst(b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
+    rk_andi(b, RK_ENTRY_S1, RK_ENTRY_S1, SNX_ARM_T | SNX_ARM_E);
+    arm_jreg(c, 1, RK_ENTRY_S1, *bad);
+    rk_li(b, RK_ENTRY_S2, 0);
+    rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
+    rk_ldst(b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, syndrome));
     c->own = b->n;
     if (c->a.nframe >= 256) sg_fail("a block of too many frames", c->a.nframe, 256);
     c->a.frame_at[c->a.nframe++] = rk_fn_prologue(b, 0);
@@ -96,21 +103,21 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     size_t wrong, thumb;
     b.p = code;
     b.cap = sizeof code;
-    rk_ldst(&b, 1, 4, 0, RK_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
-    rk_xor(&b, RK_S1, RK_S1, pc);
-    wrong = rk_bz(&b, 1, RK_S1);
-    rk_ldst(&b, 1, 4, 0, RK_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
-    rk_andi(&b, RK_S1, RK_S1, SNX_ARM_T);
-    rk_li(&b, RK_S2, SNX_ARM_ENDIAN_UNSUPPORTED);
-    thumb = rk_bz(&b, 0, RK_S1);
-    rk_li(&b, RK_S2, SNX_ARM_BAD_ENTRY);
+    rk_ldst(&b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)(offsetof(SnxArmCPU, r) + 60));
+    rk_xor(&b, RK_ENTRY_S1, RK_ENTRY_S1, pc);
+    wrong = rk_bz(&b, 1, RK_ENTRY_S1);
+    rk_ldst(&b, 1, 4, 0, RK_ENTRY_S1, s, -1, (int)offsetof(SnxArmCPU, cpsr));
+    rk_andi(&b, RK_ENTRY_S1, RK_ENTRY_S1, SNX_ARM_T);
+    rk_li(&b, RK_ENTRY_S2, SNX_ARM_ENDIAN_UNSUPPORTED);
+    thumb = rk_bz(&b, 0, RK_ENTRY_S1);
+    rk_li(&b, RK_ENTRY_S2, SNX_ARM_BAD_ENTRY);
     rk_patch(&b, thumb, b.n);
-    rk_ldst(&b, 0, 4, 0, RK_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
+    rk_ldst(&b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
     rk_ldst(&b, 0, 4, 0, word, s, -1, (int)offsetof(SnxArmCPU, syndrome));
     rk_ret(&b);
     rk_patch(&b, wrong, b.n);
-    rk_li(&b, RK_S2, SNX_ARM_BAD_ENTRY);
-    rk_ldst(&b, 0, 4, 0, RK_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
+    rk_li(&b, RK_ENTRY_S2, SNX_ARM_BAD_ENTRY);
+    rk_ldst(&b, 0, 4, 0, RK_ENTRY_S2, s, -1, (int)offsetof(SnxArmCPU, exit));
     rk_ldst(&b, 0, 4, 0, pc, s, -1, (int)offsetof(SnxArmCPU, syndrome));
     rk_ret(&b);
     size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
@@ -122,8 +129,8 @@ int MG_ARM_API(entry)(MG_ARM* c, uint32_t key) {
     unsigned char code[64];
     b.p = code;
     b.cap = sizeof code;
-    rk_li(&b, RK_S1, key & ~1u);
-    rk_ldst(&b, 0, 4, 0, RK_S1, sgx_arg_regs[0], -1, (int)(offsetof(SnxArmCPU, r) + 60));
+    rk_li(&b, RK_ENTRY_S1, key & ~1u);
+    rk_ldst(&b, 0, 4, 0, RK_ENTRY_S1, sgx_arg_regs[0], -1, (int)(offsetof(SnxArmCPU, r) + 60));
     Rel rel = {.at = rk_tail_reloc(&b), .type = MG_ARM_R_TAIL, .addend = 0};
     name_of(rel.sym, sizeof rel.sym, key);
     char name[24];

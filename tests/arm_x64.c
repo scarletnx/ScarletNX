@@ -59,6 +59,14 @@ typedef SnxPpc64beArm Back;
 #define back_(name) snx_ppc64be_arm_##name
 #define BACK_NAME   "ppc64"
 #define BACK_UC     HOSTUC_PPC64
+#elif defined(SNX_TEST_S390X)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/s390x/s390x_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxS390xArm Back;
+#define back_(name) snx_s390x_arm_##name
+#define BACK_NAME   "s390x"
+#define BACK_UC     HOSTUC_S390X
 #elif defined(SNX_TEST_MIPS64BE)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/mips64/mips64be_arm.h"
