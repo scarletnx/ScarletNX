@@ -702,6 +702,12 @@ static SgD vbits(SgCtx* g, unsigned off, unsigned width) {
     i->def = sgx_vreg(x, x->n - 1, width == 64 ? 64 : 32);
     return sgx_val(width, i->def);
 }
+/* the half of a VFP register's word at off, an S register's bottom or top one: its word read whole, as a big-endian host
+   has the half elsewhere in it and some hosts load aligned words only */
+static SgD vhalf(SgCtx* g, unsigned off) {
+    unsigned low = (off & 2) * 8;
+    return sg_d_slice(g, vbits(g, off & ~2u, 32), low + 15, low);
+}
 /* the VFP register = v (bits of 32 or 64, or an XMM value of them) */
 static void vset(SgCtx* g, unsigned off, unsigned width, SgD v) {
     SgX* x = sgx(g);
@@ -912,17 +918,16 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
         param |= v->aux << 8 | (((SnxU32)v->imm >> 8) & 255) << 16 | ((SnxU32)v->imm & 15) << 24;
     if (v->op == AV_FROUND) param |= (SnxU32)v->imm << 24 | v->aux;
     unsigned inwidth = v->op == AV_ITOF ? v->aux : width, xo = unary ? v->m : v->n;
-    SgD xv = inwidth == 16 ? sg_d_slice(g, vbits(g, xo, 32), 15, 0)
-             : hot         ? vxmm(g, xo, inwidth)
-                           : vbits(g, xo, inwidth);
+    SgD xv = inwidth == 16 ? vhalf(g, xo) : hot ? vxmm(g, xo, inwidth) : vbits(g, xo, inwidth);
     SgD yv = (v->op == AV_FCMP || v->op == AV_FCMPE) && v->aux ? sgx_const(width, 0)
+             : width == 16                                     ? xv
              : hot                                             ? vxmm(g, v->m, width)
                                                                : vbits(g, v->m, width);
     /* the destination, which the multiply-accumulates add to, and which fp_call hands the helper for every operation
        (the fused ones read it there) */
     SgD zv = hot && v->op >= AV_FMLA && v->op <= AV_FNMLS ? vxmm(g, v->d, outwidth)
-             : hot                                 ? sgx_const(outwidth, 0)
-                                                   : vbits(g, v->d, outwidth);
+             : hot || outwidth == 16                      ? sgx_const(outwidth, 0)
+                                                          : vbits(g, v->d, outwidth);
     SgD r;
     switch (v->op) {
         case AV_MOV: r = xv; break;
