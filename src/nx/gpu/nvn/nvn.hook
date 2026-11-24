@@ -19,53 +19,232 @@ route nvnBootstrapLoader
 route nvnDeviceGetProcAddress
 
 family device
+## @brief Enables the external debugger: no effect, ScarletNX has none
+## @param enabled true or false, both ignored
 hook nvnSetExternalDebuggerEnabledNVX(bool enabled)
+## @brief Frees the objects finalized with NVN_DEVICE_FLAG_DEFERRED_FINALIZE once they are age submissions old:
+##   no effect, ScarletNX frees nothing at a finalize
+## @param d Pointer to the device, not read
+## @param age Submissions, not read
 hook nvnDeviceApplyDeferredFinalizes(NVNdevice* d, i32 age)
+## @brief Get the flags of a device builder
+## @param b Pointer to the device builder, NULL is invalid
+## @return The flags nvnDeviceBuilderSetFlags gave, 0 after nvnDeviceBuilderSetDefaults
 hook nvnDeviceBuilderGetFlags(const NVNdeviceBuilder* b) -> i32
+## @brief End a device: its object is not valid any more, and nothing is freed
+## @param d Pointer to the device, NULL is invalid. If it is the current device (the last nvnDeviceInitialize made),
+##   ScarletNX has no current device after it
 hook nvnDeviceFinalize(NVNdevice* d)
+## @brief Make the ID of a debug domain
+## @param d Pointer to the device, not read
+## @param name Name of the domain, not read
+## @return A new ID, counting up from 0 at each call (one counter for the whole game)
 hook nvnDeviceGenerateDebugDomainId(const NVNdevice* d, const char* name) -> i32
+## @brief Set the function a debug layer calls with its messages: no effect, ScarletNX never calls it
+## @param d Pointer to the device, not read
+## @param fn Function, never called
+## @param data Passed to fn, not read
+## @param enable true or false, both ignored
 hook nvnDeviceInstallDebugCallback(NVNdevice* d, PFNNVNDEBUGCALLBACKPROC fn, void* data, bool enable)
+## @brief Tell whether an external debugger is attached
+## @param d Pointer to the device, not read
+## @return false always: ScarletNX has no external debugger
 hook nvnDeviceIsExternalDebuggerAttached(const NVNdevice* d) -> bool
+## @brief Register a color as a fast clear value, as signed integers (a hint for compression): no effect
+## @param d Pointer to the device, not read
+## @param color Pointer to 4 integers, RGBA (guess), not read
+## @param format Format of the color, not read
+## @return true always
 hook nvnDeviceRegisterFastClearColori(NVNdevice* d, const i32* color, NVNformat format) -> bool
+## @brief Register a color as a fast clear value, as unsigned integers (a hint for compression): no effect
+## @param d Pointer to the device, not read
+## @param color Pointer to 4 unsigned integers, RGBA (guess), not read
+## @param format Format of the color, not read
+## @return true always
 hook nvnDeviceRegisterFastClearColorui(NVNdevice* d, const u32* color, NVNformat format) -> bool
+## @brief Turn automatic checkpoints by debug group on or off (guess: a checkpoint at each debug group): no effect
+## @param d Pointer to the device, not read
+## @param on true or false, both ignored
+## @return true always
 hook nvnDeviceSetAutomaticCheckpointsByDebugGroup(NVNdevice* d, bool on) -> bool
+## @brief Turn automatic checkpoints on or off: no effect, ScarletNX records no checkpoints
+## @param d Pointer to the device, not read
+## @param on true or false, both ignored
+## @return true always
 hook nvnDeviceSetAutomaticCheckpointsEnable(NVNdevice* d, bool on) -> bool
+## @brief Choose what the automatic checkpoints record: no effect
+## @param d Pointer to the device, not read
+## @param mask Bits of the kinds to record (guess), not read
+## @return true always
 hook nvnDeviceSetAutomaticCheckpointsMask(NVNdevice* d, u32 mask) -> bool
+## @brief Set how often the automatic checkpoints are taken: no effect
+## @param d Pointer to the device, not read
+## @param interval Interval (guess: in commands between checkpoints), not read
+## @return true always
 hook nvnDeviceSetAutomaticCheckpointsSamplingInterval(NVNdevice* d, u32 interval) -> bool
+## @brief Turn the call stacks of the checkpoints on or off: no effect
+## @param d Pointer to the device, not read
+## @param on true or false, both ignored
+## @return true always
 hook nvnDeviceSetCheckpointCallStacksEnable(NVNdevice* d, bool on) -> bool
+## @brief Set the deepest call stack a checkpoint keeps: no effect
+## @param d Pointer to the device, not read
+## @param depth Frames (guess), not read
+## @return true always
 hook nvnDeviceSetCheckpointMaxCallStacksDepth(NVNdevice* d, i32 depth) -> bool
+## @brief Turn the intermediate shader cache of the offline shader compiler on or off: no effect
+## @param d Pointer to the device, not read
+## @param on true or false (guess), both ignored
 hook nvnDeviceSetIntermediateShaderCache(NVNdevice* d, i32 on)
+## @brief Walk the objects of a kind the debug layer knows: no effect, ScarletNX has no debug database
+## @param d Pointer to the device, not read
+## @param type Kind of object (NVN_DEBUG_OBJECT_TYPE_*), not read
+## @param fn Function to call for each, never called
+## @param data Passed to fn, not read
 hook nvnDeviceWalkDebugDatabase(const NVNdevice* d, NVNdebugObjectType type, PFNNVNWALKDEBUGDATABASECALLBACKPROC fn, void* data)
+## @brief Set a device builder to its defaults: no flags
+## @param b Pointer to the device builder, NULL is invalid
 hook nvnDeviceBuilderSetDefaults(NVNdeviceBuilder* b)
+## @brief Set the flags of a device builder, which the device initialized from it takes
+## @param b Pointer to the device builder, NULL is invalid
+## @param flags OR of NVNdeviceFlagBits. NVN_DEVICE_FLAG_ENABLE_SEPARATE_SAMPLER_TEXTURE_SUPPORT makes
+##   nvnQueueBuilderGetQueueMemorySize ask for more memory. NVN_DEVICE_FLAG_MAXWELL_GOB keeps the Maxwell GOB for an
+##   Ounce game's surfaces. The other bits are kept and have no effect
 hook nvnDeviceBuilderSetFlags(NVNdeviceBuilder* b, i32 flags)
+## @brief Get the handle of an image: its ID
+## @param d Pointer to the device, not read
+## @param id Image ID
+## @return id, zero-extended from 32 bits
 hook nvnDeviceGetImageHandle(const NVNdevice* d, i32 id) -> u64
+## @brief Give up the handle of a recording: no effect, its commands stay in the game's memory
+## @param d Pointer to the device, not read
+## @param handle Command handle, not read
 hook nvnDeviceFinalizeCommandHandle(NVNdevice* d, u64 handle)
+## @brief Get the time of the GPU, in nanoseconds
+## @param d Pointer to the device, not read
+## @return The GPU's time now
 hook nvnDeviceGetCurrentTimestampInNanoseconds(const NVNdevice* d) -> u64
+## @brief Get the depth mode of a device
+## @param d Pointer to the device, NULL is invalid
+## @return The mode nvnDeviceSetDepthMode gave, NVN_DEPTH_MODE_NEAR_IS_MINUS_W after nvnDeviceInitialize
 hook nvnDeviceGetDepthMode(const NVNdevice* d) -> NVNdepthMode
+## @brief Get an integer of the device, such as its API version, a limit or an alignment
+## @param d Pointer to the device, not read
+## @param what Item (NVN_DEVICE_INFO_*): the game's driver's answer, when ScarletNX finds it in the driver's code,
+##   else ScarletNX's table's (0x62, and from 0x69, are 0). An item past 0xB0 is 0
+## @param out Pointer to where the integer goes, NULL is invalid
 hook nvnDeviceGetInteger(const NVNdevice* d, NVNdeviceInfo what, i32* out)
+## @brief Get the window origin mode of a device
+## @param d Pointer to the device, NULL is invalid
+## @return The mode nvnDeviceSetWindowOriginMode gave, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT after nvnDeviceInitialize
 hook nvnDeviceGetWindowOriginMode(const NVNdevice* d) -> NVNwindowOriginMode
+## @brief Get the handle of a sampler for a separate binding: its ID << 20
+## @param d Pointer to the device, not read
+## @param id Sampler ID
+## @return id << 20
 hook nvnDeviceGetSeparateSamplerHandle(const NVNdevice* d, i32 id) -> u64
+## @brief Get the handle of a texture for a separate binding: its ID with bit 32 set
+## @param d Pointer to the device, not read
+## @param id Texture ID
+## @return id sign-extended to 64 bits, with bit 32 set
 hook nvnDeviceGetSeparateTextureHandle(const NVNdevice* d, i32 id) -> u64
+## @brief Get the handle of a texture for texel fetches: its ID with bit 32 set, as nvnDeviceGetSeparateTextureHandle
+## @param d Pointer to the device, not read
+## @param id Texture ID
+## @return id sign-extended to 64 bits, with bit 32 set
 hook nvnDeviceGetTexelFetchHandle(const NVNdevice* d, i32 id) -> u64
+## @brief Get a combined handle of a texture and a sampler
+## @param d Pointer to the device, not read
+## @param texture Texture ID: the bits past its 20 low ones overlap the sampler's
+## @param sampler Sampler ID
+## @return texture | sampler << 20
 hook nvnDeviceGetTextureHandle(const NVNdevice* d, i32 texture, i32 sampler) -> u64
+## @brief Get the timestamp of a counter, in nanoseconds. A report the GPU has not written yet is waited for
+## @param d Pointer to the device, not read
+## @param counter Pointer to the counter data, NULL is invalid
+## @return Its timestamp as nanoseconds
 hook nvnDeviceGetTimestampInNanoseconds(const NVNdevice* d, const NVNcounterData* counter) -> u64
+## @brief Make a device from a builder: its flags, and the defaults lower-left window origin and near = -w depth
+## @param d Pointer to the device to make, NULL is invalid. It becomes the current device
+## @param b Pointer to the device builder, NULL is invalid
+## @return true always
 hook nvnDeviceInitialize(NVNdevice* d, const NVNdeviceBuilder* b) -> bool
+## @brief Register a color as a fast clear value, as floats (a hint for compression): no effect
+## @param d Pointer to the device, not read
+## @param color Pointer to 4 floats, RGBA (guess), not read
+## @param format Format of the color, not read
+## @return true always
 hook nvnDeviceRegisterFastClearColor(NVNdevice* d, const f32* color, NVNformat format) -> bool
+## @brief Register a depth as a fast clear value (a hint for compression): no effect
+## @param d Pointer to the device, not read
+## @param depth Depth, not read
+## @return true always
 hook nvnDeviceRegisterFastClearDepth(NVNdevice* d, f32 depth) -> bool
+## @brief Register a stencil as a fast clear value (a hint for compression): no effect
+## @param d Pointer to the device, not read
+## @param stencil Stencil value, not read
+## @return true always
 hook nvnDeviceRegisterFastClearStencil(NVNdevice* d, i32 stencil) -> bool
+## @brief Get the memory an acceleration structure needs: 0x10000 for each size (guess: made up, no ray tracing yet)
+## @param d Pointer to the device, not read
+## @param info Build info, not read
+## @param size Pointer to where the structure's size goes, NULL is invalid
+## @param scratch Pointer to where the build scratch size goes, NULL is invalid
+## @param update_scratch Pointer to where the update scratch size goes, NULL is invalid
 hook nvnDeviceCalculateAccelerationStructureMemoryRequirements(NVNdevice* d, const void* info, u64* size, u64* scratch, u64* update_scratch)
+## @brief Set the depth mode of a device, for the draws after it
+## @param d Pointer to the device, NULL is invalid
+## @param mode NVN_DEPTH_MODE_NEAR_IS_MINUS_W (depth from -w) or NVN_DEPTH_MODE_NEAR_IS_ZERO (from 0).
+##   Other values are invalid
 hook nvnDeviceSetDepthMode(NVNdevice* d, NVNdepthMode mode)
+## @brief Set the window origin mode of a device: where row 0 of the window is
+## @param d Pointer to the device, NULL is invalid
+## @param mode NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT or NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT. Other values are invalid.
+##   A queue takes the flip of its draws when it is initialized, so set it before nvnQueueInitialize
 hook nvnDeviceSetWindowOriginMode(NVNdevice* d, NVNwindowOriginMode mode)
 # the Ounce's device command buffers and device messages (API 231)
+## @brief Get the handle of a uniform buffer (Ounce, API 231)
+## @param d Pointer to the device, not read
+## @param address Buffer address, its low 4 bits dropped
+## @param size Size in bytes, rounded up to 16. Over 0x7FFFF0 is invalid: it does not fit the handle
+## @return address / 16 in bits 0 to 44, the size / 16 rounded up in bits 45 to 63
 hook nvnDeviceGetUniformBufferHandle(NVNdevice* d, u64 address, u64 size) -> u64
+## @brief Set a device command buffer to its defaults, the device kept (Ounce, API 231)
+## @param b Pointer to the device command buffer, NULL is invalid
 hook nvnDeviceCommandBufferSetDefaults(NVNdeviceCommandBuffer* b)
+## @brief Set the device of a device command buffer (Ounce, API 231)
+## @param b Pointer to the device command buffer, NULL is invalid
+## @param d Pointer to the device, kept as given
 hook nvnDeviceCommandBufferSetDevice(NVNdeviceCommandBuffer* b, NVNdevice* d)
+## @brief Set the memory of a device command buffer (Ounce, API 231): kept, ScarletNX runs no device command buffer
+## @param b Pointer to the device command buffer, NULL is invalid
+## @param pool Pointer to the memory pool, kept as given
+## @param offset Offset in the pool, in bytes (guess), kept as given
+## @param size Size in bytes (guess), kept as given
 hook nvnDeviceCommandBufferSetStorage(NVNdeviceCommandBuffer* b, NVNmemoryPool* pool, i64 offset, u64 size)
+## @brief Set the command memory size of a device command buffer (Ounce, API 231): kept, no effect
+## @param b Pointer to the device command buffer, NULL is invalid
+## @param size Size in bytes (guess)
 hook nvnDeviceCommandBufferSetCommandMemorySize(NVNdeviceCommandBuffer* b, u64 size)
+## @brief Set the compute memory size of a device command buffer (Ounce, API 231): kept, no effect
+## @param b Pointer to the device command buffer, NULL is invalid
+## @param size Size in bytes (guess)
 hook nvnDeviceCommandBufferSetComputeMemorySize(NVNdeviceCommandBuffer* b, u64 size)
+## @brief Set a device message buffer to its defaults, the device kept (Ounce, API 231)
+## @param b Pointer to the device message buffer, NULL is invalid
 hook nvnDeviceMessageBufferSetDefaults(NVNdeviceMessageBuffer* b)
+## @brief Set the device of a device message buffer (Ounce, API 231)
+## @param b Pointer to the device message buffer, NULL is invalid
+## @param d Pointer to the device, kept as given
 hook nvnDeviceMessageBufferSetDevice(NVNdeviceMessageBuffer* b, NVNdevice* d)
+## @brief Set the memory of a device message buffer (Ounce, API 231): kept, no effect
+## @param b Pointer to the device message buffer, NULL is invalid
+## @param pool Pointer to the memory pool, kept as given
+## @param offset Offset in the pool, in bytes (guess), kept as given
+## @param size Size in bytes (guess), kept as given
 hook nvnDeviceMessageBufferSetStorage(NVNdeviceMessageBuffer* b, NVNmemoryPool* pool, i32 offset, i32 size)
+## @brief End the messages of a device message buffer: its begin and end are set to 0 (Ounce, API 231)
+## @param b Pointer to the device message buffer, NULL is invalid
 hook nvnDeviceMessageBufferEndMessages(NVNdeviceMessageBuffer* b)
 
 family memory_pool
