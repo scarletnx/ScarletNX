@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include "common/utilities/sdl_desktop.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_text.h"
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
 #endif
@@ -701,6 +702,7 @@ typedef struct App {
     int peek_rows[GUI_VIEW_ROWS];
     int pad_map, pad_swap, pad_player; /* the button map's settings: its map's row and its swap's, for which player */
     int device_listen; /* a player's Controller row waiting for a press on the controller it takes, + 1; 0 for none */
+    int key_listen;    /* a Shortcuts row waiting for the key it takes, its setting + 1; 0 for none */
     SDL_Gamepad* listened[16]; /* the controllers open meanwhile: a press comes only from an open one */
     int listened_count;
     bool theme_from_app;       /* the theme editor goes back to the App's rows */
@@ -12887,6 +12889,93 @@ static bool device_event(App* app, const SDL_Event* e) {
                e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN;
     return true;
 }
+/* ---- a Shortcuts row's key: Enter waits for the one pressed, with the modifiers held, which the row then holds (as the
+   game's menu's Shortcuts page takes one). ESC keeps the one it has, Backspace gives back its default; a key another
+   row has is refused, said ---- */
+static bool shortcut_row(const GuiSettings* s, int row) {
+    return row >= 0 && row < s->count && !s->values[row].kind && s->values[row].key &&
+           !strncmp(s->values[row].key, "hotkey_", 7);
+}
+/* the key row's shortcut has, as its text (its pick's, the launcher's for a game's own, else the default's) */
+static const char* shortcut_text(App* app, int row) {
+    GuiSettings* s = screen_settings(app);
+    const char* key = s->values[row].key;
+    const char* value = gui_settings_value(s, key);
+    if (!value && app->own_picks) value = gui_settings_value(&app->settings, key);
+    return value ? value : s->values[row].def ? s->values[row].def : "";
+}
+static const char* shortcut_shown(App* app, int row) {
+    const char* text = shortcut_text(app, row);
+    return *text ? text : snx_tr("no key");
+}
+static void key_listen(App* app, int row) {
+    app->key_listen = row + 1;
+    snprintf(app->editor.note, sizeof app->editor.note,
+             snx_tr("Press the key for %s (ESC keeps %s, Backspace: its default)"),
+             snx_tr(screen_settings(app)->keys[row].key), shortcut_shown(app, row));
+}
+/* the row of another shortcut with key and mods, -1 for none */
+static int key_taken(App* app, int row, unsigned key, unsigned mods) {
+    GuiSettings* s = screen_settings(app);
+    unsigned k, m;
+    char why[160];
+    for (int r = 0; r < s->count; ++r)
+        if (r != row && shortcut_row(s, r) && !snx_key_parse(shortcut_text(app, r), &k, &m, why, sizeof why) && k &&
+            k == key && m == mods)
+            return r;
+    return -1;
+}
+static void key_stop(App* app) { app->key_listen = 0; }
+/* key with mods into the listening row's shortcut, unless another shortcut has it: the note says */
+static void key_give(App* app, unsigned key, unsigned mods) {
+    GuiSettings* s = screen_settings(app);
+    int row = app->key_listen - 1, other = key_taken(app, row, key, mods);
+    char name[64];
+    snx_key_name(key, mods, name, sizeof name);
+    key_stop(app);
+    if (other >= 0) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s already does %s: %s keeps %s"), name,
+                 snx_tr(s->keys[other].key), snx_tr(s->keys[row].key), shortcut_shown(app, row));
+        return;
+    }
+    gui_settings_set(s, s->values[row].key, name);
+    app->editor.dirty = true;
+    keep_settings(app);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[row].key), shortcut_shown(app, row));
+}
+/* while a Shortcuts row waits: a key takes it (a modifier waits for one), ESC keeps the row's, and any other input
+   stops the waiting and goes on as itself */
+static bool key_listen_event(App* app, const SDL_Event* e) {
+    unsigned key, mods;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN) {
+        key_stop(app);
+        return false;
+    }
+    if (e->type != SDL_EVENT_KEY_DOWN) return e->type == SDL_EVENT_TEXT_INPUT; /* the key's own text */
+    if (e->key.repeat || snx_key_modifier((unsigned)e->key.key)) return true;
+    key = (unsigned)e->key.key;
+    mods = snx_key_mods((unsigned)e->key.mod);
+    if (key == SDLK_ESCAPE || key == SDLK_AC_BACK) {
+        int row = app->key_listen - 1;
+        key_stop(app);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s keeps %s"),
+                 snx_tr(screen_settings(app)->keys[row].key), shortcut_shown(app, row));
+        return true;
+    }
+    if (key == SDLK_BACKSPACE && !mods) { /* the row's default, as Del puts it back */
+        GuiSettings* s = screen_settings(app);
+        int row = app->key_listen - 1;
+        key_stop(app);
+        gui_settings_reset(s, row);
+        app->editor.dirty = true;
+        keep_settings(app);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[row].key),
+                 shortcut_shown(app, row));
+        return true;
+    }
+    key_give(app, key, mods);
+    return true;
+}
 static bool pad_event(App* app, const SDL_Event* e) {
     SDL_JoystickID ours = app->gamepad ? SDL_GetGamepadID(app->gamepad) : 0;
     switch (e->type) {
@@ -13056,6 +13145,13 @@ static void editor_key(App* app, GuiKey key) {
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         player_key(screen_settings(app)->values[setting_of(app, app->editor.row)].key, "device")) {
         device_listen(app, setting_of(app, app->editor.row));
+        return;
+    }
+    /* a Shortcuts row takes the key pressed next, as the game's menu's page does */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        shortcut_row(screen_settings(app), setting_of(app, app->editor.row))) {
+        key_listen(app, setting_of(app, app->editor.row));
         return;
     }
     /* a slider's row: Left/Right step it, Enter up as a word's, to its ends and never round (Mute a step from the
@@ -23389,6 +23485,8 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if (app->closing_ms) return; /* closing: nothing else is taken */
+    if (app->key_listen && app->editing && key_listen_event(app, e))
+        return; /* a shortcut row's key, whatever it does */
     /* a drag's first and last event, whatever shows: no screen takes them */
     if (e->type == SDL_EVENT_DROP_BEGIN || e->type == SDL_EVENT_DROP_COMPLETE) {
         app->dropping = e->type == SDL_EVENT_DROP_BEGIN;
