@@ -184,6 +184,62 @@ typedef u64 (*Step)(CPU* c);
 /* FPCR.FZ set, as many games run: operands and results the host's arithmetic gives exactly, an exact zero among them,
    take the inline code with no helper call (snx_x64_fp_calls); a denormal operand, which FZ flushes, takes the helper
    and its IDC. FPSR's IXC is set first, as the inline code needs where an operation may be inexact */
+/* CASP X0, X1, X2, X3, [X4] of doublewords (LOCK CMPXCHG16B, the new pair from R8 and R9): where memory holds X0:X1
+   it takes X2:X3, X3 the machine instruction's sixth input; else it keeps its pair; X0:X1 the old pair either way.
+   Made on this host and the plain one, with every register and with three (spills) */
+static size_t check_casp(void) {
+    static const u64 old[2] = {0x1111111111111111ull, 0x2222222222222222ull};
+    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+    size_t failures = 0;
+    int pool = snx_x64_pool();
+    if (code == MAP_FAILED) {
+        fprintf(stderr, "FAIL: CASP: no memory for the code\n");
+        return 1;
+    }
+    for (int variant = 0; variant < 4; ++variant) {
+        unsigned features = variant & 1 ? SNX_X64_BASELINE : host_features();
+        snx_x64_set_pool(variant & 2 ? 3 : pool);
+        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+            !snx_x64_step(0x48207C82u, 0x1000, TARGET, features, code, CODE_MAX) ||
+            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            fprintf(stderr, "FAIL: CASP X0, X1, X2, X3, [X4]: not made (variant %d)\n", variant);
+            ++failures;
+            continue;
+        }
+        for (int match = 0; match < 2; ++match) {
+            CPU c;
+            u64 now[2];
+            unsigned char* at = g_test.memory[0] + MEMORY_ZERO + 0x1000;
+            memcpy(at, old, sizeof old);
+            memset(&c, 0, sizeof c);
+            c.x[0] = match ? old[0] : 0x9999999999999999ull;
+            c.x[1] = old[1];
+            c.x[2] = 0x3333333333333333ull;
+            c.x[3] = 0x4444444444444444ull;
+            c.x[4] = 0x1000;
+            c.mem = g_test.memory[0] + MEMORY_ZERO;
+            c.rt = &rt;
+            c.pc = 0x1000;
+            run_step((Step)(void*)code, &c);
+            memcpy(now, at, sizeof now);
+            u64 want0 = match ? c.x[2] : old[0], want1 = match ? 0x4444444444444444ull : old[1];
+            if (now[0] != want0 || now[1] != want1 || c.x[0] != old[0] || c.x[1] != old[1]) {
+                fprintf(stderr,
+                        "FAIL: CASP %s (variant %d): memory %016llx %016llx (want %016llx %016llx), X0 %016llx X1 "
+                        "%016llx (want the old pair)\n",
+                        match ? "where memory matches" : "where it doesn't", variant, (unsigned long long)now[0],
+                        (unsigned long long)now[1], (unsigned long long)want0, (unsigned long long)want1,
+                        (unsigned long long)c.x[0], (unsigned long long)c.x[1]);
+                ++failures;
+            }
+        }
+    }
+    snx_x64_set_pool(pool);
+    munmap(code, CODE_MAX);
+    printf("CASP of doublewords, 4 ways made, matching and not: %zu failures\n", failures);
+    return failures;
+}
 static size_t check_fz_hot(void) {
     static const struct {
         u32 word;
@@ -305,6 +361,7 @@ int main(int argc, char** argv) {
         if (g_test.memory[k] == MAP_FAILED) return 1;
     }
     failures += check_fz_hot();
+    failures += check_casp();
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
