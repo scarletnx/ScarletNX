@@ -204,6 +204,69 @@ static inline void rk_call_reloc(SgXBuf* b) {
     rv_w(b, sge_rv64_auipc(RV_RA, 0));
     rv_w(b, sge_rv64_jalr(RV_RA, RV_RA, 0));
 }
+/* a tail call by the object's relocation (R_RISCV_CALL_PLT of AUIPC t6 and JALR x0) */
+static inline void rk_tail_reloc(SgXBuf* b) {
+    rv_w(b, sge_rv64_auipc(RK_SA, 0));
+    rv_w(b, sge_rv64_jalr(RV_ZERO, RK_SA, 0));
+}
+static inline void rk_jump_reg(SgXBuf* b, int r) { rv_w(b, sge_rv64_jalr(RV_ZERO, (SnxU32)r, 0)); }
+/* a call's or tail call's AUIPC and JALR at at made to reach to (within 2 GiB): 0, -1 out of reach */
+static inline int rk_patch_call(SgXBuf* b, size_t at, size_t to) {
+    long long d = (long long)to - (long long)at, lo = (long long)((SnxU64)d << 52) >> 52;
+    SnxU32 auipc, jalr;
+    if (at + 8 > b->cap) return 0;
+    if (d < -(1ll << 31) || d >= (1ll << 31) - 0x800) return -1;
+    auipc = rv_word_at(b, at), jalr = rv_word_at(b, at + 4);
+    rv_word_put(b, at, sge_rv64_auipc((auipc >> 7) & 31, (SnxU32)(((d - lo) >> 12) & 0xfffff)));
+    rv_word_put(b, at + 4, sge_rv64_jalr((jalr >> 7) & 31, (jalr >> 15) & 31, rv_i12(lo)));
+    return 0;
+}
+/* d = the address of an 8-byte absolute address in the code (its relocation's place, which this gives): JAL d over
+   it, the link its address */
+static inline size_t rk_literal(SgXBuf* b, int d) {
+    size_t at;
+    rv_w(b, sge_rv64_jal((SnxU32)d, 6)); /* 12 bytes on */
+    at = b->n;
+    sgx_imm(b, 0, 8);
+    return at;
+}
+/* a function's frame: ra, s0, s1 and (pinned) s2-s11 saved, s0 the caller's sp, s1 the state; then sp -= the slots'
+   room, LUI and ADDIW of t6 patched (rk_fn_patch_frame; the place this gives); the epilogue gives sp back from s0 */
+static inline size_t rk_fn_prologue(SgXBuf* b, int pinned) {
+    size_t at;
+    int k;
+    rv_w(b, sge_rv64_addi(RV_SP, RV_SP, rv_i12(-112)));
+    rv_w(b, sge_rv64_sd(RV_RA, RV_SP, 104));
+    rv_w(b, sge_rv64_sd(RV_S0, RV_SP, 96));
+    rv_w(b, sge_rv64_sd(9, RV_SP, 88));
+    if (pinned)
+        for (k = 0; k < 10; ++k) rv_w(b, sge_rv64_sd(18u + (SnxU32)k, RV_SP, 8u * (SnxU32)k));
+    rv_w(b, sge_rv64_addi(RV_S0, RV_SP, 112));
+    rk_mv(b, 9, 10);
+    at = b->n;
+    rv_w(b, sge_rv64_lui(RK_SA, 0));
+    rv_w(b, sge_rv64_addiw(RK_SA, RK_SA, 0));
+    rv_w(b, sge_rv64_sub(RV_SP, RV_SP, RK_SA));
+    return at;
+}
+static inline void rk_fn_epilogue(SgXBuf* b, int pinned) {
+    int k;
+    rv_w(b, sge_rv64_addi(RV_SP, RV_S0, rv_i12(-112)));
+    if (pinned)
+        for (k = 0; k < 10; ++k) rv_w(b, sge_rv64_ld(18u + (SnxU32)k, RV_SP, 8u * (SnxU32)k));
+    rv_w(b, sge_rv64_ld(9, RV_SP, 88));
+    rv_w(b, sge_rv64_ld(RV_S0, RV_SP, 96));
+    rv_w(b, sge_rv64_ld(RV_RA, RV_SP, 104));
+    rv_w(b, sge_rv64_addi(RV_SP, RV_SP, 112));
+}
+static inline int rk_fn_patch_frame(SgXBuf* b, size_t at, long long size) {
+    long long lo = (long long)((SnxU64)size << 52) >> 52;
+    if (size >= (1ll << 31) - 0x800) return 0;
+    if (at + 8 > b->cap) return 1;
+    rv_word_put(b, at, sge_rv64_lui(RK_SA, (SnxU32)(((size + 0x800) >> 12) & 0xfffff)));
+    rv_word_put(b, at + 4, sge_rv64_addiw(RK_SA, RK_SA, rv_i12(lo)));
+    return 1;
+}
 /* FENCE RW, RW (every barrier: RISC-V's loads and stores are no acquires or releases) */
 static inline void rk_fence(SgXBuf* b) { rv_w(b, sge_rv64_fence(3, 3)); }
 static inline void rk_nop(SgXBuf* b) { rv_w(b, sge_rv64_addi(RV_ZERO, RV_ZERO, 0)); }

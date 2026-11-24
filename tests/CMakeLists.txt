@@ -3935,18 +3935,22 @@ add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
 add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words
          0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
-# the arm64 back end against LLVM, function by function, its code under Unicorn on any host (where installed)
+# the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
+# host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
-    add_executable(snx-test-recompiler-arm64 recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c
-                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
-                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-    snx_cpu_helpers_flags(snx-test-recompiler-arm64)
-    snx_test_target(snx-test-recompiler-arm64 gnu23)
-    target_compile_definitions(snx-test-recompiler-arm64 PRIVATE SNX_TEST_ARM64=1)
-    target_include_directories(snx-test-recompiler-arm64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
-    target_link_libraries(snx-test-recompiler-arm64 PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
-    snx_decodetree_a64(snx-test-recompiler-arm64)
-    add_test(NAME recompiler_arm64 COMMAND snx-test-recompiler-arm64)
+    foreach(m arm64 rv64)
+        string(TOUPPER "${m}" upper)
+        add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+        snx_cpu_helpers_flags(snx-test-recompiler-${m})
+        snx_test_target(snx-test-recompiler-${m} gnu23)
+        target_compile_definitions(snx-test-recompiler-${m} PRIVATE SNX_TEST_${upper}=1)
+        target_include_directories(snx-test-recompiler-${m} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+        target_link_libraries(snx-test-recompiler-${m} PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
+        snx_decodetree_a64(snx-test-recompiler-${m})
+        add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m})
+    endforeach()
     # its A32 blocks (arm64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host registers
     add_executable(snx-test-arm-arm64 arm_x64.c support/host_unicorn.c)
     snx_test_target(snx-test-arm-arm64 gnu23)
