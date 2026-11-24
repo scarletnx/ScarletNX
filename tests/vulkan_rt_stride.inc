@@ -108,3 +108,82 @@ static int check_rt_stride(void) {
          "when another format class takes the address");
     return 0;
 }
+
+/* What one target per address must not fuse, and what it must. The 64 by 64 target of a game's stride is the holder of
+   its address, then parked by another shape; each other shape asked while it is either stays a target of its own: a
+   layer more, a volume, another block height, width, height, format, sample count or pitch. The padding alone fuses:
+   the copy's least stride, a greater one (which stays), and no smaller one lowers it */
+#define RSTS_CPU (HEAP_BASE + 0x3a000000)
+#define RSTS_GVA 0xb80000000ull
+static Surf* rsts_other(u64 gva, int n) {
+    switch (n) {
+    case 0: return vk_rt_array(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 2, 0x8000, 0, DS_MSAA_1X1);
+    case 1: return vk_rt_array(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 1, 0, 1, DS_MSAA_1X1);
+    case 2: return vk_rt_array(gva, RSTR_W, RSTR_H, RSTR_FMT, 3u << 4, 0, 1, 0, 0, DS_MSAA_1X1);
+    case 3: return vk_rt_array(gva, RSTR_W, RSTR_H / 2, RSTR_FMT, RSTR_TILE, 0, 1, 0, 0, DS_MSAA_1X1);
+    case 4: return vk_rt_array(gva, RSTR_W / 2, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 1, 0, 0, DS_MSAA_1X1);
+    case 5: return rstr_target(gva, RSTR_FMT_ALT, 0);
+    case 6: return vk_rt_array(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 1, 0, 0, DS_MSAA_2X1);
+    default: return NULL;
+    }
+}
+#define RSTS_OTHERS 7
+static int check_rt_stride_apart(void) {
+    CHECK(mem_map(RSTS_CPU, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(RSTS_GVA, RSTS_CPU, 0x200000);
+    memset(GP(RSTS_CPU), 0x40, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    Surf* t = rstr_target(RSTS_GVA, RSTR_FMT, RSTR_STRIDE);
+    CHECK(t);
+    CHECK(vk_rt(RSTS_GVA, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0) == t && t->layer_size == RSTR_STRIDE);
+    CHECK(rstr_target(RSTS_GVA, RSTR_FMT, RSTR_STRIDE + 0x80000) == t && t->layer_size == RSTR_STRIDE + 0x80000);
+    CHECK(rstr_target(RSTS_GVA, RSTR_FMT, RSTR_STRIDE) == t && t->layer_size == RSTR_STRIDE + 0x80000);
+    /* parked, then named with more padding than it had: it keeps the greater */
+    CHECK(rstr_other(RSTS_GVA) != t && (t->gva >> 63));
+    CHECK(rstr_target(RSTS_GVA, RSTR_FMT, RSTR_STRIDE + 0x100000) == t && t->layer_size == RSTR_STRIDE + 0x100000);
+    for (int n = 0; n < RSTS_OTHERS; n++)
+        for (int parked = 0; parked < 2; parked++) {
+            const u64 g = RSTS_GVA + 0x40000 + (u64)(n * 2 + parked) * 0x10000;
+            Surf* k = rstr_target(g, RSTR_FMT, RSTR_STRIDE);
+            CHECK(k);
+            if (parked) CHECK(rstr_other(g) != k && (k->gva >> 63));
+            Surf* x = rsts_other(g, n);
+            if (x == k) { /* none where the device makes no target of that shape */
+                fprintf(stderr, "shape %d asked at %llx with the 64x64 target %s: %p is the 64x64 one\n", n,
+                        (unsigned long long)g, parked ? "parked" : "holding the address", (void*)x);
+                return 1;
+            }
+        }
+    /* a target of more layers, or a volume, is not the 64 by 64 one's, holding the address or parked */
+    for (int n = 0; n < 2; n++)
+        for (int parked = 0; parked < 2; parked++) {
+            const u64 g = RSTS_GVA + 0x180000 + (u64)(n * 2 + parked) * 0x10000;
+            Surf* k = rsts_other(g, n);
+            CHECK(k);
+            if (parked) CHECK(rstr_other(g) != k && (k->gva >> 63));
+            CHECK(vk_rt(g, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0) != k);
+        }
+    /* pitch linear: the least stride of its pitch fuses, another pitch does not */
+    Surf* p = vk_rt_array(RSTS_GVA + 0x1c0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 256, 1, RSTR_STRIDE, 0, DS_MSAA_1X1);
+    CHECK(p && vk_rt(RSTS_GVA + 0x1c0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 0, 256) == p);
+    CHECK(vk_rt(RSTS_GVA + 0x1c0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 0, 512) != p);
+    Surf* q =
+        vk_rt_array(RSTS_GVA + 0x1d0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 256, 1, RSTR_STRIDE, 0, DS_MSAA_1X1);
+    CHECK(q && rstr_other(RSTS_GVA + 0x1d0000) != q && (q->gva >> 63));
+    CHECK(vk_rt(RSTS_GVA + 0x1d0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 0, 512) != q);
+    /* two layers of another class and another stride: only their first layers are the same memory, so the pixels of
+       neither are the other's, and memory is loaded */
+    Surf* two = vk_rt_array(RSTS_GVA + 0x1e0000, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 2, 0x8000, 0, DS_MSAA_1X1);
+    CHECK(two);
+    rstr_clear(two, RSTR_GREEN);
+    Surf* twice = vk_rt_array(RSTS_GVA + 0x1e0000, RSTR_W, RSTR_H, RSTR_FMT_ALT, RSTR_TILE, 0, 2, 0x10000, 0,
+                              DS_MSAA_1X1);
+    CHECK(twice && twice != two);
+    vk_unlock();
+    CHECK(ct_texel(twice, 0, 0) == 0x40404040u);
+    CHECK(mem_unmap(RSTS_CPU, 0x200000) == 0);
+    puts("render targets apart: the holder is one target, its stride never lowered, and layers, volumes and other "
+         "shapes stay targets of their own");
+    return 0;
+}
