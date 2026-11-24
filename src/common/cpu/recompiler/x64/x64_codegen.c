@@ -15,6 +15,9 @@
    The object is ELF x86-64, as LLVM's are: F_<address> global and hidden in the AOT module's units (library.c), so
    an LLVM unit's function calls one of these and the other way; in a JIT unit local, with the unit's table. A call
    is a PLT32 relocation, resolved here where the callee is this object's own */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* dl_iterate_phdr */
+#endif
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -25,6 +28,8 @@
 #include <stdlib.h>
 #if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
 #include <elf.h>
+#include <link.h>
+#include <stdint.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -2288,6 +2293,111 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     return 0;
 }
 
+typedef void (*FactPut)(void* user, const void* data, size_t size);
+static void fact64(FactPut put, void* user, SnxU64 v) {
+    unsigned char b[8];
+    for (unsigned i = 0; i < 8; ++i) b[i] = (unsigned char)(v >> (8 * i));
+    put(user, b, sizeof b);
+}
+/* what call_or_stub and call_target ask of target: its function (start and index), routed, imported, and a bound PLT
+   stub's words, binding and guard, with what the call of its function asks in turn */
+static void target_facts(Unit* u, SnxU64 target, FactPut put, void* user) {
+    const SnxCodegen* c = u->codegen;
+    const SnxFunction* f = snx_codegen_function(c, target);
+    SnxU32 w[3] = {0, 0, 0};
+    int guard = 0;
+    SnxU64 bound = stub_function(u, target, w, &guard);
+    fact64(put, user, target);
+    fact64(put, user, f ? (SnxU64)(f - c->functions) : ~(SnxU64)0);
+    fact64(put, user, (SnxU64)snx_codegen_routed(c, target));
+    fact64(put, user, u->options->direct ? (SnxU64)u->options->direct(u->options->direct_user, target) : 0);
+    fact64(put, user, bound);
+    if (!bound) return;
+    fact64(put, user, (SnxU64)guard);
+    for (unsigned i = 0; i < 3; ++i) fact64(put, user, w[i]);
+    fact64(put, user, bound);
+    f = snx_codegen_function(c, bound);
+    fact64(put, user, f ? (SnxU64)(f - c->functions) : ~(SnxU64)0);
+    fact64(put, user, u->options->direct ? (SnxU64)u->options->direct(u->options->direct_user, bound) : 0);
+}
+
+void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options,
+                        void (*put)(void* user, const void* data, size_t size), void* user) {
+    Unit u = {0};
+    size_t i, k;
+    u.codegen = codegen;
+    u.options = options;
+    fact64(put, user, host_features());
+    fact64(put, user, codegen->features);
+    fact64(put, user, (SnxU64)codegen->direct_svc);
+    fact64(put, user, (SnxU64)codegen->hook_direct_calls);
+    fact64(put, user, (SnxU64)options->jit);
+    fact64(put, user, (SnxU64)options->stale);
+    fact64(put, user, options->llvm_at);
+    fact64(put, user, first);
+    fact64(put, user, last);
+    for (i = first; i < last; ++i) {
+        const SnxFunction* f = &codegen->functions[i];
+        fact64(put, user, f->start);
+        fact64(put, user, f->count);
+        fact64(put, user, f->leader_count);
+        for (k = 0; k < f->count; ++k) {
+            SnxU64 address = snx_function_address(f, k), next = address + 4;
+            SnxU32 word = 0;
+            SnxA64Insn insn;
+            int guard = 0;
+            (void)snx_codegen_word((SnxCodegen*)codegen, address, &word);
+            fact64(put, user, address);
+            fact64(put, user, word);
+            fact64(put, user, (SnxU64)f->leaders[k]);
+            snx_a64_decode_word(word, codegen->features, &insn);
+            switch (insn.flow) {
+                case SNX_A64_FLOW_B:
+                case SNX_A64_FLOW_BC:
+                case SNX_A64_FLOW_BL: target_facts(&u, snx_a64_branch_target(&insn, address), put, user); break;
+                case SNX_A64_FLOW_BR:
+                    fact64(put, user, bound_function(&u, address, &guard));
+                    fact64(put, user, (SnxU64)guard);
+                    break;
+                default: break;
+            }
+            if (!(k + 1 < f->count && snx_function_address(f, k + 1) == next)) target_facts(&u, next, put, user);
+        }
+    }
+}
+
+/* the object (the executable or a library) whose segments hold the back end's code, and those segments put */
+typedef struct {
+    FactPut put;
+    void* user;
+    int found;
+} CodeWalk;
+static int code_segments(struct dl_phdr_info* info, size_t size, void* data) {
+    CodeWalk* walk = (CodeWalk*)data;
+    uintptr_t here = (uintptr_t)(void*)snx_x64_object;
+    int ours = 0;
+    (void)size;
+    for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
+        const Elf64_Phdr* p = &info->dlpi_phdr[i];
+        uintptr_t at = (uintptr_t)info->dlpi_addr + p->p_vaddr;
+        if (p->p_type == PT_LOAD && here >= at && here < at + p->p_memsz) ours = 1;
+    }
+    if (!ours) return 0;
+    /* the read-only ones alone: the writable hold what relocation and the run change */
+    for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
+        const Elf64_Phdr* p = &info->dlpi_phdr[i];
+        if (p->p_type == PT_LOAD && !(p->p_flags & PF_W))
+            walk->put(walk->user, (const void*)((uintptr_t)info->dlpi_addr + p->p_vaddr), p->p_filesz);
+    }
+    walk->found = 1;
+    return 1;
+}
+int snx_x64_code(void (*put)(void* user, const void* data, size_t size), void* user) {
+    CodeWalk walk = {put, user, 0};
+    dl_iterate_phdr(code_segments, &walk);
+    return walk.found ? 0 : -1;
+}
+
 #else
 int snx_x64_available(void) { return 0; }
 unsigned snx_x64_features(void) { return 0; }
@@ -2299,5 +2409,13 @@ int snx_x64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxX64O
     *object = NULL;
     *size = 0;
     return 0;
+}
+void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, const SnxX64Options* options,
+                        void (*put)(void* user, const void* data, size_t size), void* user) {
+    (void)codegen, (void)first, (void)last, (void)options, (void)put, (void)user;
+}
+int snx_x64_code(void (*put)(void* user, const void* data, size_t size), void* user) {
+    (void)put, (void)user;
+    return -1;
 }
 #endif

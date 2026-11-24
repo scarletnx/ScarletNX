@@ -40,6 +40,10 @@ struct SnxUnitCache {
     char stale_why[256];
     /* the keys of the objects the caller reads back (snx_unit_cache_object's key), which room() never removes */
     SnxLinkNames held;
+    /* the x86-64 back end's own code hashed (snx_x64_code) for its units' keys, once: x64_code_state 1 when x64_code
+       holds it, -1 when it cannot be (its units are then made and not kept), 0 before the first unit */
+    int x64_code_state;
+    unsigned char x64_code[32];
     size_t folder_size, identity_size;
     char bytes[];
 };
@@ -99,6 +103,7 @@ SnxUnitCache* snx_unit_cache_open(const char* folder, const SnxUnitIdentity* ide
     cache->left_bytes = cache->trimmed_bytes = cache->reserve = 0;
     cache->stale_why[0] = 0;
     memset(&cache->held, 0, sizeof cache->held);
+    cache->x64_code_state = 0;
     cache->folder_size = folder_size;
     cache->identity_size = identity_size;
     memcpy(cache->bytes, folder, folder_size);
@@ -137,11 +142,19 @@ void snx_unit_cache_disk(SnxUnitCache* cache, SnxUnitDisk disk) { cache->disk = 
 
 const char* snx_unit_cache_folder(const SnxUnitCache* cache) { return cache->bytes; }
 
+static void key_digits(const unsigned char hash[32], char key[65]) {
+    static const char digits[] = "0123456789abcdef";
+    for (unsigned i = 0; i < 32; ++i) {
+        key[2 * i] = digits[hash[i] >> 4];
+        key[2 * i + 1] = digits[hash[i] & 15];
+    }
+    key[64] = 0;
+}
+
 int snx_unit_cache_key(const SnxUnitCache* cache, const char* triple, const char* cpu, const char* features,
                        const void* bitcode, size_t size, char key[65]) {
-    static const char digits[] = "0123456789abcdef";
     unsigned char hash[32];
-    unsigned length = 0, i;
+    unsigned length = 0;
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     int ok = ctx && EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
              EVP_DigestUpdate(ctx, cache->bytes + cache->folder_size, cache->identity_size) == 1 &&
@@ -150,11 +163,7 @@ int snx_unit_cache_key(const SnxUnitCache* cache, const char* triple, const char
              EVP_DigestFinal_ex(ctx, hash, &length) == 1 && length == sizeof hash;
     EVP_MD_CTX_free(ctx);
     if (!ok) return -1;
-    for (i = 0; i < sizeof hash; ++i) {
-        key[2 * i] = digits[hash[i] >> 4];
-        key[2 * i + 1] = digits[hash[i] & 15];
-    }
-    key[64] = 0;
+    key_digits(hash, key);
     return 0;
 }
 
@@ -324,12 +333,74 @@ unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, s
     return file;
 }
 
+static void cache_lock(SnxUnitCache* cache) {
+#ifdef _WIN32
+    EnterCriticalSection(&cache->lock);
+#else
+    pthread_mutex_lock(&cache->lock);
+#endif
+}
+static void cache_unlock(SnxUnitCache* cache) {
+#ifdef _WIN32
+    LeaveCriticalSection(&cache->lock);
+#else
+    pthread_mutex_unlock(&cache->lock);
+#endif
+}
+
+/* The file kept under key when it is there whole, malloc'd, the bytes before its check in *size, its time renewed:
+   the size limit removes the objects reused longest ago first. NULL when it is not; one there but not whole, or that
+   cannot be read, said with unit as compiled again */
+static unsigned char* reuse(SnxUnitCache* cache, const char* key, const char* unit, size_t* size) {
+    char why[512], reason[256], *name = snx_format("%s.o", key);
+    char* path = snx_path_join(snx_unit_cache_folder(cache), name);
+    size_t file_size = 0, object_size = 0;
+    unsigned char* file = snx_read_file(path, &file_size);
+    if (!file) snx_os_error(reason, sizeof reason);
+    if (file && !whole(file, file_size, key, &object_size, why, sizeof why)) {
+        *size = object_size;
+        if (snx_set_file_time(path, (SnxU64)time(NULL))) {
+            snx_os_error(reason, sizeof reason);
+            cache_lock(cache);
+            if (!cache->stale++) snprintf(cache->stale_why, sizeof cache->stale_why, "%s: %s", path, reason);
+            cache_unlock(cache);
+        }
+    } else {
+        if (file)
+            snx_error("unit cache: %s is not a whole object (%s): %s is compiled again", path, why, unit);
+        else if (snx_path_exists(path))
+            snx_error("unit cache: cannot read %s (%s): %s is compiled again", path, reason, unit);
+        free(file);
+        file = NULL;
+    }
+    free(path);
+    free(name);
+    return file;
+}
+
+/* data, size bytes, kept under key where the disk has room: 0 when kept, else -1, each reason said for the first unit
+   it stops and the unit counted for the close */
+static int keep_new(SnxUnitCache* cache, const char* key, const unsigned char* data, size_t size) {
+    char why[512];
+    int rc = -1;
+    cache_lock(cache);
+    if (!room(cache, (SnxU64)size + SNX_UNIT_TRAILER)) {
+        if (!snx_unit_cache_keep(cache, key, data, size, why, sizeof why))
+            rc = 0;
+        else {
+            if (first_said(cache, UNIT_SAID_KEEP)) snx_error("unit cache: %s: this run's units are not cached", why);
+            not_cached(cache, (SnxU64)size + SNX_UNIT_TRAILER);
+        }
+    }
+    cache_unlock(cache);
+    return rc;
+}
+
 int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* kept,
                           char* error, size_t error_size) {
-    char key[65], why[512], reason[256], *triple, *cpu, *features, *name, *path;
+    char key[65], *triple, *cpu, *features;
     LLVMMemoryBufferRef bitcode;
-    unsigned char* file;
-    size_t file_size = 0, object_size = 0, length;
+    size_t length;
     const char* unit = LLVMGetModuleIdentifier(ir->mod, &length); /* code_NNN */
     int rc;
     *data = NULL;
@@ -354,65 +425,121 @@ int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, 
                  bitcode ? "OpenSSL cannot hash its IR" : "LLVM cannot write its IR as bitcode");
         return -1;
     }
-    name = snx_format("%s.o", key);
-    path = snx_path_join(snx_unit_cache_folder(cache), name);
     if (kept) hold(cache, key); /* before it is read, so that it is still there when it is read back */
-    file = snx_read_file(path, &file_size);
-    if (!file) snx_os_error(reason, sizeof reason);
-    if (file && !whole(file, file_size, key, &object_size, why, sizeof why)) {
-        *data = file;
-        *size = object_size;
+    *data = reuse(cache, key, unit, size);
+    if (*data) {
         *reused = 1;
         if (kept) memcpy(kept, key, sizeof key);
-        /* the size limit removes the objects reused longest ago first */
-        if (snx_set_file_time(path, (SnxU64)time(NULL))) {
-            snx_os_error(reason, sizeof reason);
-#ifdef _WIN32
-            EnterCriticalSection(&cache->lock);
-#else
-            pthread_mutex_lock(&cache->lock);
-#endif
-            if (!cache->stale++) snprintf(cache->stale_why, sizeof cache->stale_why, "%s: %s", path, reason);
-#ifdef _WIN32
-            LeaveCriticalSection(&cache->lock);
-#else
-            pthread_mutex_unlock(&cache->lock);
-#endif
-        }
-        free(path);
-        free(name);
         return 0;
     }
-    if (file)
-        snx_error("unit cache: %s is not a whole object (%s): %s is compiled again", path, why, unit);
-    else if (snx_path_exists(path))
-        snx_error("unit cache: cannot read %s (%s): %s is compiled again", path, reason, unit);
-    free(file);
     rc = snx_ir_object(ir, cache->opt, data, size, error, error_size);
-    if (!rc) {
-#ifdef _WIN32
-        EnterCriticalSection(&cache->lock);
-#else
-        pthread_mutex_lock(&cache->lock);
-#endif
-        if (!room(cache, (SnxU64)*size + SNX_UNIT_TRAILER)) {
-            if (!snx_unit_cache_keep(cache, key, *data, *size, why, sizeof why)) {
-                if (kept) memcpy(kept, key, sizeof key);
-            } else {
-                if (first_said(cache, UNIT_SAID_KEEP))
-                    snx_error("unit cache: %s: this run's units are not cached", why);
-                not_cached(cache, (SnxU64)*size + SNX_UNIT_TRAILER);
-            }
-        }
-#ifdef _WIN32
-        LeaveCriticalSection(&cache->lock);
-#else
-        pthread_mutex_unlock(&cache->lock);
-#endif
-    }
-    free(path);
-    free(name);
+    if (!rc && !keep_new(cache, key, *data, *size) && kept) memcpy(kept, key, sizeof key);
     return rc;
+}
+
+/* an x86-64 unit's file: SNXX64U1, its function count (8 bytes, little-endian), a byte a function (1: the back end
+   made it), then the object */
+static const char g_x64_magic[8] = {'S', 'N', 'X', 'X', '6', '4', 'U', '1'};
+#define X64_HEAD 16
+
+typedef struct {
+    EVP_MD_CTX* ctx;
+    int ok;
+} Hashing;
+static void hash_put(void* user, const void* data, size_t size) {
+    Hashing* h = (Hashing*)user;
+    if (h->ok && size) h->ok = EVP_DigestUpdate(h->ctx, data, size) == 1;
+}
+
+/* the back end's own code hashed into cache->x64_code, once: 1, or -1 said once when it cannot be */
+static int x64_code(SnxUnitCache* cache) {
+    int state;
+    cache_lock(cache);
+    if (!cache->x64_code_state) {
+        Hashing h = {EVP_MD_CTX_new(), 0};
+        unsigned length = 0;
+        int found = 0;
+        h.ok = h.ctx && EVP_DigestInit_ex(h.ctx, EVP_sha256(), NULL) == 1;
+        found = h.ok && !snx_x64_code(hash_put, &h);
+        h.ok = found && h.ok && EVP_DigestFinal_ex(h.ctx, cache->x64_code, &length) == 1 && length == 32;
+        EVP_MD_CTX_free(h.ctx);
+        cache->x64_code_state = h.ok ? 1 : -1;
+        if (!h.ok)
+            snx_error("unit cache: %s: the x86-64 back end's units are made and not kept in %s",
+                      found ? "OpenSSL cannot hash the x86-64 back end's code"
+                            : "this process's x86-64 back end code cannot be found",
+                      cache->bytes);
+    }
+    state = cache->x64_code_state;
+    cache_unlock(cache);
+    return state;
+}
+
+int snx_unit_cache_x64(SnxUnitCache* cache, SnxCodegen* codegen, size_t first, size_t last,
+                       const SnxX64Options* options, const char* unit, unsigned char* made, unsigned char** object,
+                       size_t* size, int* reused, char* error, size_t error_size) {
+    static const char tag[] = "snx-x64-unit";
+    size_t count = last - first, kept = 0, i;
+    unsigned char hash[32], *file, *data;
+    unsigned length = 0;
+    char key[65];
+    Hashing h;
+    int rc;
+    *object = NULL;
+    *size = 0;
+    *reused = 0;
+    if (x64_code(cache) < 0)
+        return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
+    h.ctx = EVP_MD_CTX_new();
+    h.ok = h.ctx && EVP_DigestInit_ex(h.ctx, EVP_sha256(), NULL) == 1 && field(h.ctx, tag, strlen(tag)) &&
+           EVP_DigestUpdate(h.ctx, cache->x64_code, sizeof cache->x64_code) == 1;
+    snx_x64_unit_facts(codegen, first, last, options, hash_put, &h);
+    h.ok = h.ok && EVP_DigestFinal_ex(h.ctx, hash, &length) == 1 && length == sizeof hash;
+    EVP_MD_CTX_free(h.ctx);
+    if (!h.ok) {
+        snprintf(error, error_size, "unit cache: cannot make the key of %s: OpenSSL cannot hash what it is made from",
+                 unit);
+        return -1;
+    }
+    key_digits(hash, key);
+    file = reuse(cache, key, unit, &kept);
+    if (file) {
+        SnxU64 n = 0;
+        const char* why = NULL;
+        if (kept < X64_HEAD || memcmp(file, g_x64_magic, sizeof g_x64_magic))
+            why = "no SNXX64U1 at its start";
+        else {
+            for (i = 0; i < 8; ++i) n |= (SnxU64)file[8 + i] << (8 * i);
+            if (n != count || kept < X64_HEAD + count)
+                why = "another count of functions";
+            else
+                for (i = 0; i < count && !why; ++i)
+                    if (file[X64_HEAD + i] > 1) why = "a function's mark that is neither 0 nor 1";
+        }
+        if (!why) {
+            memcpy(made, file + X64_HEAD, count);
+            *size = kept - X64_HEAD - count;
+            if (*size) {
+                memmove(file, file + X64_HEAD + count, *size);
+                *object = file;
+            } else
+                free(file);
+            *reused = 1;
+            return 0;
+        }
+        snx_error("unit cache: %s/%s.o is not an x86-64 unit (%s): %s is compiled again", cache->bytes, key, why, unit);
+        free(file);
+    }
+    rc = snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
+    if (rc) return rc;
+    data = (unsigned char*)snx_alloc(X64_HEAD + count + *size);
+    memcpy(data, g_x64_magic, sizeof g_x64_magic);
+    for (i = 0; i < 8; ++i) data[8 + i] = (unsigned char)((SnxU64)count >> (8 * i));
+    memcpy(data + X64_HEAD, made, count);
+    if (*size) memcpy(data + X64_HEAD + count, *object, *size);
+    (void)keep_new(cache, key, data, X64_HEAD + count + *size);
+    free(data);
+    return 0;
 }
 
 /* a file the cache writes: 64 hex digits and ".o", or that and ".<process>.tmp", a write that has not ended */

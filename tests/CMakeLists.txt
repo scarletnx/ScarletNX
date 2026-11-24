@@ -3945,6 +3945,11 @@ add_executable(snx_codegen_test codegen_test.c llvm_steps.c)
 snx_test_target(snx_codegen_test c23)
 target_link_libraries(snx_codegen_test PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME native_codegen COMMAND snx_codegen_test)
+# what an x86-64 unit's object is made from, which the unit cache keys it by (x64_unit_facts.c)
+add_executable(snx-test-x64-unit-facts x64_unit_facts.c)
+snx_test_target(snx-test-x64-unit-facts gnu23)
+target_link_libraries(snx-test-x64-unit-facts PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME x64_unit_facts COMMAND snx-test-x64-unit-facts)
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found
 # in the code and kept where the code reads them as data, and the words of their stubs. Words only, on any host

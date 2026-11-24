@@ -39,6 +39,7 @@ typedef struct {
        there is none */
     unsigned char* x64;
     size_t x64_size, x64_made;
+    int x64_reused; /* the x86-64 back end's object and which functions it made came from the unit cache */
     /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
        until then). Empty for one in memory */
     char key[65];
@@ -269,12 +270,17 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             options.direct_user = q;
         }
         made = (unsigned char*)snx_alloc(u->last - u->first);
-        if (snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error, error_size)) {
+        rc = q->cache ? snx_unit_cache_x64(q->cache, q->codegen, u->first, u->last, &options, name, made, &u->x64,
+                                           &u->x64_size, &u->x64_reused, error, error_size)
+                      : snx_x64_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, error,
+                                       error_size);
+        if (rc) {
             free(made);
             return -1;
         }
         for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
         if (u->x64_made == u->last - u->first) {
+            u->reused = u->x64_reused;
             free(made);
             return 0;
         }
@@ -315,6 +321,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     else if (!rc)
         rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
+    if (q->x64 && !u->x64_reused) u->reused = 0; /* reused: every part of the unit from the cache */
     /* a pack is written a record at a time: an object the cache holds is read back then, not kept in memory with every
        other unit's until the last is compiled */
     if (!rc && u->key[0]) {
@@ -858,7 +865,7 @@ static void report_units(const Queue* q, const SnxLlvmBuild* build, int quiet) {
     for (i = 0; i < q->count; ++i)
         if (q->units[i].reused) {
             ++reused;
-            bytes += q->units[i].size;
+            bytes += q->units[i].size + q->units[i].x64_size;
         }
     snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q->count, bytes, quiet);
 }

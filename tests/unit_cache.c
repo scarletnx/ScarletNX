@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The code units' cache (nx/loader/unit_cache.c) under the LLVM module build: a program of two functions, each a unit
-   of its own, built into a cache folder of the test's. The second build takes both units from the cache and links the
-   same module byte for byte; a program whose second function differs compiles that unit alone; an object planted
-   under a unit's key is what the module runs (the build read it, not compiled); a cut, altered or short object is
-   compiled again and said, and so is a whole object under another unit's key; a reuse renews the file's time, and
+/* The code units' cache (nx/loader/unit_cache.c) under the module build: a program of two functions, each a unit of
+   its own (the x86-64 back end's where it is built, else LLVM's), built into a cache folder of the test's. The second
+   build takes both units from the cache and links the same module byte for byte; a program whose second function
+   differs compiles that unit alone; an object planted under a unit's key is what the module runs (the build read it,
+   not compiled); a cut, altered or short object is compiled again and said, and so is a whole object under another
+   unit's key, and a whole file that is no x86-64 unit under one; a reuse renews the file's time, and
    the size limit removes the oldest files, never another file of the folder. Each field of the key changes it, and
    the key of fixed fields is pinned. A pack for another machine (here this host's triple) is written a record at a
    time, the bytes of snx_objects_pack, with the units the cache holds read back from it, and each failure says what
@@ -833,6 +834,20 @@ int main(void) {
     free(object);
     forget();
     CHECK(!build(folder, out[5], 0) && run(out[5]) == 42 && said(path_a, "whose SHA-256 is not the one"));
+    /* a whole file under the unit's key that is not the unit the back end made (where the x86-64 back end makes it: its
+       units hold which functions it made, then their object): said, made again and kept */
+    if (snx_x64_available() && cache) {
+        char key[65];
+        static const unsigned char other[] = "not an x86-64 unit";
+        memcpy(key, f1a, 64);
+        key[64] = 0;
+        CHECK(!snx_unit_cache_keep(cache, key, other, sizeof other, error, sizeof error));
+        forget();
+        CHECK(!build(folder, out[5], 0) && run(out[5]) == 42 &&
+              said(path_a, "is not an x86-64 unit (no SNXX64U1 at its start): code_001 is compiled again"));
+        forget();
+        CHECK(!build(folder, out[5], 0) && run(out[5]) == 42 && !g_unit_cache.said_count);
+    }
 
     /* a reuse renews the time, which the size limit goes by */
     CHECK(!snx_set_file_time(path_a, 1000) && !snx_set_file_time(path_b, 2000));
