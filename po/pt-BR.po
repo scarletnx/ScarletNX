@@ -456,23 +456,23 @@ msgstr "Limpa todas as opções de debug, para desempenho"
 
 #: src/gui/gpu_driver.c
 msgid "Turnip's flags"
-msgstr ""
+msgstr "Flags do Turnip"
 
 #: src/gui/gpu_driver.c
 msgid "The shader compiler's flags"
-msgstr ""
+msgstr "Flags do compilador de shaders"
 
 #: src/gui/gpu_driver.c
 msgid "The command stream's dumps"
-msgstr ""
+msgstr "Os dumps do fluxo de comandos"
 
 #: src/gui/gpu_driver.c
 msgid "What Turnip's choice of GMEM or system memory weighs"
-msgstr ""
+msgstr "O que pesa na escolha do Turnip entre GMEM e memória do sistema"
 
 #: src/gui/gpu_driver.c
 msgid "How Turnip chooses GMEM or system memory"
-msgstr ""
+msgstr "Como o Turnip escolhe entre GMEM e memória do sistema"
 
 #: src/gui/gpu_driver.c
 #, c-format
@@ -2367,7 +2367,7 @@ msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO"
 #: src/gui/main.c
 #, c-format
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
-msgstr ""
+msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO  /  %s"
 
 #: src/gui/main.c
 #, c-format
@@ -3793,7 +3793,7 @@ msgstr "O Freedreno e o Turnip do Mesa leem estas quando um jogo inicia (docs.me
 #: src/gui/main.c
 #, c-format
 msgid "Not added: the variables take %d at most"
-msgstr ""
+msgstr "Não adicionada: cabem no máximo %d variáveis"
 
 #: src/gui/main.c
 #, c-format
@@ -3864,53 +3864,53 @@ msgstr "Usuário %d agora é %s"
 #: src/gui/main.c
 #, c-format
 msgid "Recording devices cannot be read: %s"
-msgstr ""
+msgstr "Os dispositivos de gravação não podem ser lidos: %s"
 
 #: src/gui/main.c
 msgid "Cannot be read"
-msgstr ""
+msgstr "Não pode ser lida"
 
 #: src/gui/main.c
 #, c-format
 msgid "Room password: %s"
-msgstr ""
+msgstr "Senha da sala: %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Room password not changed: %s"
-msgstr ""
+msgstr "Senha da sala não alterada: %s"
 
 #: src/gui/main.c
 msgid "Room password: set"
-msgstr ""
+msgstr "Senha da sala: definida"
 
 #: src/gui/main.c
 msgid "Room password: none"
-msgstr ""
+msgstr "Senha da sala: nenhuma"
 
 #: src/gui/main.c
 msgid "Room password not changed: nothing was typed (Del takes it off)"
-msgstr ""
+msgstr "Senha da sala não alterada: nada foi digitado (Del a tira)"
 
 #: src/gui/main.c
 #, c-format
 msgid "the picker could not open: %s. Enter now types the path"
-msgstr ""
+msgstr "o seletor não abriu: %s. Enter agora digita o caminho"
 
 #: src/gui/main.c
 #, c-format
 msgid "takes a path of up to %d bytes, not %s: it keeps %s"
-msgstr ""
+msgstr "aceita um caminho de até %d bytes, não %s: fica %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s not changed to %s: its settings were closed while the picker was open"
-msgstr ""
+msgstr "%s não mudou para %s: as configurações fecharam com o seletor aberto"
 
 #: src/gui/main.c
 #, c-format
 msgid "not changed: %s is not a folder or file of this device's storage"
-msgstr ""
+msgstr "não mudou: %s não é pasta nem arquivo do armazenamento deste aparelho"
 
 #: src/gui/main.c
 msgid "No folder was picked."
@@ -3919,12 +3919,12 @@ msgstr "Nenhuma pasta foi escolhida."
 #: src/gui/main.c
 #, c-format
 msgid "%s: a box an item, Enter turns it on or off"
-msgstr ""
+msgstr "%s: uma caixa por item, Enter liga ou desliga"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s has no room for another item"
-msgstr ""
+msgstr "%s não tem espaço para outro item"
 
 #: src/gui/main.c
 #, c-format
@@ -4256,7 +4256,7 @@ msgstr "%s: %s é o máximo"
 
 #: src/gui/main.c
 msgid "Paste one local path"
-msgstr ""
+msgstr "Cole um caminho local"
 
 #: src/gui/main.c
 msgid "Paste one local folder's path"
@@ -4316,7 +4316,7 @@ msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas 
 
 #: src/gui/main.c
 msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
-msgstr ""
+msgstr "A senha da sala, de 1 a 255 bytes, sem caractere de controle nem espaço nas pontas"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -6360,7 +6360,7 @@ msgstr "Solte uma pasta local"
 
 #: src/gui/main.c
 msgid "Drop one local path"
-msgstr ""
+msgstr "Solte um caminho local"
 
 #: src/gui/main.c
 #, c-format
@@ -6818,11 +6818,11 @@ msgstr "Todas as linhas desta página de uma vez"
 
 #: src/gui/settings.c
 msgid "Room password"
-msgstr ""
+msgstr "Senha da sala"
 
 #: src/gui/settings.c
 msgid "The Eden room's password, kept in users/online.ini, which only you can read; never in the launcher's settings nor on a run's line"
-msgstr ""
+msgstr "A senha da sala do Eden, guardada em users/online.ini, que só você lê; nunca nas configurações do launcher nem na linha de execução"
 
 #: src/gui/settings.c
 #, c-format
@@ -6847,12 +6847,12 @@ msgstr "%s=%s está obsoleto e não é um valor de %s: agora %s=%s"
 #: src/gui/settings.c
 #, c-format
 msgid "%d on, %d other"
-msgstr ""
+msgstr "%d ligados, %d outros"
 
 #: src/gui/settings.c
 #, c-format
 msgid "%d on"
-msgstr ""
+msgstr "%d ligados"
 
 #: src/gui/settings.c
 msgid "Mixed"
