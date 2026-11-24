@@ -791,6 +791,14 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* |a - b|'s building blocks and the rest of the lanes' integer arithmetic the instructions below share */
+static int vabs(SgCtx* g, unsigned size, int a) {
+    if (k_abs[size]) return sgx_v1(X, k_abs[size], a, 0);
+    { /* (a ^ s) - s, s the sign */
+        int s = vgt(g, 3, vzero(g), a, 0);
+        return vsub(g, 3, vxor(g, a, s), s);
+    }
+}
 /* a >> n rounded (half up), logical (arith: arithmetic): the bits shifted out, the top one of them, added back */
 static int vrshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
     return vadd(g, size, vshr(g, size, a, n, arith), vand(g, vshr(g, size, a, n - 1, 0), vsplat(g, size, 1)));
@@ -1490,6 +1498,31 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         b = vwiden(g, size, vread(g, rm), (int)q, insn->op == SNX_A64_OP_SSUBW);
         vwrite(g, rd, vsub(g, size + 1, vread(g, rn), b), 1);
         return 1;
+    case SNX_A64_OP_UABD_v:
+    case SNX_A64_OP_SABD_v:
+    case SNX_A64_OP_UABA_v:
+    case SNX_A64_OP_SABA_v: {
+        int un = insn->op == SNX_A64_OP_UABD_v || insn->op == SNX_A64_OP_UABA_v;
+        if (size == 3) return -1;
+        a = vread(g, rn);
+        b = vread(g, rm);
+        r = vsub(g, size, vmax(g, size, a, b, un, 0), vmax(g, size, a, b, un, 1));
+        if (insn->op == SNX_A64_OP_UABA_v || insn->op == SNX_A64_OP_SABA_v) r = vadd(g, size, vread(g, rd), r);
+        vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_UABDL_v:
+    case SNX_A64_OP_SABDL_v:
+    case SNX_A64_OP_UABAL_v:
+    case SNX_A64_OP_SABAL_v: {
+        int sign = insn->op == SNX_A64_OP_SABDL_v || insn->op == SNX_A64_OP_SABAL_v;
+        if (size == 3) return -1;
+        r = vabs(g, size + 1, vsub(g, size + 1, vwiden(g, size, vread(g, rn), (int)q, sign),
+                                    vwiden(g, size, vread(g, rm), (int)q, sign)));
+        if (insn->op == SNX_A64_OP_UABAL_v || insn->op == SNX_A64_OP_SABAL_v) r = vadd(g, size + 1, vread(g, rd), r);
+        vwrite(g, rd, r, 1);
+        return 1;
+    }
     case SNX_A64_OP_CLZ_v:
     case SNX_A64_OP_CLS_v:
         if (size == 3) return -1;
