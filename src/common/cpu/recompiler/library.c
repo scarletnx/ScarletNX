@@ -22,7 +22,8 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
-#include "common/cpu/recompiler/x64/x64_cache.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
 #include "common/platform/time.h"
@@ -88,8 +89,8 @@ struct snx_recompiler {
     int live_code; /* the modules' JIT reads the caller's code ranges in place, not a copy */
     char* keep_ir;
     char* cache; /* folder of linked modules by the hash of what they were made from (LLVM), NULL for none */
-    /* the x86-64 back end makes what it can (x64_codegen.h): the default where it is built, SNX_RECOMPILER_BACKEND=llvm
-       or snx_recompiler_set_backend taking it back */
+    /* the host's native back end makes what it can (mach/native.h: x86-64's, arm64's): the default where it is built,
+       SNX_RECOMPILER_BACKEND=llvm or snx_recompiler_set_backend taking it back */
     int x64;
     size_t x64_made; /* the last module's functions the x86-64 back end made */
     char error[1024];
@@ -243,11 +244,11 @@ struct snx_recompiler* snx_recompiler_new(int flags) {
     if (!r) return NULL;
     r->opt = '2';
     r->features = SNX_A64_TARGET_SWITCH;
-    r->x64 = snx_x64_available();
+    r->x64 = snx_native_available();
     return r;
 }
 
-void snx_recompiler_set_backend(struct snx_recompiler* r, int x64) { r->x64 = x64 && snx_x64_available(); }
+void snx_recompiler_set_backend(struct snx_recompiler* r, int x64) { r->x64 = x64 && snx_native_available(); }
 
 void snx_recompiler_free(struct snx_recompiler* r) {
     if (r) free(r->cache);
@@ -688,7 +689,7 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     snprintf(name, sizeof(name), "code_%03lu", (unsigned long)index);
     if (q->r->x64 && !q->r->keep_ir && u->last > u->first) {
         /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
-        SnxX64Options options = {0};
+        SnxNativeOptions options = {0};
         options.llvm_at = snx_ir_dump_pc();
         made = (unsigned char*)calloc(u->last - u->first, 1);
         if (!made) {
@@ -696,8 +697,8 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
             return -1;
         }
         int reused = 0;
-        if (snx_x64_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &reused, error,
-                                  error_size)) {
+        if (snx_native_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64, &u->x64_size, &reused,
+                                     error, error_size)) {
             free(made);
             return -1;
         }
@@ -1143,7 +1144,7 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made;
         r->x64_made = x64_made;
         if (r->x64)
-            report(r, "x86-64 back end: %lu of %lu functions, LLVM the rest\n", (unsigned long)x64_made,
+            report(r, "%s back end: %lu of %lu functions, LLVM the rest\n", snx_native_name(), (unsigned long)x64_made,
                    (unsigned long)codegen->function_count);
     }
     const char* exports[1];

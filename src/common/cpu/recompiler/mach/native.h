@@ -26,4 +26,19 @@ typedef struct {
        entry and after each call's return */
     int stale;
 } SnxNativeOptions;
+
+/* this host's native back end (mach/native.c): x86-64's on an x86-64 host that loads ELF objects, arm64's on an arm64
+   one; 1 where there is one */
+int snx_native_available(void);
+/* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
+const char* snx_native_name(void);
+/* the object of the functions [first, last) of codegen the host's back end can make, made[i - first] 1 for each, as
+   snx_x64_object and snx_arm64_object make it (for this host's features) */
+int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
+                      unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size);
+/* snx_native_object through the memory an x86-64 unit is held in (x64_cache.h), *reused 1 for a unit that came from
+   there; another machine's unit is made each time (the key, snx_x64_unit_facts, is x86-64's) */
+int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
+                             unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
+                             size_t error_size);
 #endif
