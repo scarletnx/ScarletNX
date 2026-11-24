@@ -4073,6 +4073,48 @@ static void test_compute_handle_table(const char* dir) {
             fprintf(stderr, "compute handle table: ran %d, %08x\n", ran, values[0]);
     }
 }
+/* TLD4.B (0x364): a gather whose handle is the first register of list1, as TEX.B's (nak_nir_lower_tex.c). Its bits
+   87-88 are the gather's component, not a LOD mode, and its offset mode (bits 76-77) takes one register or two. A
+   handle from a MOV of a constant buffer word binds that word's texture; variant 1 has an offset register and a depth
+   reference after the handle; variant 2 is the scalar form (.SCR, bit 60), the handle after the two coordinates in b;
+   variant 3 has the component 3 (bits 87-88), which a LOD mode's reading took for an explicit LOD and a value more */
+static void test_tld4_bindless(const char* dir) {
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (u32 variant = 0; variant < 4; variant++) {
+        u8 code[16 * 4] = {0};
+        u32 n = 0, handle = variant == 1 ? 10 : 6;
+        put(code, n++, mov_cbuf(handle, 3, 0x70));
+        Word t = fix(0x364); /* TLD4.B R0, R8, R6, 2D */
+        set(&t, 16, 8, 0);
+        set(&t, 24, 8, 8);
+        set(&t, 32, 8, handle);
+        set(&t, 61, 3, 1);
+        set(&t, 64, 8, 255);
+        set(&t, 72, 4, 0xf);
+        set(&t, 81, 3, 7);
+        set(&t, 87, 2, variant == 3 ? 3 : 1);
+        if (variant == 1) set(&t, 76, 2, 1), set(&t, 78, 1, 1);
+        if (variant == 2) set(&t, 60, 1, 1);
+        put(code, n++, t);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        int ok = spv && !si.unsupported && si.ntex == 1 && si.tex[0].bl_cbuf == 3 && si.tex[0].cbuf_off == 0x70 / 4 &&
+                 si.tex[0].shadow == (variant == 1) && !(si.tex[0].flags & SNX_TEX_MEMORY);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "TLD4.B %u: %s, %d textures, bank %u word %#x\n", variant, si.first_unsupported, si.ntex,
+                    si.ntex ? si.tex[0].bl_cbuf : 0, si.ntex ? si.tex[0].cbuf_off : 0);
+        static const char* const names[4] = {"fs_tld4_b", "fs_tld4_b_dc", "fs_tld4_b_scr", "fs_tld4_b_a"};
+        if (spv) CHECK(keep_module(dir, names[variant], spv, count));
+        free(spv);
+    }
+}
 /* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
    0x30, then a ULDC UR6 of one word of bank 3, UMOV UR4 = UR7, and the LDG at [UR4 + 0x5c]. UR7 keeps its key: the
    word's ULDC took the key of UR7 as a 64-bit one's high word, and one game's material program was refused for "a
@@ -8113,6 +8155,7 @@ int main(int argc, char** argv) {
     test_uniform_handle(dir);
     test_memory_handle_carry(dir);
     test_compute_handle_table(dir);
+    test_tld4_bindless(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
     test_mesh(dir);
