@@ -42,8 +42,8 @@ static struct {
     unsigned char* memory[3]; /* the LLVM side's, the x86-64 side's, the bytes both start from */
     unsigned sev, wfe;
     /* what run allocates, which main frees after every one of its ways out */
-    u32 *rows, *words;
-    size_t (*offset)[2];
+    u32* rows;
+    size_t (*offset)[2]; /* and the words after them */
     void* sequences;
 } g_test;
 
@@ -377,9 +377,10 @@ static int run(int argc, char** argv) {
     /* the words: each row's samples, and each with Rd, Rn and Rm 31 */
     count = lqd_row_words(samples, rnd, &g_test.rows);
     rows = g_test.rows;
-    words = g_test.words = (u32*)malloc(sizeof(u32) * (count * 8 + 1));
-    offset = g_test.offset = malloc(sizeof *offset * (count * 8 + 1));
-    if (!words || !offset) return 1;
+    /* the offsets of the words' code, then the words: one block */
+    offset = g_test.offset = malloc((sizeof *offset + sizeof *words) * (count * 8 + 1));
+    if (!offset) return 1;
+    words = (u32*)(offset + count * 8 + 1);
     for (i = 0; i < count; ++i) {
         static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
         const char* name = op_name(rows[i]);
@@ -612,7 +613,6 @@ static int run(int argc, char** argv) {
 int main(int argc, char** argv) {
     int rc = run(argc, argv);
     free(g_test.rows);
-    free(g_test.words);
     free(g_test.offset);
     free(g_test.sequences);
     return rc;
