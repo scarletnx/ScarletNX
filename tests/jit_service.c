@@ -75,6 +75,26 @@ static RtAPI rt = {.cas128 = snx_runtime_cas128};
 static _Atomic unsigned misses, wrapped;
 /* the batches the report saw, and the first after which 0x3800 had code */
 static _Atomic unsigned batch_count, live_batch;
+/* the compile threads wait in their batch's report while held.on, the miss thread never: what the test does
+   meanwhile comes before their next batch, however long the host stops the test's thread */
+static _Thread_local int miss_thread;
+static void thread_role(const SnxJitThread* t) { miss_thread = t->misses; }
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t over;
+    int on;
+} held = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0};
+static void hold(int on) {
+    pthread_mutex_lock(&held.lock);
+    held.on = on;
+    if (!on) pthread_cond_broadcast(&held.over);
+    pthread_mutex_unlock(&held.lock);
+}
+static void hold_wait(void) {
+    pthread_mutex_lock(&held.lock);
+    while (held.on) pthread_cond_wait(&held.over, &held.lock);
+    pthread_mutex_unlock(&held.lock);
+}
 
 /* the guest's code is little-endian whatever the host's byte order */
 static void put(u64 address, const u32* words, size_t count) {
@@ -140,6 +160,7 @@ static void report(const SnxJitReport* r) {
         fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
         atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
     }
+    if (!miss_thread) hold_wait();
 }
 
 /* the function at 0x3400 behind a wrapper put into an empty slot: its original is the miss */
@@ -196,6 +217,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     config.budget = discovery_budget;
     config.threads = threads;
     config.report = report;
+    config.thread = thread_role;
     config.cache_path = cache_path;
     atomic_store_explicit(&batch_count, 0, memory_order_relaxed);
     atomic_store_explicit(&live_batch, ~0u, memory_order_relaxed);
@@ -1135,21 +1157,37 @@ int main(int argc, char** argv) {
     run(&c, 0x1000);
     CHECK(c.x[0] == 1 * 3 + 1 + 100 + 5 && misses == before_misses);
     snx_jit_service_free(service);
-    /* a miss goes ahead of the warm queue: the bank queued warm, then a miss at 0x3800 (and 0x1000, which it calls
-       through the table), compiled by one of the first batches on the one compile thread while the bank takes many
-       more */
+    /* a miss goes ahead of the warm queue: the bank queued warm, then a miss at 0x3800 that nobody waits for, compiled
+       by one of the first batches on the one compile thread while the bank takes many more. That thread is held in its
+       first batch until the miss is queued */
     service = start(0, 1);
     if (!service) return 1;
     for (i = 0; i < BANK_COUNT; ++i) bank_pcs[i] = BANK + 0x40 * (SnxU64)i;
+    hold(1);
+    CHECK(snx_jit_warm(service, bank_pcs, BANK_COUNT) == BANK_COUNT);
+    CHECK(!snx_jit_resolve(service, 0x3800));
+    hold(0);
+    snx_jit_drain(service);
+    printf("warm start: %d pcs and a miss in %u batches, the miss at 0x3800 compiled by batch %u\n", BANK_COUNT,
+           batch_count, live_batch);
+    CHECK(live_batch <= 2 && batch_count > 8);
+    snx_jit_stats(service, &stats);
+    CHECK(stats.compiled + stats.failures >= BANK_COUNT + 1 && !stats.failures);
+    snx_jit_service_free(service);
+    /* one that a thread waits for (and 0x1000, which it calls through the table) is the miss thread's, with the compile
+       thread held in its first batch until the code has run: the rest of the bank is queued all that time */
+    service = start(0, 1);
+    if (!service) return 1;
+    hold(1);
     CHECK(snx_jit_warm(service, bank_pcs, BANK_COUNT) == BANK_COUNT);
     cpu_init(&c, 0xF000);
     c.x[0] = 1;
     run(&c, 0x3800);
     CHECK(c.x[0] == 2 * (1 * 3 + 1 + 100 + 5));
+    snx_jit_stats(service, &stats);
+    CHECK(stats.queued >= BANK_COUNT - (SNX_JIT_BATCH + 7) / 8); /* but the batch it is held in */
+    hold(0);
     snx_jit_drain(service);
-    printf("warm start: %d pcs and 3 misses in %u batches, the miss at 0x3800 compiled by batch %u\n", BANK_COUNT,
-           batch_count, live_batch);
-    CHECK(live_batch <= 2 && batch_count > 8);
     snx_jit_stats(service, &stats);
     CHECK(stats.compiled + stats.failures >= BANK_COUNT + 1 && !stats.failures);
     snx_jit_service_free(service);
