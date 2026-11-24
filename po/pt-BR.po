@@ -3867,6 +3867,32 @@ msgid "Recording devices cannot be read: %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot be read"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password not changed: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password: set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password: none"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password not changed: nothing was typed (Del takes it off)"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "the picker could not open: %s. Enter now types the path"
 msgstr ""
@@ -4287,6 +4313,10 @@ msgstr "Ctrl+S também salva"
 #: src/gui/main.c
 msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
+
+#: src/gui/main.c
+msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Preview"
@@ -6785,6 +6815,14 @@ msgstr "Uma página própria, como no menu do jogo"
 #: src/gui/settings.c
 msgid "Every row of this page at once"
 msgstr "Todas as linhas desta página de uma vez"
+
+#: src/gui/settings.c
+msgid "Room password"
+msgstr ""
+
+#: src/gui/settings.c
+msgid "The Eden room's password, kept in users/online.ini, which only you can read; never in the launcher's settings nor on a run's line"
+msgstr ""
 
 #: src/gui/settings.c
 #, c-format

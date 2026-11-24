@@ -35,6 +35,14 @@ typedef struct {
 extern SnxUser g_users[SNX_USERS_MAX]; /* user 1 first, g_user_count of them */
 extern int g_user_count;
 
+/* the room password of online.ini in dir ("" without the file): 0, or -1 with why. The file holds a secret, so one
+   other users of this machine may read is refused; a section, another key or a value longer than size - 1 bytes is
+   too */
+int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size);
+/* the room password of online.ini in dir set to password, the file made readable by its owner alone, or taken away with
+   "": 0, or -1 with why and the file as it was. Text it would not read back, or a file that has anything else, is
+   refused */
+int snx_users_room_password_set(const char* dir, const char* password, char* why, size_t why_size);
 /* the users of users.ini in dir (one, user 1, without it), the one playing selected (1-based): 0, or -1 with why the
    file or selected is no list of users, and user 1 alone */
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size);

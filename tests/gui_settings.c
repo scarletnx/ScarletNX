@@ -39,6 +39,13 @@ static const char list[] =
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
 /* a row by its key or name: the runtime's first, then the launcher's (both have an All, the LLVM Internals page's) */
+/* the row of a kind, -1 for none */
+static int find_kind(const GuiSettings* s, int kind) {
+    int i;
+    for (i = 0; i < s->count; ++i)
+        if (s->values[i].kind == kind) return i;
+    return -1;
+}
 static int at(const GuiSettings* s, const char* name) {
     int i, n;
     for (n = 0; n < s->count; ++n) {
@@ -804,7 +811,10 @@ int main(int argc, char** argv) {
             next = c + strcspn(c, "\n");
             if (*next) ++next;
         }
-        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages);
+        /* and the Room password's row, beside the room's */
+        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages + 1);
+        assert(s.values[find_kind(&s, GUI_SETTING_SECRET)].key &&
+               !strcmp(s.values[find_kind(&s, GUI_SETTING_SECRET)].key, "room_password"));
         /* each player's own, on Controllers' Player page: a word row whose default is every player's */
         assert(words(key(&s, "gamepad_p1_swap_ab")) == 3 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[0], "As All"));
         assert(!strcmp(on_screen(&s, "gamepad_p8_swap_ab"), "As All [default]"));

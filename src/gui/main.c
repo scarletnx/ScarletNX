@@ -11846,6 +11846,60 @@ static void jdk_words(App* app, int group) {
     gui_jdks_free(jdks, count);
     gui_jdks_free(roots, n);
 }
+/* ---- the Room password (GUI_SETTING_SECRET), kept in users/online.ini: its row says whether there is one and the
+   dialog that takes one draws no letter of it; the typed text is wiped as it goes ---- */
+static int secret_row(const App* app) {
+    int row = setting_row(app, "room_password");
+    return row >= 0 && screen_settings(app)->values[row].kind == GUI_SETTING_SECRET ? row : -1;
+}
+static bool secret_open(const App* app) {
+    return app->form == GUI_FORM_GROUP && app->editing && secret_row(app) >= 0 &&
+           setting_of(app, app->editor.row) == secret_row(app);
+}
+/* what the row says: there is one, none, or why it cannot be told */
+static void secret_shown(App* app, int group) {
+    char password[256] = "", why[512] = "";
+    int row = secret_row(app);
+    GuiSetting* v;
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    v = &screen_settings(app)->values[row];
+    if (!app->users_dir || snx_users_room_password(app->users_dir, password, sizeof password, why, sizeof why)) {
+        snprintf(v->text, sizeof v->text, "%s", snx_tr("Cannot be read"));
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Room password: %s"),
+                 app->users_dir ? why : snx_tr("no users/ folder"));
+    } else
+        snprintf(v->text, sizeof v->text, "%s", password[0] ? "********" : snx_tr("None"));
+    SDL_memset(password, 0, sizeof password);
+}
+/* the dialog's text gone, its letters with it */
+static void secret_wipe(App* app) {
+    SDL_memset(app->editor.text, 0, sizeof app->editor.text);
+    app->editor.typing = false;
+}
+/* password written for the room, "" for none; its row as it is now, the note said */
+static void secret_write(App* app, const char* password) {
+    char why[512] = "";
+    if (!app->users_dir || snx_users_room_password_set(app->users_dir, password, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Room password not changed: %s"),
+                 app->users_dir ? why : snx_tr("no users/ folder"));
+        return;
+    }
+    secret_shown(app, app->group);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s",
+             *password ? snx_tr("Room password: set") : snx_tr("Room password: none"));
+    secret_wipe(app);
+}
+/* Enter on the dialog: what was typed, refused and kept to be mended where it does not fit, and no password typed is
+   no change (Del takes the one there off) */
+static void secret_take(App* app) {
+    if (app->editor.text[0])
+        secret_write(app, app->editor.text);
+    else {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Room password not changed: nothing was typed (Del takes it off)"));
+        secret_wipe(app);
+    }
+}
 /* ---- a path setting (settings.txt's path): Enter opens the system's picker, a folder's, a file's or a save dialog's,
    its answer an app->path_picked event; Ctrl+V and a drop give it a path too, Del takes it off ---- */
 /* row is a path, which a paste or a drop may give */
@@ -12065,6 +12119,7 @@ static void open_group(App* app, int g) {
     app->page = -1;
     mic_words(app, g);
     jdk_words(app, g);
+    secret_shown(app, g);
     group_view(app, g);
 }
 static void open_pad(App* app, int row);
@@ -13525,6 +13580,15 @@ static void editor_key(App* app, GuiKey key) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
     }
+    /* the Room password: its dialog opens empty, and takes or leaves what was typed */
+    if (secret_open(app) && app->editor.typing && (key == GUI_SELECT || key == GUI_CANCEL)) {
+        if (key == GUI_SELECT)
+            secret_take(app);
+        else
+            secret_wipe(app);
+        typed_keyboard(app);
+        return;
+    }
     /* a path's row opens the system's picker; typed where a picker answers with no path, or could not open */
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         app->editor.object == (char*)screen_settings(app)->values &&
@@ -13600,6 +13664,15 @@ static void editor_key(App* app, GuiKey key) {
             /* the player shown, round All and 1 to 8 */
             app->player = (app->player + (app->editor.step < 0 ? SNX_GUI_PLAYERS : 1)) % (SNX_GUI_PLAYERS + 1);
             group_view(app, app->group);
+            return;
+        }
+        if (screen_settings(app)->values[row].kind == GUI_SETTING_SECRET) { /* typed from nothing, never what it has */
+            if (!app->editor.step) {
+                app->editor.text[0] = 0;
+                app->editor.typing = true;
+                app->editor.note[0] = 0;
+                typed_keyboard(app);
+            }
             return;
         }
         if (screen_settings(app)->values[row].kind == GUI_SETTING_PAGE && !app->editor.step)
@@ -13685,6 +13758,10 @@ static void editor_input(App* app, const SDL_Event* e) {
     /* Del, or Backspace when nothing is typed: a setting back to its default */
     if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
         (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        if (secret_open(app)) { /* the Room password taken off */
+            secret_write(app, "");
+            return;
+        }
         gui_settings_reset(screen_settings(app), setting_of(app, app->editor.row));
         app->editor.dirty = true;
         keep_settings(app);
@@ -14292,7 +14369,10 @@ static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Can
 #define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
+    if (secret_open(app))
+        snprintf(out, size, "%s",
+                 snx_tr("The room's password, 1 to 255 bytes, no control character, no space at either end"));
+    else if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
         snprintf(out, size, "%s", snx_tr(SAY_NICKNAME_TAKES));
     else
         gui_editor_takes(&app->editor, out, size);
@@ -14347,7 +14427,13 @@ static void render_typed(App* app) {
     gui_editor_label(&app->editor, app->editor.row, title, sizeof title);
     over_box(app, b.c.box, title);
     outline(app, b.field, t->focus);
-    snprintf(line, sizeof line, "%s_", app->editor.text);
+    if (secret_open(app)) { /* a star a letter, as long as the text */
+        size_t at = 0;
+        for (const char* c = app->editor.text; *c && at < sizeof line - 2; ++c)
+            if (((unsigned char)*c & 0xC0) != 0x80) line[at++] = '*'; /* its first byte */
+        snprintf(line + at, sizeof line - at, "_");
+    } else
+        snprintf(line, sizeof line, "%s_", app->editor.text);
     room = (b.field.w - cw) / cw;
     text_in(app, b.field, b.field.x + cw / 2, b.field.y + 2 * app->scale,
             gui_cols_skip(line, SDL_max(gui_text_cols(line) - room, 0)), rgb(t->ink));
@@ -14375,11 +14461,13 @@ static void typed_pointer(App* app, float x, float y, bool click) {
    number pad has no point and no minus), else its letters; none once it is not */
 static void typed_keyboard(App* app) {
     const GuiThemeKey* k = gui_editor_key_of(&app->editor, app->editor.row);
-    bool pad = k && ((k->numeric && k->whole && k->lo >= 0) || k->type == GUI_KEY_NUMBER);
+    bool pad = k && ((k->numeric && k->whole && k->lo >= 0) || k->type == GUI_KEY_NUMBER), secret = secret_open(app);
     if (app->editor.typing && !SDL_TextInputActive(app->window)) {
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER,
-                              pad ? SDL_TEXTINPUT_TYPE_NUMBER : SDL_TEXTINPUT_TYPE_TEXT);
+                              secret ? SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_HIDDEN
+                              : pad  ? SDL_TEXTINPUT_TYPE_NUMBER
+                                     : SDL_TEXTINPUT_TYPE_TEXT);
         SDL_StartTextInputWithProperties(app->window, props);
         SDL_DestroyProperties(props);
     } else if (!app->editor.typing && SDL_TextInputActive(app->window))

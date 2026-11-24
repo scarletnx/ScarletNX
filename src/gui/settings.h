@@ -16,7 +16,7 @@
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
    page, which steps them together */
-enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
+enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET };
 #define GUI_SETTING_TEXT 512 /* a typed value's room: the longest of settings.txt's texts the launcher keeps */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
@@ -28,7 +28,8 @@ typedef struct {
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
     const char* only;     /* where it does something, when not on this system ("macOS only", ini.h's ini_only) */
-    int kind;             /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
+    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, or GUI_SETTING_SECRET: the Eden room's password,
+                             which is neither the picks' nor a run's option (users/online.ini holds it) */
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */

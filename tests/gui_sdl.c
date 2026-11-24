@@ -1086,6 +1086,96 @@ static void microphone_words(App* app) {
     leave_form(app);
     settings_forget(app);
 }
+/* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
+   stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
+   options; Del takes it off; refused text is said and can be mended; a file others can read is said */
+static void room_password_row(App* app, const char* temporary) {
+    static const char list[] = "Network\tldn\tlan\ttext\t0\t0\tWireless\tLocal wireless\tlan=LAN|room=Room\n"
+                               "Network\troom\t\ttext\t0\t0\tThe room\tEden room\t\n"
+                               "Network\tother\t0\tint\t0\t1\tOther\tOther\t0=Off|1=On\n";
+    char *users = snx_path_join(temporary, "room-users"), *online = snx_path_join(users, "online.ini");
+    char *was = app->users_dir, password[64], why[512], *argv_text;
+    const char* options[8];
+    int g, row;
+    assert(!snx_mkdirs(users));
+    app->users_dir = users;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Network"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "room_password"));
+    assert(app->form == GUI_FORM_GROUP && row >= 0 && app->group == g);
+    app->editor.row = row;
+    render(app);
+    shows(app, "None", yellow);
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !app->editor.text[0] && SDL_TextInputActive(app->window));
+    typed(app, "s3cret pass");
+    render(app);
+    shows(app, "***********_", rgb(app->theme.ink));
+    assert(!strcmp(app->editor.text, "s3cret pass"));
+    key(app, SDLK_ESCAPE); /* Cancel: none kept, the text gone */
+    assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RETURN); /* nothing typed: no change, as it says */
+    assert(strstr(app->editor.note, "nothing was typed") && !app->editor.typing && !snx_is_file(online));
+    key(app, SDLK_RETURN);
+    typed(app, "s3cret pass");
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && !app->editor.text[0] && !strcmp(app->editor.note, "Room password: set"));
+    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) &&
+           !strcmp(password, "s3cret pass"));
+#ifndef _WIN32
+    {
+        struct stat st;
+        assert(!stat(online, &st) && (st.st_mode & 0777) == 0600);
+    }
+#endif
+    render(app);
+    shows(app, "********", yellow);
+    assert(!picks_have(app, "room_password") && !picks_have(app, "s3cret"));
+    argv_text = snx_strdup("");
+    for (size_t i = 0, n = gui_settings_options(&app->settings, 0, NULL, options); i < n; ++i)
+        if (strstr(options[i], "password") || strstr(options[i], "s3cret")) argv_text[0] = 'x';
+    assert(!argv_text[0]);
+    free(argv_text);
+    key(app, SDLK_RETURN); /* what a room could not read back: said, the dialog stays with what was typed */
+    typed(app, " spaced");
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing &&
+           strstr(app->editor.note, "Room password not changed: a room's password has no space at either end"));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DELETE); /* off: the file away */
+    assert(!strcmp(app->editor.note, "Room password: none") && !snx_is_file(online));
+    render(app);
+    shows(app, "None", yellow);
+    /* a file others may read: said where it opens, and the row does not say None */
+#ifndef _WIN32
+    assert(!snx_write_file(online, "room_password=old\n", 18) && !chmod(online, 0644));
+    leave_form(app);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "chmod 600"));
+    app->editor.row = row;
+    render(app);
+    shows(app, "Cannot be read", yellow);
+    key(app, SDLK_RETURN); /* a new one puts it right: its file is the owner's alone */
+    typed(app, "fresh");
+    key(app, SDLK_RETURN);
+    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) && !strcmp(password, "fresh"));
+    key(app, SDLK_DELETE);
+#endif
+    leave_editor(app);
+    settings_forget(app);
+    app->users_dir = was;
+    assert(!snx_remove_tree(users));
+    free(online);
+    free(users);
+}
 static void boxes_form(App* app) {
     static const char list[] = "Debug\tfirst\t0\tint\t0\t1\tFirst\tFirst\t0=Off|1=On\n"
                                "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
@@ -17876,6 +17966,7 @@ int main(int argc, char** argv) {
     players_view(&app);
     shortcuts_capture(&app);
     microphone_words(&app);
+    room_password_row(&app, temporary);
     boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */

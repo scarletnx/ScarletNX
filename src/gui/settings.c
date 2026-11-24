@@ -198,6 +198,15 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         /* the twelfth column's marks: slider, its default a step as the runtime's list makes it, and open */
         v->slider = v->plain && has_mark(field[11], "slider");
         v->open = has_mark(field[11], "open");
+        if (!game && !page && !strcmp(field[1], "room")) { /* the Eden room's password beside its address */
+            GuiSetting* secret =
+                row(s, field[0], "room_password", SNX_TR_NOOP("Room password"),
+                    SNX_TR_NOOP("The Eden room's password, kept in users/online.ini, which only you can "
+                                "read; never in the launcher's settings nor on a run's line"),
+                    NULL, GUI_KEY_ACTION);
+            secret->kind = GUI_SETTING_SECRET;
+            v = &s->values[s->count - 2];
+        }
         v->path = has_mark(field[11], "folder") ? 'd'
                   : has_mark(field[11], "file") ? 'f'
                   : has_mark(field[11], "save") ? 's'
