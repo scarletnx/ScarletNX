@@ -71,17 +71,18 @@ static const char* const kind_name[KINDS] = {"a plain value",
 #define NONE        0xffffffffu
 #define RZ          255u
 #define MAX_DEFS    32u
-#define MAX_UNIFORM 48 /* the definitions a uniform value is followed through */
+#define GUARDS      15u /* what a way back may know of a predicate (holds) */
+#define MAX_UNIFORM 48  /* the definitions a uniform value is followed through */
 
 typedef struct {
     const ShFlow* f;
     const u64* insn;
     u32 n;
-    const u32* pop;      /* each SYNC, BRK and CONT's target, NULL where the stack is kept as the program runs */
-    u32 *note_at, *note; /* the notes of each instruction */
-    u32 *from_at, *from; /* its predecessors */
-    u32* block;          /* the first instruction of its basic block */
-    u32 *seen, *queue, stamp;
+    const u32* pop;           /* each SYNC, BRK and CONT's target, NULL where the stack is kept as the program runs */
+    u32 *note_at, *note;      /* the notes of each instruction */
+    u32 *from_at, *from;      /* its predecessors */
+    u32* block;               /* the first instruction of its basic block */
+    u32 *seen, *queue, stamp; /* by instruction and what is known there (reaching) */
     u8* kind;
     u32* vote;    /* the VOTE that its result comes from */
     u8* steps;    /* SWAPPED and REDUCED: the lanes' bits it crossed */
@@ -185,30 +186,40 @@ static int writes(const Warp* a, u32 k, u32 variable) {
         if (a->note[q] == (variable << 1 | 1)) return 1;
     return 0;
 }
-/* whether what instruction k writes is all that its variable holds after it: not under a guard, nor R2P's set of the
-   predicates its mask picks */
-static int whole_write(const Warp* a, u32 k) {
-    int op = a->f->op[k]->id;
-    return plain_guard(a->insn[k]) && op != O_R2P_R && op != O_R2P_C && op != O_R2P_I;
+static int r2p(int op) { return op == O_R2P_R || op == O_R2P_C || op == O_R2P_I; }
+/* what a guard says of its predicate's value where it holds: 0 for PT, else 1 + twice the predicate, + 1 for true */
+static u32 holds(u64 w) { return B(w, 16, 3) == 7 ? 0 : 1 + 2 * B(w, 16, 3) + !B(w, 19, 1); }
+static void back(Warp* a, u32 at, u32 known, u32* tail) {
+    for (u32 q = a->from_at[at]; q < a->from_at[at + 1]; q++) {
+        u32 state = a->from[q] * GUARDS + known;
+        if (a->seen[state] != a->stamp) a->seen[state] = a->stamp, a->queue[(*tail)++] = state;
+    }
 }
-/* the instructions whose write of variable may be what instruction at reads, into defs: their count, MAX_DEFS + 1 for
-   more than fit; *entry set where the program's start is among them */
+/* the instructions whose write of variable may be what instruction at reads, into defs: their count, MAX_DEFS + 1 for more
+   than fit; *entry set where the program's start is among them. A lane's way is followed back with what one guard on it
+   says of a predicate, until the predicate is written: so a write under P and one under !P leave nothing from before
+   them, and one under !P is not a lane's that reads under P */
 static u32 reaching(Warp* a, u32 at, u32 variable, u32 defs[MAX_DEFS], int* entry) {
     u32 count = 0, head = 0, tail = 0;
     *entry = at == 11;
     a->stamp++;
-    for (u32 q = a->from_at[at]; q < a->from_at[at + 1]; q++)
-        if (a->seen[a->from[q]] != a->stamp) a->seen[a->from[q]] = a->stamp, a->queue[tail++] = a->from[q];
+    back(a, at, holds(a->insn[at]), &tail);
     while (head < tail) {
-        u32 k = a->queue[head++];
-        if (writes(a, k, variable)) {
-            if (count == MAX_DEFS) return MAX_DEFS + 1;
-            defs[count++] = k;
-            if (whole_write(a, k)) continue;
+        u32 k = a->queue[head] / GUARDS, known = a->queue[head] % GUARDS;
+        head++;
+        if (known && writes(a, k, VAR_PRED + (known - 1) / 2)) known = 0;
+        if (writes(a, k, variable) && B(a->insn[k], 16, 4) != 15) { /* not under !PT */
+            u32 under = holds(a->insn[k]), same = known && under && (known - 1) / 2 == (under - 1) / 2, seen = 0;
+            if (!same || known == under) {
+                for (u32 d = 0; d < count; d++) seen |= defs[d] == k;
+                if (!seen && count == MAX_DEFS) return MAX_DEFS + 1;
+                if (!seen) defs[count++] = k;
+                if (!r2p(a->f->op[k]->id) && (!under || same)) continue;
+                if (!known && !r2p(a->f->op[k]->id)) known = ((under - 1) ^ 1) + 1;
+            }
         }
         if (k == 11) *entry = 1;
-        for (u32 q = a->from_at[k]; q < a->from_at[k + 1]; q++)
-            if (a->seen[a->from[q]] != a->stamp) a->seen[a->from[q]] = a->stamp, a->queue[tail++] = a->from[q];
+        back(a, k, known, &tail);
     }
     return count;
 }
@@ -581,12 +592,13 @@ int shader_lone_lane_gives(const ShFlow* f, const u32* pop_targets, const ShNote
     Warp a = {.f = f, .insn = f->insn, .n = f->n, .pop = pop_targets, .why = why, .size = size};
     snprintf(why, size, "subgroup ballot/shuffle unavailable: out of memory");
     if (notes->full || n > DIRECT_WORDS_MAX) return 0;
-    u32* words = calloc(each, 9 * sizeof *words + 4); /* the arrays by instruction, the words first */
+    /* the arrays by instruction, the words first */
+    u32* words = calloc(each, (7 + 2 * GUARDS) * sizeof *words + 4);
     if (!words) return 0;
-    a.note_at = words, a.from_at = words + each, a.block = words + 2 * each, a.seen = words + 3 * each;
-    a.queue = words + 4 * each, a.vote = words + 5 * each, a.root = words + 6 * each, a.version = words + 7 * each;
-    a.home = words + 8 * each;
-    a.kind = (u8*)(words + 9 * each), a.steps = a.kind + each, a.minmax = a.kind + 2 * each,
+    a.note_at = words, a.from_at = words + each, a.block = words + 2 * each, a.vote = words + 3 * each;
+    a.root = words + 4 * each, a.version = words + 5 * each, a.home = words + 6 * each, a.seen = words + 7 * each;
+    a.queue = a.seen + GUARDS * each;
+    a.kind = (u8*)(a.queue + GUARDS * each), a.steps = a.kind + each, a.minmax = a.kind + 2 * each;
     a.claimed = a.kind + 3 * each;
     int good = by_instruction(&a, notes) && flow_make(&a);
     for (u32 k = 11; good && k < a.n; k++)
