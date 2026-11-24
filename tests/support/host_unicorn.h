@@ -43,6 +43,9 @@ void* hostuc_alloc(HostUc* u, size_t size);
 /* native function fn under name (what an object's undefined symbol names): its trap's address. wide: fn returns
    unsigned __int128, both halves into the result registers */
 uint64_t hostuc_native(HostUc* u, const char* name, void* fn);
+typedef struct {
+    uint64_t lo, hi;
+} HostUcPair;
 uint64_t hostuc_native_wide(HostUc* u, const char* name, void* fn);
 /* a trap's address for fn under name where one is registered, else 0 */
 uint64_t hostuc_trap_of(HostUc* u, const char* name);
