@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The code units' cache (module_llvm.c's units, and module_arm.c's of a 32-bit game): each unit's object kept under a
-   key, the SHA-256 of the unit's LLVM IR and of everything else its object is made with, in a folder every game
-   shares. A unit whose key is there, whole, is not compiled again; the module descriptor and the link always are. GNU C23
-   and the LLVM-C headers, as module_llvm.c: not for the ISO C driver */
+   key, the SHA-256 of the unit's LLVM IR, or of what the x86-64 back end makes it from, and of everything else its
+   object is made with, in a folder every game shares. A unit whose key is there, whole, is not compiled again; the
+   module descriptor and the link always are. GNU C23 and the LLVM-C headers, as module_llvm.c: not for the ISO C
+   driver */
 #ifndef SNX_NX_UNIT_CACHE_H
 #define SNX_NX_UNIT_CACHE_H
 
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include <stdio.h>
 
 /* What every unit's key holds besides the unit's own target machine and IR (and SNX_IR_OBJECT_VERSION) */
@@ -61,6 +63,14 @@ int snx_unit_cache_keep(const SnxUnitCache* cache, const char* key, const unsign
    in error (snx_ir_object's) */
 int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* key,
                           char* error, size_t error_size);
+/* snx_x64_object through the cache: an x86-64 unit kept under the SHA-256 of the back end's own code (snx_x64_code,
+   hashed once a cache) and of every fact its object is made from (snx_x64_unit_facts), as which of the functions it
+   made (made) and their object. Reused when it is there whole (*reused 1, the file's time renewed), else made and
+   kept, as snx_unit_cache_object does, unit (code_NNN) naming the unit in what is said. Where this process's back end
+   code cannot be found, said once, its units are made and not kept. 0, or -1 with why in error */
+int snx_unit_cache_x64(SnxUnitCache* cache, SnxCodegen* codegen, size_t first, size_t last,
+                       const SnxX64Options* options, const char* unit, unsigned char* made, unsigned char** object,
+                       size_t* size, int* reused, char* error, size_t error_size);
 /* The object kept under key, malloc'd, its size in *size; NULL with why in error: the file and the system's reason
    when it cannot be read, or why it is not whole */
 unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, size_t* size, char* error,
