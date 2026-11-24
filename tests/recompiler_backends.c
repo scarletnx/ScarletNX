@@ -98,6 +98,7 @@
     snx_rv64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #endif
 u64 snx_x64_crc32(u64 acc, u64 value, u32 desc);
+u64 snx_x64_aes(u64 x, u32 op);
 u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
 HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
@@ -836,7 +837,7 @@ int main(int argc, char** argv) {
         NATIVE(snx_x64_fp_compare), NATIVE(snx_x64_fp_convert), NATIVE(snx_x64_fp_round);
         NATIVE(snx_x64_fp_round_int), NATIVE(snx_x64_fp_to_int), NATIVE(snx_x64_fp_from_int), NATIVE(snx_x64_fp_jcvt);
         NATIVE(snx_x64_fp_bfcvt), NATIVE(snx_mrs), NATIVE(snx_msr), NATIVE(snx_ic_ivau);
-        NATIVE(snx_x64_crc32), NATIVE(snx_x64_stxp), NATIVE(snx_x64_estimate);
+        NATIVE(snx_x64_crc32), NATIVE(snx_x64_stxp), NATIVE(snx_x64_aes), NATIVE(snx_x64_estimate);
         hostuc_native_wide(uc, "snx_x64_casp", (void*)snx_x64_casp);
 #undef NATIVE
         if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {

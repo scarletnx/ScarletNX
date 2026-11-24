@@ -1,8 +1,12 @@
-# The roots of a64.sail the RISC back ends generate (sailgen --generate with risc.h and risc_a64.h, cmake/sailgen.cmake):
-# a64_x64.roots' (copied below as they are), and the Advanced SIMD and SIMD&FP loads and stores sailgen makes for a
-# machine without vector registers: the vectors as general-purpose doublewords, element by element (gen.c without
-# lanes). The SIMD clauses not here (reals, integer arithmetic sailgen keeps only when it recompiles, nested halving
-# reductions) are another back end's
+# The roots of a64.sail the RISC back ends generate (sailgen --generate with risc.h and risc_a64.h,
+# cmake/sailgen.cmake): a64_x64.roots' but its Advanced SIMD (copied below as they are), and the Advanced SIMD and
+# SIMD&FP clauses of a64.sail: the vectors as general-purpose doublewords, element by element (gen.c without lanes).
+# The 36 not here need a feature no guest has (a64.profile's targets but max), so the decoder gives the back end none
+# of their words and no test runs them. sailgen refuses 15: BFDOT, BFMLALB and BFMLALT (vector, by element) and BFMMLA
+# (FEAT_BF16, real numbers); FMLAL, FMLAL2, FMLSL and FMLSL2 (vector, by element; FEAT_FHM, the same); SM4E and SM4EKEY
+# (FEAT_SM4, a table the guest picks from). It makes the other 21: BCAX, EOR3, RAX1 and XAR (FEAT_SHA3); SHA512H,
+# SHA512H2, SHA512SU0 and SHA512SU1; SM3PARTW1, SM3PARTW2, SM3SS1, SM3TT1A, SM3TT1B, SM3TT2A and SM3TT2B; SMMLA, UMMLA,
+# USMMLA, USDOT (vector, by element) and SUDOT (FEAT_I8MM)
 root decode_adc_aarch64_instrs_integer_arithmetic_add_sub_carry
 root decode_adcs_aarch64_instrs_integer_arithmetic_add_sub_carry
 root decode_sbc_aarch64_instrs_integer_arithmetic_add_sub_carry
@@ -316,6 +320,10 @@ root decode_addhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_
 root decode_addp_advsimd_pair_aarch64_instrs_vector_reduce_add_sisd
 root decode_addp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_pair
 root decode_addv_advsimd_aarch64_instrs_vector_reduce_add_simd
+root decode_aesd_advsimd_aarch64_instrs_vector_crypto_aes_round
+root decode_aese_advsimd_aarch64_instrs_vector_crypto_aes_round
+root decode_aesimc_advsimd_aarch64_instrs_vector_crypto_aes_mix
+root decode_aesmc_advsimd_aarch64_instrs_vector_crypto_aes_mix
 root decode_and_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_logical_and_orr
 root decode_bfcvtn_advsimd_aarch64_instrs_vector_cvt_bf16_vector
 root decode_bic_advsimd_imm_aarch64_instrs_vector_logical
@@ -347,6 +355,7 @@ root decode_cmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_lessthan
 root decode_cmlt_advsimd_aarch64_instrs_vector_arithmetic_unary_cmp_int_lessthan_sisd
 root decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd
 root decode_cmtst_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_sisd
+root decode_cnt_advsimd_aarch64_instrs_vector_arithmetic_unary_cnt
 root decode_dup_advsimd_elt_aarch64_instrs_vector_transfer_vector_cpy_dup_simd
 root decode_dup_advsimd_elt_aarch64_instrs_vector_transfer_vector_cpy_dup_sisd
 root decode_dup_advsimd_gen_aarch64_instrs_vector_transfer_integer_dup
@@ -637,6 +646,16 @@ root decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_i
 root decode_scvtf_advsimd_int_aarch64_instrs_vector_arithmetic_unary_fp16_conv_int_sisd
 root decode_sdot_advsimd_elt_aarch64_instrs_vector_arithmetic_binary_element_dotp
 root decode_sdot_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_dotp
+root decode_sha1c_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_choose
+root decode_sha1h_advsimd_aarch64_instrs_vector_crypto_sha2op_sha1_hash
+root decode_sha1m_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_majority
+root decode_sha1p_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_hash_parity
+root decode_sha1su0_advsimd_aarch64_instrs_vector_crypto_sha3op_sha1_sched0
+root decode_sha1su1_advsimd_aarch64_instrs_vector_crypto_sha2op_sha1_sched1
+root decode_sha256h2_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_hash
+root decode_sha256h_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_hash
+root decode_sha256su0_advsimd_aarch64_instrs_vector_crypto_sha2op_sha256_sched0
+root decode_sha256su1_advsimd_aarch64_instrs_vector_crypto_sha3op_sha256_sched1
 root decode_shadd_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_halving_truncating
 root decode_shl_advsimd_aarch64_instrs_vector_shift_left_simd
 root decode_shl_advsimd_aarch64_instrs_vector_shift_left_sisd
@@ -764,6 +783,8 @@ root decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrap
 root decode_subhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow
 root decode_suqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_simd
 root decode_suqadd_advsimd_aarch64_instrs_vector_arithmetic_unary_add_saturating_sisd
+root decode_tbl_advsimd_aarch64_instrs_vector_transfer_vector_table
+root decode_tbx_advsimd_aarch64_instrs_vector_transfer_vector_table
 root decode_trn1_advsimd_aarch64_instrs_vector_transfer_vector_permute_transpose
 root decode_trn2_advsimd_aarch64_instrs_vector_transfer_vector_permute_transpose
 root decode_uaba_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_diff

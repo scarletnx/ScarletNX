@@ -506,6 +506,11 @@ lower UnsignedRSqrtEstimate
 lower SatQ
 lower SignedSatQ
 lower UnsignedSatQ
+# and AES's tables, which a guest's byte picks from
+lower AESSubBytes
+lower AESInvSubBytes
+lower AESMixColumns
+lower AESInvMixColumns
 
 # NX's fixups for floating point (nx.sail) in their place: the SIMD&FP registers are _V's elements and FPCR is the
 # register as the CPU keeps it, as FPSR is; FP is enabled at EL0; nothing merges without FEAT_AFP; FPAbs and FPNeg
@@ -517,6 +522,7 @@ stop FPCR_read
 stop FPCR
 stop CheckFPEnabled64
 stop CheckFPAdvSIMDEnabled64
+stop AArch64_CheckFPAdvSIMDEnabled
 stop IsMerging
 stop UsingAArch32
 stop HaveFP16Ext

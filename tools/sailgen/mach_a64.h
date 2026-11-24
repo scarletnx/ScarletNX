@@ -496,6 +496,23 @@ static inline SgD sgx_estimate32(SgCtx* g, SgD a, int sqrt) {
 }
 static inline SgD sg_UnsignedRecipEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 0); }
 static inline SgD sg_UnsignedRSqrtEstimate(SgCtx* g, SgD a) { return sgx_estimate32(g, a, 1); }
+/* AES's SubBytes, MixColumns and their inverses (op 0 to 3), a doubleword at a time: each takes its bytes, or its two
+   columns, alone */
+static inline SgD sgx_aes(SgCtx* g, SgD a, unsigned op) {
+    SgD args[2], half[2];
+    int k;
+    for (k = 0; k < 2; ++k) {
+        args[0] = sg_d_slice(g, a, 64 * k + 63, 64 * k);
+        args[1] = sgx_const(32, op);
+        half[k] = sgx_call(g, "snx_x64_aes", 0, 0, args, 2, 64);
+    }
+    return sg_d_concat(g, half[1], half[0]);
+}
+static inline SgD sg_AESSubBytes(SgCtx* g, SgD a) { return sgx_aes(g, a, 0); }
+static inline SgD sg_AESInvSubBytes(SgCtx* g, SgD a) { return sgx_aes(g, a, 1); }
+static inline SgD sg_AESMixColumns(SgCtx* g, SgD a) { return sgx_aes(g, a, 2); }
+static inline SgD sg_AESInvMixColumns(SgCtx* g, SgD a) { return sgx_aes(g, a, 3); }
+
 /* ---- the floating point of a machine that has no inline code of its own for it (SGX_FP_HELPERS: arm64.h's,
    risc.h's): the exact helpers' for every operation, x64_helpers.c's snx_x64_fp_* (cpu.h's soft float, which raises
    FPSR's flags as FPProcessException does) ---- */

@@ -699,6 +699,9 @@ static inline void sgx_dws(SgCtx* g, SgD a, SgD* out) {
         out[0] = sg_d_zext(g, a, 64);
         return;
     }
+    if (a.w > 128 && (a.v || a.vh || a.k || a.kh)) sg_fail("bits past 128 that are not Zeros", a.w, 0);
+    for (k = 2; k < n; ++k) out[k] = sgx_const(64, 0); /* sg_d_fill's Zeros */
+    if (a.w > 128) a.w = 128;
     out[0] = sgx_half(a, 0);
     out[1] = sg_d_zext(g, sgx_half(a, 1), 64);
 }
@@ -1065,6 +1068,11 @@ static inline SgD sgx_shift_i(SgCtx* g, int kind, SgD a, long long n) {
     unsigned w = a.w, pw = sgx_width(w);
     SgD r;
     if (!n) return a;
+    if (kind == 3 && w != 32 && w != 64 && w) {
+        /* a rotation of other bits (SHA's y @ x): the low n of them over the rest */
+        n %= w;
+        return n ? sg_d_concat(g, sg_d_slice(g, a, n - 1, 0), sg_d_slice(g, a, w - 1, n)) : a;
+    }
     if (kind != 3 && n >= (long long)w && w <= 64) {
         /* by the width or more (SRI's mask of LSR(Ones(esize), esize)): zeros, or the sign's copies */
         if (kind != 2) return sgx_const(w, 0);
@@ -3214,6 +3222,35 @@ static inline void sg_SignedSatQ(SgCtx* g, SgI i, long long n, SgD* result, SgB*
 }
 static inline void sg_UnsignedSatQ(SgCtx* g, SgI i, long long n, SgD* result, SgB* saturated) {
     sg_SatQ(g, i, n, 1, result, saturated);
+}
+/* BitCount(x): the bits of each two, of each four, of each byte, then all the bytes' */
+static inline SgI sg_i_bitcount(SgCtx* g, SgD x) {
+    unsigned w = x.w;
+    SgD v;
+    if (w > 64) sg_fail("BitCount of over 64 bits", w, 0);
+    v = sg_d_zext(g, x, 64);
+    v = sg_d_sub(g, v, sg_d_and(g, sg_d_lsr(g, v, 1), sgx_const(64, 0x5555555555555555ull)));
+    v = sg_d_add(g, sg_d_and(g, v, sgx_const(64, 0x3333333333333333ull)),
+                 sg_d_and(g, sg_d_lsr(g, v, 2), sgx_const(64, 0x3333333333333333ull)));
+    v = sg_d_and(g, sg_d_add(g, v, sg_d_lsr(g, v, 4)), sgx_const(64, 0x0F0F0F0F0F0F0F0Full));
+    if (w > 8) v = sg_d_lsr(g, SGX_OP(sgx(g), mul, 64, v, sgx_const(64, 0x0101010101010101ull)), 56);
+    return sg_i_uint(g, sg_d_slice(g, v, 6, 0));
+}
+/* Elem_read(x, e, size), e known only when the guest runs: the doubleword it is in, picked by each bit of its number,
+   shifted down (an e past x's elements, which the Sail doesn't read, gives any bits) */
+static inline SgD sg_d_elem_dyn(SgCtx* g, SgD a, SgI e, long long size) {
+    SgD dw[SGX_MAXDW], at = sgx_i_val(g, &e);
+    unsigned n = sgx_ndw(a.w), k, j, bit = 0, log = 0;
+    if (size != 8 && size != 16 && size != 32 && size != 64) sg_fail("an element of this size", size, 0);
+    if (a.w > 64 * SGX_MAXDW || a.w % 64) sg_fail("an element of a value of these bits", a.w, size);
+    while ((8 << log) < size) ++log;
+    at = sg_d_lsl(g, at, 3 + log); /* the element's first bit */
+    sgx_dws(g, a, dw);
+    for (bit = 0; n > 1; ++bit, n = (n + 1) / 2) {
+        SgB odd = sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, at, sgx_const(64, 64ull << bit))));
+        for (k = j = 0; k < n; k += 2, ++j) dw[j] = k + 1 < n ? sg_d_select(g, odd, dw[k + 1], dw[k]) : dw[k];
+    }
+    return sg_d_slice(g, sg_d_shift_dyn(g, dw[0], at, 1), size - 1, 0);
 }
 
 /* LSL_C, LSR_C, ASR_C and ROR_C (kind 0 to 3) by an amount known when it recompiles: the shifted value and the last bit
