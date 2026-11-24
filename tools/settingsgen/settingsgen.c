@@ -121,24 +121,45 @@ static void fail(int line, const char* fmt, ...) {
     exit(1);
 }
 
-/* steps' values, whole numbers in order a space or a comma between, as the table keeps them: '|' between two */
+/* steps' values, whole numbers in order a space or a comma between, or a range A..B/S (A, A + S and on to B), as the
+   table keeps them: '|' between two */
 static char* steps_of(const char* text, int line) {
-    char* out = calloc(strlen(text) + 1, 1);
+    size_t cap = strlen(text) * 24 + 64, at = 0; /* a range grows it */
+    char* out = calloc(cap, 1);
     const char* c = text;
     long last = LONG_MIN;
-    size_t at = 0;
     if (!out) fail(line, "out of memory");
     while (*c) {
         char* end;
-        long v;
+        long v, to = 0, by = 0;
         while (*c == ' ' || *c == ',' || *c == '\t') ++c;
         if (!*c) break;
-        v = strtol(c, &end, 10);
+        v = to = strtol(c, &end, 10);
+        if (end != c && !strncmp(end, "..", 2)) {
+            const char* r = end + 2;
+            to = strtol(r, &end, 10);
+            if (end == r) fail(line, "steps: a range is A..B/S: %s", c);
+            by = 1;
+            if (*end == '/') {
+                r = end + 1;
+                by = strtol(r, &end, 10);
+                if (end == r || by < 1) fail(line, "steps: a range is A..B/S: %s", c);
+            }
+        }
         if (end == c || (*end && *end != ' ' && *end != ',' && *end != '\t'))
             fail(line, "steps takes whole numbers: %s", c);
-        if (v <= last) fail(line, "steps go up: %ld after %ld", v, last);
-        at += (size_t)sprintf(out + at, "%s%ld", at ? "|" : "", v);
-        last = v;
+        if (by && to < v) fail(line, "steps: a range goes up: %s", c);
+        for (;; v += by) { /* a range's values, else the one */
+            if (v <= last) fail(line, "steps go up: %ld after %ld", v, last);
+            if (at + 32 > cap) {
+                char* more = realloc(out, cap *= 2);
+                if (!more) fail(line, "out of memory");
+                out = more;
+            }
+            at += (size_t)sprintf(out + at, "%s%ld", at ? "|" : "", v);
+            last = v;
+            if (!by || v + by > to) break;
+        }
         c = end;
     }
     if (!at) fail(line, "steps takes its values");

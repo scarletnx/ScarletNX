@@ -161,8 +161,13 @@ endforeach()
 # a game's HDR output, off until asked for, and the paper white and the peak it is told: the launcher's Settings and
 # a game's menu show them (gpu/vk/hdr_swapchain.c, hle/services/gsv.c)
 foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\t\n"
-            "Graphics\thdr_paperwhite\t0\tint\t0\t480\t" "\tPaper white (nits)\t\t\n"
-            "Graphics\thdr_peak\t1000\tint\t400\t4000\t" "\tPeak light (nits)\t\t\n")
+            "Graphics\thdr_paperwhite\t0\tint\t0\t480\t" "\tPaper white (nits)\t0=Reference|10=10 nits|"
+            "|480=480 nits\t\t\topen\n"
+            "Graphics\thdr_peak\t1000\tint\t400\t4000\t" "\tPeak light (nits)\t400=400 nits|500=500 nits|"
+            "|4000=4000 nits\t\t\topen\n"
+            # the save states' slots and the upscaler's sharpness, sliders
+            "\tSave state slots\t1=1|2=2|3=3|4=4|5=5|6=6|7=7|8=8|9=9|10=10|"
+            "Graphics\tupscaler_sharpness\t75\tint\t0\t100\t" "\tUpscaler sharpness\t0=0%|5=5%|")
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")

@@ -214,6 +214,9 @@ endforeach()
 foreach(case "int 0 9\n    default 0\n    steps 0 4 2@@steps.txt:6: steps go up: 2 after 4"
              "int 0 9\n    default 0\n    steps 0 x@@steps.txt:6: steps takes whole numbers: x"
              "int 0 9\n    default 0\n    steps 0 12@@steps.txt:2: Stepped: step 12 is outside 0..9"
+             "int 0 90\n    default 0\n    steps 30..10/10@@steps.txt:6: steps: a range goes up: 30..10/10"
+             "int 0 90\n    default 0\n    steps 0..20/5 20@@steps.txt:6: steps go up: 20 after 20"
+             "int 0 90\n    default 0\n    steps 0..20/x@@steps.txt:6: steps: a range is A..B/S: 0..20/x"
              "text 8\n    default a\n    steps 1 2@@steps.txt:2: Stepped: steps takes an int, not a slider"
              "int 0 9\n    default 0\n    words Off|On\n    open@@steps.txt:2: Stepped: open takes a text with words")
     string(REPLACE "@@" ";" parts "${case}")
