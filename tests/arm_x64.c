@@ -182,6 +182,22 @@ static u64 rnd(void) {
 
 /* ---- the words ---- */
 
+/* Unicorn's MIPS64 raises an exception for an LL or LLD of an address past 4 GiB, as the hosted and the buses' blocks'
+   window is: an exclusive of theirs is not drawn for it */
+static int no_exclusives(void) {
+#if defined(SNX_TEST_MIPS64) || defined(SNX_TEST_MIPS64BE)
+    return hosted() || legacy();
+#else
+    return 0;
+#endif
+}
+/* whether the T32 pair is an exclusive (LDREX, STREX and their byte, halfword, doubleword and acquire forms) */
+static int t32_exclusive(uint16_t a, uint16_t b) {
+    unsigned kind = b >> 4 & 15;
+    return (a & 0xFFE0u) == 0xE840u ||
+           ((a & 0xFFE0u) == 0xE8C0u && (kind == 4 || kind == 5 || kind == 7 || kind >= 12));
+}
+
 /* a class of A32 instructions: its fixed bits (value under mask) and the kind the decoder gives its words */
 typedef struct {
     const char* name;
@@ -706,6 +722,7 @@ static void t32_pair(uint16_t* a, uint16_t* b) {
         SnxThumb t;
         if ((x >> 11) < 0x1D) continue;
         if (!anything && !snx_thumb_decode_profile(g_test.options.profile, x, y, &t)) continue;
+        if (no_exclusives() && t32_exclusive(x, y)) continue;
         *a = x;
         *b = y;
         return;
@@ -1862,7 +1879,8 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < b->n; ++k) {
                 const Class* c;
                 do c = pick_class();
-                while (!(b->words[k] = word_of(c)));
+                while (!(b->words[k] = word_of(c)) ||
+                       (no_exclusives() && (c->kind == SNX_A32_EXCLUSIVE || c->kind == SNX_A32_ACQUIRE_RELEASE)));
                 ++g_test.kinds[decode(b->words[k]) & 63];
             }
         }

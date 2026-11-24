@@ -149,11 +149,6 @@ static u64 resolve(const char* sym) {
         if (!strcmp(sym, table[i].name)) return hostuc_native(g_test.uc, table[i].name, table[i].f);
     return 0;
 }
-static void* page_alloc(size_t size) {
-    void* p = mmap(NULL, (size + PAGE - 1) & ~(size_t)(PAGE - 1), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-}
-
 /* a big-endian machine's state and runtime table turned over around its runs (host_unicorn.h's swapper) */
 static void swap_state(void* user) {
     (void)user;
@@ -396,13 +391,13 @@ int main(int argc, char** argv) {
     sa.sa_handler = on_abort;
     sigaction(SIGABRT, &sa, NULL);
     for (k = 0; k < 3; ++k) {
-        g_test.memory[k] = (unsigned char*)page_alloc(MEMORY_SIZE);
+        g_test.memory[k] = (unsigned char*)hostuc_pages(MEMORY_SIZE);
         if (!g_test.memory[k]) return 1;
     }
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
-    code = (unsigned char*)page_alloc(code_cap);
+    code = (unsigned char*)hostuc_pages(code_cap);
     if (!code || unicorn_begin(code, code_cap)) {
         fprintf(stderr, "FAIL: no memory or Unicorn for the code\n");
         return 1;
