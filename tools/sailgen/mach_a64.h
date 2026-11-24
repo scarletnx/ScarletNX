@@ -272,7 +272,7 @@ static inline void sgx_vpget(SgCtx* g, long long n) {
     SgXIns* i;
     if (g->vx[n]) return;
     i = sgx_append(x, SGX_K_PGET);
-    i->imm = 16 + g->vpin[n];
+    i->imm = SGX_XPIN + g->vpin[n];
     i->def = sgx_xvreg(x, x->n - 1);
     g->vx[n] = i->def;
     g->vd[n][0] = g->vd[n][1] = 0;
@@ -281,7 +281,7 @@ static inline void sgx_vpget(SgCtx* g, long long n) {
 static inline void sgx_vpset(SgCtx* g, long long n, int r) {
     SgX* x = sgx(g);
     SgXIns* i = sgx_append(x, SGX_K_PSET);
-    i->imm = 16 + g->vpin[n];
+    i->imm = SGX_XPIN + g->vpin[n];
     i->in[0] = r;
     i->side = 1;
     g->vx[n] = r;
