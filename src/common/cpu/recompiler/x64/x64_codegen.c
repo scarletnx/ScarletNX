@@ -541,7 +541,7 @@ static int fp_ldst(Unit* u, SnxU32 word, SnxU64 pc) {
     if ((word & 0x3C000000u) == 0x2C000000u) { /* the pairs: opc 101 1 0 idx L imm7 Rt2 Rn Rt */
         unsigned opc = word >> 30, idx = word >> 23 & 7, l = word >> 22 & 1, rt2 = word >> 10 & 31;
         int bytes = 4 << opc;
-        long long off = (long long)((word >> 15) & 0x7F) << 57 >> 57;
+        long long off = snx_sext64((word >> 15) & 0x7F, 7);
         SgD base, a;
         if (opc == 3 || idx > 3 || (l && rt == rt2)) return 0;
         off *= bytes;
@@ -579,7 +579,7 @@ static int fp_ldst(Unit* u, SnxU32 word, SnxU64 pc) {
             a = sg_d_add(g, base, m);
         } else { /* imm9: 00 unscaled, 01 post, 11 pre */
             unsigned idx = word >> 10 & 3;
-            long long off = (long long)((word >> 12) & 0x1FF) << 55 >> 55;
+            long long off = snx_sext64((word >> 12) & 0x1FF, 9);
             if (idx == 2) return 0;
             a = idx == 1 ? base : sg_d_add(g, base, sgx_const(64, (SnxU64)off));
             if (load) v_load(g, rt, a, bytes);
