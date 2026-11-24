@@ -46730,14 +46730,6 @@ register _P : vector(16, bits(MAX_PL))
 
 register _FFR : bits(MAX_PL)
 
-enum SMEExceptionType = {
-  SMEExceptionType_AccessTrap,
-  SMEExceptionType_Streaming,
-  SMEExceptionType_NotStreaming,
-  SMEExceptionType_InactiveZA,
-  SMEExceptionType_InaccessibleZT0
-}
-
 register _ZA : vector(256, bits(MAX_VL))
 
 enum GCSInstruction = {
@@ -52211,55 +52203,11 @@ function ExceptionSyndrome exceptype = {
     return(r)
 }
 
-val AArch32_CurrentCond : unit -> bits(4)
-
-val ConditionSyndrome : unit -> bits(5)
-
-function ConditionSyndrome () = {
-    cond : bits(4) = undefined;
-    syndrome : bits(5) = undefined;
-    if UsingAArch32() then {
-        let cond : bits(4) = AArch32_CurrentCond();
-        if PSTATE.T == 0b0 then {
-            syndrome[4] = Bit(0b1);
-            if ConditionHolds(cond) & ConstrainUnpredictableBool(Unpredictable_ESRCONDPASS) then {
-                syndrome[3 .. 0] = 0b1110
-            } else {
-                syndrome[3 .. 0] = cond
-            }
-        } else {
-            if __IMPDEF_boolean("Condition valid for trapped T32") then {
-                syndrome[4] = Bit(0b1);
-                syndrome[3 .. 0] = cond
-            } else {
-                syndrome[4] = Bit(0b0);
-                syndrome[3 .. 0] = __UNKNOWN_bits(4)
-            }
-        }
-    } else {
-        syndrome[4] = Bit(0b1);
-        syndrome[3 .. 0] = 0b1110
-    };
-    return(syndrome)
-}
-
 val IsASEInstruction : unit -> bool
 
 val GetAccumulatedFPExceptions : unit -> bits(8)
 
 val SetAccumulatedFPExceptions : bits(8) -> unit
-
-val EL3SDDUndefPriority : unit -> bool
-
-function EL3SDDUndefPriority () = {
-    return((Halted() & EDSCR_read()[SDD] == 0b1) & __IMPDEF_boolean("EL3 trap priority when SDD == '1'"))
-}
-
-val EL3SDDUndef : unit -> bool
-
-function EL3SDDUndef () = {
-    return(Halted() & EDSCR_read()[SDD] == 0b1)
-}
 
 val AArch64_ChkFeat : bits(64) -> bits(64)
 
@@ -52508,107 +52456,11 @@ function AESInvShiftRows op = {
 
 val AESSubBytes : bits(128) -> bits(128)
 
-function AESSubBytes op = {
-    let GF2 : bits(2048) = ((((((((((((((0x16bb54b00f2d99416842e6bf0d89a18c @ 0xdf2855cee9871e9b948ed9691198f8e1) @ 0x9e1dc186b95735610ef6034866b53e70) @ 0x8a8bbd4b1f74dde8c6b4a61c2e2578ba) @ 0x08ae7a65eaf4566ca94ed58d6d37c8e7) @ 0x79e4959162acd3c25c2406490a3a32e0) @ 0xdb0b5ede14b8ee4688902a22dc4f8160) @ 0x73195d643d7ea7c41744975fec130ccd) @ 0xd2f3ff1021dab6bcf5389d928f40a351) @ 0xa89f3c507f02f94585334d43fbaaefd0) @ 0xcf584c4a39becb6a5bb1fc20ed00d153) @ 0x842fe329b3d63b52a05a6e1b1a2c8309) @ 0x75b227ebe28012079a059618c323c704) @ 0x1531d871f1e5a534ccf73f362693fdb7) @ 0xc072a49cafa2d4adf04759fa7dc982ca) @ 0x76abd7fe2b670130c56f6bf27b777c63;
-    out : bits(128) = undefined;
-    foreach (i from 0 to 15 by 1 in inc) {
-        out = SetSlice(8, out, i * 8, Slice(GF2, UInt(Slice(op, i * 8, 8)) * 8, 8))
-    };
-    return(out)
-}
-
 val AESInvSubBytes : bits(128) -> bits(128)
-
-function AESInvSubBytes op = {
-    let GF2_inv : bits(2048) = ((((((((((((((0x7d0c2155631469e126d677ba7e042b17 @ 0x619953833cbbebc8b0f52aae4d3be0a0) @ 0xef9cc9939f7ae52d0d4ab519a97f5160) @ 0x5fec8027591012b131c7078833a8dd1f) @ 0xf45acd78fec0db9a2079d2c64b3e56fc) @ 0x1bbe18aa0e62b76f89c5291d711af147) @ 0x6edf751ce837f9e28535ade72274ac96) @ 0x73e6b4f0cecff297eadc674f4111913a) @ 0x6b8a130103bdafc1020f3fca8f1e2cd0) @ 0x0645b3b80558e4f70ad3bc8c00abd890) @ 0x849d8da75746155edab9edfd5048706c) @ 0x92b6655dcc5ca4d41698688664f6f872) @ 0x25d18b6d49a25b76b224d92866a12e08) @ 0x4ec3fa420b954cee3d23c2a632947b54) @ 0xcbe9dec444438e3487ff2f9b8239e37c) @ 0xfbd7f3819ea340bf38a53630d56a0952;
-    out : bits(128) = undefined;
-    foreach (i from 0 to 15 by 1 in inc) {
-        out = SetSlice(8, out, i * 8, Slice(GF2_inv, UInt(Slice(op, i * 8, 8)) * 8, 8))
-    };
-    return(out)
-}
-
-val FFmul02 : bits(8) -> bits(8)
-
-function FFmul02 b = {
-    let FFmul_02 : bits(2048) = ((((((((((((((0xE5E7E1E3EDEFE9EBF5F7F1F3FDFFF9FB @ 0xC5C7C1C3CDCFC9CBD5D7D1D3DDDFD9DB) @ 0xA5A7A1A3ADAFA9ABB5B7B1B3BDBFB9BB) @ 0x858781838D8F898B959791939D9F999B) @ 0x656761636D6F696B757771737D7F797B) @ 0x454741434D4F494B555751535D5F595B) @ 0x252721232D2F292B353731333D3F393B) @ 0x050701030D0F090B151711131D1F191B) @ 0xFEFCFAF8F6F4F2F0EEECEAE8E6E4E2E0) @ 0xDEDCDAD8D6D4D2D0CECCCAC8C6C4C2C0) @ 0xBEBCBAB8B6B4B2B0AEACAAA8A6A4A2A0) @ 0x9E9C9A98969492908E8C8A8886848280) @ 0x7E7C7A78767472706E6C6A6866646260) @ 0x5E5C5A58565452504E4C4A4846444240) @ 0x3E3C3A38363432302E2C2A2826242220) @ 0x1E1C1A18161412100E0C0A0806040200;
-    return(Slice(FFmul_02, UInt(b) * 8, 8))
-}
-
-val FFmul03 : bits(8) -> bits(8)
-
-function FFmul03 b = {
-    let FFmul_03 : bits(2048) = ((((((((((((((0x1A191C1F16151013020104070E0D080B @ 0x2A292C2F26252023323134373E3D383B) @ 0x7A797C7F76757073626164676E6D686B) @ 0x4A494C4F46454043525154575E5D585B) @ 0xDAD9DCDFD6D5D0D3C2C1C4C7CECDC8CB) @ 0xEAE9ECEFE6E5E0E3F2F1F4F7FEFDF8FB) @ 0xBAB9BCBFB6B5B0B3A2A1A4A7AEADA8AB) @ 0x8A898C8F86858083929194979E9D989B) @ 0x818287848D8E8B88999A9F9C95969390) @ 0xB1B2B7B4BDBEBBB8A9AAAFACA5A6A3A0) @ 0xE1E2E7E4EDEEEBE8F9FAFFFCF5F6F3F0) @ 0xD1D2D7D4DDDEDBD8C9CACFCCC5C6C3C0) @ 0x414247444D4E4B48595A5F5C55565350) @ 0x717277747D7E7B78696A6F6C65666360) @ 0x212227242D2E2B28393A3F3C35363330) @ 0x111217141D1E1B18090A0F0C05060300;
-    return(Slice(FFmul_03, UInt(b) * 8, 8))
-}
-
-val FFmul09 : bits(8) -> bits(8)
-
-function FFmul09 b = {
-    let FFmul_09 : bits(2048) = ((((((((((((((0x464F545D626B70790E071C152A233831 @ 0xD6DFC4CDF2FBE0E99E978C85BAB3A8A1) @ 0x7D746F6659504B42353C272E1118030A) @ 0xEDE4FFF6C9C0DBD2A5ACB7BE8188939A) @ 0x3039222B141D060F78716A635C554E47) @ 0xA0A9B2BB848D969FE8E1FAF3CCC5DED7) @ 0x0B0219102F263D34434A5158676E757C) @ 0x9B928980BFB6ADA4D3DAC1C8F7FEE5EC) @ 0xAAA3B8B18E879C95E2EBF0F9C6CFD4DD) @ 0x3A3328211E170C05727B6069565F444D) @ 0x9198838AB5BCA7AED9D0CBC2FDF4EFE6) @ 0x0108131A252C373E49405B526D647F76) @ 0xDCD5CEC7F8F1EAE3949D868FB0B9A2AB) @ 0x4C455E5768617A73040D161F2029323B) @ 0xE7EEF5FCC3CAD1D8AFA6BDB48B829990) @ 0x777E656C535A41483F362D241B120900;
-    return(Slice(FFmul_09, UInt(b) * 8, 8))
-}
-
-val FFmul0B : bits(8) -> bits(8)
-
-function FFmul0B b = {
-    let FFmul_0B : bits(2048) = ((((((((((((((0xA3A8B5BE8F849992FBF0EDE6D7DCC1CA @ 0x1318050E3F3429224B405D56676C717A) @ 0xD8D3CEC5F4FFE2E9808B969DACA7BAB1) @ 0x68637E75444F5259303B262D1C170A01) @ 0x555E434879726F640D061B10212A373C) @ 0xE5EEF3F8C9C2DFD4BDB6ABA0919A878C) @ 0x2E2538330209141F767D606B5A514C47) @ 0x9E958883B2B9A4AFC6CDD0DBEAE1FCF7) @ 0x545F424978736E650C071A11202B363D) @ 0xE4EFF2F9C8C3DED5BCB7AAA1909B868D) @ 0x2F2439320308151E777C616A5B504D46) @ 0x9F948982B3B8A5AEC7CCD1DAEBE0FDF6) @ 0xA2A9B4BF8E859893FAF1ECE7D6DDC0CB) @ 0x1219040F3E3528234A415C57666D707B) @ 0xD9D2CFC4F5FEE3E8818A979CADA6BBB0) @ 0x69627F74454E5358313A272C1D160B00;
-    return(Slice(FFmul_0B, UInt(b) * 8, 8))
-}
-
-val FFmul0D : bits(8) -> bits(8)
-
-function FFmul0D b = {
-    let FFmul_0D : bits(2048) = ((((((((((((((0x979A8D80A3AEB9B4FFF2E5E8CBC6D1DC @ 0x474A5D50737E69642F2235381B16010C) @ 0x2C21363B1815020F44495E53707D6A67) @ 0xFCF1E6EBC8C5D2DF94998E83A0ADBAB7) @ 0xFAF7E0EDCEC3D4D9929F8885A6ABBCB1) @ 0x2A27303D1E130409424F5855767B6C61) @ 0x414C5B5675786F622924333E1D10070A) @ 0x919C8B86A5A8BFB2F9F4E3EECDC0D7DA) @ 0x4D40575A7974636E25283F32111C0B06) @ 0x9D90878AA9A4B3BEF5F8EFE2C1CCDBD6) @ 0xF6FBECE1C2CFD8D59E938489AAA7B0BD) @ 0x262B3C31121F08054E4354597A77606D) @ 0x202D3A3714190E034845525F7C71666B) @ 0xF0FDEAE7C4C9DED39895828FACA1B6BB) @ 0x9B96818CAFA2B5B8F3FEE9E4C7CADDD0) @ 0x4B46515C7F726568232E3934171A0D00;
-    return(Slice(FFmul_0D, UInt(b) * 8, 8))
-}
-
-val FFmul0E : bits(8) -> bits(8)
-
-function FFmul0E b = {
-    let FFmul_0E : bits(2048) = ((((((((((((((0x8D83919FB5BBA9A7FDF3E1EFC5CBD9D7 @ 0x6D63717F555B49471D13010F252B3937) @ 0x56584A446E60727C26283A341E10020C) @ 0xB6B8AAA48E80929CC6C8DAD4FEF0E2EC) @ 0x202E3C321816040A505E4C426866747A) @ 0xC0CEDCD2F8F6E4EAB0BEACA28886949A) @ 0xFBF5E7E9C3CDDFD18B859799B3BDAFA1) @ 0x1B150709232D3F316B657779535D4F41) @ 0xCCC2D0DEF4FAE8E6BCB2A0AE848A9896) @ 0x2C22303E141A08065C52404E646A7876) @ 0x17190B052F21333D67697B755F51434D) @ 0xF7F9EBE5CFC1D3DD87899B95BFB1A3AD) @ 0x616F7D735957454B111F0D032927353B) @ 0x818F9D93B9B7A5ABF1FFEDE3C9C7D5DB) @ 0xBAB4A6A8828C9E90CAC4D6D8F2FCEEE0) @ 0x5A544648626C7E702A243638121C0E00;
-    return(Slice(FFmul_0E, UInt(b) * 8, 8))
-}
 
 val AESMixColumns : bits(128) -> bits(128)
 
-function AESMixColumns op = {
-    let in0 : bits(32) = ((Slice(op, 96, 8) @ Slice(op, 64, 8)) @ Slice(op, 32, 8)) @ Slice(op, 0, 8);
-    let in1 : bits(32) = ((Slice(op, 104, 8) @ Slice(op, 72, 8)) @ Slice(op, 40, 8)) @ Slice(op, 8, 8);
-    let in2 : bits(32) = ((Slice(op, 112, 8) @ Slice(op, 80, 8)) @ Slice(op, 48, 8)) @ Slice(op, 16, 8);
-    let in3 : bits(32) = ((Slice(op, 120, 8) @ Slice(op, 88, 8)) @ Slice(op, 56, 8)) @ Slice(op, 24, 8);
-    out0 : bits(32) = undefined;
-    out1 : bits(32) = undefined;
-    out2 : bits(32) = undefined;
-    out3 : bits(32) = undefined;
-    foreach (c from 0 to 3 by 1 in inc) {
-        out0 = SetSlice(8, out0, c * 8, EOR(EOR(EOR(FFmul02(Slice(in0, c * 8, 8)), FFmul03(Slice(in1, c * 8, 8))), Slice(in2, c * 8, 8)), Slice(in3, c * 8, 8)));
-        out1 = SetSlice(8, out1, c * 8, EOR(EOR(EOR(FFmul02(Slice(in1, c * 8, 8)), FFmul03(Slice(in2, c * 8, 8))), Slice(in3, c * 8, 8)), Slice(in0, c * 8, 8)));
-        out2 = SetSlice(8, out2, c * 8, EOR(EOR(EOR(FFmul02(Slice(in2, c * 8, 8)), FFmul03(Slice(in3, c * 8, 8))), Slice(in0, c * 8, 8)), Slice(in1, c * 8, 8)));
-        out3 = SetSlice(8, out3, c * 8, EOR(EOR(EOR(FFmul02(Slice(in3, c * 8, 8)), FFmul03(Slice(in0, c * 8, 8))), Slice(in1, c * 8, 8)), Slice(in2, c * 8, 8)))
-    };
-    return(((((((((((((((Slice(out3, 3 * 8, 8) @ Slice(out2, 3 * 8, 8)) @ Slice(out1, 3 * 8, 8)) @ Slice(out0, 3 * 8, 8)) @ Slice(out3, 2 * 8, 8)) @ Slice(out2, 2 * 8, 8)) @ Slice(out1, 2 * 8, 8)) @ Slice(out0, 2 * 8, 8)) @ Slice(out3, 1 * 8, 8)) @ Slice(out2, 1 * 8, 8)) @ Slice(out1, 1 * 8, 8)) @ Slice(out0, 1 * 8, 8)) @ Slice(out3, 0 * 8, 8)) @ Slice(out2, 0 * 8, 8)) @ Slice(out1, 0 * 8, 8)) @ Slice(out0, 0 * 8, 8))
-}
-
 val AESInvMixColumns : bits(128) -> bits(128)
-
-function AESInvMixColumns op = {
-    let in0 : bits(32) = ((Slice(op, 96, 8) @ Slice(op, 64, 8)) @ Slice(op, 32, 8)) @ Slice(op, 0, 8);
-    let in1 : bits(32) = ((Slice(op, 104, 8) @ Slice(op, 72, 8)) @ Slice(op, 40, 8)) @ Slice(op, 8, 8);
-    let in2 : bits(32) = ((Slice(op, 112, 8) @ Slice(op, 80, 8)) @ Slice(op, 48, 8)) @ Slice(op, 16, 8);
-    let in3 : bits(32) = ((Slice(op, 120, 8) @ Slice(op, 88, 8)) @ Slice(op, 56, 8)) @ Slice(op, 24, 8);
-    out0 : bits(32) = undefined;
-    out1 : bits(32) = undefined;
-    out2 : bits(32) = undefined;
-    out3 : bits(32) = undefined;
-    foreach (c from 0 to 3 by 1 in inc) {
-        out0 = SetSlice(8, out0, c * 8, EOR(EOR(EOR(FFmul0E(Slice(in0, c * 8, 8)), FFmul0B(Slice(in1, c * 8, 8))), FFmul0D(Slice(in2, c * 8, 8))), FFmul09(Slice(in3, c * 8, 8))));
-        out1 = SetSlice(8, out1, c * 8, EOR(EOR(EOR(FFmul09(Slice(in0, c * 8, 8)), FFmul0E(Slice(in1, c * 8, 8))), FFmul0B(Slice(in2, c * 8, 8))), FFmul0D(Slice(in3, c * 8, 8))));
-        out2 = SetSlice(8, out2, c * 8, EOR(EOR(EOR(FFmul0D(Slice(in0, c * 8, 8)), FFmul09(Slice(in1, c * 8, 8))), FFmul0E(Slice(in2, c * 8, 8))), FFmul0B(Slice(in3, c * 8, 8))));
-        out3 = SetSlice(8, out3, c * 8, EOR(EOR(EOR(FFmul0B(Slice(in0, c * 8, 8)), FFmul0D(Slice(in1, c * 8, 8))), FFmul09(Slice(in2, c * 8, 8))), FFmul0E(Slice(in3, c * 8, 8))))
-    };
-    return(((((((((((((((Slice(out3, 3 * 8, 8) @ Slice(out2, 3 * 8, 8)) @ Slice(out1, 3 * 8, 8)) @ Slice(out0, 3 * 8, 8)) @ Slice(out3, 2 * 8, 8)) @ Slice(out2, 2 * 8, 8)) @ Slice(out1, 2 * 8, 8)) @ Slice(out0, 2 * 8, 8)) @ Slice(out3, 1 * 8, 8)) @ Slice(out2, 1 * 8, 8)) @ Slice(out1, 1 * 8, 8)) @ Slice(out0, 1 * 8, 8)) @ Slice(out3, 0 * 8, 8)) @ Slice(out2, 0 * 8, 8)) @ Slice(out1, 0 * 8, 8)) @ Slice(out0, 0 * 8, 8))
-}
 
 val SHAchoose : (bits(32), bits(32), bits(32)) -> bits(32)
 
@@ -54670,60 +54522,6 @@ val FPRecipStepFused : forall 'N, 'N in {16, 32, 64}.
 val FPRSqrtStepFused : forall 'N, 'N in {16, 32, 64}.
   (bits('N), bits('N)) -> bits('N)
 
-val AArch64_AdvSIMDFPAccessTrap : bits(2) -> unit
-
-function AArch64_AdvSIMDFPAccessTrap target_el = {
-    let preferred_exception_return : bits(64) = ThisInstrAddr(64);
-    except : ExceptionRecord = undefined;
-    let 'vect_offset = UInt(0x0);
-    let route_to_el2 : bool = (target_el == EL1 & EL2Enabled()) & HCR_EL2[TGE] == 0b1;
-    if route_to_el2 then {
-        let except : ExceptionRecord = ExceptionSyndrome(Exception_Uncategorized);
-        AArch64_TakeException(EL2, except, preferred_exception_return, vect_offset)
-    } else {
-        except : ExceptionRecord = ExceptionSyndrome(Exception_AdvSIMDFPAccessTrap);
-        except.syndrome[24 .. 20] = ConditionSyndrome();
-        AArch64_TakeException(target_el, except, preferred_exception_return, vect_offset)
-    };
-    return()
-}
-
-val SMEAccessTrap : (SMEExceptionType, bits(2)) -> unit
-
-function SMEAccessTrap (etype, target_el_in) = {
-    target_el : bits(2) = target_el_in;
-    assert(UInt(target_el) >= UInt(PSTATE.EL));
-    if target_el == EL0 then {
-        target_el = EL1
-    };
-    let route_to_el2 : bool = ((PSTATE.EL == EL0 & target_el == EL1) & EL2Enabled()) & HCR_EL2[TGE] == 0b1;
-    except : ExceptionRecord = ExceptionSyndrome(Exception_SMEAccessTrap);
-    let preferred_exception_return : bits(64) = ThisInstrAddr(64);
-    let 'vect_offset = UInt(0x0);
-    match etype {
-      SMEExceptionType_AccessTrap => {
-          except.syndrome[2 .. 0] = 0b000
-      },
-      SMEExceptionType_Streaming => {
-          except.syndrome[2 .. 0] = 0b001
-      },
-      SMEExceptionType_NotStreaming => {
-          except.syndrome[2 .. 0] = 0b010
-      },
-      SMEExceptionType_InactiveZA => {
-          except.syndrome[2 .. 0] = 0b011
-      },
-      SMEExceptionType_InaccessibleZT0 => {
-          except.syndrome[2 .. 0] = 0b100
-      }
-    };
-    if route_to_el2 then {
-        AArch64_TakeException(EL2, except, preferred_exception_return, vect_offset)
-    } else {
-        AArch64_TakeException(target_el, except, preferred_exception_return, vect_offset)
-    }
-}
-
 val Reduce : forall 'N 'esize,
   ('N in {8, 16, 32, 64, 128, 256, 512, 1024, 2048} & 'esize in {8, 16, 32, 64} & 'N >= 'esize).
   (ReduceOp, bits('N), int('esize)) -> bits('esize)
@@ -55174,86 +54972,6 @@ function BFMatMulAdd (addend, op1, op2) = {
         }
     };
     return(result)
-}
-
-val AArch64_CheckFPAdvSIMDTrap : unit -> unit
-
-function AArch64_CheckFPAdvSIMDTrap () = {
-    if (HaveEL(EL3) & CPTR_EL3[TFP] == 0b1) & EL3SDDUndefPriority() then {
-        throw(Error_Undefined())
-    };
-    if (PSTATE.EL == EL0 | PSTATE.EL == EL1 | PSTATE.EL == EL2) & EL2Enabled() then {
-        if HaveVirtHostExt() & HCR_EL2[E2H] == 0b1 then {
-            disabled : bool = undefined;
-            match CPTR_EL2[FPEN] {
-              [_, bitzero] => {
-                  disabled = true
-              },
-              0b01 => {
-                  disabled = PSTATE.EL == EL0 & HCR_EL2[TGE] == 0b1
-              },
-              0b11 => {
-                  disabled = false
-              }
-            };
-            let disabled = disabled;
-            if disabled then {
-                AArch64_AdvSIMDFPAccessTrap(EL2)
-            };
-            ()
-        } else {
-            if CPTR_EL2[TFP] == 0b1 then {
-                AArch64_AdvSIMDFPAccessTrap(EL2)
-            };
-            ()
-        }
-    };
-    if HaveEL(EL3) then {
-        if CPTR_EL3[TFP] == 0b1 then {
-            if EL3SDDUndef() then {
-                throw(Error_Undefined())
-            } else {
-                AArch64_AdvSIMDFPAccessTrap(EL3)
-            }
-        };
-        ()
-    };
-    ()
-}
-
-val AArch64_CheckFPEnabled : unit -> unit
-
-function AArch64_CheckFPEnabled () = {
-    if (PSTATE.EL == EL0 | PSTATE.EL == EL1) & not_bool(IsInHost()) then {
-        disabled : bool = undefined;
-        match CPACR_EL1[FPEN] {
-          [_, bitzero] => {
-              disabled = true
-          },
-          0b01 => {
-              disabled = PSTATE.EL == EL0
-          },
-          0b11 => {
-              disabled = false
-          }
-        };
-        let disabled = disabled;
-        if disabled then {
-            AArch64_AdvSIMDFPAccessTrap(EL1)
-        };
-        ()
-    };
-    AArch64_CheckFPAdvSIMDTrap()
-}
-
-val AArch64_CheckFPAdvSIMDEnabled : unit -> unit
-
-function AArch64_CheckFPAdvSIMDEnabled () = {
-    AArch64_CheckFPEnabled();
-    if (HaveSME() & PSTATE.SM == 0b1) & not_bool(IsFullA64Enabled()) then {
-        SMEAccessTrap(SMEExceptionType_Streaming, PSTATE.EL)
-    };
-    ()
 }
 
 val SPESampleSIMDFPLoadStore : unit -> unit

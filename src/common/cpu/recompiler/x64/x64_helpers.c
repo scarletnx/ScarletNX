@@ -23,6 +23,7 @@ u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
+u64 snx_x64_aes(u64 x, u32 op);
 u64 snx_x64_estimate(u64 a, u32 sqrt);
 extern const u32 snx_x64_crc32_table[256];
 
@@ -189,6 +190,19 @@ void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void*
     memcpy(out, &s.v[0], 16);
 }
 
+/* AES's SubBytes (op 0) and its inverse (1) of eight bytes, MixColumns (2) and its inverse (3) of two columns: cpu.h's
+   rounds, whose ShiftRows (the bytes go where it brings them from) is undone */
+u64 snx_x64_aes(u64 x, u32 op) {
+    static const u8 from[2][8] = {{0, 5, 10, 15, 4, 9, 14, 3}, {0, 13, 10, 7, 4, 1, 14, 11}};
+    V128 t = {0}, key = {0};
+    u64 r = 0;
+    for (unsigned i = 0; i < 8; ++i) t.b[op < 2 ? from[op][i] : i] = (u8)(x >> (8 * i));
+    if (op < 2) v_aes(&t, &key, (int)op);
+    else
+        v_aesmc(&t, &t, (int)op - 2);
+    for (unsigned i = 0; i < 8; ++i) r |= (u64)t.b[i] << (8 * i);
+    return r;
+}
 /* URECPE, URSQRTE (sqrt) of a word */
 u64 snx_x64_estimate(u64 a, u32 sqrt) { return sqrt ? ursqrte32((u32)a) : urecpe32((u32)a); }
 

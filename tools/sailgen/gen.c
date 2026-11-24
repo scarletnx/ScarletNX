@@ -337,8 +337,24 @@ static Val keep(Val v) {
 }
 
 static int backend_defines_function(const char* name);
+/* the width's C of Zeros of a width known when it recompiles (c is sg_s_zeros(...), that call alone), and its length */
+static const char* zeros_width(const char* c, int* length) {
+    static const char name[] = "sg_s_zeros(";
+    const char *w = c + sizeof name - 1, *e = w;
+    int depth = 1;
+    if (strncmp(c, name, sizeof name - 1)) return NULL;
+    for (; *e; ++e) {
+        depth += *e == '(';
+        depth -= *e == ')';
+        if (!depth) break;
+    }
+    *length = (int)(e - w);
+    return *e && !e[1] ? w : NULL;
+}
 /* the value at time bt (BT_DYN from STATIC or CONST) */
 static Val raise(Val v, int bt) {
+    const char* zeros;
+    int length;
     if (v.bt == BT_LANE && bt != BT_LANE) { /* a lane's value where one value is wanted */
         if (g_gen.lane) {
             lane_refuse("a lane's value used where one value is wanted");
@@ -365,7 +381,11 @@ static Val raise(Val v, int bt) {
         return v;
     }
     switch (v.kind) {
-        case K_BITS: return val_c(K_BITS, BT_DYN, "sg_d_from_s(%s)", v.c);
+        case K_BITS:
+            /* Zeros of a width that may be past a static value's 128 bits (TBL's table) */
+            if ((zeros = zeros_width(v.c, &length)) != NULL && backend_defines_function("sg_d_elem_dyn"))
+                return val_c(K_BITS, BT_DYN, "sg_d_fill(%.*s, 0)", length, zeros);
+            return val_c(K_BITS, BT_DYN, "sg_d_from_s(%s)", v.c);
         case K_INT: return val_c(K_INT, BT_DYN, "sg_i_const(g, %s)", v.c);
         case K_BOOL: return val_c(K_BOOL, BT_DYN, "sg_bool(g, %s)", v.c);
         default: sg_fail(v.node, "a value of kind %d can't be known only at run time", v.kind);
@@ -1462,7 +1482,13 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         Val e, size;
         need_args(n, 3);
         a = need_bits(n, arg(n, 0), name);
-        e = need_static_int(n, arg(n, 1), "an element's number");
+        e = arg(n, 1);
+        if (e.kind == K_INT && e.bt == BT_DYN && backend_defines_function("sg_d_elem_dyn")) { /* TBL's, of its table */
+            size = need_static_int(n, arg(n, 2), "an element's size");
+            *r = val_c(K_BITS, BT_DYN, "sg_d_elem_dyn(g, %s, %s, %s)", raise(a, BT_DYN).c, e.c, size.c);
+            return 1;
+        }
+        e = need_static_int(n, e, "an element's number");
         size = need_static_int(n, arg(n, 2), "an element's size");
         if (a.bt == BT_DYN)
             *r = val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, ((%s) + 1) * (%s) - 1, (%s) * (%s))", a.c, e.c, size.c, e.c,
@@ -1641,6 +1667,10 @@ static int builtin_body(unsigned n, const char* name, Val* r) {
         !strcmp(name, "LowestSetBit")) { /* of bits the recompiler knows: a register list */
         need_args(n, 1);
         a = need_bits(n, arg(n, 0), name);
+        if (a.bt == BT_DYN && name[0] == 'B' && backend_defines_function("sg_i_bitcount")) { /* CNT's */
+            *r = val_c(K_INT, BT_DYN, "sg_i_bitcount(g, %s)", a.c);
+            return 1;
+        }
         if (a.bt == BT_DYN) sg_fail(n, "%s of a value known only at run time", name);
         *r = val_c(K_INT, BT_STATIC, "sg_s_%s(%s)", name[0] == 'B' ? "bitcount" : "lowest_set_bit", a.c);
         return 1;
@@ -2728,8 +2758,30 @@ static void assign(unsigned target, Val v) {
         fields_write(t, v);
         return;
     }
-    if (N(t).kind == N_BINOP && !strcmp(name_of(t), "@")) { /* PSTATE.N @ PSTATE.Z @ ... = v */
-        fields_write(t, v);
+    if (N(t).kind == N_BINOP && !strcmp(name_of(t), "@")) { /* PSTATE.N @ PSTATE.Z @ ... = v, or x @ y = v of locals */
+        unsigned leaves[8], count = concat_leaves(t, leaves, 8), k;
+        Binding* locals[8];
+        char lo[256];
+        for (k = 0; k < count && k < 8; ++k)
+            if (N(leaves[k]).kind != N_ID || !(locals[k] = lookup(name_of(leaves[k]))) || locals[k]->var < 0 ||
+                g_gen.vars[locals[k]->var].kind != K_BITS)
+                break;
+        if (!k || k < count || k == 8) {
+            fields_write(t, v);
+            return;
+        }
+        v = keep(raise(need_bits(t, v, "what is assigned to bits side by side"), BT_DYN));
+        for (k = 0; k < count; ++k) var_raise(locals[k]->var, BT_DYN);
+        snprintf(lo, sizeof lo, "0");
+        for (k = count; k-- > 0;) { /* the last the lowest */
+            Val part = val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, %s + (long long)(%s).w - 1, %s)", v.c, lo,
+                             raise(locals[k]->val, BT_DYN).c, lo);
+            char at[16];
+            temp(at, sizeof at);
+            emit("long long %s = %s + (long long)(%s).w;\n", at, lo, raise(locals[k]->val, BT_DYN).c);
+            snprintf(lo, sizeof lo, "%s", at);
+            assign(leaves[k], part);
+        }
         return;
     }
     if (N(t).kind == N_TUPLE) {

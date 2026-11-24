@@ -300,6 +300,10 @@ function CheckFPAdvSIMDEnabled64 () = ()
 val IsMerging : bits(64) -> bool
 function IsMerging fpcr = false
 
+// and the AArch64 check the crypto and the BF16 instructions make, which asks the profiling of a trapped one
+val AArch64_CheckFPAdvSIMDEnabled : unit -> unit
+function AArch64_CheckFPAdvSIMDEnabled () = ()
+
 // FPSR as the CPU keeps it (cpu.h's CPU.fpsr): the back end sets its cumulative flags, QC among them
 register FPSR : bits(64)
 
