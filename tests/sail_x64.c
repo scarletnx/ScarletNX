@@ -563,6 +563,105 @@ static size_t check_fp_guards(void) {
     return failures;
 }
 
+/* guarded operations in a row, where one's limits are another's, the registers they need are all taken, an atomic
+   between them ends what lived in registers and a guest's flags live on the host's: the block's state after it is its
+   words' one by one */
+static size_t check_fp_rows(void) {
+    enum { WORDS = 8, STATES = 800 };
+    static const struct {
+        const char* text;
+        u32 words[WORDS];
+    } rows[] = {
+        {"four limits alive",
+         {0x1E220820u, 0x1E650883u, 0x1F021C26u, 0x1F452488u, 0x1E2028CAu, 0x1E63390Bu, 0x1E202140u, 0x1E780161u}},
+        {"an atomic between",
+         {0x1E220820u, 0xB82600A7u, 0x1F021C26u, 0xB82600A7u, 0x1E61C062u, 0x1E221820u, 0x1E202008u}},
+        {"the guest's flags across",
+         {0x1E220820u, 0xEB090107u, 0x1E250883u, 0x9A8CB16Au, 0x1E6F29CDu, 0x9A8C816Du, 0x1E2E2000u, 0x9A8CA16Eu}},
+        {"each kind", {0x1E222020u, 0x1E224823u, 0x1E380020u, 0x1E6540A4u, 0x1E22C066u, 0x1E21C067u, 0x1E665888u}},
+    };
+    static const u64 values[] = {0,
+                                 0x8000000080000000ull,
+                                 0x0000000000000001ull,
+                                 0x807FFFFF00000001ull,
+                                 0x0080000000800000ull,
+                                 0x3F8000003FC00000ull,
+                                 0x404900003F800000ull,
+                                 0x3FF8000000000000ull,
+                                 0xC00921FB54442D18ull,
+                                 0x7F80000000000000ull,
+                                 0x7FC000007FC00001ull,
+                                 0x7F7FFFFF7F7FFFFFull,
+                                 0x001FFFFF00000000ull,
+                                 0x000000000080000Aull};
+    static const u32 fpcrs[] = {0, 1u << 24, 1u << 22};
+    unsigned char* code = (unsigned char*)mmap(NULL, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE,
+                                               MAP_PRIVATE | MAP_ANON, -1, 0);
+    RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+    unsigned char* at = g_test.memory[0] + MEMORY_ZERO + 0x1000;
+    u64 seed = 0x9E3779B97F4A7C15ull;
+    size_t failures = 0, runs = 0;
+    if (code == MAP_FAILED) {
+        fprintf(stderr, "FAIL: guarded operations in a row: no memory for the code\n");
+        return 1;
+    }
+    for (size_t k = 0; k < sizeof rows / sizeof *rows; ++k) {
+        size_t n = 0, count, made;
+        while (n < WORDS && rows[k].words[n]) ++n;
+        count = n;
+        if (mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE)) return 1;
+        made = snx_x64_block(rows[k].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX) != 0;
+        for (size_t w = 0; w < n; ++w)
+            made += snx_x64_step(rows[k].words[w], 0x1000 + 4 * w, TARGET, host_features(), code + (w + 1) * CODE_MAX,
+                                 CODE_MAX) != 0;
+        if (made != n + 1 || count != n || mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_EXEC)) {
+            fprintf(stderr, "FAIL: %s: %zu of %zu made, the block of %zu words\n", rows[k].text, made, n + 1, count);
+            ++failures;
+            continue;
+        }
+        for (size_t state = 0; state < STATES; ++state) {
+            CPU c[2] = {{0}, {0}};
+            u64 memory[2];
+            for (unsigned r = 0; r < 16; ++r)
+                for (unsigned h = 0; h < 2; ++h) {
+                    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                    c[0].v[r].d[h] = values[(seed >> 33) % (sizeof values / sizeof *values)];
+                }
+            for (unsigned r = 0; r < 31; ++r) {
+                seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                c[0].x[r] = seed >> 7;
+            }
+            c[0].x[5] = 0x1000;
+            c[0].n = seed >> 40 & 1, c[0].z = seed >> 41 & 1, c[0].cf = seed >> 42 & 1, c[0].vf = seed >> 43 & 1;
+            c[0].fpcr = fpcrs[(seed >> 44) % 3];
+            c[0].fpsr = seed >> 47 & 1 ? 0x10 : 0;
+            c[0].mem = g_test.memory[0] + MEMORY_ZERO;
+            c[0].rt = &rt;
+            c[0].pc = 0x1000;
+            c[1] = c[0];
+            memset(at, 0x5A, 8);
+            run_step((Step)(void*)code, &c[0]);
+            memcpy(&memory[0], at, 8);
+            memset(at, 0x5A, 8);
+            for (size_t w = 0; w < n; ++w) run_step((Step)(void*)(code + (w + 1) * CODE_MAX), &c[1]);
+            memcpy(&memory[1], at, 8);
+            ++runs;
+            if (memcmp(c[0].x, c[1].x, sizeof c[0].x) || memcmp(c[0].v, c[1].v, sizeof c[0].v) || c[0].n != c[1].n ||
+                c[0].z != c[1].z || c[0].cf != c[1].cf || c[0].vf != c[1].vf || c[0].fpsr != c[1].fpsr ||
+                memory[0] != memory[1]) {
+                if (++failures <= 8)
+                    fprintf(stderr,
+                            "FAIL: %s, state %zu: the block differs from its words (FPCR %08x FPSR %02x: %02x, %02x)\n",
+                            rows[k].text, state, c[0].fpcr, (unsigned)(seed >> 47 & 1 ? 0x10 : 0), c[0].fpsr,
+                            c[1].fpsr);
+            }
+        }
+    }
+    munmap(code, (WORDS + 1) * (size_t)CODE_MAX);
+    printf("sail_x64: guarded operations in a row, %zu runs: %zu failures\n", runs, failures);
+    return failures;
+}
+
 static int run(int argc, char** argv) {
     unsigned states = 64, samples = 3, sequences = 4000, i, k;
     unsigned hosts[2];
@@ -619,6 +718,7 @@ static int run(int argc, char** argv) {
     }
     failures += check_fz_hot();
     failures += check_fp_guards();
+    failures += check_fp_rows();
     failures += check_casp();
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
