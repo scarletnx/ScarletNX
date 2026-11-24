@@ -3617,7 +3617,7 @@ if(NOT WIN32)
             list(GET parts 2 features)
             string(REGEX REPLACE "be$" "" gen "${m}")
             add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
-                           support/host_unicorn.c support/la64_interp.c
+                           qemu_ref/qemu_ref.c support/host_unicorn.c support/la64_interp.c
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
             snx_cpu_helpers_flags(snx-test-sail-${m})
@@ -4090,10 +4090,10 @@ target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompil
 snx_test_sanitize(snx-test-recompiler-library-cpp) # this target is not made through snx_test_target
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
 # the x86-64 back end against LLVM, function by function (recompiler_backends.c)
-add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c)
+add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
 snx_test_target(snx-test-recompiler-backends gnu23)
 target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler)
+target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler scarletnx-common)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
 # x64_vec.c's Advanced SIMD, a family at a time: each word of these ops (the decoder's samples of them) made by the x86-64
@@ -4164,14 +4164,16 @@ endforeach()
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
-        add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c support/host_unicorn.c support/la64_interp.c
+        add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+                       support/host_unicorn.c support/la64_interp.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
         snx_cpu_helpers_flags(snx-test-recompiler-${m})
         snx_test_target(snx-test-recompiler-${m} gnu23)
         target_compile_definitions(snx-test-recompiler-${m} PRIVATE SNX_TEST_${upper}=1)
         target_include_directories(snx-test-recompiler-${m} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
-        target_link_libraries(snx-test-recompiler-${m} PRIVATE scarletnx-recompiler snx_llvm "${SNX_UNICORN_LIBRARY}")
+        target_link_libraries(snx-test-recompiler-${m} PRIVATE scarletnx-recompiler snx_llvm scarletnx-common
+                              "${SNX_UNICORN_LIBRARY}")
         snx_decodetree_a64(snx-test-recompiler-${m})
         add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m})
         # a JIT unit's: its literals hold addresses on MIPS64
