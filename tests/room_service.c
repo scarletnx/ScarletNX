@@ -79,12 +79,17 @@ static unsigned online_mode(void) {
     return stat(DIR "/online.ini", &st) ? 0 : (unsigned)(st.st_mode & 07777);
 #endif
 }
-static int online_holds(const char* want) {
-    size_t size;
-    char* text = (char*)snx_read_file(DIR "/online.ini", &size);
-    int same = text && strstr(text, want) != NULL;
-    free(text);
-    return same;
+/* whether setting password is refused with why naming what, the file's bytes as they were before */
+static int set_refused(const char* password, const char* what) {
+    char why[512];
+    size_t before_size, after_size;
+    char *before = (char*)snx_read_file(DIR "/online.ini", &before_size), *after;
+    int refused = snx_users_room_password_set(DIR, password, why, sizeof why) == -1 && strstr(why, what) != NULL;
+    after = (char*)snx_read_file(DIR "/online.ini", &after_size);
+    refused &= before && after && before_size && before_size == after_size && !memcmp(before, after, before_size);
+    free(before);
+    free(after);
+    return refused;
 }
 static void password_written(void) {
     char password[256], why[512], long_one[257];
@@ -122,12 +127,10 @@ static void password_written(void) {
     CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && !password[0]);
     /* a file with anything else: refused, as it was, what it has named */
     put("[room]\nroom_password=s3cret\n", 0600);
-    CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == -1 && strstr(why, "has [room]") &&
-          online_holds("[room]\nroom_password=s3cret\n"));
+    CHECK(set_refused("new", "has [room]"));
     put("other=1\n", 0600);
-    CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == -1 && strstr(why, "has other") &&
-          online_holds("other=1"));
-    CHECK(snx_users_room_password_set(DIR, "", why, sizeof why) == -1 && online_holds("other=1"));
+    CHECK(set_refused("new", "has other"));
+    CHECK(set_refused("", "has other"));
     snx_remove_tree(DIR);
 }
 static void passwords(void) {
