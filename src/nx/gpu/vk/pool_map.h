@@ -45,4 +45,36 @@ void vk_pool_map_log(u64 presents);         /* the counts since the last line, w
 /* tests: whether the record of TIC index of the texture pool at tex_pool is valid now (the events taken in first) */
 int vk_pool_map_valid(u64 tex_pool, u32 index);
 void vk_pool_map_forget(void);              /* every record cleared and every pool forgotten */
+
+/* The pool map that SM86 programs read (pool_map_gpu.c, the setting pool_map). vk_pool_gpu_draw at a draw's first
+   stage that reads it: the pages, directories and header of the draw's pools as the draw's records hold them, written
+   into this frame's arena where they changed, with the arena's address and the header's word index; 0 where it has
+   no map (the arena full, no memory), and the draw's slots take their words. vk_pool_gpu_take: whether the record of
+   the handle holds view in class cls and smp (shadow: the depth compare sampler), as the draw's map does, with view's
+   slot; vk_pool_gpu_learn: the record holds them from now, for later draws. vk_pool_gpu_empty: the empty map, which a
+   draw that reads none names */
+enum {
+    VK_POOL_GPU_MAP,     /* a slot through the map */
+    VK_POOL_GPU_MISS,    /* its own word: the record did not hold its view and sampler, or the draw changed it */
+    VK_POOL_GPU_HANDLE,  /* a handle from memory or an indexed table (the program reads its word) */
+    VK_POOL_GPU_VIEW,    /* a view of another surface (a copy, a feedback loop) or another layout */
+    VK_POOL_GPU_PAST,    /* a handle past a pool's limit */
+    VK_POOL_GPU_COMPARE, /* a depth compare of a colour texture, which the program takes with the plain sampler */
+    VK_POOL_GPU_NONE,    /* no map for the draw */
+    VK_POOL_GPU_WHY_N
+};
+typedef struct {
+    u64 why[VK_POOL_GPU_WHY_N];
+    u64 learned, conflicts, forgotten, pages_written, words_written, versions, full, switches, gpu_bytes;
+} VkPoolGpuCounts;
+int vk_pool_gpu_draw(u64 tex_pool, u32 tex_max, u64 smp_pool, u32 smp_max, u64* address, u32* header);
+int vk_pool_gpu_take(u32 handle, u32 cls, int shadow, VkImageView view, VkSampler smp, u32* image_slot);
+void vk_pool_gpu_learn(u32 handle, u32 cls, int shadow, VkImageView view, VkSampler smp, u32 image_slot,
+                       u32 sampler_slot);
+u64 vk_pool_gpu_empty(u32* header);
+void vk_pool_gpu_view_gone(VkImageView v);
+void vk_pool_gpu_count(int why);
+void vk_pool_gpu_counts(VkPoolGpuCounts* c);
+void vk_pool_gpu_forget(void);
+void vk_pool_gpu_log(u64 presents);
 #endif

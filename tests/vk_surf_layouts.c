@@ -13,6 +13,7 @@
 #include <string.h>
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* surface.c builds without -Wextra */
 #include "nx/gpu/vk/surface.c"
+ShCaps g_spirv_translate; /* the translator's caps: the pool map off (surface.c written_on) */
 
 #define CHECK(c)                                                                                                       \
     do {                                                                                                               \

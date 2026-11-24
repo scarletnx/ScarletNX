@@ -339,7 +339,10 @@ static struct {
     u32 n;
     VkWriterCounts c;
 } g_written;
-static int written_on(void) { return g_settings.writer_barriers && g_vk.has_unified_layouts; }
+/* on with writer_barriers, and with the pool map, whose draws drop the reader barriers a batch covers */
+static int written_on(void) {
+    return (g_settings.writer_barriers || g_spirv_translate.pool_map) && g_vk.has_unified_layouts;
+}
 /* whether s is on the list: its place there holds it. A surface made as a copy of another (a crop, a snapshot) starts
    with the other's place, which holds the other */
 static int written_listed(const Surf* s) {
@@ -418,6 +421,14 @@ void vk_surf_written_flush(VkCommandBuffer cb, Surf* const* rt, u32 n, const Sur
     }
 }
 void vk_surf_writer_counts(VkWriterCounts* c) { *c = g_written.c; }
+int vk_surf_read_covered(Surf* s) {
+    if (!written_on() || s->layout != VK_IMAGE_LAYOUT_GENERAL || !(s->access & SURF_WRITES)) return 0;
+    /* batched already, or on the list in this command buffer for the batch of the pass the draw begins */
+    if (!s->written_batched && !(written_listed(s) && g_written.cb[s->written_at - 1] == vk_cmd())) return 0;
+    s->stage |= VK_SAMPLED_STAGES; /* a later write's barrier waits for these reads too */
+    g_written.c.dropped++;
+    return 1;
+}
 void vk_surf_batch_begin(void) { g_surf_batch.on = 1; }
 void vk_surf_batch_end(void) {
     surf_batch_flush();

@@ -19,6 +19,7 @@
 #include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
@@ -874,6 +875,25 @@ void vk_pipeline_init(void) {
         g_spirv_translate.gbuf_address = !no;
         LOG("vulkan: SM86 global memory %s%s\n", no ? "through storage buffer descriptors, as " : "by device address",
             no ? no : "");
+    }
+    /* SM86 programs' plain textures through the pool map (pool_map_gpu.c), by device address, with the barriers at the
+       writer that unified image layouts let a draw rely on */
+    g_spirv_translate.pool_map = 0;
+    if (g_shader_sm86 && g_settings.pool_map) {
+        u32 header;
+        const char* no = !g_spirv_translate.gbuf_address ? "global memory is not read by device address"
+                         : !g_vk.has_unified_layouts     ? "the device has no unified image layouts"
+                                                         : NULL;
+        if (!no) {
+            g_spirv_translate.pool_map = 1; /* before the empty map is made: the view hook keeps its records */
+            vk_table_reserve_null();
+            if (!vk_pool_gpu_empty(&header)) {
+                g_spirv_translate.pool_map = 0;
+                no = "no memory for the map";
+            }
+        }
+        LOG("vulkan: SM86 plain textures %s%s\n", no ? "through the draws' texture words, not the pool map, as " :
+            "through the pool map, with the barriers at the writer", no ? no : "");
     }
     /* SM86 vertex programs fetch their own attributes by device address, from the words of their records: with global
        memory by address (the record, the scratch word and buffers with addresses), and with draw parameters, which
@@ -3682,7 +3702,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   arrays,
                   (u32)g_spirv_translate.split_sets,
                   (u32)g_spirv_translate.cb_windows,
-                  (u32)g_spirv_translate.tex_table,
+                  (u32)g_spirv_translate.tex_table | (u32)g_spirv_translate.pool_map << 1,
                   (u32)g_spirv_translate.gbuf_address,
                   (u32)g_spirv_translate.vertex_fetch,
                   (u32)g_spirv_translate.stage_point_size,

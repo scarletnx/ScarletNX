@@ -1686,6 +1686,17 @@ setting Pool map shadow
     help differences by cause every 600 presents, and with draw_state_check=1 names the first differences. Draws still
     help use their own textures, so nothing on the screen changes. Slow: for checking the map that bindless textures
     help will read
+setting Pool map
+    key pool_map
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = an Ounce game's textures, where the GPU reads its global memory by address and has unified image
+    help layouts, come to each draw through a map of the game's texture and sampler pools on the GPU, which the draws
+    help that sampled them before taught: a draw writes no word for a texture the map holds, and leaves out the read
+    help barriers that the barriers at the writer cover (writer_barriers, on with it). The log counts the textures
+    help through the map, and why the others are not, every 600 presents. For measuring the step to bindless textures
 setting Writer barriers
     key writer_barriers
     int 0 1
