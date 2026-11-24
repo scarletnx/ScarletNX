@@ -609,7 +609,10 @@ static SnxCodeLoader* new_loader(char* error, size_t size) {
                    snx_code_define(loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
                    snx_code_define(loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
                    snx_code_define(loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||
-                   snx_code_define(loader, "snx_arm_multiply_carry", (SnxU64)(uintptr_t)snx_arm_multiply_carry))) {
+                   snx_code_define(loader, "snx_arm_multiply_carry", (SnxU64)(uintptr_t)snx_arm_multiply_carry) ||
+                   snx_code_define(loader, "snx_arm_checked_fetch", (SnxU64)(uintptr_t)snx_arm_checked_fetch) ||
+                   snx_code_define(loader, "snx_arm_checked_access", (SnxU64)(uintptr_t)snx_arm_checked_access) ||
+                   snx_code_define(loader, "snx_arm_checked_strex", (SnxU64)(uintptr_t)snx_arm_checked_strex))) {
         snprintf(error, size, "cannot name the runtime library's functions");
         snx_code_loader_free(loader);
         return NULL;
@@ -790,7 +793,10 @@ static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* 
         }
     } else if (!hostuc_native(uc, "snx_arm_undefined", (void*)snx_arm_undefined) ||
                !hostuc_native(uc, "snx_arm_coproc", (void*)snx_arm_coproc) ||
-               !hostuc_native(uc, "snx_arm_multiply_carry", (void*)snx_arm_multiply_carry)) {
+               !hostuc_native(uc, "snx_arm_multiply_carry", (void*)snx_arm_multiply_carry) ||
+               !hostuc_native(uc, "snx_arm_checked_fetch", (void*)snx_arm_checked_fetch) ||
+               !hostuc_native(uc, "snx_arm_checked_access", (void*)snx_arm_checked_access) ||
+               !hostuc_native(uc, "snx_arm_checked_strex", (void*)snx_arm_checked_strex)) {
         fprintf(stderr, "FAIL: the " BACK_NAME " code's helpers: out of memory\n");
         return 1;
     }

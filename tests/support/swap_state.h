@@ -62,6 +62,7 @@ static inline void snx_test_swap_checked(SnxArmCheckedCPU* c) {
     snx_test_swap_arm(&c->cpu);
     snx_test_sw32(&c->abi);
     snx_test_sw64((void*)&c->context), snx_test_sw64((void*)&c->access);
+    for (int k = 0; k < 32; ++k) snx_test_sw32(&c->words[k]);
 }
 #endif
 

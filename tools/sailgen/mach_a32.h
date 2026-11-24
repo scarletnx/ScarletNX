@@ -15,6 +15,8 @@
      syndrome its address, as llvm.c's bounds() makes it; a store clears the exclusive monitor where it overlaps the
      reservation (llvm.c's store_monitor), on a cold path.
    - Hosted memory: no range check (a guard faults on the host), the rest as flat memory.
+   - Checked memory: each transfer is one call of the runtime library (rt_helpers.c's snx_arm_checked_access), its bytes
+     in the state's words (checked.h): a load's read from there, a store's written there and then sent.
    The condition of
    an instruction (ConditionPassed) is a jump past it, made where it first changes something (sg_when's deferred
    skip), so a clause that hands its word on (sg_see) has emitted nothing but what nothing reads. The machine's
@@ -23,6 +25,7 @@
    instructions the Sail has no clause for, the block's end and its chaining */
 
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/checked.h"
 #include "common/cpu/arm/codegen.h"
 #include <stddef.h>
 
@@ -104,6 +107,11 @@ struct SgCtx {
     /* the block's options (codegen.h) */
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
+    /* a checked transfer's address, size and operation (checked.h), a store's sent once (sent) */
+    SgD transfer;
+    unsigned transfer_bytes, transfer_op;
+    int sent;
+    unsigned group_at; /* the bytes of a multiple transfer already moved */
     SgA32Out* outs;
     int nouts, cap_outs;
 };
@@ -143,6 +151,7 @@ static inline long long sg_ArchVersion(SgCtx* g) {
     }
 }
 static inline int sgx_a32_hosted(const SgCtx* g) { return g->memory == SNX_ARM_MEMORY_HOSTED; }
+static inline int sgx_a32_checked(const SgCtx* g) { return g->memory == SNX_ARM_MEMORY_CHECKED; }
 /* InstrSet's member (InstrSet_A32 1, InstrSet_T32 2): the block's until the instruction selects the other */
 static inline int sg_CurrentInstrSet(SgCtx* g) { return g->iset ? g->iset : g->thumb ? 2 : 1; }
 static inline void sg_SetInstrSet(SgCtx* g, int iset) { g->iset = iset; }
@@ -190,6 +199,7 @@ static inline SgD sg_GPR_read(SgCtx* g, long long n) {
     return sgx_val(32, g->gpr[n]);
 }
 static inline void sgx_a32_commit(SgCtx* g);
+static inline void sg_transfer_commit(SgCtx* g);
 /* the state's field at disp (w bits: 32 or 64) = v: the register v is in */
 static inline int sgx_a32_put(SgCtx* g, size_t disp, unsigned w, SgD v) {
     SgX* x = sgx(g);
@@ -207,6 +217,7 @@ static inline void sgx_a32_set(SgCtx* g, long long n, SgD v) {
     g->gpr[n] = sgx_a32_put(g, offsetof(SnxArmCPU, r) + 4 * (size_t)n, 32, v);
 }
 static inline void sg_GPR_write(SgCtx* g, long long n, SgD v) {
+    sg_transfer_commit(g);
     sgx_a32_commit(g);
     if (g->group && !g->group_write) {
         /* a multiple load's: every word read before a register is written, as the block compilers read them */
@@ -391,6 +402,7 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
     sgx_a32_commit(g);
     if (g->branched) sg_fail("an instruction that branches twice", (long long)g->word, 0);
     if (target.w != 32) sg_fail("a branch to a target of other than 32 bits", target.w, 32);
+    sg_transfer_commit(g);
     g->branched = 1;
     g->target = when ? sg_d_select(g, when, target, sgx_const(32, g->next)) : target;
 }
@@ -574,32 +586,96 @@ static inline void sgx_a32_monitor(SgCtx* g, SgD address, unsigned bytes) {
     i->in[0] = r;
     i->imm = bytes;
 }
-/* ---- an instruction's transfer: begun (its range and alignment checked), moved, ended ---- */
+/* ---- checked memory (checked.h): the runtime library's calls, a transfer's bytes in the state's words ---- */
+
+/* the state's word k of a checked transfer, as a number of bits */
+static inline SgD sgx_a32_word(SgCtx* g, unsigned at, unsigned bits) {
+    SgX* x = sgx(g);
+    if (at % 4) sg_fail("a checked transfer's byte past a word's first", at, bits);
+    SgXIns* i = sgx_append(x, SGX_K_LOAD);
+    i->w = 32;
+    i->disp = (int)(offsetof(SnxArmCheckedCPU, words) + at);
+    i->def = sgx_vreg(x, x->n - 1, 32);
+    return sgx_val(bits, i->def);
+}
+/* the runtime library's sym(state, a, b, bytes), R15 the instruction's first: the callback may read it */
+static inline SgD sgx_a32_checked_call(SgCtx* g, const char* sym, SgD a, SgD b, unsigned bytes) {
+    SgX* x = sgx(g);
+    SgD args[3] = {sg_d_zext(g, a, 64), sg_d_zext(g, b, 64), sgx_const(64, bytes)};
+    for (int k = 0; k < 3; ++k) sgx_reg(x, &args[k]);
+    sgx_a32_pc(g, sgx_const(32, (SnxU32)g->pc));
+    sgx_a32_call(g, sym, args, 3, 1);
+    return sg_d_slice(g, sgx_val(64, x->ins[x->n - 1].def), 31, 0);
+}
+/* one transfer through the runtime's bus, a fault a DATA_ABORT exit with its address (llvm.c's bus_access) */
+static inline void sgx_a32_checked_access(SgCtx* g, unsigned operation, SgD address, unsigned bytes) {
+    sgx_reg(sgx(g), &address);
+    SgD status = sgx_a32_checked_call(g, "snx_arm_checked_access", sgx_const(32, operation), address, bytes);
+    sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, status)), SNX_ARM_DATA_ABORT, address, 0);
+}
+/* the instruction at g->pc fetched through the bus before it runs (llvm.c's instruction_fetch): word as the block has
+   it, of bytes */
+static inline void sgx_a32_fetch(SgCtx* g, SnxU32 word, unsigned bytes) {
+    if (!sgx_a32_checked(g)) return;
+    SgD pc = sgx_const(32, (SnxU32)g->pc);
+    SgD status = sgx_a32_checked_call(g, "snx_arm_checked_fetch", pc, sgx_const(32, word), bytes);
+    sgx_reg(sgx(g), &status);
+    sgx_a32_exit(g, sg_d_eq(g, status, sgx_const(32, SNX_ARM_PREFETCH_ABORT)), SNX_ARM_PREFETCH_ABORT, pc, 0);
+    sgx_a32_exit(g, sg_d_eq(g, status, sgx_const(32, SNX_ARM_CODE_CHANGED)), SNX_ARM_CODE_CHANGED, pc, 0);
+}
+
+/* ---- an instruction's transfer, of any profile and mode: begun (its range and alignment checked, a checked load's
+   bytes read), moved, ended (a checked store's bytes sent) ---- */
 
 /* llvm.c's transfer_begin: bytes at address, of one instruction (multi: more than one register's).
    alignment 1 for none */
 static inline void sgx_a32_transfer(SgCtx* g, SgD address, unsigned bytes, unsigned alignment, int store, int multi) {
-    (void)store, (void)multi;
-    sgx_reg(sgx(g), &address);
-    sgx_a32_bounds(g, address, bytes, alignment);
+    SgX* x = sgx(g);
+    sgx_reg(x, &address);
+    if (!sgx_a32_checked(g)) {
+        sgx_a32_bounds(g, address, bytes, alignment);
+        return;
+    }
+    if (alignment > 1)
+        sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, address, sgx_const(32, alignment - 1)))),
+                     SNX_ARM_ALIGNMENT, address, 0);
+    /* past the top of the 4 GiB: address + bytes > 2^32 */
+    sgx_a32_exit(g, sgx_d_ult(g, sgx_const(64, (1ull << 32) - bytes), sgx_zext(x, address, 64)), SNX_ARM_DATA_ABORT,
+                 address, 0);
+    g->transfer = address;
+    g->transfer_bytes = bytes;
+    g->transfer_op = (store ? SNX_ARM_ACCESS_WRITE : SNX_ARM_ACCESS_READ) | (multi ? SNX_ARM_ACCESS_MULTI : 0);
+    if (!store) sgx_a32_checked_access(g, g->transfer_op, address, bytes);
 }
 /* a single load of bytes (1, 2 or 4) of the transfer, disp bytes into it, to 32 bits */
 static inline SgD sgx_a32_read(SgCtx* g, SgD address, int bytes, int disp, int sign) {
-    SgD v = sgx_a32_load(g, address, bytes, disp);
+    SgD v;
+    v = sgx_a32_checked(g) ? sgx_a32_word(g, (unsigned)disp, (unsigned)(8 * bytes))
+                           : sgx_a32_load(g, address, bytes, disp);
     if (bytes == 4) return v;
     return sign ? sg_d_sext(g, v, 32) : sg_d_zext(g, v, 32);
 }
 /* a multiple transfer's word, disp bytes into it */
-static inline SgD sgx_a32_read_list(SgCtx* g, SgD address, int disp) { return sgx_a32_load(g, address, 4, disp); }
+static inline SgD sgx_a32_read_list(SgCtx* g, SgD address, int disp) {
+    return sgx_a32_checked(g) ? sgx_a32_word(g, (unsigned)disp, 32) : sgx_a32_load(g, address, 4, disp);
+}
 /* the low bytes of value (32 bits) stored, disp bytes into the transfer; the exclusive monitor's check is the caller's
    (sgx_a32_written) */
 static inline void sgx_a32_write(SgCtx* g, SgD address, int bytes, int disp, SgD value, int list) {
     (void)list;
+    if (sgx_a32_checked(g)) {
+        if (disp % 4) sg_fail("a checked transfer's byte past a word's first", disp, bytes);
+        sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words) + (size_t)disp, 32, value);
+        return;
+    }
     sgx_a32_store(g, address, bytes, disp, bytes < 4 ? sg_d_slice(g, value, 8 * bytes - 1, 0) : value);
 }
 /* a store's end: the monitor's one check for its bytes (their range overlaps the reservation exactly where one of its
-   words does) */
-static inline void sgx_a32_written(SgCtx* g, SgD address, unsigned bytes) { sgx_a32_monitor(g, address, bytes); }
+   words does), then a checked one's bytes sent */
+static inline void sgx_a32_written(SgCtx* g, SgD address, unsigned bytes) {
+    sgx_a32_monitor(g, address, bytes);
+    if (sgx_a32_checked(g)) sgx_a32_checked_access(g, g->transfer_op, g->transfer, g->transfer_bytes);
+}
 
 /* a multiple transfer's range, checked before its first access (arm.sail's GuestTransfer): word aligned */
 static inline void sg_GuestTransfer(SgCtx* g, SgD address, long long bytes, int write) {
@@ -610,18 +686,29 @@ static inline void sg_GuestTransfer(SgCtx* g, SgD address, long long bytes, int 
     g->group = 1;
     g->group_write = write;
     g->group_start = address;
+    g->group_at = 0;
+    g->sent = 0;
 }
-/* flat and hosted memory take a transfer of no bytes: its address checked, nothing moved */
-static inline int sg_GuestTransferEmpty(SgCtx* g) {
-    (void)g;
-    return 1;
+/* flat and hosted memory take a transfer of no bytes: its address checked, nothing moved; checked memory's bus has no
+   transaction of none */
+static inline int sg_GuestTransferEmpty(SgCtx* g) { return !sgx_a32_checked(g); }
+/* a multiple store's bytes go out before anything after them is written (checked memory's one transaction) */
+static inline void sg_transfer_commit(SgCtx* g) {
+    if (!g->group || !g->group_write || g->sent || !sgx_a32_checked(g)) return;
+    g->sent = 1;
+    sgx_a32_checked_access(g, g->transfer_op, g->transfer, g->transfer_bytes);
 }
-static inline void sg_transfer_commit(SgCtx* g) { (void)g; }
 static inline SgD sg_GuestRead(SgCtx* g, SgD address, long long size, int aligned) {
     (void)aligned;
     sgx_a32_commit(g);
     if (size != 1 && size != 2 && size != 4) sg_fail("a guest read of this size", size, 0);
-    if (!g->group) sgx_a32_transfer(g, address, (unsigned)size, 1, 0, 0);
+    if (g->group) {
+        unsigned at = g->group_at;
+        g->group_at += (unsigned)size;
+        return sgx_a32_checked(g) ? sgx_a32_word(g, at, 32) : sgx_a32_load(g, address, (int)size, 0);
+    }
+    sgx_a32_transfer(g, address, (unsigned)size, 1, 0, 0);
+    if (sgx_a32_checked(g)) return sg_d_slice(g, sgx_a32_read(g, address, (int)size, 0, 0), 8 * size - 1, 0);
     return sgx_a32_load(g, address, (int)size, 0);
 }
 static inline SgD sg_GuestReadHalfwordV4(SgCtx* g, SgD address, int sign) {
@@ -635,8 +722,16 @@ static inline void sg_GuestWrite(SgCtx* g, SgD address, long long size, int alig
     if (size != 1 && size != 2 && size != 4) sg_fail("a guest write of this size", size, 0);
     sgx_reg(sgx(g), &address);
     if (g->group) {
-        sgx_a32_store(g, address, (int)size, 0, value);
-        sgx_a32_monitor(g, address, (unsigned)size);
+        unsigned at = g->group_at;
+        g->group_at += (unsigned)size;
+        if (sgx_a32_checked(g)) {
+            /* a word of the transfer, sent as its last one is in (sg_transfer_commit) */
+            sgx_a32_put(g, offsetof(SnxArmCheckedCPU, words) + at, 32, value);
+            sgx_a32_monitor(g, address, (unsigned)size);
+        } else {
+            sgx_a32_store(g, address, (int)size, 0, value);
+            sgx_a32_monitor(g, address, (unsigned)size);
+        }
         return;
     }
     sgx_a32_transfer(g, address, (unsigned)size, 1, 1, 0);
@@ -680,6 +775,7 @@ static int sg_decode_a32(SgCtx* g);
    x64_arm.c's), else kept for the next; a multiple load's registers in their order */
 static inline void sgx_a32_finish(SgCtx* g) {
     sg_registers_flush(g);
+    sg_transfer_commit(g);
     g->group = 0;
     g->when = 0;
     if (g->skip >= 0) sg_flags_flush(g);

@@ -149,7 +149,7 @@ def main():
                         access, accesses = bus(memory)
                         state = M.Checked()
                         C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
-                        state.abi, state.access = 1, access
+                        state.abi, state.access = M.CHECKED_ABI, access
                         actual = cpu if mode == 'flat' else state.cpu
                         if mode == 'checked':
                             actual.mem = C.cast(1, C.POINTER(C.c_uint8))
@@ -183,7 +183,7 @@ def main():
                         state = M.Checked()
                         C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
                         access, accesses = bus(memory)
-                        state.abi, state.access = 1, access
+                        state.abi, state.access = M.CHECKED_ABI, access
                         actual = state.cpu
                     else:
                         actual = cpu
@@ -198,7 +198,7 @@ def main():
                         state = M.Checked()
                         C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
                         access, accesses = bus(memory)
-                        state.abi, state.access = 1, access
+                        state.abi, state.access = M.CHECKED_ABI, access
                         actual = state.cpu
                     else:
                         actual = cpu
@@ -214,7 +214,7 @@ def main():
                         state = M.Checked()
                         C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
                         access, accesses = bus(memory, True)
-                        state.abi, state.access = 1, access
+                        state.abi, state.access = M.CHECKED_ABI, access
                         actual = state.cpu
                     else:
                         actual = cpu
@@ -237,7 +237,7 @@ def main():
                             state = M.Checked()
                             C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
                             access, accesses = bus(memory, failure == 'permission')
-                            state.abi, state.access = 1, access
+                            state.abi, state.access = M.CHECKED_ABI, access
                             state.cpu.mem = C.cast(1, C.POINTER(C.c_uint8))
                             state.cpu.mem_size = 2**64 - 1
                             functions[index](C.byref(state.cpu))
