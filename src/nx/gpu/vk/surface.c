@@ -325,6 +325,98 @@ static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags
                                     .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &image};
     rec_CmdPipelineBarrier2(cb, &dependency);
 }
+/* the accesses that write an image */
+#define SURF_WRITES                                                                                                    \
+    (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |                                         \
+     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
+/* The written list of the barriers at the writer (vk_surf_written_flush): each surface with the command buffer its
+   write was recorded in. Under vk_lock, as the surfaces' recorded state is */
+#define WRITTEN_MAX 4096
+static struct {
+    Surf* s[WRITTEN_MAX];
+    VkCommandBuffer cb[WRITTEN_MAX];
+    u32 n;
+    VkWriterCounts c;
+} g_written;
+static int written_on(void) { return g_settings.writer_barriers && g_vk.has_unified_layouts; }
+/* whether s is on the list: its place there holds it. A surface made as a copy of another (a crop, a snapshot) starts
+   with the other's place, which holds the other */
+static int written_listed(const Surf* s) {
+    return s->written_at && s->written_at <= g_written.n && g_written.s[s->written_at - 1] == s;
+}
+/* entry i leaves the list: the last one takes its place */
+static void written_drop_at(u32 i) {
+    g_written.s[i]->written_at = 0;
+    g_written.n--;
+    if (i < g_written.n) {
+        g_written.s[i] = g_written.s[g_written.n];
+        g_written.cb[i] = g_written.cb[g_written.n];
+        g_written.s[i]->written_at = i + 1;
+    }
+}
+static void written_drop(Surf* s) {
+    if (written_listed(s)) written_drop_at(s->written_at - 1);
+}
+/* s written in cb: no batch covers this write yet, and s goes on the list once */
+static void written_note(VkCommandBuffer cb, Surf* s) {
+    s->written_batched = 0;
+    if (!written_on() || written_listed(s)) return;
+    if (g_written.n == WRITTEN_MAX) {
+        g_written.c.full++;
+        return;
+    }
+    g_written.s[g_written.n] = s;
+    g_written.cb[g_written.n] = cb;
+    s->written_at = ++g_written.n;
+}
+void vk_surf_written_flush(VkCommandBuffer cb, Surf* const* rt, u32 n, const Surf* zt) {
+    if (!written_on() || !g_written.n) return;
+    surf_batch_flush(); /* the barriers before go first */
+    VkImageMemoryBarrier2 b[64];
+    u32 nb = 0;
+    for (u32 i = 0; i < g_written.n;) {
+        Surf* s = g_written.s[i];
+        int own = s == zt;
+        for (u32 k = 0; k < n && !own; k++) own = rt[k] == s;
+        if (own) { /* the pass writes it again: on the list for the next pass's batch */
+            i++;
+            continue;
+        }
+        /* a write no reader barrier has followed yet, in GENERAL and in this command buffer: GENERAL to GENERAL is
+           no layout transition, so no sample locations either */
+        if ((s->access & SURF_WRITES) && s->layout == VK_IMAGE_LAYOUT_GENERAL && g_written.cb[i] == cb) {
+            b[nb++] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                              .srcStageMask = s->stage,
+                                              .srcAccessMask = s->access,
+                                              .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                              .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                                              .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                              .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                              .image = s->img,
+                                              .subresourceRange = {vk_aspect(&s->f), 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                                   VK_REMAINING_ARRAY_LAYERS}};
+            s->written_batched = 1;
+            g_written.c.batched++;
+        }
+        written_drop_at(i); /* the last one moves into place i */
+        if (nb == sizeof b / sizeof *b || (nb && i >= g_written.n)) {
+            VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = nb,
+                                  .pImageMemoryBarriers = b};
+            rec_CmdPipelineBarrier2(cb, &d);
+            g_written.c.batches++;
+            nb = 0;
+        }
+    }
+    if (nb) {
+        VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = nb,
+                              .pImageMemoryBarriers = b};
+        rec_CmdPipelineBarrier2(cb, &d);
+        g_written.c.batches++;
+    }
+}
+void vk_surf_writer_counts(VkWriterCounts* c) { *c = g_written.c; }
 void vk_surf_batch_begin(void) { g_surf_batch.on = 1; }
 void vk_surf_batch_end(void) {
     surf_batch_flush();
@@ -335,6 +427,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
+    const int compute_only = stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     /* With unified image layouts each use of the image is in GENERAL. A read then makes the last write visible to
        every later read, in each stage. Later reads of another kind (a sample after a copy read, a copy after a
        sample) then take no barrier, and they do not end the open rendering pass */
@@ -359,11 +452,21 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
+    /* a reader barrier after a write: one a written-list barrier covers, or the next pass's batch would (step 6 of
+       docs/dev/draw-cost.md, item 7, takes these away) */
+    if (written_on() && !writes && s->layout == layout && layout == VK_IMAGE_LAYOUT_GENERAL) {
+        g_written.c.readers++;
+        if (compute_only)
+            g_written.c.compute++;
+        else if (s->written_batched || written_listed(s))
+            g_written.c.covered++;
+    }
     surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
                s->layout, stage, access, layout);
     s->layout = layout;
     s->stage = stage;
     s->access = access;
+    if (writes) written_note(cb, s);
 }
 
 float g_vk_scale = 1.0f;
@@ -2922,6 +3025,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
    image being made for it too */
 static void surf_free(Surf* s) {
     const u32 r = s->row;
+    written_drop(s);
     vk_tex_later_forget(s);
     surf_changed(s->gva);
     vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */

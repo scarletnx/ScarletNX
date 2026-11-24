@@ -286,6 +286,17 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_rt_watch COMMAND snx-test-vulkan -H --vk-memory=1)
     set_tests_properties(vulkan_rt_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_RT_WATCH_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;watch: needs traps")
+    # the barriers at the writer (writer_barriers, gpu/vk/surface.c vk_surf_written_flush) under the validation layer
+    # with its synchronization checks, when it is installed: a pass's target, an upload and a storage write, each
+    # sampled after (tests/vulkan_draw_memo.inc writer_cases, tests/vulkan_cross_stage_alias.inc check_writer_storage)
+    add_test(NAME vulkan_writer_barriers COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_writer_barriers PROPERTIES TIMEOUT 300
+        ENVIRONMENT "SNX_TEST_NVN_CASE=draw_memo;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    add_test(NAME vulkan_writer_storage COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_writer_storage PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_NVN_CASE=writer_storage;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # a write log in host memory comes back from its pool clear (tests/vulkan_wlog_clear.inc): the unref clears the
     # windows its readers found, and reads the flags past them
     add_test(NAME vulkan_wlog_clear COMMAND snx-test-vulkan -H)

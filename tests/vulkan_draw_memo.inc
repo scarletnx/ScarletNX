@@ -1049,6 +1049,105 @@ static int pool_map_nvn_case(GpuChannel* channel) {
     return 0;
 }
 
+/* The barriers at the writer (writer_barriers, gpu/vk/surface.c vk_surf_written_flush), with unified image layouts. A
+   pass writes target T with the color program (white or green, as the cases before left its code), a pass on another
+   target begins (its batch takes T's write), and the next pass samples T: the drawn color, and today's reader barrier
+   for T is one a batch covered. Then an upload and a sample in one draw: the CPU
+   writes the texture's texel 0, and the draw's upload and sample give red one, the reader barrier one that the next
+   pass's batch covers. The pixels as without the setting */
+#define WB_T (MEMO_GPU + 0x34000) /* 4x4 RGBA8, as OVER_TARGET */
+#define WB_V (MEMO_GPU + 0x24000)
+static int writer_cases(GpuChannel* channel) {
+    if (!g_vk.has_unified_layouts) {
+        puts("SKIP barriers at the writer: the device has no unified image layouts");
+        return 0;
+    }
+    u32* r = channel->r3d;
+    const int saved = g_settings.writer_barriers;
+    /* SNX_TEST_WRITER_OFF=1: the same commands with the setting off, for the validation layer's messages to compare */
+    const int on = !getenv("SNX_TEST_WRITER_OFF");
+    g_settings.writer_barriers = on;
+    VkWriterCounts c0, c1;
+    /* a pass writes T, a pass on V begins, a pass samples T */
+    u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                  (u32)WB_T,
+                  (u32)(WB_T >> 32) | 3u << 21,
+                  0,
+                  (MEMO_SIDE - 1) | 1u << 23,
+                  (MEMO_SIDE - 1) | 1u << 31,
+                  0,
+                  0};
+    u8 bytes[32];
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!life_headers(0, 0)); /* the sampler, linear */
+    CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    vk_ww_new_epoch();
+    vk_surf_writer_counts(&c0);
+    rt_clear(channel, WB_T, MEMO_SIDE, MEMO_SIDE, 0, 1);
+    vk_lock();
+    over_bind(channel, WB_T);
+    r[0x851] = MEMO_GREEN;
+    r[0x458] = 0 | 1u << 21 | 7u << 27;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    u8 drawn[4] = {0}; /* the color program's color (an earlier case made it white) */
+    Surf* t = vk_rt_find(WB_T);
+    CHECK(t && !read_pixel_at(t, 2, 2, drawn));
+    vk_unlock();
+    rt_clear(channel, WB_V, MEMO_SIDE, MEMO_SIDE, 0, 1); /* a pass on V: its batch takes T's write */
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_surf_writer_counts(&c1);
+    const int same = !memcmp(px, drawn, 4) && drawn[0] + drawn[1] + drawn[2] > 0; /* drawn, not the clear's red */
+    if (!on) c1.batched = c0.batched + 1, c1.covered = c0.covered + 1; /* no counts with the setting off */
+    if (!same || drawn[1] != 255 || c1.batched == c0.batched || c1.covered == c0.covered)
+        fprintf(stderr,
+                "barriers at the writer, a pass's target sampled: pixel %u,%u,%u,%u (the target holds %u,%u,%u,%u), "
+                "%llu surfaces batched, %llu reader barriers covered (1 or more each expected)\n",
+                px[0], px[1], px[2], px[3], drawn[0], drawn[1], drawn[2], drawn[3],
+                (unsigned long long)(c1.batched - c0.batched), (unsigned long long)(c1.covered - c0.covered));
+    CHECK(same && drawn[1] == 255 && c1.batched > c0.batched && c1.covered > c0.covered);
+    /* an upload and a sample: the 2x1 R32F texture, texel 0 written by the CPU */
+    CHECK(!life_headers(0, 0));
+    u8 texels[8] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+    vk_ww_new_epoch();
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(life_near(px, (const u8[4]){191, 0, 0, 255}));
+    snx_st_le32(GP(MEMO_CPU + (LIFE_POOL + 0x400 - MEMO_GPU)), 0x3f800000);
+    vk_ww_new_epoch();
+    vk_surf_writer_counts(&c0);
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_surf_writer_counts(&c1);
+    if (!on) c1.covered = c0.covered + 1;
+    if (!life_near(px, (const u8[4]){255, 0, 0, 255}) || c1.covered == c0.covered)
+        fprintf(stderr,
+                "barriers at the writer, an upload sampled: red %u (expected 255), %llu reader barriers covered (1 or "
+                "more expected)\n",
+                px[0], (unsigned long long)(c1.covered - c0.covered));
+    CHECK(life_near(px, (const u8[4]){255, 0, 0, 255}) && c1.covered > c0.covered);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    vk_ww_new_epoch();
+    g_settings.writer_barriers = saved;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS barriers at the writer: a pass's target and an upload sampled after them, their writes in batches or "
+         "listed for the next pass's batch");
+    return 0;
+}
+
 /* Inline constant blocks, as NVN's front end gives them (DsInline, its per-block generations DsState.inl_gen): the
    constant buffer program reads its color from slot 3, the fragment stage's bank 2 block. A draw's new base vertex
    moves every stage's bank 0 block and the inline generation, not bank 2: the next draw keeps bank 2's staged copy.
@@ -1563,6 +1662,7 @@ static int check_draw_memo(void) {
     CHECK(!over_target_cases(channel));
     CHECK(!pool_map_cases(channel));
     CHECK(!pool_map_nvn_case(channel));
+    CHECK(!writer_cases(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));
