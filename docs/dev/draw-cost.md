@@ -135,7 +135,21 @@ device addresses, and a draw that skips the resolve needs each record's own chec
 `bindless-uma` has both. There it took 57% of the slots with no resolve and made the race slower. An A/B/B/A with a
 pipeline cache warmed for each side gave 75.5 and 82.0 fps off and 64.1 and 69.4 on, about 2 ms more of the GPU
 thread a present. The map's own work for each draw (its pages, and the checks by address after each submission and
-dispatch moves the stamps) costs more than the resolves it skips. The item waits for a profile of that branch.
+dispatch moves the stamps) costs more than the resolves it skips.
+
+The profile, on 2026-11-24 after the merge of main (the branch `bindless-merged`, with each side's pipeline cache
+warm): 79.3 and 82.4 fps off, 75.6 and 72.6 on. The renderer thread rose from 25.0% to 28.5% of the samples:
+
+- `vk_pool_gpu_draw` took 2.0%. At each new frame it encodes again, entry by entry, every page of the map that has
+  records (about 405 of the texture pool's 514 pages, 3.4 MB a present), where 13 pages changed.
+- The checks of each slot (`vk_pool_gpu_skip`, `map_skip`) took 0.85%.
+- What the map left out (`tex_bind_view`, `vk_sampler`, `vk_table_words`) was about 0.9%. Inclusive `tex_resolve`
+  stayed at 2.72%: the slots the map skips are the ones the memo answered already.
+
+Pages kept encoded, and written only where they change (versions freed once their submission is done), would remove
+the 2%, and leave the map near even. A map that wins must check nothing for each draw: each entry of the texture table
+kept valid by the writes that change it (uploads, the pool's header writes, drawn targets), so a draw binds the table
+alone. That is a new validity model for the texture cache, not a change to this map.
 
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
