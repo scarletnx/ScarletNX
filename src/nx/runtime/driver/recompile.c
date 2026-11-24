@@ -850,10 +850,10 @@ static int make_program(const MakeArgs* a, int index) {
             char* units = folder ? snx_path_join(folder, "units") : NULL;
             if (units && snx_is_dir(units) && !compile.quiet) {
                 char** names = NULL;
-                size_t count = 0, n;
+                size_t count = 0;
                 SnxU64 bytes = 0;
                 if (!snx_list_dir(units, &names, &count)) {
-                    for (n = 0; n < count; ++n) {
+                    for (size_t n = 0; n < count; ++n) {
                         char* path = snx_path_join(units, names[n]);
                         bytes += snx_file_size(path);
                         free(path);
