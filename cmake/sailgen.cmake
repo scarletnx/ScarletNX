@@ -97,15 +97,25 @@ function(snx_sailgen_a32 target)
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
-# snx_sailgen_gpu(<target> <isa> [EVAL]): GPU mode (sailgen --gpu, apart from the CPUs' --generate): generates
-# <isa>_sail.inc (the instructions and fusions <isa>.roots names, emitted as SPIR-V) into the build folder from gpu.sail
-# and <isa>.sail in src/nx/gpu/shader/sail/, with the back end spirv.h and the ISA's <isa>_spirv.h, and gives <target>
-# its include root. The translator of that ISA includes it after its accessors. With EVAL, <isa>_sail_eval.inc: the
-# same Sail run on values (eval.h and <isa>_eval_state.h) for the roots of <isa>_eval.roots, for the tests that hold
-# it to a reference
+# snx_sailgen_gpu(<target> <isa> [EVAL] [DIR <dir>]): GPU mode (sailgen --gpu, apart from the CPUs' --generate):
+# generates <isa>_sail.inc (the instructions and fusions <isa>.roots names, emitted as SPIR-V) into the build folder
+# from gpu.sail (src/nx/gpu/shader/sail/, what every GPU's Sail shares) and <isa>.sail in the ISA's folder (DIR, by
+# default src/nx/gpu/shader/sail/, with its lut3.sail where it has one), with the back end spirv.h and the ISA's
+# <isa>_spirv.h, and gives <target> its include root. The translator of that ISA includes it after its accessors.
+# With EVAL, <isa>_sail_eval.inc: the same Sail run on values (eval.h and <isa>_eval_state.h) for the roots of
+# <isa>_eval.roots, for the tests that hold it to a reference
 function(snx_sailgen_gpu target isa)
-    set(dir "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sail")
-    if("EVAL" IN_LIST ARGN)
+    cmake_parse_arguments(PARSE_ARGV 2 arg "EVAL" "DIR" "")
+    set(common "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sail/gpu.sail")
+    if(arg_DIR)
+        set(dir "${arg_DIR}")
+    else()
+        set(dir "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sail")
+    endif()
+    if(EXISTS "${dir}/lut3.sail")
+        list(APPEND common "${dir}/lut3.sail")
+    endif()
+    if(arg_EVAL)
         set(core "${PROJECT_SOURCE_DIR}/tools/sailgen/eval.h")
         set(state "${dir}/${isa}_eval_state.h")
         set(name "${isa}_sail_eval.inc")
@@ -123,7 +133,7 @@ function(snx_sailgen_gpu target isa)
     file(GLOB family_sail CONFIGURE_DEPENDS "${dir}/${isa}_*.sail")
     file(GLOB family_roots CONFIGURE_DEPENDS "${dir}/${isa}_*.roots")
     set(states "${state}")
-    if(NOT "EVAL" IN_LIST ARGN)
+    if(NOT arg_EVAL)
         file(GLOB family_states CONFIGURE_DEPENDS "${dir}/${isa}_*_spirv.h")
         list(APPEND states ${family_states})
     endif()
@@ -135,8 +145,8 @@ function(snx_sailgen_gpu target isa)
     add_custom_command(OUTPUT "${out}/${name}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
         COMMAND snx-sailgen --gpu "${roots}" --backend "${core}" ${backends}
-                -o "${out}/${name}" "${dir}/gpu.sail" "${dir}/lut3.sail" "${dir}/${isa}.sail" ${family_sail}
-        DEPENDS snx-sailgen "${roots}" ${family_roots} "${dir}/gpu.sail" "${dir}/lut3.sail" "${dir}/${isa}.sail" ${family_sail} ${states}
+                -o "${out}/${name}" ${common} "${dir}/${isa}.sail" ${family_sail}
+        DEPENDS snx-sailgen "${roots}" ${family_roots} ${common} "${dir}/${isa}.sail" ${family_sail} ${states}
                 "${core}"
         COMMENT "Generating the ${isa} instructions from Sail, ${what} (GPU mode)" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}")
