@@ -493,6 +493,15 @@ lower FPConvert__1
 lower FPToFixedJS
 lower FPConvertBF__1
 lower FPRoundingMode
+lower FPConvert
+lower FPMulX
+lower FPRecipEstimate
+lower FPRSqrtEstimate
+lower FPRecipStepFused
+lower FPRSqrtStepFused
+lower FPRecpX
+lower UnsignedRecipEstimate
+lower UnsignedRSqrtEstimate
 # the saturations, each once in the back end rather than in every clause that saturates
 lower SatQ
 lower SignedSatQ
@@ -500,8 +509,8 @@ lower UnsignedSatQ
 
 # NX's fixups for floating point (nx.sail) in their place: the SIMD&FP registers are _V's elements and FPCR is the
 # register as the CPU keeps it, as FPSR is; FP is enabled at EL0; nothing merges without FEAT_AFP; FPAbs and FPNeg
-# unpack an operand only under FEAT_AFP, which no guest has; and a rounded shift keeps its
-# sum short
+# unpack an operand only under FEAT_AFP, which no guest has; the comparisons that answer a bool read FPCompare's flags;
+# and a rounded shift keeps its sum short
 stop V_read
 stop V_set
 stop FPCR_read
@@ -513,6 +522,9 @@ stop UsingAArch32
 stop HaveFP16Ext
 stop FPUnpack__1
 stop FPSR
+stop FPCompareEQ
+stop FPCompareGE
+stop FPCompareGT
 stop RShr
 
 # A64 Advanced SIMD and the SIMD&FP loads and stores not above: copied, not generated here (keep: LLVM makes them with

@@ -52669,124 +52669,9 @@ function Sbox sboxin = {
     return(sboxout)
 }
 
-val RecipEstimate : forall 'a_in ('increasedprecision_name : Bool).
-  (int('a_in), bool('increasedprecision_name)) -> int
-
-function RecipEstimate (a_in, increasedprecision_name) = {
-    a : int = a_in;
-    r : int = undefined;
-    if not_bool(increasedprecision_name) then {
-        assert(256 <= a & a < 512);
-        let 'a = a * 2 + 1;
-        let 'b = DIV(2 ^ 19, a);
-        r = DIV(b + 1, 2);
-        assert(256 <= r & r < 512)
-    } else {
-        assert(2048 <= a & a < 4096);
-        let 'a = a * 2 + 1;
-        let real_val : real = Real(2 ^ 25) / Real(a);
-        r = RoundDown(real_val);
-        let error : real = real_val - Real(r);
-        let round_up : bool = error > 0.5;
-        if round_up then {
-            r = r + 1
-        };
-        assert(4096 <= r & r < 8192)
-    };
-    let 'r = r;
-    return(r)
-}
-
 val UnsignedRecipEstimate : forall 'N, 'N == 32. bits('N) -> bits('N)
 
-function UnsignedRecipEstimate operand = {
-    estimate : int = undefined;
-    increasedprecision_name : bool = undefined;
-    assert('N == 32);
-    result : bits('N) = undefined;
-    if [operand['N - 1]] == 0b0 then {
-        result = Ones('N)
-    } else {
-        let increasedprecision_name : bool = false;
-        let 'estimate = RecipEstimate(UInt(operand[31 .. 23]), increasedprecision_name);
-        result = estimate[8 .. 0] @ Zeros('N - 9)
-    };
-    return(result)
-}
-
-val RecipSqrtEstimate : forall 'a_in ('increasedprecision_name : Bool).
-  (int('a_in), bool('increasedprecision_name)) -> int
-
-function RecipSqrtEstimate (a_in, increasedprecision_name) = {
-    round_up : bool = undefined;
-    a : int = a_in;
-    r : int = undefined;
-    if not_bool(increasedprecision_name) then {
-        assert(128 <= a & a < 512);
-        if a < 256 then {
-            a = a * 2 + 1
-        } else {
-            a = (((a >> 1)) << 1);
-            a = (a + 1) * 2
-        };
-        let 'a = a;
-        b : int = 512;
-        while a * (b + 1) * (b + 1) < pow2(28) do {
-            b = b + 1
-        };
-        let 'b = b;
-        r = DIV(b + 1, 2);
-        assert(256 <= r & r < 512)
-    } else {
-        assert(1024 <= a & a < 4096);
-        real_val : real = undefined;
-        if a < 2048 then {
-            let 'a = a * 2 + 1;
-            real_val = Real(a) / 2.0
-        } else {
-            a : int = (((a >> 1)) << 1);
-            let 'a = a + 1;
-            real_val = Real(a)
-        };
-        real_val : real = sqrt(real_val);
-        real_val : real = real_val * Real(2 ^ 47);
-        int_val : int = RoundDown(real_val);
-        error : real = real_val - Real(int_val);
-        round_up : bool = error > 0.5;
-        if round_up then {
-            int_val = int_val + 1
-        };
-        let real_val : real = Real(2 ^ 65) / Real(int_val);
-        int_val : int = RoundDown(real_val);
-        let error : real = real_val - Real(int_val);
-        let round_up : bool = error > 0.5 | error == 0.5 & [int_val[0]] == 0b1;
-        if round_up then {
-            int_val = int_val + 1
-        };
-        let 'int_val = int_val;
-        r = int_val;
-        assert(4096 <= r & r < 8192)
-    };
-    let 'r = r;
-    return(r)
-}
-
 val UnsignedRSqrtEstimate : forall 'N, 'N == 32. bits('N) -> bits('N)
-
-function UnsignedRSqrtEstimate operand = {
-    estimate : int = undefined;
-    increasedprecision_name : bool = undefined;
-    assert('N == 32);
-    result : bits('N) = undefined;
-    if operand['N - 1 .. 'N - 2] == 0b00 then {
-        result = Ones('N)
-    } else {
-        let increasedprecision_name : bool = false;
-        let 'estimate = RecipSqrtEstimate(UInt(operand[31 .. 23]), increasedprecision_name);
-        result = estimate[8 .. 0] @ Zeros('N - 9)
-    };
-    return(result)
-}
 
 val SignedSatQ : forall 'N 'i, 0 <= 'N - 1.
   (int('i), int('N)) -> (bits('N), bool)
@@ -53818,24 +53703,9 @@ function FPDecodeRounding rmode = {
 
 val FPRoundingMode : FPCRType -> FPRounding
 
-val FPRound : forall 'N, 'N in {16, 32, 64}.
-  (real, FPCRType, int('N)) -> bits('N)
-
-val FPRound__1 : forall 'N, 'N in {16, 32, 64}.
-  (real, FPCRType, FPRounding, int('N)) -> bits('N)
-
 val FPRound__2 : forall 'N ('fpexc : Bool),
   'N in {16, 32, 64}.
   (real, FPCRType, FPRounding, bool('fpexc), int('N)) -> bits('N)
-
-function FPRound (op, fpcr, N) = {
-    return(FPRound__1(op, fpcr, FPRoundingMode(fpcr), N))
-}
-
-function FPRound__1 (op, fpcr_in, rounding, N) = {
-    let fpexc : bool = true;
-    return(FPRound__2(op, fpcr_in, rounding, fpexc, N))
-}
 
 function FPRound__2 (op, fpcr_in, rounding, fpexc, N) = {
     fpcr : FPCRType = fpcr_in;
@@ -53848,22 +53718,9 @@ val FixedToFP : forall 'M 'N 'fbits ('is_unsigned : Bool),
   ('N in {16, 32, 64} & 'M in {16, 32, 64}).
   (bits('M), int('fbits), bool('is_unsigned), FPCRType, FPRounding, int('N)) -> bits('N)
 
-val FPUnpackBase : forall 'N ('fpexc : Bool),
-  'N in {16, 32, 64}.
-  (bits('N), FPCRType, bool('fpexc)) -> (FPType, bits(1), real)
-
 val FPUnpackBase__1 : forall 'N ('fpexc : Bool) ('isbfloat16 : Bool),
   'N in {16, 32, 64}.
   (bits('N), FPCRType, bool('fpexc), bool('isbfloat16)) -> (FPType, bits(1), real)
-
-function FPUnpackBase (fpval, fpcr, fpexc) = {
-    fp_type : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    let isbfloat16 : bool = false;
-    (fp_type, sign, value_name) = FPUnpackBase__1(fpval, fpcr, fpexc, isbfloat16);
-    return((fp_type, sign, value_name))
-}
 
 function FPUnpackBase__1 (fpval, fpcr_in, fpexc, isbfloat16) = {
     exp16 : bits(5) = undefined;
@@ -53988,20 +53845,6 @@ function FPUnpackBase__1 (fpval, fpcr_in, fpexc, isbfloat16) = {
     return((fptype, sign, value_name))
 }
 
-val FPUnpack : forall 'N, 'N in {16, 32, 64}.
-  (bits('N), FPCRType) -> (FPType, bits(1), real)
-
-function FPUnpack (fpval, fpcr_in) = {
-    fp_type : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    fpcr : FPCRType = fpcr_in;
-    fpcr[AHP] = 0b0;
-    let fpexc : bool = true;
-    (fp_type, sign, value_name) = FPUnpackBase(fpval, fpcr, fpexc);
-    return((fp_type, sign, value_name))
-}
-
 val FPAbs : forall 'N, 'N in {16, 32, 64}. bits('N) -> bits('N)
 
 function FPAbs op = {
@@ -54085,17 +53928,9 @@ function FPProcessNaN__1 (fptype, op, fpcr, fpexc) = {
     return(result)
 }
 
-val FPProcessNaNs : forall 'N, 'N in {16, 32, 64}.
-  (FPType, FPType, bits('N), bits('N), FPCRType) -> (bool, bits('N))
-
 val FPProcessNaNs__1 : forall 'N ('fpexc : Bool),
   'N in {16, 32, 64}.
   (FPType, FPType, bits('N), bits('N), FPCRType, bool('fpexc)) -> (bool, bits('N))
-
-function FPProcessNaNs (type1, type2, op1, op2, fpcr) = {
-    let fpexc : bool = true;
-    return(FPProcessNaNs__1(type1, type2, op1, op2, fpcr, fpexc))
-}
 
 function FPProcessNaNs__1 (type1, type2, op1, op2, fpcr, fpexc) = {
     assert('N == 16 | 'N == 32 | 'N == 64);
@@ -54196,81 +54031,6 @@ val FPCompare : forall 'N ('signal_nans : Bool),
   'N in {16, 32, 64}.
   (bits('N), bits('N), bool('signal_nans), FPCRType) -> bits(4)
 
-val FPCompareEQ : forall 'N, 'N in {16, 32, 64}.
-  (bits('N), bits('N), FPCRType) -> bool
-
-function FPCompareEQ (op1, op2, fpcr) = {
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    (type1, sign1, value1_name) = FPUnpack(op1, fpcr);
-    (type2, sign2, value2_name) = FPUnpack(op2, fpcr);
-    result : bool = undefined;
-    if (type1 == FPType_SNaN | type1 == FPType_QNaN) | type2 == FPType_SNaN | type2 == FPType_QNaN then {
-        result = false;
-        if type1 == FPType_SNaN | type2 == FPType_SNaN then {
-            FPProcessException(FPExc_InvalidOp, fpcr)
-        };
-        ()
-    } else {
-        result = value1_name == value2_name;
-        FPProcessDenorms(type1, type2, 'N, fpcr)
-    };
-    return(result)
-}
-
-val FPCompareGE : forall 'N, 'N in {16, 32, 64}.
-  (bits('N), bits('N), FPCRType) -> bool
-
-function FPCompareGE (op1, op2, fpcr) = {
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    (type1, sign1, value1_name) = FPUnpack(op1, fpcr);
-    (type2, sign2, value2_name) = FPUnpack(op2, fpcr);
-    result : bool = undefined;
-    if (type1 == FPType_SNaN | type1 == FPType_QNaN) | type2 == FPType_SNaN | type2 == FPType_QNaN then {
-        result = false;
-        FPProcessException(FPExc_InvalidOp, fpcr)
-    } else {
-        result = value1_name >= value2_name;
-        FPProcessDenorms(type1, type2, 'N, fpcr)
-    };
-    return(result)
-}
-
-val FPCompareGT : forall 'N, 'N in {16, 32, 64}.
-  (bits('N), bits('N), FPCRType) -> bool
-
-function FPCompareGT (op1, op2, fpcr) = {
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    (type1, sign1, value1_name) = FPUnpack(op1, fpcr);
-    (type2, sign2, value2_name) = FPUnpack(op2, fpcr);
-    result : bool = undefined;
-    if (type1 == FPType_SNaN | type1 == FPType_QNaN) | type2 == FPType_SNaN | type2 == FPType_QNaN then {
-        result = false;
-        FPProcessException(FPExc_InvalidOp, fpcr)
-    } else {
-        result = value1_name > value2_name;
-        FPProcessDenorms(type1, type2, 'N, fpcr)
-    };
-    return(result)
-}
-
 val FPConvertNaN : forall 'M 'N,
   ('N in {16, 32, 64} & 'M in {16, 32, 64}).
   (bits('N), int('M)) -> bits('M)
@@ -54318,31 +54078,6 @@ function FPProcessDenorm (fptype, N, fpcr) = {
     ()
 }
 
-val FPRoundCV : forall 'N, 'N in {16, 32, 64}.
-  (real, FPCRType, FPRounding, int('N)) -> bits('N)
-
-function FPRoundCV (op, fpcr_in, rounding, N) = {
-    fpcr : FPCRType = fpcr_in;
-    fpcr[FZ16] = 0b0;
-    let fpexc : bool = true;
-    let isbfloat16 : bool = false;
-    return(FPRoundBase__1(op, fpcr, rounding, isbfloat16, fpexc, N))
-}
-
-val FPUnpackCV : forall 'N, 'N in {16, 32, 64}.
-  (bits('N), FPCRType) -> (FPType, bits(1), real)
-
-function FPUnpackCV (fpval, fpcr_in) = {
-    fp_type : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    fpcr : FPCRType = fpcr_in;
-    fpcr[FZ16] = 0b0;
-    let fpexc : bool = true;
-    (fp_type, sign, value_name) = FPUnpackBase(fpval, fpcr, fpexc);
-    return((fp_type, sign, value_name))
-}
-
 val FPConvert : forall 'M 'N,
   ('M in {16, 32, 64} & 'N in {16, 32, 64}).
   (bits('N), FPCRType, FPRounding, int('M)) -> bits('M)
@@ -54350,43 +54085,6 @@ val FPConvert : forall 'M 'N,
 val FPConvert__1 : forall 'M 'N,
   ('M in {16, 32, 64} & 'N in {16, 32, 64}).
   (bits('N), FPCRType, int('M)) -> bits('M)
-
-function FPConvert (op, fpcr, rounding, M) = {
-    fptype : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    assert(M == 16 | M == 32 | M == 64);
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    result : bits('M) = undefined;
-    (fptype, sign, value_name) = FPUnpackCV(op, fpcr);
-    let alt_hp : bool = M == 16 & fpcr[AHP] == 0b1;
-    if fptype == FPType_SNaN | fptype == FPType_QNaN then {
-        if alt_hp then {
-            result = FPZero(sign, M)
-        } else if fpcr[DN] == 0b1 then {
-            result = FPDefaultNaN__1(fpcr, M)
-        } else {
-            result = FPConvertNaN(op, M)
-        };
-        if fptype == FPType_SNaN | alt_hp then {
-            FPProcessException(FPExc_InvalidOp, fpcr)
-        };
-        ()
-    } else if fptype == FPType_Infinity then {
-        if alt_hp then {
-            result = sign @ Ones(M - 1);
-            FPProcessException(FPExc_InvalidOp, fpcr)
-        } else {
-            result = FPInfinity(sign, M)
-        }
-    } else if fptype == FPType_Zero then {
-        result = FPZero(sign, M)
-    } else {
-        result = FPRoundCV(value_name, fpcr, rounding, M);
-        FPProcessDenorm(fptype, 'N, fpcr)
-    };
-    return(result)
-}
 
 val FPDiv : forall 'N, 'N in {16, 32, 64}.
   (bits('N), bits('N), FPCRType) -> bits('N)
@@ -54557,56 +54255,8 @@ function FPMulAdd__1 (addend, op1, op2, fpcr, fpexc) = {
     return(result)
 }
 
-val FPTwo : forall 'N, 'N in {16, 32, 64}. (bits(1), int('N)) -> bits('N)
-
-function FPTwo (sign, N) = {
-    assert(N == 16 | N == 32 | N == 64);
-    let 'E = if N == 16 then 5 else if N == 32 then 8 else 11;
-    let 'F = N - (E + 1);
-    let exp : bits(1 + ('E - 1)) = 0b1 @ Zeros(E - 1);
-    let frac : bits('F) = Zeros(F);
-    let result : bits(1 + (1 + ('E - 1)) + 'F) = (sign @ exp) @ frac;
-    return(result)
-}
-
 val FPMulX : forall 'N, 'N in {16, 32, 64}.
   (bits('N), bits('N), FPCRType) -> bits('N)
-
-function FPMulX (op1, op2, fpcr) = {
-    inf1 : bool = undefined;
-    inf2 : bool = undefined;
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    zero1 : bool = undefined;
-    zero2 : bool = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    result : bits('N) = undefined;
-    done : bool = undefined;
-    (type1, sign1, value1_name) = FPUnpack(op1, fpcr);
-    (type2, sign2, value2_name) = FPUnpack(op2, fpcr);
-    (done, result) = FPProcessNaNs(type1, type2, op1, op2, fpcr);
-    if not_bool(done) then {
-        let inf1 : bool = type1 == FPType_Infinity;
-        let inf2 : bool = type2 == FPType_Infinity;
-        let zero1 : bool = type1 == FPType_Zero;
-        let zero2 : bool = type2 == FPType_Zero;
-        if inf1 & zero2 | zero1 & inf2 then {
-            result = FPTwo(EOR(sign1, sign2), 'N)
-        } else if inf1 | inf2 then {
-            result = FPInfinity(EOR(sign1, sign2), 'N)
-        } else if zero1 | zero2 then {
-            result = FPZero(EOR(sign1, sign2), 'N)
-        } else {
-            result = FPRound(value1_name * value2_name, fpcr, 'N)
-        };
-        FPProcessDenorms(type1, type2, 'N, fpcr)
-    };
-    return(result)
-}
 
 val FPProcessNaNs3H : forall 'N ('fpexc : Bool), 'N in {32, 64}.
   (FPType, FPType, FPType, bits('N), bits(div('N, 2)), bits(div('N, 2)), FPCRType, bool('fpexc)) -> (bool, bits('N))
@@ -54773,224 +54423,10 @@ function FPNeg op = {
     return(not_vec([op['N - 1]]) @ op['N - 2 .. 0])
 }
 
-val FPOnePointFive : forall 'N, 'N in {16, 32, 64}.
-  (bits(1), int('N)) -> bits('N)
-
-function FPOnePointFive (sign, N) = {
-    assert(N == 16 | N == 32 | N == 64);
-    let 'E = if N == 16 then 5 else if N == 32 then 8 else 11;
-    let 'F = N - (E + 1);
-    let exp : bits(1 + ('E - 1)) = 0b0 @ Ones(E - 1);
-    let frac : bits(1 + ('F - 1)) = 0b1 @ Zeros(F - 1);
-    let result : bits(1 + (1 + ('E - 1)) + (1 + ('F - 1))) = (sign @ exp) @ frac;
-    return(result)
-}
-
-val HaveFeatRPRES : unit -> bool
-
-function HaveFeatRPRES () = {
-    return(IsFeatureImplemented(FEAT_RPRES))
-}
-
 val FPRecipEstimate : forall 'N, 'N in {16, 32, 64}.
   (bits('N), FPCRType) -> bits('N)
 
-function FPRecipEstimate (operand, fpcr_in) = {
-    estimate : int = undefined;
-    fptype : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    fpcr : FPCRType = fpcr_in;
-    result : bits('N) = undefined;
-    overflow_to_inf : bool = undefined;
-    let altfp : bool = (HaveAltFP() & not_bool(UsingAArch32())) & fpcr[AH] == 0b1;
-    let fpexc : bool = not_bool(altfp);
-    if altfp then {
-        (fpcr[FIZ] @ fpcr[FZ]) = 0b11
-    };
-    if altfp then {
-        fpcr[RMode] = 0b00
-    };
-    (fptype, sign, value_name) = FPUnpack__1(operand, fpcr, fpexc);
-    let rounding : FPRounding = FPRoundingMode(fpcr);
-    if fptype == FPType_SNaN | fptype == FPType_QNaN then {
-        result = FPProcessNaN__1(fptype, operand, fpcr, fpexc)
-    } else if fptype == FPType_Infinity then {
-        result = FPZero(sign, 'N)
-    } else if fptype == FPType_Zero then {
-        result = FPInfinity(sign, 'N);
-        if fpexc then {
-            FPProcessException(FPExc_DivideByZero, fpcr)
-        };
-        ()
-    } else if ('N == 16 & Abs(value_name) < 2.0 ^ negate(16) | 'N == 32 & Abs(value_name) < 2.0 ^ negate(128)) | 'N == 64 & Abs(value_name) < 2.0 ^ negate(1024) then {
-        match rounding {
-          FPRounding_TIEEVEN => {
-              overflow_to_inf = true
-          },
-          FPRounding_POSINF => {
-              overflow_to_inf = sign == 0b0
-          },
-          FPRounding_NEGINF => {
-              overflow_to_inf = sign == 0b1
-          },
-          FPRounding_ZERO => {
-              overflow_to_inf = false
-          },
-          _ => ()
-        };
-        result = if overflow_to_inf then FPInfinity(sign, 'N) else
-          FPMaxNormal(sign, 'N);
-        if fpexc then {
-            FPProcessException(FPExc_Overflow, fpcr);
-            FPProcessException(FPExc_Inexact, fpcr)
-        };
-        ()
-    } else if (fpcr[FZ] == 0b1 & 'N != 16 | fpcr[FZ16] == 0b1 & 'N == 16) & (('N == 16 & Abs(value_name) >= 2.0 ^ 14 | 'N == 32 & Abs(value_name) >= 2.0 ^ 126) | 'N == 64 & Abs(value_name) >= 2.0 ^ 1022) then {
-        result = FPZero(sign, 'N);
-        if UsingAArch32() then {
-            FPSCR_write() = [FPSCR_read__1() with UFC = 0b1]
-        } else {
-            if fpexc then {
-                FPSR[UFC] = 0b1
-            };
-            ()
-        }
-    } else {
-        fraction : bits(52) = undefined;
-        exp : int = undefined;
-        match 'N {
-          16 => {
-              fraction = operand[9 .. 0] @ Zeros(42);
-              exp = UInt(operand[14 .. 10])
-          },
-          32 => {
-              fraction = operand[22 .. 0] @ Zeros(29);
-              exp = UInt(operand[30 .. 23])
-          },
-          64 => {
-              fraction = operand[51 .. 0];
-              exp = UInt(operand[62 .. 52])
-          },
-          _ => ()
-        };
-        if exp == 0 then {
-            if [fraction[51]] == 0b0 then {
-                exp = negate(1);
-                fraction = fraction[49 .. 0] @ 0b00
-            } else {
-                fraction = fraction[50 .. 0] @ 0b0
-            }
-        };
-        let 'exp = exp;
-        scaled : range(0, 4095) = undefined;
-        let increasedprecision_name : bool = ('N == 32 & HaveFeatRPRES()) & altfp;
-        if not_bool(increasedprecision_name) then {
-            scaled = UInt(0b1 @ fraction[51 .. 44])
-        } else {
-            scaled = UInt(0b1 @ fraction[51 .. 41])
-        };
-        let 'scaled = scaled;
-        result_exp : int = undefined;
-        match 'N {
-          16 => {
-              result_exp = 29 - exp
-          },
-          32 => {
-              result_exp = 253 - exp
-          },
-          64 => {
-              result_exp = 2045 - exp
-          },
-          _ => ()
-        };
-        let 'estimate = RecipEstimate(scaled, increasedprecision_name);
-        if not_bool(increasedprecision_name) then {
-            fraction = estimate[7 .. 0] @ Zeros(44)
-        } else {
-            fraction = estimate[11 .. 0] @ Zeros(40)
-        };
-        if result_exp == 0 then {
-            fraction = 0b1 @ fraction[51 .. 1]
-        } else if result_exp == negate(1) then {
-            fraction = 0b01 @ fraction[51 .. 2];
-            result_exp = 0
-        } else ();
-        let 'result_exp = result_exp;
-        match 'N {
-          16 => {
-              result = (sign @ result_exp['N - 12 .. 0]) @ fraction[51 .. 42]
-          },
-          32 => {
-              result = (sign @ result_exp['N - 25 .. 0]) @ fraction[51 .. 29]
-          },
-          64 => {
-              result = (sign @ result_exp['N - 54 .. 0]) @ fraction[51 .. 0]
-          },
-          _ => ()
-        }
-    };
-    return(result)
-}
-
 val FPRecpX : forall 'N, 'N in {16, 32, 64}. (bits('N), FPCRType) -> bits('N)
-
-function FPRecpX (op, fpcr_in) = {
-    fptype : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    fpcr : FPCRType = fpcr_in;
-    esize : {5, 8, 11} = 5;
-    match 'N {
-      16 => {
-          esize = 5
-      },
-      32 => {
-          esize = 8
-      },
-      64 => {
-          esize = 11
-      },
-      _ => ()
-    };
-    let 'esize = esize;
-    result : bits('N) = undefined;
-    exp : bits('esize) = undefined;
-    let frac : bits('N - ('esize + 1)) = Zeros('N - (esize + 1));
-    let altfp : bool = HaveAltFP() & fpcr[AH] == 0b1;
-    let fpexc : bool = not_bool(altfp);
-    if altfp then {
-        (fpcr[FIZ] @ fpcr[FZ]) = 0b11
-    };
-    (fptype, sign, value_name) = FPUnpack__1(op, fpcr, fpexc);
-    match 'N {
-      16 => {
-          assert(constraint((10 <= 10 + 'esize - 1 & 10 + 'esize - 1 < 'N)));
-          exp = op[10 + esize - 1 .. 10]
-      },
-      32 => {
-          assert(constraint((23 <= 23 + 'esize - 1 & 23 + 'esize - 1 < 'N)));
-          exp = op[23 + esize - 1 .. 23]
-      },
-      64 => {
-          exp = op[52 + esize - 1 .. 52]
-      },
-      _ => ()
-    };
-    let max_exp : bits('esize) = Ones(esize) - 1;
-    if fptype == FPType_SNaN | fptype == FPType_QNaN then {
-        result = FPProcessNaN__1(fptype, op, fpcr, fpexc)
-    } else {
-        if IsZero(exp) then {
-            result = (sign @ max_exp) @ frac
-        } else {
-            result = (sign @ not_vec(exp)) @ frac
-        }
-    };
-    return(result)
-}
 
 val FPRoundInt : forall 'N ('exact : Bool),
   'N in {16, 32, 64}.
@@ -55001,114 +54437,6 @@ val FPRoundIntN : forall 'N 'intsize, 'N in {32, 64}.
 
 val FPRSqrtEstimate : forall 'N, 'N in {16, 32, 64}.
   (bits('N), FPCRType) -> bits('N)
-
-function FPRSqrtEstimate (operand, fpcr_in) = {
-    estimate : int = undefined;
-    fptype : FPType = undefined;
-    sign : bits(1) = undefined;
-    value_name : real = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    fpcr : FPCRType = fpcr_in;
-    let altfp : bool = (HaveAltFP() & not_bool(UsingAArch32())) & fpcr[AH] == 0b1;
-    let fpexc : bool = not_bool(altfp);
-    if altfp then {
-        (fpcr[FIZ] @ fpcr[FZ]) = 0b11
-    };
-    (fptype, sign, value_name) = FPUnpack__1(operand, fpcr, fpexc);
-    result : bits('N) = undefined;
-    if fptype == FPType_SNaN | fptype == FPType_QNaN then {
-        result = FPProcessNaN__1(fptype, operand, fpcr, fpexc)
-    } else if fptype == FPType_Zero then {
-        result = FPInfinity(sign, 'N);
-        if fpexc then {
-            FPProcessException(FPExc_DivideByZero, fpcr)
-        };
-        ()
-    } else if sign == 0b1 then {
-        result = FPDefaultNaN__1(fpcr, 'N);
-        if fpexc then {
-            FPProcessException(FPExc_InvalidOp, fpcr)
-        };
-        ()
-    } else if fptype == FPType_Infinity then {
-        result = FPZero(0b0, 'N)
-    } else {
-        fraction : bits(52) = undefined;
-        exp : int = undefined;
-        match 'N {
-          16 => {
-              fraction = operand[9 .. 0] @ Zeros(42);
-              exp = UInt(operand[14 .. 10])
-          },
-          32 => {
-              fraction = operand[22 .. 0] @ Zeros(29);
-              exp = UInt(operand[30 .. 23])
-          },
-          64 => {
-              fraction = operand[51 .. 0];
-              exp = UInt(operand[62 .. 52])
-          },
-          _ => ()
-        };
-        if exp == 0 then {
-            while [fraction[51]] == 0b0 do {
-                fraction = fraction[50 .. 0] @ 0b0;
-                exp = exp - 1
-            };
-            fraction = fraction[50 .. 0] @ 0b0
-        };
-        let fraction = fraction;
-        let 'exp = exp;
-        scaled : range(0, 4095) = undefined;
-        let increasedprecision_name : bool = ('N == 32 & HaveFeatRPRES()) & altfp;
-        if not_bool(increasedprecision_name) then {
-            if [exp[0]] == 0b0 then {
-                scaled = UInt(0b1 @ fraction[51 .. 44])
-            } else {
-                scaled = UInt(0b01 @ fraction[51 .. 45])
-            }
-        } else {
-            if [exp[0]] == 0b0 then {
-                scaled = UInt(0b1 @ fraction[51 .. 41])
-            } else {
-                scaled = UInt(0b01 @ fraction[51 .. 42])
-            }
-        };
-        let 'scaled = scaled;
-        result_exp : int = undefined;
-        match 'N {
-          16 => {
-              result_exp = DIV(44 - exp, 2)
-          },
-          32 => {
-              result_exp = DIV(380 - exp, 2)
-          },
-          64 => {
-              result_exp = DIV(3068 - exp, 2)
-          },
-          _ => ()
-        };
-        let 'result_exp = result_exp;
-        let 'estimate = RecipSqrtEstimate(scaled, increasedprecision_name);
-        match 'N {
-          16 => {
-              result = ((0b0 @ result_exp['N - 12 .. 0]) @ estimate[7 .. 0]) @ Zeros(2)
-          },
-          32 => {
-              if not_bool(increasedprecision_name) then {
-                  result = ((0b0 @ result_exp['N - 25 .. 0]) @ estimate[7 .. 0]) @ Zeros(15)
-              } else {
-                  result = ((0b0 @ result_exp['N - 25 .. 0]) @ estimate[11 .. 0]) @ Zeros(11)
-              }
-          },
-          64 => {
-              result = ((0b0 @ result_exp['N - 54 .. 0]) @ estimate[7 .. 0]) @ Zeros(44)
-          },
-          _ => ()
-        }
-    };
-    return(result)
-}
 
 val FPSqrt : forall 'N, 'N in {16, 32, 64}. (bits('N), FPCRType) -> bits('N)
 
@@ -55339,118 +54667,8 @@ function SP_read () = {
 val FPRecipStepFused : forall 'N, 'N in {16, 32, 64}.
   (bits('N), bits('N)) -> bits('N)
 
-function FPRecipStepFused (op1_in, op2) = {
-    inf1 : bool = undefined;
-    inf2 : bool = undefined;
-    result_value : real = undefined;
-    sign : bits(1) = undefined;
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    zero1 : bool = undefined;
-    zero2 : bool = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    op1 : bits('N) = op1_in;
-    result : bits('N) = undefined;
-    done : bool = undefined;
-    fpcr : FPCRType = FPCR_read();
-    let op1 : bits('N) = FPNeg(op1);
-    let altfp : bool = HaveAltFP() & fpcr[AH] == 0b1;
-    let fpexc : bool = not_bool(altfp);
-    if altfp then {
-        (fpcr[FIZ] @ fpcr[FZ]) = 0b11
-    };
-    if altfp then {
-        fpcr[RMode] = 0b00
-    };
-    (type1, sign1, value1_name) = FPUnpack__1(op1, fpcr, fpexc);
-    (type2, sign2, value2_name) = FPUnpack__1(op2, fpcr, fpexc);
-    (done, result) = FPProcessNaNs__1(type1, type2, op1, op2, fpcr, fpexc);
-    let rounding : FPRounding = FPRoundingMode(fpcr);
-    if not_bool(done) then {
-        let inf1 : bool = type1 == FPType_Infinity;
-        let inf2 : bool = type2 == FPType_Infinity;
-        let zero1 : bool = type1 == FPType_Zero;
-        let zero2 : bool = type2 == FPType_Zero;
-        if inf1 & zero2 | zero1 & inf2 then {
-            result = FPTwo(0b0, 'N)
-        } else if inf1 | inf2 then {
-            result = FPInfinity(EOR(sign1, sign2), 'N)
-        } else {
-            let result_value : real = 2.0 + value1_name * value2_name;
-            if result_value == 0.0 then {
-                let sign : bits(1) = if rounding == FPRounding_NEGINF then 0b1
-                else
-                  0b0;
-                result = FPZero(sign, 'N)
-            } else {
-                result = FPRound__2(result_value, fpcr, rounding, fpexc, 'N)
-            }
-        }
-    };
-    return(result)
-}
-
 val FPRSqrtStepFused : forall 'N, 'N in {16, 32, 64}.
   (bits('N), bits('N)) -> bits('N)
-
-function FPRSqrtStepFused (op1_in, op2) = {
-    inf1 : bool = undefined;
-    inf2 : bool = undefined;
-    result_value : real = undefined;
-    sign : bits(1) = undefined;
-    sign1 : bits(1) = undefined;
-    sign2 : bits(1) = undefined;
-    type1 : FPType = undefined;
-    type2 : FPType = undefined;
-    value1_name : real = undefined;
-    value2_name : real = undefined;
-    zero1 : bool = undefined;
-    zero2 : bool = undefined;
-    assert('N == 16 | 'N == 32 | 'N == 64);
-    result : bits('N) = undefined;
-    op1 : bits('N) = op1_in;
-    done : bool = undefined;
-    fpcr : FPCRType = FPCR_read();
-    let op1 : bits('N) = FPNeg(op1);
-    let altfp : bool = HaveAltFP() & fpcr[AH] == 0b1;
-    let fpexc : bool = not_bool(altfp);
-    if altfp then {
-        (fpcr[FIZ] @ fpcr[FZ]) = 0b11
-    };
-    if altfp then {
-        fpcr[RMode] = 0b00
-    };
-    (type1, sign1, value1_name) = FPUnpack__1(op1, fpcr, fpexc);
-    (type2, sign2, value2_name) = FPUnpack__1(op2, fpcr, fpexc);
-    (done, result) = FPProcessNaNs__1(type1, type2, op1, op2, fpcr, fpexc);
-    let rounding : FPRounding = FPRoundingMode(fpcr);
-    if not_bool(done) then {
-        let inf1 : bool = type1 == FPType_Infinity;
-        let inf2 : bool = type2 == FPType_Infinity;
-        let zero1 : bool = type1 == FPType_Zero;
-        let zero2 : bool = type2 == FPType_Zero;
-        if inf1 & zero2 | zero1 & inf2 then {
-            result = FPOnePointFive(0b0, 'N)
-        } else if inf1 | inf2 then {
-            result = FPInfinity(EOR(sign1, sign2), 'N)
-        } else {
-            let result_value : real = (3.0 + value1_name * value2_name) / 2.0;
-            if result_value == 0.0 then {
-                let sign : bits(1) = if rounding == FPRounding_NEGINF then 0b1
-                else
-                  0b0;
-                result = FPZero(sign, 'N)
-            } else {
-                result = FPRound__2(result_value, fpcr, rounding, fpexc, 'N)
-            }
-        }
-    };
-    return(result)
-}
 
 val AArch64_AdvSIMDFPAccessTrap : bits(2) -> unit
 

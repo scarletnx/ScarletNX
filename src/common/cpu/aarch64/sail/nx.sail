@@ -303,6 +303,24 @@ function IsMerging fpcr = false
 // FPSR as the CPU keeps it (cpu.h's CPU.fpsr): the back end sets its cumulative flags, QC among them
 register FPSR : bits(64)
 
+// The comparisons' answers are those of FPCompare's flags, which raises the exceptions theirs do (a signalling NaN's
+// Invalid Operation in an equality, any NaN's in the others): equal 0110, less 1000, greater 0010, unordered 0011
+val FPCompareEQ : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareEQ (op1, op2, fpcr) = FPCompare(op1, op2, false, fpcr)[2 .. 2] == 0b1
+
+val FPCompareGE : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareGE (op1, op2, fpcr) = FPCompare(op1, op2, true, fpcr)[1 .. 0] == 0b10
+
+val FPCompareGT : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareGT (op1, op2, fpcr) = FPCompare(op1, op2, true, fpcr) == 0b0010
+
+// Without FEAT_AFP the alternate floating point's argument is false, and a minimum or a maximum is the plain one
+val FPMax__1 : forall 'N ('altfp : Bool), 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType, bool('altfp)) -> bits('N)
+function FPMax__1 (op1, op2, fpcr, altfp) = FPMax(op1, op2, fpcr)
+
+val FPMin__1 : forall 'N ('altfp : Bool), 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType, bool('altfp)) -> bits('N)
+function FPMin__1 (op1, op2, fpcr, altfp) = FPMin(op1, op2, fpcr)
+
 // A rounded shift right by one more than the rounding's place, the same number: (v + 2^(n - 1)) >> n, a floor, is
 // ((v >> (n - 1)) + 1) >> 1, whose sum needs one bit more than v however far the shift goes
 val RShr : forall ('round : Bool) 'shift 'value_name. (int('value_name), int('shift), bool('round)) -> int
