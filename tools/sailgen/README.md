@@ -460,7 +460,10 @@ k2` is one AND). Flags are the instruction that made them: AddWithCarry's NZCV i
 candidate's map of Arm's flags (SUBS's C is `setae`, ADDS's `setb`), an ANDS on the result of the AND that just set
 the flags is that AND (the selection lists its form for `ands` too), and ConditionHolds on them is the condition code
 the selection derived for that Arm condition on that form, while no instruction since has written the flags (before
-one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them).
+one does, a bool still on them is made 0 or 1 in a register by SETcc, which keeps them). The guards of the scalar
+floating-point operations are no bools: a cold path (`sgx_cold_fp`) takes up to four tests, each twice a float's bits
+less a constant against a limit made once a region (a normal result above the smallest, a denormal operand FZ flushes,
+a NaN), and each test is its own MOVD, LEA, CMP and Jcc to the same cold code.
 
 When the block ends, `sgx_optimize` works on the SSA as a whole, where what reads each value and each instruction's
 flags is known: a store a later one to the same place overwrites (no load of it, no call of the runtime between) is

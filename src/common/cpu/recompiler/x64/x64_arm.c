@@ -123,7 +123,7 @@ static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, Sg
     args[1] = sg_d_zext(g, yb, 64);
     args[2] = sg_d_zext(g, zb, 64);
     return sgx_cold_fp(x, sg_b_not(g, ok), r, "snx_arm_fp_x64", args, 3, -1, 3, fp_desc(op, width, param),
-                       (int)offsetof(SnxArmCPU, fpscr), (int)offsetof(SnxArmCPU, fpscr), 0, 0);
+                       (int)offsetof(SnxArmCPU, fpscr), (int)offsetof(SnxArmCPU, fpscr), 0, 0, NULL, 0);
 }
 
 /* the frame's room, patched once the block is done (sgx_patch_frame's sizes): SUB or ADD RSP of an 8-bit immediate,

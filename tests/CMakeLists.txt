@@ -4016,6 +4016,10 @@ add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends 
 # one where no register of the pool is free when DIV takes RDX from the divisor it holds
 add_test(NAME recompiler_backends_div_divisor COMMAND snx-test-recompiler-backends --words d2800030 f9400ac7 1acc096b
          d503201f aa0b00cd aa0b000a d503201f d503201f d503201f d503201f 9ac8092e d503201f f9401746 f1000610 54fffe61)
+# scalar floating point in a loop, its results made in the registers the loop keeps them in and its cold paths taken from
+# each of their tests
+add_test(NAME recompiler_backends_fp_pins COMMAND snx-test-recompiler-backends --states 600 --words d2800070 1e210800
+         1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1)
 # FMLA of a vector in a loop on a host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a cold
 # call always taken: its result stays in the destination's pin, past the pins' reload
 add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without 0x800 --states 40 --words
