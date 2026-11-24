@@ -122,8 +122,8 @@ one the module is compiled from.
 | Sound | the SDK's sequence player and the sixteen channels. No sound capture |
 | Save memory | kept in the game's folder |
 
-Super Mario 64 DS (USA, revision 1) is the game the driver was brought up on: it runs from its title screen through
-its menus and its opening into play, with sound.
+A 3D platformer (USA, revision 1) is the game the driver was brought up on: it runs from its title screen through its
+menus and its opening into play, with sound.
 
 ## What runs and what is answered
 
