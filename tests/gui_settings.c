@@ -1125,6 +1125,50 @@ int main(int argc, char** argv) {
         assert(!gui_settings_slide(&s, o, -1) && !strcmp(on_screen(&s, "off_step"), "60 [default]"));
         gui_settings_free(&s);
     }
+    /* a value none of a row's words is, from a file of picks or a game's .ini, on a slider's row or an open one (the
+       twelfth column's open): a number in its range kept as a word of its own after them, shown as itself and passed
+       to a run; a slider's knob placed by it and its next step taken from it; a number outside the range, a fraction
+       of a whole number's row, a text of a closed row and any value of a row neither a slider nor open refused */
+    {
+        static const char custom[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|25=25%|50=50%|75=75%|100=100%\t\t\tslider\n"
+            "Graphics\tbc7_queue\t0\tint\t0\t16384\tQueued\tBC7 queue\t0=Auto|256=256|512=512\t\t\topen\n"
+            "Graphics\tupscaler\toff\ttext\t0\t0\tFilter\tUpscaler\toff=Off|fsr1=AMD FSR 1\n"
+            "Graphics\tmode\t0\tint\t0\t9\tClosed\tMode\t0=Off|1=On\n";
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), unread[128];
+        int v, q, n;
+        assert(!gui_settings_read(&s, custom));
+        gui_settings_mark(&s);
+        v = at(&s, "volume");
+        q = at(&s, "bc7_queue");
+        n = words(&s.keys[q]);
+        assert(gui_settings_set(&s, "volume", "37") && !strcmp(gui_settings_value(&s, "volume"), "37") &&
+               !strcmp(on_screen(&s, "volume"), "37") && gui_settings_knob(&s, v) == 370);
+        assert(gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--volume=37"));
+        assert(gui_settings_slide(&s, v, 1) && !strcmp(gui_settings_value(&s, "volume"), "50"));
+        assert(gui_settings_set(&s, "volume", "37") && gui_settings_slide(&s, v, -1) &&
+               !strcmp(gui_settings_value(&s, "volume"), "25"));
+        assert(!gui_settings_set(&s, "volume", "101") && !gui_settings_set(&s, "volume", "37.5") &&
+               !gui_settings_set(&s, "upscaler", "nis2") && !gui_settings_set(&s, "bc7_queue", "-1") &&
+               !gui_settings_set(&s, "mode", "5")); /* a row neither a slider nor open: its words alone */
+        assert(gui_settings_set(&s, "bc7_queue", "3000") && words(&s.keys[q]) == n + 1 &&
+               !strcmp(on_screen(&s, "bc7_queue"), "3000") && gui_settings_set(&s, "bc7_queue", "512") &&
+               gui_settings_set(&s, "bc7_queue", "1024") && words(&s.keys[q]) == n + 1); /* one slot, reused */
+        assert(!gui_settings_save(&s, path));
+        gui_settings_free(&s);
+        assert(!gui_settings_read(&s, custom));
+        gui_settings_mark(&s);
+        assert(!gui_settings_load(&s, path, NULL, 0) && !strcmp(gui_settings_value(&s, "bc7_queue"), "1024") &&
+               !strcmp(gui_settings_value(&s, "volume"), "25"));
+        gui_settings_free(&s);
+        /* a try of the file's values leaves no word behind on a row that kept none */
+        assert(!gui_settings_read(&s, custom) && !gui_settings_unread(&s, path, unread, sizeof unread) &&
+               words(&s.keys[at(&s, "bc7_queue")]) == n && !gui_settings_value(&s, "bc7_queue"));
+        gui_settings_free(&s);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }

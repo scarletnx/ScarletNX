@@ -34,6 +34,11 @@ typedef struct {
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
     int needs_build;      /* the build this row needs, which this one has none of: shown, picked by nothing */
     int slider;           /* a plain word row on a slider (ini.h's INI_SLIDER): stepped to its ends, never round */
+    /* a word row's value that is none of its words, kept in text and shown as itself as a word after its others: that
+       word's index, 0 for none. Only a slider's row and an open one have such a value (the runtime's list's open:
+       its words the common values, not every one): a number in its range (number 'i' or 'f', lo to hi), or a text */
+    int custom, number, open;
+    double lo, hi;
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
