@@ -36,6 +36,11 @@ enum {
 #else
 #define INI_NEEDS_TRACY INI_NEEDS_BUILD
 #endif
+#if defined(SNX_VITA_LOCKSTEP)
+#define INI_NEEDS_VITA_LOCKSTEP 0
+#else
+#define INI_NEEDS_VITA_LOCKSTEP INI_NEEDS_BUILD
+#endif
 
 /* the systems a setting does something on, where not every one (settings.txt's only): one of these in flags, macOS
    without iOS, Linux the kernel (Android too), arm64 Linux the same on arm64 (NCE's hosts, nce_host.h), none for a

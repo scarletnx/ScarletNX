@@ -340,15 +340,15 @@ int snx_vita_main(int argc, char** argv) {
             snx_cli_free(&cli);
             return common < 0 ? 2 : 0;
         }
-        if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_debug_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
+        if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_run_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
         /* the Switch's settings, as --aot-threads= is: the last given counts */
         if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
-            /* the Vita debug table's, --press-len= and --shot-every= being vita_press_len and vita_shot_every (a Switch
-               game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), the
-               upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
+            /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
+               (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
+               the upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
                gamepad_map */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
@@ -362,9 +362,10 @@ int snx_vita_main(int argc, char** argv) {
                     return 2;
                 }
             } else if (value) {
-                o = ini_find(g_vita_debug_ini, !strcmp(key, "press_len")    ? "vita_press_len"
-                                               : !strcmp(key, "shot_every") ? "vita_shot_every"
-                                                                            : key);
+                o = ini_find(g_vita_run_ini, !strcmp(key, "press_len")    ? "vita_press_len"
+                                             : !strcmp(key, "shot_every") ? "vita_shot_every"
+                                                                          : key);
+                if (!o) o = ini_find(g_vita_debug_ini, key);
                 if (!o) o = ini_find(g_debug_ini, key);
                 if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
                            !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))

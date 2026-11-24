@@ -112,6 +112,7 @@ static inline unsigned gui_group_icon(const char* name) {
                  {"Display", GUI_ICON_MONITOR},
                  {"Graphics", GUI_ICON_IMAGE},
                  {"3DS", GUI_ICON_SQUARE_SPLIT_VERTICAL},
+                 {"Vita", GUI_ICON_PACKAGE}, /* the menu's Load Vita VPK's */
                  {"Performance", GUI_ICON_GAUGE},
                  {"Overlay", GUI_ICON_POINTER},
                  {"Controllers", GUI_ICON_GAMEPAD_2},

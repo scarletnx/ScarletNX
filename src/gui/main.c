@@ -16300,8 +16300,10 @@ typedef struct {
     if (n) argv[0] = first;
     argv[n++] = own->option;
     /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
-    n += item == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
+       launcher's, the 3DS's and the Vita's their own, and the others' none, whose drivers refuse a setting they do not
+       have */
+    n += item == GUI_3DS      ? gui_settings_ctr_options(s, argv + n)
+         : item == GUI_VITA   ? gui_settings_vita_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
@@ -19664,6 +19666,7 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = program;
     }
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
+    if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
