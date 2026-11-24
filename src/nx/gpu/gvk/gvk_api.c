@@ -20,7 +20,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/vk.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"

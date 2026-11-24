@@ -6,7 +6,7 @@
 #include "nx/runtime/platform/plat.h"
 #include <vulkan/vulkan_core.h>
 #include "nx/runtime/loader.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/guest_jit.h"

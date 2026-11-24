@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/gvk/gvk.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/guest_jit.h"
