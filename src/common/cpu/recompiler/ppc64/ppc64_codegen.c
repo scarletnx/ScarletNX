@@ -38,6 +38,13 @@ static _Thread_local jmp_buf* g_fail;
 typedef struct SgXAsm SgXAsm;
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
+/* the big-endian host's back end (ppc64be_codegen.c) is this one's with PPC_BE 1: its words, its guest memory's
+   accesses and its object in that order */
+#ifndef PPC_BE
+#define PPC_BE 0
+#endif
+#define RK_BIG_ENDIAN PPC_BE
+#define MG_ELF_BIG PPC_BE
 #include "a64_ppc64.inc"
 
 /* ---- what mach_codegen.inc asks of the machine ---- */
@@ -60,7 +67,8 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
 
 int snx_ppc64_available(void) {
-#if defined(__powerpc64__) && defined(__ELF__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#if defined(__powerpc64__) && defined(__ELF__) && defined(__BYTE_ORDER__) &&                                          \
+    __BYTE_ORDER__ == (PPC_BE ? __ORDER_BIG_ENDIAN__ : __ORDER_LITTLE_ENDIAN__) && (!PPC_BE || _CALL_ELF == 2)
     return 1;
 #else
     return 0;

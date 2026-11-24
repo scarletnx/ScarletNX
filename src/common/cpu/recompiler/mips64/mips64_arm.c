@@ -15,6 +15,12 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+/* the big-endian host's blocks (mips64be_arm.c) are these with MIPS_BE 1 */
+#ifndef MIPS_BE
+#define MIPS_BE 0
+#endif
+#define RK_BIG_ENDIAN MIPS_BE
+#define MG_ARM_ELF_BIG MIPS_BE
 /* the ELF MIPS64 relocation the blocks have (n64's number) */
 enum { MIPS_EM = 8, MIPS_R_64 = 18 };
 #define MG_ARM_INC         "a32_mips64.inc"

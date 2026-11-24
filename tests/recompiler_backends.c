@@ -27,9 +27,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) || defined(SNX_TEST_LA64)
+#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||          \
+    defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE)
 #define SNX_TEST_NATIVE 1
 #include "support/host_unicorn.h"
+#define SNX_TEST_SWAP_CPU 1
+#include "support/swap_state.h"
 #include "common/cpu/recompiler/codegen.h"
 #if defined(SNX_TEST_ARM64)
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
@@ -43,6 +46,18 @@
 #define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_la64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
+#elif defined(SNX_TEST_PPC64BE)
+#include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
+#define NATIVE_UC HOSTUC_PPC64
+#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
+    snx_ppc64be_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
+#elif defined(SNX_TEST_MIPS64BE)
+#include "common/cpu/recompiler/mips64/mips64be_codegen.h"
+#define NATIVE_UC HOSTUC_MIPS64
+#define NATIVE_MIN_MADE 50 /* as riscv64's: the SIMD clauses sailgen doesn't make yet */
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
+    snx_mips64be_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 #elif defined(SNX_TEST_MIPS64)
 #include "common/cpu/recompiler/mips64/mips64_codegen.h"
 #define NATIVE_UC HOSTUC_MIPS64EL
@@ -407,6 +422,23 @@ static void on_brk(CPU* c, uint64_t pc, uint32_t imm) {
     c->pc = STOP;
 }
 
+#ifdef SNX_TEST_NATIVE
+/* what a big-endian machine's code shares with the test, turned over around its runs (host_unicorn.h's swapper): the
+   state, the runtime's table and the dispatch table */
+static struct {
+    CPU* cpu;
+    RtAPI* rt;
+    uint64_t* disp;
+    size_t ndisp;
+} g_swap;
+static void swap_shared(void* user) {
+    (void)user;
+    snx_test_swap_cpu(g_swap.cpu);
+    snx_test_swap_rt(g_swap.rt);
+    snx_test_swap_u64s(g_swap.disp, g_swap.ndisp);
+}
+#endif
+
 int main(int argc, char** argv) {
     unsigned functions = 600, states = 8, i, s, k, nwords = 0;
     int target = SNX_RECOMPILER_A64_SWITCH;
@@ -554,6 +586,8 @@ int main(int argc, char** argv) {
         ucpu = (CPU*)hostuc_alloc(uc, sizeof *ucpu);
         urt = (RtAPI*)hostuc_alloc(uc, sizeof *urt);
         udisp = (uint64_t*)hostuc_alloc(uc, (size_t)functions * SLOT * 8 + 8);
+        g_swap.cpu = ucpu, g_swap.rt = urt, g_swap.disp = udisp, g_swap.ndisp = (size_t)functions * SLOT + 1;
+        hostuc_swapper(uc, swap_shared, NULL);
         for (n = 0; n < functions; ++n) {
             char name[40];
             snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[n]);

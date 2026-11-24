@@ -21,6 +21,11 @@
 #ifndef MG_ELF_FLAGS
 #define MG_ELF_FLAGS 0
 #endif
+/* the object's byte order: the machine's (MG_ELF_BIG 1 for a big-endian one), its tables swapped where it isn't this
+   host's (snx_elf_byteswap) */
+#ifndef MG_ELF_BIG
+#define MG_ELF_BIG 0
+#endif
 /* a relocation's r_info of a symbol and a type: the ELF64 one's, or the machine's (MIPS64's n64 layout) */
 #ifndef MG_R_INFO
 #define MG_R_INFO(sym, type) ELF64_R_INFO((sym), (type))
@@ -1885,7 +1890,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     sh[8] = (Elf64_Shdr){sh_name[8], SHT_PROGBITS, 0, 0, off_shstr, 0, 0, 0, 1, 0};
     memcpy(eh.e_ident, ELFMAG, SELFMAG);
     eh.e_ident[EI_CLASS] = ELFCLASS64;
-    eh.e_ident[EI_DATA] = ELFDATA2LSB;
+    eh.e_ident[EI_DATA] = MG_ELF_BIG ? ELFDATA2MSB : ELFDATA2LSB;
     eh.e_ident[EI_VERSION] = EV_CURRENT;
     eh.e_type = ET_REL;
     eh.e_machine = MG_EM;
@@ -1898,6 +1903,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     eh.e_shstrndx = 7;
     put(&o, sh, sizeof sh);
     memcpy(o.p, &eh, sizeof eh);
+    if (eh.e_ident[EI_DATA] != snx_elf_host_data()) snx_elf_byteswap(o.p, o.n, 1);
     free(strtab.p), free(symtab.p), free(rela.p), free(data.p), free(rela_data.p), free(shstr.p), free(undef);
     free(reloc_undef);
     *object = o.p;

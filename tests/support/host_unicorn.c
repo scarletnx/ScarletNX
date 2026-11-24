@@ -24,27 +24,35 @@ typedef struct {
     unsigned em;
     uint32_t ret;
     int args[6], result[2], sp, lr, pc;
+    int big;
 } Arch;
 static const Arch g_arch[] = {
     [HOSTUC_ARM64] = {"arm64", UC_ARCH_ARM64, UC_MODE_ARM, UC_CPU_ARM64_MAX, EM_AARCH64, 0xD65F03C0u,
                       {UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4,
                        UC_ARM64_REG_X5},
-                      {UC_ARM64_REG_X0, UC_ARM64_REG_X1}, UC_ARM64_REG_SP, UC_ARM64_REG_X30, UC_ARM64_REG_PC},
+                      {UC_ARM64_REG_X0, UC_ARM64_REG_X1}, UC_ARM64_REG_SP, UC_ARM64_REG_X30, UC_ARM64_REG_PC, 0},
     [HOSTUC_RV64] = {"riscv64", UC_ARCH_RISCV, UC_MODE_RISCV64, UC_CPU_RISCV64_ANY, EM_RISCV, 0x00008067u,
                      {UC_RISCV_REG_A0, UC_RISCV_REG_A1, UC_RISCV_REG_A2, UC_RISCV_REG_A3, UC_RISCV_REG_A4,
                       UC_RISCV_REG_A5},
-                     {UC_RISCV_REG_A0, UC_RISCV_REG_A1}, UC_RISCV_REG_SP, UC_RISCV_REG_RA, UC_RISCV_REG_PC},
+                     {UC_RISCV_REG_A0, UC_RISCV_REG_A1}, UC_RISCV_REG_SP, UC_RISCV_REG_RA, UC_RISCV_REG_PC, 0},
     [HOSTUC_PPC64LE] = {"ppc64le", UC_ARCH_PPC, UC_MODE_PPC64 | UC_MODE_BIG_ENDIAN, UC_CPU_PPC64_POWER9_V2_0, EM_PPC64,
                         0x4E800020u, /* blr */
                         {UC_PPC_REG_3, UC_PPC_REG_4, UC_PPC_REG_5, UC_PPC_REG_6, UC_PPC_REG_7, UC_PPC_REG_8},
-                        {UC_PPC_REG_3, UC_PPC_REG_4}, UC_PPC_REG_1, UC_PPC_REG_LR, UC_PPC_REG_PC},
+                        {UC_PPC_REG_3, UC_PPC_REG_4}, UC_PPC_REG_1, UC_PPC_REG_LR, UC_PPC_REG_PC, 0},
     [HOSTUC_MIPS64EL] = {"mips64el", UC_ARCH_MIPS, UC_MODE_MIPS64 | UC_MODE_LITTLE_ENDIAN, UC_CPU_MIPS64_MIPS64R2_GENERIC,
                          EM_MIPS, 0x03E00008u, /* jr ra (its delay slot the next word's: the page's words alternate) */
                          {UC_MIPS_REG_4, UC_MIPS_REG_5, UC_MIPS_REG_6, UC_MIPS_REG_7, UC_MIPS_REG_8, UC_MIPS_REG_9},
-                         {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC},
+                         {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC, 0},
     /* la64_interp.c's: its registers by number */
     [HOSTUC_LA64] = {"loongarch64", (uc_arch)0, (uc_mode)0, 0, EM_LOONGARCH, 0x4C000020u, /* jirl zero, ra, 0 */
-                     {4, 5, 6, 7, 8, 9}, {4, 5}, 3, 1, 0},
+                     {4, 5, 6, 7, 8, 9}, {4, 5}, 3, 1, 0, 0},
+    [HOSTUC_PPC64] = {"ppc64", UC_ARCH_PPC, UC_MODE_PPC64 | UC_MODE_BIG_ENDIAN, UC_CPU_PPC64_POWER9_V2_0, EM_PPC64,
+                      0x4E800020u, {UC_PPC_REG_3, UC_PPC_REG_4, UC_PPC_REG_5, UC_PPC_REG_6, UC_PPC_REG_7, UC_PPC_REG_8},
+                      {UC_PPC_REG_3, UC_PPC_REG_4}, UC_PPC_REG_1, UC_PPC_REG_LR, UC_PPC_REG_PC, 1},
+    [HOSTUC_MIPS64] = {"mips64", UC_ARCH_MIPS, UC_MODE_MIPS64 | UC_MODE_BIG_ENDIAN, UC_CPU_MIPS64_MIPS64R2_GENERIC,
+                       EM_MIPS, 0x03E00008u,
+                       {UC_MIPS_REG_4, UC_MIPS_REG_5, UC_MIPS_REG_6, UC_MIPS_REG_7, UC_MIPS_REG_8, UC_MIPS_REG_9},
+                       {UC_MIPS_REG_2, UC_MIPS_REG_3}, UC_MIPS_REG_29, UC_MIPS_REG_31, UC_MIPS_REG_PC, 1},
 };
 /* MIPS's virtual TLB: every address its own */
 static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
@@ -75,7 +83,19 @@ struct HostUc {
     La64* la; /* the interpreter's, where Unicorn has none of the architecture (no uc) */
     La64Region regions[64];
     size_t nregions;
+    void (*swap)(void* user); /* a big-endian architecture's (hostuc_swapper) */
+    void* swap_user;
 };
+static void swap(HostUc* u) {
+    if (u->a->big && u->swap) u->swap(u->swap_user);
+}
+int hostuc_big(HostUcArch arch) { return g_arch[arch].big; }
+void hostuc_swapper(HostUc* u, void (*fn)(void* user), void* user) { u->swap = fn, u->swap_user = user; }
+/* a word in the architecture's order */
+static void put_word(const Arch* a, unsigned char* p, uint32_t w) {
+    if (a->big) w = __builtin_bswap32(w);
+    memcpy(p, &w, 4);
+}
 
 const char* hostuc_name(HostUcArch arch) { return g_arch[arch].name; }
 
@@ -112,6 +132,7 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
     (void)size;
     if (k >= u->ntraps || (address & 15)) return;
     for (i = 0; i < 6; ++i) uc_reg_read(uc, u->a->args[i], &a[i]);
+    swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
         unsigned __int128 w = ((NativeWide)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
         uint64_t hi = (uint64_t)(w >> 64);
@@ -119,6 +140,7 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
         uc_reg_write(uc, u->a->result[1], &hi);
     } else
         r = ((Native)u->fn[k])(a[0], a[1], a[2], a[3], a[4], a[5]);
+    swap(u);
     uc_reg_write(uc, u->a->result[0], &r);
 }
 
@@ -172,13 +194,14 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
         return NULL;
     }
     uc_ctl_set_cpu_model(u->uc, u->a->cpu);
-    if (arch == HOSTUC_PPC64LE) {
-        /* 64-bit (SF), the hypervisor's real mode (HV: every address its own), little-endian (LE) */
-        uint64_t msr = 1ull << 63 | 1ull << 60 | 1, got = 0;
+    if (arch == HOSTUC_PPC64LE || arch == HOSTUC_PPC64) {
+        /* 64-bit (SF), the hypervisor's real mode (HV: every address its own), little-endian (LE) or not */
+        uint64_t msr = 1ull << 63 | 1ull << 60 | (arch == HOSTUC_PPC64LE), got = 0;
         uc_reg_write(u->uc, UC_PPC_REG_MSR, &msr);
         uc_reg_read(u->uc, UC_PPC_REG_MSR, &got);
         if (got != msr) {
-            fprintf(stderr, "ppc64le unicorn: MSR %llx doesn't hold (an unpatched Unicorn 2.1.4)\n", (unsigned long long)msr);
+            fprintf(stderr, "%s unicorn: MSR %llx doesn't hold (an unpatched Unicorn 2.1.4)\n", u->a->name,
+                    (unsigned long long)msr);
             uc_close(u->uc);
             free(u);
             return NULL;
@@ -192,8 +215,8 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     }
     u->cap = code_cap;
     u->trap = u->code + code_cap;
-    for (k = 0; k < PAGE / 4; ++k) memcpy(u->trap + 4 * k, &u->a->ret, 4);
-    if (arch == HOSTUC_MIPS64EL) {
+    for (k = 0; k < PAGE / 4; ++k) put_word(u->a, u->trap + 4 * k, u->a->ret);
+    if (arch == HOSTUC_MIPS64EL || arch == HOSTUC_MIPS64) {
         uc_hook tlb;
         for (k = 1; k < PAGE / 4; k += 2) memset(u->trap + 4 * k, 0, 4); /* each jr's delay slot a nop */
         uc_ctl_tlb_mode(u->uc, UC_TLB_VIRTUAL);
@@ -262,9 +285,34 @@ uint64_t hostuc_symbol(HostUc* u, const char* name) {
     return 0;
 }
 
+/* the bytes a relocation of the architecture's type writes, where they're a number of its order (a big-endian one's
+   turned over around snx_elf_relocate, which writes this host's): 0 for a type not known here */
+static unsigned reloc_bytes(unsigned em, unsigned type) {
+    if (em == EM_PPC64) return type == SNX_PPC_ADDR64 ? 8 : 0;
+    if (em == EM_MIPS) return type == SNX_MIPS_64 ? 8 : 0;
+    if (em == EM_S390) return type == 22 /* R_390_64 */ ? 8 : type == 19 /* R_390_PC32DBL */ ? 4 : 0;
+    return 0;
+}
+static int load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
 /* the object's sections laid out one after another in the region (.text and the others it holds bytes of), its
-   symbols at their places, each RELA section's relocations written */
+   symbols at their places, each RELA section's relocations written; an object of the other byte order's tables read
+   turned over */
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
+    unsigned char* copy;
+    int rc;
+    if (size < EI_NIDENT || object[EI_DATA] == snx_elf_host_data()) return load(u, object, size, error, error_size);
+    if (!(copy = (unsigned char*)malloc(size))) return -1;
+    memcpy(copy, object, size);
+    if (snx_elf_byteswap(copy, size, 0)) {
+        snprintf(error, error_size, "an object of the other byte order whose tables aren't inside it");
+        free(copy);
+        return -1;
+    }
+    rc = load(u, copy, size, error, error_size);
+    free(copy);
+    return rc;
+}
+static int load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)object;
     const Elf64_Shdr* sh;
     uint64_t* at;
@@ -322,8 +370,25 @@ int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error
                 free(at);
                 return -1;
             }
-            e = snx_elf_relocate(u->a->em, (unsigned char*)(uintptr_t)P,
-                                 (size_t)(at[target] + sh[target].sh_size - P), type, S, rela[r].r_addend, P, 0, 0);
+            if (u->a->big) {
+                unsigned n = reloc_bytes(u->a->em, type);
+                if (!n) {
+                    snprintf(error, error_size, "relocation %u of a big-endian object: not known here", type);
+                    free(at);
+                    return -1;
+                }
+                e = snx_elf_relocate(u->a->em, (unsigned char*)(uintptr_t)P,
+                                     (size_t)(at[target] + sh[target].sh_size - P), type, S, rela[r].r_addend, P, 0, 0);
+                if (n == 8) {
+                    uint64_t v;
+                    memcpy(&v, (void*)(uintptr_t)P, 8), v = __builtin_bswap64(v), memcpy((void*)(uintptr_t)P, &v, 8);
+                } else {
+                    uint32_t v;
+                    memcpy(&v, (void*)(uintptr_t)P, 4), v = __builtin_bswap32(v), memcpy((void*)(uintptr_t)P, &v, 4);
+                }
+            } else
+                e = snx_elf_relocate(u->a->em, (unsigned char*)(uintptr_t)P,
+                                     (size_t)(at[target] + sh[target].sh_size - P), type, S, rela[r].r_addend, P, 0, 0);
             if (e) {
                 snprintf(error, error_size, "relocation %u of %s: %d", type, strtab + s->st_name, e);
                 free(at);
@@ -358,7 +423,9 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     uc_reg_write(u->uc, u->a->lr, &lr);
     if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
     if (u->a->arch == UC_ARCH_MIPS) uc_reg_write(u->uc, UC_MIPS_REG_25, &fn); /* t9: an n64 PIC callee's */
+    swap(u);
     e = uc_emu_start(u->uc, fn, lr, 0, 1u << 22);
+    swap(u);
     if (e != UC_ERR_OK) {
         uint64_t pc;
         uc_reg_read(u->uc, u->a->pc, &pc);

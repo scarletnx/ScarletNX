@@ -14,8 +14,11 @@
 #else
 #include <elf.h>
 #endif
-/* elf_object.c's: r_info of a symbol and a type, MIPS64's n64 layout on EM_MIPS (its header clashes with this one's) */
+/* elf_object.c's (its header clashes with this one's): r_info of a symbol and a type, MIPS64's n64 layout on EM_MIPS;
+   the host's byte order; an object's tables turned to the other */
 Elf64_Xword snx_elf_info(unsigned machine, size_t symbol, unsigned type);
+unsigned char snx_elf_host_data(void);
+int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign);
 
 typedef struct {
     unsigned char* p;
@@ -43,6 +46,7 @@ struct SnxXElf {
     int oom;
     unsigned machine; /* EM_X86_64 unless snx_xelf_set_machine said */
     unsigned flags;   /* e_flags (snx_xelf_set_flags) */
+    int big;          /* a big-endian machine's (snx_xelf_set_big) */
 };
 
 static int room(Buf* b, size_t n) {
@@ -82,6 +86,7 @@ SnxXElf* snx_xelf_new(void) {
 }
 void snx_xelf_set_machine(SnxXElf* o, unsigned machine) { o->machine = machine; }
 void snx_xelf_set_flags(SnxXElf* o, unsigned flags) { o->flags = flags; }
+void snx_xelf_set_big(SnxXElf* o, int big) { o->big = big; }
 void snx_xelf_free(SnxXElf* o) {
     size_t i;
     int k;
@@ -327,7 +332,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
         while (file.n % 8) put(&file, NULL, 1);
         memcpy(eh.e_ident, ELFMAG, SELFMAG);
         eh.e_ident[EI_CLASS] = ELFCLASS64;
-        eh.e_ident[EI_DATA] = ELFDATA2LSB;
+        eh.e_ident[EI_DATA] = o->big ? ELFDATA2MSB : ELFDATA2LSB;
         eh.e_ident[EI_VERSION] = EV_CURRENT;
         eh.e_type = ET_REL;
         eh.e_machine = (Elf64_Half)o->machine;
@@ -341,6 +346,7 @@ int snx_xelf_write(SnxXElf* o, unsigned char** out, size_t* size) {
     }
     put(&file, sh, (size_t)nsh * sizeof *sh);
     if (file.p) memcpy(file.p, &eh, sizeof eh);
+    if (file.p && eh.e_ident[EI_DATA] != snx_elf_host_data()) snx_elf_byteswap(file.p, file.n, 1);
     for (k = 0; k < SNX_ELF_SECTIONS; ++k) free(rela[k].p);
     free(strtab.p), free(symtab.p), free(shstr.p), free(table), free(utable), free(sym_index), free(undef_index), free(undef);
     if (!file.p) return -1;

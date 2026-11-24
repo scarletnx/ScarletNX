@@ -38,6 +38,13 @@ static _Thread_local jmp_buf* g_fail;
 typedef struct SgXAsm SgXAsm;
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
+/* the big-endian host's back end (mips64be_codegen.c) is this one's with MIPS_BE 1: its words, its guest memory's
+   accesses and its object in that order */
+#ifndef MIPS_BE
+#define MIPS_BE 0
+#endif
+#define RK_BIG_ENDIAN MIPS_BE
+#define MG_ELF_BIG MIPS_BE
 #include "a64_mips64.inc"
 
 /* ---- what mach_codegen.inc asks of the machine ---- */
@@ -61,7 +68,8 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 #include "common/cpu/recompiler/mach/risc_codegen.inc"
 
 int snx_mips64_available(void) {
-#if defined(__mips64) && defined(__ELF__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#if defined(__mips64) && defined(__ELF__) && defined(__BYTE_ORDER__) &&                                              \
+    __BYTE_ORDER__ == (MIPS_BE ? __ORDER_BIG_ENDIAN__ : __ORDER_LITTLE_ENDIAN__)
     return 1;
 #else
     return 0;

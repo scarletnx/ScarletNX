@@ -86,3 +86,4 @@ ADDIC8=addic
 SUBFE8=subfe
 SUBFC8=subfc
 NOP=nop
+RLWIMI8=rlwimi

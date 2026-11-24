@@ -51,6 +51,22 @@ typedef SnxMips64Arm Back;
 #define back_(name) snx_mips64_arm_##name
 #define BACK_NAME   "mips64el"
 #define BACK_UC     HOSTUC_MIPS64EL
+#elif defined(SNX_TEST_PPC64BE)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/ppc64/ppc64be_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxPpc64beArm Back;
+#define back_(name) snx_ppc64be_arm_##name
+#define BACK_NAME   "ppc64"
+#define BACK_UC     HOSTUC_PPC64
+#elif defined(SNX_TEST_MIPS64BE)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/mips64/mips64be_arm.h"
+#include "support/host_unicorn.h"
+typedef SnxMips64beArm Back;
+#define back_(name) snx_mips64be_arm_##name
+#define BACK_NAME   "mips64"
+#define BACK_UC     HOSTUC_MIPS64
 #elif defined(SNX_TEST_PPC64)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/ppc64/ppc64_arm.h"
@@ -220,6 +236,12 @@ static const Class* pick_class(void) {
 }
 
 /* ---- running ---- */
+
+#ifdef SNX_TEST_NATIVE
+#define SNX_TEST_SWAP_ARM 1
+#include "support/swap_state.h"
+static void swap_arm(void* cpu) { snx_test_swap_arm((SnxArmCPU*)cpu); }
+#endif
 
 typedef struct {
     SnxArmCPU cpu;
@@ -565,6 +587,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     /* the native code's world: the states in memory Unicorn maps at their own addresses */
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
     RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
+    if (s) hostuc_swapper(uc, swap_arm, &s[1].cpu); /* a big-endian machine's state turned over around its runs */
 #else
     RunState* s = (RunState*)malloc(2 * sizeof *s);
 #endif

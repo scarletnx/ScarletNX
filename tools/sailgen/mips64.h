@@ -232,13 +232,29 @@ static inline void rk_ldst(SgXBuf* b, int load, int bytes, int sign, int rt, int
     }
 }
 
+/* a big-endian host's: d = the low bytes of a reversed (MIPS64r2's WSBH, DSBH and DSHD) */
+#define RK_BSWAP 1
+static inline void rk_bswap(SgXBuf* b, int d, int a, int bytes) {
+    if (bytes == 8) {
+        mips_w(b, sge_mips64_dsbh(U(d), U(a)));
+        mips_w(b, sge_mips64_dshd(U(d), U(d)));
+        return;
+    }
+    mips_w(b, sge_mips64_wsbh(U(d), U(a)));
+    if (bytes == 4) {
+        mips_w(b, sge_mips64_rotr(U(d), U(d), 16));
+        rk_zext(b, d, d, 32);
+    } else
+        rk_zext(b, d, d, 16);
+}
 /* guest memory's loads and stores (risc.h's moves): MIPS faults where an access isn't aligned and Arm's don't, so
-   LDL and LDR, LWL and LWR (and their stores) take a doubleword's or a word's two parts, a halfword's two bytes; the
-   address made in RK_SA first where it needs one or the loaded register is its base. A move is the only operation
-   around it: RK_S1 is its too */
+   LDL and LDR, LWL and LWR (and their stores) take a doubleword's or a word's two parts, a halfword's two bytes (the
+   guest's low byte the lower address's, on either host); the address made in RK_SA first where it needs one or the
+   loaded register is its base. A big-endian host's word and doubleword are byte-reversed after the load, before the
+   store (into RK_S1). A move is the only operation around it: RK_S1 is its too */
 #define RK_GLDST 1
 static inline void rk_gldst(SgXBuf* b, int load, int bytes, int sign, int rt, int base, int index, int disp) {
-    SnxU32 r = U(rt), a, lo, hi;
+    SnxU32 r = U(rt), a, lo, hi, first, last;
     if (bytes == 1) {
         rk_ldst(b, load, bytes, sign, rt, base, index, disp);
         return;
@@ -255,34 +271,46 @@ static inline void rk_gldst(SgXBuf* b, int load, int bytes, int sign, int rt, in
         disp = 0;
     }
     a = U(base), lo = mips_i(disp), hi = mips_i((long long)disp + bytes - 1);
-    if (RK_BIG_ENDIAN) { /* the most significant byte at the lower address: the parts' roles swapped */
-        SnxU32 t = lo;
-        lo = hi, hi = t;
-    }
-    if (load) {
-        if (bytes == 8) {
-            mips_w(b, sge_mips64_ldr(r, a, lo));
-            mips_w(b, sge_mips64_ldl(r, a, hi));
-        } else if (bytes == 4) {
-            mips_w(b, sge_mips64_lwr(r, a, lo));
-            mips_w(b, sge_mips64_lwl(r, a, hi));
-            if (!sign) rk_zext(b, rt, rt, 32);
-        } else {
+    /* LDR/LWR take the least significant end: the lower address's on a little-endian host, the higher's on a big */
+    first = RK_BIG_ENDIAN ? hi : lo, last = RK_BIG_ENDIAN ? lo : hi;
+    if (bytes == 2) {
+        if (load) {
             mips_w(b, sign ? sge_mips64_lb(RK_S1, a, hi) : sge_mips64_lbu(RK_S1, a, hi));
             mips_w(b, sge_mips64_lbu(r, a, lo));
             mips_w(b, sge_mips64_dsll(RK_S1, RK_S1, 8));
             mips_w(b, sge_mips64_or(r, r, RK_S1));
+        } else {
+            mips_w(b, sge_mips64_sb(r, a, lo));
+            mips_w(b, sge_mips64_dsrl(RK_S1, r, 8));
+            mips_w(b, sge_mips64_sb(RK_S1, a, hi));
         }
-    } else if (bytes == 8) {
-        mips_w(b, sge_mips64_sdr(r, a, lo));
-        mips_w(b, sge_mips64_sdl(r, a, hi));
-    } else if (bytes == 4) {
-        mips_w(b, sge_mips64_swr(r, a, lo));
-        mips_w(b, sge_mips64_swl(r, a, hi));
+        return;
+    }
+    if (load) {
+        if (bytes == 8) {
+            mips_w(b, sge_mips64_ldr(r, a, first));
+            mips_w(b, sge_mips64_ldl(r, a, last));
+            if (RK_BIG_ENDIAN) rk_bswap(b, rt, rt, 8);
+        } else {
+            mips_w(b, sge_mips64_lwr(r, a, first));
+            mips_w(b, sge_mips64_lwl(r, a, last));
+            if (RK_BIG_ENDIAN) rk_bswap(b, rt, rt, 4);
+            if (sign) rk_sext(b, rt, rt, 32);
+            else if (!RK_BIG_ENDIAN)
+                rk_zext(b, rt, rt, 32);
+        }
+        return;
+    }
+    if (RK_BIG_ENDIAN) {
+        rk_bswap(b, RK_S1, rt, bytes);
+        r = RK_S1;
+    }
+    if (bytes == 8) {
+        mips_w(b, sge_mips64_sdr(r, a, first));
+        mips_w(b, sge_mips64_sdl(r, a, last));
     } else {
-        mips_w(b, sge_mips64_sb(r, a, lo));
-        mips_w(b, sge_mips64_dsrl(RK_S1, r, 8));
-        mips_w(b, sge_mips64_sb(RK_S1, a, hi));
+        mips_w(b, sge_mips64_swr(r, a, first));
+        mips_w(b, sge_mips64_swl(r, a, last));
     }
 }
 

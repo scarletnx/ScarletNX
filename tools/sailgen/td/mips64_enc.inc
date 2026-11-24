@@ -565,4 +565,37 @@ static inline SnxU32 sge_mips64_swr(SnxU32 rt, SnxU32 base, SnxU32 offset) {
     return w;
 }
 
+/* WSBH: wsbh $rd, $rt (4 bytes) */
+static inline SnxU32 sge_mips64_wsbh(SnxU32 rd, SnxU32 rt) {
+    SnxU32 w = 0x7c0000a0u;
+    w |= ((SnxU32)rd & 0x1fu) << 11;
+    w |= ((SnxU32)rt & 0x1fu) << 16;
+    return w;
+}
+
+/* DSBH: dsbh $rd, $rt (4 bytes) */
+static inline SnxU32 sge_mips64_dsbh(SnxU32 rd, SnxU32 rt) {
+    SnxU32 w = 0x7c0000a4u;
+    w |= ((SnxU32)rd & 0x1fu) << 11;
+    w |= ((SnxU32)rt & 0x1fu) << 16;
+    return w;
+}
+
+/* DSHD: dshd $rd, $rt (4 bytes) */
+static inline SnxU32 sge_mips64_dshd(SnxU32 rd, SnxU32 rt) {
+    SnxU32 w = 0x7c000164u;
+    w |= ((SnxU32)rd & 0x1fu) << 11;
+    w |= ((SnxU32)rt & 0x1fu) << 16;
+    return w;
+}
+
+/* ROTR: rotr $rd, $rt, $shamt (4 bytes) */
+static inline SnxU32 sge_mips64_rotr(SnxU32 rd, SnxU32 rt, SnxU32 shamt) {
+    SnxU32 w = 0x200002u;
+    w |= ((SnxU32)rd & 0x1fu) << 11;
+    w |= ((SnxU32)rt & 0x1fu) << 16;
+    w |= ((SnxU32)shamt & 0x1fu) << 6;
+    return w;
+}
+
 #endif

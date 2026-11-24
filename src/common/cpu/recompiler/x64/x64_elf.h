@@ -18,6 +18,8 @@ void snx_xelf_free(SnxXElf* o);
 void snx_xelf_set_machine(SnxXElf* o, unsigned machine);
 /* the object's e_flags (0 by default): the ABI the host's LLVM objects say (RISC-V's float ABI, PowerPC's ELFv2) */
 void snx_xelf_set_flags(SnxXElf* o, unsigned flags);
+/* the object a big-endian machine's (1): its tables in that order wherever it's written */
+void snx_xelf_set_big(SnxXElf* o, int big);
 /* n bytes (none: zeros; .bss takes none) at an offset of align, which it gives */
 size_t snx_xelf_put(SnxXElf* o, int section, const void* bytes, size_t n, size_t align);
 /* the section's bytes so far, to patch (not .bss) */

@@ -63,3 +63,7 @@ SDL=sdl
 SDR=sdr
 SWL=swl
 SWR=swr
+WSBH=wsbh
+DSBH=dsbh
+DSHD=dshd
+ROTR=rotr

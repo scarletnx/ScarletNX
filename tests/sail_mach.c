@@ -16,6 +16,8 @@
    --dump prints the words' block as hex bytes for a disassembler (llvm-mc --disassemble -triple=MACH) */
 #include "sail_mach_emit.h"
 #include "support/host_unicorn.h"
+#define SNX_TEST_SWAP_CPU 1
+#include "support/swap_state.h"
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -140,6 +142,12 @@ static void* page_alloc(size_t size) {
     return p == MAP_FAILED ? NULL : p;
 }
 
+/* a big-endian machine's state and runtime table turned over around its runs (host_unicorn.h's swapper) */
+static void swap_state(void* user) {
+    (void)user;
+    snx_test_swap_cpu(g_test.cpu);
+    snx_test_swap_rt(g_test.rt);
+}
 /* Unicorn with the test's memory mapped: the code's region, the state, guest memory, the runtime's traps */
 static int unicorn_begin(unsigned char* code, size_t code_cap) {
     g_test.uc = hostuc_new(SAIL_MACH_UC, PAGE);
@@ -150,6 +158,7 @@ static int unicorn_begin(unsigned char* code, size_t code_cap) {
     g_test.rt = (RtAPI*)hostuc_alloc(g_test.uc, sizeof(RtAPI));
     g_test.cpu = (CPU*)hostuc_alloc(g_test.uc, sizeof(CPU));
     if (!g_test.rt || !g_test.cpu) return -1;
+    hostuc_swapper(g_test.uc, swap_state, NULL);
     memset(g_test.rt, 0, sizeof *g_test.rt);
     g_test.rt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(g_test.uc, "undef", (void*)on_undef);
     g_test.rt->sev = (void (*)(void))(uintptr_t)hostuc_native(g_test.uc, "sev", (void*)on_sev);
