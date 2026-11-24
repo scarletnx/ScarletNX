@@ -146,10 +146,21 @@ endfunction()
 # the machine back end's files sailgen copies at the top of a guest's emitters, in their order (tools/sailgen/README.md):
 # MACHINE's (x64, arm64) and GUEST's (a64, a32), the guest's part every machine shares before the machine's own, as
 # paths in out, and the --backend arguments that name them in args
+# The RISC machines (riscv64...) share risc.h, risc_asm.h and risc_<guest>.h after their own header and assembly,
+# and have a guest part of their own only where it exists
 function(snx_sailgen_machine_backends machine guest out args)
     set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
-    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h"
-              "${back}/mach_${guest}.h" "${back}/${machine}_${guest}.h")
+    set(risc rv64)
+    if(machine IN_LIST risc)
+        set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/risc.h" "${back}/mach.h"
+                  "${back}/${machine}_asm.h" "${back}/risc_asm.h" "${back}/mach_${guest}.h" "${back}/risc_${guest}.h")
+        if(EXISTS "${back}/${machine}_${guest}.h")
+            list(APPEND files "${back}/${machine}_${guest}.h")
+        endif()
+    else()
+        set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h"
+                  "${back}/mach_${guest}.h" "${back}/${machine}_${guest}.h")
+    endif()
     set(list "")
     foreach(file IN LISTS files)
         list(APPEND list --backend "${file}")
@@ -193,4 +204,39 @@ function(snx_sailgen_a32_arm64 target)
         COMMENT "Generating the AArch32 emitters' arm64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a32_arm64.inc")
     target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_sailgen_a64_risc(<target> <machine>): generates a64_<machine>.inc (the A64 emitters of a64_x64.roots with a RISC
+# machine's back end at its top: snx_sailgen_machine_backends' files, over its encoders from LLVM's TableGen records,
+# tools/sailgen/td/<machine>_enc.inc) into the build folder, and gives <target> its include roots. It builds on any
+# host: the code it writes is the machine's
+function(snx_sailgen_a64_risc target machine)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
+    set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(${machine} a64 files args)
+    add_custom_command(OUTPUT "${out}/a64_${machine}.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" ${args} --profile "${profile}"
+                -o "${out}/a64_${machine}.inc" "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
+                "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+        COMMENT "Generating the A64 emitters' ${machine} code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a64_${machine}.inc")
+    target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
+endfunction()
+# snx_sailgen_a32_risc(<target> <machine>): a32_<machine>.inc, the AArch32 emitters' (as snx_sailgen_a32_arm64)
+function(snx_sailgen_a32_risc target machine)
+    set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(${machine} a32 files args)
+    add_custom_command(OUTPUT "${out}/a32_${machine}.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                -o "${out}/a32_${machine}.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
+                "${PROJECT_SOURCE_DIR}/tools/sailgen/td/${machine}_enc.inc"
+        COMMENT "Generating the AArch32 emitters' ${machine} code from Sail" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/a32_${machine}.inc")
+    target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/td")
 endfunction()

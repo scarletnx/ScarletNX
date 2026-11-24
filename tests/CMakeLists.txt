@@ -3485,7 +3485,7 @@ if(NOT WIN32)
     find_library(SNX_UNICORN_LIBRARY unicorn)
     if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # machine, Unicorn's architecture (host_unicorn.h), the machine's features the code may use
-        foreach(mach arm64:HOSTUC_ARM64:3)
+        foreach(mach arm64:HOSTUC_ARM64:3 rv64:HOSTUC_RV64:0)
             string(REPLACE ":" ";" parts "${mach}")
             list(GET parts 0 m)
             list(GET parts 1 uc)
