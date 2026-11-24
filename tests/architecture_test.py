@@ -34,6 +34,30 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('src/nx/gpu/check.c:2: getenv("SNX_CHECK"): SNX_CHECK is not the system\'s', errors[0])
         self.assertIn('src/nx/runtime/settings.txt', errors[0])
+        self.assertIn('--key=value', errors[0])
+        self.assertNotIn('no settings table', errors[0])
+
+    def test_a_driver_takes_its_settings(self):
+        files = {name: 'int main(void) { return settings_arg(0, 0, 0) != 0; }\n' for name in architecture.DRIVER_MAINS}
+
+        def driver_errors(given):
+            with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+                root = Path(temporary)
+                for name, text in given.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_text(text, encoding='ascii')
+                return architecture.check_driver_settings(root)
+
+        self.assertEqual(driver_errors(files), [])
+        for name in architecture.DRIVER_MAINS:
+            # no settings taken, a comment naming the function, and a main gone
+            bare = {**files, name: 'int main(void) { return 0; } /* settings_arg( */\n'}
+            errors = driver_errors(bare)
+            self.assertEqual(len(errors), 1)
+            self.assertTrue(errors[0].startswith(f'{name}: it takes no setting'))
+            gone = {k: v for k, v in files.items() if k != name}
+            missing = f'{name}: missing: DRIVER_MAINS names the mains that take the settings'
+            self.assertEqual(driver_errors(gone), [missing])
 
     def test_the_systems_variables_pass(self):
         files = {
