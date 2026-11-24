@@ -1046,6 +1046,77 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
+    /* a game's own rows are its console's: a Switch game's none of another console's driver, the rest as they were; a
+       3DS game's its Console alone, in its group, its words Global and the two consoles (Auto is what Global gives,
+       unless the launcher picks one), kept in its picks as the driver reads it and back to Global by a reset. A picks
+       file without it loads all Global, and one that holds what its rows do not take keeps the rows' own */
+    {
+        static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
+                                   "3DS\tctr_model\tauto\ttext\t\t\tThe console\tConsole\t"
+                                   "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                                   "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                                   "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=On\n"
+                                   "Linux\tlinux_isolated\t0\tint\t0\t1\tNo host\tIsolated\t0=Off|1=On\n"
+                                   "Android\tandroid_jit_opt\t0\tint\t0\t1\tLevel\tJIT level\t0=Off|1=On\n"
+                                   "DS\tnds_aot\t0\tint\t0\t1\tAhead\tAOT\t0=Off|1=On\n"
+                                   "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%";
+        GuiSettings game = {0}, global = {0};
+        char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini), *text,
+             out[256];
+        static const char* const console_words[] = {"Global", "Old 3DS", "New 3DS"};
+        size_t size;
+        int v, w;
+        assert(!gui_settings_read_game(&game, list) && game.game == GUI_GAME_SWITCH && game.count == 2 &&
+               at(&game, "fullscreen") >= 0 && at(&game, "volume") >= 0 && at(&game, "ctr_model") < 0);
+        gui_settings_free(&game);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_SWITCH) && game.count == 2);
+        gui_settings_free(&game);
+        assert(!gui_settings_read(&global, list) && at(&global, "ctr_hooks") >= 0 && at(&global, "nds_aot") >= 0);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_3DS) && game.game == GUI_GAME_3DS && game.count == 1 &&
+               !game.own);
+        v = at(&game, "ctr_model");
+        assert(v == 0 && !strcmp(key(&game, "ctr_model")->key, "Console") &&
+               !strcmp(key(&game, "ctr_model")->section, "3DS") && !game.values[v].word && !game.values[v].plain);
+        for (w = 0; key(&game, "ctr_model")->words[w]; ++w)
+            assert(w < 3 && !strcmp(key(&game, "ctr_model")->words[w], console_words[w]));
+        assert(w == 3);
+        gui_settings_mark(&game);
+        /* nothing of its own: Global, with what the launcher's is, and no picks to keep; an old game's, with none */
+        assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_changed(&game) &&
+               !gui_settings_load(&game, picks, NULL, 0) && !gui_settings_unread(&game, picks, out, sizeof out));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (Auto [default])"));
+        assert(gui_settings_set(&global, "ctr_model", "new"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (New 3DS)"));
+        /* its own, over it */
+        assert(gui_settings_set(&game, "ctr_model", "old") && !strcmp(gui_settings_value(&game, "ctr_model"), "old"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Old 3DS") && gui_settings_changed(&game) == 1 && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[3DS]\nctr_model=old\n"));
+        free(text);
+        assert(gui_settings_game_own(ini, out, sizeof out) == 1 && !strcmp(out, "ctr_model=old"));
+        gui_settings_free(&game);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_3DS));
+        gui_settings_mark(&game);
+        assert(!gui_settings_load(&game, picks, NULL, 0) && !strcmp(gui_settings_value(&game, "ctr_model"), "old") &&
+               !gui_settings_unread(&game, picks, out, sizeof out));
+        gui_settings_reset(&game, v);
+        assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_changed(&game));
+        /* an old game's, with keys of its own and no ctr_model: Global; and one that is none of its rows' is said */
+        text = snx_strdup("[3DS]\nother=1\n");
+        assert(!snx_write_file(picks, text, strlen(text)) && !gui_settings_load(&game, picks, NULL, 0));
+        assert(!gui_settings_value(&game, "ctr_model") && gui_settings_unread(&game, picks, out, sizeof out) == 1 &&
+               !strcmp(out, "other=1"));
+        free(text);
+        gui_settings_free(&game);
+        gui_settings_free(&global);
+        assert(!snx_remove_tree(dir));
+        free(picks);
+        free(ini);
+        free(dir);
+    }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
        async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
        anisotropy, fps_limit, volume) only: another Display, Graphics, Debug, Controllers or On-screen controls setting
@@ -1110,6 +1181,25 @@ int main(int argc, char** argv) {
         assert(gui_settings_set(&s, "vita_hle_trace", "2") && gui_settings_vita_options(&s, options) == 1 &&
                !strcmp(options[0], "--vita-hle-trace=2"));
         assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
+        gui_settings_free(&s);
+    }
+    /* the launcher's Console for a 3DS run: --launcher-picks=1 after the rest, which puts the game's own over it; with
+       no Console picked, or Auto, no mark, the rest as it was */
+    {
+        static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                  "3DS\tctr_model\tauto\ttext\t\t\tThe console\tConsole\t"
+                                  "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                                  "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%";
+        assert(!gui_settings_read(&s, ctr));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "volume", "50"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_set(&s, "ctr_model", "auto"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_set(&s, "ctr_model", "new"));
+        assert(gui_settings_ctr_options(&s, options) == 4 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--ctr-model=new") && !strcmp(options[2], "--volume=50") &&
+               !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
         gui_settings_free(&s);
     }
     /* the Linux, Android and DS drivers': a run's options are its own group's, each only to its own driver; the DS's
