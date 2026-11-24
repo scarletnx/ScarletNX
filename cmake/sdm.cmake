@@ -91,23 +91,6 @@ function(snx_sdm_isel target)
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
-# the machine back end's files sailgen copies at the top of a guest's emitters, in their order, before the guest's
-# own (tools/sailgen/README.md): MACHINE x64's, as paths in out, and the --backend arguments that name them in args
-function(snx_sailgen_machine_backends machine guest out args)
-    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
-    set(files "${back}/bits.h" "${back}/machdef.h" "${back}/${machine}.h" "${back}/mach.h" "${back}/${machine}_asm.h")
-    if(EXISTS "${back}/mach_${guest}.h")
-        list(APPEND files "${back}/mach_${guest}.h")
-    endif()
-    list(APPEND files "${back}/${machine}_${guest}.h")
-    set(list "")
-    foreach(file IN LISTS files)
-        list(APPEND list --backend "${file}")
-    endforeach()
-    set(${out} "${files}" PARENT_SCOPE)
-    set(${args} "${list}" PARENT_SCOPE)
-endfunction()
-
 # snx_sailgen_a64_x64(<target>): generates a64_x64.inc (the A64 emitters of a64_x64.roots, with sailgen's x86-64 back
 # end at its top: snx_sailgen_machine_backends' files) into the build folder, with the instruction selection it
 # includes (snx_sdm_isel), and gives <target> its include root
