@@ -222,6 +222,18 @@ slots that ranges share. Two things it found:
 - The streamed arrays of over 128 MiB have more granules than a read adds up (`ADDR_GENS_READ_MAX`). Step 2's
   index of textures keeps a stamp for each texture, so the size of a texture costs nothing.
 
+A profile of the texture resolves before step 2 found two costs that the design did not need, now gone:
+
+- `vk_uma_import_in` took `g_uma.lk` at each take of the write tracking, 4.8% of the renderer thread (`52201bebe`).
+- `gpu_mem_granules_generation` walked each 2 MiB granule of a texture at each quiet check, 3.4% (`585d3bbeb`).
+
+After them, the resolves are 8.5% of the renderer thread. The memo itself is about 3%. What step 2 could take out (the
+memo's header and pending checks, the quiet check, the take's search) is about 5.3%, about 0.4 ms of a present. The
+write tracking finds the CPU's writes when a check takes in the scans of its own range for the epoch (`vk_ww_take`),
+and the epoch moves at each submission and wait. So no event is not no write until every watched page is taken in.
+That is a wait for the scanner in the frame, or the intake that each check does now, which is most of what is left of
+`tex_memo_unwritten` and `quiet_own`.
+
 **8. Render targets published only when memory needs them.** A profile of 2026-11-23 of an Ounce game's race, on a
 discrete GPU whose driver imports guest memory as dma-bufs (udmabuf), found `vk_surf_publish` at 21.5% of the GPU
 thread, its largest phase. 18.1% came from one path: the import branch of `rt_watch` publishes every target drawn
