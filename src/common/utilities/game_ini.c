@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/game_ini.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/ascii.h"
 #include "common/platform/file.h"
@@ -28,9 +29,16 @@ static char* text_value(char* text, const char* key) {
         if (!strcmp(k, key)) found = value;
     return found;
 }
+/* the .ini at path, its size into *size: NULL for none, and for one that cannot be read, said once a run */
+static char* ini_read(const char* path, size_t* size) {
+    char *text, why[1024];
+    if (snx_config_read(path, &text, size, why, sizeof why) < 0 && snx_config_first(path, "cannot be read"))
+        snx_error("%s", why);
+    return text;
+}
 char* snx_ini_value(const char* path, const char* key) {
     size_t size;
-    char *text = (char*)snx_read_file(path, &size), *value = text ? text_value(text, key) : NULL;
+    char *text = ini_read(path, &size), *value = text ? text_value(text, key) : NULL;
     char* copy = value && *value ? snx_strdup(value) : NULL;
     free(text);
     return copy;
@@ -115,7 +123,7 @@ done:
 }
 int snx_ini_has(const char* path, const char* key) {
     size_t size = 0;
-    char* text = (char*)snx_read_file(path, &size);
+    char* text = ini_read(path, &size);
     const char *line, *end, *next;
     int found = 0;
     for (line = text; line && line < text + size && !found; line = next) {
