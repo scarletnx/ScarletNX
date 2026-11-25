@@ -15,9 +15,9 @@ v8.2's too), so a word it gives to the back end runs and the state must be Unico
 Disagreements are grouped by what the decoder says the word is: wrong state (both executed), refused (the back end made
 no block), missing (ours undefined, Unicorn ran it), extra (ours ran, Unicorn raised), and different faults. Unicorn is
 QEMU's translator, not the hardware: a disagreement is checked against the Arm ARM before either side is called wrong.
-The missing and the extra are v8.2's and the UNPREDICTABLE encodings (RdLo == RdHi, writeback to the loaded register, the
-PC where it isn't allowed, register lists past d31, should-be-zero bits set), where either answer is the Arm ARM's, and
-QEMU 5 checks no alignment for LDRD, LDM, VLDM or VLDn, which the A57 faults on: the run fails on wrong state and on
+The missing and the extra are v8.2's and the UNPREDICTABLE encodings (RdLo == RdHi, writeback to the loaded register,
+the PC where it isn't allowed, register lists past d31, should-be-zero bits set), where either answer is the Arm ARM's,
+and QEMU 5 checks no alignment for LDRD, LDM, VLDM or VLDn, which the A57 faults on: the run fails on wrong state and on
 refused blocks, and reports the rest. No game assets.
 """
 
@@ -53,7 +53,14 @@ CLASSES = {
                             (0xFE800E90, 0xF2800E10), (0xFFB00000, 0xF3B00000)]),
     'a32-neon-ls': ('arm', [(0xFF100000, 0xF4000000)]),
     't16': ('thumb16', [(0x0000, 0x0000)]),
-    't32': ('thumb32', [(0x00000000, 0x00000000)]),
+    # any word; then by family, as few of any word are one: loads and stores, LDM and LDRD, data processing, branches
+    # and control, register shifts and extends, multiplies, and the bitfields, MLA, MLS, TBB and TBH by their own bits
+    't32': ('thumb32', [(0x00000000, 0x00000000), (0xFE000000, 0xF8000000), (0xFE000000, 0xE8000000),
+                        (0xFE008000, 0xEA000000), (0xFA008000, 0xF0000000), (0xFA008000, 0xF2000000),
+                        (0xF8008000, 0xF0008000), (0xFF000000, 0xFA000000), (0xFF800000, 0xFB000000),
+                        (0xFF800000, 0xFB800000), (0xFFF08020, 0xF3400000), (0xFFF08020, 0xF3C00000),
+                        (0xFFF08020, 0xF3600000), (0xFFF000F0, 0xFB000000), (0xFFF000F0, 0xFB000010),
+                        (0xFFF0FFE0, 0xE8D0F000)]),
     't32-vfp': ('thumb32', [(0xEF000E10, 0xEE000A00), (0xEF000E10, 0xEE000A10), (0xEE000E00, 0xEC000A00),
                             (0xFF000E10, 0xFE000A00)]),
     't32-neon': ('thumb32', [(0xEF000000, 0xEF000000), (0xFF100000, 0xF9000000)]),
@@ -207,9 +214,10 @@ def it_blocks(rng, runner, count):
 
 
 def unpredictable(isa, item):
-    """A word the decoder has whose result the Arm ARM leaves open, so that either answer is its: VSWP, VTRN, VUZP or VZIP
-    of one register with itself (UNKNOWN), and T32's data processing (of a shifted register, a modified or a plain
-    immediate) into the PC or an unprivileged load of it (UNPREDICTABLE; the rest of those the decoder refuses)."""
+    """A word the decoder has whose result the Arm ARM leaves open, so that either answer is its: VSWP, VTRN, VUZP or
+    VZIP of one register with itself (UNKNOWN), and T32's data processing (of a shifted register, a modified or a plain
+    immediate) into the PC, MUL, MLA or MLS of it, and a byte's or a halfword's load of it (UNPREDICTABLE; the rest of
+    those the decoder refuses)."""
     if isa == 'arm':
         if len(item) != 1:
             return False
@@ -221,8 +229,12 @@ def unpredictable(isa, item):
         if first >> 11 == 0b11110 or first >> 9 == 0b1110101:
             plain = first >> 11 == 0b11110 and first & 0x200 != 0  # no flags: no TST, TEQ, CMN or CMP, whose Rd is 15
             return into_pc and (plain or not first & 0x10 or first >> 5 & 15 not in (0, 4, 8, 13))
-        if first & 0xFE90 == 0xF810 and second & 0xFF00 == 0xFE00:
-            return True
+        if first & 0xFE10 == 0xF810 and first >> 5 & 3 != 2 and second >> 12 == 15:
+            # a byte's or a halfword's load of it, but for PLD, PLDW and PLI: imm12, a register, imm8 down
+            return not first & 0x80 and second & 0x0800 != 0 and second & 0x0F00 != 0x0C00
+        if first & 0xFFF0 == 0xFB00:  # MUL, MLA (Ra 15), MLS
+            regs = [first & 15, second >> 8 & 15, second & 15] + [second >> 12] * (second & 0x10 != 0)
+            return 15 in regs
         if first >> 8 not in (0xEF, 0xFF):
             return False
         word = word & 0x00FFFFFF | (0xF3000000 if first >> 8 == 0xFF else 0xF2000000)  # NEON's as A32's
