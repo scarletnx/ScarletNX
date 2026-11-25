@@ -549,7 +549,8 @@ The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over 
 R12 to R15, XMM6 to XMM15, MXCSR and the stack past the shadow marked before and read back after, and what it calls goes
 through a Windows callee that overwrites the shadow and every register it may. Its COFF objects are loaded by the JIT's
 own loader (`code_loader_coff.c`), and their function table is held to what Windows does with it: at each call out, and
-with `--step` at every instruction, the stack is unwound by the table back to the entry, which is `x64_unwind`.
+with `--step` at every instruction, the stack is unwound by the table back to the entry. `x64_unwind` does that on Windows
+with the system's `RtlVirtualUnwind`, and a `longjmp` across the code's frames.
 
 **Integers** known only when the guest runs (`SgI`: `UInt`, `SInt` and what comes of them) are 64-bit values, what their
 low bits' readers want; what needs more (a saturation of a sum of two 64-bit elements, a shift right) reads the exact

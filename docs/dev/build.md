@@ -301,13 +301,15 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
      mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
-     mingw-w64-clang-x86_64-glslang
+     mingw-w64-clang-x86_64-glslang mingw-w64-clang-x86_64-poppler
    ```
 
-   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders. CI also
+   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders; poppler
+   has `pdftotext`, which the x86-64 back end's instruction selection is derived from the Intel SDM with. CI also
    installs ccache, which is optional here, as sccache is. On Windows on Arm, open the **MSYS2 CLANGARM64** shell
-   instead and install the same packages with `mingw-w64-clang-aarch64-` in place of `mingw-w64-clang-x86_64-`, as the
-   job's AArch64 leg does; the steps below are the same there, and its DLLs are in `/clangarm64/bin`.
+   instead and install the same packages but poppler with `mingw-w64-clang-aarch64-` in place of
+   `mingw-w64-clang-x86_64-`, as the job's AArch64 leg does; the steps below are the same there, and its DLLs are in
+   `/clangarm64/bin`.
 3. Clone to a path without spaces:
 
    ```sh
@@ -496,7 +498,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
 - `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64
-  (not Windows nor Android), where it needs `pdftotext` and the Intel SDM (downloaded, or `-DSNX_SDM_PDF=`).
+  (not Android), where it needs `pdftotext` and the Intel SDM (downloaded, or `-DSNX_SDM_PDF=`).
 - `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([Library](library.md)).

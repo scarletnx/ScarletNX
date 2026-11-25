@@ -1321,7 +1321,7 @@ jobs:
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
-      # dav1d's build (cmake/dav1d.cmake), as in the appimage job
+      # dav1d's build (cmake/dav1d.cmake), as in the appimage job; poppler: pdftotext (cmake/sdm.cmake), x86-64's alone
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1345,6 +1345,7 @@ jobs:
             mingw-w64-clang-${{ matrix.arch }}-pkgconf
             mingw-w64-clang-${{ matrix.arch }}-python
             mingw-w64-clang-${{ matrix.arch }}-ccache
+            ${{ matrix.arch == 'x86_64' && 'mingw-w64-clang-x86_64-poppler' || '' }}
       - name: Check required dependencies
         run: |
           set -euo pipefail

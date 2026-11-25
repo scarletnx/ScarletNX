@@ -14,6 +14,8 @@
 #   Strawberry Perl 5.42  OpenSSL's Configure (only its perl\bin goes on PATH, not the GCC it carries)
 #   w64devkit 2.10.0      only its sh and patch (busybox) and GNU make: FFmpeg's configure and Makefiles need sh and
 #                         make, and the build patches FFmpeg with patch
+#   poppler 26.09.0       only its pdftotext: the x86-64 back end's instruction selection is derived from the Intel SDM
+#                         with it (cmake\sdm.cmake)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is many times slower with its progress bar
 
@@ -22,8 +24,8 @@ $tools = Join-Path $repo 'deps\tools'
 $downloads = Join-Path $tools 'downloads'
 New-Item -ItemType Directory -Force -Path $downloads | Out-Null
 
-# Bin is the folder, inside Dir, that env.ps1 puts on PATH. The order is PATH's: w64devkit last, so its GCC, CMake and
-# Ninja never come first (the build only needs its sh, make and patch)
+# Bin is the folder, inside Dir, that env.ps1 puts on PATH. The order is PATH's: w64devkit near the last, so its GCC,
+# CMake and Ninja never come first (the build only needs its sh, make and patch), and after it poppler with its DLLs
 $packages = @(
     @{ Name = 'llvm-mingw'; Dir = 'llvm-mingw-20261006-ucrt-x86_64'; Bin = 'bin'; Kind = 'zip'
        Url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-x86_64.zip'
@@ -42,7 +44,10 @@ $packages = @(
        Sha256 = '6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690' },
     @{ Name = 'w64devkit'; Dir = 'w64devkit'; Bin = 'bin'; Kind = 'sfx'
        Url = 'https://github.com/skeeto/w64devkit/releases/download/v2.10.0/w64devkit-x64-2.10.0.7z.exe'
-       Sha256 = '18d0a4c71a166f8401ab6305781bec5882b40b5e06ba9807c61cb5f3b3c6325e' }
+       Sha256 = '18d0a4c71a166f8401ab6305781bec5882b40b5e06ba9807c61cb5f3b3c6325e' },
+    @{ Name = 'Poppler'; Dir = 'poppler-26.09.0'; Bin = 'Library\bin'; Kind = 'zip'
+       Url = 'https://github.com/oschwartz10612/poppler-windows/releases/download/v26.09.0-0/Release-26.09.0-0.zip'
+       Sha256 = '7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0' }
 )
 
 # Windows 10 and 11 ship bsdtar, which unpacks zip files much faster than Expand-Archive
