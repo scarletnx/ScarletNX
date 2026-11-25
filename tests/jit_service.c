@@ -976,7 +976,7 @@ static void test_changed_in_flight(void) {
    leaves the batch current, and the words of the other image say the same of it: the counter that stays still says
    nothing of a change in them, and one of those drops the batch */
 static void test_counters(void) {
-    static _Atomic uint64_t counter;                     /* even: no update of the config's image is in the way */
+    _Atomic uint64_t counter;                            /* even: no update of the config's image is in the way */
     static const u32 one[] = {0x91000400, 0xD65F03C0};   /* add x0, x0, #1; ret */
     static const u32 eight[] = {0x91002000, 0xD65F03C0}; /* add x0, x0, #8; ret */
     const u64 moved = 0x6800;
@@ -1135,10 +1135,9 @@ static void test_added_beside_removal(void) {
 #define LONG_PC   0x14000
 #define LONG_ADDS 4000
 #define REWRITTEN 0x9000
-static _Atomic int rewrite_stop;
 static void* rewriter(void* arg) {
-    (void)arg;
-    for (u32 i = 0; !atomic_load_explicit(&rewrite_stop, memory_order_relaxed); ++i) {
+    const _Atomic int* stop = (const _Atomic int*)arg;
+    for (u32 i = 0; !atomic_load_explicit(stop, memory_order_relaxed); ++i) {
         const u32 word = 0x91000400 | (i & 1) << 10; /* add x0, x0, #1, then #2 */
         put(REWRITTEN, &word, 1);
         snx_jit_invalidate(service, REWRITTEN, 4);
@@ -1151,6 +1150,7 @@ static void test_rewrite_beside(void) {
     u32* words = (u32*)calloc(LONG_ADDS + 1, sizeof *words);
     SnxJitStats before, after;
     pthread_t writer;
+    _Atomic int stop = 0;
     int published = 0, started;
     double began, took;
     CPU c;
@@ -1165,8 +1165,7 @@ static void test_rewrite_beside(void) {
     put(LONG_PC, words, LONG_ADDS + 1);
     free(words);
     snx_jit_stats(service, &before);
-    atomic_store_explicit(&rewrite_stop, 0, memory_order_relaxed);
-    started = pthread_create(&writer, NULL, rewriter, NULL) == 0;
+    started = pthread_create(&writer, NULL, rewriter, &stop) == 0;
     CHECK(started);
     began = snx_seconds();
     CHECK(snx_jit_resolve(service, LONG_PC) == NULL);
@@ -1175,7 +1174,7 @@ static void test_rewrite_beside(void) {
         if (!published) nanosleep(&(struct timespec){0, 1000000}, NULL);
     }
     took = snx_seconds() - began;
-    atomic_store_explicit(&rewrite_stop, 1, memory_order_relaxed);
+    atomic_store_explicit(&stop, 1, memory_order_relaxed);
     if (started) pthread_join(writer, NULL);
     snx_jit_drain(service);
     snx_jit_stats(service, &after);
