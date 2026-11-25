@@ -220,8 +220,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # poppler: pdftotext, which the x86-64 back end's instruction selection is derived with (cmake/sdm.cmake);
-          # without it the configure stops
+          # poppler: pdftotext, which makes the x86-64 back end's instruction selection again (below)
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
@@ -468,7 +467,7 @@ jobs:
       - name: Check the ABI helpers compile
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default -LE '^unicorn$' --output-on-failure --parallel 4
+        run: ctest --test-dir build/default -LE '^(unicorn|sdm)$' --output-on-failure --parallel 4
       # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
       # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
       - name: Test the native back ends under Unicorn
@@ -484,6 +483,28 @@ jobs:
         run: |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
+      # The x86-64 back end's instruction selection (tools/sailgen/sdm/x64_isel.inc) made again from the Intel SDM, on the
+      # nightly's schedule, a run by hand and a pull request that changes what it is made from. The manual is downloaded
+      # here alone (SNX_TEST_SDM), and Intel's link serves the latest revision: where that is not 093US, or it doesn't
+      # answer, this step fails, saying what it got and what it expected, and no other pull request does
+      - name: Make the x86-64 instruction selection again
+        if: matrix.arch == 'x86_64' && github.event_name != 'push'
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            changed=$(git diff --name-only HEAD^1 HEAD)
+            if ! grep -qE '^(tools/sailgen/|cmake/sdm\.cmake$|tests/sdm_isel_test\.py$)' <<<"$changed"; then
+              echo "::notice title=x64_isel.inc::not made again: the pull request changes nothing it is made from"
+              exit 0
+            fi
+          fi
+          cmake build/default -DSNX_TEST_SDM=ON
+          cmake --build build/default --target snx-sailgen --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ctest --test-dir build/default -R '^sailgen_sdm_isel$' --output-on-failure --no-tests=error \
+            --output-junit sdm_isel.xml
+          # skipped is not made again
+          if grep -q '<skipped' build/default/sdm_isel.xml; then exit 1; fi
       # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries each.
       # The nightly's NRO is named for its version and commit, amberlith-<version>-<commit>.nro; one that cannot be
       # fetched or checked is a warning, and its run is left out
@@ -649,11 +670,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # the appimage job's build and test tools, without the AppImage's (poppler, as there, for the x86-64 back end)
+      # the appimage job's build and test tools, without the AppImage's
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -785,12 +806,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with; poppler: pdftotext
-      # (cmake/sdm.cmake)
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1352,7 +1372,7 @@ jobs:
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
-      # dav1d's build (cmake/dav1d.cmake), as in the appimage job; poppler: pdftotext (cmake/sdm.cmake), x86-64's alone
+      # dav1d's build (cmake/dav1d.cmake), as in the appimage job
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1376,7 +1396,6 @@ jobs:
             mingw-w64-clang-${{ matrix.arch }}-pkgconf
             mingw-w64-clang-${{ matrix.arch }}-python
             mingw-w64-clang-${{ matrix.arch }}-ccache
-            ${{ matrix.arch == 'x86_64' && 'mingw-w64-clang-x86_64-poppler' || '' }}
       - name: Check required dependencies
         run: |
           set -euo pipefail
