@@ -292,10 +292,31 @@ static int branch_label(Unit* u, SnxU64 address, SnxU64 target) {
     return add_stub(u, 0, target, address);
 }
 
+static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def);
+static int writes_nzcv(SnxU32 word) {
+    SnxU64 use, def;
+    regs_of(word, &use, &def);
+    return (def >> 32 & 15) != 0;
+}
+
+/* FPSR.QC as the region's saturating instructions leave it, put in the state: a machine whose vec() keeps a region's
+   in one value (g->qc_owed, MG_QC) writes the state once, where the region ends or something may read FPSR */
+#ifdef MG_QC
+static void mg_qc(Unit* u);
+#endif
+static void qc_pay(Unit* u) {
+    if (!u->g->qc_owed) return;
+#ifdef MG_QC
+    mg_qc(u);
+#endif
+    u->g->qc_owed = 0;
+}
+
 /* the region so far assembled, and the block's state forgotten: the next instruction starts a new one */
 static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
+    qc_pay(u);
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
@@ -1401,6 +1422,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     /* a long block is several regions: the guest's registers are in the state at each one's end */
     if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
         flush_to(u, address);
+    /* the branches leave the region, and MRS and MSR are FPSR's; before a compare, its flags kept for the branch */
+    if (g->qc_owed && (insn.flow != SNX_A64_FLOW_PLAIN || insn.op == SNX_A64_OP_SYS || writes_nzcv(word))) qc_pay(u);
     g->word = word;
     g->pc = address;
     g->start = x->n;
@@ -1458,6 +1481,11 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         if (!sg_decode(g) || x->unmade) return 0;
         if (g->undefined) {
             /* the Sail's UNDEF (SGX_K_UNDEF set the pc and called the runtime): the function returns */
+            if (g->qc_owed) { /* FPSR before that call, the instruction's last */
+                --x->n;
+                qc_pay(u);
+                sg_undefined(g);
+            }
             flush(u);
             after_call(u);
             leave(u);
@@ -2361,6 +2389,7 @@ out:
         u->g->x.nv = 1;
         u->g->x.nb = 1;
         u->g->x.unmade = 0;
+        u->g->qc_owed = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
     u->nlabels = lab0; /* a function's labels are its own */
