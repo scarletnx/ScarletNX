@@ -2682,7 +2682,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
             $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>)
     endif()
     snx_test_target(snx-test-overlay gnu23)
-    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
+    target_link_libraries(snx-test-overlay PRIVATE snx_vpad scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
     # the controller applet's dialog: its request, cards and gestures, and its pictures drawn on the CPU
@@ -2709,7 +2709,7 @@ add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platfo
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad gnu23)
-target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
+target_link_libraries(snx-test-vpad PRIVATE snx_vpad scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
 
@@ -2753,7 +2753,7 @@ add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/plat
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-stats gnu23)
-target_link_libraries(snx-test-stats PRIVATE scarletnx-common snx_splash m)
+target_link_libraries(snx-test-stats PRIVATE snx_vpad scarletnx-common snx_splash m)
 target_include_directories(snx-test-stats PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME stats COMMAND snx-test-stats)
 

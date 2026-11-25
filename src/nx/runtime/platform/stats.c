@@ -5,7 +5,7 @@
 #include "nx/runtime/platform/vpad.h"
 #include "common/utilities/common.h"
 #include "gui/icons.h"
-#include "nx/runtime/platform/ui_colors.h"
+#include "common/utilities/ui_colors.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>

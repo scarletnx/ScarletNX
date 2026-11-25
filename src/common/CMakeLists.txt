@@ -28,7 +28,7 @@ if(WIN32)
 endif()
 
 add_library(scarletnx-common STATIC
-    utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/config_file.c utilities/game_ini.c utilities/program_start.c utilities/pad_map.c
+    utilities/common.c utilities/process.c utilities/font.c utilities/ui_quads.c utilities/ini_lines.c utilities/config_file.c utilities/game_ini.c utilities/program_start.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_gltf.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/gpu_driver.c utilities/gpu_driver_stage.c utilities/elf_dynamic.c utilities/run_mark.c utilities/cli.c
     utilities/spirv_emit.c utilities/spirv_opt.c utilities/script.c memory/host.c memory/jemalloc.c
@@ -180,6 +180,7 @@ if(TARGET snx_libdeflate)
     target_link_libraries(snx_zip PUBLIC scarletnx-common PRIVATE snx_libdeflate)
     target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the one way a renderer makes its device (gpu/vk/device.c), the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
 # the commands each extension requires (generated from the registry, cmake/vk_extension_commands.cmake), the submission
