@@ -14,6 +14,13 @@ typedef struct {
     size_t leader_count;
 } SnxFunction;
 
+/* what a function's flow gives of the jump table of the BR at address: its base (0 where the code before its load does,
+   ~0 where two ways to the BR take two) and the entries it is bounded to (0 for none) */
+typedef struct {
+    SnxU64 address, base;
+    unsigned bound;
+} SnxFlowTable;
+
 typedef struct {
     /* the guest's A64 features (SNX_A64_FEAT_* or a SNX_A64_TARGET_* of a64_decoder.h), what decodes: 0 is the
        Switch's. The analyses' features argument: emitting decodes with them too */
@@ -36,11 +43,11 @@ typedef struct {
        every word: the one the code is built from. One block: read_capacity addresses, as many words, as many marks */
     unsigned char* read_block;
     size_t read_count, read_capacity;
-    /* the jump tables whose base or bound came from their function's flow (explore's, the leaders'), not from the
-       code before the load: each BR's address, its table's base and bound (0 where the code gives it), by BR
-       address, so every later snx_codegen_jump_table (the leaders, the back ends) finds the same cases */
-    SnxU64* jt_bases;
-    size_t jt_base_count, jt_base_capacity;
+    /* the jump tables whose base or end came from their function's flow (explore's, the leaders'), not from the code
+       before the load, by BR address, so every later snx_codegen_jump_table (the leaders, the back ends) finds the same
+       cases */
+    SnxFlowTable* flow_tables;
+    size_t flow_table_count, flow_table_capacity;
 } SnxCodegen;
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
