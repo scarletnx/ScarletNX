@@ -478,6 +478,7 @@ int main(int argc, char** argv) {
         failures += against_qemu(words, offset, code, k, states, qemu, &rt, &compared);
         printf("sail_%s: %u words, %zu runs against QEMU, %zu failures (%zu words not made)\n",
                hostuc_name(SAIL_MACH_UC), k, compared, failures, unmade);
+        free(words), free(offset);
         return failures != 0;
     }
 #if defined(SAIL_MACH_WIN64)
@@ -629,5 +630,6 @@ int main(int argc, char** argv) {
     printf("sail_%s: %zu words made (%zu bytes of code, %.1f a word), %zu runs, %zu failures (%zu words not made)\n",
            hostuc_name(SAIL_MACH_UC), n, bytes, n ? (double)bytes / (double)n : 0.0, compared, failures, unmade);
     hostuc_free(g_test.uc);
+    free(words), free(offset);
     return failures ? 1 : 0;
 }
