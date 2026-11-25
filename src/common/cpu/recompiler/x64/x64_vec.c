@@ -86,10 +86,35 @@ static int vmax(SgCtx* g, unsigned size, int a, int b, int uns, int minimum) {
         return minimum ? vsel(g, m, b, a) : vsel(g, m, a, b);
     }
 }
-/* a << n, n below the element's bits (the bytes by words, their spill masked) */
+/* ---- each byte's bits moved (GFNI) ----
+   GF2P8AFFINEQB: bit i of each byte of a its own bit i - n (left) or i + n (right, past 7 the sign's where arith), or,
+   for VGF_REVERSE, its bit 7 - i; a bit from past the byte 0. The matrix' row of bit i, in its byte 7 - i, is the mask
+   of the bits it adds */
+enum { VGF_LEFT, VGF_RIGHT, VGF_ARITH, VGF_REVERSE, VGF_BIT }; /* VGF_BIT: bit n alone, as bit 0 */
+static int vgfni(const SgCtx* g) { return (g->x.features & SGX_F_GFNI) != 0; }
+static int vgf(SgCtx* g, int a, int kind, unsigned n) {
+    SnxU64 rows = 0;
+    int i, m;
+    for (i = 0; i < 8; ++i) {
+        int from = kind == VGF_LEFT      ? i - (int)n
+                   : kind == VGF_REVERSE ? 7 - i
+                   : kind == VGF_BIT     ? (i ? 8 : (int)n)
+                                         : i + (int)n;
+        if (kind == VGF_ARITH && from > 7) from = 7;
+        if (from >= 0 && from < 8) rows |= (SnxU64)1 << (8 * (7 - i) + from);
+    }
+    m = kconst(g, rows, rows);
+    if (X->features & SGX_F_AVX) {
+        int in[4] = {0, a, m, 0};
+        return sgx_vins(X, &sgx_v_vgf2p8affineqb, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    }
+    return op2(g, &sgx_v_gf2p8affineqb, a, m);
+}
+/* a << n, n below the element's bits (the bytes by GFNI, or by words, their spill masked) */
 static int vshl(SgCtx* g, unsigned size, int a, unsigned n) {
     if (n >= 8u << size) return vzero(g);
     if (!n) return a;
+    if (!size && vgfni(g)) return vgf(g, a, VGF_LEFT, n);
     if (!size) return vand(g, opi(g, &sgx_v_psllw_i, a, n), vsplat(g, 0, 0xFFu << n));
     return opi(g, k_sll[size], a, n);
 }
@@ -105,6 +130,7 @@ static int vshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
         if (n >= e) n = e - 1;
         if (!n) return a;
         if (n == e - 1) return vsign(g, size, a);
+        if (!size && vgfni(g)) return vgf(g, a, VGF_ARITH, n);
         if (k_sra[size]) return opi(g, k_sra[size], a, n);
         /* (a ^ m) >> n - (m >> n), m the sign bit: the logical shift sign extended */
         {
@@ -114,6 +140,7 @@ static int vshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
     }
     if (n >= e) return vzero(g);
     if (!n) return a;
+    if (!size && vgfni(g)) return vgf(g, a, VGF_RIGHT, n);
     if (!size) return vand(g, opi(g, &sgx_v_psrlw_i, a, n), vsplat(g, 0, 0xFFu >> n));
     return opi(g, k_srl[size], a, n);
 }
@@ -838,6 +865,7 @@ static int vabs(SgCtx* g, unsigned size, int a) {
 }
 /* a >> n rounded (half up), logical (arith: arithmetic): the bits shifted out, the top one of them, added back */
 static int vrshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
+    if (!size && vgfni(g)) return vadd(g, 0, vshr(g, 0, a, n, arith), vgf(g, a, VGF_BIT, n - 1));
     return vadd(g, size, vshr(g, size, a, n, arith), vand(g, vshr(g, size, a, n - 1, 0), vsplat(g, size, 1)));
 }
 /* UADDLP, SADDLP: each pair of lanes added to a lane twice as wide */
@@ -1317,6 +1345,19 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         lo = vand(g, a, vsplat(g, 0, 15));
         hi = vand(g, opi(g, &sgx_v_psrlw_i, a, 4), vsplat(g, 0, 15));
         vwrite(g, rd, vadd(g, 0, op2(g, &sgx_v_pshufb, t, lo), op2(g, &sgx_v_pshufb, t, hi)), q);
+        return 1;
+    }
+    case SNX_A64_OP_RBIT_v: { /* each byte's bits reversed: GFNI, or a table of the nibbles' (PSHUFB) */
+        a = vread(g, rn);
+        if (vgfni(g))
+            r = vgf(g, a, VGF_REVERSE, 0);
+        else
+            r = vor(g,
+                    op2(g, &sgx_v_pshufb, kconst(g, 0xE060A020C0408000ull, 0xF070B030D0509010ull),
+                        vand(g, a, vsplat(g, 0, 15))),
+                    op2(g, &sgx_v_pshufb, kconst(g, 0x0E060A020C040800ull, 0x0F070B030D050901ull),
+                        vand(g, opi(g, &sgx_v_psrlw_i, a, 4), vsplat(g, 0, 15))));
+        vwrite(g, rd, r, q);
         return 1;
     }
     case SNX_A64_OP_TBL_TBX: {

@@ -529,3 +529,5 @@ enc minps MINPS xmm1, xmm2/m128
 enc minpd MINPD xmm1, xmm2/m128
 enc vfmadd231ps VFMADD231PS xmm1, xmm2, xmm3/m128
 enc vfmadd231pd VFMADD231PD xmm1, xmm2, xmm3/m128
+enc gf2p8affineqb GF2P8AFFINEQB xmm1, xmm2/m128, imm8
+enc vgf2p8affineqb VGF2P8AFFINEQB xmm1, xmm2, xmm3/m128, imm8
