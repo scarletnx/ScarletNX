@@ -6868,19 +6868,27 @@ static void states_focus(App* app) {
         snprintf(app->message, sizeof app->message, "%s",
                  snx_tr("S lists the save states of a recompiled Switch game in focus."));
 }
-/* the game box's Settings: the focused recompiled Switch or 3DS game's own Settings, Back to Games; else why not */
+/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
+static bool package(const char* name) {
+    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name);
+}
+/* a console but the Switch, whose made games have settings of their own (own_game) and no box of mods */
+static bool own_driver(int driver) {
+    return driver == GUI_3DS || driver == GUI_VITA || driver == GUI_GBA || driver == GUI_NDS;
+}
+/* the game box's Settings: the focused recompiled console's game's own Settings, Back to Games; else why not */
 static void settings_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
     const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
-    if (r && (r->driver == GUI_SWITCH || r->driver == GUI_3DS) && r->prepared)
+    if (r && (r->driver == GUI_SWITCH || own_driver(r->driver)) && r->prepared)
         open_game_settings(app, r->path, r->name, false);
-    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
+    else if (game && !package(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
         open_game_settings(app, app->games.paths[index], app->games.shown[index], false);
     else
         snprintf(app->message, sizeof app->message, "%s",
-                 snx_tr("Settings of its own are a recompiled Switch or 3DS game's, in focus."));
+                 snx_tr("Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."));
 }
 /* the box over the screen, as wide as its title or the longest row; a row each, ui.txt's scene States, the focused one
    among those shown (the box kept on the screen); the picture's place at its right, or under it, empty when neither
@@ -8015,10 +8023,6 @@ void ui_games_grid_tiles_row_action_cb(App* app, size_t row, uint32_t hit) {
 static bool game_was_old(const App* app, const char* path);
 static int row_driver(const GuiGames* games, size_t i);
 static const char* cover_why(const App* app, const char* path);
-/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
-static bool package(const char* name) {
-    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name);
-}
 /* a made game's kind, by the console its folder says */
 static const char* ready_kind(int driver) {
     return driver == GUI_3DS    ? snx_tr("3DS game, ready to run")
@@ -9700,25 +9704,26 @@ static bool games_play_focus(const App* app) {
     if (row < head) return (int)row < recent_shown(app);
     return index < app->games.count && !gui_games_heading(&app->games, index);
 }
-/* Games' focused row a made 3DS game, recent or of the page: M opens its own Settings, as it has no mods' box */
-static bool games_ctr_focus(const App* app) {
+/* Games' focused row a made game of a console but the Switch, recent or of the page: M opens its own Settings, as it
+   has no mods' box */
+static bool games_own_focus(const App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     if (row < head && (int)row < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
-        return r->driver == GUI_3DS && r->prepared && !gui_is_cia(r->path);
+        return own_driver(r->driver) && r->prepared && !package(r->path);
     }
     return row >= head && index < app->games.count && !gui_games_heading(&app->games, index) &&
-           app->games_drivers[index] == GUI_3DS && !gui_is_cia(app->games.names[index]);
+           own_driver(app->games_drivers[index]) && !package(app->games.names[index]);
 }
 /* Games' keys the focused row takes, in parts, when it does something there: Play on a game that plays, R on a game,
-   M on a made Switch or 3DS one */
+   M on a made console's one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
     if (games_play_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_PLAY : SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
-    if (games_ctr_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_OWN : SAY_GAMES_OWN);
+    if (games_own_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_OWN : SAY_GAMES_OWN);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
     if (mods)
         said_add(parts, n, pad ? SAY_PAD_GAMES_STATES : SAY_GAMES_STATES); /* its save states' box: S, a pad's X */
@@ -12608,16 +12613,20 @@ static void search_said(const App* app, bool pad, const char** parts, int* n) {
 }
 /* ---- a game's own Settings (its boxes' Settings): the Settings screen on its picks file, <name>.picks beside its
    .ini, which its runtime reads over the launcher's picks; a Switch game's the Switch's settings, a 3DS game's its
-   console; each row Global until picked, Del back to Global, the last group Reset to Global, asked first. Back from
-   its groups goes where it was opened from ---- */
+   console, a Vita, GBA or DS game's its on-screen controls; each row Global until picked, Del back to Global, the last
+   group Reset to Global, asked first. Back from its groups goes where it was opened from ---- */
 /* the made game whose program is at path, of a console whose games have settings of their own: GUI_GAME_*, its folder
-   and its name, owned; 0 for a dump's, a package's or another console's. A 3DS game has no <name>_data folder */
+   and its name, owned; 0 for a dump's, a package's or another program's. A 3DS, Vita, GBA or DS game has no <name>_data
+   folder */
 static int own_game(const char* path, char** folder, char** name) {
     *folder = path && (gui_game_folder(path) || gui_game_program(path)) ? snx_dirname(path) : NULL;
     *name = *folder ? aot_leaf(*folder) : NULL;
     if (!*name) return 0;
     SnxSystem system = snx_game_system(*folder, *name);
     return system == SNX_SYSTEM_3DS                               ? GUI_GAME_3DS
+           : system == SNX_SYSTEM_VITA                            ? GUI_GAME_VITA
+           : system == SNX_SYSTEM_GBA                             ? GUI_GAME_GBA
+           : system == SNX_SYSTEM_NDS                             ? GUI_GAME_NDS
            : system == SNX_SYSTEM_SWITCH && gui_game_folder(path) ? GUI_GAME_SWITCH
                                                                   : 0;
 }
@@ -12641,9 +12650,10 @@ static void open_game_settings(App* app, const char* program, const char* title,
     if (console) ini = snx_game_ini(folder, name);
     free(folder);
     free(name);
-    if (!ini) { /* a dump's, a package's, another console's: no runtime of its reads picks */
+    if (!ini) { /* a dump's, a package's, another program's: no runtime of its reads picks */
         snprintf(app->message, sizeof app->message,
-                 snx_tr("%s is no recompiled Switch or 3DS game: only they have settings of their own"), title);
+                 snx_tr("%s is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have settings of their own"),
+                 title);
         say_failure(app, app->message);
         return;
     }
@@ -17535,13 +17545,14 @@ typedef struct {
     if (n) argv[0] = first;
     argv[n++] = own->option;
     /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's, the Vita's and the DS's their own, and the others' none, whose drivers refuse a setting
-       they do not have */
+       launcher's, the 3DS's, the Vita's and the DS's their own, the on-screen controls' the Vita's, the GBA's and the
+       DS's, and the others' none, whose drivers refuse a setting they do not have */
     n += item == GUI_3DS      ? gui_settings_ctr_options(s, argv + n)
          : item == GUI_VITA   ? gui_settings_vita_options(s, argv + n)
          : item == GUI_NDS    ? gui_settings_nds_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
+    if (item == GUI_VITA || item == GUI_GBA || item == GUI_NDS) n += gui_settings_controls_options(s, argv + n);
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->freedreno) argv[n++] = own->freedreno;
     argv[n] = NULL;
@@ -18147,7 +18158,8 @@ static void clean_keys(App* app, const char* file, const char* unread, int faile
     gui_cleaned_add(&app->cleaned, !failed, file, what);
 }
 /* the console of the game whose picks are at path, by the name they share with its folder: a 3DS game's is its title
-   ID, 0004 and 12 hex digits more (3ds/runtime/main.h's snx_ctr_title_name), where a Switch one starts 01 */
+   ID, 0004 and 12 hex digits more (3ds/runtime/main.h's snx_ctr_title_name), where a Switch one starts 01. A Vita, GBA
+   or DS game's, whose name says no console, go by the Switch's, which have every setting theirs have */
 static int picks_console(const char* path) {
     const char* leaf = snx_path_leaf(path);
     size_t i = 0;
@@ -19474,7 +19486,7 @@ static int game_box_raw(const App* app, const char** path, int* driver) {
            gui_game_program(*path);
 }
 /* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
-   its keys have them, a made 3DS game's own Settings among them; none for a row that is no game */
+   its keys have them, another console's made game's own Settings among them; none for a row that is no game */
 static void game_box_open(App* app) {
     bool mods = false;
     int n = 0, queued;
@@ -19490,7 +19502,7 @@ static void game_box_open(App* app) {
         const char* path;
         int driver;
         if (game_box_raw(app, &path, &driver)) {
-            if (driver == GUI_3DS) app->game_picks[n++] = SAY_GAME_SETTINGS;
+            app->game_picks[n++] = SAY_GAME_SETTINGS;
             app->game_picks[n++] = SAY_GAME_EXPORT_SAVES;
             app->game_picks[n++] = SAY_GAME_IMPORT_SAVES;
         }
@@ -21067,6 +21079,8 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
     if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
     if (app->menu.selected == GUI_NDS && !make) n += gui_settings_nds_options(s, argv + n);
+    if ((app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make)
+        n += gui_settings_controls_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
@@ -22228,7 +22242,7 @@ done:
     free(f.name);
 }
 /* M on Games: the box of the focused game's updates, DLCs, mods and cheats, shown even when it has none of them for
-   its Add Mod and Add Cheats; a made 3DS game's own Settings; else why not */
+   its Add Mod and Add Cheats; another console's made game's own Settings; else why not */
 static void mods_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
@@ -22236,7 +22250,7 @@ static void mods_focus(App* app) {
          game = row >= head && index < app->games.count && !gui_games_heading(&app->games, index); /* it has no path */
     const char *path = NULL, *title = NULL;
     char* folder = NULL;
-    if (games_ctr_focus(app)) {
+    if (games_own_focus(app)) {
         settings_focus(app);
         return;
     }
@@ -23857,7 +23871,7 @@ static const struct {
                  {SNX_TR_KEY("AOT pack"), SDLK_B, 0, false},
                  {SNX_TR_KEY("M"), SDLK_M, 0, false},
                  {SNX_TR_KEY("Mods"), SDLK_M, 0, false},
-                 {SNX_TR_KEY("Settings"), SDLK_M, 0, false}, /* a finger's, on Games' 3DS game */
+                 {SNX_TR_KEY("Settings"), SDLK_M, 0, false}, /* a finger's, on Games' game of another console */
                  {SNX_TR_KEY("P"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folders"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folder"), SDLK_P, 0, false}, /* a finger's, on the Switch's Open screen */

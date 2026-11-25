@@ -57,7 +57,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - A gamepad drives the menu as the keys do (`src/gui/pad_menu.c`): the D-pad and the left stick are the arrows, the
   button labelled A (or Cross) is Enter, B (or Circle) ESC, X (or Square) Del and Y (or Triangle) R, wherever the pad
   has them (a Switch pad's A is east, its X north), LB and RB are Shift+Tab and Tab, LT and RT are PgUp and PgDn, L3
-  and R3 are M and B (Games' mods, a 3DS game's own Settings, and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
+  and R3 are M and B (Games' mods, another console's game's own Settings, and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
   back), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
   the focused game's save states, as S does, and in that box it deletes one, as Del does. A held arrow or
   page repeats. A press on the pad hides the mouse's cursor and the foot names the pad's buttons, a PlayStation pad's
@@ -702,7 +702,7 @@ cannot be read is named and the others still listed.
 - A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
   Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
   recompiled Switch game **Mods** (M), **Save States** (S) and **Settings**, its own (below), Back from them to
-  Games, for a made 3DS game its own **Settings** (M, below), **Export Saves** and **Import Saves**, then **AOT Pack**
+  Games, for a made 3DS, Vita, GBA or DS game its own **Settings** (M, below), **Export Saves** and **Import Saves**, then **AOT Pack**
   (B) where B builds one, and on Android **Add to Home Screen** for a game whose folder its
   title ID names ([The Android app](../hosts/android-app.md)). The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
@@ -733,7 +733,9 @@ cannot be read is named and the others still listed.
 - On a made 3DS game **M** (on Android a tap on *Settings* at the foot) opens its own Settings, Back from them to
   Games: **Console**, alone in the 3DS group, **Global** with the launcher's (*Global (Auto [default])*), Old 3DS or
   New 3DS, which that game then runs on from the launcher and from a terminal ([Settings](settings.md)), and
-  **Reset to Global**, as a Switch game's.
+  **Reset to Global**, as a Switch game's. On a made Vita, GBA or DS game it opens the same with the Overlay group
+  alone: the on-screen controls' rows its console has something for, each control by the console's name for it
+  (*Start*, *Circle*), and the touch screen's where it has one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
   and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDn move it a screen of rows,
@@ -748,8 +750,9 @@ when another build did, or other mods, it compiles first, where it is, in the qu
 an older version laid out beside the others runs directly, as every game does on iOS. A game another console's
 driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
 its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
-Enter and R go through that driver, in the game's folder (`--game=`), with none of the Switch's Settings. A CIA goes
-to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to
+Enter and R go through that driver, in the game's folder (`--game=`), with the Settings that driver takes alone: a
+Vita, GBA or DS game's on-screen controls and touch screen among them, under what the game's own Settings pick. A CIA
+goes to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to
 the main menu work as for a file picked by a load.
 
 ### The Compile tab

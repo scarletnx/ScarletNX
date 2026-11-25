@@ -8,6 +8,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/vpad_consoles.h"
 #include "gui/i18n.h"
 #include "snx_settings.h"
 #include <stdarg.h>
@@ -99,6 +100,35 @@ static int has_mark(const char* column, const char* mark) {
         if ((c == column || c[-1] == ' ') && (!c[n] || c[n] == ' ')) return 1;
     return 0;
 }
+#define SHOWN_KEY(name, id) "controls_" id "_shown",
+static const char* const SHOWN[SNX_VPAD_COUNT] = {SNX_VPAD_IDS(SHOWN_KEY)};
+/* a setting of the on-screen controls or of the touch screen, by its key (settings.txt's g_vpad_ini, g_vpad_shown_ini
+   and g_backend_ini) */
+static int controls_key(const char* key) {
+    return !strcmp(key, "touch") || (!strncmp(key, "controls", 8) && (!key[8] || key[8] == '_'));
+}
+/* the row of key, named name, in the own Settings of a game of a console with the on-screen controls pad: its name
+   there, a control's the console's own for it, NULL for one the console has nothing for */
+static const char* controls_name(const SnxVpadConsole* pad, const char* key, const char* name) {
+    int sticks = 0;
+    if (!controls_key(key)) return NULL;
+    if (!strcmp(key, "touch")) return pad->touch ? name : NULL;
+    for (int i = 0; i < pad->count; ++i) {
+        if (!strcmp(key, SHOWN[pad->pad[i].control])) return pad->pad[i].name;
+        sticks += pad->pad[i].control == SNX_VPAD_STICK_L || pad->pad[i].control == SNX_VPAD_STICK_R;
+    }
+    if (!strcmp(key, "controls_rel_center")) return sticks ? name : NULL;
+    for (int i = 0; i < SNX_VPAD_COUNT; ++i)
+        if (!strcmp(key, SHOWN[i])) return NULL;
+    return name;
+}
+/* the on-screen controls of a game's console, NULL for the Switch's and the 3DS's */
+static const SnxVpadConsole* pad_of(int game) {
+    return game == GUI_GAME_GBA    ? &snx_vpad_gba
+           : game == GUI_GAME_NDS  ? &snx_vpad_nds
+           : game == GUI_GAME_VITA ? &snx_vpad_vita
+                                   : NULL;
+}
 /* the rows of the runtime's list; with game, a game's own, of that console (gui_settings_read_console) */
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
@@ -150,6 +180,8 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         while (f < 12 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue; /* not a setting: another line the runtime printed */
         if (game == GUI_GAME_3DS && !snx_ctr_game_setting(field[1])) continue;
+        const char* name = f < 8 ? "" : field[7];
+        if (pad_of(game) && !(name = controls_name(pad_of(game), field[1], name))) continue;
         for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
@@ -168,7 +200,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         }
         int boxes = *field[8] && has_mark(field[11], "boxes");
         if (*field[8] && !boxes) words = words_of(field[8], &free_words, &values, game);
-        v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
+        v = row(s, field[0], field[1], name, field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
         if (boxes) items_of(field[8], &free_words, v);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
@@ -1005,6 +1037,15 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, co
 }
 size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "ctr_", NULL); }
 size_t gui_settings_vita_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "vita_", NULL); }
+size_t gui_settings_controls_options(GuiSettings* s, const char** argv) {
+    size_t n = 0;
+    for (int i = s->own; i < s->count; ++i) {
+        const char* value = s->values[i].kind || !controls_key(s->values[i].key) ? NULL : picked(s, i);
+        if (value) argv[n++] = option_of(s, i, value);
+    }
+    if (n) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    return n;
+}
 size_t gui_settings_linux_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "linux_", NULL); }
 size_t gui_settings_android_options(GuiSettings* s, const char** argv) {
     return picked_options(s, argv, "android_", NULL);

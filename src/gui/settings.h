@@ -62,7 +62,7 @@ typedef struct {
                            first word Global, no pick. The console it is of, GUI_GAME_*, 0 for the launcher's */
 } GuiSettings;
 /* the consoles whose games have picks of their own */
-enum { GUI_GAME_SWITCH = 1, GUI_GAME_3DS };
+enum { GUI_GAME_SWITCH = 1, GUI_GAME_3DS, GUI_GAME_VITA, GUI_GAME_GBA, GUI_GAME_NDS };
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
    values value=word between '|', where it does something when not on this system, what the build needs, slider for a
@@ -75,7 +75,9 @@ int gui_settings_read(GuiSettings* settings, const char* runtime);
    no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
 int gui_settings_read_game(GuiSettings* settings, const char* runtime);
 /* a game's of console (GUI_GAME_*): a 3DS game's, the settings it has of its own alone (3ds/runtime/main.h's
-   snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
+   snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives; a
+   Vita's, a GBA's or a DS's, the on-screen controls' it has (common/utilities/vpad_consoles.h) and its touch screen's,
+   each control by the console's name for it */
 int gui_settings_read_console(GuiSettings* settings, const char* runtime, int console);
 void gui_settings_free(GuiSettings* settings);
 /* row count + i (i under GUI_SETTING_LINKS), past the settings and out of their count, made a link: a row of another
@@ -174,6 +176,10 @@ size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
 /* argv's --key=value for each of the Vita driver's settings picked: its Debug page's (keys that start with vita_). Its
    count */
 size_t gui_settings_vita_options(GuiSettings* settings, const char** argv);
+/* argv's --key=value for each of the on-screen controls' settings picked (Show controls' always, gui_settings_always)
+   and the touch screen's, which a GBA, a DS and a Vita game's driver take (one its console has nothing for said there),
+   --launcher-picks=1 after them, which puts the game's own over them. Its count */
+size_t gui_settings_controls_options(GuiSettings* settings, const char** argv);
 /* the same for a Linux program's run (linux_), an Android app's (android_) and a DS game's (nds_, but the WFC
    service's, which that driver reads from settings.ini) */
 size_t gui_settings_linux_options(GuiSettings* settings, const char** argv);

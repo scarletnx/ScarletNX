@@ -2381,8 +2381,8 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr "S lista os save states de um jogo de Switch recompilado em foco."
 
 #: src/gui/main.c
-msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
-msgstr "Configurações próprias são de um jogo de Switch ou 3DS recompilado, em foco."
+msgid "Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."
+msgstr "Configurações próprias são de um jogo de Switch, 3DS, Vita, GBA ou DS recompilado, em foco."
 
 #: src/gui/main.c
 #, c-format
@@ -4046,8 +4046,8 @@ msgstr "%d de %d configurações"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
-msgstr "%s não é um jogo de Switch ou 3DS recompilado: só eles têm configurações próprias"
+msgid "%s is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have settings of their own"
+msgstr "%s não é um jogo de Switch, 3DS, Vita, GBA ou DS recompilado: só eles têm configurações próprias"
 
 #: src/gui/main.c
 msgid "Keep"
@@ -8022,6 +8022,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
+#~ msgstr "Configurações próprias são de um jogo de Switch ou 3DS recompilado, em foco."
+
+#~ msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
+#~ msgstr "%s não é um jogo de Switch ou 3DS recompilado: só eles têm configurações próprias"
 
 #~ msgid "[%s] %s = %s is not a key of a theme"
 #~ msgstr "[%s] %s = %s não é uma chave de tema"

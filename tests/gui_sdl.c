@@ -6934,7 +6934,12 @@ static char* ctr_settings(void) {
                       "3DS\tctr_model\tauto\ttext\t\t\tThe console the game runs on\tConsole\t"
                       "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
                       "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
-                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n");
+                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n"
+                      "On-screen controls\tcontrols\t2\tint\t0\t2\tShown\tShow controls\t0=Off|1=On|2=Auto\n"
+                      "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t"
+                      "0=Off|1=Fingers|2=Fingers and mouse\n"
+                      "On-screen controls/Buttons\tcontrols_zl_shown\t1\tint\t0\t1\tDrawn\tZL\t0=Hidden|1=Shown\n"
+                      "On-screen controls/Buttons\tcontrols_plus_shown\t1\tint\t0\t1\tDrawn\t+\t0=Hidden|1=Shown\n");
 }
 /* the file at path holding text */
 static void fixture_text(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
@@ -6951,7 +6956,8 @@ static int game_settings_row(App* app) {
    kept in its picks beside its .ini at once, and Reset to Global; nothing of the Switch's nor another console's, as a
    Switch game's has none of the 3DS's. M (L3, the foot's Settings on a phone) opens it on a listed and a recent game,
    and so does its box's Settings, after Recompile; Back goes to Games, its row and the side panel saying its own. A
-   3DS dump and a Vita game have none, said; the launcher's Console goes to a run of the game under its own. Clean Old
+   Vita, a GBA and a DS game's own are its on-screen controls. A 3DS dump and a file have none, said; the launcher's
+   Console goes to a run of the game under its own. Clean Old
    Settings takes out of a 3DS game's picks what its rows do not take, and keeps its console */
 static void ctr_own_console(App* app, const char* dir) {
     static const char* const name = "0004000000040000";
@@ -7059,37 +7065,96 @@ static void ctr_own_console(App* app, const char* dir) {
         char *switch_folder = made_game(app, "unused", "a switch game"),
              *played = program_in(switch_folder, "a switch game");
         open_game_settings(app, played, "a switch game", false);
-        assert(app->editing && app->own_picks && app->groups == 3 && !strcmp(app->group_keys[0].key, "Display") &&
-               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Reset to Global"));
+        assert(app->editing && app->own_picks && app->groups == 4 && !strcmp(app->group_keys[0].key, "Display") &&
+               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Overlay") &&
+               !strcmp(app->group_keys[3].key, "Reset to Global"));
         key(app, SDLK_ESCAPE);
         assert(!app->editing);
         made_gone(app, switch_folder);
         free(played);
     }
-    /* a Vita game and a file that is no game have none: said with what does */
+    /* a Vita, a GBA and a DS game's own, by M on it and by its box: its on-screen controls alone, the touch screen
+       where it has one, each control by its name there, kept in its picks; and the launcher's for its run, marked as
+       such: Show controls' always, as the Switch's runs have it */
     {
-        char *vita_folder, *played;
-        played = console_game(app, "PCSE00099", "[Game]\nsystem=vita\n", &vita_folder);
-        for (i = 0; i < 2; ++i) {
-            open_game_settings(app, i ? cia : played, i ? "a file" : "a vita game", false);
-            snprintf(value, sizeof value,
-                     "%s is no recompiled Switch or 3DS game: only they have settings of their own",
-                     i ? "a file" : "a vita game");
-            assert(!app->editing && !app->own_picks && !strcmp(app->message, value) && app->confirm.shown &&
-                   app->confirm.ask == GUI_ASK_ERROR);
+        static const struct {
+            int item;
+            const char *name, *ini;
+            int touch;
+        } consoles[] = {{GUI_VITA, "PCSE00099", "[Game]\nsystem=vita\n", 1},
+                        {GUI_GBA, "a gba game", "[Game]\nsystem=gba\nsource=/nonexistent/a gba game.gba\n", 0},
+                        {GUI_NDS, "a ds game", "[Game]\nsystem=nds\nsource=/nonexistent/a ds game.nds\n", 1}};
+        for (size_t c = 0; c < sizeof consoles / sizeof *consoles; ++c) {
+            char *made, *played = console_game(app, consoles[c].name, consoles[c].ini, &made), *beside, *own;
+            go_tab(app, GUI_TAB_GAMES);
+            list_games(app);
+            layout(app);
+            focus_game(app, consoles[c].name);
+            assert(strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+            row = game_settings_row(app);
+            assert(row > 0);
             key(app, SDLK_ESCAPE);
-            assert(!app->confirm.shown);
+            assert(!app->picks_shown);
+            beside = game_ini_of(played);
+            own = snx_game_picks(beside);
+            key(app, SDLK_M);
+            assert(app->editing && app->own_picks && same_path(app->own_picks, own));
+            assert(app->groups == 2 && !strcmp(app->group_keys[0].key, "Overlay") &&
+                   !strcmp(app->group_keys[1].key, "Reset to Global"));
+            assert(gui_settings_value(&app->game_settings, "controls") == NULL);
+            key(app, SDLK_RETURN); /* Overlay */
+            assert(app->form == GUI_FORM_GROUP);
+            snprintf(said, sizeof said, "%s own controls", consoles[c].name);
+            foot_shot(app, said);
+            key(app, SDLK_ESCAPE);
+            assert(app->editing && app->form == GUI_FORM_SETTINGS);
+            assert(!gui_settings_set(&app->game_settings, "fullscreen", "1") &&
+                   !gui_settings_set(&app->game_settings, "controls_zl_shown", "0"));
+            assert(gui_settings_set(&app->game_settings, "touch", "1") == consoles[c].touch);
+            assert(gui_settings_set(&app->game_settings, "controls_plus_shown", "0") &&
+                   gui_settings_set(&app->game_settings, "controls", "1"));
+            for (i = 0; i < app->game_settings.count; ++i)
+                if (app->game_settings.values[i].key &&
+                    !strcmp(app->game_settings.values[i].key, "controls_plus_shown"))
+                    assert(!strcmp(app->game_settings.keys[i].key, "Start"));
+            write_settings(app);
+            assert((text = (char*)snx_read_file(own, &size)) && strstr(text, "[On-screen controls]\ncontrols=1\n") &&
+                   strstr(text, "controls_plus_shown=0\n") && (strstr(text, "touch=1\n") != NULL) == consoles[c].touch);
+            free(text);
+            key(app, SDLK_ESCAPE);
+            assert(!app->editing && game_own(played, value, sizeof value) == 2 + consoles[c].touch);
+            assert(!remove(own));
+            driver_will(argv_file, 0, "own controls");
+            assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+            for (way = 0; way < 2; ++way) {
+                char* argv_got;
+                assert(gui_settings_set(&app->settings, "controls", way ? "1" : "2") &&
+                       gui_settings_set(&app->settings, "touch", way ? "1" : "2"));
+                app->menu.selected = consoles[c].item;
+                launch(app, snx_strdup(played), true);
+                argv_got = ran(app, 0);
+                assert(has_arg(argv_got, way ? "--controls=1" : "--controls=2", NULL) &&
+                       has_arg(argv_got, "--launcher-picks=1", NULL));
+                assert(has_arg(argv_got, "--touch=1", NULL) == way);
+                free(argv_got);
+                leave_run(app);
+            }
+            driver_will(NULL, 0, NULL);
+            assert(gui_settings_set(&app->settings, "controls", "2") && gui_settings_set(&app->settings, "touch", "2"));
+            free(own);
+            free(beside);
+            made_gone(app, made);
+            free(played);
         }
-        focus_game(app, "PCSE00099");
-        row = game_settings_row(app);
-        assert(row < 0);
-        key(app, SDLK_ESCAPE);
-        assert(!app->picks_shown);
-        app->message[0] = 0;
-        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
-        made_gone(app, vita_folder);
-        free(played);
         list_games(app);
+        /* a file that is no game has none: said with what does */
+        open_game_settings(app, cia, "a file", false);
+        assert(!app->editing && !app->own_picks && app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR &&
+               !strcmp(app->message, "a file is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have "
+                                     "settings of their own"));
+        key(app, SDLK_ESCAPE);
+        assert(!app->confirm.shown);
+        app->message[0] = 0;
     }
     /* a 3DS dump in focus on Games: M says whose box it opens */
     {
@@ -7335,6 +7400,22 @@ static void check_play_args(App* app, const char* root) {
         assert(!gba);
         play_args_free(&own);
         (void)gui_settings_set(settings_of(app), "vsync", "1");
+    }
+    /* the on-screen controls' go to the consoles whose windows have them, the launcher's picks under the game's own */
+    if (gui_settings_set(settings_of(app), "controls", "1")) {
+        static const int items[] = {GUI_VITA, GUI_GBA, GUI_NDS, GUI_3DS};
+        for (size_t k = 0; k < sizeof items / sizeof *items; ++k) {
+            int shown = 0, picks = 0;
+            app->menu.selected = items[k];
+            (void)play_args(app, items[k], dir, argv, 512, &own);
+            for (size_t i = 0; argv[i]; i++) {
+                shown += !strcmp(argv[i], "--controls=1");
+                picks += !strcmp(argv[i], "--launcher-picks=1");
+            }
+            assert(shown == (items[k] != GUI_3DS) && picks == shown);
+            play_args_free(&own);
+        }
+        (void)gui_settings_set(settings_of(app), "controls", "2");
     }
     free(argv);
     free(prog);

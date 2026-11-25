@@ -895,7 +895,8 @@ setting Show controls
     set vpad_on_set
     words Off|On|Auto
     help The on-screen controls: 1 = shown, 0 = hidden, 2 = Auto: shown while the device has a touch screen and no
-    help gamepad is connected, hidden while one is. The game's menu (Back, Home or F2) sets them
+    help gamepad is connected, hidden while one is. The game's menu (Back, Home or F2) sets them. A Vita, GBA or DS game
+    help has them too, with its console's buttons: there Back or F2 edits their layout
 setting Snap to grid
     key controls_snap
     int 0 1
@@ -947,7 +948,8 @@ setting Touch screen
     default 2
     set vpad_touch_set
     words Off|Fingers|Fingers and mouse
-    help The game's touch screen: 1 = fingers, 2 = fingers and the mouse's left button, 0 = off
+    help The game's touch screen: 1 = fingers, 2 = fingers and the mouse's left button, 0 = off. A 3DS game's bottom
+    help screen, a DS game's lower one and a Vita game's front panel too
 
 table g_vpad_shown_ini
 setting Control shown

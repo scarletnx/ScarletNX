@@ -2378,7 +2378,7 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
+msgid "Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."
 msgstr ""
 
 #: src/gui/main.c
@@ -4043,7 +4043,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
+msgid "%s is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have settings of their own"
 msgstr ""
 
 #: src/gui/main.c
