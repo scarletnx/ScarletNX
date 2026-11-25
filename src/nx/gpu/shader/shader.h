@@ -45,7 +45,9 @@ typedef struct {
 #define SH_PROBE_INSN(p)    ((p) >> 9)
 #define SH_PROBE_UNIFORM(p) ((p) >> 8 & 1u)
 #define SH_PROBE_REG(p)     ((p) & 0xffu)
-#define SH_MEMH_MAX         64 /* instructions of ShaderInfo.memh */
+/* instructions of ShaderInfo.memh, which all of a program's handles from memory share: a full-screen pass that loads 17
+   handles of four instructions each from its records takes 74 */
+#define SH_MEMH_MAX                  256
 /* nmemh keeps its size for the corpus format: the high bit selects the Maxwell evaluator, the low bits the count. */
 #define SH_MEMH_DIRECT    0x80000000u
 #define SH_MEMH_NUM(n)    ((n) & ~SH_MEMH_DIRECT)
