@@ -1056,8 +1056,8 @@ int main(int argc, char** argv) {
     uint64_t* udisp = NULL;
     size_t made_native = 0;
     if (!uc) {
-        printf("recompiler native: no Unicorn of the machine: nothing to compare\n");
-        return 0;
+        printf("SKIP: no Unicorn of %s: nothing to compare\n", native_name);
+        return 77;
     }
 #endif
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);

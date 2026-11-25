@@ -89,9 +89,9 @@ static int machine(const char* name, HostUcArch arch) {
     }
     free(loaded);
     if (!(u = hostuc_new(arch, 1u << 20))) {
-        printf("module_desc %s: no Unicorn of it: skipped\n", name);
+        printf("SKIP: no Unicorn of %s: nothing to run\n", name);
         free(object);
-        return 0;
+        return 77;
     }
     for (int i = 0; i < 3; ++i) {
         snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)starts[i]);
@@ -233,11 +233,13 @@ int main(int argc, char** argv) {
         HostUcArch arch;
     } all[] = {{"riscv64", HOSTUC_RV64}, {"ppc64le", HOSTUC_PPC64LE}, {"mips64el", HOSTUC_MIPS64EL},
                {"loongarch64", HOSTUC_LA64}};
-    int failed = 0;
+    int failed = 0, skipped = 0, ran = 0;
     for (size_t k = 0; k < sizeof all / sizeof *all; ++k) {
         int asked = argc < 2;
         for (int a = 1; a < argc; ++a) asked |= !strcmp(argv[a], all[k].name);
-        if (asked) failed |= machine(all[k].name, all[k].arch);
+        if (!asked) continue;
+        int rc = machine(all[k].name, all[k].arch);
+        failed |= rc == 1, skipped += rc == 77, ran += rc != 77;
     }
-    return failed;
+    return failed ? 1 : skipped && !ran ? 77 : 0;
 }
