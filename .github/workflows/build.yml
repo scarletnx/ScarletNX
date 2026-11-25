@@ -497,8 +497,8 @@ jobs:
       - *fail-fast-mark
 
   # The QEMU side of the A64 differential, recorded once for the cross jobs, which can't run qemu-aarch64 beside
-  # their own qemu-user. A pull request records it where it changes what the differential tests; a skip is named
-  # with recompiler-changes' reason
+  # their own qemu-user, and for Windows and macOS, which have none. A pull request records it where it changes what the
+  # differential tests; a skip is named with recompiler-changes' reason
   qemu-reference:
     name: >-
       ${{ needs.recompiler-changes.outputs.differential == 'false'
@@ -536,6 +536,8 @@ jobs:
       - *caches-env
       - name: Build the differential and its runner
         run: scripts/ci/linux.sh qemu_reference_build
+      # what QEMU makes of the words, whichever back end the host that reads it has: this host's native one is held to it
+      # as it is recorded
       - name: Record the A64 differential's QEMU reference
         run: scripts/ci/linux.sh qemu_reference_record
       - uses: actions/upload-artifact@v7
@@ -730,6 +732,10 @@ jobs:
   # x86-64 and AArch64 (MSYS2's CLANGARM64); the x86-64 leg keeps the name the branch rules require
   windows:
     name: Windows (Clang + LLVM${{ matrix.arch == 'aarch64' && ', aarch64' || '' }})
+    needs: qemu-reference
+    # without a reference to run against (a build with no tests, or a job that failed), the differential's test is
+    # skipped, saying so
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025-vs2026' }}
     timeout-minutes: 90
     continue-on-error: ${{ matrix.arch == 'aarch64' }}
@@ -744,6 +750,12 @@ jobs:
       - *commit
       - *nightly-name
       - uses: actions/checkout@v7
+      # The qemu-reference job's recorded QEMU side of the A64 differential: Windows has no qemu-aarch64
+      - if: needs.qemu-reference.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          path: reference
       - name: Cancel the run when another job fails
         shell: bash
         env:
@@ -965,6 +977,9 @@ jobs:
   # (V380-Ori/Ryujinx.MoltenVK), its release's tars by the SHA-256 GitHub lists
   apple:
     name: macOS and iOS (arm64)
+    needs: qemu-reference
+    # as the Windows job's: without a reference, the differential's test is skipped, saying so
+    if: ${{ !cancelled() }}
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -977,6 +992,12 @@ jobs:
       - *nightly-name
       - uses: actions/checkout@v7
       - *fail-fast-watch
+      # The qemu-reference job's recorded QEMU side of the A64 differential: macOS has no qemu-aarch64
+      - if: needs.qemu-reference.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          path: reference
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
