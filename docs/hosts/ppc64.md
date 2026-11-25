@@ -244,6 +244,13 @@ cmake --preset linux-ppc64-g5-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-ppc64-g5-cross
 ```
 
+The recompiler's own back end takes more: its code reads and writes the guest's doublewords with `ldbrx` and `stdbrx`,
+which are ISA 2.06's (POWER7) and the Cell's, and calls as ELFv2 does. On another processor, which the kernel's
+`AT_HWCAP` tells (neither `PPC_FEATURE_ARCH_2_06` nor `PPC_FEATURE_CELL`: POWER4 to POWER6, the 970, PA6T, and NXP's
+e5500 and e6500), and in an ELFv1 build, LLVM makes the code, and the recompile and the run's log say what the host has
+(`cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0xdc080000 (ppc970)`, `abi: needs ELFv2, this build
+has ELFv1`).
+
 What changes before POWER8:
 
 - **STXP's 16-byte compare-and-swap goes through the runtime** (`RtAPI.cas128`, `common/runtime/cas128.c`), as on
