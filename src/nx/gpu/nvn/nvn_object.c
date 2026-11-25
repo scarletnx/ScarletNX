@@ -838,21 +838,26 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
     (void)c;
     return NVN_OBJ(const NvnDescPool, sp)->count;
 }
-/* A texture descriptor written over another. The game writes it between two submissions, and the GPU thread may still
-   replay the work before them, with no write tracking epoch between (one Ounce game's menus and loads register new
-   textures at indices its last frame sampled others at). That replay reads the descriptor as it binds, so it would draw
-   with the new texture: the write waits for the work submitted before it, as a sampler's does (sampler_write). Recorded
-   as a GPU-side write of its 32 bytes, so what the renderer keeps of the descriptor (the texture memo, the pool map)
-   checks it again at its next lookup, not only after the next submission. The descriptor the slot already holds is no
-   write, and no wait */
-static void texture_write(u64 slot, const u32 tic[8]) {
-    if (!memcmp(GP(slot), tic, NVN_DESCRIPTOR_SIZE)) return;
+/* A descriptor written over another, a texture's or a sampler's. The game writes it between two submissions, and the
+   GPU thread may still replay the work before them, which reads the descriptor as it binds: it would draw with the new
+   one (one Ounce game's menus and loads register new textures at indices its last frame sampled others at; one game's
+   bloom reuses a sampler entry per mip level each frame, read other levels and went white). The write goes into the
+   replay's order (nvn_replay_write), so that work reads the old one, and the game goes on. A wait for the replay at
+   each write instead (nvn_replay_finish_all) took the GPU's work away between an Ounce game's frames: it idled 3.6 ms
+   a present, against 1.3 ms. The wait stays for what the order can't take (no free work slots, the writes' ring full).
+   Recorded as a GPU-side write of its 32 bytes, so what the renderer keeps of the descriptor (the texture memo, the
+   pool map) checks it again at its next lookup, not only after the next submission. The descriptor the slot already
+   holds is no write, unless a write before it is still queued (memory doesn't hold that one yet) */
+static void descriptor_write(u64 slot, const u32 desc[8]) {
+    if (!nvn_replay_writes_pending() && !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE)) return;
+    if (nvn_replay_write(slot, desc, NVN_DESCRIPTOR_SIZE)) return;
     kthread_host_wait_begin();
     nvn_replay_finish_all();
     kthread_host_wait_end();
-    memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
+    memcpy(GP(slot), desc, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
+static void texture_write(u64 slot, const u32 tic[8]) { descriptor_write(slot, tic); }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
 static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u64 slot = desc_slot(tp, id, "texture");
@@ -879,20 +884,8 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;
     register_texture(tp, id, t, v, 1);
 }
-/* A sampler descriptor written over another that the submitted work may still read. The game reuses a pool entry as
-   soon as the console's GPU is past the work that read it, which the replay can still have ahead of it: its draws would
-   read the new sampler (one game's bloom reuses an entry per mip level each frame, read other levels and went white).
-   So the write waits for the work submitted before it, as far as that goes without the game (a queue stopped at an
-   event the game signals after this call reads the new sampler behind that wait on the console too), and is recorded
-   for the renderer's kept descriptors. The descriptor the slot already holds changes nothing for that work: no wait */
-static void sampler_write(u64 slot, const u32 tsc[8]) {
-    if (!memcmp(GP(slot), tsc, NVN_DESCRIPTOR_SIZE)) return;
-    kthread_host_wait_begin();
-    nvn_replay_finish_all();
-    kthread_host_wait_end();
-    memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
-    gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
-}
+/* a sampler descriptor written over another: as a texture's (descriptor_write) */
+static void sampler_write(u64 slot, const u32 tsc[8]) { descriptor_write(slot, tsc); }
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
     u64 slot = desc_slot(sp, id, "sampler");
     u32 tsc[8];
