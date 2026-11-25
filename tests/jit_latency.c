@@ -6,7 +6,7 @@
    MANIFEST rows: hex base, text offset, text size, added-image flag, file relative to the manifest.
    AOT_ADDRESSES is the host-endian u64 table of known entries. ROOTS has hex PCs, one per line.
    Captured images, tables, profiles and reports stay outside the repository. */
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <stdio.h>
 #include <stdlib.h>

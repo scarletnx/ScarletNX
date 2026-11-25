@@ -23,7 +23,7 @@
 #     src/common/cpu/recompiler/CMakeLists.txt): a consumer links it with a linker that may not read this Clang's
 #     bitcode.
 #   - zlib's libz.a (snx_no_lto in cmake/zlib.cmake), which FFmpeg's configure links a check against with no -flto.
-#   - the runtime library of the game modules (rtlib and armlib in src/common/cpu/recompiler/llvm/): custom commands
+#   - the runtime library of the game modules (rtlib and armlib in src/common/cpu/recompiler/rtlib/): custom commands
 #     that compile with their own flags, which this file does not change.
 include_guard(GLOBAL)
 

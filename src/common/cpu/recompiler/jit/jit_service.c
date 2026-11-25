@@ -4,7 +4,7 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/compile_thread.h"
@@ -12,10 +12,10 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include <llvm-c/TargetMachine.h>
 #include <llvm/Config/llvm-config.h>
 #include <stdio.h>

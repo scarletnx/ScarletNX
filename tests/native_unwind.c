@@ -13,7 +13,7 @@
    with the same table: support/host_win64.c's on x86-64, support/arm64_unwinder.h's under Unicorn; there is no longjmp */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #if defined(SNX_TEST_ARM64WIN)
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"

@@ -6,7 +6,7 @@
    the blocks', as an AOT module's index has them */
 #include "common/cpu/arm/aot.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/platform/dl.h"

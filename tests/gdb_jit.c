@@ -6,8 +6,8 @@
    addresses the load gave them; a loader's free takes out its entries alone, another JIT's among them kept; and GDB's
    breakpoint called once per change, with the entry and the action. Skipped on Windows (no registration) and where
    the loader cannot run what it loads */
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -21,7 +21,7 @@ int main(void) {
     return 77;
 }
 #else
-#include "common/cpu/recompiler/llvm/elf_object.h" /* Elf64_* on every ELF host and macOS */
+#include "common/cpu/recompiler/object/elf_object.h" /* Elf64_* on every ELF host and macOS */
 
 /* GDB's, as gdb_jit.c declares them */
 enum { JIT_NOACTION, JIT_REGISTER_FN, JIT_UNREGISTER_FN };

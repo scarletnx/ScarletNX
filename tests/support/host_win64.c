@@ -15,8 +15,8 @@
 #define _GNU_SOURCE /* the signal's registers */
 #include "support/host_near.h"
 #include "support/host_unicorn.h"
-#include "common/cpu/recompiler/llvm/code_loader_int.h"
-#include "common/cpu/recompiler/llvm/coff_defs.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
 #include "common/utilities/bits.h"
 #include <signal.h>
 #include <stdio.h>

@@ -4,8 +4,8 @@
    the reader hands the AOT build its metadata and object, and a wrong key or a
    cut-off record is refused instead of linked. */
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include <llvm-c/TargetMachine.h>
 #include <stdio.h>

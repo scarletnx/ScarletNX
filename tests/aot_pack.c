@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/utilities/common.h"
 
 static void put32(unsigned char* p, uint32_t v) {

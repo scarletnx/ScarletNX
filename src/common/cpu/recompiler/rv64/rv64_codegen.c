@@ -9,8 +9,8 @@
    ELF RISC-V: a call R_RISCV_CALL_PLT (AUIPC and JALR, a tail call's of t6 and x0), resolved here where the callee is
    this object's own; snx_stale's address an R_RISCV_64 in the code */
 #include "common/cpu/recompiler/rv64/rv64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"

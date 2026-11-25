@@ -12,8 +12,8 @@
    never changes r2 and the nop after it stays one. A MIPS64 module has the ABI's GOT, which the dynamic loader
    relocates itself: two reserved slots, the GOT_PAGE pages, then the symbols' slots, every one local (its DT_MIPS_*
    tags), so only addresses in data take a dynamic relocation, R_MIPS_REL32 with R_MIPS_64. */
-#include "common/cpu/recompiler/llvm/link_internal.h"
-#include "common/cpu/recompiler/llvm/elf_hash.h"
+#include "common/cpu/recompiler/object/link_internal.h"
+#include "common/cpu/recompiler/object/elf_hash.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -34,7 +34,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     return -1;
 }
 #else
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #ifndef DT_RELACOUNT
 #define DT_RELACOUNT 0x6ffffff9
 #endif

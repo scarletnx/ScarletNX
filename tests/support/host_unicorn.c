@@ -5,9 +5,9 @@
 #include "support/arm64_unwinder.h"
 #include "support/host_near.h"
 #include "support/la64_interp.h"
-#include "common/cpu/recompiler/llvm/code_loader_int.h"
-#include "common/cpu/recompiler/llvm/coff_defs.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>

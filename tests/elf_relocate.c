@@ -8,8 +8,8 @@
    load larger than B's reach, on the veneers after each object's code), and GOT slots must hold their symbols'
    addresses. An arena sized by snx_code_need must hold what it counted. */
 #include "common/utilities/common.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
-#include "common/cpu/recompiler/llvm/code_loader_int.h" /* the regions' use, against snx_code_need's */
+#include "common/cpu/recompiler/object/elf_object.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h" /* the regions' use, against snx_code_need's */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <llvm-c/Target.h>
 #include <stddef.h>

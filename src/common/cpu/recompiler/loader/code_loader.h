@@ -53,10 +53,10 @@
    (pthread_jit_write_protect_np). The loading thread sees it writable while it writes a load, every other thread
    executable, so no thread can write and run it at once, and nothing loaded may run on the loading thread during
    snx_code_load (the resolver included). Not iOS, where an app may not make memory executable */
-#ifndef SNX_RECOMPILER_LLVM_CODE_LOADER_H
-#define SNX_RECOMPILER_LLVM_CODE_LOADER_H
+#ifndef SNX_RECOMPILER_LOADER_CODE_LOADER_H
+#define SNX_RECOMPILER_LOADER_CODE_LOADER_H
 #include "common/utilities/common.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 
 typedef struct SnxCodeLoader SnxCodeLoader;
 

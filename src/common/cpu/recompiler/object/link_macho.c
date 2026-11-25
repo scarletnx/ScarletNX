@@ -14,8 +14,8 @@
    "_snx_module" too.
    Written from the formats <mach-o/loader.h>, <mach-o/nlist.h> and <mach-o/arm64/reloc.h> document, and the code
    signature's (<kern/cs_blobs.h>). The structures are read and written byte by byte, so this builds anywhere */
-#include "common/cpu/recompiler/llvm/elf_object.h"
-#include "common/cpu/recompiler/llvm/link_internal.h"
+#include "common/cpu/recompiler/object/elf_object.h"
+#include "common/cpu/recompiler/object/link_internal.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stdio.h>

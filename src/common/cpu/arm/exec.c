@@ -13,9 +13,9 @@
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>

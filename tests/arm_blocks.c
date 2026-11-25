@@ -15,7 +15,7 @@
    place of --pool it takes --opt 0|2, the passes' level, and --break before|after, the module spoiled there for the
    verifier to refuse (arm_llvm_checks.py) */
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "support/arm_back.h"
 #if defined(SNX_TEST_NATIVE)
 #define SNX_TEST_SWAP_ARM 1

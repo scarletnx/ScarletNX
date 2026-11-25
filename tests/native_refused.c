@@ -13,7 +13,7 @@
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/la64/la64_codegen.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/mips64/mips64_codegen.h"
 #include "common/cpu/recompiler/mips64/mips64be_codegen.h"
 #include "common/cpu/recompiler/ppc64/ppc64_codegen.h"

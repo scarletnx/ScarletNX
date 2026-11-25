@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The game module from the LLVM backend: what module.c and toolchain.c produce through C and Clang, written directly
-   (LLVM IR per chunk, compiled in parallel, linked with the runtime library by recompiler/llvm/link.c) */
+   (LLVM IR per chunk, compiled in parallel, linked with the runtime library by recompiler/object/link.c) */
 #ifndef SNX_NX_MODULE_LLVM_H
 #define SNX_NX_MODULE_LLVM_H
 
@@ -12,7 +12,7 @@ typedef struct {
     const char* output; /* <Game>_code.so or .dll, replaced only by a complete module */
     /* The target triple of a module made for another machine than this one, which the JIT loader loads instead of
        dlopen (iOS: arm64-apple-ios16.0-elf, the object format the loader reads): then output is a pack of the
-       module's objects without the runtime library (recompiler/llvm/objects_pack.h), which the loading app has for its
+       module's objects without the runtime library (recompiler/object/objects_pack.h), which the loading app has for its
        own machine. NULL: a module for this host */
     const char* triple;
     char opt;           /* -O letter */

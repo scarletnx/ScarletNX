@@ -4,8 +4,8 @@
    resolution, relocation and the AArch64 and PowerPC64 veneers for link_elf.c and code_loader.c */
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L /* snprintf */
-#include "common/cpu/recompiler/llvm/elf_object.h"
-#include "common/cpu/recompiler/llvm/link_internal.h"
+#include "common/cpu/recompiler/object/elf_object.h"
+#include "common/cpu/recompiler/object/link_internal.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>

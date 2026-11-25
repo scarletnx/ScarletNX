@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (recompiler/llvm/jit_service.c) driven as the runtime drives it: A64 functions in a guest memory
+/* The runtime JIT (recompiler/jit/jit_service.c) driven as the runtime drives it: A64 functions in a guest memory
    buffer, a dispatch table with one "AOT" function (a host function standing in for the module's), and an RtAPI whose
    miss waits for the service's code, as rtapi.c's does. Checks that a miss gets the code of the pc, which a compile
    thread compiles with what it calls, and later calls run the published code without a miss. That the compiled code calls the AOT function directly
@@ -17,8 +17,8 @@
    code changed (and compiles the new code), and reads the records before one a run left unfinished. A change in the
    middle of a function drops its whole unit, and a callee invalidated then compiled again by a later caller's batch is
    published, so the batches after it don't compile it again */
-#include "common/cpu/recompiler/llvm/jit_service.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <pthread.h>

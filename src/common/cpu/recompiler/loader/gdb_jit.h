@@ -7,8 +7,8 @@
    is told of each removal. On Linux the same loads can also name their code for perf (snx_gdb_jit_perf_map), without
    changing what GDB sees: perf gets one map line per load, and the map keeps the lines of loads that are gone because
    perf still has samples that their code took */
-#ifndef SNX_RECOMPILER_LLVM_GDB_JIT_H
-#define SNX_RECOMPILER_LLVM_GDB_JIT_H
+#ifndef SNX_RECOMPILER_LOADER_GDB_JIT_H
+#define SNX_RECOMPILER_LOADER_GDB_JIT_H
 #include <stddef.h>
 
 /* Registration on, for the rest of the process: once, before the first load and the threads that load. Nothing on

@@ -9,10 +9,10 @@
    arena whose code is only read, never run: a call to a table symbol lands on it directly when in reach, else on a stub
    through its slot */
 #include "common/utilities/common.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/coff_defs.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include <llvm-c/Target.h>
 #include <stdio.h>
 #include <stdlib.h>

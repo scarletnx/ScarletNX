@@ -14,10 +14,10 @@ if(CMAKE_CROSSCOMPILING)
     set(snx_rtlib_gen "${CMAKE_CURRENT_BINARY_DIR}/snx-rtlib-gen-host")
     add_custom_command(OUTPUT "${snx_rtlib_gen}"
         COMMAND "${SNX_HOST_CC}" -std=gnu23 -O1 -w -I "${PROJECT_SOURCE_DIR}/src"
-            "${CMAKE_CURRENT_SOURCE_DIR}/rtlib_gen.c" -o "${snx_rtlib_gen}"
-        DEPENDS rtlib_gen.c VERBATIM)
+            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib_gen.c" -o "${snx_rtlib_gen}"
+        DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib_gen.c" VERBATIM)
 else()
-    add_executable(snx-rtlib-gen rtlib_gen.c)
+    add_executable(snx-rtlib-gen "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib_gen.c")
     set(snx_rtlib_gen snx-rtlib-gen)
 endif()
 # No -march=native: the recompiler builds modules for the machine it runs on, which is often not the one that built
@@ -74,9 +74,9 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
 endif()
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib${CMAKE_C_OUTPUT_EXTENSION}"
     COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_object_base} ${snx_rtlib_object_flags} -I "${CMAKE_CURRENT_BINARY_DIR}"
-        -I "${PROJECT_SOURCE_DIR}/src" -c "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
+        -I "${PROJECT_SOURCE_DIR}/src" -c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c"
         -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib${CMAKE_C_OUTPUT_EXTENSION}"
-    DEPENDS rtlib.c libc.inc ${snx_rtlib_sources} VERBATIM)
+    DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/libc.inc" ${snx_rtlib_sources} VERBATIM)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c"
     COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/rtlib${CMAKE_C_OUTPUT_EXTENSION}"
         "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c" snx_rtlib_object
@@ -118,9 +118,9 @@ if(snx_clang_major GREATER snx_llvm_major)
     endif()
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll"
         COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -g0 -emit-llvm -S -I "${CMAKE_CURRENT_BINARY_DIR}"
-            -I "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
+            -I "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c"
             -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll"
-        DEPENDS rtlib.c libc.inc ${snx_rtlib_sources} VERBATIM)
+        DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/libc.inc" ${snx_rtlib_sources} VERBATIM)
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll"
         COMMAND "${CMAKE_COMMAND}" -DINPUT=${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll
@@ -132,9 +132,9 @@ if(snx_clang_major GREATER snx_llvm_major)
 else()
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
         COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -emit-llvm -I "${CMAKE_CURRENT_BINARY_DIR}"
-            -I "${PROJECT_SOURCE_DIR}/src" -c "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
+            -I "${PROJECT_SOURCE_DIR}/src" -c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c"
             -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
-        DEPENDS rtlib.c libc.inc ${snx_rtlib_sources} VERBATIM)
+        DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/rtlib.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/libc.inc" ${snx_rtlib_sources} VERBATIM)
 endif()
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
@@ -148,22 +148,24 @@ file(GLOB snx_armlib_sources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/common
 # The AArch32 JIT loads it on powerpc64 alone (cpu/arm/exec.c)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
     COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -I "${PROJECT_SOURCE_DIR}/src"
-        -c "${CMAKE_CURRENT_SOURCE_DIR}/armlib.c" -o "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
-    DEPENDS armlib.c libc.inc ${snx_armlib_sources} ${snx_rtlib_sources} VERBATIM)
+        -c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/armlib.c" -o "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/armlib.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/rtlib/libc.inc" ${snx_armlib_sources} ${snx_rtlib_sources} VERBATIM)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c"
     COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}"
         "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c" snx_armlib_object
     DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/armlib${CMAKE_C_OUTPUT_EXTENSION}" VERBATIM)
 
-add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c
-    ir_int.c ir_sail.c ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c link.c link_elf.c link_coff.c link_macho.c elf_object.c objects_pack.c
-    code_loader.c code_loader_coff.c gdb_jit.c jit_service.c jit_cache.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
+add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c ir_int.c ir_sail.c
+    ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c ../object/link.c ../object/link_elf.c
+    ../object/link_coff.c ../object/link_macho.c ../object/elf_object.c ../object/objects_pack.c
+    ../loader/code_loader.c ../loader/code_loader_coff.c ../loader/gdb_jit.c ../jit/jit_service.c ../jit/jit_cache.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
     "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c" "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     "${CMAKE_CURRENT_BINARY_DIR}/armlib_object.c")
 set_target_properties(snx_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 # The object loader needs no LLVM headers: strict ISO C23 (RFC #142), after the target's -std
-set_source_files_properties(elf_object.c code_loader.c code_loader_coff.c gdb_jit.c PROPERTIES COMPILE_OPTIONS "-std=c23;-pedantic-errors")
+set_source_files_properties(../object/elf_object.c ../loader/code_loader.c ../loader/code_loader_coff.c
+    ../loader/gdb_jit.c PROPERTIES COMPILE_OPTIONS "-std=c23;-pedantic-errors")
 target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_llvm PRIVATE _CRT_SECURE_NO_WARNINGS)

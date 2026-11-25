@@ -6,8 +6,8 @@
    the System V ABI's ELF chapters (generic ABI 4.1: the header, sections, symbols, relocations) and the processor
    supplements' relocation numbers (x86-64 psABI 4.4, ELF for the Arm 64-bit Architecture 5.7, 64-bit ELF V2 ABI for
    Power 3.5). Only the names those files use: elf_object.h defines the AArch64 relocations it writes itself */
-#ifndef SNX_RECOMPILER_LLVM_ELF_DEFS_H
-#define SNX_RECOMPILER_LLVM_ELF_DEFS_H
+#ifndef SNX_RECOMPILER_OBJECT_ELF_DEFS_H
+#define SNX_RECOMPILER_OBJECT_ELF_DEFS_H
 #include <stdint.h>
 
 typedef uint16_t Elf64_Half;

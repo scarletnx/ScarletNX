@@ -4740,7 +4740,7 @@ if(TARGET OpenSSL::Crypto)
                     -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
                 DEPENDS link_macho_fixture.c VERBATIM)
         endforeach()
-        set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm")
+        set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/object")
         set(snx_macho_objects)
         foreach(object 1 2 3 4 elf_1 elf_2 elf_3 elf_4 elf_5 elf_6 elf_7)
             list(APPEND snx_macho_objects "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${object}.o")

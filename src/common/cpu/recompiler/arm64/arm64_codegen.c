@@ -16,7 +16,7 @@
    registers Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
    prologue and the epilogues (x64_elf.c), a frame of a page or more read page by page first (the guard page's) */
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -31,7 +31,7 @@
 /* not on Windows on another machine, whose tests run none of its code */
 #if !defined(_WIN32) || defined(__aarch64__)
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif

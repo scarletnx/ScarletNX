@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The JIT loader's insides (code_loader.h), shared by code_loader.c (the arena, ELF objects) and code_loader_coff.c
    (COFF objects) */
-#ifndef SNX_RECOMPILER_LLVM_CODE_LOADER_INT_H
-#define SNX_RECOMPILER_LLVM_CODE_LOADER_INT_H
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#ifndef SNX_RECOMPILER_LOADER_CODE_LOADER_INT_H
+#define SNX_RECOMPILER_LOADER_CODE_LOADER_INT_H
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include <stdint.h>
 
 /* the arena's regions, in address order (code_loader.h) */

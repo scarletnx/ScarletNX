@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #if !defined(_WIN32) && !defined(__APPLE__)
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>

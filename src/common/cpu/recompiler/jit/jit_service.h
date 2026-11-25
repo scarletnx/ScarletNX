@@ -40,8 +40,8 @@
    is. Removing one (the game unmaps the NRO) waits for the batches reading it and forgets its pcs.
 
    Not NX-specific: gnuabi's execution can create one too, with its code ranges and table */
-#ifndef SNX_RECOMPILER_LLVM_JIT_SERVICE_H
-#define SNX_RECOMPILER_LLVM_JIT_SERVICE_H
+#ifndef SNX_RECOMPILER_JIT_JIT_SERVICE_H
+#define SNX_RECOMPILER_JIT_JIT_SERVICE_H
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/aarch64/cpu.h"
 

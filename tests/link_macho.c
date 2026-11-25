@@ -9,8 +9,8 @@
    else under Unicorn, the image at an address of its own with its rebases applied. Then objects the linker refuses,
    each with words of the reason it must give.
    Usage: link_macho part1.o part2.o out.dylib elf1.o elf2.o elf_weak.o [refused.o reason]... */
-#include "common/cpu/recompiler/llvm/elf_object.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/elf_object.h"
+#include "common/cpu/recompiler/object/link.h"
 #ifdef SNX_TEST_UNICORN
 #include "support/host_unicorn.h"
 #endif

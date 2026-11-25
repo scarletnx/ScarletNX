@@ -61,7 +61,7 @@
     defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X) ||    \
     defined(SNX_TEST_WIN64)
 #define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "support/host_unicorn.h"
 #define SNX_TEST_SWAP_CPU 1
 #include "support/swap_state.h"
