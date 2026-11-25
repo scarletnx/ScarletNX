@@ -452,6 +452,35 @@ static void password_others_read(void) {
     free(root);
 #endif
 }
+/* online.ini with another version's key, a sign-in's: the password read past it, the key named, never its value; with
+   no room to join, nothing said */
+static void password_other_key(void) {
+    static const char text[] = "sign_in=FAKE-TOKEN\nroom_password=s3cret\n";
+    char *root = data_folder(""), *app = snx_path_join(root, ".scarletnx"), was[sizeof g_settings.local_wireless];
+    char *users = snx_path_join(app, "users"), *online = snx_path_join(users, "online.ini");
+    memcpy(was, g_settings.local_wireless, sizeof was);
+    assert(!snx_write_file(online, text, sizeof text - 1));
+#ifndef _WIN32
+    assert(!chmod(online, 0600));
+#endif
+    snx_error_sink(said);
+    for (int room = 0; room < 2; ++room) {
+        snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", room ? "room" : "lan");
+        g_said[0] = 0;
+        snx_ctr_uds_settings(app);
+        assert(!strcmp(g_said, room ? "3ds uds: users/online.ini: this version reads room_password (set) and no other "
+                                      "key: sign_in\n"
+                                    : ""));
+    }
+    snx_error_sink(NULL);
+    g_said[0] = 0;
+    memcpy(g_settings.local_wireless, was, sizeof was);
+    assert(!snx_remove_tree(root));
+    free(online);
+    free(users);
+    free(app);
+    free(root);
+}
 /* The variables an older version read for the room, its password and the nickname (docs/user/deprecations.md): still read
    over the settings, each said once a run with what the run takes */
 static void old_variables(void) {
@@ -756,6 +785,7 @@ int main(int argc, char** argv) {
         fake_room_stop(room);
         join_failures();
         password_others_read();
+        password_other_key();
         old_variables();
     }
     assert(!snx_remove_tree(data));

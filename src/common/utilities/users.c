@@ -20,6 +20,8 @@
 #define USERS_FIRST_NAME "Player"
 #define ONLINE_FILE      "online.ini"
 #define ONLINE_PASSWORD  255 /* a room password's bytes, at most */
+#define ONLINE_COMMENT   "; the password of the Eden room ldn=room joins (docs/user/settings.md)"
+#define ONLINE_NAMED     8 /* the keys online_said names, at most */
 
 SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
@@ -850,12 +852,39 @@ static int write_private(const char* path, const char* text) {
     return (close(fd) != 0) | failed;
 #endif
 }
+/* online.ini's keys that are neither room_password nor a mistake of it (a key that starts with room_): another
+   version's, or another program's, which this one keeps and reads nothing of. Their values can be secrets */
+typedef struct {
+    char names[ONLINE_NAMED * 36];
+    int count;
+} OnlineOthers;
+static int online_mistake(const char* key) { return !strncmp(key, "room_", 5); }
+/* key, read on the file's line, among o's: by its name, or by the line where the text before its = is no key's name
+   (small letters, digits and _, 32 at most), which could be a secret's */
+static void online_other(OnlineOthers* o, const char* key, int line) {
+    size_t n = strspn(key, "abcdefghijklmnopqrstuvwxyz0123456789_"), at = strlen(o->names);
+    if (o->count++ >= ONLINE_NAMED) return;
+    if (n && n <= 32 && !key[n])
+        snprintf(o->names + at, sizeof o->names - at, "%s%s", at ? ", " : "", key);
+    else
+        snprintf(o->names + at, sizeof o->names - at, "%sline %d", at ? ", " : "", line);
+}
+/* what a reading of online.ini says of them, "" for none */
+static void online_said(const OnlineOthers* o, int password, char* why, size_t why_size) {
+    char more[32] = "";
+    if (o->count > ONLINE_NAMED) snprintf(more, sizeof more, " and %d more", o->count - ONLINE_NAMED);
+    why[0] = 0;
+    if (o->count)
+        snprintf(why, why_size, "users/" ONLINE_FILE ": this version reads room_password (%s) and no other key: %s%s",
+                 password ? "set" : "none", o->names, more);
+}
 int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size) {
     char *path = snx_path_join(dir, ONLINE_FILE), *text = NULL, *key, *value;
+    OnlineOthers others = {0};
     size_t length;
     SnxIni ini;
     int rc = -1;
-    password[0] = 0;
+    password[0] = why[0] = 0;
     if (!path) {
         snprintf(why, why_size, "out of memory");
         goto done;
@@ -885,8 +914,12 @@ int snx_users_room_password(const char* dir, char* password, size_t size, char* 
             goto done;
         }
         if (strcmp(key, "room_password")) {
-            snprintf(why, why_size, "%s: %s is not a setting: room_password", path, key);
-            goto done;
+            if (online_mistake(key)) {
+                snprintf(why, why_size, "%s: %s is not a setting: room_password", path, key);
+                goto done;
+            }
+            online_other(&others, key, ini.line);
+            continue;
         }
         if (strlen(value) >= size) {
             snprintf(why, why_size, "%s: room_password is longer than %u bytes", path, (unsigned)size - 1);
@@ -894,36 +927,99 @@ int snx_users_room_password(const char* dir, char* password, size_t size, char* 
         }
         strcpy(password, value);
     }
+    online_said(&others, password[0] != 0, why, why_size);
     rc = 0;
 done:
     free(text);
     free(path);
     return rc;
 }
-/* online.ini's text, as room_password reads it: 1 when it holds nothing but that key, the file missing too, else 0 */
-static int online_is_room(const char* path, char* why, size_t why_size) {
-    size_t length;
-    char *text = snx_is_file(path) ? (char*)snx_read_file(path, &length) : snx_strdup(""), *key, *value;
+/* online.ini's text of size bytes, which it can set room_password in: 1, else 0 with why. Not one with a section, a key
+   that is a mistake of room_password or a NUL, which a reading stops at */
+static int online_settable(const char* path, const char* text, size_t size, char* why, size_t why_size) {
+    const char* nul = (const char*)memchr(text, 0, size);
+    char *copy, *key, *value;
     SnxIni ini;
-    int only = 0;
-    if (!text) {
-        snprintf(why, why_size, "%s could not be read", path);
+    int only = 1;
+    if (nul) {
+        snprintf(why, why_size, "%s is not text, its byte %zu is NUL: nothing is written to it", path,
+                 (size_t)(nul - text));
         return 0;
     }
-    snx_ini_start(&ini, text);
-    for (only = 1; only && snx_ini_next(&ini, &key, &value);)
-        if (ini.section[0] || strcmp(key, "room_password")) {
+    copy = snx_strdup(text);
+    if (!copy) {
+        snprintf(why, why_size, "out of memory");
+        return 0;
+    }
+    snx_ini_start(&ini, copy);
+    while (only && snx_ini_next(&ini, &key, &value))
+        if (ini.section[0] || (strcmp(key, "room_password") && online_mistake(key))) {
             snprintf(why, why_size, "%s has %s%s%s, which is not room_password: it stays as it is", path,
                      ini.section[0] ? "[" : "", ini.section[0] ? ini.section : key, ini.section[0] ? "]" : "");
             only = 0;
         }
-    free(text);
+    free(copy);
     return only;
 }
-int snx_users_room_password_set(const char* dir, const char* password, char* why, size_t why_size) {
-    char *path = snx_path_join(dir, ONLINE_FILE), *staged = NULL, *text = NULL, *again, *key, *value, *c;
+/* the line of the next room_password ini reads, 0 for none, its value in *value */
+static int online_password_line(SnxIni* ini, char** value) {
+    char* key;
+    while (snx_ini_next(ini, &key, value))
+        if (!strcmp(key, "room_password")) return ini->line;
+    return 0;
+}
+/* online.ini's text with password as its room_password, or with none for "", owned and NUL-terminated; NULL out of
+   memory. Every other line stays byte for byte, and in place: the password, under its comment, goes where the first of
+   its lines was, else at the end. *kept: whether a line that is not blank is left beside it */
+static char* online_text(const char* text, const char* password, int* kept) {
+    size_t size = strlen(text), out = 0, n;
+    char *copy = snx_strdup(text), *value;
+    char* set = *password ? snx_format(ONLINE_COMMENT "\nroom_password=%s\n", password) : snx_strdup("");
+    char* made = set ? (char*)malloc(size + strlen(set) + 2) : NULL; /* and a newline before it, and the NUL */
+    const char *line = text, *end;
     SnxIni ini;
-    int rc = -1;
+    int number = 1, next, placed = 0;
+    *kept = 0;
+    if (!copy || !made) {
+        free(made);
+        made = NULL;
+        goto done;
+    }
+    snx_ini_start(&ini, copy);
+    next = online_password_line(&ini, &value);
+    for (; *line; line = end, ++number) {
+        end = strchr(line, '\n');
+        end = end ? end + 1 : line + strlen(line);
+        n = strcspn(line, "\r\n");
+        if (number == next || (n == sizeof ONLINE_COMMENT - 1 && !memcmp(line, ONLINE_COMMENT, n))) {
+            if (number == next) next = online_password_line(&ini, &value);
+            if (!placed) {
+                memcpy(made + out, set, strlen(set));
+                out += strlen(set);
+                placed = 1;
+            }
+            continue;
+        }
+        memcpy(made + out, line, (size_t)(end - line));
+        out += (size_t)(end - line);
+        *kept |= line[strspn(line, " \t\r")] != '\n' && line[strspn(line, " \t\r")] != 0;
+    }
+    if (!placed) {
+        if (*set && out && made[out - 1] != '\n') made[out++] = '\n';
+        memcpy(made + out, set, strlen(set));
+        out += strlen(set);
+    }
+    made[out] = 0;
+done:
+    free(set);
+    free(copy);
+    return made;
+}
+int snx_users_room_password_set(const char* dir, const char* password, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, ONLINE_FILE), *staged = NULL, *was = NULL, *text = NULL, *again, *value, *c;
+    size_t was_size = 0;
+    SnxIni ini;
+    int rc = -1, kept, same;
     if (!path || !(staged = snx_format("%s.new", path))) {
         snprintf(why, why_size, "out of memory");
         goto done;
@@ -938,8 +1034,18 @@ int snx_users_room_password_set(const char* dir, const char* password, char* why
         snprintf(why, why_size, "a room's password has no control character, not byte %#x", (unsigned char)*c);
         goto done;
     }
-    if (!online_is_room(path, why, why_size)) goto done;
-    if (!*password) { /* none: the file away */
+    was = snx_is_file(path) ? (char*)snx_read_file(path, &was_size) : snx_strdup("");
+    if (!was) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    if (!online_settable(path, was, was_size, why, why_size)) goto done;
+    text = online_text(was, password, &kept);
+    if (!text) {
+        snprintf(why, why_size, "out of memory");
+        goto done;
+    }
+    if (!*password && !kept) { /* none, and nothing else in it: the file away */
         if (snx_is_file(path) && remove(path)) {
             snprintf(why, why_size, "%s could not be taken away", path);
             goto done;
@@ -947,22 +1053,20 @@ int snx_users_room_password_set(const char* dir, const char* password, char* why
         rc = 0;
         goto done;
     }
-    text = snx_format("; the password of the Eden room ldn=room joins (docs/user/settings.md)\nroom_password=%s\n",
-                      password);
-    if (!text) {
-        snprintf(why, why_size, "out of memory");
-        goto done;
-    }
     /* what its reader reads back: not the spaces at either end, nor a value that is no value of it */
-    again = snx_strdup(text);
-    if (again) {
-        snx_ini_start(&ini, again);
-        if (!snx_ini_next(&ini, &key, &value) || strcmp(value, password)) {
-            snprintf(why, why_size, "a room's password has no space at either end");
-            free(again);
+    if (*password) {
+        again = snx_strdup(text);
+        if (!again) {
+            snprintf(why, why_size, "out of memory");
             goto done;
         }
+        snx_ini_start(&ini, again);
+        same = online_password_line(&ini, &value) && !strcmp(value, password);
         free(again);
+        if (!same) {
+            snprintf(why, why_size, "a room's password has no space at either end");
+            goto done;
+        }
     }
     if (snx_mkdirs(dir)) {
         snprintf(why, why_size, "%s could not be made", dir);
@@ -976,6 +1080,7 @@ int snx_users_room_password_set(const char* dir, const char* password, char* why
     }
     rc = 0;
 done:
+    free(was);
     free(text);
     free(staged);
     free(path);
