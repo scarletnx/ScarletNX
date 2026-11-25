@@ -244,13 +244,14 @@ unicorn_tests() {
 qemu_reference_build() {
   cmake --preset default -DBUILD_TESTING=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)" \
-    --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
+    --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
   ccache --show-stats
 }
 
 qemu_reference_record() {
-  build/default/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/default/qemu_ref_runner \
-    build/qemu_reference_dir tests/native_qemu_expected.txt --quiet --record build/llvm_qemu_reference.bin
+  build/default/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/default/qemu_ref_runner \
+    build/llvm_qemu_reference_dir tests/llvm_qemu_expected.txt --quiet \
+    --record build/llvm_qemu_reference.bin
 }
 
 if [ $# != 1 ] || [ "$(type -t "$1")" != function ]; then

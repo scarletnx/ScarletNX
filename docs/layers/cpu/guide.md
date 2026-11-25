@@ -216,12 +216,12 @@ back ends on any of them. CI's `qemu-reference` job records it for each run and 
 `ScarletNX-llvm-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
 made it. Record another when one of these changes: the rows of the generated decoder, `directed()`, `scalar_words()`
 or `kept[]` in `tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU
-version. By hand, on a Linux host with the tools named above, the recording takes 4 seconds and about 54 MB:
+version. By hand, on a Linux host with the tools named above, the job's command takes about 20 seconds and 56 MB:
 
 ```sh
-cmake --build build --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
-build/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/qemu_ref_runner build/record \
-    tests/native_qemu_expected.txt --quiet --record qemu_reference.bin
+cmake --build build --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
+build/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/qemu_ref_runner build/record \
+    tests/llvm_qemu_expected.txt --quiet --record qemu_reference.bin
 ```
 
 On the other host, configure with `-DSNX_QEMU_REFERENCE=/path/qemu_reference.bin` and run `native_qemu_differential`. It
