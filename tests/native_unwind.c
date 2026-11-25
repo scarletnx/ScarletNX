@@ -253,6 +253,7 @@ static size_t walk(const uint32_t* code, uint32_t words, uint64_t begin, unsigne
     size_t states = 0;
     unsigned r;
     entry.sp = (uint64_t)(uintptr_t)(g_test.stack + STACK / 8) & ~15ull;
+    entry.low = (uint64_t)(uintptr_t)g_test.stack, entry.high = entry.low + sizeof g_test.stack;
     for (r = 0; r < 31; ++r) entry.x[r] = 0x5A5A000000000000ull + r * 0x0101010101ull;
     s = entry;
     for (int in_body = 0; k < words; ++k) {

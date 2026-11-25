@@ -253,7 +253,7 @@ static const char* win_unwinds(HostUc* u, Arm64State* s) {
     return NULL;
 }
 static void win_state(HostUc* u, uint64_t pc) {
-    Arm64State s = {.pc = pc};
+    Arm64State s = {.pc = pc, .low = (uintptr_t)u->stack, .high = (uintptr_t)u->stack + STACK_SIZE};
     uint64_t x18;
     const char* why;
     unsigned k;
