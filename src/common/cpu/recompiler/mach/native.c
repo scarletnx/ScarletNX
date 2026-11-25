@@ -223,6 +223,9 @@ int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size,
            : c->mips64be ? snx_mips64be_arm_object(c->mips64be, object, size, blocks)
                          : snx_s390x_arm_object(c->s390x, object, size, blocks);
 }
+void snx_native_arm_split(SnxNativeArm* c, size_t bytes) {
+    if (c->arm64) snx_arm64_arm_split(c->arm64, bytes);
+}
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from) {
     return c->x64     ? snx_x64_arm_absorb(c->x64, from->x64)
            : c->arm64 ? snx_arm64_arm_absorb(c->arm64, from->arm64)

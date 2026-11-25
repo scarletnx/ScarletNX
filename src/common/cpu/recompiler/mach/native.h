@@ -84,6 +84,10 @@ int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned cha
                            size_t* consumed, SnxNativeArmNext next, void* user);
 const char* snx_native_arm_why(const SnxNativeArm* c);
 int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks);
+/* the most code an object takes where the host's branches reach little (arm64's), the rest going in the next
+   objects. snx_native_arm_object returns 1 for one with more to follow, and is called again for the next. No effect
+   elsewhere */
+void snx_native_arm_split(SnxNativeArm* c, size_t bytes);
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from);
 int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
 

@@ -43,6 +43,10 @@ const char* snx_arm64_arm_why(const SnxArm64Arm* c);
 /* the object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
    Its count of blocks in *blocks where not NULL; the compiler starts a new object after */
 int snx_arm64_arm_object(SnxArm64Arm* c, unsigned char** object, size_t* size, size_t* blocks);
+/* the most code of one object, 0 for no limit. A B reaches 128 MiB, so a larger set of blocks goes in several
+   objects, which the linker joins by veneers. snx_arm64_arm_object returns 1 for one with more to follow, and is
+   called again for the next */
+void snx_arm64_arm_split(SnxArm64Arm* c, size_t bytes);
 /* the blocks another compiler (another thread's) made, taken into c's next object: 0; -1 out of memory */
 int snx_arm64_arm_absorb(SnxArm64Arm* c, SnxArm64Arm* from);
 /* the arm64 back end's blocks go on to another of theirs past its checks (its function's X and its name: the code

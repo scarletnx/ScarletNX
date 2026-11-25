@@ -254,6 +254,7 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     entry_exit_fn(o);
     thumb_entry_exit_fn(o);
 }
+void snx_arm64_arm_split(MG_ARM* c, size_t bytes) { c->split = bytes; }
 int snx_arm64_arm_entry(MG_ARM* c, uint32_t key) {
     SgXBuf b = {0};
     unsigned char code[16];
@@ -302,6 +303,7 @@ int snx_arm64_arm_absorb(SnxArm64Arm* c, SnxArm64Arm* from) {
     (void)c, (void)from;
     return -1;
 }
+void snx_arm64_arm_split(SnxArm64Arm* c, size_t bytes) { (void)c, (void)bytes; }
 int snx_arm64_arm_entry(SnxArm64Arm* c, uint32_t key) {
     (void)c, (void)key;
     return -1;

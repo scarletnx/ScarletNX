@@ -26,6 +26,8 @@
 #include <string.h>
 
 #define CHUNK_BLOCKS 512u
+/* the most code of a native object: its calls reach 128 MiB, and the veneers of a call out of it go past its code */
+#define NATIVE_OBJECT_BYTES ((size_t)48 << 20)
 /* the most blocks one block goes on to, a branch's target and the code after it */
 #define SUCCESSORS   2u
 
@@ -852,7 +854,8 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
     char *target = NULL, *staged = NULL, *kept = NULL, *recorded = NULL, note[160];
     Stub* stubs = NULL;
     const char* exports[1] = {"snx_vita_module_v1"};
-    unsigned files = 0;
+    SnxLinkInput* native_objects = NULL;
+    unsigned parts = 0, files = 0;
     int result = 1;
     const char opt = g_settings.optimization_level[0]; /* the setting opt's, which -O sets */
     bool quiet = asked && asked->quiet;
@@ -910,14 +913,37 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
             llvm[llvm_count++] = d.blocks[i];
         }
     const unsigned chunks = cut_chunks(llvm, llvm_count, asked ? asked->chunk : 0, starts);
-    files = chunks + 3; /* the helpers, the index, the native blocks, LLVM's chunks */
+    /* the native blocks in one object, or in several where the host's branches reach little (arm64's 128 MiB) */
+    if (made.native) {
+        int more = 1;
+        snx_native_arm_split(native, NATIVE_OBJECT_BYTES);
+        while (more) {
+            unsigned char* object = NULL;
+            size_t object_size = 0;
+            SnxLinkInput* grown = (SnxLinkInput*)realloc(native_objects, (parts + 1) * sizeof *native_objects);
+            if (!grown) {
+                snprintf(error, error_size, "out of memory");
+                goto done;
+            }
+            native_objects = grown;
+            more = snx_native_arm_object(native, &object, &object_size, NULL);
+            if (more < 0) {
+                snprintf(error, error_size, "%s back end: out of memory for the object of %zu blocks",
+                         snx_native_name(), made.native);
+                goto done;
+            }
+            native_objects[parts++] = (SnxLinkInput){.data = object, .size = object_size, .name = "native blocks"};
+        }
+    }
+    files = 2 + parts + chunks; /* the helpers, the index, the native blocks, LLVM's chunks */
     objects = calloc(files, sizeof *objects);
     if (!objects) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    objects[0].name = "armlib", objects[1].name = "index", objects[2].name = "native blocks";
-    for (unsigned i = 3; i < files; ++i) objects[i].name = "blocks";
+    objects[0].name = "armlib", objects[1].name = "index";
+    for (unsigned i = 0; i < parts; ++i) objects[2 + i] = native_objects[i];
+    for (unsigned i = 2 + parts; i < files; ++i) objects[i].name = "blocks";
     work = (Work){.image = image,
                   .blocks = llvm,
                   .starts = starts,
@@ -926,19 +952,12 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
                   .opt = opt,
                   .keep_ir = kept,
                   .quiet = quiet,
-                  .objects = objects + 3,
+                  .objects = objects + 2 + parts,
                   .chunks = chunks,
                   .steps = chunks + (made.native != 0),
                   .stubs = stubs,
                   .stub_count = d.stub_count};
     if (made.native) {
-        unsigned char* object = NULL;
-        if (snx_native_arm_object(native, &object, &objects[2].size, NULL)) {
-            snprintf(error, error_size, "%s back end: out of memory for the object of %zu blocks", snx_native_name(),
-                     made.native);
-            goto done;
-        }
-        objects[2].data = object;
         ++work.finished;
         if (!quiet) printf("Compiled %u/%u chunks of blocks\n", work.finished, work.steps);
     }
@@ -967,6 +986,9 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
 done:
     if (objects)
         for (unsigned i = 1; i < files; ++i) free((void*)objects[i].data);
+    else
+        for (unsigned i = 0; i < parts; ++i) free((void*)native_objects[i].data);
+    free(native_objects);
     free(objects);
     free(stubs);
     free(linked.data);
