@@ -118,7 +118,7 @@ static void differential_cuts(void) {
         u64 at = (random_word(&seed) % 4) * (1ull << OWN_REGION_SHIFT) - 32 + 64;
         for (u32 i = 0; i < 128; i++) {
             u64 gap = random_word(&seed) % 64, size = random_word(&seed) % 96 + 1;
-            Own o = {at + gap, at + gap + size, at + gap + 19, &resources[i], i * 100, 0};
+            Own o = {at + gap, at + gap + size, at + gap + 19, &resources[i], i * 100, 0, 0};
             retain_resource(o.res);
             insert_nl(g_own.nown, &o);
             at = o.hi;
@@ -180,7 +180,7 @@ static void watch_walk_bound(void) {
         for (u32 i = 0; i < 64; i++) {
             u64 gap = random_word(&seed) % 64, size = random_word(&seed) % 96 + 1;
             Resource* res = random_word(&seed) % 4 ? NULL : &resources[i];
-            Own o = {at + gap, at + gap + size, at + gap, res, i * 100, 0};
+            Own o = {at + gap, at + gap + size, at + gap, res, i * 100, 0, 0};
             if (res) retain_resource(res);
             insert_nl(g_own.nown, &o);
             at = o.hi;
@@ -275,7 +275,7 @@ static void benchmark(void) {
         Own* original = malloc(sizeof *original * count * 2);
         CHECK(original != NULL);
         for (u32 i = 0; i < count * 2; i++) {
-            Own o = {0x1000 + i * 64, 0x1020 + i * 64, 0x1000 + i * 64, &r, i * 32, 0};
+            Own o = {0x1000 + i * 64, 0x1020 + i * 64, 0x1000 + i * 64, &r, i * 32, 0, 0};
             retain_resource(&r);
             insert_nl(g_own.nown, &o);
         }

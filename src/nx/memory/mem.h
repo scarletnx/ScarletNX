@@ -251,7 +251,7 @@ typedef struct {
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
 /* [a, a + size), whole pages, all a GPU's buffer's (mem_migrate) with a view of its pages, to be trapped where they are
    (own_watch_in_place): a dma-buf of them keeps them, and a move into the pool would leave it the old ones. 0 with
-   the runs, each its own address as its "pool offset" (as without the pool), or -1 */
+   the runs, each with its view's address as its "pool offset", or -1 */
 int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
 /* the bytes of [a, a + size) through the view of the buffer whose pages are there (mem_migrate), under mem.c's lock,
    which the view outlives: 0, or -1 when a run of such pages with a view doesn't hold them all */

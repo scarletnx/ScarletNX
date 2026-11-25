@@ -1201,7 +1201,8 @@ int vk_own_init(void) {
                   .wait = own_wait,
                   .resolve = vk_rt_watch_hit,
                   .refresh = vk_rt_watch_hit,
-                  .claim = own_claim};
+                  .claim = own_claim,
+                  .open = vk_ww_open};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
@@ -1224,7 +1225,11 @@ int vk_own_watch(u64 cpu, u64 size) {
        trapped one */
     const int region = vk_uma_region_held(cpu, size);
     if (!region && vk_uma_held(cpu, size)) return -1;
-    if (!region) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
+    if (region) {
+        const u64 page = plat_vm_page();
+        vk_ww_watching(cpu & ~(page - 1), (cpu + size + page - 1) & ~(page - 1));
+    } else
+        vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     pend_lock(); /* as own_publish: a change of guest memory without vk_lock finds no entry there */
     int r = region ? own_watch_in_place(cpu, size) : own_watch(cpu, size);
     pend_unlock();
@@ -1274,7 +1279,7 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
         if (publish_in_place(cpu, size, r->buf, off)) {
             if (trapped) {
                 vk_uma_mem_need_cpu(cpu, size);
-                own_drop(cpu, size);
+                own_unwatch(cpu, size); /* no write of the CPU's (OwnHooks' open), where own_drop leaves them written */
             }
             SNX_ZONE_TEXT(z, "UMA holds %llu bytes, copied into its import", (unsigned long long)size);
             SNX_PLOT(k_bytes, (double)size);

@@ -7906,6 +7906,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_uma_imports.inc"
 #include "vulkan_uma_pages.inc"
 #include "vulkan_uma_region_reads.inc"
+#include "vulkan_uma_region_watch.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_poll_kick.inc"
 #include "vulkan_tex_partial.inc"
@@ -9075,6 +9076,8 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "region_watch") && ++ran) CHECK(!check_uma_region_watch());
         if (!strcmp(name, "region_letgo") && ++ran) CHECK(!check_uma_region_letgo());
         if (!strcmp(name, "region_dead_bind") && ++ran) CHECK(!check_uma_region_dead_bind());
+        if (!strcmp(name, "region_watch_frames") && ++ran) CHECK(!check_uma_region_watch_frames());
+        if (!strcmp(name, "region_watch_writes") && ++ran) CHECK(!check_uma_region_watch_writes());
 #endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
@@ -9091,7 +9094,9 @@ static int run_headless(int argc, char** argv) {
                     "dispatch_open, "
                     "nvdec, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
+                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, region_dmabuf_trap, "
+                    "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
+                    "storage_region, "
                     "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
                     "alias_order\n",
                     name);

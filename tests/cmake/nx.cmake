@@ -530,6 +530,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         set_tests_properties(vulkan_uma_region_dead_bind PROPERTIES TIMEOUT 60
             ENVIRONMENT "SNX_TEST_UMA_ONLY=region_dead_bind"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # what comes after the watch: a target drawn over it again keeps its drawing in memory and in its image, and the
+        # write tracking finds what the CPU wrote to its pages and nothing else
+        foreach(snx_watch frames writes)
+            add_test(NAME vulkan_uma_region_watch_${snx_watch} COMMAND snx-test-vulkan -H --uma-copies=2)
+            set_tests_properties(vulkan_uma_region_watch_${snx_watch} PROPERTIES TIMEOUT 60
+                ENVIRONMENT "SNX_TEST_UMA_ONLY=region_watch_${snx_watch}"
+                FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        endforeach()
     endif()
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
