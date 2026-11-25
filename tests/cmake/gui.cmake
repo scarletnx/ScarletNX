@@ -210,6 +210,25 @@ if(BUILD_TESTING)
         add_test(NAME gui_pixel_order COMMAND snx-test-gui-pixel-order)
         set_tests_properties(gui_pixel_order PROPERTIES TIMEOUT 60 ENVIRONMENT "${gui_screen_env}")
     endif()
+    # the launcher's settings files through tests/config_files.h's situations (config_files_gui.c)
+    add_executable(snx-test-config-files-gui "${PROJECT_SOURCE_DIR}/tests/config_files_gui.c"
+                   "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
+    target_link_libraries(snx-test-config-files-gui PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
+                          snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
+    target_compile_definitions(snx-test-config-files-gui PRIVATE
+                               SNX_CONFIG_PENDING="${PROJECT_SOURCE_DIR}/tests/config_files.pending")
+    if(APPLE)
+        target_sources(snx-test-config-files-gui PRIVATE apple.m)
+        target_link_libraries(snx-test-config-files-gui PRIVATE snx_apple_frontend "-framework Foundation")
+        if(IOS)
+            target_link_libraries(snx-test-config-files-gui PRIVATE "-framework UIKit")
+        endif()
+        set_target_properties(snx-test-config-files-gui PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    if(NOT IOS)
+        add_test(NAME config_files_gui COMMAND snx-test-config-files-gui)
+        set_tests_properties(config_files_gui PROPERTIES TIMEOUT 60 ENVIRONMENT "${gui_screen_env}")
+    endif()
     # every test here, as snx_test_target does: warnings are errors, the asserts stay in any build type, and the
     # sanitizers come with SNX_TEST_SANITIZERS
     get_directory_property(gui_tests BUILDSYSTEM_TARGETS)
