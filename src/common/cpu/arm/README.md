@@ -27,6 +27,9 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
   or, under Unicorn, as another machine's.
 - `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: execution witnesses of those blocks and optional
   independent Unicorn comparisons, their words written in the tests.
+- `tests/support/arm_llvm_back.h`: LLVM's blocks for the same tests (`snx-test-arm-blocks-llvm`), their module verified
+  before and after the passes; `tests/arm_mc_words.py`: llvm-mc's verdict on the tests' words; `tests/arm_llvm_checks.py`:
+  fails where one of LLVM's checks has gone.
 - `tests/arm_fuzz.py`: random encodings of each class, A32 and Thumb, against Unicorn from random FP and flag state (`--only ISA:HEX` replays one).
 
 Input words are host integers decoded from little-endian guest code (A32 words, or Thumb halfwords). A block consumes at most `count` instructions (or halfwords for Thumb) and stops at a control transfer, including a conditional transfer. `consumed` reports the compiled length. Bad input returns NULL before changing the module.
@@ -167,7 +170,8 @@ ctest --test-dir build/arm11 --output-on-failure
 ```
 
 The build-time generator makes the native back end's `.o` files, with the blocks' values
-in all the host registers and in few of them; the witness
+in all the host registers and in few of them, and LLVM's, verified before and after the passes at O0 and O2
+(`arm_checked_static_O0`, `_O2`, whose hosted blocks have a `noalias` cpu); the witness
 executables link only the CTR CPU/memory adapters, **not LLVM or MCJIT**. The bus
 matrix compares checked and flat blocks across 1,265 integer encodings and 13 states
 for both profiles, with all the host registers and with three (65,780 comparisons). With
@@ -294,7 +298,7 @@ python3 -m venv .venv
 .venv/bin/pip install unicorn==2.1.4
 cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF \
   -DSNX_TEST_ARM_DIFF=ON -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
-ctest --test-dir build/a32 -R '^arm_native_' --output-on-failure
+ctest --test-dir build/a32 -R '^arm_(native|llvm)_' --output-on-failure
 ```
 
 `snx-test-arm-blocks` (`tests/arm_blocks.c`) makes each block with the native back end and runs it from the states the
@@ -303,6 +307,12 @@ Python tests hold (`tests/arm_blocks.py`). `arm_native_<test>` are the host's ba
 back ends make code for, run under Unicorn (LoongArch, which it has none of, under the test's own interpreter): the same
 tests, the differentials on a share of their states. Each block is made twice, its values in all the host registers and in three of
 them, so that they spill. No assembler: the words are written in the tests, beside their text.
+
+While LLVM still makes the blocks a native back end leaves, `arm_llvm_<test>` run the same tests on LLVM's blocks at -O0
+and -O2 (`snx-test-arm-blocks-llvm`), the module verified before the passes and after them; `arm_llvm_mc_words` holds the
+tests' words to llvm-mc's, and `arm_llvm_fuzz` runs only the words llvm-objdump has for the Cortex-A57 and counts no
+difference llvm-mc warns of (SoftFail). Those two say so and are skipped where the LLVM this is built with has no llvm-mc.
+`arm_llvm_checks` fails where one of these checks is no longer registered or no longer refuses what it is there for.
 
 The integer suite covers 49 witness programs, including an inter-block BL/BX loop, bounds failures, address wrapping,
 writeback, PC loads, failed predicates, monitor invalidation, TLS and deferred-backend exits, with 1,287

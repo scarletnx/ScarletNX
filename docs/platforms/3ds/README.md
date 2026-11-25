@@ -989,7 +989,7 @@ ctest --test-dir build/arm11 --output-on-failure
 This requires a native LLVM SDK (select with `SNX_LLVM_CONFIG` if needed).
 `SNX_TEST_ARM_DIFF=ON` additionally requires Python `unicorn==2.1.4`, and enables
 ARM11 MPCore plus shared A57 integer/VFP/NEON/Thumb regressions of the native back
-ends' blocks. See
+ends' blocks and LLVM's. See
 `src/common/cpu/arm/README.md` for the codegen contract and exact limitations.
 The compiler links its objects with the LLVM backend's linker, so a game compiles
 on a machine without a C compiler. The compiled modules need no LLVM library. On Windows `scarletnx-3ds` carries the runtime's

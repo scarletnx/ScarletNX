@@ -4,7 +4,8 @@
 """Thumb16/Thumb32 blocks of a native back end vs ARMv8 AArch32 (Unicorn 2.1.4).
 
 A Thumb block for each instruction or sequence, its halfwords beside its text, made by this host's back end or (run
-under Unicorn) another machine's, with all its host registers and with three, so that values spill. Each is run from
+under Unicorn) another machine's, with all its host registers and with three, so that values spill, or by LLVM at
+each --opt level. Each is run from
 random state, every GPR, CPSR, D register, FPSCR and guest memory compared. Exact raw-bit comparisons only. No game
 assets.
 """
@@ -13,7 +14,7 @@ import argparse
 import ctypes as C
 import random
 
-from arm_blocks import CPU, PC, SIZE, Blocks, thumb
+from arm_blocks import CPU, PC, SIZE, Blocks, add_variants, thumb, variants
 
 
 def catalogue():
@@ -463,11 +464,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     p.add_argument('--states', type=int, default=24)
-    p.add_argument('--pool', type=int, action='append', help='the host registers its values are in (0: all of them)')
+    add_variants(p)
     args = p.parse_args()
     entries = catalogue()
     halfwords = [hws for _, _, hws in entries] + [hws for _, hws in IT_WITNESSES]
-    libraries = [Blocks(args.blocks, thumb(halfwords), pool=pool).refuse() for pool in args.pool or (0, 3)]
+    libraries = [Blocks(args.blocks, thumb(halfwords), **variant).refuse() for variant in variants(p, args)]
     for blocks in libraries:
         print(f'Thumb16/32: {blocks.name}', flush=True)
         it_witnesses(blocks.functions[len(entries) :])

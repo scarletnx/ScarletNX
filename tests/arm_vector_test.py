@@ -4,7 +4,8 @@
 """A32 VFP/NEON blocks of a native back end vs ARMv8 AArch32 (Unicorn 2.1.4).
 
 Every GPR, D register, CPSR, FPSCR and memory after one instruction, by the blocks of this host's back end or (run under
-Unicorn) another machine's, with all its host registers and with three, so that values spill. The instructions are
+Unicorn) another machine's, with all its host registers and with three, so that values spill, or LLVM's at each
+--opt level. The instructions are
 arm_vfp_cases.s's and arm_neon_cases.s's, whose words stand beside their text, and forms of them made here by their
 fields. No host floating-point comparisons or tolerances. No skipped mismatches.
 """
@@ -15,7 +16,7 @@ import pathlib
 import random
 import re
 
-from arm_blocks import CPU, PC, SIZE, Blocks, arm
+from arm_blocks import CPU, PC, SIZE, Blocks, add_variants, arm, variants
 from arm_test import unicorn_dies
 
 # a register's field: its four bits and the fifth (a D or Q register's highest, an S register's lowest)
@@ -303,11 +304,11 @@ def main():
     p.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     p.add_argument('--states', type=int, default=80)
     p.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
-    p.add_argument('--pool', type=int, action='append', help='the host registers its values are in (0: all of them)')
+    add_variants(p)
     args = p.parse_args()
     words, names = zip(*catalogue())
     listed = arm([(word,) for word in words])
-    libraries = [Blocks(args.blocks, listed, pool=pool).refuse() for pool in args.pool or (0, 3)]
+    libraries = [Blocks(args.blocks, listed, **variant).refuse() for variant in variants(p, args)]
     print(f'A32 VFP/NEON: {"; ".join(blocks.name for blocks in libraries)}', flush=True)
     compare(libraries, words, names, args.states, args.every)
     for blocks in libraries:

@@ -528,7 +528,7 @@ it:
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
 - `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 and checked memory witnesses, and the comparisons of
-  the native back ends' A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
+  the native back ends' and LLVM's A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
 
 With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
 wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code

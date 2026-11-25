@@ -5,14 +5,14 @@
 
 This is a memory-codegen differential, not an independent ISA oracle. The
 A57 tests separately compare against Unicorn. Both blocks are the native back
-end's, made for a profile and a memory mode (arm_blocks.py).
+end's, or LLVM's, made for a profile and a memory mode (arm_blocks.py).
 """
 
 import argparse
 import ctypes as C
 
 import arm_test as A
-from arm_blocks import CHECKED_ABI, Access, Blocks, Checked
+from arm_blocks import CHECKED_ABI, Access, Blocks, Checked, add_variants, variants
 
 
 def snapshot(cpu):
@@ -32,15 +32,16 @@ def snapshot(cpu):
     )
 
 
-def make(runner, profile, mode, pool):
+def make(runner, profile, mode, variant):
     programs = [('arm', pc, words) for pc, words in zip(A.PCS, A.PROGRAMS)]
-    return Blocks(runner, programs, profile=profile, memory=mode, pool=pool).refuse()
+    return Blocks(runner, programs, profile=profile, memory=mode, **variant).refuse()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     parser.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
+    add_variants(parser)
     args = parser.parse_args()
     A.catalogue()
     # A57 checked exclusives remain unsupported. ARM11 reservations have an
@@ -48,9 +49,9 @@ def main():
     cases = [(i, group) for i, group in A.CASES if group != 'atomic']
     total = 0
     for profile in ('a57', 'arm11'):
-        for pool in (0, 3):
-            flat = make(args.blocks, profile, 'flat', pool)
-            checked = make(args.blocks, profile, 'checked', pool)
+        for variant in variants(parser, args):
+            flat = make(args.blocks, profile, 'flat', variant)
+            checked = make(args.blocks, profile, 'checked', variant)
             name = f'{flat.name}, {profile}'
             count = 0
             for index, group in cases:
