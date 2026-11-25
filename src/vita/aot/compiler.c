@@ -891,7 +891,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
         if (!discover(&d, recorded, jobs, every, quiet, &native, &made, error, error_size)) goto done;
     }
     snx_arm_aot_report(&made, "scarletnx-vita", quiet);
-    qsort(d.blocks, d.count, sizeof *d.blocks, by_key);
+    if (d.count) qsort(d.blocks, d.count, sizeof *d.blocks, by_key); /* a NULL of none is no argument of it */
     target = vita_game_file(folder, VITA_MODULE_SUFFIX);
     staged = target ? snx_format("%s.tmp", target) : NULL;
     llvm = malloc((made.llvm + 1) * sizeof *llvm);
