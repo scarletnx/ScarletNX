@@ -3368,7 +3368,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
     # the barriers of an image's uses (gpu/vk/surface.c vk_surf_use) in the layouts that VK_LAYOUT names: with unified
     # image layouts, GENERAL and no barrier between reads of another kind; without them, each use's own layout
-    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c)
+    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-surf-layouts gnu23)
     target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
     add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
@@ -3380,13 +3380,13 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_stamp COMMAND snx-test-vk-stamp)
     # a draw that binds an owner where it is (gpu/vk/buffer.c buf_get_owned): one that a draw or the page cache wrote
     # in this submission takes a pass end and a barrier first, any other none
-    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c)
+    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-buffer-owned gnu23)
     target_link_libraries(snx-test-vk-buffer-owned PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_owned COMMAND snx-test-vk-buffer-owned)
     # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
     # one run at a time give the pages, run flags and byte spans of a walk one page at a time
-    add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)
+    add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-buffer-pages gnu23)
     target_link_libraries(snx-test-vk-buffer-pages PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
@@ -5713,7 +5713,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
     # the trim of the caches (gpu/vk/surface.c vk_mem_trim) over stubs of the rest of the renderer: when it takes the
     # render targets that later ones drew all over, where the driver moves memory by priority and where it does not
-    add_executable(snx-test-vk-mem-trim vk_mem_trim.c)
+    add_executable(snx-test-vk-mem-trim vk_mem_trim.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-mem-trim gnu23)
     target_compile_definitions(snx-test-vk-mem-trim PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx-test-vk-mem-trim PRIVATE "${volk_SOURCE_DIR}" "${renderdoc_app_SOURCE_DIR}")
