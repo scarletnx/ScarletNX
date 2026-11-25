@@ -77,6 +77,8 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
 /* HOSTUC_WIN64's: the code's frames unwound by its function table after every instruction (1), not where it calls a
    native function alone; and how many states were unwound, *failures of them wrongly (hostuc_call fails with them) */
 void hostuc_step(HostUc* u, int on);
+/* HOSTUC_WIN64's: size bytes of pages the code in the arena (arena bytes at base) reaches, NULL where none are free */
+void* hostuc_near(const void* base, size_t arena, size_t size);
 size_t hostuc_unwound(const HostUc* u, size_t* failures);
 
 #endif
