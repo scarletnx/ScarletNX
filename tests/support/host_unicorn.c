@@ -90,6 +90,7 @@ struct HostUc {
     size_t nregions;
     void (*swap)(void* user); /* a big-endian architecture's (hostuc_swapper) */
     void* swap_user;
+    uint64_t sp; /* the entry's */
 };
 static void swap(HostUc* u) {
     if (u->a->big && u->swap) u->swap(u->swap_user);
@@ -135,6 +136,52 @@ int hostuc_map(HostUc* u, void* p, size_t size) {
     }
     return 0;
 }
+
+/* ---- what a callee of AAPCS64 keeps ---- */
+
+/* X19 to X29, and X18, the platform's; the low halves of V8 to V15 */
+#define KEPT_X 12
+#define KEPT_D 8
+static int x_reg(unsigned n) { /* X29 and X30 are apart in Unicorn's numbers */
+    return n == 29 ? UC_ARM64_REG_X29 : n == 30 ? UC_ARM64_REG_X30 : UC_ARM64_REG_X0 + (int)n;
+}
+static uint64_t mark_x(unsigned n) { return 0x5151000000000000ull + n * 0x0101010101ull; }
+static uint64_t mark_d(unsigned n) { return 0x6262000000000000ull + n * 0x0303030303ull; }
+static void mark_kept(HostUc* u) {
+    unsigned k;
+    for (k = 0; k < KEPT_X; ++k) {
+        uint64_t v = mark_x(18 + k);
+        uc_reg_write(u->uc, x_reg(18 + k), &v);
+    }
+    for (k = 0; k < KEPT_D; ++k) {
+        uint64_t v[2] = {mark_d(8 + k), 0xBAD0BAD1BAD2BAD3ull};
+        uc_reg_write(u->uc, UC_ARM64_REG_V8 + (int)k, v);
+    }
+}
+/* what came back changed of what the entry marked, and its stack pointer: 0 for nothing, said */
+static int kept_changed(HostUc* u) {
+    int bad = 0;
+    unsigned k;
+    uint64_t v, sp;
+    for (k = 0; k < KEPT_X; ++k) {
+        uc_reg_read(u->uc, x_reg(18 + k), &v);
+        if (v != mark_x(18 + k))
+            bad = 1, fprintf(stderr, "%s: X%u came back %llx, was %llx\n", u->a->name, 18 + k, (unsigned long long)v,
+                             (unsigned long long)mark_x(18 + k));
+    }
+    for (k = 0; k < KEPT_D; ++k) {
+        uint64_t q[2];
+        uc_reg_read(u->uc, UC_ARM64_REG_V8 + (int)k, q);
+        if (q[0] != mark_d(8 + k))
+            bad = 1, fprintf(stderr, "%s: D%u came back %llx, was %llx\n", u->a->name, 8 + k, (unsigned long long)q[0],
+                             (unsigned long long)mark_d(8 + k));
+    }
+    uc_reg_read(u->uc, u->a->sp, &sp);
+    if (sp != u->sp) bad = 1, fprintf(stderr, "%s: SP came back %lld off\n", u->a->name, (long long)(sp - u->sp));
+    return bad;
+}
+
+/* ---- the traps ---- */
 
 /* the native function of a trap the code reached, with the first six arguments (System V passes them the same way, a
    function of fewer ignoring the rest), its result into the result register (both halves of a wide one); the trap's
@@ -477,6 +524,8 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     uc_reg_write(u->uc, u->a->lr, &lr);
     if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
     if (u->a->arch == UC_ARCH_MIPS) uc_reg_write(u->uc, UC_MIPS_REG_25, &fn); /* t9: an n64 PIC callee's */
+    u->sp = sp;
+    if (u->a->arch == UC_ARCH_ARM64) mark_kept(u);
     swap(u);
     e = uc_emu_start(u->uc, fn, lr, 0, 1u << 22);
     swap(u);
@@ -488,5 +537,5 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
         return -1;
     }
     if (result) uc_reg_read(u->uc, u->a->result[0], result);
-    return 0;
+    return u->a->arch == UC_ARCH_ARM64 && kept_changed(u) ? -1 : 0;
 }

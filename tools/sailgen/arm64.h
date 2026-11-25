@@ -13,8 +13,8 @@
    Registers: X0-X15 hold values (X0 and X1 last: a call's results); X16 and X17 are the assembler's own (an
    address or a constant it has to make, a flag's byte); X18 is the platform's on Apple and Windows and is never
    touched; X19 holds the state's address; X20-X28 the pinned guest registers and the guest memory's base; X29 and
-   X30 the frame and the link; SP the spill slots. V0-V31 hold vector values, every one caller-saved for mach.h (V8-V15
-   keep only their low halves across a call) */
+   X30 the frame and the link; SP the spill slots. V0-V7 and V16-V31 hold vector values, every one caller-saved; V8-V15
+   hold none, as their low halves are the callee's to keep (SGX_XCALLEE) */
 
 #include "a64_enc.inc"
 
@@ -52,6 +52,7 @@ enum { SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_CS, SGX_ARM_CC, SGX_ARM_MI, SGX_ARM_PL, S
 #define SGA_ZR 31
 static const signed char sgx_pool[] = {9, 10, 11, 12, 13, 14, 15, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 #define SGX_CALLER_SAVED 0xFFFFu /* X0-X15 of the pool; X16 and X17 hold nothing across an instruction */
+#define SGX_XCALLEE(a)   0xFF00u /* V8-V15, whose low halves a callee keeps: no prologue saves them, no value has them */
 
 /* ---- immediates ---- */
 

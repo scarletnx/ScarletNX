@@ -15,7 +15,10 @@
    MSR's HV): hostuc_new gives NULL where the MSR it set doesn't hold. MIPS64 runs as MIPS64R2 with Unicorn's virtual
    TLB, every address its own (the kernel's segments would want them under 2 GiB). Unicorn has no LoongArch: its
    code runs in la64_interp.c's interpreter, on the same memory and the same traps. s390x runs as a z196 in 64-bit
-   addressing mode (the PSW's EA and BA); a native function's sixth argument is the ABI's stack slot (160(r15)) */
+   addressing mode (the PSW's EA and BA); a native function's sixth argument is the ABI's stack slot (160(r15)).
+
+   hostuc_call marks what a callee of AAPCS64 keeps on arm64 (X19 to X29, the low halves of V8 to V15, SP), and X18, the
+   platform's on some, and fails where one came back changed */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
