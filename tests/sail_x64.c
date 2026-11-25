@@ -41,7 +41,7 @@ typedef jmp_buf sigjmp_buf;
 #endif
 
 #define TARGET SNX_A64_TARGET_OUNCE
-#define CODE_MAX 4096
+#define CODE_MAX 8192
 /* guest memory for the loads and stores, as llvm_sail_ir.c's: each side's own, guest address 0 MEMORY_ZERO bytes in,
    the same random bytes, every access below MEMORY_TOUCHED (the address registers point at 0x1000 to 0x1ff0) */
 #define MEMORY_SIZE    (4u << 20)
