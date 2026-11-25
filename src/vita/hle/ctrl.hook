@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that ctrl.c answers, by NID, for tools/hookgen --vita.
+# SceCtrl and SceTouch: the buttons, the sticks and the touch panels, read from the player's input when asked
+family ctrl
+[0xa9c3ced6] hook sceCtrlPeekBufferPositive(u32 port, addr data, u32 count) -> u32 = vita_ctrl_peek_buffer_positive
+[0x15f81e8c] hook sceCtrlPeekBufferPositive2(u32 port, addr data, u32 count) -> u32 = vita_ctrl_peek_buffer_positive
+[0x67e7ab83] hook sceCtrlReadBufferPositive(u32 port, addr data, u32 count) -> u32 = vita_ctrl_read_buffer_positive
+[0xa497b150] hook sceCtrlSetSamplingMode() -> u32 = vita_ctrl_set_sampling_mode
+[0xff082df0] hook sceTouchPeek(u32 port, addr data, u32 count) -> u32 = vita_ctrl_touch_peek
+[0x169a1d58] hook sceTouchRead(u32 port, addr data, u32 count) -> u32 = vita_ctrl_touch_peek
+[0x1b9c5d14] hook sceTouchSetSamplingState() -> u32 = vita_ctrl_touch_set_sampling_state
+[0x10a2ca25] hook sceTouchGetPanelInfo(u32 port, addr info) -> u32 = vita_ctrl_touch_get_panel_info

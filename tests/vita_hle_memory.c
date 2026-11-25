@@ -532,8 +532,8 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(kernel, "sceKernelGetSemaInfo", sema, UNMAPPED, 0x3c) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
     assert(CALL(kernel, "sceKernelGetSemaInfo", sema, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x100) == 0x3c);
     assert(CALL(kernel, "sceKernelGetFreeMemorySize", UNMAPPED) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
-    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
-    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
+    assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
+    assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
     strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
     assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
     assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
