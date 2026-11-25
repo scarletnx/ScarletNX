@@ -65,6 +65,7 @@ typedef struct {
     VkFormatFeatureFlags features;
     VkImageAspectFlags preinit;
     int importable;
+    VkFormat game_depth; /* the 24-bit depth format the game made it with, held as a 32-bit one (host_format), else 0 */
 } GvkImage;
 
 /* The render pass, its resume twin and the self-dependencies supported by Vulkan inside it. */
@@ -546,8 +547,9 @@ static GvkMem mem_take(u64 mem) {
     return m;
 }
 static u32 scale_factor(void);
-static void image_track(VkImage img, const VkImageCreateInfo* ci, int importable, VkImageAspectFlags preinit) {
-    GvkImage e = {U(img), ci->format, ci->samples, 0, preinit, importable};
+static void image_track(VkImage img, const VkImageCreateInfo* ci, int importable, VkImageAspectFlags preinit,
+                        VkFormat game_depth) {
+    GvkImage e = {U(img), ci->format, ci->samples, 0, preinit, importable, game_depth};
     if (scale_factor() > 1 && (ci->tiling == VK_IMAGE_TILING_OPTIMAL || ci->tiling == VK_IMAGE_TILING_LINEAR)) {
         VkFormatProperties props;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, ci->format, &props);
@@ -2299,7 +2301,9 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
         ci->sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci->queueFamilyIndexCount = 0;
         ci->pQueueFamilyIndices = NULL;
-        ci->format = host_format(ci->format);
+        VkFormat game = ci->format;
+        ci->format = host_format(game);
+        VkFormat game_depth = game == ci->format ? VK_FORMAT_UNDEFINED : game;
         for (VkBaseOutStructure* n = (VkBaseOutStructure*)ci->pNext; n; n = n->pNext) {
             if (n->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO) continue;
             VkImageFormatListCreateInfo* fl = (VkImageFormatListCreateInfo*)n;
@@ -2335,7 +2339,8 @@ static void gvk_CreateImage(CPU* RESTRICT c, u64 entry) {
             ci->usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         r = vkCreateImage(g_vk.dev, ci, NULL, &h);
         if (r == VK_SUCCESS && target) target_track(U(h), ci, ci->extent.width, ci->extent.height, 1);
-        if (r == VK_SUCCESS && (importable || scale_factor() > 1)) image_track(h, ci, importable, preinit);
+        if (r == VK_SUCCESS && (importable || scale_factor() > 1 || game_depth))
+            image_track(h, ci, importable, preinit, game_depth);
         if (r != VK_SUCCESS)
             WARN_LIMIT(32, "gvk: an image of format %d, %ux%ux%u, tiling %d, usage %#x, failed (%d)\n", (int)ci->format,
                        ci->extent.width, ci->extent.height, ci->extent.depth, (int)ci->tiling, ci->usage, (int)r);
@@ -3935,9 +3940,20 @@ static void gvk_CmdResolveImage(CPU* RESTRICT c, u64 entry) {
 }
 /* A buffer holds the game's pixels: a copy between one and a target drawn at the scale goes through the target's own
    image, blitted up to the shadow after the copy in, or down from it before the copy out */
+/* what host_format says of a 24-bit depth format's copies: said where one is recorded, as the bytes differ */
+static void depth24_copy_said(u64 img, const VkBufferImageCopy* r, u32 n, const char* what) {
+    GvkImage e = image_get(img);
+    if (e.game_depth && gvk_copies_depth(r, n))
+        WARN_LIMIT(
+            4,
+            "gvk: %s of the depth of an image the game made with format %d, held as format %d: 32-bit floats are "
+            "moved where the game expects 24-bit integers\n",
+            what, (int)e.game_depth, (int)e.format);
+}
 static void gvk_CmdCopyBufferToImage(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[4], f;
     GUEST(r, VkBufferImageCopy, c->x[5], n);
+    depth24_copy_said(c->x[2], r, n, "a copy from a buffer");
     gvk_scratch_reset();
     VkImage dst = host_image(c->x[2], &f, c->x[0], 1);
     VkBuffer buf = H(VkBuffer, c->x[1]);
@@ -3961,6 +3977,7 @@ static void gvk_CmdCopyBufferToImage(CPU* RESTRICT c, u64 entry) {
 static void gvk_CmdCopyImageToBuffer(CPU* RESTRICT c, u64 entry) {
     u32 n = (u32)c->x[4], f;
     GUEST(r, VkBufferImageCopy, c->x[5], n);
+    depth24_copy_said(c->x[1], r, n, "a copy to a buffer");
     gvk_scratch_reset();
     VkImage src = host_image(c->x[1], &f, c->x[0], 0);
     VkBuffer buf = H(VkBuffer, c->x[3]);
@@ -4332,7 +4349,7 @@ static void gvk_CreateSwapchainKHR(CPU* RESTRICT c, u64 entry) {
         r = vkAllocateMemory(g_vk.dev, &ai, NULL, &s->mem[i]);
         if (r == VK_SUCCESS) r = vkBindImageMemory(g_vk.dev, s->img[i], s->mem[i], 0);
         if (r == VK_SUCCESS && f > 1) target_track(U(s->img[i]), &ii, w, h, f);
-        if (r == VK_SUCCESS && scale_factor() > 1) image_track(s->img[i], &ii, 0, 0);
+        if (r == VK_SUCCESS && scale_factor() > 1) image_track(s->img[i], &ii, 0, 0, VK_FORMAT_UNDEFINED);
     }
     if (r == VK_SUCCESS) r = images_general(s->img, s->n, VK_IMAGE_ASPECT_COLOR_BIT);
     if (r != VK_SUCCESS) {

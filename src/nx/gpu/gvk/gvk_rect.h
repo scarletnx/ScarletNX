@@ -19,4 +19,11 @@ static inline VkRect2D gvk_rect_at(VkRect2D r, u32 f) {
     return (VkRect2D){{(i32)x, (i32)y}, {(u32)(w < wmax ? w : wmax), (u32)(h < hmax ? h : hmax)}};
 }
 
+/* whether any of the n regions of a copy between a buffer and an image moves its depth */
+static inline int gvk_copies_depth(const VkBufferImageCopy* r, u32 n) {
+    for (u32 i = 0; r && i < n; i++)
+        if (r[i].imageSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) return 1;
+    return 0;
+}
+
 #endif
