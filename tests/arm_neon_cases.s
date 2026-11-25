@@ -2,184 +2,184 @@
    Copyright 2026 the ScarletNX contributors */
 .syntax unified
 .arm
-vadd.i8 q0,q1,q2
-vsub.i16 q0,q1,q2
-vhadd.s8 q0,q1,q2
-vhsub.u16 q0,q1,q2
-vrhadd.s32 q0,q1,q2
-vqadd.s64 q0,q1,q2
-vqsub.u8 q0,q1,q2
-vand q0,q1,q2
-vbic q0,q1,q2
-vorr q0,q1,q2
-vorn q0,q1,q2
-veor q0,q1,q2
-vbsl q0,q1,q2
-vbit q0,q1,q2
-vbif q0,q1,q2
-vcgt.s8 q0,q1,q2
-vcge.u16 q0,q1,q2
-vceq.i32 q0,q1,q2
-vtst.8 q0,q1,q2
-vmin.s8 q0,q1,q2
-vmax.u16 q0,q1,q2
-vabd.s32 q0,q1,q2
-vaba.u8 q0,q1,q2
-vmul.i16 q0,q1,q2
-vmla.i32 q0,q1,q2
-vmls.i8 q0,q1,q2
-vmul.p8 q0,q1,q2
-vpadd.i16 d0,d2,d4
-vpmin.s32 d0,d2,d4
-vpmax.u8 d0,d2,d4
-vshl.s8 q0,q1,q2
-vrshl.u16 q0,q1,q2
-vqshl.s32 q0,q1,q2
-vqrshl.u64 q0,q1,q2
-vqdmulh.s16 q0,q1,q2
-vqrdmulh.s32 q0,q1,q2
-vadd.f32 q0,q1,q2
-vsub.f32 q0,q1,q2
-vmul.f32 q0,q1,q2
-vmla.f32 q0,q1,q2
-vmls.f32 q0,q1,q2
-vfma.f32 q0,q1,q2
-vfms.f32 q0,q1,q2
-vabd.f32 q0,q1,q2
-vmax.f32 q0,q1,q2
-vmin.f32 q0,q1,q2
-vmaxnm.f32 q0,q1,q2
-vminnm.f32 q0,q1,q2
-vceq.f32 q0,q1,q2
-vcge.f32 q0,q1,q2
-vcgt.f32 q0,q1,q2
-vacge.f32 q0,q1,q2
-vacgt.f32 q0,q1,q2
-vrecps.f32 q0,q1,q2
-vrsqrts.f32 q0,q1,q2
-vpadd.f32 d0,d2,d4
-vpmax.f32 d0,d2,d4
-vpmin.f32 d0,d2,d4
-vabs.s8 q0,q2
-vneg.s16 q0,q2
-vqabs.s32 q0,q2
-vqneg.s8 q0,q2
-vclz.i16 q0,q2
-vcls.s32 q0,q2
-vcnt.8 q0,q2
-vmvn q0,q2
-vrev16.8 q0,q2
-vrev32.16 q0,q2
-vrev64.32 q0,q2
-vceq.i16 q0,q2,#0
-vcgt.s32 q0,q2,#0
-vcge.s8 q0,q2,#0
-vclt.s16 q0,q2,#0
-vcle.s32 q0,q2,#0
-vabs.f32 q0,q2
-vneg.f32 q0,q2
-vceq.f32 q0,q2,#0
-vcgt.f32 q0,q2,#0
-vcge.f32 q0,q2,#0
-vclt.f32 q0,q2,#0
-vcle.f32 q0,q2,#0
-vrecpe.f32 q0,q2
-vrsqrte.f32 q0,q2
-vrecpe.u32 q0,q2
-vrsqrte.u32 q0,q2
-vcvt.f32.s32 q0,q2
-vcvt.f32.u32 q0,q2
-vcvt.s32.f32 q0,q2
-vcvt.u32.f32 q0,q2
-vcvt.f32.f16 q0,d4
-vcvt.f16.f32 d0,q2
-vrinta.f32 q0,q2
-vrintn.f32 q0,q2
-vrintp.f32 q0,q2
-vrintm.f32 q0,q2
-vrintz.f32 q0,q2
-vrintx.f32 q0,q2
-vcvta.s32.f32 q0,q2
-vcvtn.u32.f32 q0,q2
-vcvtp.s32.f32 q0,q2
-vcvtm.u32.f32 q0,q2
-vswp q0,q2
-vtrn.8 q0,q2
-vzip.16 q0,q2
-vuzp.32 q0,q2
-vext.8 q0,q1,q2,#3
-vtbl.8 d0,{d2-d5},d6
-vtbx.8 d0,{d2-d3},d6
-vdup.8 q0,d4[3]
-vdup.32 d0,d4[1]
-vaddl.s8 q0,d2,d4
-vaddw.u16 q0,q1,d4
-vsubl.s32 q0,d2,d4
-vsubw.u8 q0,q1,d4
-vabdl.s16 q0,d2,d4
-vabal.u32 q0,d2,d4
-vmull.s8 q0,d2,d4
-vmlal.u16 q0,d2,d4
-vmlsl.s32 q0,d2,d4
-vmull.p8 q0,d2,d4
-vqdmlal.s16 q0,d2,d4
-vqdmlsl.s32 q0,d2,d4
-vqdmull.s16 q0,d2,d4
-vaddhn.i16 d0,q1,q2
-vraddhn.i32 d0,q1,q2
-vsubhn.i64 d0,q1,q2
-vrsubhn.i16 d0,q1,q2
-vpaddl.s8 q0,q2
-vpadal.u16 q0,q2
-vmovn.i16 d0,q2
-vqmovn.s32 d0,q2
-vqmovn.u64 d0,q2
-vqmovun.s16 d0,q2
-vshll.s8 q0,d4,#3
-vshll.u16 q0,d4,#7
-vshll.i32 q0,d4,#32
-vshrn.i16 d0,q2,#3
-vrshrn.i32 d0,q2,#9
-vqshrn.s64 d0,q2,#17
-vqrshrn.u16 d0,q2,#3
-vqshrun.s32 d0,q2,#7
-vqrshrun.s64 d0,q2,#32
-vshr.s8 q0,q2,#3
-vrshr.u16 q0,q2,#9
-vsra.s32 q0,q2,#17
-vrsra.u64 q0,q2,#33
-vshl.i8 q0,q2,#3
-vqshl.s16 q0,q2,#9
-vqshlu.s32 q0,q2,#17
-vsli.64 q0,q2,#33
-vsri.8 q0,q2,#3
-vcvt.s32.f32 q0,q2,#17
-vcvt.f32.u32 q0,q2,#17
-vmul.i16 q0,q1,d4[2]
-vmla.f32 q0,q1,d4[1]
-vmlsl.s32 q0,d2,d4[1]
-vqdmulh.s16 q0,q1,d4[2]
-vmov.i8 q0,#0xab
-vmov.i16 q0,#0xab00
-vmov.i32 q0,#0xab0000
-vmov.i32 q0,#0xabffff
-vmov.i64 q0,#0xff00ff000000ffff
-vmvn.i16 q0,#0xab00
-vorr.i32 q0,#0xab0000
-vbic.i16 q0,#0xab00
-vmov.f32 q0,#1.0
-aese.8 q0,q2
-aesd.8 q0,q2
-aesmc.8 q0,q2
-aesimc.8 q0,q2
-sha1c.32 q0,q1,q2
-sha1p.32 q0,q1,q2
-sha1m.32 q0,q1,q2
-sha1su0.32 q0,q1,q2
-sha1h.32 q0,q2
-sha1su1.32 q0,q2
-sha256h.32 q0,q1,q2
-sha256h2.32 q0,q1,q2
-sha256su0.32 q0,q2
-sha256su1.32 q0,q1,q2
-vmull.p64 q0,d2,d4
+vadd.i8 q0,q1,q2 @ f2020844
+vsub.i16 q0,q1,q2 @ f3120844
+vhadd.s8 q0,q1,q2 @ f2020044
+vhsub.u16 q0,q1,q2 @ f3120244
+vrhadd.s32 q0,q1,q2 @ f2220144
+vqadd.s64 q0,q1,q2 @ f2320054
+vqsub.u8 q0,q1,q2 @ f3020254
+vand q0,q1,q2 @ f2020154
+vbic q0,q1,q2 @ f2120154
+vorr q0,q1,q2 @ f2220154
+vorn q0,q1,q2 @ f2320154
+veor q0,q1,q2 @ f3020154
+vbsl q0,q1,q2 @ f3120154
+vbit q0,q1,q2 @ f3220154
+vbif q0,q1,q2 @ f3320154
+vcgt.s8 q0,q1,q2 @ f2020344
+vcge.u16 q0,q1,q2 @ f3120354
+vceq.i32 q0,q1,q2 @ f3220854
+vtst.8 q0,q1,q2 @ f2020854
+vmin.s8 q0,q1,q2 @ f2020654
+vmax.u16 q0,q1,q2 @ f3120644
+vabd.s32 q0,q1,q2 @ f2220744
+vaba.u8 q0,q1,q2 @ f3020754
+vmul.i16 q0,q1,q2 @ f2120954
+vmla.i32 q0,q1,q2 @ f2220944
+vmls.i8 q0,q1,q2 @ f3020944
+vmul.p8 q0,q1,q2 @ f3020954
+vpadd.i16 d0,d2,d4 @ f2120b14
+vpmin.s32 d0,d2,d4 @ f2220a14
+vpmax.u8 d0,d2,d4 @ f3020a04
+vshl.s8 q0,q1,q2 @ f2040442
+vrshl.u16 q0,q1,q2 @ f3140542
+vqshl.s32 q0,q1,q2 @ f2240452
+vqrshl.u64 q0,q1,q2 @ f3340552
+vqdmulh.s16 q0,q1,q2 @ f2120b44
+vqrdmulh.s32 q0,q1,q2 @ f3220b44
+vadd.f32 q0,q1,q2 @ f2020d44
+vsub.f32 q0,q1,q2 @ f2220d44
+vmul.f32 q0,q1,q2 @ f3020d54
+vmla.f32 q0,q1,q2 @ f2020d54
+vmls.f32 q0,q1,q2 @ f2220d54
+vfma.f32 q0,q1,q2 @ f2020c54
+vfms.f32 q0,q1,q2 @ f2220c54
+vabd.f32 q0,q1,q2 @ f3220d44
+vmax.f32 q0,q1,q2 @ f2020f44
+vmin.f32 q0,q1,q2 @ f2220f44
+vmaxnm.f32 q0,q1,q2 @ f3020f54
+vminnm.f32 q0,q1,q2 @ f3220f54
+vceq.f32 q0,q1,q2 @ f2020e44
+vcge.f32 q0,q1,q2 @ f3020e44
+vcgt.f32 q0,q1,q2 @ f3220e44
+vacge.f32 q0,q1,q2 @ f3020e54
+vacgt.f32 q0,q1,q2 @ f3220e54
+vrecps.f32 q0,q1,q2 @ f2020f54
+vrsqrts.f32 q0,q1,q2 @ f2220f54
+vpadd.f32 d0,d2,d4 @ f3020d04
+vpmax.f32 d0,d2,d4 @ f3020f04
+vpmin.f32 d0,d2,d4 @ f3220f04
+vabs.s8 q0,q2 @ f3b10344
+vneg.s16 q0,q2 @ f3b503c4
+vqabs.s32 q0,q2 @ f3b80744
+vqneg.s8 q0,q2 @ f3b007c4
+vclz.i16 q0,q2 @ f3b404c4
+vcls.s32 q0,q2 @ f3b80444
+vcnt.8 q0,q2 @ f3b00544
+vmvn q0,q2 @ f3b005c4
+vrev16.8 q0,q2 @ f3b00144
+vrev32.16 q0,q2 @ f3b400c4
+vrev64.32 q0,q2 @ f3b80044
+vceq.i16 q0,q2,#0 @ f3b50144
+vcgt.s32 q0,q2,#0 @ f3b90044
+vcge.s8 q0,q2,#0 @ f3b100c4
+vclt.s16 q0,q2,#0 @ f3b50244
+vcle.s32 q0,q2,#0 @ f3b901c4
+vabs.f32 q0,q2 @ f3b90744
+vneg.f32 q0,q2 @ f3b907c4
+vceq.f32 q0,q2,#0 @ f3b90544
+vcgt.f32 q0,q2,#0 @ f3b90444
+vcge.f32 q0,q2,#0 @ f3b904c4
+vclt.f32 q0,q2,#0 @ f3b90644
+vcle.f32 q0,q2,#0 @ f3b905c4
+vrecpe.f32 q0,q2 @ f3bb0544
+vrsqrte.f32 q0,q2 @ f3bb05c4
+vrecpe.u32 q0,q2 @ f3bb0444
+vrsqrte.u32 q0,q2 @ f3bb04c4
+vcvt.f32.s32 q0,q2 @ f3bb0644
+vcvt.f32.u32 q0,q2 @ f3bb06c4
+vcvt.s32.f32 q0,q2 @ f3bb0744
+vcvt.u32.f32 q0,q2 @ f3bb07c4
+vcvt.f32.f16 q0,d4 @ f3b60704
+vcvt.f16.f32 d0,q2 @ f3b60604
+vrinta.f32 q0,q2 @ f3ba0544
+vrintn.f32 q0,q2 @ f3ba0444
+vrintp.f32 q0,q2 @ f3ba07c4
+vrintm.f32 q0,q2 @ f3ba06c4
+vrintz.f32 q0,q2 @ f3ba05c4
+vrintx.f32 q0,q2 @ f3ba04c4
+vcvta.s32.f32 q0,q2 @ f3bb0044
+vcvtn.u32.f32 q0,q2 @ f3bb01c4
+vcvtp.s32.f32 q0,q2 @ f3bb0244
+vcvtm.u32.f32 q0,q2 @ f3bb03c4
+vswp q0,q2 @ f3b20044
+vtrn.8 q0,q2 @ f3b200c4
+vzip.16 q0,q2 @ f3b601c4
+vuzp.32 q0,q2 @ f3ba0144
+vext.8 q0,q1,q2,#3 @ f2b20344
+vtbl.8 d0,{d2-d5},d6 @ f3b20b06
+vtbx.8 d0,{d2-d3},d6 @ f3b20946
+vdup.8 q0,d4[3] @ f3b70c44
+vdup.32 d0,d4[1] @ f3bc0c04
+vaddl.s8 q0,d2,d4 @ f2820004
+vaddw.u16 q0,q1,d4 @ f3920104
+vsubl.s32 q0,d2,d4 @ f2a20204
+vsubw.u8 q0,q1,d4 @ f3820304
+vabdl.s16 q0,d2,d4 @ f2920704
+vabal.u32 q0,d2,d4 @ f3a20504
+vmull.s8 q0,d2,d4 @ f2820c04
+vmlal.u16 q0,d2,d4 @ f3920804
+vmlsl.s32 q0,d2,d4 @ f2a20a04
+vmull.p8 q0,d2,d4 @ f2820e04
+vqdmlal.s16 q0,d2,d4 @ f2920904
+vqdmlsl.s32 q0,d2,d4 @ f2a20b04
+vqdmull.s16 q0,d2,d4 @ f2920d04
+vaddhn.i16 d0,q1,q2 @ f2820404
+vraddhn.i32 d0,q1,q2 @ f3920404
+vsubhn.i64 d0,q1,q2 @ f2a20604
+vrsubhn.i16 d0,q1,q2 @ f3820604
+vpaddl.s8 q0,q2 @ f3b00244
+vpadal.u16 q0,q2 @ f3b406c4
+vmovn.i16 d0,q2 @ f3b20204
+vqmovn.s32 d0,q2 @ f3b60284
+vqmovn.u64 d0,q2 @ f3ba02c4
+vqmovun.s16 d0,q2 @ f3b20244
+vshll.s8 q0,d4,#3 @ f28b0a14
+vshll.u16 q0,d4,#7 @ f3970a14
+vshll.i32 q0,d4,#32 @ f3ba0304
+vshrn.i16 d0,q2,#3 @ f28d0814
+vrshrn.i32 d0,q2,#9 @ f2970854
+vqshrn.s64 d0,q2,#17 @ f2af0914
+vqrshrn.u16 d0,q2,#3 @ f38d0954
+vqshrun.s32 d0,q2,#7 @ f3990814
+vqrshrun.s64 d0,q2,#32 @ f3a00854
+vshr.s8 q0,q2,#3 @ f28d0054
+vrshr.u16 q0,q2,#9 @ f3970254
+vsra.s32 q0,q2,#17 @ f2af0154
+vrsra.u64 q0,q2,#33 @ f39f03d4
+vshl.i8 q0,q2,#3 @ f28b0554
+vqshl.s16 q0,q2,#9 @ f2990754
+vqshlu.s32 q0,q2,#17 @ f3b10654
+vsli.64 q0,q2,#33 @ f3a105d4
+vsri.8 q0,q2,#3 @ f38d0454
+vcvt.s32.f32 q0,q2,#17 @ f2af0f54
+vcvt.f32.u32 q0,q2,#17 @ f3af0e54
+vmul.i16 q0,q1,d4[2] @ f3920864
+vmla.f32 q0,q1,d4[1] @ f3a20164
+vmlsl.s32 q0,d2,d4[1] @ f2a20664
+vqdmulh.s16 q0,q1,d4[2] @ f3920c64
+vmov.i8 q0,#0xab @ f3820e5b
+vmov.i16 q0,#0xab00 @ f3820a5b
+vmov.i32 q0,#0xab0000 @ f382045b
+vmov.i32 q0,#0xabffff @ f3820d5b
+vmov.i64 q0,#0xff00ff000000ffff @ f3820e73
+vmvn.i16 q0,#0xab00 @ f3820a7b
+vorr.i32 q0,#0xab0000 @ f382055b
+vbic.i16 q0,#0xab00 @ f3820b7b
+vmov.f32 q0,#1.0 @ f2870f50
+aese.8 q0,q2 @ f3b00304
+aesd.8 q0,q2 @ f3b00344
+aesmc.8 q0,q2 @ f3b00384
+aesimc.8 q0,q2 @ f3b003c4
+sha1c.32 q0,q1,q2 @ f2020c44
+sha1p.32 q0,q1,q2 @ f2120c44
+sha1m.32 q0,q1,q2 @ f2220c44
+sha1su0.32 q0,q1,q2 @ f2320c44
+sha1h.32 q0,q2 @ f3b902c4
+sha1su1.32 q0,q2 @ f3ba0384
+sha256h.32 q0,q1,q2 @ f3020c44
+sha256h2.32 q0,q1,q2 @ f3120c44
+sha256su0.32 q0,q2 @ f3ba03c4
+sha256su1.32 q0,q1,q2 @ f3220c44
+vmull.p64 q0,d2,d4 @ f2a20e04
