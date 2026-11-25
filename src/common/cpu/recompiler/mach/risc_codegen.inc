@@ -68,10 +68,11 @@ static void call_rt(Unit* u, int off) {
     rk_call_reg(&u->b, RK_S1);
 }
 
-/* the pins to the state (store) or from it; a call changes none of them (the callee's registers) */
+/* the pins to the state (store; none where none is newer than it) or from it; a call changes none of them (the
+   callee's registers) */
 static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
-    if (!u->pinned || caller) return;
+    if (!u->pinned || caller || (store && !u->cur_dirty && !u->vcur_dirty)) return;
     if (u->mempin >= 0 && !store) rk_state(b, 1, 8, u->mempin, offsetof(CPU, mem));
     for (n = 0; n < 32; ++n)
         if (u->pin[n] >= 0) rk_state(b, !store, 8, u->pin[n], offsetof(CPU, x) + 8 * (size_t)n);
