@@ -34,8 +34,9 @@ def place(word, field, kind, number):
 
 
 REGISTER = re.compile(r'(?<![.\w])([sdq])(\d+)\b')
-# the conditional words (VFP's) whose one vector register is not the d field's: VMOV from and to a core register and VDUP
-# of one (n), VMOV from and to two (m, of S(n) and S(n+1) the first's); and the fixed-point VCVT's, which names it twice
+# the conditional words (VFP's) whose one vector register is not the d field's: VMOV from and to a core register and
+# VDUP of one (n), VMOV from and to two (m, of S(n) and S(n+1) the first's); and the fixed-point VCVT's, which names it
+# twice
 ONE = {
     'n': ((0x0FE00F7F, 0x0E000A10), (0x0F900F5F, 0x0E800B10)),
     'm': ((0x0FE00ED0, 0x0C400A10),),

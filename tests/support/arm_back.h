@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The native back end whose AArch32 blocks a test makes: Back, its functions back_(name) and BACK_NAME. Built with
-   SNX_TEST_ARM64, SNX_TEST_RV64 and their like it is that machine's, and SNX_TEST_NATIVE is defined: its code runs under
-   Unicorn (BACK_UC, host_unicorn.h), arm64's as Windows' with SNX_TEST_ARM64WIN too, and x86-64's as Windows' with
-   SNX_TEST_WIN64, by an x86-64 host itself (host_win64.c). Built with none of them it is the host's own */
+   SNX_TEST_ARM64, SNX_TEST_RV64 and their like it is that machine's, and SNX_TEST_NATIVE is defined: its code runs
+   under Unicorn (BACK_UC, host_unicorn.h), arm64's as Windows' with SNX_TEST_ARM64WIN too, and x86-64's as Windows'
+   with SNX_TEST_WIN64, by an x86-64 host itself (host_win64.c). Built with none of them it is the host's own */
 #ifndef SNX_TEST_ARM_BACK_H
 #define SNX_TEST_ARM_BACK_H
 #if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_PPC64BE) ||       \

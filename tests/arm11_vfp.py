@@ -237,7 +237,8 @@ def main():
                         assert bytes(memory) == old_memory
                         assert accesses[0][0] == 3 and all(op in (0x101, 0x102) for op, _, _ in accesses[1:])
             print(
-                f'ARM11 VFPv2, {blocks.name}, {mode}: {total} exact comparisons; unsupported controls/wide transfers stop',
+                f'ARM11 VFPv2, {blocks.name}, {mode}: {total} exact comparisons; '
+                'unsupported controls/wide transfers stop',
                 flush=True,
             )
             blocks.close()

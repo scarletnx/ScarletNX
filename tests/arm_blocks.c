@@ -4,15 +4,14 @@
    what they must come to (arm_blocks.py): the host's back end, whose code this processor runs, or built with
    SNX_TEST_ARM64 and its like another machine's, run under Unicorn (support/arm_back.h).
      snx-test-arm-blocks LIST STATE [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|checked] [--pool N]
-         [--features MASK]
    LIST has a block a line: arm or thumb, its address, and its words or halfwords (64 at most), all hexadecimal. Block N
    is the Nth line's. Each is said on stdout, a line each, "made UNITS NAME..." (the words or halfwords it covers, and
    each instruction of the line as the decoder has it: an SnxA32Kind, a Thumb shape, "/pc" after one that names R15) or
    "refused WHY", then "ready MACHINE". STATE is a file of Shared and guest memory, which this maps and the test too.
    Then each block number read from stdin (32 bits, this host's order) runs on the state there and is answered by Reply:
    the run's end, or before it a call of the state's bus hook or access, which the test makes and answers with 32 bits.
-   --pool N keeps the values in N host registers, so they spill; --features takes the host's that are not in MASK out.
-   Without a back end, or a Unicorn of the machine, it says why and exits with 77 */
+   --pool N keeps the values in N host registers, so they spill. Without a back end, or a Unicorn of the machine, it
+   says why and exits with 77 */
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "support/arm_back.h"
@@ -39,7 +38,8 @@ typedef struct {
 } Shared;
 static_assert(sizeof(Shared) <= MEMORY, "the state's page");
 
-/* what an answer is: the run over; the bus hook (address, size_write, value); checked memory (operation, address, size) */
+/* what an answer is: the run over; the bus hook (address, size_write, value); checked memory (operation, address,
+   size) */
 enum { REPLY_DONE, REPLY_IO, REPLY_ACCESS };
 typedef struct {
     uint32_t kind, a, b, c, d;
@@ -374,11 +374,9 @@ int main(int argc, char** argv) {
                                            [SNX_ARM_PROFILE_ARM7TDMI] = "arm7tdmi",
                                            [SNX_ARM_PROFILE_ARM946E] = "arm946e"};
     static const char* const memories[] = {[SNX_ARM_MEMORY_FLAT] = "flat", [SNX_ARM_MEMORY_CHECKED] = "checked"};
-    unsigned features = ~0u;
     int pool = 0;
     g_arm_blocks.options.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
-    if (argc < 3)
-        fail("usage", "snx-test-arm-blocks LIST STATE [--profile NAME] [--memory NAME] [--pool N] [--features MASK]");
+    if (argc < 3) fail("usage", "snx-test-arm-blocks LIST STATE [--profile NAME] [--memory NAME] [--pool N]");
     for (int i = 3; i < argc; i += 2) {
         if (i + 1 == argc) fail("an option with no value", argv[i]);
         if (!strcmp(argv[i], "--profile"))
@@ -387,8 +385,6 @@ int main(int argc, char** argv) {
             g_arm_blocks.options.memory = (SnxArmMemoryMode)name_of("--memory", argv[i + 1], memories, 2);
         else if (!strcmp(argv[i], "--pool"))
             pool = (int)strtol(argv[i + 1], NULL, 10);
-        else if (!strcmp(argv[i], "--features"))
-            features = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else
             fail("an unknown option", argv[i]);
     }
@@ -426,7 +422,7 @@ int main(int argc, char** argv) {
     if (!g_arm_blocks.back) fail("the " BACK_NAME " back end's compiler", "out of memory");
     if (back_(options)(g_arm_blocks.back, &g_arm_blocks.options))
         fail("no block compiler takes this", "profile and memory");
-    back_(limit)(g_arm_blocks.back, pool, features);
+    back_(limit)(g_arm_blocks.back, pool, ~0u);
     make_blocks();
     printf("ready " BACK_NAME "\n");
     fflush(stdout);

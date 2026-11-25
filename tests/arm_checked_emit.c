@@ -3,8 +3,8 @@
 /* The object of arm_checked.c's blocks, made at build time by the host's native back end for its linker: no execution
    engine.
      snx-test-arm-checked-emit OBJECT COUNTS POOL
-   COUNTS gets the words or halfwords each covers, an initializer. POOL is the host registers their values are in (0: all of
-   them), so that they spill */
+   COUNTS gets the words or halfwords each covers, an initializer. POOL is the host registers their values are in (0:
+   all of them), so that they spill */
 #include "common/cpu/arm/codegen.h"
 #include "arm_checked_cases.h"
 #include "support/arm_back.h"
@@ -53,8 +53,8 @@ int main(int argc, char** argv) {
         if (!counts[i]) return 1;
     }
     /* Rejected options: a bad ABI, profile or memory mode, and bus cycles counted by a profile other than the ARM7TDMI,
-       into one place only, or into the table itself; and the AGB's ARM7TDMI hosted. None of them leaves a block, and the
-       compiler's own options are as they were */
+       into one place only, or into the table itself; and the AGB's ARM7TDMI hosted. None of them leaves a block, and
+       the compiler's own options are as they were */
     SnxArmCodegenOptions bad[] = {{99, 0, 0, 0, 0},
                                   {1, 99, 0, 0, 0},
                                   {1, 0, 99, 0, 0},
