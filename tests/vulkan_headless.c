@@ -7906,6 +7906,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_uma_imports.inc"
 #include "vulkan_uma_pages.inc"
 #include "vulkan_uma_region_reads.inc"
+#include "vulkan_uma_region_watch.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_poll_kick.inc"
 #include "vulkan_tex_partial.inc"
@@ -7915,6 +7916,8 @@ static int check_finish_lets_go(void) {
 #include "vulkan_texture_quiet_other.inc"
 #include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
+#include "vulkan_pool_map.inc"
+#include "vulkan_dma_named.inc"
 #include "vulkan_astc_kind.inc"
 
 /* hmma_mode at the renderer's start (vk/hmma_pick.c), on this device: 1 to 5 take that way; Auto with no file of the
@@ -8537,6 +8540,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(start_log);
         t_plat.log_redirect = start_log;
     }
+    /* SNX_TEST_SM86_TABLE=1: the renderer starts with the SM86 frontend, and takes the texture table where the device
+       has it, for the cases of Ounce programs that read it alone (vulkan_pool_map.inc) */
+    if (getenv("SNX_TEST_SM86_TABLE")) g_shader_sm86 = 1;
     video_init("Headless Vulkan fixture", "");
     if (start_log) {
         t_plat.log_redirect = NULL;
@@ -8756,6 +8762,12 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_half_rounding();
         else if (!strcmp(name, "cross_stage_alias"))
             result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "dma_named"))
+            result = check_dma_named();
+        else if (!strcmp(name, "writer_storage"))
+            result = check_writer_storage();
+        else if (!strcmp(name, "pool_map")) /* with SNX_TEST_SM86_TABLE=1 and --pool-map=1 (vulkan_pool_map.inc) */
+            result = check_pool_map_draws();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
         else if (!strcmp(name, "compute_lone_lane"))
@@ -9062,6 +9074,17 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
+#if !defined(_WIN32)
+        if (!strcmp(name, "region_dmabuf_trap") && ++ran) CHECK(!check_uma_region_dmabuf_trap());
+        if (!strcmp(name, "region_watch") && ++ran) CHECK(!check_uma_region_watch());
+        if (!strcmp(name, "region_letgo") && ++ran) CHECK(!check_uma_region_letgo());
+        if (!strcmp(name, "region_dead_bind") && ++ran) CHECK(!check_uma_region_dead_bind());
+        if (!strcmp(name, "region_watch_frames") && ++ran) CHECK(!check_uma_region_watch_frames());
+        if (!strcmp(name, "region_watch_writes") && ++ran) CHECK(!check_uma_region_watch_writes());
+        if (!strcmp(name, "region_watch_engine") && ++ran) CHECK(!check_uma_region_watch_engine());
+        if (!strcmp(name, "region_table") && ++ran) CHECK(!check_uma_region_table());
+        if (!strcmp(name, "region_stays") && ++ran) CHECK(!check_uma_region_stays());
+#endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
         if (!strcmp(name, "alias_in_place") && ++ran) CHECK(!check_uma_alias_in_place());
@@ -9077,7 +9100,10 @@ static int run_headless(int argc, char** argv) {
                     "dispatch_open, "
                     "nvdec, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, storage_region, "
+                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, region_dmabuf_trap, "
+                    "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
+                    "region_watch_engine, region_table, region_stays, "
+                    "storage_region, "
                     "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
                     "alias_order\n",
                     name);

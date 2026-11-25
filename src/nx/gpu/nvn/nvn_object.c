@@ -838,15 +838,30 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
     (void)c;
     return NVN_OBJ(const NvnDescPool, sp)->count;
 }
+/* A texture descriptor written over another. The game writes it between two submissions, and the GPU thread may still
+   replay the work before them, with no write tracking epoch between (one Ounce game's menus and loads register new
+   textures at indices its last frame sampled others at). That replay reads the descriptor as it binds, so it would draw
+   with the new texture: the write waits for the work submitted before it, as a sampler's does (sampler_write). Recorded
+   as a GPU-side write of its 32 bytes, so what the renderer keeps of the descriptor (the texture memo, the pool map)
+   checks it again at its next lookup, not only after the next submission. The descriptor the slot already holds is no
+   write, and no wait */
+static void texture_write(u64 slot, const u32 tic[8]) {
+    if (!memcmp(GP(slot), tic, NVN_DESCRIPTOR_SIZE)) return;
+    nvn_wait_begin();
+    nvn_replay_finish_all();
+    nvn_wait_end();
+    memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
+    gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
+}
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
 static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u64 slot = desc_slot(tp, id, "texture");
     NvnTexture tex;
     NvnView view;
-    u32 tic[8];
+    u32 tic[8] = {0};
     if (!slot) return;
-    if (!t) {                            /* no texture: an empty descriptor */
-        memset(GP(slot), 0, sizeof tic); /* guest memory: every byte the game sees */
+    if (!t) { /* no texture: an empty descriptor */
+        texture_write(slot, tic);
         return;
     }
     memcpy(&tex, GP(t), sizeof tex);
@@ -854,7 +869,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     if (!nvn_tic_encode(&tex, v ? &view : NULL, image, g_nvn.loader.api, tic))
         LOG_LIMIT(8, "nvn: a texture of format %#x, which has no texture descriptor: an empty one at %d\n",
                   v && (view.set & NVN_VIEW_FORMAT) ? view.format : tex.d.format, id);
-    memcpy(GP(slot), tic, sizeof tic);
+    texture_write(slot, tic);
 }
 void nvn_TexturePoolRegisterTexture(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;

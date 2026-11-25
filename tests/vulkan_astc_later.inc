@@ -270,6 +270,9 @@ static int al_frames(void) {
     CHECK(t && !al_shown(&x, t, "made", &rgba));
     const VkImage rgba_img = t->img;
     const u64 rgba_bytes = t->bytes;
+    vk_lock();
+    const u64 bc7 = vk_tex_astc_bc7_bytes(); /* the checks' before it; t is RGBA8 still */
+    vk_unlock();
     vk_tex_later_stats(&a);
     const u64 first = al_step(), second = al_step();
     CHECK(t->bc7.queued && t->img == rgba_img && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM);
@@ -287,6 +290,10 @@ static int al_frames(void) {
     (void)over;
     /* the BC7 image in the RGBA8 one's place, the RGBA8 one's memory deferred, then freed with the frames */
     CHECK(t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK && t->img != rgba_img && !t->bc7.img && t->bytes < rgba_bytes);
+    vk_lock();
+    const u64 bc7_now = vk_tex_astc_bc7_bytes(); /* what astc_mode's Auto counts as held, to make room for */
+    vk_unlock();
+    CHECK(bc7_now == bc7 + t->bytes);
     CHECK(swapped_deferred >= deferred + rgba_bytes);
     CHECK(b.made == a.made + 1 && b.freed - a.freed == rgba_bytes - t->bytes);
     vk_lock();

@@ -6,6 +6,7 @@
    (vk/blocklinear.c, vk/texconv.c, vk/astc.c), and checked for changes now and then: often at first, rarely once
    they have stayed the same. */
 #include "nx/gpu/vk/descriptor_objects.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/texture/descriptor.h"
 #include <stdio.h>
@@ -1317,6 +1318,7 @@ static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat
     atomic_fetch_add_explicit(&g_tex_frees, 1, memory_order_relaxed);
     t->img = img;
     t->mem = mem;
+    vk_pool_map_swapped(t);
     if (t->took_drawn) vk_devmem_priority(mem, DM_PRIO_MID); /* new memory has the low class of its owner */
     if (t->movable) vk_devmem_owner(mem, t);
     vk_surf_bytes(t, bytes);
@@ -2413,31 +2415,55 @@ static int tex_rehash(Surf* t) {
     return 1;
 }
 
-int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at,
-                    u32 rows_pitch, Surf** hit, int max) {
+/* every page under the bytes [o, o + n) of a texture with bricks has memory (the padding after a layer's levels has
+   none to have) */
+static int resident_has(const Surf* t, u64 o, u64 n) {
+    for (u64 end = o + n, e; o < end; o = e) {
+        const i64 k = resident_page(t, o, &e);
+        if (k >= 0 && !vk_image_resident_has(t->img, (u32)k, 1)) return 0;
+    }
+    return 1;
+}
+int vk_tex_dma_rows(u64 tex, u32 level, u32 layer, u64 gva, u64 lo, u64 span, u32 wb, u32 bh, u32 ox, u32 oy,
+                    u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at, u32 rows_pitch, Surf** hit, int max) {
     int n = 0;
     VkCommandBuffer cb = VK_NULL_HANDLE;
-    for (Surf* t = vk_surf_first(gva); t && n < max; t = vk_surf_next(t)) {
+    for (Surf* t = vk_surf_first(tex); t && n < max; t = vk_surf_next(t)) {
         const VkFmt* f = &t->f;
-        if (t->is_rt || t->gva != gva || !t->upload_valid || !t->bl || t->bh != bh || t->bd || t->msaa ||
-            t->type == VK_IMAGE_VIEW_TYPE_3D || f->depth || f->conv || vk_tc_converts(f) || !f->bpp || !f->bw ||
-            !f->bh || ox % f->bpp || line_bytes % f->bpp || rows_pitch % f->bpp || (rows_at % f->bpp) || (rows_at & 3))
+        if (t->is_rt || t->gva != tex || level >= t->levels || layer >= t->layers || !t->upload_valid || !t->bl ||
+            t->bd || t->msaa || t->type == VK_IMAGE_VIEW_TYPE_3D || f->depth || f->conv || vk_tc_converts(f) ||
+            !f->bpp || !f->bw || !f->bh || ox % f->bpp || line_bytes % f->bpp || rows_pitch % f->bpp ||
+            (rows_at % f->bpp) || (rows_at & 3))
             continue;
-        u32 tw = (t->w + f->bw - 1) / f->bw, th = (t->h + f->bh - 1) / f->bh;
-        /* the same layout: as many GOBs a row (their addresses don't depend on the height), the rows within level 0
-           of a texture with more of them after it */
+        /* the level's place and blocks in that layer, as tex_patch_range finds them: the copy's surface is it */
+        u64 at = (u64)layer * t->layer_size;
+        u32 lbh = 0, lbd = 0;
+        for (u32 l = 0; l <= level; l++) {
+            const u64 lsz = bl_level_size(t->w, t->h, 1, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+            if (l < level) at += lsz;
+        }
+        if (t->gva + at != gva || lbh != bh || lbd) continue;
+        const u32 lw = t->w >> level ? t->w >> level : 1, lh = t->h >> level ? t->h >> level : 1;
+        u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh;
+        /* the same layout: as many GOBs a row (their addresses don't depend on the height), the rows within the
+           level of a texture with more of them after it */
         if (bl_level_gobs_x(tw * f->bpp, th, 1, t->bh, t->bd, t->tile_w) != ((u64)wb + 63) >> 6 || oy >= th ||
             ((t->levels > 1 || t->layers > 1) && oy + rows > th))
             continue;
         /* what an engine wrote since its last check would be lost */
         if (gpu_mem_dirty_since(t->gw, t->gva, t->size)) continue;
         u32 x = ox / f->bpp * f->bw, y = oy * f->bh, w = line_bytes / f->bpp * f->bw, h = rows * f->bh;
-        if (x >= t->w) continue;
-        if (w > t->w - x) w = t->w - x;
-        if (h > t->h - y) h = t->h - y;
+        if (x >= lw) continue;
+        if (w > lw - x) w = lw - x;
+        if (h > lh - y) h = lh - y;
+        /* an image with memory only where it is bound takes the rows only where it has it: elsewhere the piece
+           load binds the pages the game mapped, and loads them */
+        if (lo < t->gva || (t->sparse && !vk_image_sparse_bound(t->img, layer, level, y, y + h, 0, 1, 1)) ||
+            (t->bricks && !resident_has(t, lo - t->gva, span)))
+            continue;
         VkBufferImageCopy r = {.bufferOffset = rows_at,
                                .bufferRowLength = rows_pitch / f->bpp * f->bw,
-                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
                                .imageOffset = {(i32)x, (i32)y, 0},
                                .imageExtent = {w, h, 1}};
         if (!cb) cb = vk_cmd();
@@ -3727,6 +3753,14 @@ static void later_exact(Surf* t, void* ctx) {
     took->textures++;
     took->bytes += t->bytes;
 }
+static void astc_bc7_held(Surf* t, void* ctx) {
+    if (t->f.conv == VKC_ASTC && is_bc7(t->f.vk)) *(u64*)ctx += t->bytes;
+}
+u64 vk_tex_astc_bc7_bytes(void) {
+    u64 bytes = 0;
+    vk_surf_textures(astc_bc7_held, &bytes);
+    return bytes;
+}
 void vk_tex_later_exact(u32* textures, u64* bytes) {
     LaterExact took = {0, 0};
     vk_surf_textures(later_exact, &took);
@@ -4712,6 +4746,7 @@ static int copied_into(const Surf* s, const Surf* t) {
     return 0;
 }
 static void mark_copied(Surf* s, Surf* t) {
+    t->takes++;
     tex_drawn(t, 1);
     vk_tex_took(t);
     if (s->copied[0].t != t) s->copied[1] = s->copied[0];

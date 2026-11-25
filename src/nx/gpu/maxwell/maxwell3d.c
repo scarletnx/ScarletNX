@@ -74,8 +74,14 @@ static int watched_in(u64 gva, u64 n, int all) {
 /* Each watched granule's newest write (gpu_mem_granules_generation): a texture asks its own granules, so a write on
    another granule leaves it as it was. Leaves of 4096 granules (8 GiB), made by gpu_mem_watch under g_wlk and never
    freed. A write's granules are noted while it is stamped and their generations stored once it is published; past
-   WHITS of them, or at the tables' overflow, every granule reads as written then (g_wgran_all) */
-#define WGRAN_LEAF 4096u
+   WHITS of them, or at the tables' overflow, every granule reads as written then (g_wgran_all).
+
+   After a leaf's granules, a block's newest write for each WGRAN_BLOCK granules (128 MiB), stored with the granule's:
+   generations only grow, so it is the newest of its granules. A read takes a block whole where the range covers it.
+   One game's streamed arrays of 1.4 to 5.8 GB read 700 to 2,900 granules at each check of each, 3% of the renderer
+   thread */
+#define WGRAN_LEAF  4096u
+#define WGRAN_BLOCK 64u
 static _Atomic u64* _Atomic g_wgran[WW_BITS / WGRAN_LEAF]; /* atomic pointers, made under g_wlk */
 static _Atomic u64 g_wgran_all;                            /* atomic, stored under g_wlk */
 #define WHITS 16u
@@ -119,7 +125,9 @@ static void publish(u64 gen, int kind) {
     else
         for (u32 i = 0; i < g_nhits; i++) {
             _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g_whits[i] / WGRAN_LEAF], memory_order_relaxed);
-            if (leaf) atomic_store_explicit(&leaf[g_whits[i] % WGRAN_LEAF], gen, memory_order_release);
+            if (!leaf) continue;
+            atomic_store_explicit(&leaf[g_whits[i] % WGRAN_LEAF], gen, memory_order_release);
+            atomic_store_explicit(&leaf[WGRAN_LEAF + g_whits[i] % WGRAN_LEAF / WGRAN_BLOCK], gen, memory_order_release);
         }
     g_nhits = 0;
     g_whits_over = 0;
@@ -128,6 +136,27 @@ static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, *(const u
 /* the renderer's watch on GPU-side writes (gpu_set_write_watch): any thread, under g_wlk */
 static void (*_Atomic g_wwatch)(u64 cpu, u64 n);
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { atomic_store_explicit(&g_wwatch, fn, memory_order_release); }
+/* the renderer's watch by GPU address (gpu_set_gva_watch), called after publish under g_wlk */
+static void (*_Atomic g_gwatch)(u64 gva, u64 n);
+void gpu_set_gva_watch(void (*fn)(u64 gva, u64 n)) { atomic_store_explicit(&g_gwatch, fn, memory_order_release); }
+typedef void (*GvaWatch)(u64 gva, u64 n);
+static void gwatch_alias(void* ctx, u64 gva, u64 n) { (*(const GvaWatch*)ctx)(gva, n); }
+static int gwatch_run(u64 cpu, u64 n, void* ctx) {
+    gmmu_aliases(cpu, n, gwatch_alias, ctx);
+    return 0;
+}
+/* [gva, gva + size) of a published write to the watch, with the other GPU addresses of its guest memory (all of them
+   but gva itself too: gmmu_aliases names each). cpu_only: a write by guest address alone, [cpu, cpu + size) */
+static void gwatch(u64 gva, u64 size, int cpu_only) {
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (!fn) return;
+    if (cpu_only) {
+        gmmu_aliases(gva, size, gwatch_alias, &fn);
+        return;
+    }
+    fn(gva, size);
+    guest_runs(gva, size, gwatch_run, &fn);
+}
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
     void (*watch)(u64, u64) = atomic_load_explicit(&g_wwatch, memory_order_acquire);
@@ -187,6 +216,7 @@ void gpu_mem_written_cb(u64 gva, u64 size) {
     cb_box(gva, size);
     guest_runs(gva, size, stamp_run_cb, &gen);
     publish(gen, GPU_WRITE_CB);
+    gwatch(gva, size, 0);
     pm_unlock(&g_wlk);
 }
 static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
@@ -200,6 +230,7 @@ static void written(u64 gva, u64 size, int kind, u32 format, u64 surface) {
     atomic_store_explicit(&g_wformat[gen % WKINDS], format, memory_order_relaxed);
     atomic_store_explicit(&g_wsurface[gen % WKINDS], surface, memory_order_relaxed);
     publish(gen, kind);
+    gwatch(gva, size, 0);
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written(u64 gva, u64 size) { written(gva, size, GPU_WRITE_ENGINE, 0, 0); }
@@ -218,6 +249,8 @@ void gpu_mem_remapped(u64 gva, u64 size) {
     stamp_gpu(gva, size, gen);
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_REMAP);
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (fn) fn(gva, size); /* the pages that show other memory now, alone */
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written_shader(u64 gva, u64 size) { written(gva, size, GPU_WRITE_SHADER, 0, 0); }
@@ -229,6 +262,7 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     stamp_cpu(cpu, size, gen);
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     publish(gen, GPU_WRITE_RESULT);
+    gwatch(cpu, size, 1);
     pm_unlock(&g_wlk);
 }
 u64 gpu_mem_generation(void) { return atomic_load_explicit(&g_wgen, memory_order_acquire); }
@@ -241,7 +275,7 @@ int gpu_mem_watch(u64 gva, u64 size) {
     for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e && made; g++) {
         _Atomic u64* _Atomic* slot = &g_wgran[g / WGRAN_LEAF];
         if (!atomic_load_explicit(&(*slot), memory_order_relaxed)) {
-            _Atomic u64* leaf = calloc(WGRAN_LEAF, sizeof *leaf);
+            _Atomic u64* leaf = calloc(WGRAN_LEAF + WGRAN_LEAF / WGRAN_BLOCK, sizeof *leaf); /* granules, blocks */
             if (leaf) atomic_store_explicit(slot, leaf, memory_order_release);
             made = leaf != NULL;
         }
@@ -254,11 +288,19 @@ int gpu_mem_watch(u64 gva, u64 size) {
 u64 gpu_mem_granules_generation(u64 gva, u64 size) {
     u64 newest = atomic_load_explicit(&g_wgran_all, memory_order_acquire);
     if (!size || gva + size - 1 < gva || (gva + size - 1) >> WW_SHIFT >= WW_BITS) return ~(u64)0;
-    for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e; g++) {
+    for (u64 g = gva >> WW_SHIFT, e = (gva + size - 1) >> WW_SHIFT; g <= e;) {
         const _Atomic u64* leaf = atomic_load_explicit(&g_wgran[g / WGRAN_LEAF], memory_order_acquire);
         if (!leaf) return ~(u64)0; /* not watched: no answer */
-        u64 gen = atomic_load_explicit(&leaf[g % WGRAN_LEAF], memory_order_acquire);
+        u64 gen, next;
+        if (g % WGRAN_BLOCK == 0 && e - g + 1 >= WGRAN_BLOCK) { /* a whole block */
+            gen = atomic_load_explicit(&leaf[WGRAN_LEAF + g % WGRAN_LEAF / WGRAN_BLOCK], memory_order_acquire);
+            next = g + WGRAN_BLOCK;
+        } else {
+            gen = atomic_load_explicit(&leaf[g % WGRAN_LEAF], memory_order_acquire);
+            next = g + 1;
+        }
         if (gen > newest) newest = gen;
+        g = next;
     }
     return newest;
 }
@@ -290,6 +332,8 @@ void gpu_mem_written_all(void) {
     atomic_store_explicit(&g_wlast, gen, memory_order_relaxed);
     g_whits_over = 1; /* every page, the watched ones too */
     publish(gen, GPU_WRITE_ALL);
+    GvaWatch fn = atomic_load_explicit(&g_gwatch, memory_order_acquire);
+    if (fn) fn(0, ~0ull); /* every GPU address */
     pm_unlock(&g_wlk);
 }
 typedef struct {

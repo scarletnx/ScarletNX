@@ -81,6 +81,17 @@ typedef struct {
     signed char pin[32]; /* each X register's host register, -1 for none */
     signed char vpin[32]; /* each V register's vector register, -1 for none */
     signed char mempin;   /* the guest memory's base's host register, -1 for none */
+    SnxU64 pin_wr;        /* the X registers (31 the SP) some instruction of the function may write: a pin of none of
+                             them is never stored, the state holding its value */
+    SnxU32 vpin_wr;       /* the same of the V registers */
+    SnxU64 pin_sel;       /* the pins a load of them reloads (the prologue's: those live where the function starts) */
+    SnxU32 vpin_sel;
+    SnxU64* dsync;        /* each instruction's X registers a store of the pins there stores: those it may write and
+                             those an instruction before it may have, with no call (which syncs them) between */
+    SnxU32* vdsync;
+    size_t cap_dsync, cap_vdsync;
+    SnxU64 cur_dirty;     /* the pins a store of them stores now: the instruction's dsync, 0 past a call */
+    SnxU32 vcur_dirty;
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
     int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
@@ -90,11 +101,25 @@ typedef struct {
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
     int dispatch, d_label, mismatch_label;
     int nstubs, cap_stubs;
+    /* the function's BRs through a recovered jump table (MG_JTAB): each one's table, its label, the guest address of its
+       first slot and its slots (a word each), whose labels are jslots[first...] (the dispatch block's where no case) */
+    struct JTab {
+        int label;
+        SnxU64 lo;
+        unsigned n, first;
+    } * jtabs;
+    int njtabs;
+    size_t cap_jtabs;
+    int* jslots;
+    size_t njslots, cap_jslots;
     struct Stub {
         int label;
-        int kind; /* 0 a branch to target; 1 a poll then target (resume); 2 a return (leave) */
+        int kind; /* 0 a branch to target; 1 a poll then target (resume); 2 a return (leave); 3 a pending poll
+                     (poll_slow) */
         SnxU64 target;
         SnxU64 address;
+        SnxU64 dirty; /* cur_dirty where it was made */
+        SnxU32 vdirty;
     } * stubs;
 } Unit;
 
@@ -141,6 +166,18 @@ static void call_sym(Unit* u, const char* sym, int tail);
 static void check_return(Unit* u, SnxU64 next);
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
 static void poll_then(Unit* u, SnxU64 resume);
+#ifdef MG_POLL_INLINE
+/* the poll split for a backward branch laid out with one taken jump a pass of the loop: a jump to label where no poll
+   is pending (it may change the host's flags), and the pending poll's call alone, out of line */
+static void poll_jz(Unit* u, int label);
+static void poll_slow(Unit* u, SnxU64 resume);
+#endif
+#ifdef MG_JTAB
+/* a BR's jump through table k (the target in SGX_FN_TARGET): to the case's label, else (a poll pending, the target
+   no case of it) to the dispatch block, CPU.pc stored already; and the tables' words at the function's end */
+static void jtab_jump(Unit* u, int k);
+static void jtab_emit(Unit* u);
+#endif
 /* c->pc = address, c->rt->undef(c, address, word); SVC n (c->pc = next, c->rt->svc or svcs[n], the pins around it);
    c->pc = address, c->rt->brk(c, address, imm) */
 static void mg_undef(Unit* u, SnxU64 address, SnxU32 word);
@@ -184,9 +221,18 @@ static int lane_put(SgCtx* g, unsigned size, int a, int i, SgD v);
 static int vdup(SgCtx* g, unsigned size, int a, int e);
 
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
-static void pins_flush(void* machine) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
+/* the region's own stores of the pins (UNDEF's flush, the spill and reload around a helper's call) are assembled
+   with the region, or with the cold paths at the function's end, not where cur_dirty is theirs: every pin written */
+static void pins_all(Unit* u, SgXBuf* b, int store, int caller) {
+    SnxU64 d = u->cur_dirty, sel = u->pin_sel;
+    SnxU32 vd = u->vcur_dirty, vsel = u->vpin_sel;
+    u->cur_dirty = u->pin_sel = ~(SnxU64)0, u->vcur_dirty = u->vpin_sel = ~0u;
+    pins_of(u, b, store, caller);
+    u->cur_dirty = d, u->vcur_dirty = vd, u->pin_sel = sel, u->vpin_sel = vsel;
+}
+static void pins_flush(void* machine) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
 /* the region assembler's: into the buffer it writes (the cold one on a cold path) */
-static void pins_cs(void* machine, int store) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
+static void pins_cs(void* machine, int store) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
 /* a function's symbol */
 static void fname(char* out, size_t size, const char* prefix, SnxU64 address) {
@@ -231,6 +277,8 @@ static int add_stub(Unit* u, int kind, SnxU64 target, SnxU64 address) {
     u->stubs[u->nstubs].kind = kind;
     u->stubs[u->nstubs].target = target;
     u->stubs[u->nstubs].address = address;
+    u->stubs[u->nstubs].dirty = u->cur_dirty;
+    u->stubs[u->nstubs].vdirty = u->vcur_dirty;
     return u->stubs[u->nstubs++].label;
 }
 
@@ -272,13 +320,28 @@ static void flush_to(Unit* u, SnxU64 target) {
 }
 
 /* the machine's instructions of a function's region */
-enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN };
+enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK, SGX_FN_JTAB };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
     (void)r;
     switch (i->op) {
     case SGX_FN_JCC: jcc(u, i->cc, i->disp); break;
+#ifdef MG_POLL_INLINE
+    case SGX_FN_JCC_BACK: {
+        /* a loop's backward branch: past it where not taken (the flags as they were, for the region's code after);
+           taken, to the header where no poll is pending, else to the poll's stub (imm) */
+        int skip = new_label(u);
+        jcc(u, i->cc ^ 1, skip);
+        poll_jz(u, i->disp);
+        jmp(u, (int)i->imm);
+        bind(u, skip);
+        break;
+    }
+#endif
+#ifdef MG_JTAB
+    case SGX_FN_JTAB: jtab_jump(u, (int)i->imm); break; /* the target in SGX_FN_TARGET (in[0]) */
+#endif
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -307,6 +370,15 @@ static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
     i->kv[0] = vdead_at(u, target);
     i->jdead = i->kv[1] != 0 || i->kv[0] != 0;
 }
+#ifdef MG_POLL_INLINE
+/* the same for a backward branch to the function's instruction header, its poll pending going to the stub slow */
+static void jump_if_back(Unit* u, SgB taken, int header, int slow, SnxU64 target) {
+    SgX* x = &u->g->x;
+    jump_if(u, taken, header, target);
+    x->ins[x->n - 1].op = SGX_FN_JCC_BACK;
+    x->ins[x->n - 1].imm = slow;
+}
+#endif
 
 /* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
 
@@ -1269,6 +1341,55 @@ static void no_code(Unit* u, const char* why) {
               snx_a64_target_text(u->codegen->features), becomes);
 }
 
+/* a call's reload of the pins: those live where it returns (the next instruction); and past it, until the next
+   instruction, every pin in sync with the state (stored before it, loaded after) or dead. Past undef's or brk's, which
+   may change the state and which nothing is loaded after, the state is the newer: the exit stores none */
+static void call_masks(Unit* u, size_t i) {
+    const SnxFunction* f = u->f;
+    if (u->pinned && u->live && i + 1 < f->count && snx_function_address(f, i + 1) == snx_function_address(f, i) + 4)
+        u->pin_sel = u->live[i + 1], u->vpin_sel = u->vlive ? u->vlive[i + 1] : ~0u;
+}
+static void after_call(Unit* u) {
+    u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    u->cur_dirty = 0, u->vcur_dirty = 0;
+}
+
+#ifdef MG_JTAB
+/* the table of the BR at address (snx_codegen_jump_table's cases), its slots from the first case to the last, each the
+   case's leader label or the dispatch block's: its index in u->jtabs, -1 where it has no case in the function or is
+   too sparse */
+static int jtab_new(Unit* u, SnxU64 address) {
+    SnxU64 t[SNX_JUMP_TABLE_MAX], lo = ~(SnxU64)0, hi = 0;
+    size_t n = snx_codegen_jump_table((SnxCodegen*)u->codegen, address, t, SNX_JUMP_TABLE_MAX), k, cases = 0;
+    const SnxFunction* f = u->f;
+    struct JTab* j;
+    unsigned span, s;
+    for (k = 0; k < n; ++k) {
+        size_t at;
+        if (!snx_function_contains(f, t[k]) || !f->leaders[at = index_of(f, t[k])] || snx_function_address(f, at) != t[k])
+            continue;
+        lo = t[k] < lo ? t[k] : lo, hi = t[k] > hi ? t[k] : hi;
+        t[cases++] = t[k];
+    }
+    /* a function of few leaders: the dispatch block's compares, as many, are quicker (its matching jump is to a
+       label the predictor knows; the table's waits on its load) */
+    if (!cases || (hi - lo) / 4 >= 1024 || f->leader_count <= MG_JTAB_LEADERS) return -1;
+    span = (unsigned)((hi - lo) / 4 + 1);
+    u->jtabs = (struct JTab*)grow(u->jtabs, &u->cap_jtabs, (size_t)u->njtabs + 1, sizeof *u->jtabs);
+    u->jslots = (int*)grow(u->jslots, &u->cap_jslots, u->njslots + span, sizeof *u->jslots);
+    if (!u->jtabs || !u->jslots) return -1;
+    j = &u->jtabs[u->njtabs];
+    j->label = new_label(u);
+    j->lo = lo;
+    j->n = span;
+    j->first = (unsigned)u->njslots;
+    for (s = 0; s < span; ++s) u->jslots[j->first + s] = u->d_label;
+    for (k = 0; k < cases; ++k) u->jslots[j->first + (t[k] - lo) / 4] = (int)index_of(f, t[k]);
+    u->njslots += span;
+    return u->njtabs++;
+}
+#endif
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -1297,6 +1418,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     undef:
         flush(u);
         mg_undef(u, address, word);
+        after_call(u);
         leave(u);
         return 1;
     case SNX_A64_FLOW_PLAIN:
@@ -1337,6 +1459,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         if (g->undefined) {
             /* the Sail's UNDEF (SGX_K_UNDEF set the pc and called the runtime): the function returns */
             flush(u);
+            after_call(u);
             leave(u);
             return 1;
         }
@@ -1345,6 +1468,14 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         target = snx_a64_branch_target(&insn, address);
         flush_to(u, target);
         if (snx_function_contains(f, target)) {
+#ifdef MG_POLL_INLINE
+            if (target <= address) {
+                poll_jz(u, (int)index_of(f, target));
+                jmp(u, add_stub(u, 3, target, address));
+                terminal = 1;
+                break;
+            }
+#endif
             if (target <= address) poll_then(u, target);
             jmp(u, (int)index_of(f, target));
         } else if (!call_or_stub(u, target, 1))
@@ -1361,7 +1492,12 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
                holds where the branch isn't taken. The taken path finds the guest's state where a label wants it:
                every write stored (or PSET) where it was made, and the store pass keeps the stores before a machine
                instruction */
-            jump_if(u, g->taken, branch_label(u, address, target), target);
+#ifdef MG_POLL_INLINE
+            if (target <= address && snx_function_contains(f, target))
+                jump_if_back(u, g->taken, (int)index_of(f, target), add_stub(u, 3, target, address), target);
+            else
+#endif
+                jump_if(u, g->taken, branch_label(u, address, target), target);
             if (target <= address && u->exits && u->exits[index]) {
                 /* a loop's latch: the registers the loop doesn't read again (dead at its header) but the code after
                    it may are stored here, on the way out alone: the store pass then drops the ones in the body, dead
@@ -1406,13 +1542,17 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         target = snx_a64_branch_target(&insn, address);
         sg_GPR_write(g, 30, sgx_const(64, next));
         flush(u);
+        call_masks(u, index);
         if (!call_or_stub(u, target, 0)) return 0;
+        after_call(u);
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BLR:
         if (!sg_decode(g) || x->unmade || !g->branched) return 0; /* it writes the link register */
         machine_target(u, SGX_FN_CALLDYN, g->target);
+        call_masks(u, index);
         flush(u);
+        after_call(u);
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BR: {
@@ -1426,6 +1566,30 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         (void)guard;
 #endif
         if (!sg_decode(g) || x->unmade || !g->branched) return 0;
+#ifdef MG_JTAB
+        if (u->dispatch && !bound) {
+            int k = jtab_new(u, address);
+            if (k >= 0) {
+                /* a switch: CPU.pc for the dispatch block's way, then the table's jump */
+                SgD t = g->target;
+                int v = sgx_reg(x, &t);
+                SgXIns* st = sgx_append(x, SGX_K_STORE);
+                SgXIns* j;
+                st->w = 64;
+                st->in[0] = v;
+                st->disp = (int)offsetof(CPU, pc);
+                j = sgx_append(x, SGX_K_MACHINE);
+                j->op = SGX_FN_JTAB;
+                j->in[0] = v;
+                j->fixed[0] = SGX_FN_TARGET;
+                j->imm = k;
+                j->mclobber = MG_JTAB_CLOBBER;
+                flush(u);
+                terminal = 1;
+                break;
+            }
+        }
+#endif
         if (u->dispatch || bound) {
             SgD t = g->target;
             int v = sgx_reg(x, &t);
@@ -1477,6 +1641,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_BRK:
         flush(u);
         mg_brk(u, address, (word >> 5) & 0xFFFF);
+        after_call(u);
         leave(u);
         terminal = 1;
         break;
@@ -1530,8 +1695,8 @@ static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
             *use = LIVE_NZCV;
             return;
         }
-        if ((w & 0xFFFFF01F) == 0xD503201F) { /* hints: NOP, YIELD... */
-            *use = 0;
+        if ((w & 0xFFFFF01F) == 0xD503201F) { /* hints: NOP, YIELD...; but XPACLRI's X30 and CHKFEAT's X16 */
+            if ((w >> 5 & 127) != 7 && (w >> 5 & 127) != 40) *use = 0;
             return;
         }
         if ((w >> 20) == 0xD53) { /* MRS */
@@ -1779,6 +1944,74 @@ static SnxU32 vdead_at(Unit* u, SnxU64 target) {
     return ~u->vlive[index_of(u->f, target)];
 }
 
+/* the guest registers an instruction may write, X in the result (31 the SP), V in *v: more than regs_of's def,
+   which is for liveness and leaves out some (a SIMD&FP transfer's general-purpose register, the SP as a
+   destination, a structure's post-index). A call's or an SVC's callee writes the state, which the pins are
+   reloaded from after it: the call itself writes the link register alone */
+static SnxU64 may_write(const SnxA64Insn* insn, SnxU32 w, SnxU32* v) {
+    SnxU64 use, def;
+    unsigned rd = w & 31, rn = w >> 5 & 31;
+    *v = 0;
+    if ((w >> 25 & 7) == 7) *v = 1u << rd;
+    else if ((w >> 25 & 5) == 4 && (w >> 26 & 1) && ((w >> 22 & 1) || ((w >> 27 & 7) == 3 && !(w >> 24 & 1))))
+        *v = vreg_run(rd, 4) | 1u << (w >> 10 & 31); /* a load: Rt, a pair's Rt2, a structure's list */
+    regs_of(w, &use, &def);
+    if (use == LIVE_ALL) {
+        if (insn->flow == SNX_A64_FLOW_BL || insn->flow == SNX_A64_FLOW_BLR) return live_r(30);
+        if (insn->flow == SNX_A64_FLOW_RET || insn->flow == SNX_A64_FLOW_BR || insn->flow == SNX_A64_FLOW_B ||
+            insn->flow == SNX_A64_FLOW_SVC || insn->flow == SNX_A64_FLOW_BRK || insn->flow == SNX_A64_FLOW_UNDEF)
+            return 0;
+        *v = ~0u;
+        return LIVE_ALL;
+    }
+    if ((w >> 25 & 5) == 4) { /* loads and stores: def has Rt (and Rt2); a writeback's base, the SP too */
+        unsigned idx = w >> 10 & 3;
+        if (((w >> 27 & 7) == 5 && ((w >> 23 & 3) == 1 || (w >> 23 & 3) == 3)) ||
+            ((w >> 27 & 7) == 7 && !(w >> 24 & 1) && !(w >> 21 & 1) && (idx == 1 || idx == 3)) ||
+            ((w >> 26 & 1) && !(w >> 31) && (w >> 23 & 0x3E) == 0x18 && (w >> 23 & 1)))
+            def |= live_r(rn);
+        return def;
+    }
+    return def | live_r(rd); /* the SP as a destination; a SIMD&FP transfer's or conversion's register */
+}
+
+/* each instruction's dsync, from its own writes (u->dsync on entry) and what reaches it by succ: forward passes
+   until nothing changes. A call or an SVC (sk 1) leaves nothing to store, the pins synced around it; a BR to the
+   dispatch block (sk 2) reaches every leader. All stored where there is no fixed point */
+static void pin_dirt(Unit* u, const SnxFunction* f, const int* succ, const unsigned char* sk) {
+    size_t n = f->count, i;
+    SnxU64 *in = (SnxU64*)calloc(n, sizeof *in), br = 0;
+    SnxU32 *vin = (SnxU32*)calloc(n, sizeof *vin), vbr = 0;
+    int changed = 1, passes = 0;
+    if (in && vin)
+        do {
+            SnxU64 nbr = 0;
+            SnxU32 nvbr = 0;
+            changed = 0;
+            for (i = 0; i < n; ++i) {
+                SnxU64 out;
+                SnxU32 vout;
+                int k;
+                if (f->leaders[i] && ((in[i] | br) != in[i] || (vin[i] | vbr) != vin[i]))
+                    in[i] |= br, vin[i] |= vbr, changed = 1;
+                out = sk[i] == 1 ? 0 : in[i] | u->dsync[i];
+                vout = sk[i] == 1 ? 0 : vin[i] | u->vdsync[i];
+                if (sk[i] == 2) nbr |= out, nvbr |= vout;
+                for (k = 0; k < 2; ++k) {
+                    int s = succ[2 * i + k];
+                    if (s >= 0 && ((in[s] | out) != in[s] || (vin[s] | vout) != vin[s]))
+                        in[s] |= out, vin[s] |= vout, changed = 1;
+                }
+            }
+            if (nbr != br || nvbr != vbr) br |= nbr, vbr |= nvbr, changed = 1;
+        } while (changed && ++passes < 64);
+    for (i = 0; i < n; ++i)
+        if (changed) u->dsync[i] = ~(SnxU64)0, u->vdsync[i] = ~0u;
+        else
+            u->dsync[i] |= in[i], u->vdsync[i] |= vin[i];
+    free(in), free(vin);
+}
+
 /* the guest registers the function keeps in host registers (the machine's mg_pin_hosts: callee-saved ones first, no
    call changes them) for its whole run, written to the state where something else may read it (a call, SVC, BRK, UNDEF, a poll, the
    exits) and read back after: the most used, a register field of an instruction counting 1, 8 inside a loop
@@ -1788,21 +2021,27 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     SnxU64 weight[33], vweight[32]; /* weight[32]: the guest memory's base */
     unsigned k, best, nhosts;
     int fixed = 0; /* an exclusive, an atomic or CRC32: the last pins' registers may be their machine instructions' */
-    unsigned char* loop;
+    unsigned char *loop, *sk;
     int* succ;
     size_t i, backs = 0;
     memset(u->pin, -1, sizeof u->pin);
     memset(u->vpin, -1, sizeof u->vpin);
     u->pinned = 0;
     u->mempin = -1;
+    u->pin_wr = 0;
+    u->vpin_wr = 0;
+    u->pin_sel = ~(SnxU64)0;
+    u->vpin_sel = ~0u;
     u->exits = NULL;
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
     memset(vweight, 0, sizeof vweight);
-    if (f->count < 8) return;
-    loop = (unsigned char*)calloc(f->count + 1, 1);
+    loop = (unsigned char*)calloc(2 * (f->count + 1), 1);
+    sk = loop + f->count + 1; /* each instruction's kind for pin_dirt */
     succ = (int*)malloc(2 * f->count * sizeof *succ);
-    if (!loop || !succ) {
+    u->dsync = (SnxU64*)grow(u->dsync, &u->cap_dsync, f->count, sizeof *u->dsync);
+    u->vdsync = (SnxU32*)grow(u->vdsync, &u->cap_vdsync, f->count, sizeof *u->vdsync);
+    if (!loop || !succ || !u->dsync || !u->vdsync) {
         free(loop), free(succ);
         return;
     }
@@ -1821,6 +2060,22 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             free(loop), free(succ);
             return;
         }
+        {
+            SnxU32 vw;
+            SnxU64 xw = may_write(&insn, w, &vw);
+            /* a bound PLT stub's, in the place of a call or of a tail call */
+            if (insn.flow == SNX_A64_FLOW_BL ||
+                ((insn.flow == SNX_A64_FLOW_B || insn.flow == SNX_A64_FLOW_BC) &&
+                 !snx_function_contains(f, snx_a64_branch_target(&insn, a))))
+                xw |= live_r(16) | live_r(17);
+            u->pin_wr |= xw;
+            u->vpin_wr |= vw;
+            u->dsync[i] = xw;
+            u->vdsync[i] = vw;
+            sk[i] = insn.flow == SNX_A64_FLOW_BL || insn.flow == SNX_A64_FLOW_BLR || insn.flow == SNX_A64_FLOW_SVC
+                        ? 1
+                        : insn.flow == SNX_A64_FLOW_BR ? 2 : 0;
+        }
         falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
                 insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
         succ[2 * i] = falls && i + 1 < f->count && snx_function_address(f, i + 1) == a + 4 ? (int)i + 1 : -1;
@@ -1832,6 +2087,11 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                 if (t <= a) ++backs;
             }
         }
+    }
+    if (f->count < 8 && !backs) {
+        /* a small function's pins cost more than they save, but where it loops (a strlen) */
+        free(loop), free(succ);
+        return;
     }
     if (backs) {
         /* the natural loops: for each header (a back edge's target), what reaches one of its back edges without
@@ -1895,7 +2155,6 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         }
         free(first), free(pred), free(stack), free(seen);
     }
-    free(succ);
     /* what a pin saves is the load where a block (from one label to the next) reads a register before it writes it,
        and the store where it writes it: each counted once a block, 8 times a loop's level */
     {
@@ -1938,7 +2197,6 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             }
         }
     }
-    free(loop);
     nhosts = fixed ? MG_NPINS_FIXED : MG_NPINS;
     for (k = 0; k < nhosts; ++k) {
         unsigned r;
@@ -1965,12 +2223,16 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         u->a.xreserved |= 1u << MG_VPIN(k);
         u->pinned = 1;
     }
+    if (u->pinned) pin_dirt(u, f, succ, sk);
+    free(succ), free(loop); /* sk's too */
 }
 
 /* the function's code, or 0 (the unit as it was) where an instruction isn't this back end's */
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
     int lab0 = u->nlabels, ok = 1;
+    SnxU64 pin_rest = 0;
+    SnxU32 vpin_rest = 0;
     jmp_buf jb;
     jmp_buf* saved = g_fail;
     char sym[40];
@@ -1983,6 +2245,8 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->a.npool = u->a.nrips = 0;
     u->a.slots_max = 0;
     u->nstubs = 0;
+    u->njtabs = 0;
+    u->njslots = 0;
     g_fail = &jb;
     g_why = NULL;
     if (setjmp(jb)) {
@@ -2008,7 +2272,15 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
     u->a.pin_flush = pins_flush;
+    /* the prologue loads the pins live where the function starts; the mismatch's path (another entry) the others */
+    if (u->pinned && u->live && f->count && snx_function_address(f, 0) == f->start) {
+        u->pin_sel = u->live[0];
+        u->vpin_sel = u->vlive ? u->vlive[0] : ~0u;
+    }
+    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
     prologue(u);
+    pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
+    u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
     /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
     mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
@@ -2027,6 +2299,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
+            if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
             if (!instruction(u, vi, address, word)) {
                 ok = 0;
                 goto out;
@@ -2039,18 +2312,32 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
     bind(u, u->mismatch_label);
+    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
+    if (pin_rest || vpin_rest) {
+        u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
+        pins(u, 0);
+        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    }
     mg_dispatch(u, lab0);
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
         bind(u, s.label);
+        u->cur_dirty = s.dirty, u->vcur_dirty = s.vdirty;
         if (s.kind == 1) {
             poll_then(u, s.target);
             jmp(u, (int)index_of(f, s.target));
+#ifdef MG_POLL_INLINE
+        } else if (s.kind == 3) {
+            poll_slow(u, s.target);
+#endif
         } else if (!call_or_stub(u, s.target, 1)) {
             ok = 0;
             goto out;
         }
     }
+#ifdef MG_JTAB
+    jtab_emit(u);
+#endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
     sgx_cold_emit(&u->a);
     sgx_pool_emit(&u->a);
@@ -2440,7 +2727,8 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
     free(u.none);
-    free(u.live_buf), free(u.exits_buf), free(u.vlive_buf);
+    free(u.live_buf), free(u.exits_buf), free(u.vlive_buf), free(u.dsync), free(u.vdsync);
+    free(u.jtabs), free(u.jslots);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);

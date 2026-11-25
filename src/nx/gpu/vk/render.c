@@ -42,6 +42,8 @@
 #include "nx/gpu/vk/host_program.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/addr_gens.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/varying_geometry.h"
 #include "nx/gpu/vk/quad_indices.h"
@@ -321,6 +323,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    vk_surf_written_flush(cb, rt, n, zt); /* the barriers at the writer, outside the pass (writer_barriers) */
     for (u32 i = 0; i < n; i++)
         if (rt[i]) snx_vk_redraw_seen(&rt[i]->redraw, g_vk_present);
     if (zt) snx_vk_redraw_seen(&zt->redraw, g_vk_present);
@@ -436,6 +439,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
         g_rp.layers == layers)
         return 1;
     vk_render_end();
+    vk_surf_written_flush(vk_cmd(), NULL, 0, NULL); /* the barriers at the writer, outside the pass */
     async_tell(0); /* no attachment: what its draws keep is only what they store, which no target tells */
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
     vk_predraw_pass_begin(vk_cmd());
@@ -484,22 +488,35 @@ static struct {
     u8* data;               /* the draw's block, NULL for a draw that reads none */
     u32 at;                 /* where the block starts in the window, in 16-byte units */
 } g_draw_block;
+/* The draw's pool map (pool_map_gpu.c, ShCaps.pool_map): whether a stage that reads it got one (state 1, -1 for none,
+   0 not asked yet), its address and header, and the bits of each stage's plain slots (the vertex stage's, then the
+   fragment stage's) that take their texture words, all of them until a slot takes the map */
+static struct {
+    int state;
+    u64 address;
+    u32 header;
+    u64 own[2];
+} g_map_draw;
+/* the bytes of a draw's block: the push constants' words, and with the pool map its words (SH_DRAW_MAP) */
+static u32 draw_block_bytes(void) { return g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP : SH_PUSH_BYTES_TABLE; }
 static int draw_block_take(void) {
     VkBuffer b;
     u64 o;
     g_draw_block.data = NULL;
-    u8* data = vk_stage(SH_PUSH_BYTES_TABLE, 16, &b, &o);
+    g_map_draw.state = 0;
+    g_map_draw.own[0] = g_map_draw.own[1] = ~0ull;
+    u8* data = vk_stage(draw_block_bytes(), 16, &b, &o);
     if (!data) return 0;
     const u64 frame = vk_frame_id() + 1;
     if (g_draw_block.b != b || g_draw_block.frame != frame || o < g_draw_block.base ||
-        o + SH_PUSH_BYTES_TABLE > g_draw_block.base + g_draw_block.range) {
+        o + draw_block_bytes() > g_draw_block.base + g_draw_block.range) {
         const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
         const u64 align = l->minStorageBufferOffsetAlignment > 16 ? l->minStorageBufferOffsetAlignment : 16;
         const u64 size = vk_stage_buffer_size(b), base = o / align * align;
         u64 reach = size > base ? size - base : 0;
         if (reach > SNX_DRAW_WINDOW) reach = SNX_DRAW_WINDOW; /* what the programs declare */
         if (reach > l->maxStorageBufferRange) reach = l->maxStorageBufferRange;
-        if (o + SH_PUSH_BYTES_TABLE > base + reach) return 0;
+        if (o + draw_block_bytes() > base + reach) return 0;
         g_draw_block.b = b;
         g_draw_block.base = base;
         g_draw_block.range = reach;
@@ -1451,7 +1468,12 @@ static struct {
     u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
+    /* by TIC index, the present (tic_stamp) that a draw last named it in: VK_SLOT_TICS counts each index once a
+       present, with no walk */
+    u16 tic_seen[1u << 20];
 } g_stats;
+/* a present's stamp in g_stats.tic_seen: never 0, the stamp of an index that no draw named */
+static u16 tic_stamp(void) { return (u16)(g_vk_present % 65535u + 1u); }
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
 /* for the statistics (the GPU plan's M12m): the nanoseconds of those copies, timed one in CB_TIME_EVERY and taken as
@@ -1587,6 +1609,22 @@ void vk_render_stats_log(void) {
     if (!presents) presents = 1;
     memo_miss_log(presents);
     fs_count_log(n, w, presents);
+    vk_pool_map_log(presents);
+    vk_tex_events_log(presents);
+    vk_pool_gpu_log(presents);
+    if ((g_settings.writer_barriers || g_spirv_translate.pool_map) && g_vk.has_unified_layouts) {
+        static VkWriterCounts was;
+        VkWriterCounts c;
+        vk_surf_writer_counts(&c);
+        LOG("vulkan: barriers at the writer, a present: %.1f surfaces in %.1f batches; of today's %.1f reader barriers "
+            "after a write, %.1f covered by a batch, earlier or at the next pass, %.1f in compute alone, %.1f left out of "
+            "draws; %.1f writes not listed (the list full)\n",
+            (double)(c.batched - was.batched) / (double)presents, (double)(c.batches - was.batches) / (double)presents,
+            (double)(c.readers - was.readers) / (double)presents, (double)(c.covered - was.covered) / (double)presents,
+            (double)(c.compute - was.compute) / (double)presents, (double)(c.dropped - was.dropped) / (double)presents,
+            (double)(c.full - was.full) / (double)presents);
+        was = c;
+    }
     LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
         "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
         "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "
@@ -1689,6 +1727,26 @@ void vk_render_stats_log(void) {
         (double)(n->top[VK_TOP_SCANNED] - w->top[VK_TOP_SCANNED]) / (double)presents,
         (double)(n->top_indices - w->top_indices) / (double)presents,
         (double)(n->top[VK_TOP_UNKNOWN] - w->top[VK_TOP_UNKNOWN]) / (double)presents);
+    {
+        /* the measure of bindless textures (docs/dev/draw-cost.md, item 7), a present */
+        double k[VK_SLOT_N], p[VK_POOL_N];
+        for (int i = 0; i < VK_SLOT_N; i++) k[i] = (double)(n->slot[i] - w->slot[i]) / (double)presents;
+        for (int i = 0; i < VK_POOL_N; i++) p[i] = (double)(n->pool[i] - w->pool[i]) / (double)presents;
+        LOG("vulkan: texture slots a present by handle: %.1f plain, %.1f bl2, %.1f indexed, %.1f memory, %.1f other; "
+            "%.1f TIC indices named; for a draw's own path %.1f feedback, %.1f a copy of a bound target, %.1f read-only "
+            "depth, %.1f color depth compares, %.1f min or max reductions, %.1f query hints; pool headers on pages the "
+            "CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f changed)\n",
+            k[VK_SLOT_PLAIN], k[VK_SLOT_BL2], k[VK_SLOT_INDEXED], k[VK_SLOT_MEMORY], k[VK_SLOT_OTHER], k[VK_SLOT_TICS],
+            k[VK_SLOT_FEEDBACK], k[VK_SLOT_TARGET_COPY], k[VK_SLOT_DEPTH_RO], k[VK_SLOT_DC_COLOR], k[VK_SLOT_MINMAX],
+            k[VK_SLOT_QUERY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
+            p[VK_POOL_TSC_CHANGED]);
+    }
+    LOG("vulkan: texture memo checks a present: headers after an epoch %.1f kept by their generations, %.1f checked; "
+        "results added %.1f kept by the generations, %.1f checked\n",
+        (double)(n->gens[VK_GENS_HEADERS_KEPT] - w->gens[VK_GENS_HEADERS_KEPT]) / (double)presents,
+        (double)(n->gens[VK_GENS_HEADERS_CHECKED] - w->gens[VK_GENS_HEADERS_CHECKED]) / (double)presents,
+        (double)(n->gens[VK_GENS_RESULTS_KEPT] - w->gens[VK_GENS_RESULTS_KEPT]) / (double)presents,
+        (double)(n->gens[VK_GENS_RESULTS_CHECKED] - w->gens[VK_GENS_RESULTS_CHECKED]) / (double)presents);
     LOG("vulkan: constant buffers copied from the CPU in the last %llu presents: %.1f KB a present, %.3f ms a "
         "present\n",
         (unsigned long long)presents, (double)g_cb_copied_bytes / 1024.0 / (double)presents,
@@ -1729,6 +1787,16 @@ typedef struct {
     u64 t_gva; /* t's address when kept: its bucket of the surface table tells whether t is still there */
     u32 handle, surf_epoch, ww_epoch;
     u32 wseen; /* vk_ww_now() before the headers were read */
+    /* The generations by address (addr_gens.h) of what the memo read, when its last check passed: cgen of its headers
+       by guest address (the CPU's writes), pgen of its headers and its texture by GPU address (the results). Each
+       stands only with its _ok: 0 when the way is kept (its first check after that goes the full way), and where the
+       generations tell nothing */
+    u32 cgen, pgen;
+    u8 cgen_ok, pgen_ok;
+    /* tex_events_shadow: the generations by address of the texture's memory (tex_texel_gens) when it was last checked,
+       and whether they told anything */
+    u32 tgen;
+    u8 tgen_ok;
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
@@ -1780,18 +1848,41 @@ static struct {
    epoch and the baseline brought up to now. In one game's street the epoch dropped 39% of the lookups */
 static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32 now) {
     if (m->ww_epoch == epoch) return 1;
+    const u8 *tic_host = gmem_host(tic_at, 32), *tsc_host = gmem_host(tsc_at, 32);
+    /* The headers' generations by guest address, read once their pages' scans are taken in for this epoch and before
+       the stamps and the headers are read: the sum of the last check that passed is no stamp on their pages since,
+       a write elsewhere in the pool or in memory included. Not the sum a way is kept with (cgen_ok): its first check
+       goes the full way */
+    u32 g_tic = 0, g_tsc = 0;
+    const int gens = vk_ww_take(tic_host, 32) == 0 && vk_ww_take(tsc_host, 32) == 0 && vk_ww_gen(tic_host, 32, &g_tic) &&
+                     vk_ww_gen(tsc_host, 32, &g_tsc);
+    if (gens && m->cgen_ok && g_tic + g_tsc == m->cgen) {
+        g_stats.n.gens[VK_GENS_HEADERS_KEPT]++;
+        m->ww_epoch = epoch;
+        m->wseen = now;
+        return 1;
+    }
+    g_stats.n.gens[VK_GENS_HEADERS_CHECKED]++;
     /* A written page holds 128 headers: the game writes a few of its pool's every frame, and in one battle that dropped
        about 340 lookups a frame whose own headers were as kept. Where the tracking saw a write, the headers' 64 bytes
        are compared with m's */
-    if (vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0 ||
-        vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0) {
+    const int tic_written = vk_written_since(tic_host, 32, m->wseen) != 0,
+              tsc_written = vk_written_since(tsc_host, 32, m->wseen) != 0;
+    if (tic_written || tsc_written) {
         u32 tic[8], tsc[8];
         vk_gmem_words(tic_at, tic, 8);
         vk_gmem_words(tsc_at, tsc, 8);
-        if (memcmp(tic, m->tic, sizeof tic) || memcmp(tsc, m->tsc, sizeof tsc)) return 0;
+        const int tic_changed = memcmp(tic, m->tic, sizeof tic) != 0, tsc_changed = memcmp(tsc, m->tsc, sizeof tsc) != 0;
+        g_stats.n.pool[VK_POOL_TIC_WRITTEN] += (u64)tic_written;
+        g_stats.n.pool[VK_POOL_TSC_WRITTEN] += (u64)tsc_written;
+        g_stats.n.pool[VK_POOL_TIC_CHANGED] += (u64)(tic_written && tic_changed);
+        g_stats.n.pool[VK_POOL_TSC_CHANGED] += (u64)(tsc_written && tsc_changed);
+        if (tic_changed || tsc_changed) return 0;
     }
     m->ww_epoch = epoch;
     m->wseen = now;
+    m->cgen = g_tic + g_tsc;
+    m->cgen_ok = (u8)gens;
     return 1;
 }
 /* The results added since m was kept, when any was added anywhere: what m read is its two headers and its texture's
@@ -1801,10 +1892,26 @@ static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32
 static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
     if (m->adds == adds) return 1;
     const u64 size = vk_surf_guest_size(m->t);
+    /* The generations by GPU address of the headers and the texture, read before the pages the results cover: the sum
+       of the last check that found none pending there is no result added or taken away over them since, so still none
+       (a result added elsewhere moves only the count). Not with results past the tables (overflow, which pend_hit reads
+       as over every page), nor the sum a way is kept with (pgen_ok): its first check goes the full way */
+    u32 g_tic = 0, g_tsc = 0, g_tex = 0;
+    const int gens = !g_pend_any.overflow && addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
+                     addr_gens_read(ADDR_GENS_GPU, tsc_at, 32, &g_tsc) &&
+                     addr_gens_read(ADDR_GENS_GPU, m->t->gva, size, &g_tex);
+    if (gens && m->pgen_ok && g_tic + g_tsc + g_tex == m->pgen) {
+        g_stats.n.gens[VK_GENS_RESULTS_KEPT]++;
+        m->adds = adds;
+        return 1;
+    }
+    g_stats.n.gens[VK_GENS_RESULTS_CHECKED]++;
     if (pend_hit(&g_pend_any, tic_at, 32) || pend_hit(&g_pend_any, tsc_at, 32) ||
         pend_hit(&g_pend_any, m->t->gva, size))
         return 0;
     m->adds = adds;
+    m->pgen = g_tic + g_tsc + g_tex;
+    m->pgen_ok = (u8)gens;
     return 1;
 }
 /* a storage image other than m's texture itself pending over its memory. Asked of each texture of each draw while one
@@ -1816,6 +1923,100 @@ static int tex_memo_image_pending(TexMemo* m) {
     if (vk_gfx_image_pending_besides(m->t->gva, vk_surf_guest_size(m->t), m->t)) return 1;
     m->img_adds = adds;
     return 0;
+}
+/* Item 7b's events in shadow (tex_events_shadow): each kept texture's check is judged by the generations by address of
+   the writes over its memory. A claim is that they did not move since its last check, so its texels are current. The
+   check runs as before, and the counts say which claims it contradicted (it loaded pieces, took a drawn target, or
+   gave another texture) */
+static struct {
+    int watching;
+    u64 claims, claims_wrong, unclaimed_changed, unclaimed_same, untold;
+    u64 was[5];
+    /* why the generations told nothing: no host run, too many granules, a change taken in, no CPU gens, a first check */
+    u64 why[5], why_was[5];
+} g_tex_ev;
+static void tex_events_gva(u64 gva, u64 n) { addr_gens_bump(ADDR_GENS_WRITE, gva, n); }
+/* the sum of the generations of t's memory: the GPU side's writes, draws and surfaces there (ADDR_GENS_WRITE), the
+   results pending (ADDR_GENS_GPU) and the CPU's writes taken in (ADDR_GENS_CPU). 0 where they tell nothing (memory in
+   more than one run, more granules than a read adds up, or the write tracking can't say) */
+static int tex_texel_gens(const Surf* t, u32* g) {
+    const u64 size = t->size; /* every level and layer, as tex_check reads them (rt_bytes is level 0's alone) */
+    u32 a = 0, b = 0, c = 0;
+    int why =
+        !addr_gens_read(ADDR_GENS_WRITE, t->gva, size, &a) || !addr_gens_read(ADDR_GENS_GPU, t->gva, size, &b) ? 1 : -1;
+    /* the CPU's, run by run of the guest memory behind it (a page with none: its mapping's change is a write above) */
+    for (u64 o = 0; why < 0 && o < size;) {
+        u64 cpu = 0, n = gmmu_run(t->gva + o, size - o, &cpu);
+        if (!n) {
+            o += 0x1000 - ((t->gva + o) & 0xFFF);
+            continue;
+        }
+        const u8* host = gmem_host(t->gva + o, n);
+        u32 run = 0;
+        why = !host ? 0 : vk_ww_take(host, n) != 0 ? 2 : !vk_ww_gen(host, n, &run) ? 3 : -1;
+        c += run;
+        o += n;
+    }
+    if (why >= 0) {
+        g_tex_ev.why[why]++;
+        return 0;
+    }
+    *g = a + b + c;
+    return 1;
+}
+/* m's texture checked again (vk_tex_recheck), judged with the setting on */
+static Surf* tex_recheck_judged(TexMemo* m) {
+    if (!g_settings.texture_events_shadow) return vk_tex_recheck(m->t);
+    if (!g_tex_ev.watching) {
+        gpu_set_gva_watch(tex_events_gva);
+        g_tex_ev.watching = 1;
+    }
+    u32 g = 0;
+    const int ok = tex_texel_gens(m->t, &g), claim = ok && m->tgen_ok && g == m->tgen;
+    Surf* before = m->t;
+    const u32 wgen = before->wgen, takes = before->takes;
+    Surf* t = vk_tex_recheck(m->t);
+    const int changed = t != before || (t && (t->wgen != wgen || t->takes != takes));
+    if (!ok || !m->tgen_ok) {
+        g_tex_ev.untold++;
+        if (ok) g_tex_ev.why[4]++;
+    } else if (claim && changed) {
+        g_tex_ev.claims_wrong++;
+        if (g_settings.draw_state_check)
+            WARN_LIMIT(16,
+                       "vulkan: tex_events_shadow: the %ux%ux%u texture at %llx changed (%s) where no event over its "
+                       "memory moved\n",
+                       before->w, before->h, before->layers, (unsigned long long)before->gva,
+                       t != before              ? "another texture"
+                       : t && t->takes != takes ? "a drawn target taken"
+                                                : "loaded again");
+    } else if (claim)
+        g_tex_ev.claims++;
+    else if (changed)
+        g_tex_ev.unclaimed_changed++;
+    else
+        g_tex_ev.unclaimed_same++;
+    m->tgen = g; /* read before the check: a write during it moves them again */
+    m->tgen_ok = (u8)ok;
+    return t;
+}
+void vk_tex_events_log(u64 presents) {
+    if (!g_settings.texture_events_shadow || !presents) return;
+    const u64 now[5] = {g_tex_ev.claims, g_tex_ev.claims_wrong, g_tex_ev.unclaimed_changed, g_tex_ev.unclaimed_same,
+                        g_tex_ev.untold};
+    const double p = (double)presents;
+    LOG("vulkan: texture events (shadow), a present: %.1f kept textures claimed current, %.2f of them changed by their "
+        "check (missed events); not claimed: %.1f changed, %.1f the same (needless); %.1f with no generations to tell\n",
+        (double)(now[0] - g_tex_ev.was[0]) / p, (double)(now[1] - g_tex_ev.was[1]) / p,
+        (double)(now[2] - g_tex_ev.was[2]) / p, (double)(now[3] - g_tex_ev.was[3]) / p,
+        (double)(now[4] - g_tex_ev.was[4]) / p);
+    memcpy(g_tex_ev.was, now, sizeof now);
+    LOG("vulkan: texture events (shadow), why nothing told, a present: %.1f no single host run, %.1f too many granules, "
+        "%.1f the write tracking took a change in, %.1f no CPU generations, %.1f their first check\n",
+        (double)(g_tex_ev.why[0] - g_tex_ev.why_was[0]) / p, (double)(g_tex_ev.why[1] - g_tex_ev.why_was[1]) / p,
+        (double)(g_tex_ev.why[2] - g_tex_ev.why_was[2]) / p, (double)(g_tex_ev.why[3] - g_tex_ev.why_was[3]) / p,
+        (double)(g_tex_ev.why[4] - g_tex_ev.why_was[4]) / p);
+    memcpy(g_tex_ev.why_was, g_tex_ev.why, sizeof g_tex_ev.why);
 }
 /* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, 4 and 3 the same of
    a texture over a target (TexMemo.over), -1 none but its headers as memory has them, 0 none */
@@ -1893,7 +2094,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
         if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
-        x->t = m->copy ? m->t : vk_tex_recheck(m->t);
+        x->t = m->copy ? m->t : tex_recheck_judged(m);
         if (g_settings.draw_state_check) { /* resolved again in full, and that one taken */
             u32 tic[8];
             const u32 crop_gen = m->copy ? m->t->crop_gen : 0;
@@ -1933,7 +2134,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             x->memo = 0;
             miss = MEMO_UNDEFINED;
         } else {
-            x->t = vk_tex_recheck(m->t);
+            x->t = tex_recheck_judged(m);
             if (!x->t) {
                 m->t = NULL;
                 x->memo = 0;
@@ -1970,6 +2171,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
         m->ww_epoch = epoch;
         m->wseen = now;
+        m->cgen_ok = m->pgen_ok = m->tgen_ok =
+            0; /* the first check after goes the full way, and takes the generations */
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
@@ -2005,6 +2208,24 @@ static TexOver tex_over_of(const TexRes* x) {
 /* the target still holds the pixels the texture was kept over */
 static int tex_over_holds(const TexOver* o) {
     return o->rt->wgen == o->wgen && o->rt->layout != VK_IMAGE_LAYOUT_UNDEFINED;
+}
+/* A slot's resolve x of handle, for the pool map in shadow mode (pool_map.h, pool_map_shadow): view the one bound of
+   x's own texture, or none, as the slot reads it (want, num). A record may hold what the memo keeps: a texture, a
+   target, or one over a target with that target as the memo kept it */
+static void pool_shadow(const DsState* ds, u32 handle, const TexRes* x, VkImageView view, VkImageViewType want,
+                        int num) {
+    const TexMemo* m =
+        x->memo ? &g_tex_memo.set[(x->memo - 1) / TEX_MEMO_WAYS][(x->memo - 1) % TEX_MEMO_WAYS] : NULL;
+    const TexOver over = tex_over_of(x);
+    const PoolSlot slot = {.t = x->t,
+                           .tic = x->tic,
+                           .tsc = x->tsc,
+                           .over = over.rt,
+                           .over_wgen = over.wgen,
+                           .keepable = m && x->t && m->t == x->t && (!m->over || over.rt),
+                           .view = view,
+                           .view_kind = (u32)want | (u32)num << 8};
+    vk_pool_map_slot(ds->bind.tex_pool, ds->bind.tex_max, ds->bind.smp_pool, ds->bind.smp_max, handle, &slot);
 }
 /* The memo's last answers by handle, with what every check of a memo hit reads, taken before the lookup: while none
    of those moved, the same way is found again and each of its checks says the same (the surface table's epoch moves
@@ -4282,6 +4503,11 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
+        g_stats.n.slot[st->flags & SNX_TEX_INDEXED  ? VK_SLOT_INDEXED
+                       : st->flags & SNX_TEX_MEMORY ? VK_SLOT_MEMORY
+                       : st->bindless && st->bl2    ? VK_SLOT_BL2
+                       : st->flags & 3              ? VK_SLOT_OTHER
+                                                    : VK_SLOT_PLAIN]++;
         if (st->flags & SNX_TEX_INDEXED) {
             int table = 0;
             while (table < table_count && !shader_same_indexed_table(st, &s->si.tex[table_first[table]])) table++;
@@ -4300,6 +4526,18 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     /* a program of the texture table: each plain slot's word, in place of its descriptor */
     const int table = s->si.tex_table && g_spirv_translate.tex_table && shader_vk_set(s->stage) < 2;
     u32* words = rec + tex_at; /* after the global buffers' part, and a fetching vertex program's attributes */
+    /* a program that reads the pool map (ShCaps.pool_map): the draw's map at its first such stage, and the slots that
+       learn their records after the table gives them their words */
+    const int mapped = table && (s->si.tex_table & SH_TEX_TABLE_MAP) && (s->stage == ST_VS || s->stage == ST_FS) &&
+                       g_draw_block.data;
+    const int own_at = s->stage == ST_VS ? 0 : 1;
+    if (mapped && !g_map_draw.state)
+        g_map_draw.state = vk_pool_gpu_draw(ds->bind.tex_pool, ds->bind.tex_max, ds->bind.smp_pool, ds->bind.smp_max,
+                                            &g_map_draw.address, &g_map_draw.header)
+                               ? 1
+                               : -1;
+    u64 learn = 0;
+    u32 learn_cls[SH_MAXTEX], learn_handle[SH_MAXTEX];
     VkImageView tviews[SH_MAXTEX];
     VkImageLayout tlayouts[SH_MAXTEX];
     VkSampler tsamplers[SH_MAXTEX];
@@ -4322,6 +4560,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                      : res && res[i].have ? res[i].handle
                      : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
+        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_stats.tic_seen[handle & 0xFFFFFu] != tic_stamp()) {
+            g_stats.tic_seen[handle & 0xFFFFFu] = tic_stamp();
+            g_stats.n.slot[VK_SLOT_TICS]++;
+        }
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = predrawn ? &g_predraw.tex[predraw_k] : res ? &res[i] : NULL;
@@ -4367,6 +4609,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                   : ((s->si.tex_sint_mask >> i) & 1)               ? 2
                                                                    : 1;
         VkImageView view = VK_NULL_HANDLE;
+        int own_view = 0; /* view is one tex_bind_view made of the resolve's texture (pool_shadow) */
         VkImageLayout layout = images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && ds->dyn.stencil_test &&
@@ -4395,6 +4638,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
         }
+        g_stats.n.slot[VK_SLOT_FEEDBACK] += slots != 0;
         if (slots && predrawn) {
             /* the save draw copies the target's texels as they are, through a view of the format its save attachment
                is written in and none of the header's swizzle or sRGB reading: the guest's draw reads the save
@@ -4413,6 +4657,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
                copy. A slot the program reads no texel of asks only the size or the levels, which the copy answers
                as it is: nothing is copied into it */
+            g_stats.n.slot[VK_SLOT_TARGET_COPY]++;
             int texels = !(s->si.tex_unread_mask >> i & 1);
             Surf* snap = vk_rt_snapshot(t, texels);
             if (snap != t) {
@@ -4421,8 +4666,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                 if (texels) g_vk_rt_copies++;
             } else
                 LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
-        } else
+        } else {
             view = tex_bind_view(x, t, want, num);
+            own_view = t == x->t; /* the resolve's own texture, nothing put in its place */
+        }
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
@@ -4430,13 +4677,17 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (own_size(sampled, rt, zt, n)) scaled[1] |= 1ull << i;
         }
         if (view && depth_ro) {
+            g_stats.n.slot[VK_SLOT_DEPTH_RO]++;
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_LAYOUT(DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
-        else if (view)
-            vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else {
+        else if (view) {
+            /* with the pool map, a read whose surface's write a batch at the writer covers takes no barrier of its own
+               (vk_surf_written_flush) */
+            if (!g_spirv_translate.pool_map || !vk_surf_read_covered(t))
+                vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        } else {
             const char* why = t ? vk_tex_view_refusal(t, want) : NULL;
             if (why)
                 LOG_LIMIT(4,
@@ -4466,10 +4717,41 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                     st->shadow ? "a depth of 1.0 to compare" : "zeros");
         }
         if (!view) return VK_NULL_HANDLE;
+        if (g_settings.pool_map_shadow && !predrawn) pool_shadow(ds, handle, x, own_view ? view : VK_NULL_HANDLE, want, num);
         VkSampler smp = tex_bind_sampler(x, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
         if (table) {
             tviews[i] = view, tlayouts[i] = layout, tsamplers[i] = smp; /* their words after the loop */
+            const ShTex* orig = &s->si.tex[i];
+            if (mapped && !(orig->flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)) && !orig->bl2) {
+                /* a plain slot, which the program reads through the map unless its bit says otherwise */
+                const u32 cls = (orig->flags & 2) ? (orig->array ? SH_MAP_CLASS_MS_ARRAY : SH_MAP_CLASS_MS)
+                                : orig->type == 2 ? SH_MAP_CLASS_3D
+                                : orig->type == 3 ? (orig->array ? SH_MAP_CLASS_CUBE_ARRAY : SH_MAP_CLASS_CUBE)
+                                                  : (orig->array ? SH_MAP_CLASS_2D_ARRAY : SH_MAP_CLASS_2D);
+                const int why = g_map_draw.state != 1 ? VK_POOL_GPU_NONE
+                                : (handle & 0xFFFFFu) > ds->bind.tex_max || ((handle >> 20) & 0xFFFu) > ds->bind.smp_max
+                                    ? VK_POOL_GPU_PAST
+                                : (s->si.tex_dc_color_mask >> i & 1) ? VK_POOL_GPU_COMPARE
+                                : !own_view || predrawn || layout != VK_IMAGE_LAYOUT_GENERAL ? VK_POOL_GPU_VIEW
+                                                                                            : VK_POOL_GPU_MAP;
+                u32 slot = 0;
+                if (why == VK_POOL_GPU_MAP && vk_pool_gpu_take(handle, cls, orig->shadow != 0, view, smp, &slot)) {
+                    vk_table_touch(slot); /* no frame in flight's slot goes back to the free stack */
+                    g_map_draw.own[own_at] &= ~(1ull << i);
+                    tviews[i] = VK_NULL_HANDLE; /* no word: the map gives the slot */
+                    vk_pool_gpu_count(VK_POOL_GPU_MAP);
+                    continue;
+                }
+                vk_pool_gpu_count(why == VK_POOL_GPU_MAP ? VK_POOL_GPU_MISS : why);
+                g_map_draw.own[own_at] |= 1ull << i;
+                if (why == VK_POOL_GPU_MAP) {
+                    learn |= 1ull << i;
+                    learn_cls[i] = cls;
+                    learn_handle[i] = handle;
+                }
+            } else if (mapped)
+                vk_pool_gpu_count(VK_POOL_GPU_HANDLE);
             continue;
         }
         u32 b = SNX_VKB_TEX + i;
@@ -4485,6 +4767,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
         if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
+        /* the slots whose records did not hold their view and sampler: the records hold them for the draws after */
+        for (u64 m = learn; m; m &= m - 1) {
+            const int i = (int)snx_ctz64(m);
+            vk_pool_gpu_learn(learn_handle[i], learn_cls[i], s->si.tex[i].shadow != 0, tviews[i], tsamplers[i],
+                              words[i] & (SNX_TABLE_IMAGES - 1), words[i] >> SNX_TABLE_SAMPLER_SHIFT);
+        }
         if (recorded && !addressed && !fetch) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         rec_n = tex_at + (u32)nt;
     }
@@ -6836,6 +7124,10 @@ retry:
             fk = (FsKey){.tm = num != 0, .ts = num == 2, .rm = sh.rt_int, .rs = sh.rt_sint};
         } else {
             fs_key(ds, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+            /* the fragment key's slots that a pool map would leave to the draw's own path (VK_SLOT_DC_COLOR) */
+            g_stats.n.slot[VK_SLOT_DC_COLOR] += snx_popcount64(fk.dm);
+            g_stats.n.slot[VK_SLOT_MINMAX] += snx_popcount64(fk.minmax & ((1u << SH_MINMAX_SLOTS) - 1u));
+            for (int i = 0; fk.queried && i < SH_MAXTEX; i++) g_stats.n.slot[VK_SLOT_QUERY] += fk.query[i] != 0;
             u32 varying = capture ? 0 : draw_varying(ds, &sh, 1);
             if ((varying & 3) == SH_VARYING_BARYCENTRIC) {
                 varying_vs = vs_position_copy(ds, sh.vs, SH_VARYING_SLOT(varying));
@@ -8164,6 +8456,22 @@ retry:
            block starts in its window (the vec4 that the programs declare at byte 0) */
         memcpy(block, pc, SH_PUSH_BYTES_TABLE);
         snx_le32_array(block, SNX_DRAW_WORDS); /* read by the device little-endian */
+        if (g_spirv_translate.pool_map) { /* the map's words: the empty map where the draw has none */
+            u64 address = g_map_draw.address;
+            u32 header = g_map_draw.header;
+            if (g_map_draw.state != 1) address = vk_pool_gpu_empty(&header);
+            const u32 tex_max = ds->bind.tex_max > 0xFFFFF ? 0xFFFFF : ds->bind.tex_max,
+                      smp_max = ds->bind.smp_max > 0xFFF ? 0xFFF : ds->bind.smp_max;
+            const u32 w[8] = {(u32)address,
+                              (u32)(address >> 32),
+                              header,
+                              tex_max | smp_max << 20,
+                              (u32)g_map_draw.own[0],
+                              (u32)(g_map_draw.own[0] >> 32),
+                              (u32)g_map_draw.own[1],
+                              (u32)(g_map_draw.own[1] >> 32)};
+            for (u32 k = 0; k < 8; k++) snx_st_le32(block + SH_PUSH_BYTES_TABLE + 4 * k, w[k]);
+        }
         const u32 at[4] = {block_at, 0, 0, 0};
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
     } else

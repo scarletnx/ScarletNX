@@ -409,6 +409,7 @@ static int movable_nl(u64 a, u64 size) {
 /* Guest memory whose pages are a buffer a GPU shares (mem_migrate): runs sorted and disjoint, under g_mem_lk */
 typedef struct {
     u64 a, b;
+    u8* view; /* the byte at a in a mapping of the buffer's pages (mem_ext_read), or NULL */
 } ExtRun;
 static struct {
     ExtRun* run;
@@ -440,16 +441,17 @@ static void ext_cut_nl(u64 a, u64 b) {
         if (r.a < a && b < r.b) { /* split in two */
             if (ext_room_nl(1)) fatal("Out of memory noting guest memory a GPU shares");
             memmove(&g_ext.run[i + 2], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
-            g_ext.run[i] = (ExtRun){r.a, a};
-            g_ext.run[i + 1] = (ExtRun){b, r.b};
+            g_ext.run[i] = (ExtRun){r.a, a, r.view};
+            g_ext.run[i + 1] = (ExtRun){b, r.b, r.view ? r.view + (b - r.a) : NULL};
             g_ext.n++;
             return;
         }
         if (r.a < a)
             g_ext.run[i].b = a;
-        else if (b < r.b)
+        else if (b < r.b) {
             g_ext.run[i].a = b;
-        else {
+            if (r.view) g_ext.run[i].view = r.view + (b - r.a);
+        } else {
             memmove(&g_ext.run[i], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
             g_ext.n--;
             i--;
@@ -1565,6 +1567,65 @@ out:
     mem_unlock();
     return r;
 }
+/* the run of a GPU buffer's pages that holds guest address a, or g_ext.n (under the lock) */
+static u32 ext_at_nl(u64 a) {
+    u32 i = 0;
+    while (i < g_ext.n && g_ext.run[i].b <= a) i++;
+    return i < g_ext.n && g_ext.run[i].a <= a ? i : g_ext.n;
+}
+int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
+    u64 end = a + size;
+    int r = -1;
+    *n = 0;
+    if ((a | size) & (PAGE - 1) || !size || a < AS_BASE || end > AS_END) return -1;
+    mem_lock();
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++)
+        if (!data_state(g_blk[i].state) || g_blk[i].pool) goto out;
+    /* the runs side by side, each with its view: a run without one has no place to read its CPU bytes from */
+    for (u64 at = a; at < end;) {
+        const u32 i = ext_at_nl(at);
+        if (i == g_ext.n || !g_ext.run[i].view || *n == max) goto out;
+        const u64 hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        runs[*n] = (MemPoolRun){at, hi - at, (u64)(uintptr_t)(g_ext.run[i].view + (at - g_ext.run[i].a))};
+        ++*n;
+        at = hi;
+    }
+    r = 0;
+out:
+    if (r) *n = 0;
+    mem_unlock();
+    return r;
+}
+int mem_ext_is(u64 a, u64 size, const u8* view) {
+    int r = 1;
+    if (!size || !view || a + size < a) return 0;
+    mem_lock();
+    for (u64 at = a, end = a + size; at < end && r;) {
+        const u32 i = ext_at_nl(at);
+        r = i < g_ext.n && g_ext.run[i].view && g_ext.run[i].view + (at - g_ext.run[i].a) == view + (at - a);
+        if (r) at = g_ext.run[i].b;
+    }
+    mem_unlock();
+    return r;
+}
+int mem_ext_read(u64 a, void* dst, u64 size) {
+    u8* d = (u8*)dst;
+    int r = 0;
+    if (!size || a + size < a) return -1;
+    mem_lock();
+    for (u64 at = a, end = a + size; at < end && !r;) {
+        const u32 i = ext_at_nl(at);
+        if (i == g_ext.n || !g_ext.run[i].view) {
+            r = -1;
+            break;
+        }
+        const u64 hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        memcpy(d + (at - a), g_ext.run[i].view + (at - g_ext.run[i].a), (size_t)(hi - at));
+        at = hi;
+    }
+    mem_unlock();
+    return r;
+}
 /* what mem_migrate moves: the guest's data on the reservation's own pages, or on pool pages that this address alone
    maps. A GPU owner moves its pages into the pool to trap them (mem_own_prepare), and they stay there once it lets
    go: refused, they kept their memory from an import for good, and every read of them by the GPU was a copy. Not
@@ -1605,7 +1666,7 @@ static void pool_give_back_nl(u64 a, u64 size) {
     }
     if (any) pool_set_nl(a, size, 0);
 }
-int mem_migrate(u64 a, u64 size, int fd) {
+int mem_migrate(u64 a, u64 size, int fd, u8* view) {
     u64 end = a + size;
     u32 at;
     int r = 0, s;
@@ -1632,14 +1693,14 @@ int mem_migrate(u64 a, u64 size, int fd) {
     ext_cut_nl(a, end); /* pages another buffer had are this one's now */
     for (at = 0; at < g_ext.n && g_ext.run[at].a < a; at++) {}
     memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));
-    g_ext.run[at] = (ExtRun){a, end};
+    g_ext.run[at] = (ExtRun){a, end, view};
     g_ext.n++;
 out:
     mem_unlock();
     return r;
 }
-int mem_unmigrate(u64 a, u64 size) {
-    u64 end = a + size, at = a;
+int mem_unmigrate(u64 a, u64 size, u64* moved) {
+    u64 end = a + size, at = a, back = 0;
     int r = 0;
     mem_lock();
     for (;;) {
@@ -1647,6 +1708,11 @@ int mem_unmigrate(u64 a, u64 size) {
         while (i < g_ext.n && g_ext.run[i].b <= at) i++;
         if (i == g_ext.n || g_ext.run[i].a >= end) break;
         u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        /* the copy reads the pages, which a watch over them traps where they are (own_watch_in_place): a fault there
+           waits for the trap thread, which can wait for the renderer's lock that the caller holds. What the GPU holds
+           there lands first, as promote_nl's does (the caller publishes the targets pending there before:
+           uma.c's imp_let_go) */
+        own_acquire(lo, hi - lo);
         plat_freeze(GP(lo), hi - lo);
         int u = plat_vm_unshare(GP(lo), hi - lo);
         plat_thaw();
@@ -1655,11 +1721,14 @@ int mem_unmigrate(u64 a, u64 size) {
                   (unsigned long long)((hi - lo) >> 10));
         if (u)
             r = MEM_NOMEM;
-        else
+        else {
             ext_cut_nl(lo, hi);
+            back += hi - lo;
+        }
         at = hi;
     }
     mem_unlock();
+    if (moved) *moved = back;
     return r;
 }
 int mem_pool_any(u64 a, u64 size) {

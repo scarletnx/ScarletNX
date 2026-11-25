@@ -164,10 +164,12 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
         case SM86_IMAD_WIDE:
         case SM86_UIMAD_WIDE: {
             u32 a = ev_int(e, &in->a), b = ev_int(e, &in->b);
-            if (in->c.kind == SM86_SRC_IMM || in->c.kind == SM86_SRC_CBUF) return 0;
+            if (in->c.kind == SM86_SRC_IMM) return 0;
             u64 product = sm86_field(in, 73, 1) ? (u64)((i64)(i32)a * (i64)(i32)b) : (u64)a * b;
-            u32 creg = in->c.reg, chi = in->c.kind == SM86_SRC_UREG ? (creg >= SM86_URZ ? 0 : e->ur[creg + 1])
-                                                                    : (creg >= SM86_RZ ? 0 : e->r[creg + 1]);
+            u32 creg = in->c.reg, chi = in->c.kind == SM86_SRC_CBUF
+                                            ? in->c.bindless ? 0 : e->io->cbuf(e->io->user, in->c.bank, in->c.value + 4)
+                                        : in->c.kind == SM86_SRC_UREG ? (creg >= SM86_URZ ? 0 : e->ur[creg + 1])
+                                                                      : (creg >= SM86_RZ ? 0 : e->r[creg + 1]);
             u64 sum = product + ((u64)chi << 32 | ev_bits(e, &in->c));
             int carry = sum < product; /* the carry out, and .X's carry in, as the translation's */
             if (sm86_field(in, 74, 1)) {

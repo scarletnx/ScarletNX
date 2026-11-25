@@ -13,7 +13,7 @@
 /* the descriptor's ELF object (malloc'd), its entries' count and its variants' (the profile run's units it links:
    records, their functions' snx_variants table and the snx_aot_ wrappers their calls name); nonzero with error set on
    failure. The host's machine's; snx_x64_descriptor_for a RISC machine's (desc, NULL for the host's x86-64 or
-   arm64), as the tests run another machine's */
+   arm64, &snx_a64_desc arm64's on any host: a module packed for iOS), as the tests run another machine's */
 int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
                        const SnxU64* imports, size_t import_count, const SnxJitCacheRecord* records,
                        size_t record_count, unsigned char** object, size_t* size, size_t* entry_count,
@@ -22,6 +22,9 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
                            const SnxProgram* loaded, const SnxU64* imports, size_t import_count,
                            const SnxJitCacheRecord* records, size_t record_count, unsigned char** object,
                            size_t* size, size_t* entry_count, size_t* variant_count, char* error, size_t error_size);
+/* arm64's descriptor functions, which this file writes: the machine alone, for snx_x64_descriptor_for. An ELF object,
+   so not on Windows (the reason in error there) */
+extern const SnxNativeDesc snx_a64_desc;
 
 /* a 32-bit program's (module_arm.c): its SnxArmModule and snx_module_arm, the count blocks' keys sorted (the address,
    bit 0 set for Thumb); nonzero with error set on failure */

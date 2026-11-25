@@ -107,6 +107,10 @@ typedef struct {
        The miss thread is one more */
     unsigned threads;
     char opt;         /* the -O letter, 0: '0' */
+    /* as a batch begins, on its compile thread, with its first pc: it has taken the epoch that a change of guest memory
+       moves, and has read no code yet. Outside every lock of the service, but the batch holds its images: what waits
+       for a batch (snx_jit_remove_image, snx_jit_drain) waits for this too (NULL: none) */
+    void (*begin)(SnxU64 pc);
     /* after each batch, on its compile thread, outside every lock of the service (NULL: none) */
     void (*report)(const SnxJitReport* report);
     /* once on each thread of the service as it starts, outside every lock of the service (NULL: none) */

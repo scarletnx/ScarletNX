@@ -44,7 +44,22 @@ if(BUILD_TESTING)
     set_tests_properties(shaderc_sm86_corpus PROPERTIES FIXTURES_SETUP shaderc_sm86)
     add_test(NAME shaderc_sm86 COMMAND $<TARGET_FILE:snx-shaderc> "${snx_shaderc_corpus}" --sm86)
     set_tests_properties(shaderc_sm86 PROPERTIES FIXTURES_REQUIRED shaderc_sm86 TIMEOUT 60
-        PASS_REGULAR_EXPRESSION "1 shaders: 1 translated, 0 unsupported, 0 failed")
+        PASS_REGULAR_EXPRESSION "2 shaders: 2 translated, 0 unsupported, 0 failed")
+    # the same through the texture table, and through the pool map in a storage buffer and by device address
+    # (ShCaps.pool_map), each module checked by the spirv-val that snx-shaderc runs from PATH, where there is one
+    find_program(SNX_SHADERC_SPIRV_VAL spirv-val)
+    if(SNX_SHADERC_SPIRV_VAL)
+        foreach(form "tex-table" "pool-map" "gbuf-address")
+            set(snx_form_args --${form})
+            if(form STREQUAL "gbuf-address")
+                set(snx_form_args --pool-map --gbuf-address)
+            endif()
+            add_test(NAME shaderc_sm86_${form} COMMAND $<TARGET_FILE:snx-shaderc> "${snx_shaderc_corpus}" --sm86
+                                                       --validate ${snx_form_args})
+            set_tests_properties(shaderc_sm86_${form} PROPERTIES FIXTURES_REQUIRED shaderc_sm86 TIMEOUT 60
+                PASS_REGULAR_EXPRESSION "2 shaders: 2 translated, 0 unsupported, 0 failed")
+        endforeach()
+    endif()
     add_executable(snx-test-shader-indexed-ms "${PROJECT_SOURCE_DIR}/tests/shader_indexed_ms.c")
     snx_test_target(snx-test-shader-indexed-ms gnu23)
     target_link_libraries(snx-test-shader-indexed-ms PRIVATE snx_shader)
@@ -287,6 +302,28 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_rt_watch COMMAND snx-test-vulkan -H --vk-memory=1)
     set_tests_properties(vulkan_rt_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_RT_WATCH_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;watch: needs traps")
+    # the barriers at the writer (writer_barriers, gpu/vk/surface.c vk_surf_written_flush) under the validation layer
+    # with its synchronization checks, when it is installed: a pass's target, an upload and a storage write, each
+    # sampled after (tests/vulkan_draw_memo.inc writer_cases, tests/vulkan_cross_stage_alias.inc check_writer_storage)
+    add_test(NAME vulkan_writer_barriers COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_writer_barriers PROPERTIES TIMEOUT 300
+        ENVIRONMENT "SNX_TEST_NVN_CASE=draw_memo;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    add_test(NAME vulkan_writer_storage COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_writer_storage PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_NVN_CASE=writer_storage;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a buffer-to-texture copy into the level and layer it names (tests/vulkan_dma_named.inc)
+    add_test(NAME vulkan_dma_named COMMAND snx-test-vulkan -H --vk-validation=1)
+    set_tests_properties(vulkan_dma_named PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=dma_named;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the pool map that Ounce programs read (tests/vulkan_pool_map.inc), the renderer started with the SM86 frontend
+    # and the setting on, under the validation layer with its synchronization checks when it is installed
+    add_test(NAME vulkan_pool_map COMMAND snx-test-vulkan -H --vk-validation=1 --pool-map=1)
+    set_tests_properties(vulkan_pool_map PROPERTIES TIMEOUT 300
+        ENVIRONMENT "SNX_TEST_SM86_TABLE=1;SNX_TEST_NVN_CASE=pool_map;VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR" SKIP_REGULAR_EXPRESSION "SKIP pool map")
     # a write log in host memory comes back from its pool clear (tests/vulkan_wlog_clear.inc): the unref clears the
     # windows its readers found, and reads the flags past them
     add_test(NAME vulkan_wlog_clear COMMAND snx-test-vulkan -H)
@@ -477,6 +514,45 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         COMMAND snx-test-vulkan -H --vk-memory=2 --write-tracking=1 --write-tracking-hot-pages=1)
     set_tests_properties(vulkan_uma_hot PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # a dma-buf region (udmabuf) keeps the GPU's pages while the CPU's mapping is trapped, the ground of the watch
+        # over one in docs/dev/draw-cost.md's item 8: uma_copies=2 takes the dma-buf way on any discrete GPU, and the
+        # check skips where the device or the kernel has none
+        add_test(NAME vulkan_uma_region_dmabuf_trap COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_dmabuf_trap PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_dmabuf_trap"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # the watch itself: a render target there is watched at a release, not published, and the CPU's read publishes
+        # it in place
+        add_test(NAME vulkan_uma_region_watch COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_watch"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region let go, idle and dead, while a watch is on its pages: the move back copies no trapped page
+        add_test(NAME vulkan_uma_region_letgo COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_letgo PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_letgo"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region dead under a watch: a bind meanwhile publishes nothing, reads stay current, the present lets it go
+        add_test(NAME vulkan_uma_region_dead_bind COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_dead_bind PROPERTIES TIMEOUT 60
+            ENVIRONMENT "SNX_TEST_UMA_ONLY=region_dead_bind"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # what comes after the watch: a target drawn over it again keeps its drawing in memory and in its image, and the
+        # write tracking finds what the CPU wrote to its pages and nothing else; an engine's result over it waits for
+        # nothing
+        # a full table of imports lets go of the oldest one that no watch traps (gpu/vk/uma.c imp_get)
+        add_test(NAME vulkan_uma_region_table COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_table PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_table"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region that the host has no room to move back stays with its pages (gpu/vk/uma.c imp_let_go)
+        add_test(NAME vulkan_uma_region_stays COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_stays PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_stays"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        foreach(snx_watch frames writes engine)
+            add_test(NAME vulkan_uma_region_watch_${snx_watch} COMMAND snx-test-vulkan -H --uma-copies=2)
+            set_tests_properties(vulkan_uma_region_watch_${snx_watch} PROPERTIES TIMEOUT 60
+                ENVIRONMENT "SNX_TEST_UMA_ONLY=region_watch_${snx_watch}"
+                FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        endforeach()
+    endif()
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
     # Android, older Linux), without and with its hot pages (write_tracking_hot_pages 0 and 1), unified memory's reads

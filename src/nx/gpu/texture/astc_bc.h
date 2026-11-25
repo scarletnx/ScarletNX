@@ -8,7 +8,7 @@
 #ifndef SNX_TEXTURE_ASTC_BC_H
 #define SNX_TEXTURE_ASTC_BC_H
 
-/* Auto, for a program that is not an Ounce one (those are BC7 at load), follows the room in the heap images go to: its
+/* Auto follows the room in the heap images go to: its
    budget (the driver's, VK_EXT_memory_budget, or vk_budget_mb where that is lower) less the caches' use (vk_mem_use).
    The levels that load are Exact while the caches have room, and BC7 from the first trim (vk_mem_trim: the caches past
    mark, vk_mem_trim_start's head under the budget, from where each new RGBA8 level costs an eviction, or an image that
@@ -51,8 +51,15 @@ static inline void snx_astc_auto_converted(SnxAstcAuto* a, unsigned long long by
     if (bytes - bytes / 4 > a->band) a->band = bytes - bytes / 4;
 }
 /* the caches' use at a present, against mark: 1 when Auto turns to Exact again, with more room under mark than band */
-static inline int snx_astc_auto_room(SnxAstcAuto* a, unsigned long long usage, unsigned long long mark) {
-    if (!a->bc7 || usage >= mark || mark - usage <= a->band) return 0;
+/* Auto held as BC7, with the caches at usage against mark and held_bc7 bytes of ASTC textures held as BC7 now: 1 when
+   it turns Exact again. The room under mark must be more than band, and more than those textures would take more as
+   RGBA8 (three times their bytes): a game that loads new parts of its world as it goes loads them again in time, Exact
+   from the switch on. Without the second, the room that BC7 itself made turned it Exact, and the next loads filled the
+   caches again: one Ounce game's race under a 6 GB budget turned 58 to 75 times in 330 s, and each turn to BC7 read
+   hundreds of MB of textures again */
+static inline int snx_astc_auto_room(SnxAstcAuto* a, unsigned long long usage, unsigned long long mark,
+                                     unsigned long long held_bc7) {
+    if (!a->bc7 || usage >= mark || mark - usage <= a->band || mark - usage <= held_bc7 * 3) return 0;
     a->bc7 = 0;
     a->switches++;
     return 1;

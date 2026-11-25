@@ -1004,6 +1004,26 @@ int main(void) {
                   p.out_base[1] == 3 && p.jitter[0] == 0.25f && p.pre_exposure == 1 && p.reset && p.flags == 0x50000,
               "and the request's fields");
     }
+
+    /* The Ounce's driver (API 231) writes only the vertex attributes and streams that a bind names, each list padded to
+       an even count of words. One game's model sizes a heap by these bytes: the Switch's 68 and 64 + 4n overflowed it */
+    {
+        const u64 cbv = 0x6f000, attribs = 0x6f800, streams = 0x6f900;
+        u32 api = g_nvn.loader.api;
+        g_nvn.loader.api = 231u << 16 | 30;
+        nvn_CommandBufferInitialize(&cpu, cbv, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbv, 1, 0x2f000, 0x400);
+        nvn_CommandBufferBeginRecording(&cpu, cbv);
+        nvn_CommandBufferBindVertexAttribState(&cpu, cbv, 13, attribs);
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbv) == 64, "13 attributes: a header, the count and 14 words");
+        nvn_CommandBufferBindVertexStreamState(&cpu, cbv, 2, streams);
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbv) == 64 + 24, "2 streams with no divisor: 6 words");
+        gw32(streams + 8 + 4, 1); /* stream 1's divisor */
+        nvn_CommandBufferBindVertexStreamState(&cpu, cbv, 2, streams);
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbv) == 64 + 24 + 32, "and with a divisor of stream 1: 8");
+        nvn_CommandBufferEndRecording(&cpu, cbv);
+        g_nvn.loader.api = api;
+    }
     if (failures) return 1;
     puts("nvn_commands: ok");
     return 0;

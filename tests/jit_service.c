@@ -27,11 +27,6 @@
 #include <string.h>
 #include <time.h>
 #include <stdatomic.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sched.h>
-#endif
 #ifdef __linux__
 #include <errno.h>
 #include <sys/resource.h>
@@ -94,6 +89,47 @@ static void hold_wait(void) {
     pthread_mutex_lock(&held.lock);
     while (held.on) pthread_cond_wait(&held.over, &held.lock);
     pthread_mutex_unlock(&held.lock);
+}
+
+/* the batch of in_flight.pc waits as it begins, having taken its epoch, until in_flight_release: a change of memory made
+   between the two is one the batch must see. Then its report says how it ended */
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t moved;
+    u64 pc; /* the batch's first pc, 0: none waits */
+    int begun, released, ended, dropped;
+} in_flight = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0};
+static void batch_begins(SnxU64 pc) {
+    pthread_mutex_lock(&in_flight.lock);
+    if (pc == in_flight.pc) {
+        in_flight.pc = 0;
+        in_flight.begun = 1;
+        pthread_cond_broadcast(&in_flight.moved);
+        while (!in_flight.released) pthread_cond_wait(&in_flight.moved, &in_flight.lock);
+    }
+    pthread_mutex_unlock(&in_flight.lock);
+}
+static void in_flight_hold(u64 pc) {
+    pthread_mutex_lock(&in_flight.lock);
+    in_flight.pc = pc;
+    in_flight.begun = in_flight.released = in_flight.ended = in_flight.dropped = 0;
+    pthread_mutex_unlock(&in_flight.lock);
+}
+/* whether *flag is set, within a minute */
+static int in_flight_wait(const int* flag) {
+    struct timespec until = {time(NULL) + 60, 0};
+    pthread_mutex_lock(&in_flight.lock);
+    while (!*flag && pthread_cond_timedwait(&in_flight.moved, &in_flight.lock, &until) == 0) {}
+    int set = *flag;
+    pthread_mutex_unlock(&in_flight.lock);
+    return set;
+}
+static void in_flight_release(void) {
+    pthread_mutex_lock(&in_flight.lock);
+    in_flight.pc = 0;
+    in_flight.released = 1;
+    pthread_cond_broadcast(&in_flight.moved);
+    pthread_mutex_unlock(&in_flight.lock);
 }
 
 /* the guest's code is little-endian whatever the host's byte order */
@@ -160,7 +196,16 @@ static void report(const SnxJitReport* r) {
         fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
         atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed);
     }
-    if (!miss_thread) hold_wait();
+    if (miss_thread) return;
+    /* the one compile thread reports a batch before it begins the next: this is the held one's */
+    pthread_mutex_lock(&in_flight.lock);
+    if (in_flight.begun && !in_flight.ended) {
+        in_flight.ended = 1;
+        in_flight.dropped = r->dropped;
+        pthread_cond_broadcast(&in_flight.moved);
+    }
+    pthread_mutex_unlock(&in_flight.lock);
+    hold_wait();
 }
 
 /* the function at 0x3400 behind a wrapper put into an empty slot: its original is the miss */
@@ -216,6 +261,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     config.region_instructions = region_limit;
     config.budget = discovery_budget;
     config.threads = threads;
+    config.begin = batch_begins;
     config.report = report;
     config.thread = thread_role;
     config.cache_path = cache_path;
@@ -764,68 +810,60 @@ static void test_invalidated_callee(void) {
     snx_jit_service_free(service);
 }
 
-/* an invalidation of another range while a pc compiles: the batch read code that may be stale, so it publishes nothing
-   and its pcs go back to their queue. Before, they were left GONE with their pending bit set, which snx_jit_resolve's
-   fast path reads as "queued, wait for it": nothing queued them again, and the pc was never compiled (rt_miss's fatal,
-   DQ7 at 98f1fc4). Each round invalidates elsewhere until its batch ends, so the batch reads the epoch before one of
-   them and is dropped, unless it was quicker than the first; a run where none was dropped proves nothing and fails.
-   The function is long so its batch outlasts a scheduler slice: on one CPU (a loaded runner, taskset -c 0) the woken
-   compile thread ran a short batch to its end before this thread ran again, and no round dropped one */
-#define IN_FLIGHT_PC   0x10000
-#define IN_FLIGHT_ADDS 4000
-/* a spin of a round: an invalidation elsewhere and the stats, then the processor to the others. A lock taken again at
-   once by the thread that let it go (Windows' SRW lock is not fair) leaves the compile thread waiting for it, its
-   batch never begun */
-static void in_flight_spin(SnxJitStats* stats) {
+/* an invalidation of another range while a pc compiles: the batch read words that the invalidation did not touch, so it
+   publishes what it compiled. Before, every invalidation dropped every batch in flight, and the pcs went back to their
+   queue: a pc was left GONE with its pending bit set, which snx_jit_resolve's fast path reads as "queued, wait for it",
+   twice nothing queued it, and it was never compiled (a game's at 98f1fc4). Each batch is held from its epoch until the
+   invalidation, without which the batch may end before it however long the function is, when the host runs that thread
+   first */
+#define IN_FLIGHT_PC 0x10000
+/* whether the batch queued for pc, held as it begins while memory elsewhere changes, publishes anyway: the words it read
+   did not change, its report says it was not dropped, and its code is in the service at its end (its thread is held in
+   its report) */
+static int publishes_in_flight(u64 pc) {
+    int publishes = in_flight_wait(&in_flight.begun);
     snx_jit_invalidate(service, 0x8000, 0x10);
-    snx_jit_stats(service, stats);
-#ifdef _WIN32
-    SwitchToThread();
-#else
-    sched_yield();
-#endif
+    hold(1);
+    in_flight_release();
+    publishes = publishes && in_flight_wait(&in_flight.ended) && !in_flight.dropped && get(pc) != NULL;
+    hold(0);
+    return publishes;
 }
 static void test_invalidate_in_flight(void) {
     static const u32 words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
     static const SnxU64 warm_pc[] = {0x4800};
-    static u32 long_words[IN_FLIGHT_ADDS + 1];
     SnxJitStats stats;
-    unsigned long batches, dropped;
-    time_t until;
+    unsigned long dropped;
     unsigned round;
-    size_t i;
+    int ok = 1;
     service = start(1, 1);
     if (!service) {
         ++failures;
         return;
     }
-    for (i = 0; i < IN_FLIGHT_ADDS; ++i) long_words[i] = words[0];
-    long_words[IN_FLIGHT_ADDS] = words[1];
-    put(IN_FLIGHT_PC, long_words, IN_FLIGHT_ADDS + 1);
-    snx_jit_stats(service, &stats);
-    dropped = stats.dropped;
-    for (round = 0; round < 8; ++round) {
-        snx_jit_invalidate(service, IN_FLIGHT_PC, 4); /* the pc is new to the service again */
-        snx_jit_stats(service, &stats);
-        batches = stats.batches;
-        CHECK(snx_jit_resolve(service, IN_FLIGHT_PC) == NULL);
-        for (until = time(NULL) + 60; stats.batches == batches && time(NULL) < until;) in_flight_spin(&stats);
-        CHECK(stats.batches != batches);
-        CHECK(snx_jit_wait(service, IN_FLIGHT_PC) != NULL); /* queued again, and compiled once nothing changes */
-    }
-    /* a warm pc goes back to the warm queue, and is compiled from there */
+    put(IN_FLIGHT_PC, words, 2);
     put(0x4800, words, 2);
     snx_jit_stats(service, &stats);
-    batches = stats.batches;
+    dropped = stats.dropped;
+    for (round = 0; ok && round < 8; ++round) {
+        snx_jit_invalidate(service, IN_FLIGHT_PC, 4); /* the pc is new to the service again */
+        in_flight_hold(IN_FLIGHT_PC);
+        CHECK(snx_jit_resolve(service, IN_FLIGHT_PC) == NULL);
+        ok = publishes_in_flight(IN_FLIGHT_PC);
+        CHECK(ok);
+        CHECK(snx_jit_wait(service, IN_FLIGHT_PC) != NULL); /* published: the wait finds its code */
+    }
+    /* a warm pc publishes too, and its code is compiled once nothing changes */
+    in_flight_hold(0x4800);
     CHECK(snx_jit_warm(service, warm_pc, 1) == 1);
-    for (until = time(NULL) + 60; stats.batches == batches && time(NULL) < until;) in_flight_spin(&stats);
+    CHECK(publishes_in_flight(0x4800));
     snx_jit_drain(service);
     CHECK(get(0x4800) != NULL);
     snx_jit_stats(service, &stats);
     printf("invalidate in flight: %lu batches dropped in 9 rounds of invalidating code they never read\n",
            stats.dropped - dropped);
-    /* none: the batches read code no invalidation touched, and what a game does all the time elsewhere in memory must
-       not cost a batch its second of the game's time (code_fingerprint) */
+    /* none: the batches read words no invalidation touched (their own code did not change), and what a game does all
+       the time elsewhere in memory must not cost a batch its second of the game's time */
     CHECK(stats.dropped == dropped);
     snx_jit_service_free(service);
 }

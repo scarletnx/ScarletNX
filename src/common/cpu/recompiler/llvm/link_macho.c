@@ -1,15 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Mach-O: arm64 MH_OBJECTs into an MH_DYLIB for macOS and iOS, without imports, initializers or unwind info.
+/* Mach-O: arm64 objects into an MH_DYLIB for macOS and iOS, without imports, initializers or unwind info. The objects
+   are Mach-O, as LLVM writes them, or AArch64 ELF, as the native back ends and the runtime library's embedded object
+   are: what the JIT loader takes on Darwin (code_loader.c), read and relocated by the same elf_object.c, their code
+   Darwin's whatever the container. A module may have both.
    Segments: [__TEXT: headers, __text, __const (every read-only input section)] [__DATA: __data, __got, __bss]
    [__LINKEDIT: rebase opcodes, the export trie, the symbol table, the code signature]. Every symbol must be defined by
    one of the objects; the only fixups dyld applies are rebases, for absolute addresses in __DATA and the GOT's slots.
    Apple silicon runs no unsigned code, so the dylib carries the ad hoc signature ld64 and lld give it (linker-signed:
    a SHA-256 of each 4 KiB page of the file before it). __compact_unwind and __eh_frame are dropped, as the ELF module
-   has no PT_GNU_EH_FRAME. Symbols are named in the objects with C's leading underscore, so an export "snx_module" is
-   "_snx_module" here, as dlsym looks it up.
+   has no PT_GNU_EH_FRAME. Symbols are named in the Mach-O objects with C's leading underscore, so an export
+   "snx_module" is "_snx_module" here, as dlsym looks it up. An ELF object's have none: its "snx_module" is spelled
+   "_snx_module" too.
    Written from the formats <mach-o/loader.h>, <mach-o/nlist.h> and <mach-o/arm64/reloc.h> document, and the code
    signature's (<kern/cs_blobs.h>). The structures are read and written byte by byte, so this builds anywhere */
+#include "common/cpu/recompiler/llvm/elf_object.h"
 #include "common/cpu/recompiler/llvm/link_internal.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>
@@ -153,9 +158,13 @@ typedef struct {
     uint32_t nsymbols, nsections;
     const char* strings;
     uint32_t strings_size;
-    Sec* sections; /* from 1, as n_sect and a section relocation's r_symbolnum count them */
+    Sec* sections;  /* from 1, as n_sect and a section relocation's r_symbolnum count them, and an ELF st_shndx */
     size_t veneers; /* its veneers, after its code at island (an offset in the code) */
     uint64_t island;
+#if !defined(_WIN32)
+    SnxElfObject elf; /* an ELF object (is_elf): its symbols and relocations are elf_object.c's to read */
+#endif
+    int is_elf;
 } Obj;
 
 typedef struct {
@@ -169,9 +178,19 @@ typedef struct {
     uint64_t got_address;
     size_t got_count;
     int far; /* the code may be out of a branch's reach */
+    char* name; /* an ELF symbol's Mach-O spelling (spelled), the longest's room */
+    size_t name_size;
     char* error;
     size_t error_size;
 } Link;
+
+/* a symbol of an object of either format, without its name (spelled) */
+typedef struct {
+    int external, undefined, absolute, defined; /* defined: in a section the module loads */
+    int weak_def, weak_ref, unsupported;        /* unsupported: of a type the linker takes in no form */
+    unsigned section;                           /* of a section's symbol, Obj.sections' */
+    uint64_t value;                             /* its address in the object, or an absolute symbol's */
+} Symbol;
 
 static int fail(Link* l, const char* format, const char* a, const char* b) {
     return snx_link_fail(l->error, l->error_size, format, a, b);
@@ -181,6 +200,51 @@ static const unsigned char* symbol(const Obj* o, uint32_t index) { return o->sym
 static const char* symbol_name(const Obj* o, const unsigned char* s) {
     uint32_t offset = snx_ld_le32(s);
     return offset < o->strings_size ? o->strings + offset : "";
+}
+/* the symbol's name as Mach-O has it: an ELF object's is C's own, spelled with an underscore in l->name, which the next
+   ELF symbol's takes */
+static const char* spelled(Link* l, const Obj* o, uint32_t index) {
+#if !defined(_WIN32)
+    if (o->is_elf) {
+        const char* name = snx_elf_symbol_name(&o->elf, &o->elf.syms[index]);
+        size_t n = strlen(name) + 1;
+        l->name[0] = '_';
+        memcpy(l->name + 1, name, n);
+        return l->name;
+    }
+#endif
+    (void)l;
+    return symbol_name(o, symbol(o, index));
+}
+static Symbol symbol_at(const Obj* o, uint32_t index) {
+    Symbol y = {0};
+#if !defined(_WIN32)
+    if (o->is_elf) {
+        const Elf64_Sym* s = &o->elf.syms[index];
+        y.external = ELF64_ST_BIND(s->st_info) == STB_GLOBAL || ELF64_ST_BIND(s->st_info) == STB_WEAK;
+        y.undefined = s->st_shndx == SHN_UNDEF;
+        y.absolute = s->st_shndx == SHN_ABS;
+        y.unsupported = s->st_shndx == SHN_COMMON;
+        y.weak_def = !y.undefined && ELF64_ST_BIND(s->st_info) == STB_WEAK;
+        y.weak_ref = y.undefined && ELF64_ST_BIND(s->st_info) == STB_WEAK;
+        y.section = y.undefined || y.absolute || y.unsupported ? 0 : s->st_shndx;
+        y.value = s->st_value;
+        y.defined = y.section && o->sections[y.section].kind >= 0;
+        return y;
+    }
+#endif
+    const unsigned char* s = symbol(o, index);
+    unsigned type = s[4] & N_TYPE;
+    y.external = s[4] & N_EXT;
+    y.undefined = type == N_UNDF;
+    y.absolute = type == N_ABS;
+    y.unsupported = !y.undefined && !y.absolute && type != N_SECT;
+    y.weak_def = snx_ld_le16(s + 6) & N_WEAK_DEF;
+    y.weak_ref = snx_ld_le16(s + 6) & N_WEAK_REF;
+    y.section = type == N_SECT ? s[5] : 0;
+    y.value = snx_ld_le64(s + 8);
+    y.defined = y.section && y.section <= o->nsections && o->sections[y.section].kind >= 0;
+    return y;
 }
 
 /* the platform and oldest version the objects were compiled for (LLVM writes them from the triple) */
@@ -209,10 +273,63 @@ static int classify(Link* l, const Obj* o, const Sec* s) {
     return fail(l, "%s: unsupported section in segment %s", o->input->name, s->segment), -2;
 }
 
+#if !defined(_WIN32)
+/* An AArch64 ELF object: its sections as Sec's, numbered as its st_shndx and sh_info number them, with elf_object.c's
+   kinds in this module's segments. Its unwind tables go, as a Mach-O object's __eh_frame does */
+static int parse_elf(Link* l, Obj* o, const SnxLinkInput* input) {
+    static const int kinds[SNX_ELF_KINDS] = {
+        [SNX_ELF_RODATA] = K_CONST, [SNX_ELF_TEXT] = K_TEXT, [SNX_ELF_DATA] = K_DATA, [SNX_ELF_BSS] = K_BSS};
+    unsigned machine = EM_AARCH64, abi = 0;
+    const Elf64_Ehdr* eh;
+    if (input->size > 0xFFFFFFFFu) return fail(l, "%s: an object larger than Mach-O's 4 GiB%s", input->name, "");
+    o->is_elf = 1;
+    if (snx_elf_parse(&o->elf, input, &machine, &abi, l->error, l->error_size)) return -1;
+    eh = o->elf.eh;
+    o->sections = (Sec*)calloc(eh->e_shnum ? eh->e_shnum : 1, sizeof(Sec));
+    if (!o->sections) return fail(l, "out of memory%s%s", "", "");
+    o->sections[0].kind = -1;
+    o->nsections = eh->e_shnum ? eh->e_shnum - 1u : 0;
+    for (uint32_t j = 1; j <= o->nsections; ++j) {
+        const Elf64_Shdr* h = &o->elf.sh[j];
+        const char* name = snx_elf_section_name(&o->elf, j);
+        Sec* s = &o->sections[j];
+        uint64_t align = h->sh_addralign ? h->sh_addralign : 1;
+        s->kind = o->elf.kind[j] < 0 || !strcmp(name, ".eh_frame") ? -1 : kinds[o->elf.kind[j]];
+        if (s->kind < 0) continue;
+        snprintf(s->name, sizeof(s->name), "%s", name);
+        s->size = h->sh_size;
+        s->offset = (uint32_t)h->sh_offset;
+        while (((uint64_t)1 << s->align) < align && s->align < 63) ++s->align;
+        if (((uint64_t)1 << s->align) != align)
+            return fail(l, "%s: section %s's alignment is not a power of two", input->name, s->name);
+        if (s->align > 14) /* PAGE, which is all a slid image keeps */
+            return fail(l, "%s: section %s aligned beyond a page", input->name, s->name);
+    }
+    for (size_t j = 0; j < o->elf.nsyms; ++j) {
+        size_t n = strlen(snx_elf_symbol_name(&o->elf, &o->elf.syms[j])) + 2; /* the underscore, the NUL */
+        if (n > l->name_size) {
+            char* grown = (char*)realloc(l->name, n);
+            if (!grown) return fail(l, "out of memory%s%s", "", "");
+            l->name = grown;
+            l->name_size = n;
+        }
+    }
+    o->nsymbols = (uint32_t)o->elf.nsyms;
+    return 0;
+}
+#endif
+
 static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
     const unsigned char* d = input->data;
     uint32_t at = 32;
     o->input = input;
+    if (input->size >= 4 && !memcmp(d, "\177ELF", 4)) {
+#if !defined(_WIN32)
+        return parse_elf(l, o, input);
+#else
+        return fail(l, "%s: an ELF object, which this host's recompiler does not read%s", input->name, "");
+#endif
+    }
     if (input->size < 32 || snx_ld_le32(d) != MH_MAGIC_64 || snx_ld_le32(d + 12) != MH_OBJECT)
         return fail(l, "%s: not a 64-bit Mach-O object%s", input->name, "");
     if (snx_ld_le32(d + 4) != CPU_TYPE_ARM64)
@@ -282,8 +399,23 @@ static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
     return 0;
 }
 
-static int defined_in(const Obj* o, const unsigned char* s) {
-    return (s[4] & N_TYPE) == N_SECT && s[5] && s[5] <= o->nsections && o->sections[s[5]].kind >= 0;
+/* a symbol that says nothing of the code: a Mach-O debugger's, an ELF null symbol's */
+static int no_symbol(const Obj* o, uint32_t index) { return o->is_elf ? !index : (symbol(o, index)[4] & N_STAB) != 0; }
+
+/* a symbol the module's table leaves out: one without a name, a temporary's (L, l; .L in ELF), and in an ELF object
+   what is neither a function nor an object, as link_elf.c: sections', files', AArch64's mapping symbols ($x, $d) */
+static int unnamed(const Obj* o, uint32_t index) {
+    const char* name;
+#if !defined(_WIN32)
+    if (o->is_elf) {
+        const Elf64_Sym* s = &o->elf.syms[index];
+        int type = ELF64_ST_TYPE(s->st_info);
+        name = snx_elf_symbol_name(&o->elf, s);
+        return (type != STT_FUNC && type != STT_OBJECT) || !*name || name[0] == '.';
+    }
+#endif
+    name = symbol_name(o, symbol(o, index));
+    return !*name || name[0] == 'L' || name[0] == 'l';
 }
 
 static int collect_globals(Link* l) {
@@ -291,21 +423,20 @@ static int collect_globals(Link* l) {
     for (size_t i = 0; i < l->nobjs; ++i) {
         Obj* o = &l->objs[i];
         for (uint32_t j = 0; j < o->nsymbols; ++j) {
-            const unsigned char* s = symbol(o, j);
-            unsigned type = s[4] & N_TYPE;
-            const char* name = symbol_name(o, s);
-            if ((s[4] & N_STAB) || !(s[4] & N_EXT)) continue;
-            if (type == N_UNDF) {
-                if (snx_ld_le64(s + 8)) return fail(l, "%s: common symbol %s", o->input->name, name);
+            const Symbol y = symbol_at(o, j);
+            if (no_symbol(o, j) || !y.external) continue;
+            if (y.undefined) {
+                if (!o->is_elf && y.value) return fail(l, "%s: common symbol %s", o->input->name, spelled(l, o, j));
                 continue;
             }
-            if (type != N_ABS && type != N_SECT)
-                return fail(l, "%s: unsupported symbol type of %s", o->input->name, name);
-            if (type == N_SECT && !defined_in(o, s)) continue;
+            if (y.unsupported)
+                return fail(l, o->is_elf ? "%s: common symbol %s" : "%s: unsupported symbol type of %s", o->input->name,
+                            spelled(l, o, j));
+            if (!y.absolute && !y.defined) continue;
+            const char* name = spelled(l, o, j);
             if (snx_link_find(&l->globals, name, &found)) {
-                const Obj* other = &l->objs[found >> 32];
-                if (snx_ld_le16(s + 6) & N_WEAK_DEF) continue;
-                if (!(snx_ld_le16(symbol(other, (uint32_t)found) + 6) & N_WEAK_DEF))
+                if (y.weak_def) continue;
+                if (!symbol_at(&l->objs[found >> 32], (uint32_t)found).weak_def)
                     return fail(l, "duplicate symbol %s (%s)", name, o->input->name);
             }
             snx_link_insert(&l->globals, name, (i << 32) | j);
@@ -322,36 +453,36 @@ static int definition(Link* l, size_t object, uint32_t index, size_t* def_object
     size_t found;
     *undefined_weak = 0;
     if (index >= o->nsymbols) return fail(l, "%s: bad symbol index%s", o->input->name, "");
-    const unsigned char* s = symbol(o, index);
-    if ((s[4] & N_EXT) && snx_link_find(&l->globals, symbol_name(o, s), &found)) {
+    const Symbol y = symbol_at(o, index);
+    if (y.external && snx_link_find(&l->globals, spelled(l, o, index), &found)) {
         *def_object = found >> 32;
         *def_index = (uint32_t)found;
         return 0;
     }
-    if ((s[4] & N_TYPE) != N_UNDF) {
-        if ((s[4] & N_TYPE) != N_SECT && (s[4] & N_TYPE) != N_ABS) /* symbol_address reads a section's or the value */
-            return fail(l, "%s: unsupported symbol type of %s", o->input->name, symbol_name(o, s));
-        if ((s[4] & N_TYPE) == N_SECT && !defined_in(o, s))
+    if (!y.undefined) {
+        if (y.unsupported) /* symbol_address reads a section's or the value */
+            return fail(l, "%s: unsupported symbol type of %s", o->input->name, spelled(l, o, index));
+        if (!y.absolute && !y.defined)
             return fail(l, "%s: reference to %s in a section the module leaves out", o->input->name,
-                        symbol_name(o, s));
+                        spelled(l, o, index));
         *def_object = object;
         *def_index = index;
         return 0;
     }
-    if (snx_ld_le16(s + 6) & N_WEAK_REF) {
+    if (y.weak_ref) {
         *undefined_weak = 1;
         return 0;
     }
-    return fail(l, "undefined symbol %s (referenced by %s)", symbol_name(o, s), o->input->name);
+    return fail(l, "undefined symbol %s (referenced by %s)", spelled(l, o, index), o->input->name);
 }
 
 /* final address of a definition; the value of an absolute symbol */
 static uint64_t symbol_address(const Link* l, size_t object, uint32_t index, int* absolute) {
     const Obj* o = &l->objs[object];
-    const unsigned char* s = symbol(o, index);
-    *absolute = (s[4] & N_TYPE) == N_ABS;
-    if (*absolute) return snx_ld_le64(s + 8);
-    return o->sections[s[5]].address + (snx_ld_le64(s + 8) - o->sections[s[5]].addr);
+    const Symbol y = symbol_at(o, index);
+    *absolute = y.absolute;
+    if (y.absolute) return y.value;
+    return o->sections[y.section].address + (y.value - o->sections[y.section].addr);
 }
 
 static int fits(int64_t value, unsigned bits) {
@@ -416,6 +547,88 @@ static int rebase(Link* l, Rebases* r, uint64_t address) {
     return 0;
 }
 
+/* a GOT slot for the definition, or for an undefined weak symbol by its name: the slot's address, or 0 when the second
+   pass finds none */
+static uint64_t got_slot(Link* l, const unsigned char* image, size_t def_object, size_t def_index, int weak,
+                         const char* name) {
+    char key[72];
+    size_t slot;
+    if (weak) /* a weak import nothing defines: a slot of its own, holding 0 */
+        snprintf(key, sizeof(key), "~%.70s", name);
+    else
+        snx_link_got_key(key, def_object, def_index);
+    if (!snx_link_find(&l->got, key, &slot)) {
+        if (image) return 0;
+        snx_link_insert(&l->got, key, slot = l->got_count++);
+    }
+    return l->got_address + 8 * (uint64_t)slot;
+}
+
+#if !defined(_WIN32)
+/* An ELF object's relocations, in relocations' two passes, each written by elf_object.c as the AOT linker and the JIT
+   loader write it: GOT slots and veneers are this module's, a 64-bit address in data a rebase */
+static int elf_relocations(Link* l, size_t object, unsigned char* image, Rebases* rebases) {
+    Obj* o = &l->objs[object];
+    for (uint32_t j = 1; j <= o->nsections; ++j) {
+        const Elf64_Shdr* h = &o->elf.sh[j];
+        if ((h->sh_type != SHT_RELA && h->sh_type != SHT_REL) || h->sh_info > o->nsections) continue;
+        const Sec* s = &o->sections[h->sh_info];
+        if (s->kind < 0 || s->kind == K_BSS) continue;
+        if (h->sh_type == SHT_REL) return fail(l, "%s: REL relocations in %s", o->input->name, s->name);
+        const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(o->input->data + h->sh_offset);
+        for (size_t k = 0, n = h->sh_size / sizeof(*r); k < n; ++k) {
+            unsigned type = snx_elf_type(EM_AARCH64, r[k].r_info);
+            size_t index = snx_elf_symbol(EM_AARCH64, r[k].r_info), def_object = 0, slot;
+            uint32_t def_index = 0;
+            uint64_t S = 0, P = s->address + r[k].r_offset, got = 0;
+            int weak = 0, absolute = 0, call = snx_elf_call_relocation(EM_AARCH64, type), written;
+            char key[72];
+            if (type == SNX_A64_NONE) continue;
+            if (!index) return fail(l, "%s: a relocation of no symbol in %s", o->input->name, s->name);
+            if (definition(l, object, (uint32_t)index, &def_object, &def_index, &weak)) return -1;
+            if (!weak) S = symbol_address(l, def_object, def_index, &absolute);
+            if (snx_elf_got_relocation(EM_AARCH64, type) &&
+                !(got = got_slot(l, image, def_object, def_index, weak, spelled(l, o, (uint32_t)index))) && image)
+                return fail(l, "%s: GOT slot missing%s", o->input->name, "");
+            snx_link_veneer_key(key, object, def_object, def_index);
+            if (!image) {
+                if (call && weak) /* the module imports nothing: there is no address to call */
+                    return fail(l, "%s: a call to the undefined weak symbol %s", o->input->name,
+                                spelled(l, o, (uint32_t)index));
+                if (call && l->far && def_object != object && !r[k].r_addend) {
+                    if (!snx_link_find(&l->veneer, key, &slot)) snx_link_insert(&l->veneer, key, o->veneers++);
+                } else if (snx_elf_absolute_relocation(EM_AARCH64, type) && !weak && !absolute && s->kind != K_DATA) {
+                    return fail(l, "%s: absolute address in read-only section %s", o->input->name, s->name);
+                }
+                continue;
+            }
+            written = r[k].r_offset > s->size
+                          ? SNX_LINK_OUTSIDE
+                          : snx_elf_relocate(EM_AARCH64, image + P, (size_t)(s->size - r[k].r_offset), type, S,
+                                             r[k].r_addend, P, 0, got);
+            /* the caller's veneer, which it reaches, jumps there */
+            if (written == SNX_LINK_RANGE && call && !r[k].r_addend && snx_link_find(&l->veneer, key, &slot)) {
+                uint64_t veneer = l->kind_address[K_TEXT] + o->island + VENEER * (uint64_t)slot;
+                written = snx_elf_branch_veneer(image + P, P, image + veneer, veneer, S, 0);
+            }
+            if (written == SNX_LINK_OUTSIDE)
+                return fail(l, "%s: relocation outside section %s", o->input->name, s->name);
+            if (written == SNX_LINK_MISALIGNED)
+                return fail(l, "%s: relocation to a misaligned address in %s", o->input->name, s->name);
+            if (written) {
+                snprintf(l->error, l->error_size,
+                         written == SNX_LINK_RANGE ? "%s: relocation %u out of range (the module is too large)"
+                                                   : "%s: unsupported relocation type %u",
+                         o->input->name, type);
+                return -1;
+            }
+            if (snx_elf_absolute_relocation(EM_AARCH64, type) && !weak && !absolute && rebase(l, rebases, P)) return -1;
+        }
+    }
+    return 0;
+}
+#endif
+
 /* The relocations of every loaded section. The first pass (image NULL) finds the GOT slots and veneers and checks
    that absolute addresses are in data; the second applies them to the image (file offsets are addresses there) and
    lists the rebases. A relocation's target is a symbol (r_extern), or a section by its number, whose contents hold
@@ -427,6 +640,12 @@ static int relocations(Link* l, unsigned char* image, Rebases* rebases) {
     char key[72];
     for (size_t i = 0; i < l->nobjs; ++i) {
         Obj* o = &l->objs[i];
+#if !defined(_WIN32)
+        if (o->is_elf) {
+            if (elf_relocations(l, i, image, rebases)) return -1;
+            continue;
+        }
+#endif
         for (uint32_t j = 1; j <= o->nsections; ++j) {
             const Sec* s = &o->sections[j];
             const unsigned char* table = o->input->data + s->reloff;
@@ -483,15 +702,8 @@ static int relocations(Link* l, unsigned char* image, Rebases* rebases) {
                 }
                 if (type == R_GOT_LOAD_PAGE21 || type == R_GOT_LOAD_PAGEOFF12 || type == R_POINTER_TO_GOT) {
                     if (!external) return fail(l, "%s: GOT reference to a section in %s", o->input->name, s->name);
-                    if (weak) /* a weak import nothing defines: a slot of its own, holding 0 */
-                        snprintf(key, sizeof(key), "~%.70s", symbol_name(o, symbol(o, number)));
-                    else
-                        snx_link_got_key(key, def_object, def_index);
-                    if (!snx_link_find(&l->got, key, &slot)) {
-                        if (image) return fail(l, "%s: GOT slot missing%s", o->input->name, "");
-                        snx_link_insert(&l->got, key, slot = l->got_count++);
-                    }
-                    got = l->got_address + 8 * slot;
+                    got = got_slot(l, image, def_object, def_index, weak, symbol_name(o, symbol(o, number)));
+                    if (!got && image) return fail(l, "%s: GOT slot missing%s", o->input->name, "");
                 }
                 if (!image) {
                     if (type == R_BRANCH26 && weak) /* the module imports nothing: there is no address to call */
@@ -868,7 +1080,7 @@ int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* 
         export_address[i] = symbol_address(&l, found >> 32, (uint32_t)found, &absolute);
         if (!absolute) {
             const Obj* o = &l.objs[found >> 32];
-            export_section[i] = (unsigned)kind_section[o->sections[symbol(o, (uint32_t)found)[5]].kind];
+            export_section[i] = (unsigned)kind_section[o->sections[symbol_at(o, (uint32_t)found).section].kind];
         }
     }
     /* __LINKEDIT: rebases, exports, symbols (every named function and object, local, for debuggers and crash reports;
@@ -879,18 +1091,19 @@ int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* 
     for (size_t i = 0; i < count; ++i) {
         const Obj* o = &l.objs[i];
         for (uint32_t j = 0; j < o->nsymbols; ++j) {
-            const unsigned char* s = symbol(o, j);
-            const char* name = symbol_name(o, s);
+            const Symbol y = symbol_at(o, j);
+            const char* name;
             size_t found;
-            if ((s[4] & N_STAB) || !defined_in(o, s) || !*name || name[0] == 'L' || name[0] == 'l') continue;
-            if ((s[4] & N_EXT) && snx_link_find(&l.globals, name, &found) && found != ((i << 32) | j))
+            if (no_symbol(o, j) || !y.defined || unnamed(o, j)) continue;
+            name = spelled(&l, o, j);
+            if (y.external && snx_link_find(&l.globals, name, &found) && found != ((i << 32) | j))
                 continue; /* an overridden weak definition */
             /* external, below */
             if (bsearch(&name, names, export_count, sizeof(*names), snx_compare_strings)) continue;
             {
                 int absolute;
                 uint32_t offset = (uint32_t)snx_link_append(&strtab, name, strlen(name) + 1);
-                nlist(&symtab, offset, N_SECT, (unsigned)kind_section[o->sections[s[5]].kind],
+                nlist(&symtab, offset, N_SECT, (unsigned)kind_section[o->sections[y.section].kind],
                       symbol_address(&l, i, j, &absolute));
                 ++nlocal;
             }
@@ -1021,8 +1234,14 @@ int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* 
     out.data = NULL;
     rc = 0;
 done:
-    for (size_t i = 0; l.objs && i < count; ++i) free(l.objs[i].sections);
+    for (size_t i = 0; l.objs && i < count; ++i) {
+#if !defined(_WIN32)
+        if (l.objs[i].is_elf) snx_elf_free(&l.objs[i].elf);
+#endif
+        free(l.objs[i].sections);
+    }
     free(l.objs);
+    free(l.name);
     for (size_t i = 0; names && i < export_count; ++i) free(names[i]);
     free(names);
     free(export_address);

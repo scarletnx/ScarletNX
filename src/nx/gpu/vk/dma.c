@@ -53,7 +53,10 @@ static struct {
     /* for the statistics, under vk_lock: the launches whose guest bytes do not overlap those of the launch before
        (no write of one meets a byte of the other), and that launch's source and destination bounds */
     u64 apart, last[2][2];
-} g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0, 0, {{0}}};
+    /* the launches into a texture its image took as well (vk_tex_dma_rows), and of those the ones that named the
+       texture, its level and layer (GpuDmaOp.tex), under vk_lock */
+    u64 into_tex, into_named;
+} g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0, 0, {{0}}, 0, 0};
 
 /* the guest bytes that a side of o can touch, or more: a block linear surface from its start to the end of the slab of
    slice z */
@@ -231,16 +234,18 @@ void vk_dma_stats(u64* copies, u64* bands, u64* bytes) {
     *bytes = g_dma.moved;
 }
 void vk_dma_log(void) {
-    static u64 copies_was, bands_was, moved_was, apart_was;
+    static u64 copies_was, bands_was, moved_was, apart_was, into_was, named_was;
     vk_lock();
-    u64 copies = g_dma.copies, bands = g_dma.bands, moved = g_dma.moved, apart = g_dma.apart;
+    u64 copies = g_dma.copies, bands = g_dma.bands, moved = g_dma.moved, apart = g_dma.apart, into = g_dma.into_tex,
+        named = g_dma.into_named;
     vk_unlock();
     if (copies != copies_was)
         LOG("vulkan: DMA launches of the last 600 presents: %llu (%llu bands, %.2f MB), %llu of them apart from the "
-            "launch before\n",
+            "launch before, %llu into a texture's image as well (%llu into the level and layer the copy named)\n",
             (unsigned long long)(copies - copies_was), (unsigned long long)(bands - bands_was),
-            (double)(moved - moved_was) / 1048576.0, (unsigned long long)(apart - apart_was));
-    copies_was = copies, bands_was = bands, moved_was = moved, apart_was = apart;
+            (double)(moved - moved_was) / 1048576.0, (unsigned long long)(apart - apart_was),
+            (unsigned long long)(into - into_was), (unsigned long long)(named - named_was));
+    copies_was = copies, bands_was = bands, moved_was = moved, apart_was = apart, into_was = into, named_was = named;
 }
 
 /* o's lines that could not be copied, the bytes it lacked them for and where they go */
@@ -372,8 +377,10 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     /* the textures over a block linear destination take its rows now in scratch */
     Surf* hit[8];
     int hits = ok && tl && o->dst.bl && !o->dst.bd && !o->dst.z
-                   ? vk_tex_dma_rows(o->dst.addr, o->dst.wb, o->dst.bh, o->dst.ox, o->dst.oy, o->line_out, dv, scr, tat,
-                                     pb, hit, 8)
+                   ? vk_tex_dma_rows(o->tex ? o->tex : o->dst.addr, o->tex ? o->tex_level : 0, o->tex ? o->tex_layer : 0,
+                                     o->dst.addr, o->dst.addr + need->dlo,
+                                     need->druns ? (u64)(need->druns - 1) * need->dstride + need->drun : 0, o->dst.wb, o->dst.bh,
+                                     o->dst.ox, o->dst.oy, o->line_out, dv, scr, tat, pb, hit, 8)
                    : 0;
     if (ok) { /* those bytes are the buffer's from now on, run by run of guest memory */
         for (u32 r = 0; r < need->druns; r++) {
@@ -390,6 +397,10 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
             gpu_mem_written_by(at, need->drun, GPU_WRITE_DMA, 0, 0);
         }
         vk_tex_dma_seen(hit, hits);
+        if (hits) {
+            g_dma.into_tex++;
+            if (o->tex) g_dma.into_named++;
+        }
         g_dma.moved += (o->src.bl ? need->stiles : sspan) + dlen;
         SNX_PLOT("vk pres dma bytes", (double)((o->src.bl ? need->stiles : sspan) + dlen));
     } else

@@ -88,6 +88,13 @@ CPU reads the pixels with one wait for the GPU, and a target that the CPU never 
 release and nothing more. A watch over memory that is freed or given to other data costs one fault, which finds no
 pending target and only drops the watch.
 
+Over a dma-buf region of unified memory ([below](#linux-guest-memory-moved-into-dma-bufs-of-memfds)) the watch is in
+place (`own_watch_in_place`): its pages stay the region's, which the GPU goes on reading and writing, and only the CPU's
+mapping of them is trapped. A publish over it is a copy in the region on the GPU (`vk_uma_publish`), with no owner and
+no landing. It waits for nothing and leaves the watch, as it can be the GPU thread's, part-way through its recording.
+The CPU's access waits: once the targets pending there are published, for what the GPU writes there in place
+(`own_accessed` in `vk/owned.c`), and the watch goes after it.
+
 The thread that held `vk_lock` before it touched a watched page (the GPU thread, which reads guest memory in a draw's
 setup) cannot wait for a publish. Its `own_acquire`, or its fault on a page with only watches on it, drops the watches
 and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is.
@@ -519,8 +526,11 @@ scan runs during it, the new mapping is registered (`ww_remapped`, where every p
 are protected again, and the range stays read only from `plat_freeze` to `plat_thaw`, so no write comes between;
 tracking by protection keeps each page's state and protection through the move. A region that goes marks none of its
 pages changed (`imp_destroy`). A page marked written with no write reads as newer than a render target drawn there
-whose pixels are not in memory yet, and a texture over that target loads memory's bytes. The GPU's writes in place
-there reach the caches when their submit is done (`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks
+whose pixels are not in memory yet, and a texture over that target loads memory's bytes. A watch in place is none
+either. No scan looks under its trap, so its pages are scanned before they are trapped (`vk_ww_watching`). Let go of,
+they read as written, so they are scanned as they open (own.c's `open` hook, `vk_ww_open`), with their leaves claimed
+over both: of what that scan finds, only the pages whose bytes are not those from before count. The GPU's writes in
+place there reach the caches when their submit is done (`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks
 that a region's pages answer `vk_written_since`, that a CPU write there is found, and that a page nobody wrote stays
 unwritten through a region made, moved on into a bigger one and gone; `memory_alias` checks the moves under both
 trackings. In the race above, the caches stopped comparing the regions' bytes: about 12.0 and 12.5 fps over its last

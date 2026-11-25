@@ -67,6 +67,13 @@ typedef struct {
        a thread that holds that lock can wait for this landing's marks */
     void* (*land_start)(const OwnRange* r, u8* const* dst, u32 n, int by);
     void (*land_end)(void* handle);
+    /* a watch over the host pages [lo, hi) of a GPU's buffer (own_watch_in_place) goes with no landing: the producer has
+       it go, by go(ctx), once, before it returns. The pages then read as written to plat_ww_scan, and nothing wrote
+       them: the producer tells what a woken thread writes from that by their bytes, which it reads through bytes (lo's
+       place in the buffer's view, never trapped) before go, while no thread can write them. Called with no lock of
+       own.c's, on any thread, with the producer's lock or mem.c's held or not. Optional: without it the watch goes, and
+       its pages read as written */
+    void (*open)(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ctx);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
@@ -84,6 +91,10 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off);
    lock before it touched a watched page drops the watch and goes on with the CPU's bytes: it cannot wait for a publish.
    The watch's bytes are owed then (own_owed_take). 0, or -1 as own_begin. The caller holds the producer's lock */
 int own_watch(u64 addr, u64 size);
+/* own_watch over the pages of a GPU's buffer that guest memory moved into (mem_migrate), trapped where they are: a
+   dma-buf of them keeps the same pages for the GPU, and the CPU's bytes read through the buffer's view (mem_ext_read).
+   -1 when [addr, addr + size)'s pages are not all such pages */
+int own_watch_in_place(u64 addr, u64 size);
 /* Watched bytes whose watch a thread that held the producer's lock dropped with no publish: the producer watches them
    again before that thread lets go of its lock, so the next CPU access still asks it for its result. 1, with one
    owed span in [*addr, *addr + *size) taken from the list, or 0 when none is owed */
@@ -141,10 +152,11 @@ u64 own_land_bytes(void);
 /* own.c's state. Other files read only nown (own_any) */
 typedef struct {
     u64 lo, hi;  /* guest bytes */
-    u64 pool;    /* the pool offset of lo */
+    u64 pool;    /* the pool offset of lo; with in_place, lo's address in the view of the buffer */
     void* res;   /* the producer's copy, lo at res_off: NULL for a watch (own_watch) */
     u64 res_off;
     int landing; /* being landed by some thread: the others wait */
+    int in_place; /* a watch over a GPU's buffer (own_watch_in_place) */
 } Own;
 /* The CPU's bytes of a trapped page, where there is no mirror to read them through: its bytes as they were when it was
    first armed with CPU bytes on it (an owner's edge page, or a watch's page). While the page is armed no CPU write can

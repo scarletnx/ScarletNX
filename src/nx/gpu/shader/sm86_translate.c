@@ -110,6 +110,7 @@ typedef struct {
     u32 push, push_ptr; /* a compute dispatch's push constant vec4 (push_component): a task program's first workgroup */
     /* with tex_table: the words' uniform buffer, the samplers' table, and each kind of image's table (table_kind) */
     u32 tex_words, tex_words_ptr, table_samplers;
+    u32 map, map_ptr; /* with pool_map and no device address: the map's storage buffer (map_word) */
     u32 table_kinds, table_kind_key[32], table_kind_var[32], table_kind_sampled[32];
     u32 tex_images[SH_MAXTEX]; /* a table slot's image table, 0 for a slot of its own variable */
     u32 centroid_mask;  /* the inputs decorated Centroid */
@@ -3032,7 +3033,7 @@ static int tex_table_slot(Ctx* c, int i, u32 type, u32 array, u32 shadow, u32 ms
     /* a 1D texture is bound as a 2D one (shader.h) */
     c->tex_images[i] = table_kind(c, type == 0 ? 1 : type, array, shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     if (!c->tex_images[i]) return 0;
-    c->si->tex_table = 1;
+    c->si->tex_table |= 1;
     c->tex[i] = 0;
     return 1;
 }
@@ -3053,6 +3054,86 @@ static u32 record_word(Ctx* c, u32 k) {
         &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, 2)), cu(c, k));
     return uniform_word(c, c->tex_words_ptr, c->tex_words, index);
 }
+/* ---- the pool map (ShCaps.pool_map, shader.h's SH_MAP_*) ---- */
+
+/* word index of the draw's map: by its device address where the program reads global memory by address, else in the
+   storage buffer at the table set's SNX_TABLE_MAP, from the word the per-draw block names. A map holds every index
+   its directories name (map_slots clamps the others to 0), so the reads stay in it */
+static u32 map_word(Ctx* c, u32 index) {
+    if (gbuf_by_address(c)) {
+        const u32 t64 = u64_type(c);
+        u32 base = pair64(c, to_u(c, draw_component(c, SH_DRAW_MAP)), to_u(c, draw_component(c, SH_DRAW_MAP + 1)));
+        u32 at = op2(c, SPV_OP_I_ADD, t64, base, op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, t64, to64(c, index), c64(c, 2)));
+        return spv_emit_load_aligned(&c->e, c->t_u32, spv_emit_address_pointer(&c->e, c->t_u32, at), 4, 0);
+    }
+    if (!c->map) {
+        c->map = spv_emit_readonly_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, g_spirv_translate.table_set,
+                                              SNX_TABLE_MAP, SH_MAP_WINDOW / 16, &c->map_ptr);
+        add_interface(c, c->map);
+    }
+    u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, to_u(c, draw_component(c, SH_DRAW_MAP)), index);
+    return spv_emit_uniform_component(&c->e, c->map_ptr, c->map, c->zero,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, at, cu(c, 2)),
+                                      spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, at, cu(c, 3)), c->t_u32);
+}
+/* the 16-bit field half (0 low, 1 high) of map word index */
+static u32 map_half(Ctx* c, u32 index, u32 half) {
+    return ubits(c, map_word(c, index), 16u * half, 16);
+}
+/* whether the pool map gives slot's view and sampler: a plain slot, its handle one word of a constant buffer */
+static int map_slot(const Ctx* c, int slot) {
+    const ShTex* t = &c->si->tex[slot];
+    return g_spirv_translate.pool_map && !(t->flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)) && !t->bl2;
+}
+/* slot's word as the draw's texture words hold one (image slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT), from the
+   pool map: the handle the slot's constant buffer word holds, its TIC index (bits 0-19) and its TSC index (20-31),
+   each against its pool's limit, then each index's record through its directory and page. A handle past a limit
+   takes the null slots (SH_MAP_NULL), and reads index 0, which every map holds */
+static u32 map_slots(Ctx* c, int slot) {
+    const ShTex* t = &c->si->tex[slot];
+    c->si->tex_table |= SH_TEX_TABLE_MAP;
+    u32 handle = cbuf_load(c, t->bl_cbuf, t->cbuf_off * 4, 0);
+    u32 tic = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, handle, cu(c, 0xFFFFF));
+    u32 tsc = ubits(c, handle, 20, 12);
+    const u32 limits = to_u(c, draw_component(c, SH_DRAW_MAP_LIMITS)),
+              header = to_u(c, draw_component(c, SH_DRAW_MAP_HEADER));
+    u32 ok = op2(c, SPV_OP_LOGICAL_AND, c->t_bool,
+                 op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tic,
+                     spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, limits, cu(c, 0xFFFFF))),
+                 op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, tsc, ubits(c, limits, 20, 12)));
+    tic = u_select(c, ok, tic, c->zero);
+    tsc = u_select(c, ok, tsc, c->zero);
+    const u32 ms = (t->flags & 2) != 0, type = t->type == 0 ? 1u : t->type;
+    const u32 cls = ms ? (t->array ? SH_MAP_CLASS_MS_ARRAY : SH_MAP_CLASS_MS)
+                    : type == 2 ? SH_MAP_CLASS_3D
+                    : type == 3 ? (t->array ? SH_MAP_CLASS_CUBE_ARRAY : SH_MAP_CLASS_CUBE)
+                                : (t->array ? SH_MAP_CLASS_2D_ARRAY : SH_MAP_CLASS_2D);
+    u32 page = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                             map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, header, cu(c, SH_MAP_TIC_DIR))),
+                                             spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, tic,
+                                                             cu(c, SH_MAP_PAGE_SHIFT))));
+    u32 record = spv_emit_iadd_u32(
+        &c->e, c->t_u32, page,
+        op2(c, SPV_OP_I_MUL, c->t_u32,
+                        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, tic, cu(c, (1u << SH_MAP_PAGE_SHIFT) - 1)),
+                        cu(c, SH_MAP_TIC_WORDS)));
+    u32 image = map_half(c, spv_emit_iadd_u32(&c->e, c->t_u32, record, cu(c, cls / 2)), cls & 1);
+    u32 tpage = map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                              map_word(c, spv_emit_iadd_u32(&c->e, c->t_u32, header, cu(c, SH_MAP_TSC_DIR))),
+                                              spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, tsc,
+                                                              cu(c, SH_MAP_PAGE_SHIFT))));
+    u32 srecord = spv_emit_iadd_u32(
+        &c->e, c->t_u32, tpage,
+        op2(c, SPV_OP_I_MUL, c->t_u32,
+                        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, tsc, cu(c, (1u << SH_MAP_PAGE_SHIFT) - 1)),
+                        cu(c, SH_MAP_TSC_WORDS)));
+    u32 sampler = map_half(c, srecord, t->shadow ? 1u : 0u);
+    image = u_select(c, ok, image, cu(c, SH_MAP_NULL));
+    sampler = u_select(c, ok, sampler, cu(c, SH_MAP_NULL));
+    return spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, image,
+                           spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, sampler,
+                                           cu(c, SNX_TABLE_SAMPLER_SHIFT)));
+}
 static void table_element(Ctx* c, int slot) {
     if (!c->tex_images[slot]) return;
     if (!c->table_samplers) {
@@ -3066,6 +3147,13 @@ static void table_element(Ctx* c, int slot) {
                    : g_spirv_translate.gbuf_address         ? SH_RECORD_GBUF
                                                             : 0;
     u32 word = record_word(c, at + (u32)slot);
+    /* a plain slot reads the map, but where the draw's bit of the slot (SH_DRAW_MAP_WORDS_VS or _FS) says it takes
+       its texture word */
+    if (map_slot(c, slot)) {
+        const u32 masks = c->stage == ST_VS ? SH_DRAW_MAP_WORDS_VS : SH_DRAW_MAP_WORDS_FS;
+        u32 own = ubits(c, to_u(c, draw_component(c, masks + (u32)slot / 32)), (u32)slot % 32, 1);
+        word = u_select(c, spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, own, c->zero), map_slots(c, slot), word);
+    }
     /* the image index within the table's array whatever the word holds: an index past an array is undefined, where
        robustness doesn't reach */
     u32 image = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, word, cu(c, SNX_TABLE_IMAGES - 1));
@@ -4852,6 +4940,16 @@ static u32 system_value(Ctx* c, u32 sr) {
                which one game's vertex programs scale w before they test the position against it (FMUL by the
                register, then FSETP, then PSETP). The runtime sets no w scaling, which is a factor of 1 */
             return cu(c, 0x3f800000u);
+        case 0x13:
+            /* SR_THREAD_KILL: all ones in a helper lane, which is also a lane that KILL demoted (as the Maxwell
+               translator gives it). Five fragment programs of one game read it, and their draws were skipped */
+            if (c->stage != ST_FS) {
+                fail(c, "S2R system register 0x13 outside a fragment program");
+                return c->zero;
+            }
+            spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION); /* IsHelperInvocationEXT */
+            return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, spv_emit_is_helper(&c->e, c->t_bool),
+                                    cu(c, 0xffffffffu), c->zero);
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }

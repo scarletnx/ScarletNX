@@ -427,6 +427,8 @@ typedef struct {
 int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s);
 int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img);
 int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes);
+/* pages first to first + n of such an image all have memory */
+int vk_image_resident_has(VkImage img, u32 first, u32 n);
 /* the bytes such a bind allocates: what the budget must have room for before it */
 u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
@@ -530,6 +532,8 @@ int vk_uma_storage_copied(void); /* read-only storage is copied as vertices are 
 int vk_uma_through_dmabuf(void);  /* guest memory reaches the GPU through dma-bufs (uma.c) */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
+/* tests: the imports the table takes, n of them, or 0 for its own number */
+void vk_uma_table_max(u32 n);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
@@ -625,6 +629,11 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 int vk_uma_held(u64 cpu, u64 len); /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+/* dma-buf regions (udmabuf) hold all of guest memory [cpu, cpu + len) now, one or more of them side by side, and no
+   placed chunk is there (vk_lock held). The driver pinned their pages when it imported them and leaves the CPU's
+   page table alone, so a trap of the CPU's mapping there leaves the GPU's pages as they are. An import of guest
+   memory where it is (a host pointer) is not one: amdgpu takes its pages again at each submission */
+int vk_uma_region_held(u64 cpu, u64 len);
 /* why no region holds guest memory [cpu, cpu + len), for the log's counts: unified memory is off, or a region holds it,
    or the windows it touches meet placed memory, have a trapped page, have pages not mapped or that can't move, are
    over the cap of a region, or are a span the driver refused; else nothing stops a region there, which no read in
@@ -1267,8 +1276,13 @@ typedef struct Surf {
     VkImageLayout layout;   /* the whole image is kept in one layout */
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
+    /* the barriers at the writer (writer_barriers, surface.c vk_surf_written_flush): its place in the written list plus
+       one (0 for none), and whether a batch of that list made its last write visible to every later read */
+    u32 written_at;
+    u8 written_batched;
     u64 last_used;
     u32 wgen;    /* render targets: bumped when drawn to */
+    u32 takes;   /* textures: the drawn targets copied into it (texture.c mark_copied), for tex_events_shadow */
     SnxVkRedraw redraw; /* render targets: drawn every frame, which async_pipelines asks (redraw.h) */
     u64 wseq;    /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
@@ -1485,6 +1499,26 @@ int vk_rt_pages_hit(u64 gva, u64 size);
 VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
+/* The barriers at the writer (docs/dev/draw-cost.md, item 7, step 4; the setting writer_barriers, with unified image
+   layouts). A surface that a pass, a copy, an upload or a storage write of the frame's command buffer changes goes on
+   the written list. A rendering pass's start (render.c render_begin) calls vk_surf_written_flush first, outside any
+   pass: one barrier call makes the last write of each surface on the list visible to every later read, but for the
+   pass's own attachments (rt, n, zt), which stay on the list. The surfaces' recorded state does not change, so the
+   reader barriers of vk_surf_use still run: this step adds barriers and counts what they cover */
+void vk_surf_written_flush(VkCommandBuffer cb, Surf* const* rt, u32 n, const Surf* zt);
+typedef struct {
+    u64 batches, batched; /* the batch calls made, and the surfaces in them */
+    u64 readers;          /* vk_surf_use's reader barriers after a write, in GENERAL */
+    u64 covered;          /* of those, the surfaces that a batch covered, or that the next pass's batch covers */
+    u64 compute;          /* of those, readers in compute alone, which no pass's batch comes before */
+    u64 full;             /* writes not listed: the list was full */
+    u64 dropped;          /* reader barriers a draw left out, which a batch covers (vk_surf_read_covered) */
+} VkWriterCounts;
+void vk_surf_writer_counts(VkWriterCounts* c);
+/* With the pool map: whether a draw's sample of s needs no barrier of its own, as a batch at the writer covers s's
+   last write, one recorded already or the pass's that the draw begins; s's stages then hold the sample's, which a
+   later write waits for. 0 where the draw makes the barrier itself (vk_surf_use) */
+int vk_surf_read_covered(Surf* s);
 /* vk_surf_use's barriers between these two in one barrier call, at the end: for uses of different surfaces that
    nothing is recorded between (a pass's targets, a copy's two surfaces) */
 void vk_surf_batch_begin(void);
@@ -1565,18 +1599,29 @@ void vk_rt_publish_drawn(void);
 /* own.c's resolve: the CPU touched watched guest memory [cpu, cpu + size): the targets pending there are published
    over it (vk_lock held, by a thread that did not hold it before) */
 void vk_rt_watch_hit(u64 cpu, u64 size);
+/* the targets pending over guest memory [cpu, cpu + size) published, with no CPU access: the pages under their watches
+   move (uma.c's imp_let_go), and a copy of a trapped page would fault. Not a CPU read for cpu_asked: they are watched
+   again at later releases. vk_lock held */
+void vk_rt_publish_over(u64 cpu, u64 size);
 /* the outermost vk_unlock's, with the lock still held: the targets pending over the watched bytes that this hold read
    with no publish (own.c owes them, own_owed_take) are watched again (rt_watch), so the CPU's next access publishes
    them. It copies nothing, and does not count as the CPU asking for them (cpu_asked) */
 void vk_rt_watch_owed(void);
 /* the watches that releases armed over targets, the CPU accesses that published them, and the targets that releases
    published at once because the CPU read them lately: the statistics, and the tests */
+/* why a render target was published (vk_surf_publish): a release's, as the CPU read it lately (cpu_asked) or as an
+   import holds its memory (rt_watch); the CPU's access to a watched page (vk_rt_watch_hit); a release's with no traps
+   (a linear target, vk_rt_publish_drawn); any other caller (a dispatch's storage image, a write-back's, an overlay's) */
+enum { VK_PUB_CPU_LATELY, VK_PUB_IMPORT, VK_PUB_CPU_ACCESS, VK_PUB_NO_TRAPS, VK_PUB_OTHER, VK_PUB_N };
 typedef struct {
     u64 arms, hits, publishes;
+    /* since the last report: publishes that ran by why, with their bytes and the CPU's time in them */
+    u64 by[VK_PUB_N], bytes[VK_PUB_N], ns[VK_PUB_N];
 } VkRtWatchStats;
 extern VkRtWatchStats g_vk_rt_watch;
 void vk_surf_wrote(Surf* s); /* its image changed: its copies are out of date (wgen), and it is the newest (wseq) */
 u32 vk_surf_gen(void);       /* a write generation no image has held yet */
+u32 vk_surf_gen_now(void);   /* the last write generation vk_surf_gen gave */
 /* vk_surf_flush in two halves, the GPU not waited for: the bytes a write-back of s copies (0 for none), its copy
    recorded into buf at at (host-readable once the submit being recorded is done), and its landing from those bytes p,
    as of the write generation the copy was recorded at */
@@ -1597,12 +1642,14 @@ void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size);
 void vk_tex_note_writeback(Surf* s);
 /* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
-   byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
-   is that surface, so its image keeps them without loading the whole texture again (the console's copy changes
-   those bytes only). A texture qualifies when no engine wrote its memory since its last check (what it lacks would
-   be lost), and it is 2D, of one sample, and loaded as memory holds it. Into hit (max of them), for vk_tex_dma_seen
-   once the copy's write is published; how many */
-int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at,
+   byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture at tex whose
+   level `level` of layer `layer` is that surface, so its image keeps them without loading those pieces again (the
+   console's copy changes those bytes only). The copy writes the guest bytes [lo, lo + span). A texture qualifies when
+   no engine wrote its memory since its last check (what it lacks would be lost), it is 2D, of one sample, and loaded
+   as memory holds it, and its image has memory where the rows go. Into hit (max of them), for vk_tex_dma_seen once
+   the copy's write is published; how many */
+int vk_tex_dma_rows(u64 tex, u32 level, u32 layer, u64 gva, u64 lo, u64 span, u32 wb, u32 bh, u32 ox, u32 oy,
+                    u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at,
                     u32 rows_pitch, Surf** hit, int max);
 void vk_tex_dma_seen(Surf** hit, int n); /* their memory as of now is the copy's, which they hold */
 void vk_rt_drawn(Surf* s);               /* a render target was drawn to (gpu/vk/render.c) */
@@ -1611,6 +1658,8 @@ int vk_rt_drawn_fresh(Surf* s);          /* no guest-memory write has replaced t
 /* the same for its bytes [at, at + size) alone (a texture's level in one of its layers that the target gives): a
    write past them, in the rows that a taller block height puts after the level, leaves the level as it was */
 int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size);
+/* the counts of item 7b's events in shadow (render.c, tex_events_shadow), with the render statistics */
+void vk_tex_events_log(u64 presents);
 /* a storage image surface published after a dispatch wrote it (compute.c): its texels are guest memory's now, and a
    texture over that memory takes them on the GPU as it takes a drawn target's (texture.c tex_take_drawn) */
 void vk_surf_stored(Surf* s);
@@ -2389,6 +2438,13 @@ int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const
                    u32* words);
 /* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
 void vk_table_forget_view(VkImageView view);
+/* The pool map's use of the table (ShCaps.pool_map): image slot 0 and sampler slot 0 kept for the null texture and
+   the default sampler (vk_table_reserve_null, at the table's start, before any slot is given), written by
+   vk_table_null once; and a slot a draw took through the map, which keeps it from going back to the free stack while
+   frames in flight read it (vk_table_touch) */
+void vk_table_reserve_null(void);
+int vk_table_null(VkImageView view, VkSampler sampler);
+void vk_table_touch(u32 image_slot);
 /* An image slot a program declares whose header is empty (word 0 zero: no format, nothing bound there): a 1x1 storage
    image of zeros, its format by the slot's kind (ShaderInfo.img[].kind), viewed as type (2D, 2D array or 3D) in
    *view. The caller makes it ready for its stage (vk_surf_use, layout GENERAL) and writes nothing of it back. NULL
@@ -2489,6 +2545,9 @@ void vk_tex_later_forget(Surf* s);
    encoder as ones held as BC7 do (Liz's choice, of keeping every Exact texture's blocks or of leaving them RGBA8); the
    others stay Exact. How many go, and the bytes of their RGBA8 images */
 void vk_tex_later_exact(u32* textures, u64* bytes);
+/* the bytes of the ASTC textures held as BC7 images now (astc_mode's Auto: what it needs room for to turn Exact
+   again, snx_astc_auto_room). A walk over the textures, under vk_lock */
+u64 vk_tex_astc_bc7_bytes(void);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
    given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,
    the bytes their RGBA8 images take, textures held Exact for their writes */
@@ -2852,6 +2911,10 @@ int vk_written_quick(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* the generations by guest address (addr_gens.h) of the pages under [host, host + len) into *gen: 1, or 0 where they
+   tell nothing (no host pointer, or a range too wide). They move when the tracking stamps one of those pages written,
+   which it does when it takes a scan in (vk_ww_take): take the range in first */
+int vk_ww_gen(const u8* host, u64 len, u32* gen);
 /* vk_written_since without its answer: the scans and changes over [host, host + len) taken in, so the stamps and the
    dirty bits of its pages are up to date. 0, or -1 where vk_written_since is -1. Under vk_lock */
 int vk_ww_take(const u8* host, u64 len);
@@ -2883,6 +2946,12 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+/* own.c's open hook: the pages of a watch in place open by go(ctx), with no report as written but of those whose bytes
+   changed as they opened (bytes: their place in their buffer's view) */
+void vk_ww_open(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ctx);
+/* the host pages [lo, hi) are trapped in place next, where no scan looks: what the CPU wrote there so far is noted as a
+   scan finds it. Under vk_lock */
+void vk_ww_watching(u64 lo, u64 hi);
 void vk_ww_stats(u32 presents); /* the stats: the write tracking's epochs and scans since the last, a line */
 /* tests: the landed pages' list sorted as a scan's take sorts it, its length, or ~0u when it isn't one entry a page in
    the pages' order; and the hash kept for the host page at cpu (0 for none) */
@@ -3464,6 +3533,34 @@ enum {
     VK_FS_UNKEPT_TEXTURES, /* not kept: a slot's texture isn't one the texture memo keeps */
     VK_FS_N
 };
+/* The measure of bindless textures (docs/dev/draw-cost.md, item 7). A stage's texture slots by where the program
+   takes the handle (render.c stage_set_): one constant buffer word, two words ORed (bl2), an indexed table, guest
+   memory (an Ounce's), or one word for a raw load or a multisample fetch (other). Then the slots that a pool map
+   would leave to each draw's own path: a target the draw renders to, sampled in a feedback loop, through a copy, or as
+   its read-only depth; and the fragment key's color depth compares, min or max reductions in the program and query
+   hints (fs_key). Then the TIC indices that the draws named, each counted once a present */
+enum {
+    VK_SLOT_PLAIN,
+    VK_SLOT_BL2,
+    VK_SLOT_INDEXED,
+    VK_SLOT_MEMORY,
+    VK_SLOT_OTHER,
+    VK_SLOT_FEEDBACK,
+    VK_SLOT_TARGET_COPY,
+    VK_SLOT_DEPTH_RO,
+    VK_SLOT_DC_COLOR,
+    VK_SLOT_MINMAX,
+    VK_SLOT_QUERY,
+    VK_SLOT_TICS,
+    VK_SLOT_N
+};
+/* The headers that the texture memo checked again after a write tracking epoch (render.c tex_memo_unwritten): those
+   on a page that the CPU wrote, and of those, the ones whose bytes changed, by pool */
+enum { VK_POOL_TIC_WRITTEN, VK_POOL_TSC_WRITTEN, VK_POOL_TIC_CHANGED, VK_POOL_TSC_CHANGED, VK_POOL_N };
+/* The texture memo's checks after a write tracking epoch (tex_memo_unwritten) and after a result added anywhere
+   (tex_memo_unpended): kept by the generations of the addresses the memo read (addr_gens.h), with no other check, or
+   checked as before (the generations moved, were not taken yet, or tell nothing) */
+enum { VK_GENS_HEADERS_KEPT, VK_GENS_HEADERS_CHECKED, VK_GENS_RESULTS_KEPT, VK_GENS_RESULTS_CHECKED, VK_GENS_N };
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
@@ -3479,6 +3576,7 @@ typedef struct {
     u64 epochs;  /* write tracking epochs with draws */
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
+    u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end

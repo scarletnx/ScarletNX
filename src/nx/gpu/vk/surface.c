@@ -7,6 +7,7 @@
    come back. Textures and render targets are each in a list from the least recently used to the most, which the
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
+#include "nx/gpu/vk/addr_gens.h"
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/rt_bands.h"
 #include "nx/gpu/vk/rt_cover.h"
@@ -26,6 +27,7 @@
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/tex_report.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/pool_map.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
@@ -252,6 +254,8 @@ u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
 static void surf_changed(u64 gva) {
     atomic_fetch_add_explicit(&g_vk_surf_epoch, 1, memory_order_relaxed);
     g_surf_bucket_epoch[hkey(gva)]++;
+    /* item 7b's events: a surface made or freed changes no texel, its draws do (vk_rt_drawn), so its first byte alone */
+    if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
@@ -325,6 +329,109 @@ static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags
                                     .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &image};
     rec_CmdPipelineBarrier2(cb, &dependency);
 }
+/* the accesses that write an image */
+#define SURF_WRITES                                                                                                    \
+    (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |                                         \
+     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
+/* The written list of the barriers at the writer (vk_surf_written_flush): each surface with the command buffer its
+   write was recorded in. Under vk_lock, as the surfaces' recorded state is */
+#define WRITTEN_MAX 4096
+static struct {
+    Surf* s[WRITTEN_MAX];
+    VkCommandBuffer cb[WRITTEN_MAX];
+    u32 n;
+    VkWriterCounts c;
+} g_written;
+/* on with writer_barriers, and with the pool map, whose draws drop the reader barriers a batch covers */
+static int written_on(void) {
+    return (g_settings.writer_barriers || g_spirv_translate.pool_map) && g_vk.has_unified_layouts;
+}
+/* whether s is on the list: its place there holds it. A surface made as a copy of another (a crop, a snapshot) starts
+   with the other's place, which holds the other */
+static int written_listed(const Surf* s) {
+    return s->written_at && s->written_at <= g_written.n && g_written.s[s->written_at - 1] == s;
+}
+/* entry i leaves the list: the last one takes its place */
+static void written_drop_at(u32 i) {
+    g_written.s[i]->written_at = 0;
+    g_written.n--;
+    if (i < g_written.n) {
+        g_written.s[i] = g_written.s[g_written.n];
+        g_written.cb[i] = g_written.cb[g_written.n];
+        g_written.s[i]->written_at = i + 1;
+    }
+}
+static void written_drop(Surf* s) {
+    if (written_listed(s)) written_drop_at(s->written_at - 1);
+}
+/* s written in cb: no batch covers this write yet, and s goes on the list once */
+static void written_note(VkCommandBuffer cb, Surf* s) {
+    s->written_batched = 0;
+    if (!written_on() || written_listed(s)) return;
+    if (g_written.n == WRITTEN_MAX) {
+        g_written.c.full++;
+        return;
+    }
+    g_written.s[g_written.n] = s;
+    g_written.cb[g_written.n] = cb;
+    s->written_at = ++g_written.n;
+}
+void vk_surf_written_flush(VkCommandBuffer cb, Surf* const* rt, u32 n, const Surf* zt) {
+    if (!written_on() || !g_written.n) return;
+    surf_batch_flush(); /* the barriers before go first */
+    VkImageMemoryBarrier2 b[64];
+    u32 nb = 0;
+    for (u32 i = 0; i < g_written.n;) {
+        Surf* s = g_written.s[i];
+        int own = s == zt;
+        for (u32 k = 0; k < n && !own; k++) own = rt[k] == s;
+        if (own) { /* the pass writes it again: on the list for the next pass's batch */
+            i++;
+            continue;
+        }
+        /* a write no reader barrier has followed yet, in GENERAL and in this command buffer: GENERAL to GENERAL is
+           no layout transition, so no sample locations either */
+        if ((s->access & SURF_WRITES) && s->layout == VK_IMAGE_LAYOUT_GENERAL && g_written.cb[i] == cb) {
+            b[nb++] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                              .srcStageMask = s->stage,
+                                              .srcAccessMask = s->access,
+                                              .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                              .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                                              .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                              .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                              .image = s->img,
+                                              .subresourceRange = {vk_aspect(&s->f), 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                                   VK_REMAINING_ARRAY_LAYERS}};
+            s->written_batched = 1;
+            g_written.c.batched++;
+        }
+        written_drop_at(i); /* the last one moves into place i */
+        if (nb == sizeof b / sizeof *b || (nb && i >= g_written.n)) {
+            VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = nb,
+                                  .pImageMemoryBarriers = b};
+            rec_CmdPipelineBarrier2(cb, &d);
+            g_written.c.batches++;
+            nb = 0;
+        }
+    }
+    if (nb) {
+        VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = nb,
+                              .pImageMemoryBarriers = b};
+        rec_CmdPipelineBarrier2(cb, &d);
+        g_written.c.batches++;
+    }
+}
+void vk_surf_writer_counts(VkWriterCounts* c) { *c = g_written.c; }
+int vk_surf_read_covered(Surf* s) {
+    if (!written_on() || s->layout != VK_IMAGE_LAYOUT_GENERAL || !(s->access & SURF_WRITES)) return 0;
+    /* batched already, or on the list in this command buffer for the batch of the pass the draw begins */
+    if (!s->written_batched && !(written_listed(s) && g_written.cb[s->written_at - 1] == vk_cmd())) return 0;
+    s->stage |= VK_SAMPLED_STAGES; /* a later write's barrier waits for these reads too */
+    g_written.c.dropped++;
+    return 1;
+}
 void vk_surf_batch_begin(void) { g_surf_batch.on = 1; }
 void vk_surf_batch_end(void) {
     surf_batch_flush();
@@ -335,6 +442,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
+    const int compute_only = stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     /* With unified image layouts each use of the image is in GENERAL. A read then makes the last write visible to
        every later read, in each stage. Later reads of another kind (a sample after a copy read, a copy after a
        sample) then take no barrier, and they do not end the open rendering pass */
@@ -359,11 +467,21 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
+    /* a reader barrier after a write: one a written-list barrier covers, or the next pass's batch would (step 6 of
+       docs/dev/draw-cost.md, item 7, takes these away) */
+    if (written_on() && !writes && s->layout == layout && layout == VK_IMAGE_LAYOUT_GENERAL) {
+        g_written.c.readers++;
+        if (compute_only)
+            g_written.c.compute++;
+        else if (s->written_batched || written_listed(s))
+            g_written.c.covered++;
+    }
     surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
                s->layout, stage, access, layout);
     s->layout = layout;
     s->stage = stage;
     s->access = access;
+    if (writes) written_note(cb, s);
 }
 
 float g_vk_scale = 1.0f;
@@ -607,6 +725,7 @@ static int rt_move(VkCommandBuffer cb, Surf* s, const DevMemWant* want, u64* byt
     s->att = s->att_linear = VK_NULL_HANDLE;
     s->img = img;
     s->mem = mem;
+    vk_pool_map_swapped(s);
     vk_surf_bytes(s, info.size);
     s->layout = copied ? VK_LAYOUT(TRANSFER_DST_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED;
     s->stage = copied ? VK_PIPELINE_STAGE_2_COPY_BIT : 0;
@@ -912,6 +1031,7 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+u32 vk_surf_gen_now(void) { return g_surf_gen; }
 /* What a texture takes from the drawn targets over it (texture.c tex_take_drawn) changes only with the targets in its
    range and their pixels, so a texture that had nothing left to take is passed over while this count hasn't moved. It
    moves when a target enters the list of drawn targets or leaves it, is parked or taken out of parking, and when one
@@ -925,6 +1045,8 @@ static void take_changed(Surf* s) {
     g_take_gen++;
 }
 void vk_surf_wrote(Surf* s) {
+    /* item 7b's events: its pixels changed, by a draw or a copy, blit or pack into it */
+    if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
@@ -2002,7 +2124,7 @@ static u32 publish_gaps(const Surf* s, u64 size, const CpuRuns* newer, u64 (*r)[
     return n ? n : (u32)-1; /* -1: nothing to read, the flush writes it all */
 }
 u64 g_vk_publish_reads_cut, g_vk_publish_bytes_skipped; /* publishes that read only their gaps, and the bytes left */
-int vk_surf_publish(Surf* s) {
+static int surf_publish(Surf* s) {
     SNX_ZONE(z_publish, "vk: surface publish");
     u64 size = flush_bytes(s);
     u32 mem_wgen = s ? s->mem_wgen : 0;
@@ -2138,6 +2260,21 @@ int vk_surf_publish(Surf* s) {
                                    : "span read from memory");
     return 1;
 }
+/* surf_publish counted by why (VkRtWatchStats, vk_lock held): its bytes, and the CPU's time in the outermost one, as
+   a publish publishes the older targets under it first (vk_rt_before_publish_cpu) */
+static int publish_why(Surf* s, int why) {
+    static int depth;
+    const u64 size = s ? flush_bytes(s) : 0, a = depth ? 0 : plat_ns();
+    depth++;
+    const int r = surf_publish(s);
+    depth--;
+    if (!r) return 0;
+    g_vk_rt_watch.by[why]++;
+    g_vk_rt_watch.bytes[why] += size;
+    if (!depth) g_vk_rt_watch.ns[why] += plat_ns() - a;
+    return 1;
+}
+int vk_surf_publish(Surf* s) { return publish_why(s, VK_PUB_OTHER); }
 /* A draw's storage image kept on the GPU until the CPU touches its bytes, where the write-back read all of them on the
    CPU before the draw, and copied the image back after it, to merge the two with what the CPU wrote between. Here
    the span is GPU-owned from the bind on: by the owner a release published there before, or by one made now from
@@ -2489,13 +2626,13 @@ static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey, int* padding) {
     }
     return found;
 }
-static void rt_publish_now(Surf* s);
+static void rt_publish_now(Surf* s, int why);
 /* A target that takes its address from another parks it, which drops its pages from the watch (rt_pages): a CPU write
    there is no access vk_rt_watch_hit sees, and lands over bytes the draw never wrote back, so the target is published
    first, whatever of its pixels memory lacks */
 static void rt_park_publish(u64 gva) {
     Surf* live = vk_rt_find(gva);
-    if (live && flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live);
+    if (live && flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
 }
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume, u32 msaa);
@@ -2801,8 +2938,8 @@ static void linear_drop(Surf* s) {
     drawn_pull(&g_linear, s, &s->in_linear);
     drawn_pull(&g_bl, s, &s->in_bl);
 }
-static void rt_publish_now(Surf* s) {
-    if (!vk_surf_publish(s)) vk_surf_flush(s, NULL);
+static void rt_publish_now(Surf* s, int why) {
+    if (!publish_why(s, why)) vk_surf_flush(s, NULL);
 }
 /* a block linear target s drawn since the last release, its pixels newer than memory: watched, or published */
 static void rt_watch(Surf* s) {
@@ -2822,7 +2959,7 @@ static void rt_watch(Surf* s) {
         if (g_vk_rt_watch.publishes++ < 4)
             LOG("vulkan: the %ux%u render target at %llx (%llu bytes) published at a release: the CPU read it lately\n",
                 s->w, s->h, (unsigned long long)s->gva, (unsigned long long)size);
-        rt_publish_now(s);
+        rt_publish_now(s, VK_PUB_CPU_LATELY);
         return;
     }
     for (u64 off = 0; off < size;) {
@@ -2835,9 +2972,16 @@ static void rt_watch(Surf* s) {
                one own_watch arms nothing. Asked of watches alone, a run under an owner was armed again at each
                release: one game's 864x480 depth target, drawn between its occlusion reports, 1,700 times a present, about
                10 ms of each (31 fps with this, 25 without) */
-            /* memory an import holds (unified memory): the publish copies in place, with no trap */
-            if (vk_own_watch(cpu, n) && vk_uma_held(cpu, n)) {
-                rt_publish_now(s);
+            /* memory an import of guest memory where it is holds (unified memory): the publish copies in place, with
+               no trap. Over dma-buf regions the watch traps the CPU's mapping alone (vk_own_watch), and the CPU's
+               access publishes it in place (own_publish); one that can't be had is published now there too */
+            if (vk_own_watch(cpu, n) && (vk_uma_held(cpu, n) || vk_uma_region_held(cpu, n))) {
+                static u32 said;
+                if (said++ < 8)
+                    LOG("vulkan: the %ux%u render target at %llx (%u layers, format %d, %llu bytes) published at a "
+                        "release: an import holds its memory\n",
+                        s->w, s->h, (unsigned long long)s->gva, s->layers, (int)s->f.vk, (unsigned long long)size);
+                rt_publish_now(s, VK_PUB_IMPORT);
                 return;
             }
             armed = 1;
@@ -2855,7 +2999,7 @@ void vk_rt_publish_drawn(void) {
             if (own_traps())
                 rt_watch(s);
             else
-                rt_publish_now(s);
+                rt_publish_now(s, VK_PUB_NO_TRAPS);
         }
     }
     while (g_bl.n) {
@@ -2864,7 +3008,9 @@ void vk_rt_publish_drawn(void) {
         if (!(s->gva >> 63) && flush_bytes(s)) rt_watch(s); /* pending: drawn since memory last had it */
     }
 }
-void vk_rt_watch_hit(u64 cpu, u64 size) {
+/* the targets pending over guest memory [cpu, cpu + size) published: for a CPU access (vk_rt_watch_hit) when asked,
+   else for a move of the pages under them (vk_rt_publish_over) */
+static void rt_publish_pending(u64 cpu, u64 size, int asked) {
     Surf* local[16];
     RtPendingList pending = {local, 0, 16};
     vk_lock();
@@ -2873,16 +3019,22 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
        written back, and its watch goes as the write-back's own_acquire finds it */
     for (u32 i = 0; i < pending.count; i++) {
         Surf* s = pending.surfaces[i];
+        if (!asked) {
+            rt_publish_now(s, VK_PUB_OTHER);
+            continue;
+        }
         if (g_vk_rt_watch.hits++ < 4)
             LOG("vulkan: the CPU touched guest memory %llx, a page of the %ux%u render target at %llx (%llu bytes), "
                 "watched: published\n",
                 (unsigned long long)cpu, s->w, s->h, (unsigned long long)s->gva, (unsigned long long)rt_bytes(s));
         s->cpu_asked = g_vk_present + 1;
-        rt_publish_now(s);
+        rt_publish_now(s, VK_PUB_CPU_ACCESS);
     }
     if (pending.surfaces != local) free(pending.surfaces);
     vk_unlock();
 }
+void vk_rt_watch_hit(u64 cpu, u64 size) { rt_publish_pending(cpu, size, 1); }
+void vk_rt_publish_over(u64 cpu, u64 size) { rt_publish_pending(cpu, size, 0); }
 void vk_rt_watch_owed(void) {
     u64 cpu, size;
     /* watched again, as a release watches them: no copy and no GPU work, and the CPU's next access publishes them.
@@ -2975,6 +3127,8 @@ static u32 rt_own_runs(const Surf* s, u64 size, u64 run[][2], u32 max) {
     return n;
 }
 void vk_rt_drawn(Surf* s) {
+    /* item 7b's events: what a texture over the target's memory should show changed */
+    if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;
@@ -3060,6 +3214,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
    image being made for it too */
 static void surf_free(Surf* s) {
     const u32 r = s->row;
+    written_drop(s);
     vk_tex_later_forget(s);
     surf_changed(s->gva);
     vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */

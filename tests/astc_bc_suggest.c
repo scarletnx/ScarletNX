@@ -16,7 +16,7 @@ static int trim_then_present(SnxAstcAuto* a, unsigned long long use, unsigned lo
                              unsigned long long mark) {
     const unsigned long long left = use > freed ? use - freed : 0;
     snx_astc_auto_trimmed(a, left, mark);
-    snx_astc_auto_room(a, left, mark);
+    snx_astc_auto_room(a, left, mark, 0);
     return a->bc7;
 }
 
@@ -26,7 +26,7 @@ int main(void) {
     /* Auto starts Exact, and a present never turns Exact to BC7: only a trim does */
     {
         SnxAstcAuto a = {0, 0, 0};
-        assert(!snx_astc_auto_room(&a, 0, 9000 * MB) && !snx_astc_auto_room(&a, 20000 * MB, 9000 * MB));
+        assert(!snx_astc_auto_room(&a, 0, 9000 * MB, 0) && !snx_astc_auto_room(&a, 20000 * MB, 9000 * MB, 0));
         assert(!a.bc7 && !a.band && !a.switches);
         /* the first trim, past a 9000 MB mark, leaves the caches at 8000: BC7, and a band of
            the 1000 MB it left under the mark */
@@ -37,17 +37,26 @@ int main(void) {
         assert(!snx_astc_auto_trimmed(&a, 7600 * MB, 9000 * MB) && a.band == 1400 * MB);
         assert(!snx_astc_auto_trimmed(&a, 9500 * MB, 9000 * MB) && a.band == 1400 * MB && a.bc7);
         /* presents: BC7 stays with the caches past the mark, at it, and with room up to the band itself */
-        assert(!snx_astc_auto_room(&a, 9800 * MB, 9000 * MB) && !snx_astc_auto_room(&a, 9000 * MB, 9000 * MB));
-        assert(!snx_astc_auto_room(&a, 7600 * MB, 9000 * MB) && a.bc7 && a.switches == 1);
+        assert(!snx_astc_auto_room(&a, 9800 * MB, 9000 * MB, 0) && !snx_astc_auto_room(&a, 9000 * MB, 9000 * MB, 0));
+        assert(!snx_astc_auto_room(&a, 7600 * MB, 9000 * MB, 0) && a.bc7 && a.switches == 1);
         /* a byte more room than the band: Exact again */
-        assert(snx_astc_auto_room(&a, 7600 * MB - 1, 9000 * MB) && !a.bc7 && a.switches == 2);
-        assert(!snx_astc_auto_room(&a, 0, 9000 * MB) && a.switches == 2);
+        assert(snx_astc_auto_room(&a, 7600 * MB - 1, 9000 * MB, 0) && !a.bc7 && a.switches == 2);
+        assert(!snx_astc_auto_room(&a, 0, 9000 * MB, 0) && a.switches == 2);
         /* the next trim turns it to BC7 again; the band is the run's, kept */
         assert(snx_astc_auto_trimmed(&a, 8200 * MB, 9000 * MB) && a.bc7 && a.switches == 3 && a.band == 1400 * MB);
         /* the budget moves: a mark of 4500 MB (a budget that fell to 5000) with the caches at 3000 is 1500 MB of room,
            past the band: Exact; the same use under a mark of 9000 is not */
-        assert(!snx_astc_auto_room(&a, 7600 * MB, 9000 * MB));
-        assert(snx_astc_auto_room(&a, 3000 * MB - 1, 4500 * MB) && !a.bc7);
+        assert(!snx_astc_auto_room(&a, 7600 * MB, 9000 * MB, 0));
+        assert(snx_astc_auto_room(&a, 3000 * MB - 1, 4500 * MB, 0) && !a.bc7);
+    }
+    {
+        /* BC7 held textures need room as RGBA8 too: 1000 MB of them would take 3000 MB more, so 2000 MB of room past
+           a band of 1400 keeps BC7, and 3000 MB and a byte turns Exact */
+        SnxAstcAuto a = {0, 0, 0};
+        assert(snx_astc_auto_trimmed(&a, 7600 * MB, 9000 * MB) && a.band == 1400 * MB);
+        assert(!snx_astc_auto_room(&a, 7000 * MB, 9000 * MB, 1000 * MB) && a.bc7 && a.switches == 1);
+        assert(!snx_astc_auto_room(&a, 6000 * MB, 9000 * MB, 1000 * MB) && a.bc7);
+        assert(snx_astc_auto_room(&a, 6000 * MB - 1, 9000 * MB, 1000 * MB) && !a.bc7 && a.switches == 2);
     }
     /* what a trim leaves: the use it counted (an allocation's 300 MB in it) less what it freed; an allocation that
        found no memory left out, as it comes later; never under nothing */
@@ -67,7 +76,7 @@ int main(void) {
         for (freed = 0; freed <= use; freed += 307 * MB) {
             SnxAstcAuto a = {0, 0, 0};
             const unsigned long long left = snx_astc_trim_left(use + 512 * MB, 512 * MB, freed, 1);
-            assert(snx_astc_auto_trimmed(&a, left, 9000 * MB) && !snx_astc_auto_room(&a, left, 9000 * MB));
+            assert(snx_astc_auto_trimmed(&a, left, 9000 * MB) && !snx_astc_auto_room(&a, left, 9000 * MB, 0));
         }
     /* nor does a sawtooth of trims: the caches filling from 7900 MB to past the 9000 MB mark, each trim taking them
        back to 7900 (a trim's own swing), 200 times: one switch. With no band
@@ -76,7 +85,7 @@ int main(void) {
         SnxAstcAuto a = {0, 0, 0}, none = {0, 0, 0};
         for (int i = 0; i < 200; i++) {
             for (use = 7900 * MB; use <= 9000 * MB; use += 100 * MB) {
-                snx_astc_auto_room(&a, use, 9000 * MB);
+                snx_astc_auto_room(&a, use, 9000 * MB, 0);
                 if (none.bc7 && use < 9000 * MB) none.bc7 = 0, none.switches++;
             }
             snx_astc_auto_trimmed(&a, 7900 * MB, 9000 * MB);
@@ -84,7 +93,7 @@ int main(void) {
         }
         assert(a.switches == 1 && a.bc7 && a.band == 1100 * MB && none.switches == 399);
         /* the game frees 2 GB (a scene left behind): more room than any trim left, Exact again */
-        assert(snx_astc_auto_room(&a, 7900 * MB - 2048 * MB, 9000 * MB) && a.switches == 2);
+        assert(snx_astc_auto_room(&a, 7900 * MB - 2048 * MB, 9000 * MB, 0) && a.switches == 2);
     }
     /* Exact never, BC7 always (2 between frames, 3 at load), Auto as its state says; past 3 none of them */
     assert(!snx_astc_bc7(1, 0) && !snx_astc_bc7(1, 1));

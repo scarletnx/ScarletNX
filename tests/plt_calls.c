@@ -106,14 +106,16 @@ enum {
     OTHER = 0x80,
     OWN_ADD = 0x100,
     MAIN_TWO = 0x120,
+    LEAF = 0x140,
     STUB = 0x200, /* the first of four, 16 bytes each: of ext_add, own_add, two and ext_tail */
     EXT_ADD = 0x40,
     SDK_TWO = 0x60,
     EXT_TAIL = 0x80
 };
-/* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two and ends in a branch to
-   ext_tail's, which another function (OTHER, never run) calls too and a symbol names (tail_stub), so that the branch
-   leaves game_main; own_add copies x16 to x22 and adds 0x20 to x0, and its two adds 0x200. ext: the name ext_add
+/* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two, and leaf (a loop of X9 and X10),
+   reads x16 in a loop (so a back end keeps it in a host register) and ends in a branch to ext_tail's, a CBNZ where x23
+   is not zero or a B, which another function (OTHER, never run) calls too and a symbol names (tail_stub), so that the
+   branch leaves game_main; own_add copies x16 to x22 and adds 0x20 to x0, and its two adds 0x200. ext: the name ext_add
    goes by */
 static void main_image(unsigned char* image, const char* ext) {
     const Symbol symbols[6] = {{"game_main", CALLER}, {"own_add", OWN_ADD},    {"two", MAIN_TWO}, {ext, 0},
@@ -127,10 +129,22 @@ static void main_image(unsigned char* image, const char* ext) {
     put32(image, CALLER + 4, 0x94000000 | rel(CALLER + 4, STUB));               /* bl ext_add's stub */
     put32(image, CALLER + 8, 0x94000000 | rel(CALLER + 8, STUB + 16));          /* bl own_add's */
     put32(image, CALLER + 12, 0x94000000 | rel(CALLER + 12, STUB + 32));        /* bl two's */
-    put32(image, CALLER + 16, 0xAA1303FE);                                      /* mov x30, x19 */
-    put32(image, CALLER + 20, 0x14000000 | rel(CALLER + 20, STUB + 48));        /* b ext_tail's */
+    put32(image, CALLER + 16, 0x94000000 | rel(CALLER + 16, LEAF));             /* bl leaf */
+    put32(image, CALLER + 20, 0xAA1303FE);                                      /* mov x30, x19 */
+    put32(image, CALLER + 24, 0xD280004A);                                      /* mov x10, #2 */
+    put32(image, CALLER + 28, 0x8B100209);                                      /* add x9, x16, x16 */
+    put32(image, CALLER + 32, 0xD100054A);                                      /* sub x10, x10, #1 */
+    put32(image, CALLER + 36, 0xB5FFFFCA);                                      /* cbnz x10, -8 */
+    put32(image, CALLER + 40, 0xB5000017 | rel(CALLER + 40, STUB + 48) << 5);   /* cbnz x23, ext_tail's */
+    put32(image, CALLER + 44, 0x14000000 | rel(CALLER + 44, STUB + 48));        /* b ext_tail's */
     put32(image, OTHER, 0x94000000 | rel(OTHER, STUB + 48));                    /* bl ext_tail's */
     put32(image, OTHER + 4, 0xD65F03C0);                                        /* ret */
+    put32(image, LEAF, 0xD2800009);                                             /* mov x9, #0 */
+    put32(image, LEAF + 4, 0xD280006A);                                         /* mov x10, #3 */
+    put32(image, LEAF + 8, 0x8B0A0129);                                         /* add x9, x9, x10 */
+    put32(image, LEAF + 12, 0xF100054A);                                        /* subs x10, x10, #1 */
+    put32(image, LEAF + 16, 0x54FFFFC1);                                        /* b.ne -8 */
+    put32(image, LEAF + 20, 0xD65F03C0);                                        /* ret */
     put32(image, OWN_ADD, 0xAA1003F6);                                          /* mov x22, x16 */
     put32(image, OWN_ADD + 4, 0x91008000), put32(image, OWN_ADD + 8, 0xD65F03C0); /* add x0, x0, #0x20; ret */
     put32(image, MAIN_TWO, 0x91080000), put32(image, MAIN_TWO + 4, 0xD65F03C0); /* add x0, x0, #0x200; ret */
@@ -265,6 +279,7 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
             c.disp[(b + EXT_TAIL - m->code_lo) / 4] = override_add;
         }
         c.x[30] = 0x1000;
+        c.x[23] = step == 1; /* the tail call a CBNZ's */
         missed = 0;
         entry(&c, a + CALLER);
         if (!step)
@@ -370,6 +385,29 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
                         (unsigned long long)c.x[0], (unsigned long long)c.x[30]);
             check(c.pc == a + STUB && !c.x[0] && c.x[30] == a + CALLER + 8 && !missed,
                   "a call of a stub whose code changed leaves for the stub's address");
+        }
+        /* leaf, its own code changed, keeps X9 and X10 in host registers it loads nothing into: entered, it leaves for
+           its address, the state as it was */
+        {
+            GuestFn leaf = NULL;
+            u32 fn = m->nfns;
+            for (i = 0; i < m->nentries; ++i)
+                if (m->entry_addr[i] == a + LEAF) leaf = m->entry_fn[i];
+            for (i = 0; i < m->nfns; ++i)
+                if (m->fn_lo[i] == a + LEAF) fn = i;
+            check(leaf && fn < m->nfns, "leaf is a function of the module");
+            c.x[30] = 0x1000;
+            if (leaf) leaf(&c, a + LEAF);
+            check(c.pc == 0x1000 && c.x[9] == 6 && !c.x[10], "leaf runs");
+            c.x[9] = 0x1122334455667788ull;
+            c.x[10] = 0x99aabbccddeeff00ull;
+            if (leaf && fn < m->nfns) {
+                m->stale[fn] = 1;
+                leaf(&c, a + LEAF);
+                m->stale[fn] = 0;
+                check(c.pc == a + LEAF && c.x[9] == 0x1122334455667788ull && c.x[10] == 0x99aabbccddeeff00ull,
+                      "a function entered after its code changed leaves the state as it was");
+            }
         }
         free(c.disp);
     }

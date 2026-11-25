@@ -135,3 +135,34 @@ static int check_cross_stage_image_alias(void) {
     puts("PASS graphics cross-stage image alias: TES stores, disjoint FS samples, next-draw visibility and padding exact=1");
     return 0;
 }
+/* The barriers at the writer (writer_barriers) over the same case: the evaluation stage's storage writes go on the
+   written list, and the next draw's sample of the image has a reader barrier that a batch covers, or that the next
+   pass's batch covers. The pixels the case checks as without the setting */
+static int check_writer_storage(void) {
+    if (!g_vk.has_unified_layouts) {
+        puts("SKIP barriers at the writer over storage writes: the device has no unified image layouts");
+        return 0;
+    }
+    const int saved = g_settings.writer_barriers;
+    /* SNX_TEST_WRITER_OFF=1: the same commands with the setting off, for the validation layer's messages to compare */
+    const int on = !getenv("SNX_TEST_WRITER_OFF");
+    g_settings.writer_barriers = on;
+    VkWriterCounts c0, c1;
+    vk_surf_writer_counts(&c0);
+    const int failed = check_cross_stage_image_alias();
+    vk_surf_writer_counts(&c1);
+    g_settings.writer_barriers = saved;
+    CHECK(!failed);
+    if (!on) c1.readers = c0.readers + 1, c1.covered = c0.covered + 1;
+    if (c1.readers == c0.readers || c1.covered == c0.covered)
+        fprintf(stderr,
+                "barriers at the writer over storage writes: %llu reader barriers after a write, %llu covered (1 or "
+                "more each expected)\n",
+                (unsigned long long)(c1.readers - c0.readers), (unsigned long long)(c1.covered - c0.covered));
+    CHECK(c1.readers > c0.readers && c1.covered > c0.covered);
+    printf("PASS barriers at the writer over storage writes: %llu reader barriers after a write, %llu covered, %llu "
+           "surfaces batched\n",
+           (unsigned long long)(c1.readers - c0.readers), (unsigned long long)(c1.covered - c0.covered),
+           (unsigned long long)(c1.batched - c0.batched));
+    return 0;
+}

@@ -2003,23 +2003,36 @@ void nvn_CommandBufferBindMultisampleState(CPU* c, u64 cb, u64 st) {
 /* the driver writes 20 or 24 bytes for a polygon state and 8 or 16 for a depth-stencil one, by its contents: the fewest */
 void nvn_CommandBufferBindPolygonState(CPU* c, u64 cb, u64 st) { bind_state(c, cb, 4, st, 4, 20); }
 void nvn_CommandBufferBindDepthStencilState(CPU* c, u64 cb, u64 st) { bind_state(c, cb, 5, st, 8, 8); }
+/* The Switch's driver writes a vertex attribute bind as a header and all 16 attributes, 68 bytes, and a stream bind of
+   n streams in 64 + 4n bytes. The Ounce's driver (API 231) writes only what the game binds, each list padded to an even
+   count of words. An attribute bind is a header, the count and the attributes. A stream bind is a header, the count and
+   the strides, then two words and the divisors up to the last stream that has one */
+static u32 even_words(u32 n) { return n + (n & 1); }
 void nvn_CommandBufferBindVertexAttribState(CPU* c, u64 cb, i32 n, u64 st) {
     NvnPBindVAttr* r;
     if (n < 0 || n > 16) {
         LOG_LIMIT(4, "nvn: nvnCommandBufferBindVertexAttribState of %d attributes\n", n);
         return;
     }
-    r = RECN(c, cb, OP_BIND_VATTR, NvnPBindVAttr, st, n, 68); /* the driver writes all 16 attributes */
+    r = RECN(c, cb, OP_BIND_VATTR, NvnPBindVAttr, st, n,
+             g_nvn.loader.api >= 231u << 16 ? 4 * (2 + even_words((u32)n)) : 68);
     r->count = n;
     memcpy(r->st, GP(st), 4 * (size_t)n);
 }
 void nvn_CommandBufferBindVertexStreamState(CPU* c, u64 cb, i32 n, u64 st) {
     NvnPBindVStream* r;
+    u32 cost = (u32)(64 + 4 * n);
     if (n < 0 || n > 16) {
         LOG_LIMIT(4, "nvn: nvnCommandBufferBindVertexStreamState of %d streams\n", n);
         return;
     }
-    r = RECN(c, cb, OP_BIND_VSTREAM, NvnPBindVStream, st, n, (u32)(64 + 4 * n));
+    if (g_nvn.loader.api >= 231u << 16) {
+        u32 divisors = 0; /* one past the last stream with a divisor */
+        for (i32 i = 0; i < n; i++)
+            if (gr32(st + 8 * (u64)i + offsetof(NvnVertexStream, divisor))) divisors = (u32)i + 1;
+        cost = 4 * (4 + even_words((u32)n) + even_words(divisors));
+    }
+    r = RECN(c, cb, OP_BIND_VSTREAM, NvnPBindVStream, st, n, cost);
     r->count = n;
     memcpy(r->st, GP(st), 8 * (size_t)n);
 }

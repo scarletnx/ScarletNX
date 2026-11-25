@@ -323,7 +323,7 @@ typedef struct {
     u32 cb_window;
     /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
        view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
-    u32 tex_table;
+    u32 tex_table; /* with SH_TEX_TABLE_MAP: its plain slots' view and sampler slots come from the pool map */
     /* the program reads its global buffers by device address (ShCaps.gbuf_address): each slot's address and length
        are words of its record, and no storage buffer descriptor is bound for them */
     u32 gbuf_address;
@@ -509,6 +509,49 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    samplers at binding 1. A vertex or fragment program reads its words, one for each plain texture slot, from a window
    of the staging ring at SNX_VKB_TEXWORDS, the binding only compute programs use otherwise */
 #define SNX_VKB_TEXWORDS        SNX_VKB_FMT
+/* The pool map as a program reads it (ShCaps.pool_map), u32 words, little-endian, by word index from the map's start.
+   A version of the map is a header at word h (SH_DRAW_MAP + 2): word h + SH_MAP_TIC_DIR holds the word index of the
+   TIC directory, word h + SH_MAP_TSC_DIR that of the TSC directory. Entry p of a directory is the word index of page
+   p: the records of indices 256 p to 256 p + 255. A TIC record is SH_MAP_TIC_WORDS words: 16 bits for each view class
+   (SH_MAP_CLASS_*), the view's slot in the texture table's images, two a word, low half first; then a word of flags
+   (SH_MAP_FLAG_*), and words kept for later. A TSC record is SH_MAP_TSC_WORDS words of 16-bit sampler slots: the
+   plain sampler and the depth compare one, then the nearest one of an integer texture and the guest-size one.
+   Image slot 0 and sampler slot 0 (SH_MAP_NULL) are the renderer's null texture and default sampler, which a handle
+   past the pools' limits reads. A directory holds a page for every index to its pool's limit, so a read of index 0
+   is always in the map. Pages, directories and headers are written once and never changed while a draw may read
+   them: a change makes new pages and a new directory and header, and the draws after it name the new header */
+/* ShaderInfo.tex_table's bit of a program that finds the view and sampler slots of its plain texture slots in the pool
+   map, by the handle its constant buffer holds, not in the draw's texture words (a bit of a field the program has,
+   so that ShaderInfo's size, which the shader cache's key holds, stays) */
+#define SH_TEX_TABLE_MAP        2u
+#define SH_MAP_TIC_DIR          0u
+#define SH_MAP_TSC_DIR          1u
+#define SH_MAP_PAGE_SHIFT       8u
+#define SH_MAP_TIC_WORDS        8u
+#define SH_MAP_TSC_WORDS        2u
+#define SH_MAP_NULL             0u
+enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUBE, SH_MAP_CLASS_CUBE_ARRAY,
+       SH_MAP_CLASS_MS, SH_MAP_CLASS_MS_ARRAY, SH_MAP_CLASSES };
+#define SH_MAP_FLAGS_WORD       4u      /* the record's word of flags */
+#define SH_MAP_FLAG_INT         1u      /* the format's numbers are integers */
+#define SH_MAP_FLAG_SINT        2u      /* signed ones */
+#define SH_MAP_FLAG_UNNORMALIZED 4u     /* the header takes coordinates in texels */
+#define SH_MAP_FLAG_SCALED      8u      /* a target at the resolution scale */
+/* Where the map is: the per-draw block's words SH_DRAW_MAP on (after the push constants' SNX_DRAW_WORDS, so a draw
+   that reads the map stages SH_DRAW_BYTES_MAP bytes): the map's device address, low and high, where the program reads
+   its global memory by address (ShCaps.gbuf_address), else the word index of the map's first word in the storage
+   buffer at the table set's binding SNX_TABLE_MAP (the high word 0); the word index of the version's header; the TIC
+   limit (the pool's last index, bits 0-19) and the TSC limit (bits 20-31); then for the vertex stage and for the
+   fragment stage the 64 bits (two words, low first) of the plain slots that take the draw's texture words, not the
+   map: those whose record the draw could not use */
+#define SH_DRAW_MAP             SNX_DRAW_WORDS
+#define SH_DRAW_MAP_HEADER      (SH_DRAW_MAP + 2u)
+#define SH_DRAW_MAP_LIMITS      (SH_DRAW_MAP + 3u)
+#define SH_DRAW_MAP_WORDS_VS    (SH_DRAW_MAP + 4u)
+#define SH_DRAW_MAP_WORDS_FS    (SH_DRAW_MAP + 6u)
+#define SH_DRAW_BYTES_MAP       ((SH_DRAW_MAP + 8u) * 4u)
+#define SNX_TABLE_MAP           2u
+#define SH_MAP_WINDOW           (16u << 20) /* the bytes of the storage buffer the program declares */
 #define SNX_TABLE_IMAGES        65536u
 #define SNX_TABLE_SAMPLERS      4096u
 #define SNX_TABLE_SAMPLER_SHIFT 20
@@ -553,6 +596,9 @@ typedef struct {
        table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
     unsigned tex_table : 1;
     u32 table_set;
+    /* with tex_table, an SM86 vertex or fragment program's plain texture slots (a handle in one word of a constant
+       buffer) take their view and sampler slots from the pool map (SH_MAP_*): docs/dev/draw-cost.md, item 7 */
+    unsigned pool_map : 1;
     /* with tex_table, an SM86 vertex or fragment program reads its global memory by device address: each slot's
        address and length are words of the draw's record (SH_RECORD_GBUF), not a storage buffer descriptor */
     unsigned gbuf_address : 1;

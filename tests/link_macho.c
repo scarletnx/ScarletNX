@@ -4,15 +4,25 @@
    in order, __LINKEDIT last; the rebases inside __DATA, onto addresses in the image; the export trie finding the
    entry in __text; the code's ADRP and its low 12 bits onto the symbols they name; the ad hoc signature last, with
    each 4 KiB page's SHA-256 as OpenSSL computes it. A dump of the output is written to argv[3] for llvm-objdump
-   --macho. Then objects the linker refuses, each with words of the reason it must give.
-   Usage: link_macho part1.o part2.o out.dylib [refused.o reason]... */
+   --macho. The same two parts as AArch64 ELF objects, and one of each, give dylibs that check the same: what the
+   native back ends write, linked beside what LLVM does. Each dylib's code is run: as dyld loads it on Apple silicon,
+   else under Unicorn, the image at an address of its own with its rebases applied. Then objects the linker refuses,
+   each with words of the reason it must give.
+   Usage: link_macho part1.o part2.o out.dylib elf1.o elf2.o elf_weak.o [refused.o reason]... */
+#include "common/cpu/recompiler/llvm/elf_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
+#ifdef SNX_TEST_UNICORN
+#include "support/host_unicorn.h"
+#endif
 #include <assert.h>
 #include <openssl/evp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <dlfcn.h>
+#endif
 
 static uint32_t rd32(const unsigned char* p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -88,7 +98,7 @@ static int refused(const SnxLinkInput* inputs, size_t count, const char* reason)
     SnxLinkOutput out;
     const char* exports[] = {"test_entry"};
     char error[512];
-    if (!snx_link(inputs, count, exports, 1, "test.dylib", &out, error, sizeof(error))) {
+    if (!snx_link_macho(inputs, count, exports, 1, "test.dylib", &out, error, sizeof(error))) {
         fprintf(stderr, "%s: linked, where it should fail with %s\n", inputs[0].name, reason);
         free(out.data);
         return 1;
@@ -119,6 +129,91 @@ static unsigned char* retyped(const SnxLinkInput* object, const char* name, unsi
     assert(!"no such symbol");
     return copy;
 }
+
+/* the linker's ELF side (elf_object.c) is not on Windows, whose objects are COFF */
+#if !defined(_WIN32)
+/* a copy of an ELF object, which the caller frees, with pad bytes of code before its own: its code's symbols moved, and
+   no relocation (the part it is made of has none in its code) */
+static unsigned char* stretched(const SnxLinkInput* object, uint64_t pad, size_t* size) {
+    Elf64_Ehdr eh;
+    unsigned char* copy;
+    size_t at = (object->size + 15) & ~(size_t)15, k, j, text = 0, length = 0;
+    Elf64_Shdr* sh;
+    memcpy(&eh, object->data, sizeof(eh));
+    for (k = 1; k < eh.e_shnum; ++k) {
+        Elf64_Shdr h;
+        memcpy(&h, object->data + eh.e_shoff + k * sizeof(h), sizeof(h));
+        if (h.sh_type == SHT_PROGBITS && (h.sh_flags & SHF_EXECINSTR)) text = k, length = h.sh_size;
+    }
+    assert(text);
+    *size = at + pad + length;
+    copy = (unsigned char*)calloc(1, *size);
+    assert(copy);
+    memcpy(copy, object->data, object->size);
+    sh = (Elf64_Shdr*)(void*)(copy + eh.e_shoff);
+    memcpy(copy + at + pad, object->data + sh[text].sh_offset, length);
+    sh[text].sh_offset = at;
+    sh[text].sh_size = pad + length;
+    for (k = 1; k < eh.e_shnum; ++k) {
+        if (sh[k].sh_type == SHT_RELA) assert(sh[k].sh_info != text);
+        if (sh[k].sh_type != SHT_SYMTAB) continue;
+        Elf64_Sym* y = (Elf64_Sym*)(void*)(copy + sh[k].sh_offset);
+        for (j = 1; j < sh[k].sh_size / sizeof(*y); ++j)
+            if (y[j].st_shndx == text && ELF64_ST_TYPE(y[j].st_info) != STT_SECTION) y[j].st_value += pad;
+    }
+    return copy;
+}
+
+/* an ELF object's malformed copies the linker refuses: 1 for each it does not refuse so */
+static int malformed(const SnxLinkInput* object, const SnxLinkInput* other, const char* name) {
+    enum { COMMON, REL, NO_SYMBOL, ALIGNMENT, OUTSIDE, MISALIGNED, UNSUPPORTED, INDEX, CASES };
+    static const char* const reasons[CASES] = {"common symbol _",
+                                               "REL relocations in .",
+                                               "a relocation of no symbol",
+                                               "alignment is not a power of two",
+                                               "relocation outside section",
+                                               "relocation to a misaligned address",
+                                               "unsupported relocation type 999",
+                                               "bad symbol index"};
+    int failed = 0, c;
+    for (c = 0; c < CASES; ++c) {
+        SnxLinkInput bad = *object;
+        unsigned char* copy = (unsigned char*)malloc(object->size);
+        Elf64_Ehdr eh;
+        Elf64_Shdr* sh;
+        size_t k, j, changed = 0;
+        assert(copy);
+        memcpy(copy, object->data, object->size);
+        memcpy(&eh, copy, sizeof(eh));
+        sh = (Elf64_Shdr*)(void*)(copy + eh.e_shoff);
+        for (k = 1; k < eh.e_shnum && !changed; ++k) {
+            if (c == COMMON && sh[k].sh_type == SHT_SYMTAB) {
+                Elf64_Sym* y = (Elf64_Sym*)(void*)(copy + sh[k].sh_offset);
+                for (j = 1; j < sh[k].sh_size / sizeof(*y) && !changed; ++j)
+                    if (!strcmp((char*)copy + sh[sh[k].sh_link].sh_offset + y[j].st_name, name))
+                        y[j].st_shndx = SHN_COMMON, changed = 1;
+            } else if (c != COMMON && sh[k].sh_type == SHT_RELA && (sh[sh[k].sh_info].sh_flags & SHF_EXECINSTR)) {
+                Elf64_Rela* r = (Elf64_Rela*)(void*)(copy + sh[k].sh_offset);
+                if (c == REL) sh[k].sh_type = SHT_REL;
+                if (c == NO_SYMBOL) r[0].r_info &= 0xFFFFFFFFu;
+                if (c == ALIGNMENT) sh[sh[k].sh_info].sh_addralign = 3;
+                if (c == OUTSIDE) r[0].r_offset = sh[sh[k].sh_info].sh_size;
+                if (c == UNSUPPORTED) r[0].r_info = (r[0].r_info & ~(uint64_t)0xFFFFFFFFu) | 999;
+                if (c == INDEX) r[0].r_info = (r[0].r_info & 0xFFFFFFFFu) | (uint64_t)0xFFFFFF << 32;
+                for (j = 0; c == MISALIGNED && j < sh[k].sh_size / sizeof(*r); ++j)
+                    if ((r[j].r_info & 0xFFFFFFFFu) == SNX_A64_LDST64_ABS_LO12_NC) r[j].r_addend += 1;
+                changed = 1;
+            }
+        }
+        assert(changed);
+        bad.data = copy;
+        const SnxLinkInput both[2] = {bad, *other};
+        failed |= refused(both, 2, reasons[c]);
+        free(copy);
+    }
+    return failed;
+}
+#endif
 
 /* name's address in a symbol table, or 0 */
 static uint64_t symbol_named(const unsigned char* symbols, uint32_t count, const char* strings, const char* name) {
@@ -186,59 +281,85 @@ static unsigned check_pages(const unsigned char* o, const unsigned char* d, uint
     return checked;
 }
 
-int main(int argc, char** argv) {
-    SnxLinkInput inputs[2];
+/* what test_entry gives: PART 1's sum, 'w' + 2 * 3 + 5 * 3 + 10 + 2 (missing is not there) + 3 + 2 */
+#define EXPECTED 157u
+
+/* 0 when the dylib's code gives what it should, run from entry: as dyld loads the file at path on Apple silicon,
+   elsewhere under Unicorn where the test has it, the image of size bytes at pages of its own, the count pointers it
+   rebases (addresses[]) moved with it; 1 with what it gave. 0, saying so, where neither is here */
+static int run(const char* what, const char* path, const unsigned char* image, size_t size, uint64_t entry,
+               const uint64_t* addresses, unsigned count) {
+    uint64_t got = 0;
+#if defined(__APPLE__) && defined(__aarch64__)
+    void* library = dlopen(path, RTLD_NOW);
+    unsigned long long (*test_entry)(void);
+    (void)image, (void)size, (void)entry, (void)addresses, (void)count;
+    if (!library) {
+        fprintf(stderr, "%s: dyld does not load it: %s\n", what, dlerror());
+        return 1;
+    }
+    *(void**)&test_entry = dlsym(library, "test_entry");
+    if (!test_entry) {
+        fprintf(stderr, "%s: dlsym finds no test_entry: %s\n", what, dlerror());
+        return 1;
+    }
+    got = test_entry();
+    dlclose(library);
+#elif defined(SNX_TEST_UNICORN)
+    HostUc* u = hostuc_new(HOSTUC_ARM64, 1 << 16);
+    unsigned char* pages;
+    unsigned i;
+    int rc;
+    (void)path;
+    assert(u);
+    pages = (unsigned char*)hostuc_alloc(u, (size + 0xFFFF) & ~(size_t)0xFFFF);
+    assert(pages);
+    memcpy(pages, image, size);
+    for (i = 0; i < count; ++i) {
+        uint64_t value = rd64(pages + addresses[i]) + (uint64_t)(size_t)pages;
+        memcpy(pages + addresses[i], &value, 8);
+    }
+    rc = hostuc_call(u, (uint64_t)(size_t)pages + entry, 0, 0, &got);
+    hostuc_free(u);
+    if (rc) {
+        fprintf(stderr, "%s: Unicorn stopped\n", what);
+        return 1;
+    }
+#else
+    (void)path, (void)image, (void)size, (void)entry, (void)addresses, (void)count;
+    printf("link_macho: %s: its code is not run here (no Unicorn, and no Apple silicon)\n", what);
+    return 0;
+#endif
+    if (got == EXPECTED) return 0;
+    fprintf(stderr, "%s: test_entry gives %llu, not %u\n", what, (unsigned long long)got, EXPECTED);
+    return 1;
+}
+
+/* the dylib the two objects link into, checked as dyld would and run; written to path. page_object, where not NULL, is
+   the first object, Mach-O, whose page relocations are read back (check_pages) */
+static int check_dylib(const char* what, const SnxLinkInput* inputs, size_t count, const char* path,
+                       const unsigned char* page_object, int by_first_input) {
     SnxLinkOutput out;
     Segment segments[4], *text = NULL, *data = NULL, *linkedit = NULL;
     const char* exports[] = {"test_entry"};
     char error[512];
     const unsigned char *d, *c, *trie = NULL, *rebase = NULL, *p, *end, *symbols = NULL;
     const char* strings = NULL;
-    uint64_t text_address = 0, text_size = 0, entry, address = 0, symbol_value = 0;
+    uint64_t text_address = 0, text_size = 0, entry, address = 0, symbol_value = 0, rebased[64];
     uint32_t ncmds, i, nsegments = 0, trie_size = 0, rebase_size = 0, signature_offset = 0, signature_size = 0,
                     nslots, k;
     uint32_t nsymbols = 0;
-    unsigned rebases = 0, pages, wide = 0, signed_bytes = 0;
+    unsigned rebases = 0, pages = 0, wide = 0, signed_bytes = 0;
+    int failed;
     FILE* f;
-    assert(argc >= 4 && argc % 2 == 0);
-    for (i = 4; i < (uint32_t)argc; i += 2) {
-        SnxLinkInput input;
-        int failed;
-        input.data = slurp(argv[i], &input.size);
-        input.name = argv[i];
-        failed = refused(&input, 1, argv[i + 1]);
-        free((void*)input.data);
-        if (failed) return 1;
-    }
-    inputs[0].data = slurp(argv[1], &inputs[0].size);
-    inputs[0].name = argv[1];
-    inputs[1].data = slurp(argv[2], &inputs[1].size);
-    inputs[1].name = argv[2];
-    /* code referring to a symbol of a type the linker does not take: scale made a local N_PBUD */
-    {
-        SnxLinkInput retyped_inputs[2];
-        int failed;
-        retyped_inputs[0] = inputs[0];
-        retyped_inputs[1] = inputs[1];
-        retyped_inputs[0].data = retyped(&inputs[0], "_scale", 0xC);
-        failed = refused(retyped_inputs, 2, "unsupported symbol type of _scale");
-        free((void*)retyped_inputs[0].data);
-        if (failed) return 1;
-    }
-    /* the entry's own object alone leaves helper and counter undefined */
-    if (!snx_link(inputs, 1, exports, 1, "test.dylib", &out, error, sizeof(error))) {
-        fprintf(stderr, "link of %s alone: linked, with helper and counter undefined\n", argv[1]);
+    if (by_first_input ? snx_link(inputs, count, exports, 1, "test.dylib", &out, error, sizeof(error))
+                       : snx_link_macho(inputs, count, exports, 1, "test.dylib", &out, error, sizeof(error))) {
+        fprintf(stderr, "%s: link: %s\n", what, error);
         return 1;
     }
-    if (!strstr(error, "undefined")) {
-        fprintf(stderr, "link of %s alone: %s, not an undefined symbol\n", argv[1], error);
-        return 1;
-    }
-    if (snx_link(inputs, 2, exports, 1, "test.dylib", &out, error, sizeof(error))) {
-        fprintf(stderr, "link: %s\n", error);
-        return 1;
-    }
-    f = fopen(argv[3], "wb");
+    /* a new file: macOS keeps a signed image by its inode, and kills a program that opens one written over */
+    remove(path);
+    f = fopen(path, "wb");
     assert(f && fwrite(out.data, 1, out.size, f) == out.size);
     fclose(f);
     d = out.data;
@@ -305,6 +426,8 @@ int main(int argc, char** argv) {
             case 0x30: address += uleb(&p); break;
             case 0x60:
                 for (n = uleb(&p); n--; address += 8, ++rebases) {
+                    assert(rebases < sizeof(rebased) / sizeof(*rebased));
+                    rebased[rebases] = address;
                     uint64_t target = rd64(d + data->fileoff + (address - data->vmaddr));
                     assert(address >= data->vmaddr && address + 8 <= data->vmaddr + data->filesize);
                     assert(target < data->vmaddr + data->vmsize);
@@ -320,8 +443,19 @@ int main(int argc, char** argv) {
     assert(!trie_find(trie, trie_size, "_helper") && !trie_find(trie, trie_size, "test_entry"));
     /* the code addresses what its relocations name, a 128-bit load and a signed byte one among them */
     assert(symbols);
-    pages = check_pages(inputs[0].data, d, text_address, symbols, nsymbols, strings, &wide, &signed_bytes);
-    assert(pages >= 10 && wide && signed_bytes);
+    if (page_object) {
+        pages = check_pages(page_object, d, text_address, symbols, nsymbols, strings, &wide, &signed_bytes);
+        assert(pages >= 10 && wide && signed_bytes);
+    }
+    for (i = 0; i < nsymbols; ++i) {
+        const char* name = strings + rd32(symbols + 16 * (size_t)i);
+        if (name[0] != '_' || name[1] == '$' || name[1] == '.' || name[1] == '<' || !name[1]) {
+            fprintf(stderr, "%s: a symbol named %s\n", what, name);
+            free(out.data);
+            return 1;
+        }
+    }
+    assert(symbol_named(symbols, nsymbols, strings, "_second_vector"));
     /* the signature: the last thing in the file, hashing every page before it */
     assert(signature_offset && signature_offset + signature_size == out.size && !(signature_offset % 16));
     p = d + signature_offset;
@@ -339,10 +473,109 @@ int main(int argc, char** argv) {
         assert(EVP_Digest(d + at, n, digest, &length, EVP_sha256(), NULL) && length == 32);
         assert(!memcmp(c + be32(c + 16) + 32 * (size_t)k, digest, 32));
     }
-    printf("link_macho: %lu bytes, %u rebases, %u page relocations, entry at 0x%llx, %u pages signed\n",
+    failed = run(what, path, d, (size_t)(data->vmaddr + data->vmsize), entry, rebased, rebases);
+    printf("link_macho: %s: %lu bytes, %u rebases, %u page relocations, entry at 0x%llx, %u pages signed\n", what,
            (unsigned long)out.size, rebases, pages, (unsigned long long)entry, nslots);
     free(out.data);
-    free((void*)inputs[0].data);
-    free((void*)inputs[1].data);
-    return 0;
+    return failed;
+}
+
+#if !defined(_WIN32)
+/* the ELF objects argv[4] to argv[6] name, alone and beside the Mach-O ones: 1 where one of the cases fails */
+static int check_elf(const SnxLinkInput* macho, char** argv) {
+    SnxLinkInput elf[2];
+    SnxLinkOutput out;
+    const char* exports[] = {"helper"};
+    char error[512];
+    int failed = 0, i;
+    for (i = 0; i < 2; ++i) {
+        elf[i].data = slurp(argv[4 + i], &elf[i].size);
+        elf[i].name = argv[4 + i];
+    }
+    /* another machine's object, and one definition of a name in an object of each format */
+    {
+        SnxLinkInput other = elf[0];
+        unsigned char* copy = (unsigned char*)malloc(elf[0].size);
+        const SnxLinkInput twice[2] = {elf[1], macho[1]};
+        assert(copy);
+        memcpy(copy, elf[0].data, elf[0].size);
+        copy[18] = 62; /* e_machine: EM_X86_64 */
+        other.data = copy;
+        failed |= refused(&other, 1, "another machine's object");
+        failed |= refused(twice, 2, "duplicate symbol _counter");
+        free(copy);
+        failed |= malformed(&elf[0], &elf[1], "test_entry");
+    }
+    /* the entry's own object alone leaves helper and counter undefined */
+    failed |= refused(&elf[0], 1, "undefined symbol _");
+    {
+        const SnxLinkInput first_elf[2] = {elf[0], macho[1]}, first_macho[2] = {macho[0], elf[1]};
+        failed |= check_dylib("ELF", elf, 2, argv[3], NULL, 0);
+        failed |= check_dylib("ELF and Mach-O", first_elf, 2, argv[3], NULL, 0);
+        failed |= check_dylib("Mach-O and ELF", first_macho, 2, argv[3], macho[0].data, 1);
+    }
+    /* a weak definition of helper beside PART 2's, whichever comes first */
+    {
+        SnxLinkInput weak;
+        weak.data = slurp(argv[6], &weak.size);
+        weak.name = argv[6];
+        const SnxLinkInput before[3] = {elf[0], weak, elf[1]}, after[3] = {elf[0], elf[1], weak};
+        failed |= check_dylib("ELF, the weak helper first", before, 3, argv[3], NULL, 0);
+        failed |= check_dylib("ELF, the weak helper last", after, 3, argv[3], NULL, 0);
+        free((void*)weak.data);
+    }
+    /* helper beyond a branch's 128 MiB: called through its caller's veneer */
+    {
+        SnxLinkInput far_elf[2] = {elf[0], elf[1]};
+        far_elf[1].data = stretched(&elf[1], (uint64_t)130 << 20, &far_elf[1].size);
+        failed |= check_dylib("ELF beyond a branch's reach", far_elf, 2, argv[3], NULL, 0);
+        free((void*)far_elf[1].data);
+    }
+    /* which linker the first object's format picks: ELF's on Apple is this one's, elsewhere the ELF linker's */
+    if (snx_link(&elf[1], 1, exports, 1, "test.dylib", &out, error, sizeof(error)))
+        fprintf(stderr, "link of %s: %s\n", argv[5], error), failed = 1;
+    else {
+#ifdef __APPLE__
+        const uint32_t magic = 0xFEEDFACFu;
+#else
+        const uint32_t magic = 0x464C457Fu; /* "\177ELF" */
+#endif
+        if (rd32(out.data) != magic) fprintf(stderr, "link of %s: not this host's module\n", argv[5]), failed = 1;
+        free(out.data);
+    }
+    for (i = 0; i < 2; ++i) free((void*)elf[i].data);
+    return failed;
+}
+#endif
+
+int main(int argc, char** argv) {
+    SnxLinkInput macho[2];
+    int failed = 0, i;
+    assert(argc >= 7 && argc % 2 == 1);
+    for (i = 7; i < argc; i += 2) {
+        SnxLinkInput input;
+        input.data = slurp(argv[i], &input.size);
+        input.name = argv[i];
+        failed |= refused(&input, 1, argv[i + 1]);
+        free((void*)input.data);
+    }
+    for (i = 0; i < 2; ++i) {
+        macho[i].data = slurp(argv[1 + i], &macho[i].size);
+        macho[i].name = argv[1 + i];
+    }
+    /* code referring to a symbol of a type the linker does not take: scale made a local N_PBUD */
+    {
+        SnxLinkInput retyped_inputs[2] = {macho[0], macho[1]};
+        retyped_inputs[0].data = retyped(&macho[0], "_scale", 0xC);
+        failed |= refused(retyped_inputs, 2, "unsupported symbol type of _scale");
+        free((void*)retyped_inputs[0].data);
+    }
+    /* the entry's own object alone leaves helper and counter undefined */
+    failed |= refused(&macho[0], 1, "undefined");
+    failed |= check_dylib("Mach-O", macho, 2, argv[3], macho[0].data, 1);
+#if !defined(_WIN32)
+    failed |= check_elf(macho, argv);
+#endif
+    for (i = 0; i < 2; ++i) free((void*)macho[i].data);
+    return failed;
 }

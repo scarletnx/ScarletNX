@@ -151,11 +151,66 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     return sg_vt(v, t);
 }
 [[maybe_unused]] static SgV sg_RoundF64(SgG* g, int64_t mode, SgV d) { return sg_fv(round_f64(g->c, (u32)mode, d.id)); }
+/* the double at an operand: a register pair, a uniform register pair, or a constant buffer's 8 bytes (the word at its
+   offset the low one), with the operand's absolute value and negation. The zero register's pair is 0 */
+[[maybe_unused]] static SgV sg_SrcF64(SgG* g, int64_t s) {
+    const Sm86Src* x = sg86_src(g, s);
+    Ctx* c = g->c;
+    u32 lo, hi;
+    if (x->kind == SM86_SRC_CBUF) {
+        if (x->bindless) {
+            fail(c, "bindless constant buffer operand");
+            return sg_vt(c->zero, f64_type(c));
+        }
+        lo = cbuf_load(c, x->bank, x->value, 0), hi = cbuf_load(c, x->bank, x->value + 4, 0);
+    } else if (x->kind == SM86_SRC_UREG)
+        lo = urd(c, x->reg), hi = urd(c, x->reg >= SM86_URZ ? x->reg : x->reg + 1u);
+    else
+        lo = rd(c, x->reg), hi = rd(c, x->reg >= SM86_RZ ? x->reg : x->reg + 1u);
+    u32 t = f64_type(c);
+    u32 v = spv_emit_unary(&c->e, SPV_OP_BITCAST, t, pair64(c, lo, hi));
+    if (x->abs) v = spv_emit_glsl_unary(&c->e, t, c->glsl, SPV_GLSL_F_ABS, v);
+    if (x->neg) v = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, t, v);
+    return sg_vt(v, t);
+}
+/* the double to the destination pair: its low word to the destination, its high word to the next register */
+[[maybe_unused]] static void sg_D_writeF64(SgG* g, SgV d) {
+    Ctx* c = g->c;
+    u32 bits = spv_emit_unary(&c->e, SPV_OP_BITCAST, u64_type(c), d.id);
+    dwr(c, g->in, lo32(c, bits));
+    if (g->in->dst < SM86_RZ) wr(c, g->in->dst + 1u, hi32(c, bits));
+}
+/* a double's sum, product and fused product and sum, each rounded once to nearest (NoContraction keeps the driver
+   from fusing a product into a sum the program keeps apart) */
+[[maybe_unused]] static SgV sg_F64Add(SgG* g, SgV a, SgV b) {
+    u32 t = f64_type(g->c);
+    return sg_vt(nocontract(g->c, op2(g->c, SPV_OP_F_ADD, t, a.id, b.id)), t);
+}
+[[maybe_unused]] static SgV sg_F64Mul(SgG* g, SgV a, SgV b) {
+    u32 t = f64_type(g->c);
+    return sg_vt(nocontract(g->c, op2(g->c, SPV_OP_F_MUL, t, a.id, b.id)), t);
+}
+[[maybe_unused]] static SgV sg_F64Fma(SgG* g, SgV a, SgV b, SgV d) {
+    u32 t = f64_type(g->c);
+    return sg_vt(spv_emit_glsl_ternary(&g->c->e, t, g->c->glsl, SPV_GLSL_FMA, a.id, b.id, d.id), t);
+}
+/* a float widened to a double, which is exact: NoContraction, so a driver does not take the float's own conversion
+   from an integer as the double's, which is not rounded to a float */
+[[maybe_unused]] static SgV sg_F32ToF64(SgG* g, SgV x) {
+    return sg_vt(nocontract(g->c, widen(g->c, sg_f(g, x))), f64_type(g->c));
+}
 
 /* ---- the rest of the integer ALU, the uniform registers, the system registers, the warp ---- */
 [[maybe_unused]] static int sg_SrcIsCbuf(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_CBUF; }
 [[maybe_unused]] static SgV sg_SrcNext(SgG* g, int64_t s) {
     const Sm86Src* x = sg86_src(g, s);
+    if (x->kind == SM86_SRC_CBUF) {
+        if (x->bindless) {
+            fail(g->c, "bindless constant buffer operand");
+            return sg_v(g->c->zero, SGT_U32);
+        }
+        return sg_v(cbuf_load(g->c, x->bank, x->value + 4, 0), SGT_U32);
+    }
     u32 r = x->reg;
     return sg_v(x->kind == SM86_SRC_UREG ? urd(g->c, r >= SM86_URZ ? r : r + 1) : rd(g->c, r >= SM86_RZ ? r : r + 1), SGT_U32);
 }

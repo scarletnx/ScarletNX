@@ -86,20 +86,25 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_XRESERVED 0u
 #define MG_BOUND 1
 #define MG_COFF win64
+#define MG_POLL_INLINE 1
+#define MG_JTAB 1
+#define MG_JTAB_CLOBBER (1u << 0 | 1u << (MG_WIN64(u) ? 8 : 2)) /* RAX, RDX (Windows' R8) */
+#define MG_JTAB_LEADERS 24 /* fewer: the dispatch block (measured on an i5-9400: 12 cases, 14 leaders, 17% quicker) */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 
 static int win64(const Unit* u) { return MG_WIN64(u); }
-/* the host registers of the pins the function pushes itself, RDI's and RSI's, on Windows (bits) */
+/* the callee-saved host registers the pins take (RBP, R12-R15, on Windows RDI and RSI: bits), which the prologue
+   pushes */
 static unsigned pushed_pins(const Unit* u) {
     unsigned mask = 0;
     int n;
-    if (!win64(u)) return 0;
+    if (!u->pinned) return 0;
     for (n = 0; n < 32; ++n)
-        if (u->pin[n] == 6 || u->pin[n] == 7) mask |= 1u << u->pin[n];
-    if (u->mempin == 6 || u->mempin == 7) mask |= 1u << u->mempin;
-    return mask;
+        if (u->pin[n] >= 0) mask |= 1u << u->pin[n];
+    if (u->mempin >= 0) mask |= 1u << u->mempin;
+    return mask & ~(1u << 10 | 1u << 11);
 }
 /* where the function's saved XMM register k (xsaved's bits) is from RSP: above the callees' bytes, in order */
 static int xsaved_at(const Unit* u, int k) {
@@ -113,6 +118,7 @@ static void imm(Unit* u, long long v, int bytes) { sgx_imm(&u->b, v, bytes); }
 static void rel_label(Unit* u, int label) {
     u->fixups = (Fixup*)grow(u->fixups, &u->cap_fixups, u->nfixups + 1, sizeof *u->fixups);
     u->fixups[u->nfixups].at = u->b.n;
+    u->fixups[u->nfixups].kind = 0;
     u->fixups[u->nfixups++].label = label;
     imm(u, 0, 4);
 }
@@ -264,14 +270,15 @@ static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
         sgx_imm(b, (long long)offsetof(CPU, mem), 4);
     }
     for (n = 0; n < 32; ++n) {
-        if (u->pin[n] >= 0 && (!caller || u->pin[n] == 10 || u->pin[n] == 11)) {
+        if (u->pin[n] >= 0 && (!caller || u->pin[n] == 10 || u->pin[n] == 11) &&
+            (store ? (u->pin_wr & u->cur_dirty) >> n & 1 : u->pin_sel >> n & 1)) {
             int p = u->pin[n];
             sgx_byte(b, (unsigned char)(0x48 | (p >> 3) << 2));
             sgx_byte(b, store ? 0x89 : 0x8B);
             sgx_byte(b, (unsigned char)(0x83 | (p & 7) << 3)); /* [rbx + disp32] */
             sgx_imm(b, (long long)(offsetof(CPU, x) + 8 * (size_t)n), 4);
         }
-        if (u->vpin[n] >= 0) {
+        if (u->vpin[n] >= 0 && (store ? (u->vpin_wr & u->vcur_dirty) >> n & 1 : u->vpin_sel >> n & 1)) {
             int p = u->vpin[n];
             sgx_byte(b, 0xF3); /* movdqu [rbx + disp32], xmm / xmm, [rbx + disp32] */
             if (p >= 8) sgx_byte(b, 0x44);
@@ -306,9 +313,9 @@ static void prologue(Unit* u) {
         if (u->a.xsaved) u->a.xsaved |= 1u << 6 | 1u << 7, sgx_call_room(&u->a);
     }
     byte(u, 0x53); /* push rbx */
-    if (u->pinned) /* push rbp, r12, r13, r14, r15 */
-        byte(u, 0x55), byte(u, 0x41), byte(u, 0x54), byte(u, 0x41), byte(u, 0x55), byte(u, 0x41), byte(u, 0x56),
-            byte(u, 0x41), byte(u, 0x57);
+    if (pushed >> 5 & 1) byte(u, 0x55);                            /* push rbp */
+    for (n = 12; n < 16; ++n)
+        if (pushed >> n & 1) byte(u, 0x41), byte(u, (unsigned char)(0x50 | (n & 7))); /* push r12 to r15 */
     if (pushed >> 7 & 1) byte(u, 0x57);                            /* push rdi */
     if (pushed >> 6 & 1) byte(u, 0x56);                            /* push rsi */
     byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xCB : 0xFB); /* mov rbx, rdi (rcx) */
@@ -331,6 +338,7 @@ static void prologue(Unit* u) {
    the ADD on the bytes are an epilogue as Windows' unwinder knows one, up to the return or the jump after it */
 static void epilogue(Unit* u) {
     unsigned pushed = pushed_pins(u);
+    int n;
     xsaved(u, 1);
     byte(u, 0x48); /* add rsp, imm32 */
     byte(u, 0x81);
@@ -340,9 +348,9 @@ static void epilogue(Unit* u) {
     imm(u, 0, 4);
     if (pushed >> 6 & 1) byte(u, 0x5E); /* pop rsi */
     if (pushed >> 7 & 1) byte(u, 0x5F); /* pop rdi */
-    if (u->pinned) /* pop r15, r14, r13, r12, rbp */
-        byte(u, 0x41), byte(u, 0x5F), byte(u, 0x41), byte(u, 0x5E), byte(u, 0x41), byte(u, 0x5D), byte(u, 0x41),
-            byte(u, 0x5C), byte(u, 0x5D);
+    for (n = 15; n >= 12; --n)
+        if (pushed >> n & 1) byte(u, 0x41), byte(u, (unsigned char)(0x58 | (n & 7))); /* pop r15 to r12 */
+    if (pushed >> 5 & 1) byte(u, 0x5D); /* pop rbp */
     byte(u, 0x5B); /* pop rbx */
 }
 static void leave(Unit* u) {
@@ -423,11 +431,12 @@ static void check_return(Unit* u, SnxU64 next) {
 }
 
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
-static void poll_then(Unit* u, SnxU64 resume) {
-    int run = new_label(u);
-    char sym[40];
+static void poll_jz(Unit* u, int label) {
     byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00); /* cmp dword [rbx+poll], 0 */
-    jcc(u, 0x4, run);
+    jcc(u, 0x4, label);
+}
+static void poll_slow(Unit* u, SnxU64 resume) {
+    char sym[40];
     pins(u, 1);
     set_pc(u, resume);
     state_arg(u);
@@ -439,6 +448,53 @@ static void poll_then(Unit* u, SnxU64 resume) {
     fname(sym, sizeof sym, "F_", u->f->start);
     byte(u, 0xE9);
     rel_sym(u, sym);
+}
+/* a switch's jump, T the target (SGX_FN_TARGET): if (!c->poll && T - lo <= span && !(T & 3)) goto *(table +
+   table[T - lo]), else the dispatch block (CPU.pc holds the target). In RAX and RDX, on Windows, where T is in RDX, R8 */
+static void jtab_jump(Unit* u, int k) {
+    const struct JTab* t = &u->jtabs[k];
+    SnxU64 span = (SnxU64)(t->n - 1) * 4;
+    int win = win64(u);
+    byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00); /* cmp dword [rbx+poll], 0 */
+    jcc(u, 0x5, u->d_label);
+    if (t->lo < 0x80000000u) {
+        byte(u, 0x48), byte(u, 0x8D), byte(u, win ? 0x82 : 0x86), imm(u, -(long long)t->lo, 4); /* lea rax, [T - lo] */
+    } else {
+        byte(u, win ? 0x49 : 0x48), byte(u, win ? 0xB8 : 0xBA), imm(u, (long long)t->lo, 8); /* mov rdx (r8), lo */
+        mov_rax_target(u);
+        byte(u, win ? 0x4C : 0x48), byte(u, 0x29), byte(u, win ? 0xC0 : 0xD0); /* sub rax, rdx (r8) */
+    }
+    byte(u, 0x48), byte(u, 0x3D), imm(u, (long long)span, 4); /* cmp rax, span */
+    jcc(u, 0x7, u->d_label);                                  /* ja */
+    byte(u, 0xA8), byte(u, 0x03);                             /* test al, 3 */
+    jcc(u, 0x5, u->d_label);
+    byte(u, win ? 0x4C : 0x48), byte(u, 0x8D), byte(u, win ? 0x05 : 0x15); /* lea rdx (r8), [rip + table] */
+    rel_label(u, t->label);
+    byte(u, win ? 0x49 : 0x48), byte(u, 0x63), byte(u, 0x04), byte(u, win ? 0x00 : 0x02); /* movsxd rax, [rdx + rax] */
+    byte(u, win ? 0x4C : 0x48), byte(u, 0x01), byte(u, win ? 0xC0 : 0xD0);                /* add rax, rdx (r8) */
+    byte(u, 0xFF), byte(u, 0xE0); /* jmp rax (no REX.W: no epilogue's to Windows' unwinder) */
+}
+/* each table: a word a slot, its label's distance from the table (mg_finish's fixups of kind table's label + 1) */
+static void jtab_emit(Unit* u) {
+    int k;
+    for (k = 0; k < u->njtabs; ++k) {
+        const struct JTab* t = &u->jtabs[k];
+        unsigned s;
+        while (u->b.n & 3) byte(u, 0xCC);
+        bind(u, t->label);
+        for (s = 0; s < t->n; ++s) {
+            u->fixups = (Fixup*)grow(u->fixups, &u->cap_fixups, u->nfixups + 1, sizeof *u->fixups);
+            u->fixups[u->nfixups].at = u->b.n;
+            u->fixups[u->nfixups].kind = t->label + 1;
+            u->fixups[u->nfixups++].label = u->jslots[t->first + s];
+            imm(u, 0, 4);
+        }
+    }
+}
+static void poll_then(Unit* u, SnxU64 resume) {
+    int run = new_label(u);
+    poll_jz(u, run);
+    poll_slow(u, resume);
     bind(u, run);
 }
 
@@ -483,12 +539,44 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
         jcc(u, 0x4, live);
         mov_rax_target(u);
         store_rax(u, (int)offsetof(CPU, pc));
-        leave(u);
+        epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
+        byte(u, 0xC3);
         bind(u, live);
     }
     mov_rax_imm(u, start);
     byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6); /* cmp rsi, rax */
     jcc(u, 0x5, u->mismatch_label);
+}
+/* cmp rax, value (RDX the value where it is no imm32) */
+static void cmp_rax(Unit* u, SnxU64 value) {
+    if (value < 0x80000000u) {
+        byte(u, 0x48), byte(u, 0x3D), imm(u, (long long)value, 4); /* cmp rax, imm32 */
+    } else {
+        byte(u, 0x48), byte(u, 0xBA), imm(u, (long long)value, 8); /* mov rdx, imm64 */
+        byte(u, 0x48), byte(u, 0x39), byte(u, 0xD0);               /* cmp rax, rdx */
+    }
+}
+/* RAX among the leaders at[0..n) (ascending): a jump to the leader's label (lab0 + its index), else to miss. A tree
+   of compares, the middle one first, a few in a row at its leaves */
+static void dispatch_tree(Unit* u, int lab0, const SnxU64* at, const size_t* index, size_t n, int miss) {
+    size_t m, k;
+    int left;
+    if (n <= 3) {
+        for (k = 0; k < n; ++k) {
+            cmp_rax(u, at[k]);
+            jcc(u, 0x4, lab0 + (int)index[k]); /* je */
+        }
+        jmp(u, miss);
+        return;
+    }
+    m = n / 2;
+    left = new_label(u);
+    cmp_rax(u, at[m]);
+    jcc(u, 0x4, lab0 + (int)index[m]); /* je */
+    jcc(u, 0x2, left);                  /* jb */
+    dispatch_tree(u, lab0, at + m + 1, index + m + 1, n - m - 1, miss);
+    bind(u, left);
+    dispatch_tree(u, lab0, at, index, m, miss);
 }
 static void mg_dispatch(Unit* u, int lab0) {
     const SnxFunction* f = u->f;
@@ -510,22 +598,35 @@ static void mg_dispatch(Unit* u, int lab0) {
         pins(u, 0);
         bind(u, run);
         load_rax(u, (int)offsetof(CPU, pc));
-        for (i = 0; i < f->count; ++i)
-            if (f->leaders[i]) {
-                SnxU64 a = snx_function_address(f, i);
-                byte(u, 0x48), byte(u, 0xBA), imm(u, (long long)a, 8); /* mov rdx, imm64 */
-                byte(u, 0x48), byte(u, 0x39), byte(u, 0xD0);        /* cmp rax, rdx */
-                jcc(u, 0x4, lab0 + (int)i);
+        {
+            /* a target outside the leaders' span (a tail call through a pointer: most BRs that aren't a switch's) goes
+               on at once; inside it, a tree of compares, not one a leader */
+            size_t n = 0;
+            SnxU64* at = (SnxU64*)malloc(f->leader_count * sizeof *at);
+            size_t* index = (size_t*)malloc(f->leader_count * sizeof *index);
+            int miss = new_label(u);
+            if (!at || !index) sg_fail("out of memory for the dispatch block", 0, 0);
+            for (i = 0; i < f->count && n < f->leader_count; ++i)
+                if (f->leaders[i]) at[n] = snx_function_address(f, i), index[n++] = i;
+            if (n > 3) {
+                cmp_rax(u, at[0]);
+                jcc(u, 0x2, miss); /* jb */
+                cmp_rax(u, at[n - 1]);
+                jcc(u, 0x7, miss); /* ja */
             }
+            dispatch_tree(u, lab0, at, index, n, miss);
+            free(at), free(index);
+            bind(u, miss);
+        }
         mov_target_rax(u);
         calldyn(u, 1);
     }
 }
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
-    /* RSP 16-aligned in the body: the return address and RBX (and RBP, R12-R15 where pinned, RDI, RSI): 8 more where
-       those are an odd number of doublewords */
-    int size = ((u->a.slots_max * 8 + 15) & ~15) + ((u->pinned ? 5 : 0) + (int)snx_popcount64(pushed_pins(u))) % 2 * 8;
+    /* RSP 16-aligned in the body: the return address and RBX, and the pushed pins' registers: 8 more where those are
+       an odd number of doublewords */
+    int size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
     if (win64(u) && size >= 4096 && !u->again) {
         u->again = 1; /* a page or more, whose prologue reads each page first (the guard page): made again with it */
         return 0;
@@ -539,8 +640,11 @@ static int mg_finish(Unit* u, size_t fix0) {
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
         if (t < 0) return 0;
-        if (u->fixups[i].at + 4 <= u->b.cap)
-            snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - (long long)(u->fixups[i].at + 4)));
+        if (u->fixups[i].at + 4 <= u->b.cap) {
+            /* a jump table's word (kind: its table's label + 1), else a rel32 */
+            long long from = u->fixups[i].kind ? u->label_at[u->fixups[i].kind - 1] : (long long)(u->fixups[i].at + 4);
+            snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - from));
+        }
     }
     return 1;
 }

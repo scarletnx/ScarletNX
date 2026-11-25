@@ -1179,6 +1179,15 @@ static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
 }
+/* own.c's, as the CPU touches pages [cpu, cpu + size) that watches or owners are on: the targets pending there are
+   published, and the pages open next, for a thread that waits to read them. What the GPU writes there in place is done
+   first, those publishes into a region and any before them: its copy, landing after the pages opened, would be a change
+   that the opening's scan takes for the CPU's (vk_ww_open). The wait is for the last such write's submit, and its end
+   has the host barrier (vk_uma_host_barrier) */
+static void own_accessed(u64 cpu, u64 size) {
+    vk_rt_watch_hit(cpu, size);
+    vk_uma_mem_need_cpu(cpu, size);
+}
 /* owners dropped with no landing (an unmap, a remap, a decommit): the GPU mirror's copy of those pages is no longer
    guest memory's, and its next binding of them fills them again, as a landing has it. A page the mirror owns leaves
    its granule's check whole (mirror.c), which no other change of these pages would end */
@@ -1199,9 +1208,10 @@ int vk_own_init(void) {
                   .dropped = own_dropped,
                   .writer = own_writer,
                   .wait = own_wait,
-                  .resolve = vk_rt_watch_hit,
-                  .refresh = vk_rt_watch_hit,
-                  .claim = own_claim};
+                  .resolve = own_accessed,
+                  .refresh = own_accessed,
+                  .claim = own_claim,
+                  .open = vk_ww_open};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
@@ -1216,13 +1226,37 @@ void vk_own_res_wrote(VkOwnRes* r) {
 }
 
 int vk_own_watch(u64 cpu, u64 size) {
-    /* an import reads and writes those pages in place: a trap would take them from it */
-    if (!g_owned.traps || !size || vk_uma_held(cpu, size)) return -1;
-    vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
-    pend_lock();              /* as own_publish: a change of guest memory without vk_lock finds no entry there */
-    int r = own_watch(cpu, size);
+    if (!g_owned.traps || !size) return -1;
+    /* Over dma-buf regions (uma.c's Imp.tracked) the trap is the CPU's mapping's alone, its pages kept where they are:
+       the driver pinned them when it imported them and leaves the CPU's page table alone, so the GPU goes on with the
+       same pages (vulkan_uma_region_trap). Over another import the GPU reads and writes the pages in place and a trap
+       would take them from it: amdgpu takes a host pointer import's pages again at each submission, and fails on a
+       trapped one */
+    const int region = vk_uma_region_held(cpu, size);
+    if (!region && vk_uma_held(cpu, size)) return -1;
+    if (region) {
+        const u64 page = plat_vm_page();
+        vk_ww_watching(cpu & ~(page - 1), (cpu + size + page - 1) & ~(page - 1));
+    } else
+        vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
+    pend_lock(); /* as own_publish: a change of guest memory without vk_lock finds no entry there */
+    int r = region ? own_watch_in_place(cpu, size) : own_watch(cpu, size);
     pend_unlock();
     return r;
+}
+/* the result at off of src copied over [cpu, cpu + size) on the GPU, in stream order, where imports hold it (one, or
+   dma-buf regions side by side): 1, or 0 when they don't (nothing recorded then, or the parts before the one that
+   isn't, which the caller's owner then writes over) */
+static int publish_in_place(u64 cpu, u64 size, VkBuffer src, u64 off) {
+    if (vk_uma_held(cpu, size)) return vk_uma_publish(cpu, size, src, off);
+    if (!vk_uma_region_held(cpu, size)) return 0;
+    for (u64 at = 0; at < size;) {
+        int held = 0;
+        const u64 n = vk_uma_import_part(cpu + at, size - at, &held);
+        if (!held || !n || !vk_uma_publish(cpu + at, n, src, off + at)) return 0;
+        at += n;
+    }
+    return 1;
 }
 
 static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
@@ -1244,9 +1278,12 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
        owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
        owners of the bytes go: they are written over whole */
-    if (in_place && vk_uma_held(cpu, size)) {
-        own_drop(cpu, size);
-        if (vk_uma_publish(cpu, size, r->buf, off)) {
+    if (in_place && (vk_uma_held(cpu, size) || vk_uma_region_held(cpu, size))) {
+        /* A trap over regions is a watch (vk_own_watch), and it stays: the copy is the GPU's, as with no watch, and
+           nothing waits for it here, part-way through what the GPU thread records. A CPU access to those pages waits
+           for it, and the watch goes then (own_accessed). No owner is there: its pages are the pool's, not a region's */
+        if (!(vk_uma_region_held(cpu, size) && own_trapped(cpu, size))) own_drop(cpu, size);
+        if (publish_in_place(cpu, size, r->buf, off)) {
             SNX_ZONE_TEXT(z, "UMA holds %llu bytes, copied into its import", (unsigned long long)size);
             SNX_PLOT(k_bytes, (double)size);
             return;

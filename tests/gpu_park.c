@@ -562,6 +562,27 @@ int main(int argc, char** argv) {
                "a mapping change dirties its own GPU pages alone");
     }
 
+    /* the watched granules' newest write over a range that starts and ends inside blocks of 64 granules and covers two
+       whole (maxwell3d.c's g_wgran, WGRAN_BLOCK): a write to any granule of it is its newest, the first and the last
+       ones and each of the two blocks' too, and a write to a granule beside it is not */
+    {
+        const u64 granule = 2ull << 20, block = 64 * granule, base = 256ull << 30;
+        const u64 from = base + 62 * granule, to = base + 3 * block + 2 * granule;
+        u32 missed = 0, beside = 0;
+        expect(gpu_mem_watch(base, 4 * block), "four blocks of granules are watched");
+        for (u64 at = from - 2 * granule; at < to + 2 * granule; at += granule) {
+            const u64 before = gpu_mem_granules_generation(from, to - from);
+            gpu_mem_written(at + 0x1000, 4);
+            const u64 now = gpu_mem_granules_generation(from, to - from);
+            if (at >= from && at < to)
+                missed += now != gpu_mem_generation();
+            else
+                beside += now != before;
+        }
+        expect(!missed, "a write to any granule of a range of blocks is the range's newest");
+        expect(!beside, "and a write to a granule beside it is not");
+    }
+
     /* Constant buffer uploads (gpu_mem_written_cb, gmem_write_cb) stamp their pages as any write does. A question whose
        baseline is after every write of another kind is answered "not written" without the tables where no upload
        touched its 2 MiB granules of GPU addresses (maxwell3d.c's g_wcb), so each kind of write here has granules of

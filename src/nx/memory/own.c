@@ -448,10 +448,26 @@ static int watched_nl(u64 lo, u64 hi) {
         if (!g_own.ent[i].res) return 1;
     return 0;
 }
+/* the bytes [a, b) of a watch over a GPU's buffer go, and its pages [lo, hi) open where no entry is left: what the
+   producer's hook calls (OwnHooks' open). Cut before that, a fault on one of them would find no entry there and open it
+   (own_fault), before the producer read its bytes */
+typedef struct {
+    u64 a, b, lo, hi;
+} WatchGone;
+static void watch_gone(void* ctx) {
+    const WatchGone* w = (const WatchGone*)ctx;
+    ResList rel = {0};
+    pm_lock(&g_own.lk);
+    cut_nl(w->a, w->b, &rel);
+    pm_unlock(&g_own.lk);
+    let_go(w->lo, w->hi);
+    res_release(&rel);
+}
 /* the watches on [lo, hi) go, one at a time: whole when whole is set, else only their bytes in [lo, hi). Their pages
    open where no entry is left, now, or with keep the caller's landing's let_go opens them: the pages widen [*keep,
    keep[1]). In place, opening a page wakes every thread that waits in a trap, and one on a page the landing fills
-   then can read it half written (plat_trap_fill). Never under a lock of own.c's */
+   then can read it half written (plat_trap_fill). Never under a lock of own.c's. One over a GPU's buffer
+   (own_watch_in_place) opens now, with keep too: no landing is on its pages */
 static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
     for (u64 c = lo; c < hi;) {
         ResList rel = {0};
@@ -464,13 +480,22 @@ static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
             return;
         }
         u64 a = g_own.ent[i].lo, b = g_own.ent[i].hi;
+        const int in_place = g_own.ent[i].in_place;
+        const u64 view = g_own.ent[i].pool - a; /* where the guest's byte 0 would be in an in place one's view */
         if (!whole) {
             if (a < c) a = c;
             if (b > hi) b = hi;
         }
+        u64 plo = a & ~(g_own.page - 1), phi = (b + g_own.page - 1) & ~(g_own.page - 1);
+        if (in_place && g_own.hooks.open) {
+            WatchGone w = {a, b, plo, phi};
+            pm_unlock(&g_own.lk);
+            g_own.hooks.open(plo, phi, (const u8*)(uintptr_t)(view + plo), watch_gone, &w);
+            c = b;
+            continue;
+        }
         cut_nl(a, b, &rel); /* the watch's bytes alone: no other entry is on them */
         pm_unlock(&g_own.lk);
-        u64 plo = a & ~(g_own.page - 1), phi = (b + g_own.page - 1) & ~(g_own.page - 1);
         if (!keep)
             let_go(plo, phi);
         else {
@@ -1001,6 +1026,19 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     return n;
 }
 
+/* the CPU's bytes of [a, end) of a watch over a GPU buffer's pages (own_watch_in_place), which are no pool pages: read
+   through the buffer's view, into a buffer of this thread's first, as dst can be guest memory and mem.c's lock is held
+   for the read. 1, or 0 when they aren't such pages */
+static int ext_stage(u64 a, u64 end, u8* dst) {
+    for (u64 at = a; at < end;) {
+        u8 part[1024];
+        const u64 n = end - at < sizeof part ? end - at : sizeof part;
+        if (mem_ext_read(at, part, n)) return 0;
+        memcpy(dst + (at - a), part, (size_t)n);
+        at += n;
+    }
+    return 1;
+}
 /* the CPU's bytes of [a, b) into dst at a - addr: a page an owner is on through the mirror (its CPU bytes are in the
    pool), page by page, and each run of pages no entry is on as it is, with one look under the lock. A page landed
    meanwhile reads the same through either. A look for each page, in a range of 16 MiB with two small owners that one
@@ -1040,7 +1078,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
             }
         } else if (owned && !mem_pool_offset(a, &off))
             memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else
+        else if (!owned || !ext_stage(a, end, dst + (a - addr)))
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
     }
@@ -1152,7 +1190,9 @@ int own_hash(u64 addr, u64 size, u64* h) {
     return any;
 }
 
-int own_watch(u64 addr, u64 size) {
+/* own_watch, own_watch_in_place: in place, the pages stay a GPU buffer's (mem_ext_runs) where mem_own_prepare would
+   move them into the pool */
+static int watch(u64 addr, u64 size, int in_place) {
     u64 lo = addr & ~(g_own.page - 1), hi, end = addr + size;
     MemPoolRun buf[16];
     ResList rel = {0};
@@ -1162,7 +1202,8 @@ int own_watch(u64 addr, u64 size) {
     if (!g_own.traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_own.page - 1) & ~(g_own.page - 1);
     inflight_wait(lo, hi);
-    MemPoolRun* runs = own_runs(lo, hi, buf, sizeof buf / sizeof *buf, &n);
+    MemPoolRun* runs = in_place ? (mem_ext_runs(lo, hi - lo, buf, sizeof buf / sizeof *buf, &n) ? NULL : buf)
+                                : own_runs(lo, hi, buf, sizeof buf / sizeof *buf, &n);
     if (!runs) return -1;
     /* in place: each page armed by no entry yet keeps a copy of its bytes, all of them the CPU's, for own_stage. Read
        without faulting, as own_begin's edges: a page that can't be read is armed already and keeps what it has */
@@ -1187,7 +1228,8 @@ int own_watch(u64 addr, u64 size) {
                           : rhi;
             u64 next = gap < rhi ? g_own.ent[j].hi : rhi; /* before the replace moves the entries */
             if (gap > c) {
-                Own w = {.lo = c, .hi = gap, .pool = runs[i].pool + (c - runs[i].addr), .res = NULL};
+                Own w = {
+                    .lo = c, .hi = gap, .pool = runs[i].pool + (c - runs[i].addr), .res = NULL, .in_place = in_place};
                 own_replace(c, gap, &w, 1, &rel);
             }
             c = next;
@@ -1204,6 +1246,8 @@ int own_watch(u64 addr, u64 size) {
     if (snap) scratch_put(&g_own.snap, snap);
     return 0;
 }
+int own_watch(u64 addr, u64 size) { return watch(addr, size, 0); }
+int own_watch_in_place(u64 addr, u64 size) { return watch(addr, size, 1); }
 
 int own_watched(u64 addr, u64 size) {
     u64 c = addr, end = addr + size;

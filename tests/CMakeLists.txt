@@ -3368,7 +3368,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
     # the barriers of an image's uses (gpu/vk/surface.c vk_surf_use) in the layouts that VK_LAYOUT names: with unified
     # image layouts, GENERAL and no barrier between reads of another kind; without them, each use's own layout
-    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c)
+    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-surf-layouts gnu23)
     target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
     add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
@@ -3380,13 +3380,13 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_stamp COMMAND snx-test-vk-stamp)
     # a draw that binds an owner where it is (gpu/vk/buffer.c buf_get_owned): one that a draw or the page cache wrote
     # in this submission takes a pass end and a barrier first, any other none
-    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c)
+    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-buffer-owned gnu23)
     target_link_libraries(snx-test-vk-buffer-owned PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_owned COMMAND snx-test-vk-buffer-owned)
     # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
     # one run at a time give the pages, run flags and byte spans of a walk one page at a time
-    add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)
+    add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-buffer-pages gnu23)
     target_link_libraries(snx-test-vk-buffer-pages PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
@@ -3446,7 +3446,8 @@ if(NOT SNX_TOOLS_ONLY)
     endif()
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
     # recorded goes on from it with no read or wait, and they land in order, each over the bytes the last one left
-    add_executable(snx-test-vk-image-out vk_image_out.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/image_out.c")
+    add_executable(snx-test-vk-image-out vk_image_out.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/image_out.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-image-out gnu23)
     target_link_libraries(snx-test-vk-image-out PRIVATE snx_nx_flags)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
@@ -3845,6 +3846,21 @@ snx_test_target(snx-test-aot-variants gnu23)
 target_link_libraries(snx-test-aot-variants PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME aot_variants COMMAND snx-test-aot-variants)
 set_tests_properties(aot_variants PROPERTIES TIMEOUT 120)
+# a pack of objects for iOS made by the arm64 back end, loaded as the app does and run (Unicorn) where it is here
+if(NOT WIN32)
+    add_executable(snx-test-ios-pack ios_pack.c)
+    if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+        target_sources(snx-test-ios-pack PRIVATE support/host_unicorn.c support/la64_interp.c)
+        target_include_directories(snx-test-ios-pack PRIVATE "${SNX_UNICORN_INCLUDE_DIR}")
+        target_compile_definitions(snx-test-ios-pack PRIVATE SNX_TEST_UNICORN=1)
+        target_link_libraries(snx-test-ios-pack PRIVATE "${SNX_UNICORN_LIBRARY}")
+    endif()
+    snx_test_target(snx-test-ios-pack gnu23)
+    target_include_directories(snx-test-ios-pack PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-ios-pack PRIVATE snx_driver_llvm snx_driver snx_llvm ${CMAKE_DL_LIBS})
+    add_test(NAME ios_pack COMMAND snx-test-ios-pack "${CMAKE_CURRENT_BINARY_DIR}/ios_pack.snxobj")
+    set_tests_properties(ios_pack PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
 # the x86-64 back end's units held in memory (x64_cache.h) under the module build: reuse, room, the limit
 add_executable(snx-test-unit-cache unit_cache.c)
 snx_test_target(snx-test-unit-cache gnu23)
@@ -4020,6 +4036,11 @@ add_executable(snx-bench-jit-latency jit_latency.c)
 snx_test_target(snx-bench-jit-latency gnu23)
 target_link_libraries(snx-bench-jit-latency PRIVATE snx_llvm Threads::Threads)
 # longjmp across the loader's code, which on Windows unwinds through its registered function table
+# what the loader says where the system refuses its memory, on any host
+add_executable(snx-test-code-loader-refused code_loader_refused.c)
+snx_test_target(snx-test-code-loader-refused gnu23)
+target_link_libraries(snx-test-code-loader-refused PRIVATE snx_llvm)
+add_test(NAME code_loader_refused COMMAND snx-test-code-loader-refused)
 add_executable(snx-test-code-loader-unwind code_loader_unwind.c)
 snx_test_target(snx-test-code-loader-unwind gnu23)
 target_link_libraries(snx-test-code-loader-unwind PRIVATE snx_llvm)
@@ -4230,6 +4251,20 @@ add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backend
 set(snx_br_pins d2800070 1e210800 1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1
     d61f03c0)
 add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends --words ${snx_br_pins})
+# X17 written in a loop, kept in a host register, and then an undefined word, whose runtime function changes it in the
+# state: the exit past it stores none
+set(snx_undef_pins d2800050 91000631 f1000610 54ffffc1 00000000)
+add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backends --words ${snx_undef_pins})
+# X30 kept in a host register, in step with the state (an SVC), and then stripped by XPACLRI: what the exit stores
+add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --target max --words aa0003fe d4000001
+         d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0)
+# functions that call each other, with loops, SVCs, polls and switches: what a call, an exit and an entry keep of the
+# registers kept in host ones
+add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
+add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
+add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4)
+set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 recompiler_backends_calls_3 PROPERTIES
+                     TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
@@ -4274,14 +4309,18 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME recompiler_${m}_jit COMMAND snx-test-recompiler-${m} --jit --made --states 40 --words 1e622820 1e621841
                  9ac10c00 d65f03c0)
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
+        add_test(NAME recompiler_${m}_undef_pins COMMAND snx-test-recompiler-${m} --words ${snx_undef_pins})
+        add_test(NAME recompiler_${m}_calls COMMAND snx-test-recompiler-${m} --calls --functions 40 --states 4)
+        set_tests_properties(recompiler_${m}_calls PROPERTIES TIMEOUT 600)
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
                  ${snx_half_words})
         # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
         add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # no Unicorn of the machine (an unpatched one's PPC64): skipped, as it compares nothing
-        set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_half_words
-                             recompiler_${m}_system PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_undef_pins
+                             recompiler_${m}_calls recompiler_${m}_half_words recompiler_${m}_system PROPERTIES
+                             SKIP_RETURN_CODE 77)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
         foreach(target switch android ounce max)
@@ -4375,7 +4414,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # run the back end's own words (la64_interp) or skip, so they have no compiled function
     include(arm_call_abi.cmake)
     snx_arm_call_abi(rv64 riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax)
-    snx_arm_call_abi(arm64 aarch64-unknown-elf)
+    # X18 is the system's on Windows and Apple, where the back end never touches it: the callee must not either
+    snx_arm_call_abi(arm64 aarch64-unknown-elf -ffixed-x18)
 endif()
 # the x86-64 back end's functions as a Windows host's (the calling convention, COFF objects), run by this host's processor
 # as Windows' C would call them (support/host_win64.c): against LLVM, as the other machines' under Unicorn
@@ -4395,6 +4435,8 @@ if(snx_host_win64)
     add_test(NAME recompiler_win64_hook COMMAND snx-test-recompiler-win64 --hook --functions 300 --seed 2)
     add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3)
     add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins})
+    add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins})
+    add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8)
     set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
@@ -4483,7 +4525,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_link_libraries(snx-test-module-desc PRIVATE snx_driver_llvm snx_driver snx_llvm "${SNX_UNICORN_LIBRARY}"
                           ${CMAKE_DL_LIBS})
     # one test a machine: one whose Unicorn is missing (an unpatched one's PPC64) is skipped, not passed
-    foreach(m riscv64 ppc64le mips64el loongarch64)
+    foreach(m riscv64 ppc64le mips64el loongarch64 arm64)
         add_test(NAME module_desc_${m} COMMAND snx-test-module-desc ${m})
         set_tests_properties(module_desc_${m} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
@@ -4568,28 +4610,54 @@ if(TARGET OpenSSL::Crypto)
                     -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
                 DEPENDS link_macho_fixture.c VERBATIM)
         endforeach()
+        # the same parts as ELF, with the ABI and the visibility the runtime library's embedded object has
+        # (recompiler/llvm/CMakeLists.txt): what the native back ends write for this host
+        foreach(part 1 2 3 4 5 6 7)
+            add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
+                COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13-elf -std=gnu23 -ffreestanding -O2 -fPIC
+                    -fvisibility=hidden -fno-common -DPART=${part} -c "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
+                DEPENDS link_macho_fixture.c VERBATIM)
+        endforeach()
         set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm")
+        set(snx_macho_objects)
+        foreach(object 1 2 3 4 elf_1 elf_2 elf_3 elf_4 elf_5 elf_6 elf_7)
+            list(APPEND snx_macho_objects "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${object}.o")
+        endforeach()
         add_executable(snx-test-link-macho link_macho.c "${snx_link_sources}/link.c" "${snx_link_sources}/link_elf.c"
             "${snx_link_sources}/elf_object.c" "${snx_link_sources}/link_coff.c" "${snx_link_sources}/link_macho.c"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o")
+            ${snx_macho_objects})
         # the objects are the test's data, not part of its own link
-        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
+        set_source_files_properties(${snx_macho_objects} PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
         snx_test_target(snx-test-link-macho gnu23)
         target_include_directories(snx-test-link-macho PRIVATE "${PROJECT_SOURCE_DIR}/src")
         target_link_libraries(snx-test-link-macho PRIVATE OpenSSL::Crypto)
+        if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY) # the dylib's code, run
+            target_sources(snx-test-link-macho PRIVATE support/host_unicorn.c support/la64_interp.c)
+            target_include_directories(snx-test-link-macho PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                                                                   "${SNX_UNICORN_INCLUDE_DIR}")
+            target_compile_definitions(snx-test-link-macho PRIVATE SNX_TEST_UNICORN=1)
+            # the harness loads objects with the JIT's loader; the sources above stay this test's own
+            target_link_libraries(snx-test-link-macho PRIVATE snx_llvm "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
+        endif()
+        # the linker's ELF side is not on Windows, whose objects are COFF
+        if(NOT WIN32)
+            set(snx_macho_elf_refusals
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_3.o" "a call to the undefined weak symbol _missing"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_4.o" "aligned beyond a page"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_5.o" "absolute address in read-only section .rodata"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_6.o" "thread-local data is not supported")
+        else()
+            set(snx_macho_elf_refusals)
+        endif()
         add_test(NAME link_macho COMMAND snx-test-link-macho "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho.dylib"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_2.o"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_7.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "a call to the undefined weak symbol _missing"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page")
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page"
+            ${snx_macho_elf_refusals})
     endif()
-endif()
-if(APPLE)
-    # aot_variants links a JIT cache unit as ELF into an AOT module that is Mach-O on this host: it needs its own fix
-    # before it can run here
-    set_tests_properties(aot_variants PROPERTIES DISABLED TRUE)
 endif()
 
 # the generated decoder, function discovery, and LLVM steps against expected values (llvm_steps.c)
@@ -5296,7 +5364,7 @@ add_executable(snx-test-vk-space vk_space.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk
 snx_test_target(snx-test-vk-space c23)
 target_include_directories(snx-test-vk-space PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME vk_space COMMAND snx-test-vk-space)
-add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
 snx_test_target(snx-test-pending-pages gnu23)
 target_link_libraries(snx-test-pending-pages PRIVATE scarletnx-filesystem Threads::Threads) # pend_lock's PMutex
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
@@ -5518,13 +5586,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                      "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/llvm-opt-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_opt.cmake")
         endif()
     endif()
-    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vulkan-release gnu23)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
     # the GPU mirror's bookkeeping on the CPU (gpu/vk/mirror.c), with no device
     add_executable(snx-test-mirror-landing mirror_landing.c tracy_stubs.c
-                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-mirror-landing gnu23)
     target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags)
     add_test(NAME mirror_landing COMMAND snx-test-mirror-landing)
@@ -5711,9 +5779,16 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-devmem PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-devmem PRIVATE Vulkan::Headers scarletnx-common) # snx_thread_name
     add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
+    # the constant buffer slots bound as dynamic uniform buffers (gpu/vk/cb_dynamic.c), from one run's moves to the next
+    add_executable(snx-test-vk-cb-dynamic vk_cb_dynamic.c)
+    snx_test_target(snx-test-vk-cb-dynamic gnu23)
+    target_compile_definitions(snx-test-vk-cb-dynamic PRIVATE VK_NO_PROTOTYPES)
+    target_include_directories(snx-test-vk-cb-dynamic PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-cb-dynamic PRIVATE Vulkan::Headers)
+    add_test(NAME vk_cb_dynamic COMMAND snx-test-vk-cb-dynamic)
     # the trim of the caches (gpu/vk/surface.c vk_mem_trim) over stubs of the rest of the renderer: when it takes the
     # render targets that later ones drew all over, where the driver moves memory by priority and where it does not
-    add_executable(snx-test-vk-mem-trim vk_mem_trim.c)
+    add_executable(snx-test-vk-mem-trim vk_mem_trim.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-mem-trim gnu23)
     target_compile_definitions(snx-test-vk-mem-trim PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx-test-vk-mem-trim PRIVATE "${volk_SOURCE_DIR}" "${renderdoc_app_SOURCE_DIR}")

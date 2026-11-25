@@ -542,10 +542,10 @@ setting ASTC mode
     startup
     words Auto|Exact|BC7|BC7 at load
     perf
-    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = BC7 at load for an Ounce
-    help game, as feat/ounce holds them; for any other, it follows the GPU's memory as the game runs: the textures that
-    help load are Exact while there is room, BC7 from the moment the caches fill to where they start freeing memory
-    help (a little under the budget), and Exact again once more room comes back than the caches' own trims leave;
+    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = it follows the GPU's
+    help memory as the game runs: the textures that load are Exact while there is room, BC7 from the moment the
+    help caches fill to where they start freeing memory (a little under the budget), and Exact again once more room
+    help comes back than the caches' own trims leave and than the textures held as BC7 would take more as RGBA8;
     help those loaded Exact go to BC7 too at the turn, read again at their next use where their memory is unchanged.
     help The log says each change with the memory in use, the budget and the room. Whatever the room, a texture whose
     help blocks hold luminance alone is BC4 as it loads, luminance and alpha BC5, and opaque colour on one line a 4x4
@@ -554,7 +554,7 @@ setting ASTC mode
     help BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between frames, a few at a time, into a
     help quarter of RGBA8's memory, close to what the blocks decode to but not always the same. A later run loads them
     help from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
-    help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
+    help RGBA8 image before it, as feat/ounce did. Where the GPU samples ASTC it does
     help nothing. It takes the place of astc_bc, whose 1 is Auto
 setting Texture shed
     label Texture levels give way
@@ -1674,6 +1674,51 @@ setting Draw state check
     help compared too. A texture the quick check finds unchanged is checked the full way too, and the log counts where
     help the full check found a change. The buffers and images of a draw past the count it has of each, which a draw
     help leaves unwritten, hold a pattern, so a read past a count shows. Slow: for checking what a draw keeps
+setting Pool map shadow
+    key pool_map_shadow
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the renderer keeps a record of what each texture and sampler header of the game's pools resolved to, which
+    help the header's writes, surface changes, draws into a cropped target, the scale, image swaps and views destroyed
+    help clear, and compares each draw's textures with the records it holds. The log counts the agreements and the
+    help differences by cause every 600 presents, and with draw_state_check=1 names the first differences. Draws still
+    help use their own textures, so nothing on the screen changes. Slow: for checking the map that bindless textures
+    help will read
+setting Texture events shadow
+    key tex_events_shadow
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = each texture a draw keeps is also judged by the generations by address of the writes over its memory (the
+    help CPU's, the GPU side's, results added, targets drawn, surfaces made or freed): unchanged generations claim its
+    help texels are current. The renderer still checks each texture as before, and the log counts every 600 presents the
+    help claims each check contradicted, and with draw_state_check=1 names the first ones. Nothing on the screen changes.
+    help Slow: for checking the events that bindless textures will take (docs/dev/draw-cost.md, item 7b)
+setting Pool map
+    key pool_map
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = an Ounce game's textures, where the GPU reads its global memory by address and has unified image
+    help layouts, come to each draw through a map of the game's texture and sampler pools on the GPU, which the draws
+    help that sampled them before taught: a draw writes no word for a texture the map holds, and leaves out the read
+    help barriers that the barriers at the writer cover (writer_barriers, on with it). The log counts the textures
+    help through the map, and why the others are not, every 600 presents. For measuring the step to bindless textures
+setting Writer barriers
+    key writer_barriers
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with unified image layouts, an image a pass, a copy, an upload or a storage write changes goes on a list,
+    help and the next rendering pass starts with one barrier that makes those writes visible to every later read. The
+    help barriers each read makes come too, so nothing on the screen changes: the log counts the images in the batches
+    help and the read barriers they cover every 600 presents. For measuring the step to bindless textures that moves
+    help the barriers to the writer
 setting Profiler
     key profile
     only windows

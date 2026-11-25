@@ -1098,7 +1098,7 @@ static int split_before(u64 texels) {
 
 /* ---- Very large levels: the quick build now, the fast build in the background
 
-   A level held as BC7 at load (astc_mode's BC7 at load, or its Auto for an Ounce game) of astc_quick_mtexels
+   A level held as BC7 at load (astc_mode's BC7 at load) of astc_quick_mtexels
    megatexels or more, all its layers or slices counted, takes the encoder's quick build (mode 6 from one line) in the
    frame that needs it, and its fast build is made in the background: into the BC7 cache,
    so that the next upload of the same blocks (a later run's, or this run's after an eviction) copies them with no

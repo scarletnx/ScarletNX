@@ -551,6 +551,192 @@ static int compute_pending_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* The texture memo's checks by the generations of the addresses it read (render.c tex_memo_unwritten and
+   tex_memo_unpended, vk/addr_gens.h). The texture program samples the 2x1 R32F texture of compute_pending_cases (red
+   0.75). A write to other memory, in a granule of its own, by a dispatch and by the CPU, two times each: the second
+   check keeps the texture by the generations alone, with no resolve and the same pixel. Then the writes that must
+   miss or load again: the CPU writes the texture's texel 0 (red one, then 0.75 again), the CPU writes the header
+   (its red read as one), and a dispatch stores 1.0 into texel 0 (red one) */
+#include "nx/gpu/vk/addr_gens.h"
+#define GENS_OTHER_GPU (MEMO_GPU + 0x200000)
+#define GENS_OTHER_CPU (MEMO_CPU + 0x200000)
+/* a draw of pending_draw's, its pixel's red against want, and the counts it added into *d */
+static int gens_draw(GpuChannel* channel, u8 want, const char* what, VkDrawCounts* d) {
+    VkDrawCounts before, after;
+    u8 px[4];
+    int kept;
+    vk_draw_counts(&before);
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_draw_counts(&after);
+    for (int i = 0; i < VK_GENS_N; i++) d->gens[i] = after.gens[i] - before.gens[i];
+    for (int i = 0; i < VK_TEX_N; i++) d->tex[i] = after.tex[i] - before.tex[i];
+    const int near = px[0] + 2 >= want && px[0] <= want + 2;
+    if (!near)
+        fprintf(stderr, "memo generations, %s: red %u, expected %u (%llu resolved, gens %llu %llu %llu %llu)\n", what,
+                px[0], want, (unsigned long long)d->tex[VK_TEX_RESOLVED],
+                (unsigned long long)d->gens[VK_GENS_HEADERS_KEPT], (unsigned long long)d->gens[VK_GENS_HEADERS_CHECKED],
+                (unsigned long long)d->gens[VK_GENS_RESULTS_KEPT], (unsigned long long)d->gens[VK_GENS_RESULTS_CHECKED]);
+    CHECK(near);
+    return 0;
+}
+/* the CPU writes word at cpu and a submission starts an epoch, as the guest's queue submission does */
+static void gens_cpu_word(u64 cpu, u32 word) {
+    snx_st_le32(GP(cpu), word);
+    vk_ww_new_epoch();
+}
+/* the sampler pool of the fragment stage at gva, its sampler 0 the cases' (life_headers) */
+static int gens_samplers(GpuChannel* channel, u64 gva) {
+    u8 sampler[32];
+    CHECK(!gmem_read(LIFE_POOL + 0x100, sampler, sizeof sampler) && !gmem_write(gva, sampler, sizeof sampler));
+    channel->r3d[0x557] = (u32)(gva >> 32);
+    channel->r3d[0x558] = (u32)gva;
+    return 0;
+}
+/* A way of the memo that is kept anew for another key takes nothing of the generations it had: its first check reads
+   the headers. The texture through five sampler pools, one more than a set has ways, so the last takes the way of the
+   first, whose last check took the sum of its headers' granule (header_cpu's, two times). The last one's sampler is in
+   a granule of its own: once the texture's header is written, that granule is moved until the sum of the two is the
+   first one's. Taken for the last check's, it kept the header from before */
+static int gens_way_again(GpuChannel* channel, u64 header_cpu) {
+    const u64 last = GENS_OTHER_GPU + 0x100, last_cpu = GENS_OTHER_CPU + 0x100;
+    VkDrawCounts d;
+    u32 tic[8], g = 0, h = 0;
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "the first pool", &d));
+    for (int i = 0; i < 64; i++) addr_gens_bump(ADDR_GENS_CPU, header_cpu, 32); /* room for the last one's sum */
+    gens_cpu_word(GENS_OTHER_CPU, 0x5ca1ab1eu);
+    CHECK(!gens_draw(channel, 191, "the first pool, its headers checked", &d));
+    CHECK(d.gens[VK_GENS_HEADERS_CHECKED] && vk_ww_gen(GP(header_cpu), 32, &g));
+    const u32 sum = 2 * g;
+    for (u32 i = 1; i < 4; i++) {
+        CHECK(!gens_samplers(channel, LIFE_POOL + 0x100 + i * 0x20));
+        CHECK(!gens_draw(channel, 191, "a pool beside it", &d));
+    }
+    CHECK(!gens_samplers(channel, last));
+    CHECK(!gens_draw(channel, 191, "the last pool", &d));
+    CHECK(d.tex[VK_TEX_RESOLVED]);
+    life_tic(tic, 1);
+    for (u32 i = 0; i < 8; i++) snx_st_le32(GP(header_cpu) + i * 4, tic[i]);
+    vk_ww_new_epoch();
+    vk_lock();
+    CHECK(!vk_ww_take(GP(header_cpu), 32) && !vk_ww_take(GP(last_cpu), 32));
+    CHECK(vk_ww_gen(GP(header_cpu), 32, &g) && vk_ww_gen(GP(last_cpu), 32, &h));
+    for (; g + h < sum; h++) addr_gens_bump(ADDR_GENS_CPU, last_cpu, 8);
+    CHECK(vk_ww_gen(GP(last_cpu), 32, &h) && g + h == sum);
+    vk_unlock();
+    CHECK(!gens_draw(channel, 255, "the last pool, after the CPU wrote the header", &d));
+    CHECK(d.tex[VK_TEX_RESOLVED] && !d.gens[VK_GENS_HEADERS_KEPT]);
+    CHECK(!gens_samplers(channel, LIFE_POOL + 0x100) && !life_headers(0, 0));
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "the first pool again", &d));
+    return 0;
+}
+static int memo_gens_cases(GpuChannel* channel) {
+    if (vk_uma()) {
+        puts("SKIP memo generations: memory is shared with the CPU, where a dispatch writes in place");
+        return 0;
+    }
+    static int mapped;
+    if (!mapped) {
+        CHECK(mem_map(GENS_OTHER_CPU, 0x1000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(GENS_OTHER_GPU, GENS_OTHER_CPU, 0x1000);
+        mapped = 1;
+    }
+    u32* r = channel->r3d;
+    CHECK(!life_headers(0, 0));
+    u8 texels[8] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    int saved_check = g_settings.draw_state_check;
+    g_settings.draw_state_check = 0;
+    vk_ww_new_epoch();
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    const u64 header_cpu = MEMO_CPU + (LIFE_POOL - MEMO_GPU), texel_cpu = header_cpu + 0x400;
+    const int tracking = vk_written_since(GP(header_cpu), 32, 0) >= 0;
+    vk_unlock();
+    VkDrawCounts d[2];
+    CHECK(!gens_draw(channel, 191, "the first draw", &d[0]));
+    /* a dispatch's result elsewhere, two times: the second check is kept by the generations, and nothing resolves */
+    for (int k = 0; k < 2; k++) {
+        CHECK(!pending_dispatch(GENS_OTHER_GPU));
+        CHECK(!gens_draw(channel, 191, "after a result elsewhere", &d[k]));
+        CHECK(!d[k].tex[VK_TEX_RESOLVED]);
+    }
+    if (!d[1].gens[VK_GENS_RESULTS_KEPT])
+        fprintf(stderr, "memo generations: a second result elsewhere was checked again (%llu checked)\n",
+                (unsigned long long)d[1].gens[VK_GENS_RESULTS_CHECKED]);
+    CHECK(d[1].gens[VK_GENS_RESULTS_KEPT] && !d[1].gens[VK_GENS_RESULTS_CHECKED]);
+    vk_lock();
+    vk_compute_land();
+    vk_finish();
+    vk_unlock();
+    /* the CPU writes elsewhere, two times, each with an epoch: the second check of the headers is kept by the
+       generations, where the write tracking runs and reports no write on the headers' page. With hot pages
+       (write_tracking_hot_pages=1), the cases before wrote that page often enough that it reads as written at each
+       scan for a while, and the headers are checked again, as they must be */
+    const u32 before = vk_ww_now();
+    for (int k = 0; k < 2; k++) {
+        gens_cpu_word(GENS_OTHER_CPU, 0x12345678u + (u32)k);
+        CHECK(!gens_draw(channel, 191, "after a CPU write elsewhere", &d[k]));
+        CHECK(!d[k].tex[VK_TEX_RESOLVED]);
+    }
+    vk_lock();
+    const int header_quiet = vk_written_since(GP(header_cpu), 32, before) == 0;
+    vk_unlock();
+    if (tracking && !header_quiet)
+        puts("memo generations: the headers' page read as written (hot pages), so the second check was not asked to be "
+             "kept");
+    if (tracking && header_quiet) {
+        if (!d[1].gens[VK_GENS_HEADERS_KEPT])
+            fprintf(stderr, "memo generations: a second CPU write elsewhere was checked again (%llu checked)\n",
+                    (unsigned long long)d[1].gens[VK_GENS_HEADERS_CHECKED]);
+        CHECK(d[1].gens[VK_GENS_HEADERS_KEPT] && !d[1].gens[VK_GENS_HEADERS_CHECKED]);
+    }
+    /* the CPU writes the texture memory: the new texel, then the old one */
+    gens_cpu_word(texel_cpu, 0x3f800000);
+    CHECK(!gens_draw(channel, 255, "after the CPU wrote texel 0", &d[0]));
+    gens_cpu_word(texel_cpu, 0);
+    CHECK(!gens_draw(channel, 191, "after the CPU wrote texel 0 back", &d[0]));
+    /* the CPU writes the header between two draws: its red read as one, a miss */
+    u32 tic[8];
+    life_tic(tic, 1);
+    for (u32 i = 0; i < 8; i++) snx_st_le32(GP(header_cpu) + i * 4, tic[i]);
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 255, "after the CPU wrote the header", &d[0]));
+    CHECK(d[0].tex[VK_TEX_RESOLVED] && !d[0].gens[VK_GENS_HEADERS_KEPT]);
+    CHECK(!life_headers(0, 0));
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "after the header written back", &d[0]));
+    /* a dispatch writes the texture memory: a miss, which lands the result. A result elsewhere first, whose check
+       takes the generations again after the header's miss kept the way anew: the store is then asked of them */
+    CHECK(!pending_dispatch(GENS_OTHER_GPU));
+    CHECK(!gens_draw(channel, 191, "after a result elsewhere again", &d[0]));
+    CHECK(!pending_dispatch(LIFE_POOL + 0x400));
+    CHECK(!gens_draw(channel, 255, "after a dispatch wrote texel 0", &d[0]));
+    CHECK(d[0].tex[VK_TEX_RESOLVED] && !d[0].gens[VK_GENS_RESULTS_KEPT]);
+    vk_lock();
+    vk_compute_land();
+    vk_finish();
+    vk_unlock();
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    if (tracking) CHECK(!gens_way_again(channel, header_cpu));
+    vk_ww_new_epoch();
+    g_settings.draw_state_check = saved_check;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    printf("PASS memo generations: writes elsewhere by a dispatch and by the CPU kept by the generations%s; the "
+           "texture's memory and header written by the CPU and by a dispatch drawn new\n",
+           tracking ? "" : " (the CPU's not: no write tracking)");
+    return 0;
+}
+
 /* A draw's fragment key kept from the draw before where its texture lies over a render target without being it
    (render.c's fs_key, TexOver): the texture's header reads the 4x4 RGBA8 target at OVER_TARGET as R32F, the same bytes
    in another format, so the draws sample a copy of the target. The second draw of a pair keeps the first one's key.
@@ -677,6 +863,437 @@ static int over_target_cases(GpuChannel* channel) {
     channel->ds.bind.cb_addr[4][2] = 0;
     channel->ds.bind.cb_size[4][2] = 0;
     r[0x982] = 0;
+    return 0;
+}
+
+/* The pool map in shadow mode (vk/pool_map.c, pool_map_shadow): the texture program's draws fill the record of TIC
+   index 0, which stays valid and agrees with each resolve after it. Each event clears it, and the next draw fills it
+   again: the CPU writes the header between two draws, the GPU writes it back, the texture's image is swapped, a view
+   of the record is destroyed, and the target that a record's texture crops is drawn again. Pixels as without the map,
+   and no difference, in each run, the second with draw_state_check=1 */
+#include "nx/gpu/vk/pool_map.h"
+/* whether the record of TIC index 0 of the draws' texture pool is valid now (the events taken in first) */
+static int pm_valid(GpuChannel* channel) {
+    vk_lock();
+    const int valid = vk_pool_map_valid(channel->ds.bind.tex_pool, 0);
+    vk_unlock();
+    return valid;
+}
+/* one draw of the texture program: its pixel's red against want */
+static int pm_draw(GpuChannel* channel, u8 want, const char* what) {
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    if (px[0] + 2 < want || px[0] > want + 2)
+        fprintf(stderr, "pool map, %s: red %u, expected %u\n", what, px[0], want);
+    CHECK(px[0] + 2 >= want && px[0] <= want + 2);
+    return 0;
+}
+/* event cleared the record of TIC index 0: valid after two draws, not valid after event, valid after the next draw */
+#define PM_CLEARS(what, want, ...)                                                                                      \
+    do {                                                                                                               \
+        CHECK(!pm_draw(channel, want, what));                                                                          \
+        CHECK(!pm_draw(channel, want, what));                                                                          \
+        const int before_event = pm_valid(channel);                                                                    \
+        __VA_ARGS__;                                                                                                   \
+        const int after_event = pm_valid(channel);                                                                     \
+        if (!before_event || after_event)                                                                              \
+            fprintf(stderr, "pool map, %s: valid %d before the event and %d after it (expected 1 and 0)\n", what,      \
+                    before_event, after_event);                                                                        \
+        CHECK(before_event && !after_event);                                                                           \
+    } while (0)
+/* every view of the texture tic names destroyed, as the end of its frame destroys them (vk_image_view_destroy) */
+static void pm_views_gone(const u32* tic) {
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    for (int i = 0; t && i < t->nsv; i++) vk_pool_map_view_gone(t->sv[i].v);
+    vk_unlock();
+}
+static void pm_swapped(const u32* tic) {
+    vk_lock();
+    vk_pool_map_swapped(vk_tex_from_tic(tic));
+    vk_unlock();
+}
+static int pool_map_cases(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const int saved_check = g_settings.draw_state_check, saved_map = g_settings.pool_map_shadow;
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    for (int check = 0; check < 2; check++) {
+        g_settings.draw_state_check = check;
+        g_settings.pool_map_shadow = 1;
+        vk_lock();
+        vk_pool_map_forget();
+        vk_unlock();
+        CHECK(!life_headers(0, 0)); /* the 2x1 R32F texture of 0 and 1: red 0.75 */
+        u8 texels[8] = {0};
+        snx_st_le32(texels + 4, 0x3f800000);
+        CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+        vk_ww_new_epoch();
+        vk_lock();
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        vk_unlock();
+        PoolMapCounts c0, c1;
+        vk_pool_map_counts(&c0);
+        u32 tic[8], tic_one[8];
+        life_tic(tic, 0);
+        life_tic(tic_one, 1);
+        /* the CPU writes the header between two draws (its red read as one) */
+        PM_CLEARS("the CPU writes the header", 191, {
+            for (u32 i = 0; i < 8; i++) snx_st_le32(GP(MEMO_CPU + (LIFE_POOL - MEMO_GPU)) + i * 4, tic_one[i]);
+            vk_ww_new_epoch();
+        });
+        /* the GPU writes it back */
+        PM_CLEARS("the GPU writes the header", 255, CHECK(!life_headers(0, 0)));
+        /* the texture's image swapped, and a view of the record destroyed */
+        PM_CLEARS("the image swapped", 191, pm_swapped(tic));
+        PM_CLEARS("a view destroyed", 191, pm_views_gone(tic));
+        CHECK(!pm_draw(channel, 191, "after the events"));
+        CHECK(!pm_draw(channel, 191, "after the events"));
+        vk_pool_map_counts(&c1);
+        u64 differ = 0;
+        for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+        if (differ || c1.agree - c0.agree < 5)
+            fprintf(stderr, "pool map%s: %llu agreed (5 or more expected), %llu differed (none expected)\n",
+                    check ? " with draw_state_check=1" : "", (unsigned long long)(c1.agree - c0.agree),
+                    (unsigned long long)differ);
+        CHECK(!differ && c1.agree - c0.agree >= 5);
+        /* a texture over a target (a copy of it in another format), and the target drawn again */
+        u32 over[8];
+        u8 bytes[32];
+        life_tic(over, 0);
+        over[1] = (u32)OVER_TARGET;
+        over[2] = (u32)(OVER_TARGET >> 32) | 3u << 21;
+        over[4] = (MEMO_SIDE - 1) | 1u << 23;
+        over[5] = (MEMO_SIDE - 1) | 1u << 31;
+        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, over[i]);
+        CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+        vk_ww_new_epoch();
+        vk_lock();
+        rt_clear(channel, OVER_TARGET, MEMO_SIDE, MEMO_SIDE, 0, 1);
+        vk_unlock();
+        vk_release_submit();
+        vk_lock();
+        rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        vk_unlock();
+        u8 px[4];
+        int kept;
+        CHECK(!pending_draw(channel, px, &kept));
+        const u8 crop_red = px[0];
+        PM_CLEARS("the cropped target drawn again", crop_red, {
+            vk_lock();
+            over_bind(channel, OVER_TARGET);
+            r[0x851] = MEMO_GREEN;
+            channel->r3d_dirty = ~0u;
+            mx_draw_state_sync(channel);
+            DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+            vk_render_draw(&channel->ds, &call, &channel->owner);
+            vk_render_end();
+            over_bind(channel, MEMO_GPU + 0x20000);
+            vk_unlock();
+            vk_release_submit();
+        });
+        vk_pool_map_counts(&c0);
+        CHECK(!pending_draw(channel, px, &kept));
+        vk_pool_map_counts(&c1);
+        differ = 0;
+        for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+        CHECK(!differ);
+        CHECK(pm_valid(channel));
+    }
+    g_settings.draw_state_check = saved_check;
+    g_settings.pool_map_shadow = saved_map;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    CHECK(!life_headers(0, 0));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS pool map: a record of a texture pool agrees with each resolve while valid, and a header written by the "
+         "CPU or the GPU, an image swap, a view destroyed and a cropped target drawn again each clear it");
+    return 0;
+}
+
+/* A header that NVN's nvnTexturePoolRegisterTexture writes between two draws, with no submission between them, as an
+   Ounce game's menus register a new texture at an index while the GPU thread replays the work before (nvn_object.c
+   register_texture). No write tracking epoch starts, so only the record of that write as a GPU-side one
+   (gpu_mem_written_cpu) tells the pool map: the record of the index must be cleared before the next compare. The
+   texture and sampler pools of the draws, as an NVN pool over their memory: texture A, the 2x1 R32F texture of 0 and
+   1, then texture B, the same over 1 and 1 */
+#include "gpu/nvn/nvn.hook.h"
+#define PMN_OBJECTS (MEMO_CPU + 0x3c000) /* the memory pool, the texture pool and the two textures' objects */
+static void pmn_texture(u64 at, u64 gpu) {
+    NvnTexture tex = {0};
+    tex.d.target = NVN_TEXTURE_TARGET_2D;
+    tex.d.format = NVN_FORMAT_R32F;
+    tex.d.levels = 1;
+    tex.d.width = 2;
+    tex.d.height = 1;
+    tex.d.depth = 1;
+    tex.gpu = gpu;
+    memcpy(GP(at), &tex, sizeof tex);
+}
+static int pool_map_nvn_case(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const int saved_map = g_settings.pool_map_shadow;
+    const u64 pool = PMN_OBJECTS, tp = PMN_OBJECTS + 0x100, a = PMN_OBJECTS + 0x200, b = PMN_OBJECTS + 0x300;
+    NvnPool mem = {0};
+    mem.memory = MEMO_CPU + (LIFE_POOL - MEMO_GPU);
+    mem.gpu = LIFE_POOL;
+    mem.size = 0x1000;
+    memcpy(GP(pool), &mem, sizeof mem);
+    CHECK(nvn_TexturePoolInitialize(NULL, tp, pool, 0, 2));
+    pmn_texture(a, LIFE_POOL + 0x400);
+    pmn_texture(b, LIFE_POOL + 0x800);
+    u8 texels[16] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    snx_st_le32(texels + 8, 0x3f800000);
+    snx_st_le32(texels + 12, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, 8));
+    CHECK(!gmem_write(LIFE_POOL + 0x800, texels + 8, 8));
+    CHECK(!life_headers(0, 0)); /* the sampler */
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    g_settings.pool_map_shadow = 1;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, a, 0);
+    vk_ww_new_epoch(); /* the game's submission */
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    vk_unlock();
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(!pending_draw(channel, px, &kept));
+    const int before = pm_valid(channel);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, b, 0); /* no submission: the same epoch */
+    const int after = pm_valid(channel);
+    PoolMapCounts c0, c1;
+    vk_pool_map_counts(&c0);
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_pool_map_counts(&c1);
+    u64 differ = 0;
+    for (int i = 0; i < POOL_DIFF_N; i++) differ += c1.differ[i] - c0.differ[i];
+    if (!before || after || differ)
+        fprintf(stderr,
+                "pool map, a header NVN registers in the same epoch: valid %d before and %d after (expected 1 and 0), "
+                "%llu differences after (none expected)\n",
+                before, after, (unsigned long long)differ);
+    CHECK(before && !after && !differ);
+    g_settings.pool_map_shadow = saved_map;
+    vk_lock();
+    vk_pool_map_forget();
+    vk_unlock();
+    CHECK(!life_headers(0, 0));
+    u8 zero[8] = {0};
+    snx_st_le32(zero + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, zero, 8));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS pool map: a header NVN registers between two draws in one epoch clears its record");
+    return 0;
+}
+/* Work submitted with texture A at index 0, which the GPU thread replays while the game registers B there: it draws
+   with A, as the registration waits for it (nvn_object.c texture_write). The call on the GPU thread draws once it sees
+   what the registration does: B's descriptor in the slot, which nothing waited to write, or the wait for the submitted
+   work queued (nvn_replay_finish_all's job, NVN_QUEUES + 1), which ends after this call */
+typedef struct {
+    GpuChannel* channel;
+    u64 slot;
+    u32 a[8];
+    u8 px[4];
+    int failed, waited, late;
+} TxwDraw;
+static int txw_waits(void) {
+    NvnReplayState* st = &g_nvn.replay;
+    int n = 0;
+    pm_lock(&st->lock);
+    for (int i = 0; i < NVN_JOBS; i++) n += st->jobs[i].queue == NVN_QUEUES + 1;
+    pm_unlock(&st->lock);
+    return n != 0;
+}
+static int txw_draw(void* arg) {
+    TxwDraw* d = (TxwDraw*)arg;
+    const u64 end = plat_ns() + 10000000000ull;
+    int kept;
+    while (!(d->waited = txw_waits()) && !memcmp(GP(d->slot), d->a, sizeof d->a)) {
+        if (plat_ns() > end) {
+            d->late = 1;
+            break;
+        }
+        plat_sleep_ns(20000);
+    }
+    d->failed = pending_draw(d->channel, d->px, &kept);
+    return 1;
+}
+static int texture_write_case(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const u64 pool = PMN_OBJECTS, tp = PMN_OBJECTS + 0x100, a = PMN_OBJECTS + 0x200, b = PMN_OBJECTS + 0x300;
+    NvnPool mem = {0};
+    mem.memory = MEMO_CPU + (LIFE_POOL - MEMO_GPU);
+    mem.gpu = LIFE_POOL;
+    mem.size = 0x1000;
+    memcpy(GP(pool), &mem, sizeof mem);
+    CHECK(nvn_TexturePoolInitialize(NULL, tp, pool, 0, 2));
+    pmn_texture(a, LIFE_POOL + 0x400);
+    pmn_texture(b, LIFE_POOL + 0x800);
+    u8 texels[16] = {0}, px[4];
+    int kept;
+    snx_st_le32(texels + 4, 0x3f800000);
+    snx_st_le32(texels + 8, 0x3f800000);
+    snx_st_le32(texels + 12, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, 8));     /* A: 0 and 1, filtered to 191 of 255 */
+    CHECK(!gmem_write(LIFE_POOL + 0x800, texels + 8, 8)); /* B: 1 and 1 */
+    CHECK(!life_headers(0, 0));                           /* the sampler */
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, a, 0);
+    vk_ww_new_epoch(); /* the game's submission */
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    vk_unlock();
+    CHECK(!pending_draw(channel, px, &kept));
+    const u8 alone = px[0];
+    TxwDraw d = {.channel = channel, .slot = mem.memory};
+    memcpy(d.a, GP(d.slot), sizeof d.a);
+    const u32 q = nvn_replay_queue(); /* a live queue: with none, finish_all has nothing to wait for */
+    gpu_call_poll(txw_draw, &d, q - 1);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, b, 0); /* the same epoch */
+    nvn_replay_finish(q);
+    const int written = memcmp(GP(d.slot), d.a, sizeof d.a) != 0;
+    CHECK(!pending_draw(channel, px, &kept));
+    nvn_replay_queue_free(q);
+    if (alone != 191 || d.px[0] != 191 || px[0] != 255 || !written || d.late || d.failed)
+        fprintf(stderr,
+                "a texture registered over another while the work before it replays: that work reads red %u, the draw "
+                "after %u, and A alone %u (expected 191, 255 and 191); the registration waited %d, wrote %d, the draw "
+                "gave up on it %d, failed %d\n",
+                d.px[0], px[0], alone, d.waited, written, d.late, d.failed);
+    CHECK(alone == 191 && d.px[0] == 191 && px[0] == 255 && written && !d.late && !d.failed);
+    CHECK(!life_headers(0, 0));
+    u8 zero[8] = {0};
+    snx_st_le32(zero + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, zero, 8));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS a texture NVN registers over another waits for the work that samples it");
+    return 0;
+}
+
+/* The barriers at the writer (writer_barriers, gpu/vk/surface.c vk_surf_written_flush), with unified image layouts. A
+   pass writes target T with the color program (white or green, as the cases before left its code), a pass on another
+   target begins (its batch takes T's write), and the next pass samples T: the drawn color, and today's reader barrier
+   for T is one a batch covered. Then an upload and a sample in one draw: the CPU
+   writes the texture's texel 0, and the draw's upload and sample give red one, the reader barrier one that the next
+   pass's batch covers. The pixels as without the setting */
+#define WB_T (MEMO_GPU + 0x34000) /* 4x4 RGBA8, as OVER_TARGET */
+#define WB_V (MEMO_GPU + 0x24000)
+static int writer_cases(GpuChannel* channel) {
+    if (!g_vk.has_unified_layouts) {
+        puts("SKIP barriers at the writer: the device has no unified image layouts");
+        return 0;
+    }
+    u32* r = channel->r3d;
+    const int saved = g_settings.writer_barriers;
+    /* SNX_TEST_WRITER_OFF=1: the same commands with the setting off, for the validation layer's messages to compare */
+    const int on = !getenv("SNX_TEST_WRITER_OFF");
+    g_settings.writer_barriers = on;
+    VkWriterCounts c0, c1;
+    /* a pass writes T, a pass on V begins, a pass samples T */
+    u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                  (u32)WB_T,
+                  (u32)(WB_T >> 32) | 3u << 21,
+                  0,
+                  (MEMO_SIDE - 1) | 1u << 23,
+                  (MEMO_SIDE - 1) | 1u << 31,
+                  0,
+                  0};
+    u8 bytes[32];
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!life_headers(0, 0)); /* the sampler, linear */
+    CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    vk_ww_new_epoch();
+    vk_surf_writer_counts(&c0);
+    rt_clear(channel, WB_T, MEMO_SIDE, MEMO_SIDE, 0, 1);
+    vk_lock();
+    over_bind(channel, WB_T);
+    r[0x851] = MEMO_GREEN;
+    r[0x458] = 0 | 1u << 21 | 7u << 27;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    u8 drawn[4] = {0}; /* the color program's color (an earlier case made it white) */
+    Surf* t = vk_rt_find(WB_T);
+    CHECK(t && !read_pixel_at(t, 2, 2, drawn));
+    vk_unlock();
+    rt_clear(channel, WB_V, MEMO_SIDE, MEMO_SIDE, 0, 1); /* a pass on V: its batch takes T's write */
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    u8 px[4];
+    int kept;
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_surf_writer_counts(&c1);
+    const int same = !memcmp(px, drawn, 4) && drawn[0] + drawn[1] + drawn[2] > 0; /* drawn, not the clear's red */
+    if (!on) c1.batched = c0.batched + 1, c1.covered = c0.covered + 1; /* no counts with the setting off */
+    if (!same || drawn[1] != 255 || c1.batched == c0.batched || c1.covered == c0.covered)
+        fprintf(stderr,
+                "barriers at the writer, a pass's target sampled: pixel %u,%u,%u,%u (the target holds %u,%u,%u,%u), "
+                "%llu surfaces batched, %llu reader barriers covered (1 or more each expected)\n",
+                px[0], px[1], px[2], px[3], drawn[0], drawn[1], drawn[2], drawn[3],
+                (unsigned long long)(c1.batched - c0.batched), (unsigned long long)(c1.covered - c0.covered));
+    CHECK(same && drawn[1] == 255 && c1.batched > c0.batched && c1.covered > c0.covered);
+    /* an upload and a sample: the 2x1 R32F texture, texel 0 written by the CPU */
+    CHECK(!life_headers(0, 0));
+    u8 texels[8] = {0};
+    snx_st_le32(texels + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels));
+    vk_ww_new_epoch();
+    CHECK(!pending_draw(channel, px, &kept));
+    CHECK(life_near(px, (const u8[4]){191, 0, 0, 255}));
+    snx_st_le32(GP(MEMO_CPU + (LIFE_POOL + 0x400 - MEMO_GPU)), 0x3f800000);
+    vk_ww_new_epoch();
+    vk_surf_writer_counts(&c0);
+    CHECK(!pending_draw(channel, px, &kept));
+    vk_surf_writer_counts(&c1);
+    if (!on) c1.covered = c0.covered + 1;
+    if (!life_near(px, (const u8[4]){255, 0, 0, 255}) || c1.covered == c0.covered)
+        fprintf(stderr,
+                "barriers at the writer, an upload sampled: red %u (expected 255), %llu reader barriers covered (1 or "
+                "more expected)\n",
+                px[0], (unsigned long long)(c1.covered - c0.covered));
+    CHECK(life_near(px, (const u8[4]){255, 0, 0, 255}) && c1.covered > c0.covered);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    vk_ww_new_epoch();
+    g_settings.writer_barriers = saved;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS barriers at the writer: a pass's target and an upload sampled after them, their writes in batches or "
+         "listed for the next pass's batch");
     return 0;
 }
 
@@ -1190,7 +1807,12 @@ static int check_draw_memo(void) {
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
     CHECK(!compute_pending_cases(channel));
+    CHECK(!memo_gens_cases(channel));
     CHECK(!over_target_cases(channel));
+    CHECK(!pool_map_cases(channel));
+    CHECK(!pool_map_nvn_case(channel));
+    CHECK(!texture_write_case(channel));
+    CHECK(!writer_cases(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
     CHECK(!last_cases(channel));

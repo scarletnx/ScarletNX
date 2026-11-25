@@ -817,7 +817,7 @@ static void test_migrate(void) {
         CHECK(scan_reports(a, 2 * size, a) >= 0); /* the fill's writes taken */
         g[5 * page] = fill(5 * page);             /* a write of the byte it holds, before the move, not scanned yet */
     }
-    CHECK(mem_migrate(a, size, f1) == 0);
+    CHECK(mem_migrate(a, size, f1, NULL) == 0);
     for (u64 i = 0; i < size; i += 4093) CHECK(v1[i] == fill(i) && g[i] == v1[i]);
     if (g_ww) CHECK(scan_only(a, 2 * size, a + 5 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[100] = 0x77;
@@ -826,7 +826,7 @@ static void test_migrate(void) {
     check_tracking(a, size);
     /* the first megabyte moves on from f1's pages, with the second from the reservation's */
     if (g_ww) g[size + 9 * page] = fill(size + 9 * page);
-    CHECK(mem_migrate(a, 2 * size, f2) == 0);
+    CHECK(mem_migrate(a, 2 * size, f2, NULL) == 0);
     CHECK(v2[100] == 0x77 && v2[200] == 0x55 && v2[size + 5] == fill(size + 5));
     if (g_ww) CHECK(scan_only(a, 2 * size, a + size + 9 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[300] = 0x11;
@@ -842,30 +842,30 @@ static void test_migrate(void) {
         CHECK(scan_reports(a, 2 * size, a) >= 0); /* the writes above, and the pages mapped again, taken */
         g[13 * page] = fill(13 * page);
     }
-    CHECK(mem_unmigrate(a, 2 * size) == 0);
+    CHECK(mem_unmigrate(a, 2 * size, NULL) == 0);
     if (g_ww) CHECK(scan_only(a, 2 * size, a + 13 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[500] = 0x44;
     CHECK(v2[500] != 0x44 && g[100] == 0x77 && g[300] == 0x11 && g[400] == 0x33 && g[size] == 0x22 &&
           g[size + 0x10000] == fill(size + 0x10000));
     check_tracking(a, 2 * size);
-    CHECK(mem_unmigrate(a, 2 * size) == 0); /* none moved */
+    CHECK(mem_unmigrate(a, 2 * size, NULL) == 0); /* none moved */
     /* moved, then unmapped: zero when mapped again, the buffer's bytes its own */
     g[100] = 0x99;
-    CHECK(mem_migrate(a, size, f1) == 0 && mem_unmap(a, 2 * size) == 0 &&
+    CHECK(mem_migrate(a, size, f1, NULL) == 0 && mem_unmap(a, 2 * size) == 0 &&
           mem_map(a, 2 * size, MS_NORMAL, PERM_RW) == 0);
     for (u64 i = 0; i < 2 * size && zero; i += 512) zero = g[i] == 0;
     CHECK(zero && v1[100] == 0x99);
     /* moved, then the source of a view (MapMemory): its pages move on into the pool, which a move back leaves alone */
     gw32(src, 0x600d);
-    CHECK(mem_migrate(src, 0x4000, f1) == 0 && svc_map_memory(dst, src, 0x4000) == 0 && gr32(dst) == 0x600d);
-    CHECK(mem_unmigrate(src, 0x4000) == 0);
+    CHECK(mem_migrate(src, 0x4000, f1, NULL) == 0 && svc_map_memory(dst, src, 0x4000) == 0 && gr32(dst) == 0x600d);
+    CHECK(mem_unmigrate(src, 0x4000, NULL) == 0);
     gw32(src, 0x1234abcd);
     CHECK(gr32(dst) == 0x1234abcd && snx_ld_le32(v1) == 0x600d); /* the buffer keeps what it had */
     /* only the guest's data on the reservation's own pages: not past the mapped pages, not code, not the pool's */
-    CHECK(mem_migrate(a + 2 * size - 0x1000, 0x2000, f1) == MEM_BADSTATE);
+    CHECK(mem_migrate(a + 2 * size - 0x1000, 0x2000, f1, NULL) == MEM_BADSTATE);
     CHECK(mem_map(a + 4 * size, 0x1000, MS_CODE, PERM_RX) == 0);
-    CHECK(!mem_movable(a + 4 * size, 0x1000) && mem_migrate(a + 4 * size, 0x1000, f1) == MEM_BADSTATE);
-    CHECK(!mem_movable(src, 0x4000) && mem_migrate(src, 0x4000, f1) == MEM_BADSTATE);
+    CHECK(!mem_movable(a + 4 * size, 0x1000) && mem_migrate(a + 4 * size, 0x1000, f1, NULL) == MEM_BADSTATE);
+    CHECK(!mem_movable(src, 0x4000) && mem_migrate(src, 0x4000, f1, NULL) == MEM_BADSTATE);
     CHECK(svc_unmap_memory(dst, src, 0x4000) == 0);
     CHECK(mem_unmap(a, 2 * size) == 0 && mem_unmap(a + 4 * size, 0x1000) == 0);
     munmap(v1, (size_t)size);
@@ -903,13 +903,13 @@ static void test_migrate_placed(void) {
     mem_set_placed(&fake);
     CHECK(mem_map(a, 2 * MIB, MS_NORMAL, PERM_RW) == 0);
     g_fake_held = a; /* the renderer's: it stays */
-    CHECK(!mem_movable(a, MIB) && mem_migrate(a, MIB, f) == MEM_BADSTATE);
+    CHECK(!mem_movable(a, MIB) && mem_migrate(a, MIB, f, NULL) == MEM_BADSTATE);
     g_fake_held = 0;
     CHECK(mem_movable(a, MIB));
     CHECK(mem_unmap(a, 2 * MIB) == 0);
     g_fake_ask = p; /* half a window of physical memory, moved, then the other half committed */
     CHECK(mem_map_physical(p, MIB, 1ull << 30) == 0 && g_fake_asked == 1);
-    CHECK(mem_migrate(p, MIB, f) == 0);
+    CHECK(mem_migrate(p, MIB, f, NULL) == 0);
     CHECK(mem_map_physical(p + MIB, MIB, 1ull << 30) == 0);
     if (g_fake_asked != 1) fprintf(stderr, "placed: the renderer was offered a window with moved pages\n");
     CHECK(g_fake_asked == 1);
@@ -934,22 +934,22 @@ static void test_migrate_owned(void) {
     CHECK(mem_own_prepare(a, size, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + size);
     mem_query(a, &b);
     CHECK(b.pool && GP(a)[5] == fill(5));
-    CHECK(mem_movable(a, size) && mem_migrate(a, size, f) == 0);
+    CHECK(mem_movable(a, size) && mem_migrate(a, size, f, NULL) == 0);
     CHECK(mem_pool_used() == used && v[5] == fill(5) && v[size - 1] == fill(size - 1));
     mem_query(a, &b);
     CHECK(!b.pool);
     GP(a)[7] = 0x5A;
     CHECK(v[7] == 0x5A);
-    CHECK(mem_unmigrate(a, size) == 0 && GP(a)[7] == 0x5A);
+    CHECK(mem_unmigrate(a, size, NULL) == 0 && GP(a)[7] == 0x5A);
     /* one pool page among the reservation's own */
     CHECK(mem_own_prepare(a + 0x1000, 0x1000, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + 0x1000);
-    CHECK(mem_migrate(a, size, f) == 0 && mem_pool_used() == used);
+    CHECK(mem_migrate(a, size, f, NULL) == 0 && mem_pool_used() == used);
     CHECK(v[7] == 0x5A && v[0x1003] == fill(0x1003) && v[0x2003] == fill(0x2003));
-    CHECK(mem_unmigrate(a, size) == 0);
+    CHECK(mem_unmigrate(a, size, NULL) == 0);
     /* a service's mapping of the pool pages outside the reservation, which a move would leave behind */
     u8* p = mem_pool_host(0x1000, &off);
     CHECK(p && mem_map_pool(a + size, off, 0x1000, MS_SHARED, PERM_RW) == 0);
-    CHECK(!mem_movable(a + size, 0x1000) && mem_migrate(a + size, 0x1000, f) == MEM_BADSTATE);
+    CHECK(!mem_movable(a + size, 0x1000) && mem_migrate(a + size, 0x1000, f, NULL) == MEM_BADSTATE);
     CHECK(mem_unmap_pool(a + size, off, 0x1000, MS_SHARED) == 0);
     mem_pool_host_free(p, off, 0x1000);
     CHECK(mem_unmap(a, size) == 0 && mem_pool_used() == used);

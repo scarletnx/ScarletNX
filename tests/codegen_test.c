@@ -449,6 +449,134 @@ static void jump_table_anchor_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A byte table no compare guards, its index masked: and x0, x0, #3 bounds it to four entries, as a compare would */
+static void jump_table_mask_test(void) {
+    static const SnxU32 words[] = {
+        0x92400400UL, /* and x0, x0, #3 */
+        0xD503201FUL, /* nop */
+        0x90000009UL, /* adrp x9, base's page */
+        0x91020129UL, /* add x9, x9, #0x80: the table */
+        0x100000AAUL, /* adr x10, 0x24: what an entry counts from */
+        0x3860692BUL, /* ldrb w11, [x9, x0] */
+        0x8B0B094AUL, /* add x10, x10, x11, lsl #2 */
+        0x2A1F03E8UL, /* mov w8, wzr */
+        0xD61F0140UL, /* br x10 */
+        0x52800020UL, /* 0x24, case 0: mov w0, #1 */
+        0x14000006UL, /* b 0x40 */
+        0x52800040UL, /* 0x2c, case 1 */
+        0x14000004UL, /* b 0x40 */
+        0x52800060UL, /* 0x34, case 2 */
+        0x14000002UL, /* b 0x40 */
+        0x52800080UL, /* 0x3c, case 3 */
+        0xD65F03C0UL, /* 0x40: ret */
+    };
+    static const SnxU64 cases[] = {0x24, 0x2C, 0x34, 0x3C};
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i, n;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    for (i = 0; i < 4; ++i) image[0x80 + i] = (unsigned char)((cases[i] - 0x24) / 4);
+    image[0x84] = 7; /* past the mask's bound: it would name the RET */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table of a masked index");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8);
+    check(n == 4, "the masked byte table's four cases");
+    for (i = 0; i < n && i < 4; ++i) check(targets[i] == SNX_CODE_BASE + cases[i], "a masked table's case");
+    for (i = 0; i < 4; ++i)
+        check(function && has_leader(function, SNX_CODE_BASE + cases[i]), "a masked table's case is a leader");
+    snx_codegen_free(&codegen);
+    /* a mask of nine bits is no bound a byte table is followed to */
+    put32(image, 0, 0x92402000UL); /* and x0, x0, #0x1ff */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table of a wide mask");
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8) == 0, "a mask too wide for a bound");
+    snx_codegen_free(&codegen);
+}
+
+/* Tables found from the function's flow, not the code just before the load (llvm-mc, at SNX_CODE_BASE):
+   A, the base set before a RET in the layout, the switch reached by a branch around it:
+     adrp x14, tbl; add x14, x14, #0x80; cmp w0, #3; b.ls sw; mov w0, #99; ret
+     sw: adr x10, c0; ldrb w11, [x14, x0]; add x10, x10, x11, lsl #2; br x10; c0..c3: mov w0, #k; ret
+   B, the compare on another block, its guard shared: adrp x9, tbl; add x9, x9, #0x80; cmp w0, #3; b join;
+     mov w0, #7; ret; join: b.hi dflt; adr x10, c0; ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10;
+     c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret
+   C, no bound at all (the index the caller's), in an unwind range: adr x9, tbl; adr x10, c0; ldrb w11, [x9, x0];
+     add x10, x10, x11, lsl #2; br x10; c0..c2: mov w0, #k; ret; tbl: 0, 2, 4, then 0xff, past the function */
+static void jump_table_flow_test(void) {
+    static const SnxU32 a[] = {0x9000000EUL, 0x910201CEUL, 0x71000C1FUL, 0x54000069UL, 0x52800C60UL, 0xD65F03C0UL,
+                               0x1000008AUL, 0x386069CBUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL,
+                               0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const SnxU32 b[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x14000003UL, 0x528000E0UL, 0xD65F03C0UL,
+                               0x540001A8UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL,
+                               0xD65F03C0UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL,
+                               0xD65F03C0UL, 0x52800000UL, 0xD65F03C0UL};
+    static const SnxU32 c[] = {0x10000169UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL,
+                               0xD65F03C0UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL};
+    static const unsigned char entries[] = {0, 2, 4, 6};
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    SnxFde range;
+    const SnxFunction* function;
+    size_t i, n;
+    /* A */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(a) / sizeof(a[0]); ++i) put32(image, i * 4, a[i]);
+    memcpy(image + 0x80, entries, 4);
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(a); /* the table is .rodata */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table set before a RET");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x24, targets, 8);
+    check(n == 4, "the table whose base the flow gives: its four cases");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    for (i = 0; i < 4; ++i)
+        check(n == 4 && targets[i] == SNX_CODE_BASE + 0x28 + 8 * i && function &&
+                  has_leader(function, SNX_CODE_BASE + 0x28 + 8 * i),
+              "a case of the table the flow gives, a leader of its function");
+    snx_codegen_free(&codegen);
+    /* B */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(b) / sizeof(b[0]); ++i) put32(image, i * 4, b[i]);
+    memcpy(image + 0x80, entries, 4);
+    image[0x84] = 0x0a; /* past the bound: it would name dflt */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(b);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table guarded from another block");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x28, targets, 8);
+    check(n == 4, "the table whose bound the flow gives: its four cases, not the next byte's");
+    for (i = 0; i < n && i < 4; ++i) check(targets[i] == SNX_CODE_BASE + 0x2C + 8 * i, "a case of the guarded table");
+    snx_codegen_free(&codegen);
+    /* C: in its unwind range, to the first entry past the function; explored, not followed */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(c) / sizeof(c[0]); ++i) put32(image, i * 4, c[i]);
+    image[0x2C] = 0, image[0x2D] = 2, image[0x2E] = 4, image[0x2F] = 0xff;
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = 0x30;
+    range.start = 0;
+    range.size = 0x2C;
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze an unbounded table in an unwind range");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x10, targets, 8);
+    check(n == 3, "the unbounded table's cases, to the entry that leaves its function");
+    for (i = 0; i < n && i < 3; ++i) check(targets[i] == SNX_CODE_BASE + 0x14 + 8 * i, "a case inside the function");
+    snx_codegen_free(&codegen);
+    module.fde = NULL;
+    module.fde_count = 0;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze it explored");
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x10, targets, 8) == 0,
+          "an unbounded table of an explored function is not followed");
+    snx_codegen_free(&codegen);
+}
+
 /* The same with halves, the table's address taken before the compare's branch: the code that takes it is not next
    to the load (in a loop it is outside the loop) */
 static void jump_table_anchor_far_test(void) {
@@ -1548,6 +1676,288 @@ static void zva_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* What is between the compare and the guard, and what writes the index after them, of a table the flow bounds (llvm-mc):
+   adrp x9, tbl; add x9, x9, #0x80; cmp w0, #3; [between]; b join; mov w0, #7; ret; join: b.hi dflt; [after]; adr x10, c0;
+   ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10; c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret */
+static void jump_table_flags_test(void) {
+    static const struct {
+        SnxU32 between, after;
+        int found;
+        const char* what;
+    } rows[] = {
+        {0xD503201FUL, 0xD503201FUL, 1, "NOP sets no flags"},
+        {0x1A8700C5UL, 0xD503201FUL, 1, "CSEL w5, w6, w7, eq sets no flags"},
+        {0x1B077CC5UL, 0xD503201FUL, 1, "MUL w5, w6, w7 sets no flags"},
+        {0x4EA71CE5UL, 0xD503201FUL, 1, "a vector MOV sets no flags"},
+        {0x2B0700C5UL, 0xD503201FUL, 0, "ADDS w5, w6, w7 sets them"},
+        {0x3A0700C5UL, 0xD503201FUL, 0, "ADCS w5, w6, w7 sets them"},
+        {0x3A4008C0UL, 0xD503201FUL, 0, "CCMN w6, #0, #0, eq sets them"},
+        {0x1E602000UL, 0xD503201FUL, 0, "FCMP d0, d0 sets them"},
+        {0xD503201FUL, 0x1E380000UL, 0, "FCVTZS w0, s0 writes the index"},
+        {0xD503201FUL, 0x1E18F000UL, 0, "FCVTZS w0, s0, #4 writes the index"},
+        {0xD503201FUL, 0x1E18F005UL, 1, "FCVTZS w5, s0, #4 doesn't"},
+    };
+    static const unsigned char entries[] = {0, 2, 4, 6, 0x3F};
+    size_t k, i;
+    for (k = 0; k < sizeof(rows) / sizeof(rows[0]); ++k) {
+        const SnxU32 words[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL,  rows[k].between, 0x14000003UL, 0x528000E0UL,
+                                0xD65F03C0UL, 0x540001C8UL, rows[k].after, 0x1000008AUL,    0x3860692BUL, 0x8B0B094AUL,
+                                0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL,  0x52800040UL,    0xD65F03C0UL, 0x52800060UL,
+                                0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL,  0x52800000UL,    0xD65F03C0UL};
+        unsigned char image[0x100];
+        SnxProgram program;
+        SnxModuleImage module;
+        SnxCodegen codegen;
+        SnxU64 targets[8];
+        memset(image, 0, sizeof(image));
+        for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+        memcpy(image + 0x80, entries, sizeof(entries));
+        setup_program(&program, &module, image, sizeof(image));
+        module.text_size = sizeof(words);
+        check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a guard and what is before it");
+        check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x30, targets, 8) == (rows[k].found ? 4 : 0),
+              rows[k].what);
+        snx_codegen_free(&codegen);
+    }
+}
+
+/* a program of words at SNX_CODE_BASE, its tables' bytes at 0x80 and 0xff past them, in nranges unwind ranges (none:
+   explored), analyzed: the BR at each of want's br has these cases, in order (a 0 ends them), each a leader */
+typedef struct {
+    unsigned br;
+    unsigned cases[8];
+} TableCases;
+static void table_cases(const char* what, const SnxU32* words, size_t n, const unsigned char* table, size_t bytes,
+                        SnxFde* ranges, unsigned nranges, const TableCases* want, unsigned nwant) {
+    unsigned char image[0x300];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[SNX_JUMP_TABLE_MAX];
+    char text[160];
+    size_t i, k, found;
+    memset(image, 0, 0x80);
+    memset(image + 0x80, 0xff, sizeof(image) - 0x80);
+    for (i = 0; i < n; ++i) put32(image, i * 4, words[i]);
+    memcpy(image + 0x80, table, bytes);
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = n * 4;
+    module.fde = ranges;
+    module.fde_count = nranges;
+    snprintf(text, sizeof(text), "%s: analyze", what);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), text);
+    for (i = 0; i < nwant; ++i) {
+        size_t cases = 0;
+        found = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + want[i].br, targets, SNX_JUMP_TABLE_MAX);
+        while (cases < 8 && want[i].cases[cases]) ++cases;
+        snprintf(text, sizeof(text), "%s: the BR at 0x%x has %zu cases, not %zu", what, want[i].br, found, cases);
+        check(found == cases, text);
+        for (k = 0; k < found && k < cases; ++k) {
+            const SnxFunction* f = codegen.functions;
+            while (f < codegen.functions + codegen.function_count && !snx_function_contains(f, targets[k])) ++f;
+            snprintf(text, sizeof(text), "%s: case %zu of the BR at 0x%x is 0x%llx, not 0x%x", what, k, want[i].br,
+                     (unsigned long long)(targets[k] - SNX_CODE_BASE), want[i].cases[k]);
+            check(targets[k] == SNX_CODE_BASE + want[i].cases[k], text);
+            check(f < codegen.functions + codegen.function_count && has_leader(f, targets[k]), "a case is a leader");
+        }
+    }
+    snx_codegen_free(&codegen);
+}
+
+/* A table found by every way to its BR (llvm-mc).
+   paths: cmp w1, #1; b.hi d; cbz w3, L2; mov w0, w1 (or w2); b join; L2: mov w0, w2 (or w1); b join; d: mov w0, #0; ret;
+     join: adr x10, c0; ldrb w11, [x9, x0]; ...: the index of one way is bounded, the other's isn't, in either order
+   nested: cmp w0, #3; b.hi d; adr x10, c0; ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10; c0: ldrb w1, [x2];
+     cmp w1, #3; b.hi d; adr x10, c0; ldrb w11, [x9, x1]; add x10, x10, x11, lsl #2; br x10: a switch in another's case,
+     x9 set before both
+   other: the same, but case 1 sets x9 to another address and branches to the second switch's case */
+static void jump_table_ways_test(void) {
+    static const SnxU32 paths_a[] = {0x90000009UL, 0x91020129UL, 0x7100043FUL, 0x540000C8UL, 0x34000063UL, 0x2A0103E0UL,
+                                     0x14000005UL, 0x2A0203E0UL, 0x14000003UL, 0x52800000UL, 0xD65F03C0UL, 0x1000008AUL,
+                                     0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const SnxU32 paths_b[] = {0x90000009UL, 0x91020129UL, 0x7100043FUL, 0x540000C8UL, 0x34000063UL, 0x2A0203E0UL,
+                                     0x14000005UL, 0x2A0103E0UL, 0x14000003UL, 0x52800000UL, 0xD65F03C0UL, 0x1000008AUL,
+                                     0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const SnxU32 nested[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x54000248UL, 0x1000008AUL, 0x3860692BUL,
+                                    0x8B0B094AUL, 0xD61F0140UL, 0x39400041UL, 0x71000C3FUL, 0x54000168UL, 0x10FFFFAAUL,
+                                    0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL,
+                                    0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL, 0x52800000UL, 0xD65F03C0UL};
+    static const SnxU32 other[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x54000248UL, 0x1000008AUL, 0x3860692BUL,
+                                   0x8B0B094AUL, 0xD61F0140UL, 0x39400041UL, 0x71000C3FUL, 0x54000168UL, 0x10FFFFAAUL,
+                                   0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x10FFFE29UL, 0x17FFFFF8UL, 0x52800060UL,
+                                   0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL, 0x52800000UL, 0xD65F03C0UL};
+    static const unsigned char four[] = {0, 2, 4, 6}, in_case[] = {0, 7, 9, 11};
+    static SnxFde whole[] = {{0, sizeof(nested)}};
+    static const TableCases none[] = {{0x38, {0}}};
+    static const TableCases both[] = {{0x1C, {0x20, 0x3C, 0x44, 0x4C}}, {0x38, {0x20, 0x3C, 0x44, 0x4C}}};
+    static const TableCases first[] = {{0x1C, {0x20, 0x3C, 0x44, 0x4C}}, {0x38, {0}}};
+    table_cases("a way of two with a bound", paths_a, sizeof(paths_a) / 4, four, 4, NULL, 0, none, 1);
+    table_cases("the ways swapped", paths_b, sizeof(paths_b) / 4, four, 4, NULL, 0, none, 1);
+    table_cases("a switch in a case, explored", nested, sizeof(nested) / 4, in_case, 4, NULL, 0, both, 2);
+    table_cases("a switch in a case, in an unwind range", nested, sizeof(nested) / 4, in_case, 4, whole, 1, both, 2);
+    table_cases("a base of two addresses", other, sizeof(other) / 4, in_case, 4, whole, 1, first, 2);
+}
+
+/* Where a table without a compare ends, in an unwind range (llvm-mc; its cases mov w0, #k; ret, the byte table at 0x80).
+   masked: and x0, x0, #7; ...: four entries, and the bytes past them name the function after it
+   two: a switch of three cases, its table at 0x80, and one of three, its table at 0x83
+   shifted: and w0, w0, #0x7fff; nop; ubfx x1, x0, #13, #19; ...: four values, and a fifth byte names a case's RET */
+static void jump_table_end_test(void) {
+    static const SnxU32 masked[] = {0x92400800UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL,
+                                    0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                    0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL,
+                                    0x528000A0UL, 0x11000400UL, 0x11000800UL, 0xD65F03C0UL};
+    static const SnxU32 two[] = {0x35000201UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL,
+                                 0xD61F0140UL, 0x52800020UL, 0x11000400UL, 0xD65F03C0UL, 0x52800040UL, 0x11000400UL,
+                                 0xD65F03C0UL, 0x52800060UL, 0x11000400UL, 0xD65F03C0UL, 0x90000009UL, 0x91020D29UL,
+                                 0x1000008AUL, 0x3862692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800080UL, 0xD65F03C0UL,
+                                 0x528000A0UL, 0xD65F03C0UL, 0x528000C0UL, 0xD65F03C0UL};
+    static const SnxU32 shifted[] = {0x12003800UL, 0xD503201FUL, 0xD34D7C01UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL,
+                                     0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const unsigned char past[] = {0, 2, 4, 6, 9, 10}, next[] = {0, 3, 6, 0, 2, 4}, five[] = {0, 2, 4, 6, 1};
+    static SnxFde ranges[] = {{0, 0x3C}, {0x3C, 0x10}}, all[] = {{0, sizeof(two)}}, shift[] = {{0, sizeof(shifted)}};
+    static const TableCases four_cases[] = {{0x18, {0x1C, 0x24, 0x2C, 0x34}}};
+    static const TableCases threes[] = {{0x18, {0x1C, 0x28, 0x34}}, {0x54, {0x58, 0x60, 0x68}}};
+    static const TableCases fours[] = {{0x20, {0x24, 0x2C, 0x34, 0x3C}}};
+    table_cases("a mask wider than the table", masked, sizeof(masked) / 4, past, 6, ranges, 2, four_cases, 1);
+    table_cases("a table another follows", two, sizeof(two) / 4, next, 6, all, 1, threes, 2);
+    table_cases("a mask and a shift", shifted, sizeof(shifted) / 4, five, 5, shift, 1, fours, 1);
+}
+
+/* What the way back from a table's load meets (llvm-mc), each a byte table at 0x80 of cases that are RETs, its guard
+   cmp #3; b.hi d but where said.
+   others: a switch in another's case; between them ccmp w5, w6, #9, eq; fmov s9, w5; scvtf d9, x5, #4; msr tpidr_el0, x9:
+     none writes x9, the base's register
+   copied: adrp x9; add x9; mov x12, x9; a switch of x9's, and in its case one of x12's
+   apart: adrp x9; nine MOVs; add x9, x9, #0x80
+   padded: cbz w5, j; ret; nop; nop; j: ...: nothing comes to j from the NOPs
+   landed: cbz w5, j; ret; mov w6, #1; j: ...: something may, where the MOV is a landing pad
+   aborted: cbz w5, j; bl f; j: ...: a call that changes x9, not a way the code takes to the load
+   argued: cbz w5, j; adrp x1; add x1; b j; ret; j: ... the table in x1, which the caller may have set
+   answered: adrp x1; add x1; svc #0; ...: the SVC's x1
+   late: a switch of x12's, in its case one of x9's, whose case 2 sets x9 to another address and branches to it
+   deep: a switch of x12's, in its case one of x9's, in that one's case another of x9's
+   remade: cmp w1, #0; cneg w1, w1, mi; and x1, x1, #3; ...: the compare is of w1 before
+   unreachable: five entries, the third the end of the unwind range, another function's start
+   longer: cmp w0, #299; b.hi d: 300 entries of four cases, the last alone of the fifth */
+static void jump_table_met_test(void) {
+    static const SnxU32 others[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x54000248UL, 0x1000008AUL, 0x3860692BUL,
+                                    0x8B0B094AUL, 0xD61F0140UL, 0x7A4600A9UL, 0x1E2700A9UL, 0x9E42F0A9UL, 0xD51BD049UL,
+                                    0x71000C3FUL, 0x54000108UL, 0x10FFFF4AUL, 0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 copied[] = {0x90000009UL, 0x91020129UL, 0xAA0903ECUL, 0x71000C1FUL, 0x540001C8UL,
+                                    0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x71000C3FUL,
+                                    0x54000108UL, 0x10FFFFCAUL, 0x3861698BUL, 0x8B0B094AUL, 0xD61F0140UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 apart[] = {0x90000009UL, 0x52800025UL, 0x52800046UL, 0x52800067UL, 0x52800085UL, 0x528000A6UL,
+                                   0x528000C7UL, 0x528000E5UL, 0x52800106UL, 0x52800127UL, 0x91020129UL, 0x71000C1FUL,
+                                   0x54000128UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                   0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 padded[] = {0x90000009UL, 0x91020129UL, 0x34000085UL, 0xD65F03C0UL, 0xD503201FUL, 0xD503201FUL,
+                                    0x71000C1FUL, 0x54000128UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 landed[] = {0x90000009UL, 0x91020129UL, 0x34000065UL, 0xD65F03C0UL, 0x52800026UL, 0x71000C1FUL,
+                                    0x54000128UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 aborted[] = {0x90000009UL, 0x91020129UL, 0x34000045UL, 0x97FFFFFDUL, 0x71000C1FUL,
+                                     0x54000128UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL,
+                                     0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 argued[] = {0x340000A5UL, 0x90000001UL, 0x91020021UL, 0x14000002UL, 0xD65F03C0UL, 0x71000C1FUL,
+                                    0x54000128UL, 0x1000008AUL, 0x3860682BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 answered[] = {0x90000001UL, 0x91020021UL, 0xD4000001UL, 0x71000C1FUL, 0x54000128UL,
+                                      0x1000008AUL, 0x3860682BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                      0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 late[] = {0x90000009UL, 0x91021129UL, 0x9000000CUL, 0x9102018CUL, 0x71000C1FUL, 0x540001E8UL,
+                                  0x1000008AUL, 0x3860698BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x71000C3FUL, 0x54000128UL,
+                                  0x10FFFFCAUL, 0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0x10FFFDE9UL,
+                                  0x17FFFFF8UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 deep[] = {0x90000009UL, 0x91021129UL, 0x9000000CUL, 0x9102018CUL, 0x71000C1FUL,
+                                  0x54000268UL, 0x1000008AUL, 0x3860698BUL, 0x8B0B094AUL, 0xD61F0140UL,
+                                  0x71000C3FUL, 0x540001A8UL, 0x10FFFFCAUL, 0x3861692BUL, 0x8B0B094AUL,
+                                  0xD61F0140UL, 0x71000C5FUL, 0x540000E8UL, 0x10FFFF0AUL, 0x3862692BUL,
+                                  0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 remade[] = {0x90000009UL, 0x91020129UL, 0x7100003FUL, 0x5A815421UL, 0x92400421UL,
+                                    0x1000008AUL, 0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 unreachable[] = {0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL,
+                                         0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                         0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 longer[] = {0x90000009UL, 0x91020129UL, 0x7104AC1FUL, 0x54000148UL, 0x1000008AUL,
+                                    0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const unsigned char in_case[] = {0, 10, 11, 12}, copies[] = {0, 6, 7, 8}, four[] = {0, 1, 2, 3};
+    static const unsigned char holed[] = {0, 1, 4, 2, 3}, in_late[] = {0, 0, 0, 0, 6, 7, 9, 6};
+    static const unsigned char in_deep[] = {0, 0, 0, 0, 6, 12, 13, 6};
+    static SnxFde of_padded[] = {{0, sizeof(padded)}}, of_landed[] = {{0, sizeof(landed)}};
+    static SnxFde of_late[] = {{0, sizeof(late)}}, of_deep[] = {{0, sizeof(deep)}}, two[] = {{0, 0x28}, {0x28, 4}};
+    static const TableCases others_want[] = {{0x1C, {0x20, 0x48, 0x4C, 0x50}}, {0x44, {0x20, 0x48, 0x4C, 0x50}}};
+    static const TableCases copied_want[] = {{0x20, {0x24, 0x3C, 0x40, 0x44}}, {0x38, {0x24, 0x3C, 0x40, 0x44}}};
+    static const TableCases apart_want[] = {{0x40, {0x44, 0x48, 0x4C, 0x50}}};
+    static const TableCases padded_want[] = {{0x2C, {0x30, 0x34, 0x38, 0x3C}}};
+    static const TableCases landed_want[] = {{0x28, {0}}};
+    static const TableCases aborted_want[] = {{0x24, {0x28, 0x2C, 0x30, 0x34}}};
+    static const TableCases answered_want[] = {{0x20, {0}}};
+    static const TableCases late_want[] = {{0x24, {0x28}}, {0x3C, {0}}};
+    static const TableCases deep_want[] = {{0x24, {0x28}}, {0x3C, {0x40, 0x58, 0x5C}}, {0x54, {0x40, 0x58, 0x5C}}};
+    static const TableCases remade_want[] = {{0x20, {0x24, 0x28, 0x2C, 0x30}}};
+    static const TableCases unreachable_want[] = {{0x14, {0x18, 0x1C, 0x20, 0x24}}};
+    static const TableCases longer_want[] = {{0x1C, {0x20, 0x24, 0x28, 0x2C, 0x30}}};
+    unsigned char entries[300];
+    unsigned i;
+    for (i = 0; i < sizeof(entries); ++i) entries[i] = (unsigned char)(i % 4);
+    entries[sizeof(entries) - 1] = 4;
+    table_cases("no write of the base", others, sizeof(others) / 4, in_case, 4, NULL, 0, others_want, 2);
+    table_cases("a copy of the base", copied, sizeof(copied) / 4, copies, 4, NULL, 0, copied_want, 2);
+    table_cases("an ADRP far from its ADD", apart, sizeof(apart) / 4, four, 4, NULL, 0, apart_want, 1);
+    table_cases("a padded join", padded, sizeof(padded) / 4, four, 4, of_padded, 1, padded_want, 1);
+    table_cases("a join nothing known leads to", landed, sizeof(landed) / 4, four, 4, of_landed, 1, landed_want, 1);
+    table_cases("a call that doesn't return", aborted, sizeof(aborted) / 4, four, 4, NULL, 0, aborted_want, 1);
+    table_cases("the caller's table", argued, sizeof(argued) / 4, four, 4, NULL, 0, landed_want, 1);
+    table_cases("an SVC's register", answered, sizeof(answered) / 4, four, 4, NULL, 0, answered_want, 1);
+    table_cases("a base refused late", late, sizeof(late) / 4, in_late, 8, of_late, 1, late_want, 2);
+    table_cases("a switch two switches in", deep, sizeof(deep) / 4, in_deep, 8, of_deep, 1, deep_want, 3);
+    table_cases("an index made after a compare", remade, sizeof(remade) / 4, four, 4, NULL, 0, remade_want, 1);
+    table_cases("an unreachable case", unreachable, sizeof(unreachable) / 4, holed, 5, two, 2, unreachable_want, 1);
+    table_cases("a table of 300 entries", longer, sizeof(longer) / 4, entries, sizeof(entries), NULL, 0, longer_want,
+                1);
+}
+
+/* The guards of a table's compare in another block (llvm-mc), an entry past it in each: adrp x9; add x9; cmp w0, #imm;
+   b join; ret; join: the guard; adr x10, c0; ldrb w11, [x9, x0]; ...: b.hs d (hs), b.lo s; b d; s: (lo), b.ls s; b d; s:
+   (ls), two compares of two ways and b.hi d (wider), a call between the compare and b.hi d (called, its base x19) */
+static void jump_table_guards_test(void) {
+    static const SnxU32 hs[] = {0x90000009UL, 0x91020129UL, 0x7100101FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000142UL,
+                                0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 lo[] = {0x90000009UL, 0x91020129UL, 0x7100101FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000043UL,
+                                0x1400000AUL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 ls[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000049UL,
+                                0x1400000AUL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 wider[] = {0x90000009UL, 0x91020129UL, 0x34000065UL, 0x7100041FUL, 0x14000004UL,
+                                   0x71000C1FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000148UL, 0x1000008AUL,
+                                   0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                   0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 called[] = {0x90000013UL, 0x91020273UL, 0x71000C1FUL, 0x97FFFFFDUL, 0x14000002UL, 0xD65F03C0UL,
+                                    0x54000148UL, 0x1000008AUL, 0x38606A6BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const unsigned char five[] = {0, 1, 2, 3, 4};
+    static const TableCases hs_want[] = {{0x24, {0x28, 0x2C, 0x30, 0x34}}};
+    static const TableCases lo_want[] = {{0x28, {0x2C, 0x30, 0x34, 0x38}}};
+    static const TableCases wider_want[] = {{0x30, {0x34, 0x38, 0x3C, 0x40}}};
+    static const TableCases called_want[] = {{0x28, {0}}};
+    table_cases("a B.HS", hs, sizeof(hs) / 4, five, 5, NULL, 0, hs_want, 1);
+    table_cases("a B.LO taken", lo, sizeof(lo) / 4, five, 5, NULL, 0, lo_want, 1);
+    table_cases("a B.LS taken", ls, sizeof(ls) / 4, five, 5, NULL, 0, lo_want, 1);
+    table_cases("two ways' compares", wider, sizeof(wider) / 4, five, 5, NULL, 0, wider_want, 1);
+    table_cases("a call after the compare", called, sizeof(called) / 4, five, 5, NULL, 0, called_want, 1);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -1559,6 +1969,13 @@ int main(void) {
     svc_resume_test();
     jump_table_other_function_test();
     jump_table_anchor_test();
+    jump_table_mask_test();
+    jump_table_flow_test();
+    jump_table_flags_test();
+    jump_table_ways_test();
+    jump_table_end_test();
+    jump_table_met_test();
+    jump_table_guards_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();

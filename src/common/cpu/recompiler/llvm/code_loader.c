@@ -13,6 +13,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/platform/vm.h"
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,13 @@ typedef char snx_code_loader_needs_64_bits[sizeof(size_t) >= 8 ? 1 : -1];
 #else
 #define HOST_MACHINE 0u
 #endif
+
+void snx_code_jit_refused(size_t size, int number, char* error, size_t error_size) {
+    snprintf(error, error_size,
+             "cannot map %lu MiB of JIT memory for code: %s. An app with the hardened runtime needs the entitlement "
+             "com.apple.security.cs.allow-jit",
+             (unsigned long)(size >> 20), strerror(number));
+}
 
 /* the regions (code_loader_int.h), by their short names here */
 #define CODE    SNX_CODE_TEXT
@@ -175,14 +183,13 @@ static int apple_arena(SnxCodeLoader* loader, char* error, size_t error_size) {
     void* base =
         mmap(NULL, loader->reserved, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
     if (base == MAP_FAILED) {
-        snprintf(error, error_size, "cannot map %lu MiB of JIT memory for code",
-                 (unsigned long)(loader->reserved >> 20));
+        snx_code_jit_refused(loader->reserved, errno, error, error_size);
         return -1;
     }
     loader->base = (unsigned char*)base;
     if (mmap(loader->base + loader->region[DATA].start, loader->region[DATA].size, PROT_NONE,
              MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED) {
-        snprintf(error, error_size, "cannot map the code arena's data");
+        snprintf(error, error_size, "cannot map the code arena's data: %s", strerror(errno));
         return -1;
     }
     for (int i = CODE; i < REGIONS; ++i) loader->region[i].write = loader->base + loader->region[i].start;
