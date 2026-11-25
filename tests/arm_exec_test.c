@@ -5,6 +5,7 @@
 #include "common/cpu/arm/checked.h"
 #include "common/cpu/arm/codegen.h"
 #include "common/cpu/arm/exec.h"
+#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include <stdio.h>
 #include <string.h>
@@ -240,6 +241,14 @@ int main(void) {
     Svc svc = {0};
     int exit = snx_arm_exec_run(exec, &cpu, &range, 1, syscall, &svc);
     int failures = 0;
+    /* a program of the A57's blocks is the host's back end's, where it has one, and LLVM never starts for it */
+    const char* why = "";
+    size_t refused = snx_arm_exec_refused(exec, &why);
+    if (snx_native_arm_available() ? refused || snx_ir_started() : !refused || !snx_ir_started()) {
+        fprintf(stderr, "FAIL: a program of the A57's blocks: %zu asked of LLVM (%s), LLVM started %d\n", refused, why,
+                snx_ir_started());
+        failures++;
+    }
     /* a checked block loads without the compiler runtime's stack probe, which the JIT loader does not define */
     static const uint32_t checked_code[] = {0xE1A00000, 0xEAFFFFFE}; /* mov r0, r0; b . */
     size_t consumed = 0;
@@ -319,6 +328,39 @@ int main(void) {
         fprintf(stderr, "FAIL: TBB past guest memory: exit %d, R15 %08x; a data abort (%d) at 00001000 wanted\n", exit,
                 (unsigned)cpu.r[15], SNX_ARM_DATA_ABORT);
         failures++;
+    }
+    /* a block that calls the runtime library's helpers: VADD of a NaN (the VFP's cold path), MRC of CP15's thread
+       pointer; the native back end's object names them, and the loader has them */
+    static const uint32_t helpers[] = {0xEE300A81u, 0xEE1D0F70u, 0xEF000000u}; /* vadd.f32 s0, s1, s2; mrc; svc #0 */
+    memset(mem, 0, sizeof mem);
+    for (unsigned i = 0; i < sizeof helpers; i++) mem[0x1000 + i] = (unsigned char)(helpers[i / 4] >> (i % 4 * 8));
+    for (int nan = 0; nan < 2; nan++) {
+        cpu = (SnxArmCPU){0};
+        cpu.mem = mem;
+        cpu.mem_size = sizeof mem;
+        cpu.cpsr = 0x10;
+        cpu.r[15] = 0x1000;
+        cpu.tpidruro = 0x12345678;
+        cpu.d[0] = (uint64_t)0x3F800000u << 32;     /* S0 0, S1 1.0 */
+        cpu.d[1] = nan ? 0x7FC12345u : 0x40000000u; /* S2 a NaN, or 2.0 */
+        SnxArmExecRange helper_range = {0x1000, mem + 0x1000, sizeof helpers};
+        SnxArmExec* helper_exec = snx_arm_exec_new(NULL, 0);
+        if (!helper_exec) return 1;
+        Svc helper_stop = {0};
+        (void)snx_arm_exec_run(helper_exec, &cpu, &helper_range, 1, syscall, &helper_stop);
+        const char* helper_why = "";
+        size_t helper_refused = snx_arm_exec_refused(helper_exec, &helper_why);
+        uint32_t s0 = (uint32_t)cpu.d[0], want = nan ? 0x7FC12345u : 0x40400000u; /* the NaN itself, or 3.0 */
+        if (!helper_stop.seen || s0 != want || cpu.r[0] != 0x12345678u) {
+            fprintf(stderr, "FAIL: VADD and MRC: S0 %08x, %08x wanted, R0 %08x\n", (unsigned)s0, (unsigned)want,
+                    (unsigned)cpu.r[0]);
+            failures++;
+        }
+        if (snx_native_arm_available() && helper_refused) {
+            fprintf(stderr, "FAIL: a block with helpers asked of LLVM: %s\n", helper_why);
+            failures++;
+        }
+        snx_arm_exec_free(helper_exec);
     }
     failures += forget_test();
     failures += modes_test();
