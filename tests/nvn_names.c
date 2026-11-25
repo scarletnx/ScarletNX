@@ -1262,6 +1262,42 @@ static void test_sampler(void) {
     check(g_written == written + 4 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
     g_finish_at = 0;
 }
+/* a texture's descriptor over another, which the work submitted before and not replayed yet reads as it binds: it is
+   done while the slot still holds the one it was submitted with, as with a sampler's. The one the slot holds already
+   waits for nothing */
+static void test_texture_pool_waits(void) {
+    const u64 tp = SCRATCH + 0x100, a = SCRATCH + 0x200, b = a + sizeof(NvnTexture), slot = POOL_MEM + 0x40400 + 32 * 2;
+    u32 first[8], second[8], zero[8] = {0};
+    NvnTexture t = {.magic = NVN_MAGIC('T', 'E', 'X', 0)};
+    t.d.target = NVN_TEXTURE_TARGET_2D;
+    t.d.format = NVN_FORMAT_RGBA8;
+    t.d.width = 64;
+    t.d.height = 32;
+    t.d.depth = t.d.levels = 1;
+    t.gpu = 0x10000;
+    memcpy(GP(a), &t, sizeof t);
+    t.gpu = 0x20000;
+    memcpy(GP(b), &t, sizeof t);
+    memset(GP(POOL_MEM + 0x40400), 0, 8 * 32);
+    check(nvn_TexturePoolInitialize(NULL, tp, POOL, 0x40400, 8), "a texture pool");
+    u32 waits = g_finish_all, written = g_written;
+    g_finish_at = slot;
+    nvn_TexturePoolRegisterTexture(NULL, tp, 2, a, 0);
+    memcpy(first, GP(slot), 32);
+    check(memcmp(first, zero, 32) != 0 && g_finish_all == waits + 1 && !memcmp(g_finish_saw, zero, 32),
+          "a texture's descriptor over an empty one waits before it is written");
+    nvn_TexturePoolRegisterTexture(NULL, tp, 2, b, 0);
+    memcpy(second, GP(slot), 32);
+    check(memcmp(second, first, 32) != 0 && g_finish_all == waits + 2 && !memcmp(g_finish_saw, first, 32),
+          "a texture's descriptor over another waits before it is written");
+    check(g_written == written + 2 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
+    nvn_TexturePoolRegisterTexture(NULL, tp, 2, b, 0);
+    check(g_finish_all == waits + 2 && g_written == written + 2, "the same texture again waits for nothing");
+    nvn_TexturePoolRegisterTexture(NULL, tp, 2, 0, 0);
+    check(g_finish_all == waits + 3 && !memcmp(g_finish_saw, second, 32) && !memcmp(GP(slot), zero, 32),
+          "no texture over one waits before it is written");
+    g_finish_at = 0;
+}
 
 /* ---- events, programs, syncs */
 static void test_objects(void) {
@@ -1573,6 +1609,7 @@ int main(void) {
     test_texture();
     test_array_surface();
     test_sampler();
+    test_texture_pool_waits();
     test_objects();
     test_state();
     test_queue_window();
