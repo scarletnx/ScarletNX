@@ -2133,6 +2133,65 @@ done:
     return rc;
 }
 
+#if defined(SNX_TEST_ARM64WIN)
+/* a block whose frame is past a page (vector floating-point additions, whose lanes are kept over the helper's calls): its
+   prologue reads each page first, once, and it unwinds from every instruction. The results are the sums */
+static int run_big_frame(Back* x64) {
+    enum { WORDS = 40 };
+    /* LDRB WZR, [X17]; CMP X17, X16 */
+    static const unsigned char probe[] = {0x3F, 0x02, 0x40, 0x39, 0x3F, 0x02, 0x10, 0xEB};
+    uint32_t words[WORDS + 1], sum[4];
+    unsigned char* object = NULL;
+    size_t consumed = 0, size = 0, probes = 0, bad = 0, unwound;
+    char error[512] = "";
+    SnxU64 addr = 0;
+    for (unsigned k = 0; k < WORDS; ++k) words[k] = 0xF2000D44u; /* VADD.F32 Q0, Q0, Q2 */
+    words[WORDS] = 0xE12FFF1Eu;                                  /* BX LR */
+    for (unsigned e = 0; e < 4; ++e) {
+        const float f = (float)(e + WORDS); /* Q0's lanes e, Q2's 1 */
+        memcpy(&sum[e], &f, 4);
+    }
+    if (!back_(block)(x64, "B_big", (const unsigned char*)words, WORDS + 1, PC, &consumed, NULL, NULL) ||
+        consumed != WORDS + 1 || back_(object)(x64, &object, &size, NULL))
+        return fprintf(stderr, "FAIL: the block of a frame of more than a page: %s\n", back_(why)(x64)), 1;
+    for (size_t k = 0; k + sizeof probe <= size; ++k) probes += !memcmp(object + k, probe, sizeof probe);
+    HostUc* uc = hostuc_new(BACK_UC, 1u << 20);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, sizeof *s) : NULL;
+    if (!s || !hostuc_native(uc, "snx_arm_fp_x64", (void*)counted_fp) ||
+        hostuc_load(uc, object, size, error, sizeof error) || !(addr = hostuc_symbol(uc, "B_big"))) {
+        fprintf(stderr, "FAIL: the object of a frame of more than a page: %s\n", error);
+        free(object);
+        hostuc_free(uc);
+        return 1;
+    }
+    memset(s, 0, sizeof *s);
+    s->cpu.r[15] = PC;
+    s->cpu.r[14] = 0x300000u;
+    s->cpu.cpsr = 0x10u;
+    for (unsigned e = 0; e < 4; ++e) {
+        const float f[2] = {(float)e, 1};
+        uint32_t w[2];
+        memcpy(w, f, sizeof w);
+        s->cpu.d[e / 2] |= (uint64_t)w[0] << 32 * (e % 2);
+        s->cpu.d[4 + e / 2] |= (uint64_t)w[1] << 32 * (e % 2);
+    }
+    hostuc_step(uc, 1);
+    int wrong = hostuc_call(uc, addr, (uint64_t)(uintptr_t)&s->cpu, 0, NULL);
+    unwound = hostuc_unwound(uc, &bad);
+    wrong |= s->cpu.exit || s->cpu.r[15] != 0x300000u || memcmp(s->cpu.d, sum, sizeof sum) != 0 || probes != 1 || bad ||
+             unwound < 4 * WORDS;
+    if (wrong)
+        fprintf(stderr,
+                "FAIL: the block of a frame of more than a page: exit %u, R15 %x, Q0 %llx:%llx, %zu probes, %zu states "
+                "unwound, %zu wrongly\n",
+                s->cpu.exit, s->cpu.r[15], (unsigned long long)s->cpu.d[1], (unsigned long long)s->cpu.d[0], probes,
+                unwound, bad);
+    printf("a block of a frame of more than a page: %zu states unwound, %d failures\n", unwound, wrong);
+    free(object);
+    hostuc_free(uc);
+    return wrong;
+}
+#endif
 /* a block's address: the bus's open bus reads the code by its region, and in IWRAM by its halfword */
 static uint32_t block_pc(int thumb) {
     static const uint32_t at[] = {0x1000, 0x2001000, 0x3001000, 0x3001002, 0x7000010, 0x8001000, 0x8001006};
@@ -2284,6 +2343,9 @@ int main(int argc, char** argv) {
         if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
 #if defined(SNX_TEST_UNWINDS)
     if (plain && !g_test.nonly && !g_test.nhalves && run_entries(x64)) ++g_test.failures;
+#endif
+#if defined(SNX_TEST_ARM64WIN)
+    if (plain && !g_test.nonly && !g_test.nhalves && run_big_frame(x64)) ++g_test.failures;
 #endif
 #else
     back_(limit)(x64, g_test.pool, g_test.features | ~7u);
