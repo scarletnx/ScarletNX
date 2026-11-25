@@ -149,6 +149,12 @@ static void jit_cache(struct snx_recompiler* r, uint8_t* mem, const char* folder
    dflt:   movz x0, #999; ret
    table:  .byte (5k mod 32) * 2 for k 0..31 */
 #define SWITCH64 0xA000u
+static unsigned switch_misses;
+static void (*switch_miss_next)(CPU*, uint64_t);
+static void switch_miss(CPU* c, uint64_t pc) {
+    ++switch_misses;
+    switch_miss_next(c, pc);
+}
 static const uint32_t switch_words[] = {
     0x71007c1f, 0x540008e8, 0x2a0003e8, 0x100008e9, 0x1000008a, 0x3868692b,
     0x8b0b094a, 0xd61f0140, 0xd2800060, 0xd65f03c0, 0xd2800140, 0xd65f03c0,
@@ -190,6 +196,8 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
         rt.svc = svc64;
         rt.undef = undef64;
         rt.brk = brk64;
+        switch_miss_next = rt.miss;
+        rt.miss = switch_miss;
         memset(&cpu, 0, sizeof(cpu));
         memset(&seen, 0, sizeof(seen));
         cpu.mem = mem;
@@ -205,6 +213,20 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
                      (unsigned long long)k, (unsigned long long)cpu.x[0], (unsigned long long)want);
             check(cpu.x[0] == want && cpu.pc == STOP && !seen.brks && !seen.undefs, what);
         }
+        /* each case entered at its own address: the function's dispatch block finds its leader, nothing compiled */
+        switch_misses = 0;
+        for (k = 0; k < 33; ++k) {
+            uint64_t want = k < 32 ? k * 7 + 3 : 999;
+            cpu.x[0] = 12345;
+            cpu.x[30] = STOP;
+            snx_recompiled_run(m, &cpu, SWITCH64 + 0x20 + 8 * k, STOP);
+            snprintf(what, sizeof(what), "switch, back end %d: entered at case %llu, x0 %llu, not %llu", backend,
+                     (unsigned long long)k, (unsigned long long)cpu.x[0], (unsigned long long)want);
+            check(cpu.x[0] == want && cpu.pc == STOP && !seen.brks && !seen.undefs, what);
+        }
+        snprintf(what, sizeof(what), "switch, back end %d: the cases' entries compiled nothing (%u misses)", backend,
+                 switch_misses);
+        check(!switch_misses, what);
         snx_recompiled_free(m);
     }
     snx_recompiler_set_backend(r, 1);

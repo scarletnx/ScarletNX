@@ -547,6 +547,37 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
     byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6); /* cmp rsi, rax */
     jcc(u, 0x5, u->mismatch_label);
 }
+/* cmp rax, value (RDX the value where it is no imm32) */
+static void cmp_rax(Unit* u, SnxU64 value) {
+    if (value < 0x80000000u) {
+        byte(u, 0x48), byte(u, 0x3D), imm(u, (long long)value, 4); /* cmp rax, imm32 */
+    } else {
+        byte(u, 0x48), byte(u, 0xBA), imm(u, (long long)value, 8); /* mov rdx, imm64 */
+        byte(u, 0x48), byte(u, 0x39), byte(u, 0xD0);               /* cmp rax, rdx */
+    }
+}
+/* RAX among the leaders at[0..n) (ascending): a jump to the leader's label (lab0 + its index), else to miss. A tree
+   of compares, the middle one first, a few in a row at its leaves */
+static void dispatch_tree(Unit* u, int lab0, const SnxU64* at, const size_t* index, size_t n, int miss) {
+    size_t m, k;
+    int left;
+    if (n <= 3) {
+        for (k = 0; k < n; ++k) {
+            cmp_rax(u, at[k]);
+            jcc(u, 0x4, lab0 + (int)index[k]); /* je */
+        }
+        jmp(u, miss);
+        return;
+    }
+    m = n / 2;
+    left = new_label(u);
+    cmp_rax(u, at[m]);
+    jcc(u, 0x4, lab0 + (int)index[m]); /* je */
+    jcc(u, 0x2, left);                  /* jb */
+    dispatch_tree(u, lab0, at + m + 1, index + m + 1, n - m - 1, miss);
+    bind(u, left);
+    dispatch_tree(u, lab0, at, index, m, miss);
+}
 static void mg_dispatch(Unit* u, int lab0) {
     const SnxFunction* f = u->f;
     size_t i;
@@ -567,13 +598,26 @@ static void mg_dispatch(Unit* u, int lab0) {
         pins(u, 0);
         bind(u, run);
         load_rax(u, (int)offsetof(CPU, pc));
-        for (i = 0; i < f->count; ++i)
-            if (f->leaders[i]) {
-                SnxU64 a = snx_function_address(f, i);
-                byte(u, 0x48), byte(u, 0xBA), imm(u, (long long)a, 8); /* mov rdx, imm64 */
-                byte(u, 0x48), byte(u, 0x39), byte(u, 0xD0);        /* cmp rax, rdx */
-                jcc(u, 0x4, lab0 + (int)i);
+        {
+            /* a target outside the leaders' span (a tail call through a pointer: most BRs that aren't a switch's) goes
+               on at once; inside it, a tree of compares, not one a leader */
+            size_t n = 0;
+            SnxU64* at = (SnxU64*)malloc(f->leader_count * sizeof *at);
+            size_t* index = (size_t*)malloc(f->leader_count * sizeof *index);
+            int miss = new_label(u);
+            if (!at || !index) sg_fail("out of memory for the dispatch block", 0, 0);
+            for (i = 0; i < f->count && n < f->leader_count; ++i)
+                if (f->leaders[i]) at[n] = snx_function_address(f, i), index[n++] = i;
+            if (n > 3) {
+                cmp_rax(u, at[0]);
+                jcc(u, 0x2, miss); /* jb */
+                cmp_rax(u, at[n - 1]);
+                jcc(u, 0x7, miss); /* ja */
             }
+            dispatch_tree(u, lab0, at, index, n, miss);
+            free(at), free(index);
+            bind(u, miss);
+        }
         mov_target_rax(u);
         calldyn(u, 1);
     }
