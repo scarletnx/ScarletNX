@@ -124,6 +124,17 @@ void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi) {
     *hi = (u64)(zl >> m->bd) * slab_bytes(m) + (u64)(((last >> 3) >> m->bh) + 1) * block_row_bytes(m);
 }
 
+/* before a copy or a fill writes the scratch buffer first: after the copies and the moves that read or wrote it before
+   (a load's copy out of it, then a publish's copy into it, was a write after a read with nothing between) */
+void vk_bl_scratch_reuse(VkCommandBuffer cb) {
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                          .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+}
 /* global, as the buffers it orders are several and change */
 void vk_bl_barrier(VkCommandBuffer cb, int before) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -138,8 +149,9 @@ void vk_bl_barrier(VkCommandBuffer cb, int before) {
         b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                          VK_PIPELINE_STAGE_2_HOST_BIT;
-        b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                          VK_ACCESS_2_HOST_READ_BIT;
+        /* and the next copy into the scratch buffer, a write after the copy and the moves before it */
+        b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
     }
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
