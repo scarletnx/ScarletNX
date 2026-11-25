@@ -7,7 +7,8 @@
    next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs after a load-exclusive of its address, so that
    it can succeed.
      snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable | --generic] [--without-avx512] [--abi-contract] [--record FILE]
+                                     [--jit] [--portable | --generic] [--without-avx512] [--abi-contract]
+                                     [--record FILE]
      snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit]
                                      [--portable | --generic] [--without-avx512]
      snx-test-llvm-qemu-differential DIR EXPECTED --reference-if-there FILE ...
@@ -21,15 +22,16 @@
    it. The record defines the run: --sweep, --states and --seed do not apply with it. A --reference that is not there
    fails the test; with --reference-if-there it is skipped (77), saying that the file is not there.
    The words: samples of every row of the generated decoder's table with every value of each field of 3 bits or
-   fewer, directed() words, and the words the other instruction tests hand-check (kept[]). The default run takes 2
-   samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples, 300 rounds and 6
-   states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit loads them with the
-   JIT's loader (code_loader.c) instead, and --portable builds them without the host's extensions (x86's PSHUFB,
-   PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms are compared.
-   --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has no bit for
-   (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and rounding.
-   --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices and the
-   target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped (77).
+   fewer, directed() and scalar_words() words, and the words the other instruction tests hand-check (kept[]). The
+   default run takes 2 samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples,
+   300 rounds and 6 states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit
+   loads them with the JIT's loader (code_loader.c) instead, and --portable builds them without the host's extensions
+   (x86's PSHUFB, PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms
+   are compared. --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has
+   no bit for (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and
+   rounding. --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices
+   and the target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped
+   (77).
    A word the back end leaves UNDEF (the generated decoder for the Switch target), or decodes without code for it, while
    QEMU runs it, has none yet: it is listed in DIR/<side>_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
@@ -52,17 +54,19 @@
 #include <unistd.h>
 #ifdef SNX_TEST_NATIVE_STEPS
 #include "common/cpu/aarch64/a64_decoder.h"
-/* the name of this side of the comparison: in the causes, the reports' names and the expected-failure list */
-#define SIDE    "native"
-#define PROGRAM "snx-test-llvm-qemu-differential-native"
+/* this side of the comparison: in the causes, the reports' names and the expected-failure list, and in prose */
+#define SIDE      "native"
+#define SIDE_NAME "native"
+#define PROGRAM   "snx-test-llvm-qemu-differential-native"
 #else
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
 #include "common/cpu/recompiler/llvm/ir_fpu.h"
 #include "common/cpu/recompiler/llvm/ir_int.h"
 #include "common/cpu/recompiler/llvm/ir_vec.h"
-#define SIDE    "llvm"
-#define PROGRAM "snx-test-llvm-qemu-differential"
+#define SIDE      "llvm"
+#define SIDE_NAME "LLVM"
+#define PROGRAM   "snx-test-llvm-qemu-differential"
 #endif
 
 #define WINDOW      0x0ull /* the window starts at guest address 0 on both sides */
@@ -863,7 +867,7 @@ static int write_expected(const char* path, Expected* e, size_t n) {
           " until the emitters are rewritten from QEMU's translate-a64.c"
 #endif
           ":\n# the max target's name for the word, the cause (the state parts that differ, or " SIDE "-X/qemu-Y for\n"
-          "# different outcomes, or qemu-alignment-fault for an alignment fault the " SIDE
+          "# different outcomes, or qemu-alignment-fault for an alignment fault the " SIDE_NAME
           " side doesn't run), and the\n"
           "# words differing in the default run and in --sweep. A group missing here fails the test, and so does a\n"
           "# listed one that no longer differs in a run whose count isn't 0.\n"
