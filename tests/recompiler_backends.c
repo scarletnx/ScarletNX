@@ -10,7 +10,7 @@
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs] [--long N BYTES]
+         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
@@ -27,6 +27,8 @@
    folder for its files) rather than to LLVM's, which lacks what no guest's CPU has; not loads nor stores
    --programs: what LLVM's back end and QEMU's one word don't show, as C says it: FEAT_CMPBR's compare and branch,
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
+   --calls: functions that call each other, in four layers: BL, BLR and tail B, loops (some with a call in them), SVCs
+   that change registers, switches through a table, a pending poll in every other state
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
    On a host without the back end (not x86-64, or built without SNX_SAIL_X64) it passes, saying so.
@@ -140,7 +142,9 @@ HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 #define SLOT     16u          /* words a function has room for, its RET included */
 #define DATA     0x200000u    /* the loads' and stores' memory */
 #define DATA_LEN 0x10000u
-#define MEMORY   (DATA + DATA_LEN + 0x1000u)
+#define CALLS_SLOT 160u /* --calls' words of a function, and its data's length: the frames far from the rest */
+#define CALLS_LEN  0x100000u
+#define MEMORY     (DATA + CALLS_LEN + 0x1000u)
 #define STOP     0u
 
 static int failures, verbose;
@@ -395,6 +399,136 @@ static uint32_t word(void) {
     }
 }
 
+/* ---- --calls ---- */
+
+/* a word that writes its base back (a loop's drifts) */
+static int writes_back(uint32_t w) {
+    if ((w >> 27 & 7) == 7 && !(w >> 24 & 1) && !(w >> 21 & 1) && ((w >> 10 & 3) == 1 || (w >> 10 & 3) == 3)) return 1;
+    if ((w >> 27 & 7) == 5 && ((w >> 23 & 3) == 1 || (w >> 23 & 3) == 3)) return 1;
+    return (w & 0xBE000000u) == 0x0C000000u && (w >> 23 & 1);
+}
+/* a word() of a function that calls: few write a base back, none's base is the stack's (the frames' alone) */
+static uint32_t calls_word(void) {
+    for (;;) {
+        uint32_t w = word();
+        if ((w >> 24) == 0xD5) continue; /* MSR TPIDR, the cache's */
+        if (writes_back(w) && pick(12)) continue;
+        if ((w >> 25 & 5) == 4 && (w >> 5 & 31) == 31) continue;
+        return w;
+    }
+}
+typedef struct {
+    uint32_t w[CALLS_SLOT];
+    unsigned n;
+} Calls;
+static void calls_put(Calls* f, uint32_t w) {
+    if (f->n < CALLS_SLOT) f->w[f->n++] = w;
+}
+static void calls_words(Calls* f, unsigned n) {
+    unsigned k;
+    for (k = 0; k < n; ++k) {
+        unsigned skip = 2 + pick(2), r = lo();
+        if (n - k < 3 || pick(7)) {
+            calls_put(f, calls_word());
+            continue;
+        }
+        switch (pick(3)) { /* a branch forward */
+            case 0: calls_put(f, 0x54000000u | skip << 5 | pick(14)); break;
+            case 1: calls_put(f, pick(2) << 31 | 0x34000000u | pick(2) << 24 | skip << 5 | r); break;
+            default: calls_put(f, 0x36000000u | pick(2) << 24 | pick(32) << 19 | skip << 5 | r); break;
+        }
+    }
+}
+/* the words from top on again while the one before them wasn't zero: B.NE back */
+static void calls_back(Calls* f, unsigned top) {
+    calls_put(f, 0x54000001u | ((0x80000u - (f->n - top)) & 0x7FFFF) << 5);
+}
+static uint32_t calls_rel(uint64_t pc, uint64_t target) { return (uint32_t)((int64_t)(target - pc) / 4) & 0x3FFFFFF; }
+/* BL target, or MOVZ, MOVK, BLR x17 */
+static void calls_call(Calls* f, uint64_t at, uint64_t target) {
+    if (pick(3)) {
+        calls_put(f, 0x94000000u | calls_rel(at + 4 * f->n, target));
+        return;
+    }
+    calls_put(f, 0xD2800011u | (uint32_t)(target & 0xFFFF) << 5);
+    calls_put(f, 0xF2A00011u | (uint32_t)(target >> 16 & 0xFFFF) << 5);
+    calls_put(f, 0xD63F0220u);
+}
+/* AND x17, xN, #cases - 1; ADR x18, the table; LDRSW x17, [x18, x17, LSL #2]; ADD x17, x18, x17; BR x17; the cases,
+   each a B past the table of words; nothing where it doesn't fit */
+static void calls_switch(Calls* f) {
+    unsigned cases = pick(3) ? 8 : 32, start = f->n, k, adr, table, at[32], join[32];
+    calls_put(f, cases == 8 ? 0x92400811u | lo() << 5 : 0x92401011u | lo() << 5);
+    adr = f->n;
+    calls_put(f, 0);
+    calls_put(f, 0xB8B17A51u), calls_put(f, 0x8B110251u), calls_put(f, 0xD61F0220u);
+    for (k = 0; k < cases; ++k) {
+        at[k] = f->n;
+        calls_words(f, cases == 8 ? 1 + pick(2) : 1);
+        join[k] = f->n;
+        calls_put(f, 0);
+    }
+    table = f->n;
+    if (table + cases >= CALLS_SLOT - 8) {
+        f->n = start;
+        return;
+    }
+    for (k = 0; k < cases; ++k) calls_put(f, (uint32_t)(4 * ((int)at[pick(cases)] - (int)table)));
+    f->w[adr] = 0x10000012u | (table - adr) << 5;
+    for (k = 0; k < cases; ++k) f->w[join[k]] = 0x14000000u | (f->n - join[k]);
+}
+/* function i of n, at at, in the first of four layers of as many: what it calls is in the next */
+static void calls_function(Calls* f, unsigned i, unsigned n, uint64_t at) {
+    unsigned layer = i * 4 / n, first = (layer + 1) * n / 4, count = (layer + 2) * n / 4 - first;
+    unsigned calls = layer < 3 && count ? 2 : 0, leaf = !calls && pick(2), blocks = 2 + pick(4), done = 0;
+    uint64_t base = at - (uint64_t)i * CALLS_SLOT * 4;
+#define CALLEE (base + (uint64_t)(first + pick(count)) * CALLS_SLOT * 4)
+    f->n = 0;
+    if (!leaf) {
+        calls_put(f, 0xA9BE7BFDu), calls_put(f, 0xF9000BF3u); /* STP x29, x30, [sp, #-32]!; STR x19, [sp, #16] */
+        if (pick(2)) calls_put(f, 0x910003FDu);               /* MOV x29, sp */
+    }
+    for (; blocks && f->n < CALLS_SLOT - 60; --blocks) {
+        unsigned top, r;
+        switch (pick(8)) {
+            case 0:
+            case 1: calls_words(f, 1 + pick(7)); break;
+            case 2:
+            case 3:
+                calls_words(f, pick(4));
+                if (done < calls) calls_call(f, at, CALLEE), ++done;
+                calls_words(f, pick(5));
+                break;
+            case 4: /* SVC #0-15 */
+                calls_words(f, pick(3));
+                calls_put(f, 0xD4000001u | pick(16) << 5);
+                calls_words(f, pick(4));
+                break;
+            case 5: /* MOVZ r, #1-3; the words, perhaps a call; SUBS r, r, #1; B.NE */
+                r = done < calls && !leaf && pick(2) ? 19 : 16;
+                calls_put(f, 0xD2800000u | (1 + pick(3)) << 5 | r);
+                top = f->n;
+                calls_words(f, 1 + pick(6));
+                if (r == 19) calls_call(f, at, CALLEE), ++done, calls_words(f, pick(4));
+                calls_put(f, 0xF1000400u | r << 5 | r);
+                calls_back(f, top);
+                break;
+            case 6: /* a strlen's loop: MOVZ x16, #2-6; SUBS x16, x16, #1; a word or two; TST x16, x16; B.NE */
+                calls_put(f, 0xD2800000u | (2 + pick(5)) << 5 | 16u);
+                top = f->n;
+                calls_put(f, 0xF1000610u);
+                calls_words(f, 1 + pick(2));
+                calls_put(f, 0xEA10021Fu);
+                calls_back(f, top);
+                break;
+            default: calls_switch(f);
+        }
+    }
+    if (!leaf) calls_put(f, 0xF9400BF3u), calls_put(f, 0xA8C27BFDu); /* LDR x19, [sp, #16]; LDP x29, x30, [sp], #32 */
+    calls_put(f, calls && !pick(6) ? 0x14000000u | calls_rel(at + 4 * f->n, CALLEE) : 0xD65F03C0u);
+#undef CALLEE
+}
+
 /* ---- running ---- */
 
 static void put32(uint8_t* mem, uint64_t a, uint32_t w) {
@@ -515,12 +649,18 @@ static void on_fault(int sig) {
     _exit(3);
 }
 static int g_qemu; /* --qemu: the end compared is QEMU's, of the word alone */
+static int g_calls; /* --calls */
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
     /* what it was passed, in the state the sides are compared by; not QEMU's, which has no RET of a word's X30 */
     if (!g_qemu) c->x[17] ^= pc ^ (uint64_t)word << 32;
     c->pc = STOP;
 }
-static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
+static void on_svc(CPU* c, uint32_t imm) {
+    if (!g_calls) return;
+    c->x[imm & 15] ^= 0x1234567ull * (imm + 1);
+    c->x[(imm + 5) & 15] += c->x[imm & 15];
+    c->v[imm & 31].d[0] ^= c->x[imm & 15];
+}
 static void on_poll(CPU* c) { atomic_store_explicit(&c->poll, 0, memory_order_relaxed); }
 #ifdef SNX_TEST_NATIVE
 /* the native side's: a call no function takes (CALLDYN's miss) goes on at its target, which the run's loop finds */
@@ -979,6 +1119,7 @@ int main(int argc, char** argv) {
 #endif
     unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0, slot = SLOT, times = 0;
     int refused = 0, must_make = 0, branches = 0;
+    size_t data_len = DATA_LEN;
     uint32_t (*more)[2] = NULL; /* --programs' words after the first */
     char** ops = NULL;
     OpWord* opw = NULL;
@@ -1025,6 +1166,8 @@ int main(int argc, char** argv) {
             refused = 2;
         else if (!strcmp(argv[i], "--programs"))
             branches = 1;
+        else if (!strcmp(argv[i], "--calls"))
+            g_calls = 1;
         else if (!strcmp(argv[i], "--long") && i + 2 < (unsigned)argc) {
             times = (unsigned)atoi(argv[++i]);
 #ifdef SNX_TEST_NATIVE
@@ -1080,6 +1223,14 @@ int main(int argc, char** argv) {
         }
         slot = (nwords * times + 8 + SLOT - 1) / SLOT * SLOT;
     }
+    if (g_calls) {
+        if (nwords || nops || branches || qemu) {
+            fprintf(stderr, "--calls: not with --words, --ops, --programs or --qemu\n");
+            return 2;
+        }
+        slot = CALLS_SLOT;
+        data_len = CALLS_LEN;
+    }
     if (g_features == SNX_A64_TARGET_OUNCE) {
         fprintf(stderr, "--target ounce: snx_recompiler.h has no such target to compare with: only with --refused\n");
         return 2;
@@ -1130,7 +1281,7 @@ int main(int argc, char** argv) {
 #else
     mem[1] = (uint8_t*)calloc(1, MEMORY);
 #endif
-    data0 = (uint8_t*)malloc(DATA_LEN);
+    data0 = (uint8_t*)malloc(data_len);
     hints = (uint64_t*)malloc(functions * sizeof *hints);
     if (CODE + (uint64_t)functions * slot * 4 > DATA) {
         fprintf(stderr, "FAIL: %u functions of %u words do not fit in the code's %u bytes\n", functions, slot, DATA - CODE);
@@ -1144,6 +1295,12 @@ int main(int argc, char** argv) {
                      : nwords ? nwords
                               : 1 + pick(SLOT - 2);
         hints[i] = at;
+        if (g_calls) {
+            Calls f;
+            calls_function(&f, i, functions, at);
+            for (k = 0; k < slot; ++k) put32(mem[0], at + 4 * k, k < f.n ? f.w[k] : 0xD65F03C0u);
+            continue;
+        }
         if (times) {
             unsigned all = nwords * times;
             put32(mem[0], at, 0xB4000011u | (all + 6) << 5);                     /* CBZ x17, the ADD past them */
@@ -1343,7 +1500,7 @@ int main(int argc, char** argv) {
             uc, "cas128", (void*)snx_runtime_cas128),
     };
 #endif
-    for (k = 0; k < DATA_LEN; ++k) data0[k] = (uint8_t)rnd();
+    for (k = 0; k < data_len; ++k) data0[k] = (uint8_t)rnd();
     if (qemu) {
         if (!opw) {
             fprintf(stderr, "--qemu: only with --ops\n");
@@ -1393,6 +1550,11 @@ int main(int argc, char** argv) {
                 if (branches && s % 4 == 3) start.x[1] &= 0xFF, start.x[2] = start.x[1] ^ 0x80; /* a byte's sign */
             } else
                 start_state(&start, s);
+            if (g_calls) { /* the stack's frames past what the words reach, and a poll at the first branch back */
+                for (k = 20; k < 28; ++k) start.x[k] += 0x7A000u;
+                start.x[31] += 0xEA000u;
+                atomic_store_explicit(&start.poll, s & 1, memory_order_relaxed);
+            }
             if (times) { /* past the words or not, and a poll at the branch back, which resumes in the function's midst */
                 start.x[17] = s & 1 ? 0 : 1 + s;
                 atomic_store_explicit(&start.poll, s >> 1 & 1, memory_order_relaxed);
@@ -1406,7 +1568,7 @@ int main(int argc, char** argv) {
                 snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[i]);
                 fn = hostuc_symbol(uc, name);
                 if (!fn) break; /* not made: another back end's */
-                memcpy(mem[1] + DATA, data0, DATA_LEN);
+                memcpy(mem[1] + DATA, data0, data_len);
                 *ucpu = start;
                 ucpu->mem = mem[1];
                 ucpu->rt = urt;
@@ -1437,7 +1599,7 @@ int main(int argc, char** argv) {
             for (k = 0; k < 2; ++k) {
                 struct snx_recompiled* m = k ? mx : ml;
 #endif
-                memcpy(mem[k] + DATA, data0, DATA_LEN);
+                memcpy(mem[k] + DATA, data0, data_len);
                 c[k] = start;
                 c[k].mem = mem[k];
                 c[k].rt = &rt;
@@ -1452,28 +1614,28 @@ int main(int argc, char** argv) {
             if (branches) {
                 c[0] = start;
                 c[0].rt = c[1].rt, c[0].pc = c[1].pc, c[0].x[30] = c[1].x[30];
-                memcpy(mem[0] + DATA, data0, DATA_LEN);
+                memcpy(mem[0] + DATA, data0, data_len);
                 program_end(&opw[i], &c[0], mem[0], between && !g_between);
             }
             if (qemu) {
                 c[0] = ends[(size_t)i * states + s];
                 c[0].pc = c[1].pc; /* RET's, which a word that writes x30 moves */
-                memcpy(mem[0] + DATA, data0, DATA_LEN);
+                memcpy(mem[0] + DATA, data0, data_len);
             }
             c[0].mem = c[1].mem = NULL;
             c[0].disp = c[1].disp = NULL;
-            if (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, DATA_LEN)) {
+            if (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, data_len)) {
                 unsigned n;
                 ++failures;
                 fprintf(stderr, "FAIL: the function at %llx, state %u:", (unsigned long long)hints[i], s);
-                for (n = 0; n + 1 < SLOT; ++n) {
+                for (n = 0; !g_calls && n + 1 < SLOT; ++n) {
                     uint64_t a = hints[i] + 4 * n;
                     uint32_t w = (uint32_t)mem[0][a] | (uint32_t)mem[0][a + 1] << 8 | (uint32_t)mem[0][a + 2] << 16 |
                                  (uint32_t)mem[0][a + 3] << 24;
                     fprintf(stderr, " %08x", w);
                     if (w == 0xD65F03C0u) break;
                 }
-                fprintf(stderr, "%s\n", memcmp(mem[0] + DATA, mem[1] + DATA, DATA_LEN) ? " (memory differs)" : "");
+                fprintf(stderr, "%s\n", memcmp(mem[0] + DATA, mem[1] + DATA, data_len) ? " (memory differs)" : "");
                 if (verbose && opw) { /* what its Rn and Rm held */
                     unsigned rn = opw[i].word >> 5 & 31, rm = opw[i].word >> 16 & 31;
                     fprintf(stderr, "  from v%u %016llx:%016llx v%u %016llx:%016llx\n", rn,
