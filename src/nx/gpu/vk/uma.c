@@ -2262,6 +2262,7 @@ static void hz_old(u64 cpu, u64 len) { write_pages_stamp(&g_uma.live, cpu, len, 
    in place since the last answer */
 static void gpu_wrote(u64 cpu, u64 n) {
     u64 done = atomic_load_explicit(&g_uma.hz_done, memory_order_relaxed), dummy;
+    vk_ww_gpu_wrote(cpu, n); /* the write marks' check, whose watch this one is (buffer.c) */
     if (!n) return;
     /* the LIVE stamps of the regions there, under lk (their tables go only under it), when a region holds a window
        of it or one that went may still. A stamp stored as this reads it may be missed: its submit is one the write

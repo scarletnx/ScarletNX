@@ -4,7 +4,10 @@
    host tracking: memory/mem.c's marks modelled as a byte a page that mem_marks_scan reads and clears. A range reads
    as unchanged after its baseline until a page of it is marked, and as written in the next write epoch after a mark,
    its pages besides it still unchanged; a scan takes the marks it reports; a page a trap holds keeps its mark, and
-   reads unchanged until the trap lets go of it, as the host's tracking leaves such a page for then. */
+   reads unchanged until the trap lets go of it, as the host's tracking leaves such a page for then.
+   --check and --check-uma: write_marks_scan=2 with the host's tracking modelled too, and the GPU's writes told of by the
+   watch (unified memory's hazard count holds it there, and tells the check itself). A page the host found written that
+   the GPU side wrote is no page with no mark, with either memory model. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +26,7 @@
 /* ------------------------------------------------ the marks: a byte a page, as mem.c keeps them below guest memory */
 #define LEAVES 2u /* the guest memory of the model: whole leaves, as the scans cover */
 #define PAGES  (LEAVES << (WW_LEAF_SHIFT - 12))
-static u8 g_marks[PAGES];
+static u8 g_marks[PAGES], g_host[PAGES]; /* the marks, and the pages the host's tracking (modelled) has written */
 static u64 g_trapped = ~0ull; /* the guest address of the page a trap holds, ~0 for none */
 static u32 g_scans;           /* calls of mem_marks_scan */
 /* as mem.c's: the runs of marked pages in [a, a + size), each mark taken */
@@ -49,11 +52,20 @@ void fatal(const char* fmt, ...) {
     va_end(ap);
     exit(2);
 }
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static char g_checked[512]; /* the check's last line */
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    (void)lvl;
+    if (!strstr(fmt, "write marks check over")) return;
+    va_start(ap, fmt);
+    vsnprintf(g_checked, sizeof g_checked, fmt, ap);
+    va_end(ap);
+}
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 u64 gmmu_translate(u64 gva) { abort(); }
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) { abort(); }
-void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { abort(); } /* check mode's */
+static void (*g_watch)(u64 cpu, u64 n); /* the renderer's watch on GPU-side writes: check mode's, where it is free */
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { g_watch = fn; }
 u64 g_as_size;
 _Atomic(int) g_cs_any;
 _Atomic(int) g_gfx_any;
@@ -83,7 +95,7 @@ int mem_alias_any(void) { return 0; }
 int mem_alias_clear(u64 a, u64 size) { return 1; }
 void mem_alias_peers(u64 a, u64 size, void (*fn)(void*, u64, u64), void* user) {} /* no views */
 int mem_pool_any(u64 a, u64 size) { abort(); }
-int mem_ww_probe(void (*cb)(u8*, u64)) { abort(); }
+int mem_ww_probe(void (*cb)(u8*, u64)) { return 0; } /* the host tracks (check mode) */
 int mem_marks_on(void) { return 1; }
 
 u8 mem_mark_peek(u64 a) { return g_marks[a >> 12]; }
@@ -105,9 +117,13 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) { return -1; } /* no scan
 int plat_vm_read(const void* p, void* dst, u64 size) { abort(); }
 void plat_ww_cool(u8* p, u64 size, void (*cb)(u8*, u64)) { abort(); }
 int plat_ww_hot_in(const u8* p, u64 size) { abort(); }
-int plat_ww_scan(u8* p, u64 size, void (*cb)(u8*, u64)) { abort(); }
+int plat_ww_scan(u8* p, u64 size, void (*cb)(u8*, u64)) { /* the host's, as mem_marks_scan is for the marks */
+    for (u64 pg = (u64)(p - g_mem) >> 12, e = ((u64)(p - g_mem) + size) >> 12; pg < e; pg++)
+        if (g_host[pg]) g_host[pg] = 0, cb(g_mem + (pg << 12), 4096);
+    return 0;
+}
 int plat_trap_armed(const void* p) { return (u64)((const u8*)p - g_mem) == g_trapped; }
-void plat_trap_open_watch(void (*fn)(u8*, u64)) { abort(); } /* check mode's */
+void plat_trap_open_watch(void (*fn)(u8*, u64)) {}
 void plat_yield(void) { abort(); }
 void pm_lock(PMutex* m) {}
 void pm_unlock(PMutex* m) {}
@@ -200,7 +216,8 @@ void vk_stage_report(void) { abort(); }
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off) { abort(); }
 u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) { abort(); }
 u64 vk_submit_number(void) { abort(); }
-int vk_uma(void) { return 0; }
+static int g_uma_on;
+int vk_uma(void) { return g_uma_on; }
 void vk_uma_forget_all(void) { abort(); }
 void vk_uma_frame(void) { abort(); }
 void vk_uma_frame_done(u64 frame) { abort(); }
@@ -213,6 +230,7 @@ u64 vk_uma_import_part(u64 cpu, u64 len, int* held) { abort(); }
 int vk_uma_imports_dear(void) { abort(); }
 int vk_uma_pending(u64 gva, u64 len) { abort(); }
 int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) { abort(); }
+int vk_uma_storage_copied(void) { abort(); }
 void vk_uma_order_request(void) { abort(); }
 void vk_uma_ordered(void) { abort(); }
 void vk_uma_writes_abort(void) { abort(); }
@@ -236,10 +254,46 @@ void vk_writeback_diag(u64* cmp, u64* chg) { abort(); }
 #define P(n) ((u64)(n) << 12)
 static int written(u64 a, u64 len, u32 since) { return vk_written_since(g_mem + a, len, since); }
 
-int main(void) {
+/* check mode: three pages the host found written, one by the GPU's side (no mark of it), one by nothing the marks saw, one
+   marked by the game's code: the check's line says 3, 1 with no mark, 1 more the GPU wrote. With unified memory (uma) the
+   watch is the hazard count's, which this stands in for */
+static int check(int uma) {
+    unsigned presents, host = 0, unmarked = 0, more = 0, later = 0, since = 0, queries = 0, stamped = 0;
+    g_uma_on = uma;
+    g_settings.write_marks_scan = 2;
+    CHECK(written(P(10), P(3), 0) == 0);
+    CHECK(uma ? !g_watch : g_watch != NULL); /* never taken from the hazard count */
+    vk_ww_new_epoch();
+    const u32 base = vk_ww_now();
+    g_host[10] = g_host[11] = g_host[12] = 1;
+    g_marks[12] = 1;
+    if (uma)
+        vk_ww_gpu_wrote(P(10), 4096);
+    else
+        g_watch(P(10), 4096);
+    vk_ww_new_epoch();
+    CHECK(written(P(10), P(3), base) == 1);
+    vk_ww_stats(1);
+    CHECK(
+        sscanf(
+            g_checked,
+            "vulkan: write marks check over %u presents: %u pages the host found written, %u of them with no mark "
+            "(%u marked by a later scan, %u pages with no mark since); %u queries read as written for such a page, %u "
+            "of them on a page a GPU-side write stamped; %u more had a GPU-side write or a landing",
+            &presents, &host, &unmarked, &later, &since, &queries, &stamped, &more) == 8);
+    if (host != 3 || unmarked != 1 || more != 1) fprintf(stderr, "%s", g_checked);
+    CHECK(host == 3 && unmarked == 1 && more == 1);
+    printf("vk_write_marks_check%s: ok\n", uma ? ", unified memory" : "");
+    return 0;
+}
+
+int main(int argc, char** argv) {
     g_as_size = (u64)LEAVES << WW_LEAF_SHIFT;
     g_mem = calloc(1, g_as_size);
     CHECK(g_mem);
+    if (argc > 1 && !strcmp(argv[1], "--check")) return check(0);
+    if (argc > 1 && !strcmp(argv[1], "--check-uma")) return check(1);
+    CHECK(argc == 1);
     g_settings.write_marks_scan = 1;
     CHECK(written(P(10), P(2), 0) == 0); /* since 0: whether the tracking works */
     CHECK(g_scans == 1);                 /* the range's leaf, scanned from the marks */
@@ -280,6 +334,7 @@ int main(void) {
     CHECK(written(P(20), P(3), held) == 1);
     CHECK(written(P(20), P(1), held) == 0);
     CHECK(!g_marks[21]);
+    CHECK(!g_watch); /* the marks alone watch nothing of the GPU's */
     puts("vk_write_marks_scan: ok");
     return 0;
 }

@@ -3439,6 +3439,8 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-write-marks-scan gnu23)
     target_link_libraries(snx-test-vk-write-marks-scan PRIVATE snx_nx_flags)
     add_test(NAME vk_write_marks_scan COMMAND snx-test-vk-write-marks-scan)
+    add_test(NAME vk_write_marks_check COMMAND snx-test-vk-write-marks-scan --check)
+    add_test(NAME vk_write_marks_check_uma COMMAND snx-test-vk-write-marks-scan --check-uma)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit

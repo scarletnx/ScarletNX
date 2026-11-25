@@ -2619,10 +2619,11 @@ static int ww_take(const u8* host, u64 len) {
                 (unsigned long long)(AS_SIZE >> 34));
             g_wmarks_scan = 0;
         }
-        /* the GPU's writes by guest address, where unified memory's hazard count does not hold the watch */
-        if (g_wmarks_scan == 2 && !vk_uma() && (g_wgpu = calloc(AS_SIZE >> 15, 1))) {
+        /* the GPU's writes by guest address: the watch's own, or with unified memory the hazard count's, which tells
+           this of them too (uma.c's gpu_wrote) */
+        if (g_wmarks_scan == 2 && (g_wgpu = calloc(AS_SIZE >> 15, 1))) {
             g_wgpu_window = calloc(AS_SIZE >> 15, 1);
-            gpu_set_write_watch(ww_gpu_wrote);
+            if (!vk_uma()) gpu_set_write_watch(ww_gpu_wrote);
             plat_trap_open_watch(ww_trap_opened); /* a page let go reads as written to the host */
         }
         g_ww = g_wmarks_scan == 1 || mem_ww_probe(ww_mark) == 0;
