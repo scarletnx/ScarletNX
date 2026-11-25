@@ -757,9 +757,18 @@ static int writes_reg(SnxU32 w, unsigned reg) {
         if ((w & 0xbe000000UL) == 0x0c000000UL) return (w >> 23 & 1) && rn == reg; /* structures' post-index */
         return rt == reg || rn == reg || ((w >> 16) & 31) == reg;
     }
-    if ((w & 0x0e000000UL) == 0x0e000000UL) /* SIMD and FP: the moves and conversions to a general register */
-        return rt == reg && ((w & 0x5f200000UL) == 0x1e200000UL && !((w >> 10) & 63) ? 1
-                             : (w & 0xbfe0fc00UL) == 0x0e003c00UL || (w & 0xbfe0fc00UL) == 0x0e002c00UL);
+    if ((w & 0x0e000000UL) == 0x0e000000UL) {
+        /* SIMD and FP: UMOV, SMOV and the scalar moves and conversions (bit 21 clear: of fixed point) to a general
+           register, not from one (SCVTF, UCVTF, FMOV) */
+        unsigned op = (w >> 16) & 7;
+        if (rt != reg) return 0;
+        if ((w & 0x5f000000UL) == 0x1e000000UL && (!((w >> 21) & 1) || !((w >> 10) & 63)))
+            return op != 2 && op != 3 && op != 7;
+        return (w & 0xbfe0fc00UL) == 0x0e003c00UL || (w & 0xbfe0fc00UL) == 0x0e002c00UL;
+    }
+    if ((w & 0xffe00000UL) == 0xd5000000UL) return 0;                       /* MSR, SYS: Rt is read */
+    if ((w & 0x1fe00000UL) == 0x1a400000UL) return 0;                       /* CCMP, CCMN: the flags */
+    if ((w & 0x1fe00000UL) == 0x1a000000UL && ((w >> 10) & 0x3f)) return 0; /* RMIF, SETF: a mask */
     return rt == reg;
 }
 
@@ -879,15 +888,24 @@ static SnxU64 function_base(SnxCodegen* codegen, const JumpTable* table, const S
     return ok ? value : 0;
 }
 
-/* whether the word may set the flags (anything that isn't plain data processing without them, a load or store, a move
-   of an immediate or an address, may) */
+/* whether the word may set the flags: of what is classified below, the ones that set them (an S bit, CCMP and CCMN,
+   RMIF and SETF); loads and stores but MOPS's and RCW's, hints and the vectors' don't, and anything else (scalar
+   floating point, MSR) may */
 static int sets_flags(SnxU32 w) {
-    if ((w & 0x0a000000UL) == 0x08000000UL) return 0;                           /* loads and stores */
-    if ((w & 0x1c000000UL) == 0x10000000UL)                                     /* data processing (immediate) */
+    if ((w & 0x3f000000UL) == 0x19000000UL || (w & 0x3b208c00UL) == 0x38208000UL) return 1; /* MOPS, RCW among them */
+    if ((w & 0x0a000000UL) == 0x08000000UL) return 0;                                       /* loads and stores */
+    if ((w & 0xfffff01fUL) == 0xd503201fUL) return 0;                                       /* hints */
+    if ((w & 0x9e000000UL) == 0x0e000000UL) return 0;                                       /* AdvSIMD */
+    if ((w & 0x1c000000UL) == 0x10000000UL) /* data processing (immediate) */
         return ((w >> 23) & 7) == 2 ? (w >> 29) & 1 : ((w >> 23) & 7) == 4 ? ((w >> 29) & 3) == 3 : 0;
-    if ((w & 0x1e000000UL) == 0x0a000000UL) {                                   /* data processing (register) */
+    if ((w & 0x0e000000UL) == 0x0a000000UL) { /* data processing (register) */
         if (!((w >> 28) & 1)) return ((w >> 24) & 1) ? (w >> 29) & 1 : ((w >> 29) & 3) == 3;
-        return ((w >> 21) & 0xf) == 0 || ((w >> 21) & 0xf) == 2;               /* ADC(S)/RMIF/SETF, CCMP/CCMN */
+        switch ((w >> 21) & 0xf) {
+            case 0: return (w >> 29) & 1 || (w >> 10) & 0x3f; /* ADCS, SBCS; RMIF, SETF */
+            case 2: return 1;                                 /* CCMN, CCMP */
+            case 6: return (w >> 29) & 1;                     /* SUBPS */
+            default: return 0;                                /* CSEL, the 3-source */
+        }
     }
     return 1;
 }
