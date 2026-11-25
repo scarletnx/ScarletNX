@@ -156,8 +156,9 @@ typedef enum {
     GUI_PICKS_THEME,
     GUI_PICKS_GAME,
     GUI_PICKS_MISSING,
-    GUI_PICKS_MORE, /* the foot's More: the screen's own keys past its first (more_open) */
-    GUI_PICKS_SAVES /* the menu's Saves (saves_open) */
+    GUI_PICKS_MORE,  /* the foot's More: the screen's own keys past its first (more_open) */
+    GUI_PICKS_SAVES, /* the menu's Saves (saves_open) */
+    GUI_PICKS_WORDS  /* a setting's list (words_open) */
 } GuiPicksOf;
 /* What a row of Saves, or a game's box's Export Saves and Import Saves, does: a console's saves (its menu item,
    GUI_SWITCH...) out, or in with import, or every console's (GUI_SAVES_EVERY) in one zip */
@@ -219,6 +220,7 @@ static const char* const library_words[GUI_LIBRARIES] = {"recompiled", "dumps"};
 typedef enum { GUI_ROW_PLACE, GUI_ROW_DUMPS, GUI_ROW_FOLDER, GUI_ROW_ADD, GUI_ROW_CONFIG } GuiFolderRow;
 enum { GUI_GROUP_APP, GUI_GROUP_DUMPS, GUI_GROUP_RECOMPILED, GUI_FOLDER_GROUPS }; /* as the screen has them */
 #define GUI_VIEW_ROWS    24    /* a group's rows shown as a view of them */
+#define GUI_WORD_PICKS   64    /* the words a setting's list shows at most: settings.txt's longest has 61 */
 #define SNX_GUI_PLAYERS  8     /* Controllers' players, as the runtime's gamepad_p<N>_ keys */
 /* Settings > App > Folders' rows, its last aside: the app's places and Settings, then each library's Main, its Extras
    and Add a folder, the dumps' library first */
@@ -627,6 +629,12 @@ typedef struct App {
     Uint64 size_until;
     char size_line[128];
     bool typed_cancel; /* the pointer is on Cancel of a typed value's dialog, nothing typed since */
+    /* a setting's list (words_open): its words, and Other... where the row takes a value of its own, which word_typing
+       types; the setting; a pad's A held on its row since pad_hold_ms (0: none), its button, whether the list opened */
+    const char* word_picks[GUI_WORD_PICKS + 2];
+    int word_row, pad_hold_button;
+    bool word_typing, pad_hold_fired;
+    Uint64 pad_hold_ms;
     /* Settings' search (search_open): its row over the groups in focus; its screen, a view of the rows that match
        search_text (search_total of them, search_note saying so), what search_was had before it was typed again; a
        screen opened from a row of it, which goes back to it on search_at; each link's App row, or -1 - g for group
@@ -1103,6 +1111,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #endif
 #define SAY_SETTINGS         SAY_EDITOR
 #define SAY_SEARCH           NULL /* a finger taps Search's row */
+#define SAY_WORDS            SNX_TR_KEYS("Hold: list.")
 #define SAY_SEARCH_GO        SNX_TR_KEYS("Its group.")
 #define SAY_SETTINGS_DEFAULT NULL /* a finger has no Del */
 #define SAY_SETTINGS_GLOBAL  NULL /* a game's own: its word Global, or its text emptied */
@@ -1183,6 +1192,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_SETTINGS     SNX_TR_KEYS("Up/Down: setting. Left/Right: change. Enter: type. ESC: back.")
 #define SAY_SETTINGS_DEFAULT SNX_TR_KEYS("Del: default.") /* a setting not at its default */
 #define SAY_SEARCH           SNX_TR_KEYS("Ctrl+F: search.")
+#define SAY_WORDS            SNX_TR_KEYS("Alt+Down/right click: list.")
 #define SAY_SEARCH_GO        SNX_TR_KEYS("G: its group.")
 #define SAY_SETTINGS_GLOBAL  SNX_TR_KEYS("Del: Global.")  /* a game's own picked */
 #define SAY_GROUPS           SNX_TR_KEYS("Up/Down: group. Enter: open. ESC: back.")
@@ -1231,6 +1241,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_SETTINGS_DEFAULT SNX_TR_KEYS("X: default.")
 #define SAY_PAD_SETTINGS_GLOBAL  SNX_TR_KEYS("X: Global.")
 #define SAY_PAD_SEARCH           SNX_TR_KEYS("Y: search.")
+#define SAY_PAD_WORDS            SNX_TR_KEYS("Hold A: list.")
 #define SAY_PAD_SEARCH_GO        SNX_TR_KEYS("L3: its group.")
 #define SAY_PAD_GROUPS           SNX_TR_KEYS("D-pad: group. A: open. B: back.")
 #define SAY_PAD_APP              SNX_TR_KEYS("D-pad: row, change. A: change or open. B: back.")
@@ -3611,6 +3622,11 @@ static void games_said(const App* app, bool pad, const char** parts, int* n);
 static int setting_of(const App* app, int row);
 static void settings_said(const App* app, bool pad, const char** parts, int* n);
 static void search_said(const App* app, bool pad, const char** parts, int* n);
+static int words_row(const App* app);
+static int words_app_row(const App* app);
+static void words_open(App* app);
+static void words_typed_key(App* app, GuiKey key);
+static void pad_hold_tick(App* app);
 static int hint_next(const char** s, char* key, char* what, size_t size);
 /* a key every screen has, which F1's box says and a foot leaves out: moving and picking, paging, the tabs, the side
    box, a pad's D-pad, A, LT/RT and LB/RB. key: an English sentence's, its words between slashes */
@@ -3728,6 +3744,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"help", GUI_ICON_INFO},
                  {"more", GUI_ICON_ELLIPSIS},
                  {"search", GUI_ICON_EYE},
+                 {"list", GUI_ICON_ELLIPSIS},
                  {"its group", GUI_ICON_LAYERS}};
     size_t i;
     if (!*what) what = key;
@@ -12585,6 +12602,8 @@ static void search_said(const App* app, bool pad, const char** parts, int* n) {
          app->form != GUI_FORM_USERS))
         return;
     if (search_shown(app) && app->view_count) said_add(parts, n, pad ? SAY_PAD_SEARCH_GO : SAY_SEARCH_GO);
+    if (words_row(app) >= 0 || words_app_row(app) >= 0) /* the focus on a list */
+        said_add(parts, n, pad ? SAY_PAD_WORDS : SAY_WORDS);
     if (open) said_add(parts, n, open);
 }
 /* ---- a game's own Settings (its boxes' Settings): the Settings screen on its picks file, <name>.picks beside its
@@ -14006,6 +14025,10 @@ static void editor_key(App* app, GuiKey key) {
         app->typed_cancel = false; /* a dialog opens on OK */
     else if (key == GUI_SELECT && typed_focus(app))
         key = GUI_CANCEL;
+    if (app->word_typing && app->editor.typing) { /* Other...'s dialog: Enter takes it, ESC leaves the row */
+        if (key == GUI_SELECT || key == GUI_CANCEL) words_typed_key(app, key);
+        return;
+    }
     if (search_typing(app)) { /* the search's dialog: Enter, its rows; ESC, the search as it was */
         if (key == GUI_SELECT || key == GUI_CANCEL) search_typed_key(app, key);
         return;
@@ -14245,6 +14268,11 @@ static void editor_input(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_KEY_DOWN && search_go_of(app, &e->key)) {
         search_go(app);
+        return;
+    }
+    if (e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_DOWN && (e->key.mod & SDL_KMOD_ALT) &&
+        !app->editor.typing && (app->form == GUI_FORM_GROUP || app->form == GUI_FORM_APP)) { /* the row's list */
+        words_open(app);
         return;
     }
     /* the search with no row: nothing for a key to act on but ESC and Tab */
@@ -14913,7 +14941,14 @@ static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Can
 #define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (search_typing(app))
+    const GuiSetting* v = app->word_typing ? &screen_settings(app)->values[app->word_row] : NULL;
+    if (v && v->number)
+        snprintf(out, size,
+                 v->number == 'i' ? snx_tr("A whole number from %.0f to %.0f") : snx_tr("A number from %g to %g"),
+                 v->lo, v->hi);
+    else if (v)
+        snprintf(out, size, snx_tr("Text, up to %u bytes"), (unsigned)(sizeof v->text - 1));
+    else if (search_typing(app))
         snprintf(out, size, "%s", snx_tr("Words of a setting's name, key, group, help or values"));
     else if (secret_open(app))
         snprintf(out, size, "%s",
@@ -14925,7 +14960,9 @@ static void typed_takes(const App* app, char* out, size_t size) {
 }
 /* the dialog's title: the row's label, the search's Search */
 static void typed_title(const App* app, char* out, size_t size) {
-    if (search_typing(app))
+    if (app->word_typing)
+        snprintf(out, size, "%s", snx_tr(screen_settings(app)->keys[app->word_row].key));
+    else if (search_typing(app))
         snprintf(out, size, "%s", snx_tr("Search"));
     else
         gui_editor_label(&app->editor, app->editor.row, out, size);
@@ -18630,7 +18667,10 @@ static void hold_tick(App* app) {
     SDL_GetWindowSize(app->window, &w, &h);
     pointer(app, app->finger_x * (float)w, app->finger_y * (float)h, false, false);
     app->hovering = false; /* a finger hovers nowhere */
-    game_box_open(app);
+    if (app->editing)      /* a row of a group of settings: its list */
+        words_open(app);
+    else
+        game_box_open(app);
     app->hold_fired = app->picks_shown; /* a row that is no game opened none: the lift taps it */
 }
 static size_t titles_unknown(const App* app);
@@ -18653,6 +18693,7 @@ static void titles_look(App* app, Uint64 now) {
 static void bt_pump(App* app);
 static void pump(App* app) {
     hold_tick(app);
+    pad_hold_tick(app);
     bt_pump(app);
     keys_left(app);
     text_left(app);
@@ -18971,6 +19012,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
     if (app->picks_of == GUI_PICKS_MORE) return app->more_picks;
     if (app->picks_of == GUI_PICKS_SAVES) return app->saves_picks;
+    if (app->picks_of == GUI_PICKS_WORDS) return app->word_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -18983,8 +19025,8 @@ static const char* pick_label(App* app, int i) {
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
     if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME || app->picks_of == GUI_PICKS_MORE ||
-        app->picks_of == GUI_PICKS_SAVES)
-        return picks[i]; /* names, the foot's sentences and Saves' rows (translated as made), as they are */
+        app->picks_of == GUI_PICKS_SAVES || app->picks_of == GUI_PICKS_WORDS)
+        return picks[i]; /* names, the foot's sentences, Saves' rows and a list's words (as made), as they are */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -19001,7 +19043,8 @@ static unsigned pick_tone(const App* app, int i) {
     int n = 0;
     while (picks[n]) ++n;
     if (i < 0 || i >= n || app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME ||
-        app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MORE || app->picks_of == GUI_PICKS_SAVES)
+        app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MORE || app->picks_of == GUI_PICKS_SAVES ||
+        app->picks_of == GUI_PICKS_WORDS)
         return 0;
     if (app->picks_of == GUI_PICKS_DRIVER) return !strcmp(picks[i], "Remove") ? UI_ATTR_DANGER : 0;
     if (app->picks_of == GUI_PICKS_MISSING) return !strcmp(picks[i], SAY_MISSING_REMOVE) ? UI_ATTR_CAUTION : 0;
@@ -19021,6 +19064,135 @@ static void picks_open(App* app, GuiPicksOf of) {
     app->picks.focus = 0;
     for (app->picks.count = 0; pick_label(app, app->picks.count);) ++app->picks.count;
     app->picks_shown = true;
+}
+/* ---- a setting's list: on a Settings row of three words or more, a right click, a finger held GUI_HOLD_MS, a pad's A
+   held as long or Alt+Down opens its words in the picks box, the one it has in focus; Enter, a click or a tap takes
+   one, ESC or a click off it leaves the row as it was. A row that takes a value of its own (the runtime's list's open)
+   has Other... last, which types it. A row of two words goes on stepping, a slider sliding, a row of boxes opening
+   its form ---- */
+#define SAY_WORDS_OTHER SNX_TR_NOOP("Other...")
+/* the setting the focused row is when it is a list, -1 otherwise: a word row of three words or more, no slider, no
+   row of boxes, none greyed */
+static int words_row(const App* app) {
+    const GuiSettings* s = screen_settings(app);
+    int r, n = 0;
+    if (!app->editing || app->form != GUI_FORM_GROUP || app->editor.typing || !s->values ||
+        app->editor.object != (char*)s->values || !gui_editor_rows(&app->editor))
+        return -1;
+    r = setting_of(app, app->editor.row);
+    if (r < 0 || r >= s->count || s->keys[r].type != GUI_KEY_WORD || s->values[r].slider || s->values[r].items ||
+        s->values[r].only || s->values[r].needs_build)
+        return -1;
+    while (s->keys[r].words[n]) ++n;
+    return n >= 3 && n <= GUI_WORD_PICKS ? r : -1;
+}
+/* App's row in focus when it is a list: Language, Side panel or Background recompile, -1 otherwise */
+static int words_app_row(const App* app) {
+    int r = app->editor.row;
+    if (!app->editing || app->form != GUI_FORM_APP || app->editor.typing || app->editor.picking) return -1;
+    return (r == GUI_APP_LANGUAGE && snx_gui_language_count + 1 <= GUI_WORD_PICKS) || r == GUI_APP_SIDE ||
+                   r == GUI_APP_BACKGROUND
+               ? r
+               : -1;
+}
+/* the list's row's name and what it has now, a setting's or App's */
+static void words_said(App* app, const char** name, char* now, size_t size) {
+    if (app->word_row < 0) {
+        *name = snx_tr(app_keys[-1 - app->word_row].key);
+        app_values(app);
+        gui_theme_get((const char*)&app->app_form, &app_keys[-1 - app->word_row], now, size);
+    } else {
+        *name = snx_tr(screen_settings(app)->keys[app->word_row].key);
+        setting_shown(app, app->word_row, now, size);
+    }
+}
+/* the focused row's list, its word in focus; asked on a row that is none, it says so */
+static void words_open(App* app) {
+    GuiSettings* s = screen_settings(app);
+    int r = words_row(app), a = words_app_row(app), n = 0;
+    if (a >= 0) { /* App's: its words as its row steps them */
+        const char* const* names = a == GUI_APP_SIDE ? side_names : background_names;
+        if (a == GUI_APP_LANGUAGE) {
+            app->word_picks[n++] = snx_tr("Auto");
+            for (int i = 0; i < snx_gui_language_count; ++i) app->word_picks[n++] = snx_gui_languages[i].name;
+        } else
+            for (int i = 0; i < 3; ++i) app->word_picks[n++] = snx_tr(names[i]);
+        app->word_picks[n] = NULL;
+        app->word_row = -1 - a;
+        picks_open(app, GUI_PICKS_WORDS);
+        app->picks.focus = a == GUI_APP_LANGUAGE ? app->language
+                           : a == GUI_APP_SIDE   ? (int)app->side_box
+                                                 : app->background_mode;
+        return;
+    }
+    if (r < 0) {
+        const GuiThemeKey* k =
+            app->editing && (app->form == GUI_FORM_GROUP || app->form == GUI_FORM_APP) && !app->editor.typing
+                ? gui_editor_key_of(&app->editor, app->editor.row)
+                : NULL;
+        if (k)
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s has no list: Enter changes it"),
+                     snx_tr(k->key));
+        return;
+    }
+    for (; s->keys[r].words[n]; ++n) app->word_picks[n] = s->keys[r].words[n];
+    if (s->values[r].open) app->word_picks[n++] = snx_tr(SAY_WORDS_OTHER);
+    app->word_picks[n] = NULL;
+    app->word_row = r;
+    picks_open(app, GUI_PICKS_WORDS);
+    app->picks.focus = s->values[r].word;
+}
+static void resolution_check(App* app, int row);
+/* the list's word i taken, or its Other... typed; -1 (ESC, a click off it) leaves the row as it was */
+static void words_take(App* app, int i) {
+    GuiSettings* s = screen_settings(app);
+    int r = app->word_row, n = 0;
+    if (i >= 0 && r < 0) { /* App's: as its row's steps set it, kept in app.ini */
+        int a = -1 - r;
+        if (a == GUI_APP_LANGUAGE) {
+            app->language = i;
+            language_apply(app);
+        } else if (a == GUI_APP_SIDE) {
+            app->side_box = i;
+            layout(app);
+        } else
+            app->background_mode = i;
+        app_save(app);
+        app_values(app);
+        return;
+    }
+    if (i < 0 || r < 0 || r >= s->count) return;
+    while (s->keys[r].words[n]) ++n;
+    if (i >= n) { /* Other...: a value of its own, typed in the dialog of a typed value */
+        snprintf(app->editor.text, sizeof app->editor.text, "%s", s->values[r].custom ? s->values[r].text : "");
+        app->editor.typing = app->word_typing = true;
+        app->typed_cancel = false;
+        typed_keyboard(app);
+        return;
+    }
+    s->values[r].word = i;
+    app->editor.dirty = true;
+    keep_settings(app);
+    resolution_check(app, r);
+}
+/* Enter or ESC in Other...'s dialog: what was typed taken where the row takes it, else said and typed again */
+static void words_typed_key(App* app, GuiKey key) {
+    GuiSettings* s = screen_settings(app);
+    int r = app->word_row;
+    char was[GUI_SETTING_TEXT];
+    if (key == GUI_SELECT && r >= 0 && r < s->count) {
+        setting_shown(app, r, was, sizeof was);
+        if (!gui_settings_set(s, s->values[r].key, app->editor.text)) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s is no value of %s: it keeps %s"),
+                     app->editor.text, snx_tr(s->keys[r].key), was);
+            return;
+        }
+        app->editor.dirty = true;
+        keep_settings(app);
+    }
+    app->editor.typing = app->word_typing = false;
+    app->editor.text[0] = 0;
+    typed_keyboard(app);
 }
 /* the foot's More (F3, its button, a finger's word): the screen's own keys its foot left out (screen_more) in the picks
    box, a row each with its icon, which presses that key as the keyboard does; none, said */
@@ -19079,7 +19251,10 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MISSING ? snx_tr("Game")
            : app->picks_of == GUI_PICKS_MORE                                       ? snx_tr("More")
            : app->picks_of == GUI_PICKS_SAVES                                      ? snx_tr("Saves")
-                                                                                   : snx_tr("Folders");
+           : app->picks_of == GUI_PICKS_WORDS
+               ? snx_tr(app->word_row < 0 ? app_keys[-1 - app->word_row].key
+                                          : screen_settings(app)->keys[app->word_row].key)
+               : snx_tr("Folders");
     if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
         snprintf(out, size, "%s", app->pick_text);
         return;
@@ -19090,6 +19265,13 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
                         "emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash "
                         "first."),
                  snx_users_selected()->nickname);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_WORDS) { /* what the row has now */
+        char now[GUI_SETTING_TEXT];
+        const char* name;
+        words_said(app, &name, now, sizeof now);
+        snprintf(out, size, snx_tr("%s: %s. Enter picks one, ESC leaves it"), name, now);
         return;
     }
     if (app->picks_of == GUI_PICKS_MORE) { /* what the foot left out, each key pressed from here as there */
@@ -20292,6 +20474,10 @@ static bool hint_press(App* app, const char* key, int col);
 static void pick_take(App* app, int i) {
     int at, group, kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
+    if (app->picks_of == GUI_PICKS_WORDS) {
+        words_take(app, i);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_THEME) { /* the one in focus kept, as the App's Theme row keeps a theme, or the one
                                                shown before back */
         theme_load(app, i < 0 || (size_t)i >= app->themes.count ? app->theme_was : app->themes.ids[i], false);
@@ -23683,7 +23869,11 @@ static const struct {
                  {SNX_TR_KEY("Ctrl+V"), SDLK_V, SDL_KMOD_CTRL, false},
                  {SNX_TR_KEY("Ctrl+F"), SDLK_F, SDL_KMOD_CTRL, false},
                  {SNX_TR_KEY("G"), SDLK_G, 0, false},
-                 {SNX_TR_KEY("Its group"), SDLK_G, 0, false}, /* a finger's, on the search's rows */
+                 {SNX_TR_KEY("Its group"), SDLK_G, 0, false},           /* a finger's, on the search's rows */
+                 {SNX_TR_KEY("Hold A"), SDLK_DOWN, SDL_KMOD_ALT, true}, /* a pad's, on a list's row */
+                 {SNX_TR_KEY("Alt+Down"), SDLK_DOWN, SDL_KMOD_ALT, false},
+                 {SNX_TR_KEY("right click"), SDLK_DOWN, SDL_KMOD_ALT, false},
+                 {SNX_TR_KEY("Hold"), SDLK_DOWN, SDL_KMOD_ALT, false}, /* a finger's, on a list's row */
                  {SNX_TR_KEY("F5"), SDLK_F5, 0, false},
                  {SNX_TR_KEY("F2"), SDLK_F2, 0, false},
                  {SNX_TR_KEY("F1"), SDLK_F1, 0, false},
@@ -24525,11 +24715,40 @@ static bool input_seen(App* app, const SDL_Event* e) {
    take the event as it is; whether it was taken here */
 static bool pads_event(App* app, const SDL_Event* e) {
     SDL_Event key;
-    bool pressed = gui_pads_event(&app->pads, e, now_ms(app), &key);
+    bool pressed;
+    /* A let go on a list's row: held GUI_HOLD_MS its list opened (pad_hold_tick), else a press as any */
+    if (e->type == SDL_EVENT_GAMEPAD_BUTTON_UP && app->pad_hold_ms && e->gbutton.button == app->pad_hold_button) {
+        gui_pads_event(&app->pads, e, now_ms(app), &key); /* its release, for the pads' own count */
+        app->pad_hold_ms = 0;
+        if (!app->pad_hold_fired) {
+            SDL_zero(key);
+            key.type = SDL_EVENT_KEY_DOWN;
+            key.key.key = SDLK_RETURN;
+            key.key.which = GUI_PAD_KEYBOARD;
+            key.key.down = true;
+            event(app, &key);
+        }
+        return true;
+    }
+    pressed = gui_pads_event(&app->pads, e, now_ms(app), &key);
     if (pressed) pad_drive(app, true); /* a stick or a trigger too */
     if (!pressed || pads_own(app)) return false;
+    if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && key.key.key == SDLK_RETURN &&
+        (words_row(app) >= 0 || words_app_row(app) >= 0) && !box_shown(app) &&
+        !app->picks_shown) { /* A on a list's row: what it does waits for its lift or its hold */
+        app->pad_hold_ms = SDL_max(now_ms(app), (Uint64)1);
+        app->pad_hold_button = e->gbutton.button;
+        app->pad_hold_fired = false;
+        return true;
+    }
     event(app, &key);
     return true;
+}
+/* a pad's A held GUI_HOLD_MS on a list's row: its list, which takes the lift */
+static void pad_hold_tick(App* app) {
+    if (!app->pad_hold_ms || app->pad_hold_fired || now_ms(app) - app->pad_hold_ms < GUI_HOLD_MS) return;
+    app->pad_hold_fired = true;
+    words_open(app);
 }
 /* SDL could not start the menu's pads: why, from SDL */
 static void pads_fail(App* app) {
@@ -24830,9 +25049,12 @@ static void event_take(App* app, const SDL_Event* e) {
         app->finger_x = e->tfinger.x;
         app->finger_y = e->tfinger.y;
         app->hold_fired = false; /* held on Games, its game's box (hold_tick) */
-        app->hold_ms = app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown
-                           ? SDL_max(now_ms(app), (Uint64)1)
-                           : 0;
+        app->hold_ms =
+            ((app->menu.view == GUI_LOAD_GAMES && !app->editing) ||
+             (app->editing && (app->form == GUI_FORM_GROUP || app->form == GUI_FORM_APP) && !app->editor.typing)) &&
+                    !box_shown(app) && !app->picks_shown
+                ? SDL_max(now_ms(app), (Uint64)1)
+                : 0;
         SDL_GetWindowSize(app->window, &w, &h);
         app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
         if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
@@ -24965,6 +25187,14 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
+        return;
+    }
+    /* a right click on a row of a group of settings: its list, as a finger held there opens it */
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_RIGHT && app->editing &&
+        (app->form == GUI_FORM_GROUP || app->form == GUI_FORM_APP) && !app->editor.typing && !box_shown(app) &&
+        !app->picks_shown) {
+        pointer(app, e->button.x, e->button.y, false, false); /* the row under it in focus, as the mouse over it does */
+        words_open(app);
         return;
     }
     /* a right click on a game of Games: its box, as a finger held there opens it */

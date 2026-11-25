@@ -338,7 +338,7 @@ msgstr "0 到 %lu 的整数"
 msgid "A whole number from %.0f to %.0f; empty, the default %s"
 msgstr "%.0f 到 %.0f 的整数；留空则为默认值 %s"
 
-#: src/gui/editor.c
+#: src/gui/editor.c src/gui/main.c
 #, c-format
 msgid "A whole number from %.0f to %.0f"
 msgstr "%.0f 到 %.0f 的整数"
@@ -353,7 +353,7 @@ msgstr "%g 到 %g 的数，最多两位小数；留空则为默认值 %s"
 msgid "A number from %g to %g, two decimals at most"
 msgstr "%g 到 %g 的数，最多两位小数"
 
-#: src/gui/editor.c
+#: src/gui/editor.c src/gui/main.c
 #, c-format
 msgid "Text, up to %u bytes"
 msgstr "文字，最多 %u 字节"
@@ -761,6 +761,12 @@ msgstr "拖动: 更改. 轻触 #RRGGBB: 输入. 轻触外面: 确定."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Hold: list."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Its group."
 msgstr ""
 
@@ -1045,6 +1051,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Alt+Down/right click: list."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "G: its group."
 msgstr ""
 
@@ -1282,6 +1294,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Y: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Hold A: list."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -4409,6 +4427,11 @@ msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr "昵称，1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
+#, c-format
+msgid "A number from %g to %g"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Words of a setting's name, key, group, help or values"
 msgstr ""
 
@@ -5312,6 +5335,20 @@ msgid "Remove from Games"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Other..."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no list: Enter changes it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no value of %s: it keeps %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Every key of this screen is in its foot"
 msgstr ""
 
@@ -5324,6 +5361,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "The saves of %s, the user playing: every console's in one zip, or a console's as its emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash first."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. Enter picks one, ESC leaves it"
 msgstr ""
 
 #: src/gui/main.c
@@ -6319,6 +6361,30 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Its group"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Hold A"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Alt+Down"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "right click"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Hold"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

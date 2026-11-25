@@ -311,7 +311,13 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting that is a path
   (a shader corpus's folder, a branch profile's file, a stats file to write) is picked: Enter opens the system's
   folder, file or save dialog over the path it has, Ctrl+V and a drop give it a path too, Del takes it off; on iOS, and
-  after a dialog that could not open (said), Enter types it. A setting's words are
+  after a dialog that could not open (said), Enter types it. A row of three words or more is a list: Alt+Down, a right
+  click, a finger held half a second or a pad's A held as long opens its words in a box, the one it has in focus, and
+  the foot says how while the focus is on one (*Alt+Down/right click: list.*); Enter, a click or a tap takes one, ESC
+  or a click off the box leaves the row as it was. A row that takes a value of its own has **Other...** last, which
+  types it in the dialog of a typed value, one the row does not take said with the value it keeps (`300 is no value of
+  FPS limit: it keeps 120`). A row of two words goes on stepping, a slider sliding, a row of boxes opening its form;
+  Alt+Down there says it has no list. A setting's words are
   its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
   `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
   that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
