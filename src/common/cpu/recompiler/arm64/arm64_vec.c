@@ -19,6 +19,12 @@ static void vwrite(SgCtx* g, unsigned d, int r, int q) {
     sg__V_write(g, d, sgx_xval(128, r));
 }
 static int vzero(SgCtx* g) { return sgx_xconst(X, 0, 0); }
+/* RBIT of a W or an X */
+static SgD mg_rbit(Unit* u, SgD v) {
+    SgCtx* g = u->g;
+    sgx_flat(X, &v);
+    return SGX_OP(X, rbit, v.w, v);
+}
 
 /* an element's imm5: its size (0 B ... 3 D) and index */
 static SnxU32 v_imm5(unsigned size, int i) { return (SnxU32)i << (size + 1) | 1u << size; }

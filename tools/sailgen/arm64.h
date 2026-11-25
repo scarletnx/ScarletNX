@@ -180,6 +180,8 @@ SGA_E(clz_64) { (void)imm, (void)cc; sga_w(b, sge_a64_clz_int(r[0], r[1], 1)); }
 SGA_E(clz_32) { (void)imm, (void)cc; sga_w(b, sge_a64_clz_int(r[0], r[1], 0)); }
 SGA_E(rev_64) { (void)imm, (void)cc; sga_w(b, sge_a64_rev(r[0], r[1], 3, 1)); }
 SGA_E(rev_32) { (void)imm, (void)cc; sga_w(b, sge_a64_rev(r[0], r[1], 2, 0)); }
+SGA_E(rbit_64) { (void)imm, (void)cc; sga_w(b, sge_a64_rbit_int(r[0], r[1], 1)); }
+SGA_E(rbit_32) { (void)imm, (void)cc; sga_w(b, sge_a64_rbit_int(r[0], r[1], 0)); }
 
 /* a load or a store of a general-purpose register at [base + index + disp] (b's), of bytes 1, 2, 4 or 8: LDR (and
    LDRB, LDRH) of an unsigned offset the size scales, LDUR of a signed 9-bit one, the register offset for an index of
@@ -387,6 +389,7 @@ SGA_PAIR(SGA_R, neg, 0)
 SGA_PAIR(SGA_R, not, 0)
 SGA_PAIR(SGA_R, clz, 1)
 SGA_PAIR(SGA_R, rev, 1)
+SGA_PAIR(SGA_R, rbit, 1)
 SGA_RR(umulh, 64, 0, 3)
 SGA_RR(smulh, 64, 0, 3)
 SGA_RR(udiv, 64, 0, 3)

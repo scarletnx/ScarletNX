@@ -220,6 +220,13 @@ static SgD lane_get(SgCtx* g, unsigned size, int a, int i);
 static int lane_put(SgCtx* g, unsigned size, int a, int i, SgD v);
 static int vdup(SgCtx* g, unsigned size, int a, int e);
 
+/* the bits of v (a W's or an X's) in the other order: the machine's, where it has better (MG_RBIT) */
+#ifdef MG_RBIT
+static SgD MG_RBIT(Unit* u, SgD v);
+#else
+#define MG_RBIT(u, v) sg_d_bitreverse((u)->g, (v))
+#endif
+
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
 /* the region's own stores of the pins (UNDEF's flush, the spill and reload around a helper's call) are assembled
    with the region, or with the cold paths at the function's end, not where cur_dirty is theirs: every pin written */
@@ -931,6 +938,29 @@ static int bitfield(Unit* u, SnxU32 word) {
     return 1;
 }
 
+/* RBIT, REV16, REV32 and REV: the machine's byte reversal and what of it is left to move, not the Sail's loops of bits
+   and of bytes. X registers' REV of W's size is reserved, the Sail's */
+static int reverse(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned sf = word >> 31, opc = word >> 10 & 3, rn = word >> 5 & 31, rd = word & 31, w = sf ? 64 : 32;
+    SgD v, r;
+    if ((word & 0x7FFFF000u) != 0x5AC00000u || (opc == 3 && !sf)) return 0;
+    v = xzr_or(g, rn);
+    if (!sf) v = sg_d_slice(g, v, 31, 0);
+    if (!opc)
+        r = MG_RBIT(u, v);
+    else if (opc == 1 && sf) { /* REV16's halves of X: each byte with its neighbour */
+        SgD m = sgx_const(64, 0x00FF00FF00FF00FFull);
+        r = sg_d_or(g, sg_d_and(g, sg_d_lsr(g, v, 8), m), sg_d_lsl(g, sg_d_and(g, v, m), 8));
+    } else {
+        sgx_flat(sgx(g), &v);
+        r = SGX_OP(sgx(g), rev, w, v);
+        if (opc != 2 + sf) r = sg_d_or(g, sg_d_lsl(g, r, w / 2), sg_d_lsr(g, r, w / 2)); /* the halves back in order */
+    }
+    if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
+    return 1;
+}
+
 /* ---- PLT stubs the program's linker binds (SnxBoundBranch), as ir_codegen.c lowers them ----
    On a machine without MG_BOUND every call of a stub runs the stub */
 
@@ -1451,7 +1481,9 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (!k) return 0;
             break;
         }
-        if (bitfield(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
+        if (bitfield(u, word) || reverse(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) ||
+            simd_scalar_cvt(u, word) || simd_copy(u, word))
+            break;
         {
             int v = struct_ldst(u, word);
             if (v < 0) goto undef;
