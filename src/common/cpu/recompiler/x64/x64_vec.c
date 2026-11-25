@@ -1234,6 +1234,16 @@ static int vsha1(SgCtx* g, int func, int abcd, int e, int wk) {
 }
 /* the words of a rotated left by n */
 static int vrolw(SgCtx* g, int a, unsigned n) { return vor(g, vshl(g, 2, a, n), vshr(g, 2, a, 32 - n, 0)); }
+/* AESMC (AESIMC: inv) of a value AESE (AESD) made, the pair a full round of AES-NI's with a zero key: what that last
+   round was of, or 0 */
+static int vaes_last(SgCtx* g, int a, int inv) {
+    SgX* x = X;
+    const SgXIns* i = x->v[a].def >= 0 && x->v[a].def < x->n ? &x->ins[x->v[a].def] : NULL;
+    const SgXIns* key;
+    if (!i || i->kind != SGX_K_VEC || i->def != a || i->vf != (inv ? &sgx_v_aesdeclast : &sgx_v_aesenclast)) return 0;
+    key = &x->ins[x->v[i->in[1]].def];
+    return key->kind == SGX_K_VEC && key->vzero ? i->in[0] : 0;
+}
 
 /* the cryptographic extensions' instructions: the host's AES-NI and SHA-NI where it has them, else the portable
    helpers; 0 for the rest */
@@ -1258,8 +1268,10 @@ static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         a = vread(g, rn);
         b = 0;
         if (aes) { /* MixColumns: a full round after an inverse last one, both with a zero key */
-            r = insn->op == SNX_A64_OP_AESIMC ? sgx_v1(X, &sgx_v_aesimc, a, 0)
-                                              : op2(g, &sgx_v_aesenc, op2(g, &sgx_v_aesdeclast, a, vzero(g)), vzero(g));
+            int inv = insn->op == SNX_A64_OP_AESIMC, before = vaes_last(g, a, inv);
+            r = before ? op2(g, inv ? &sgx_v_aesdec : &sgx_v_aesenc, before, vzero(g))
+                : inv  ? sgx_v1(X, &sgx_v_aesimc, a, 0)
+                       : op2(g, &sgx_v_aesenc, op2(g, &sgx_v_aesdeclast, a, vzero(g)), vzero(g));
             break;
         }
         op = insn->op == SNX_A64_OP_AESIMC ? 0x23 : 0x22;
