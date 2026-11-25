@@ -3,6 +3,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/mach/native.h"
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include "common/cpu/recompiler/object/elf_object.h"
 #endif
@@ -246,6 +247,7 @@ static BOOL CALLBACK init_callback(PINIT_ONCE once, PVOID parameter, PVOID* cont
 }
 #endif
 int snx_ir_init(char* error, size_t error_size) {
+    if (snx_native_refused(error, error_size)) return -1;
 #ifdef _WIN32
     InitOnceExecuteOnce(&g_ir.once, init_callback, NULL, NULL);
 #else

@@ -280,7 +280,8 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
         snx_arm_exec_free(e);
         return NULL;
     }
-    snprintf(e->why, sizeof e->why, "no native back end on this host");
+    if (!e->native && !snx_native_floor(e->why, sizeof e->why))
+        snprintf(e->why, sizeof e->why, "no native back end on this host");
     if (!(e->fallback = snx_fallback_arm_new("a32exec", BLOCK_OPT, 1))) {
         snprintf(error, error_size, "out of memory");
         snx_arm_exec_free(e);

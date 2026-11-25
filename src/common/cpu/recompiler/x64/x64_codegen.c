@@ -668,15 +668,17 @@ static struct {
     _Atomic int win64;
 } g_x64_codegen;
 /* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT */
-#define X64_BASELINE (SGX_F_SSE3 | SGX_F_SSSE3 | SGX_F_SSE41 | SGX_F_SSE42 | SGX_F_PCLMUL | SGX_F_POPCNT)
-int snx_x64_available(void) {
-    return (host_features() & X64_BASELINE) == X64_BASELINE;
+static const SnxNativeFeature k_x64_floor[] = {{"SSE3", SGX_F_SSE3},        {"SSSE3", SGX_F_SSSE3},
+                                               {"SSE4.1", SGX_F_SSE41},     {"SSE4.2", SGX_F_SSE42},
+                                               {"PCLMULQDQ", SGX_F_PCLMUL}, {"POPCNT", SGX_F_POPCNT}};
+int snx_x64_floor(char* why, size_t size) {
+    return snx_native_lacks(k_x64_floor, sizeof k_x64_floor / sizeof *k_x64_floor, host_features(), why, size);
 }
+int snx_x64_available(void) { return !snx_x64_floor(NULL, 0); }
 unsigned snx_x64_features(void) { return host_features(); }
 int snx_x64_win64(void) { return snx_x64_available() && (host_features() & SGX_F_WIN64); }
 void snx_x64_without(unsigned features) {
-    atomic_store_explicit(&g_x64_codegen.without, features & ~(unsigned)(X64_BASELINE | SGX_F_WIN64),
-                          memory_order_relaxed);
+    atomic_store_explicit(&g_x64_codegen.without, features & ~(unsigned)SGX_F_WIN64, memory_order_relaxed);
 }
 void snx_x64_set_win64(int on) { atomic_store_explicit(&g_x64_codegen.win64, on, memory_order_relaxed); }
 
@@ -805,6 +807,10 @@ void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, co
 
 #else
 int snx_x64_available(void) { return 0; }
+int snx_x64_floor(char* why, size_t size) {
+    if (size) why[0] = 0;
+    return 0;
+}
 unsigned snx_x64_features(void) { return 0; }
 int snx_x64_win64(void) { return 0; }
 void snx_x64_without(unsigned features) { (void)features; }

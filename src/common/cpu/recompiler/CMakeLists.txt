@@ -134,6 +134,10 @@ endif()
 # generates with the A64 Sail's encoders; built on every host (its code is arm64's, which the tests run under
 # Unicorn; not on Windows on another machine), the default code generator on arm64's ELF hosts and Windows
 target_sources(snx_recompiler_core PRIVATE arm64/arm64_codegen.c arm64/arm64_arm.c mach/native.c)
+# without LLVM a host below its back end's floor is refused (native.h's snx_native_refused): nothing else makes its code
+if(NOT SNX_WITH_LLVM)
+    target_compile_definitions(snx_recompiler_core PRIVATE SNX_NATIVE_ALONE=1)
+endif()
 snx_sailgen_a64_arm64(snx_recompiler_core)
 snx_sailgen_a32_arm64(snx_recompiler_core)
 # the riscv64 back end (src/common/cpu/recompiler/rv64): the same functions in RV64, from the emitters sailgen

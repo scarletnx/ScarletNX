@@ -19,6 +19,7 @@
 #include <android/api-level.h>
 #endif
 #include "common/cpu/recompiler/llvm/ir_settings.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
@@ -589,6 +590,13 @@ typedef struct {
     int ios, no_build, keep_c, host_win, tmpfs, dump;
     int programs, primary; /* the application's programs, and the one the profile's --jit-cache and --layout are of */
 } MakeArgs;
+/* the line a recompile starts with, which the launcher reads as its step (gui/steps.c) */
+static void say_recompiling(const char* title, int index, int programs, size_t modules) {
+    if (index)
+        printf("Recompiling %s, program %d of %d (%zu modules)\n", title, index, programs, modules);
+    else
+        printf("Recompiling %s (%zu modules)\n", title, modules);
+}
 /* program index of the input, made in its game's folder: the game's own (0) as before, another program of its
    application (snx_program_index) beside it, <game>_<its ID>, with its code and stamp and its data folder alone, the
    game's runtime and settings its own. 0, else nonzero, said why */
@@ -707,6 +715,12 @@ static int make_program(const MakeArgs* a, int index) {
         goto done; /* before any code is made from them */
     say_hook_routes(&program);
     base = snx_path_join(folder, game);
+    /* nothing makes this host's code (native.h): before the stamp of a game made already goes */
+    if (!no_build && !ios && snx_native_refused(why, sizeof why)) {
+        if (!compile.quiet) say_recompiling(title, index, a->programs, program.module_count);
+        snx_error("%s", why);
+        goto done;
+    }
     /* Invalidate the completion stamp before touching an existing game's data
        or module. Failed recompilation must never leave a trusted checkpoint. */
     if (!no_build) {
@@ -726,10 +740,9 @@ static int make_program(const MakeArgs* a, int index) {
     gen.jit_cache = jit_cache;
     gen.hints = hints = read_hints(base, program.npdm.is64, &gen.hint_count);
     if (move_hints(base, made_by, &program, hints, &gen.hint_count, compile.quiet)) goto done;
-    if (!compile.quiet && index)
-        printf("Recompiling %s, program %d of %d (%zu modules)\n", title, index, a->programs, program.module_count);
-    else if (!compile.quiet)
-        printf("Recompiling %s (%zu modules)\n", title, program.module_count);
+    if (!compile.quiet) say_recompiling(title, index, a->programs, program.module_count);
+    if (!no_build && !ios && !gen.interp_only && snx_native_floor(why, sizeof why))
+        snx_error("%s: LLVM makes the code", why);
     /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder. An extracted game
        the game's .ini names as its source= is read in place as a dump is: nothing of it copied */
     if (addon ? snx_mkdirs(data)

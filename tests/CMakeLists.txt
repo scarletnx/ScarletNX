@@ -4472,6 +4472,21 @@ if(NOT WIN32)
     add_test(NAME native_refused COMMAND snx-test-native-refused)
     set_tests_properties(native_refused PROPERTIES TIMEOUT 300)
 endif()
+# a host below its native back end's floor (native.h's snx_native_floor): the line of what it lacks, what refuses it
+# without LLVM, and LLVM's code with it
+add_executable(snx-test-native-floor native_floor.c)
+snx_test_target(snx-test-native-floor gnu23)
+target_link_libraries(snx-test-native-floor PRIVATE scarletnx-recompiler)
+add_test(NAME native_floor COMMAND snx-test-native-floor)
+set_tests_properties(native_floor PROPERTIES TIMEOUT 300)
+# and scarletnx -r there, over a game made already
+add_executable(snx-test-native-floor-recompile native_floor_recompile.c)
+snx_test_target(snx-test-native-floor-recompile gnu23)
+target_link_libraries(snx-test-native-floor-recompile PRIVATE snx_driver snx_driver_llvm snx_llvm ${CMAKE_DL_LIBS})
+set(snx_floor_folder "${CMAKE_CURRENT_BINARY_DIR}/native-floor")
+add_test(NAME native_floor_recompile COMMAND snx-test-native-floor-recompile "${snx_floor_folder}")
+set_tests_properties(native_floor_recompile PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT
+    "HOME=${snx_floor_folder}-home;XDG_DATA_HOME=${snx_floor_folder}-home/data;XDG_CONFIG_HOME=${snx_floor_folder}-home/config;XDG_STATE_HOME=${snx_floor_folder}-home/state;XDG_CACHE_HOME=${snx_floor_folder}-home/cache")
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling

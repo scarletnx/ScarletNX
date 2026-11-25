@@ -15,8 +15,11 @@
 
 typedef SnxNativeOptions SnxX64Options;
 
-/* 1 where this host runs the x86-64 back end's code and its objects load (x86-64) */
+/* 1 where this host runs the x86-64 back end's code and its objects load (x86-64, with what its code needs) */
 int snx_x64_available(void);
+/* 1 on an x86-64 host without what the back end's code needs (SSE4.2, PCLMULQDQ, POPCNT...), with the line of it in
+   why (snx_native_floor); 0 and "" elsewhere */
+int snx_x64_floor(char* why, size_t size);
 /* the host's processor features the back end's forms may need (sailgen's SGX_F_*: CPUID's BMI1, BMI2, LZCNT, the SSE
    levels, PCLMULQDQ, POPCNT, AES-NI, SHA-NI, GFNI, and AVX, AVX2, FMA and F16C where the system keeps the YMM
    state), and SGX_F_WIN64 where the code is Windows'; 0 where unavailable */
@@ -24,7 +27,7 @@ unsigned snx_x64_features(void);
 /* 1 where the code is made for Windows: its calling convention, in COFF objects */
 int snx_x64_win64(void);
 /* the features (SGX_F_*) the back end goes without from here on though the host has them, for a test of a host without
-   them (0 none); those every host it runs on has stay */
+   them (0 none): one of those its code needs of every host leaves the host without a back end (snx_x64_floor) */
 void snx_x64_without(unsigned features);
 /* the code made from here on as a Windows host's, Microsoft's x64 calling convention in COFF objects (1), or as this
    host's own (0), for a test of it elsewhere; a Windows host makes its own alone */

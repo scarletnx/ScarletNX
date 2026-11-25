@@ -22,6 +22,7 @@
 #include "common/cpu/recompiler/variants.h"
 #include "common/cpu/recompiler/loader/gdb_jit.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -369,6 +370,8 @@ void jit_init(void) {
         snx_jit_stats(g_jit, &stats);
         LOG("jit: %u compile threads and the miss thread, %lu pcs of earlier runs queued\n", stats.threads,
             (unsigned long)warm);
+        char why[256];
+        if (snx_native_floor(why, sizeof why)) WARN("jit: %s: LLVM makes the code\n", why);
     }
     /* mapping, permission and write-back changes drop the slots and images the range's code filled (mem.c) */
     mem_set_code_invalidate(jit_code_invalidate);

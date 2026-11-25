@@ -55,8 +55,11 @@ void snx_arm_aot_report(const SnxArmAotCount* c, const char* program, int quiet)
     const int asked = c->nwhys == 1 && !c->native &&
                       (!strcmp(c->whys[0].why, snx_arm_aot_none) || !strcmp(c->whys[0].why, snx_arm_aot_kept));
     if (!quiet) {
+        char floor[256];
+        const char* why = asked ? c->whys[0].why : "";
+        if (asked && !strcmp(why, snx_arm_aot_none) && snx_native_floor(floor, sizeof floor)) why = floor;
         if (asked)
-            printf("LLVM: %zu blocks (%s)\n", blocks, c->whys[0].why);
+            printf("LLVM: %zu blocks (%s)\n", blocks, why);
         else
             printf("%s back end: %zu of %zu blocks%s\n", snx_native_name(), c->native, blocks,
                    c->llvm ? ", LLVM the rest" : "");
