@@ -82,6 +82,7 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
+#define MG_RBIT mg_rbit
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"

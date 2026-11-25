@@ -71,7 +71,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
    x86-64's ELF; a call's target and a function's entry in RSI (Windows' RDX); the pins in RBP, R12-R15 (pushed: the
    callee's) and R11, R10 (caller-saved, values' otherwise: reserved, and an exclusive's, an atomic's or CRC32's fixed
    registers), on Windows RDI and RSI (the callee's: no value's and no sequence's); the vector pins in XMM15 down to
-   XMM8; FPSR.QC owed by a region's saturating instructions (mg_qc) */
+   XMM8; FPSR.QC owed by a region's saturating instructions (mg_qc); RBIT by GFNI (mg_rbit) */
 #define MG_EM EM_X86_64
 #define MG_R_ABS64 R_X86_64_64
 #define MG_WIN64(u) SGX_WIN64(&(u)->g->x)
@@ -86,6 +86,7 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_XRESERVED 0u
 #define MG_BOUND 1
 #define MG_QC 1
+#define MG_RBIT mg_rbit
 #define MG_COFF win64
 #define MG_POLL_INLINE 1
 #define MG_JTAB 1

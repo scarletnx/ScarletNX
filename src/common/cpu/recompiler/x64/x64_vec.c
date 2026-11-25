@@ -110,6 +110,17 @@ static int vgf(SgCtx* g, int a, int kind, unsigned n) {
     }
     return op2(g, &sgx_v_gf2p8affineqb, a, m);
 }
+/* RBIT of a W or an X: each byte's bits reversed there, then the bytes */
+static SgD mg_rbit(Unit* u, SgD v) {
+    SgCtx* g = u->g;
+    unsigned w = v.w;
+    int in[4] = {0, 0, 0, 0}, r;
+    if (!vgfni(g)) return sg_d_bitreverse(g, v);
+    in[1] = sgx_reg(X, &v);
+    r = sgx_vins(X, w == 64 ? &sgx_v_movq_xr : &sgx_v_movd_xr, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    v = sgx_val(w, sgx_v1(X, w == 64 ? &sgx_v_movq_rx : &sgx_v_movd_rx, vgf(g, r, VGF_REVERSE, 0), 0));
+    return SGX_OP(X, rev, w, v);
+}
 /* a << n, n below the element's bits (the bytes by GFNI, or by words, their spill masked) */
 static int vshl(SgCtx* g, unsigned size, int a, unsigned n) {
     if (n >= 8u << size) return vzero(g);

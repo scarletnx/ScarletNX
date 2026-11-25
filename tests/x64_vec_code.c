@@ -51,6 +51,14 @@ static const Row k_rows[] = {
     {"srshr v0.16b, v1.16b, #3", NEEDS_GFNI, 0, 288, -1, NULL, "4F0D2420"},
     {"rbit v0.16b, v1.16b", NEEDS_GFNI, 0, 240, -1, NULL, "6E605820"},
     {"rbit v0.16b, v1.16b", 0, NEEDS_GFNI, 320, -1, NULL, "6E605820"},
+    {"rbit w0, w1", NEEDS_GFNI, 0, 240, -1, NULL, "5AC00020"},
+    {"rbit x0, x1", NEEDS_GFNI, 0, 240, -1, NULL, "DAC00020"},
+    {"rbit w0, w1", 0, NEEDS_GFNI, 272, -1, NULL, "5AC00020"},
+    {"rbit x0, x1", 0, NEEDS_GFNI, 336, -1, NULL, "DAC00020"},
+    {"rev w0, w1", 0, NEEDS_GFNI, 192, -1, NULL, "5AC00820"},
+    {"rev x0, x1", 0, NEEDS_GFNI, 192, -1, NULL, "DAC00C20"},
+    {"rev16 x0, x1", 0, NEEDS_GFNI, 240, -1, NULL, "DAC00420"},
+    {"rev16 w0, w1", 0, NEEDS_GFNI, 208, -1, NULL, "5AC00420"},
 };
 
 static const Row* g_row; /* the one being checked, for the messages */
