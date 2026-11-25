@@ -44,7 +44,11 @@
    those --without names */
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #define SAIL_MACH_HOST snx_x64_features()
+/* reserved encodings (ADD shifted by ROR, UBFM of bit 32 up in 32 bits, ADD extended by 5), whose code calls undef */
+static const u32 g_reserved[] = {0x0BC00000u, 0x53008000u, 0x0B20F400u};
 #endif
+enum { RESERVED = 3 }; /* g_reserved's */
+
 #define HOST SAIL_MACH_HOST /* the machine's features the code may use (its SGX_F_*) */
 
 static struct {
@@ -424,8 +428,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     count = lqd_row_words(samples, rnd, &rows);
-    words = (u32*)malloc(sizeof(u32) * (count * 8 + 1));
-    offset = (size_t*)malloc(sizeof *offset * (count * 8 + 1));
+    words = (u32*)malloc(sizeof(u32) * (count * 8 + RESERVED));
+    offset = (size_t*)malloc(sizeof *offset * (count * 8 + RESERVED));
     if (!words || !offset) return 1;
     for (i = 0; i < count; ++i) {
         static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
@@ -476,6 +480,20 @@ int main(int argc, char** argv) {
                hostuc_name(SAIL_MACH_UC), k, compared, failures, unmade);
         return failures != 0;
     }
+#if defined(SAIL_MACH_WIN64)
+    for (i = 0; i < RESERVED; ++i) {
+        size_t got = snx_mach_step(g_reserved[i], 0x1000, g_test.target, HOST, code + code_at, code_cap - code_at);
+        if (!got) {
+            ++failures;
+            fprintf(stderr, "FAIL: %08x: the %s back end doesn't make its UNDEFINED\n", (unsigned)g_reserved[i],
+                    hostuc_name(SAIL_MACH_UC));
+            continue;
+        }
+        offset[n] = code_at;
+        code_at += (got + 15) & ~(size_t)15;
+        words[n++] = g_reserved[i];
+    }
+#endif
     if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
         fprintf(stderr, "FAIL: %s\n", error);
         return 1;
