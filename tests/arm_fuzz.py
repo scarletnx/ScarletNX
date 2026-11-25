@@ -19,15 +19,25 @@ The missing and the extra are v8.2's and the UNPREDICTABLE encodings (RdLo == Rd
 the PC where it isn't allowed, register lists past d31, should-be-zero bits set), where either answer is the Arm ARM's,
 and QEMU 5 checks no alignment for LDRD, LDM, VLDM or VLDn, which the A57 faults on: the run fails on wrong state and on
 refused blocks, and reports the rest. No game assets.
+
+With --mc and --objdump (LLVM's, as the LLVM blocks are tested with: --blocks snx-test-arm-blocks-llvm --opt 2) their
+verdict is had too: the words run are only those llvm-objdump has for the Cortex-A57, and a difference on one that
+llvm-mc warns of (SoftFail: the Arm ARM calls it UNPREDICTABLE) is not counted. Where they are not there, it says so and
+exits with 77.
 """
 
 import argparse
 import collections
 import ctypes as C
+import os
+import pathlib
 import random
+import re
+import subprocess
 import sys
+import tempfile
 
-from arm_blocks import CPU, PC, SIZE, Blocks
+from arm_blocks import CPU, PC, SIZE, SKIP, Blocks
 from arm_test import unicorn_dies
 from thumb_test import catalogue as thumb_catalogue
 
@@ -196,13 +206,17 @@ def allowed_in_it(item, name):
     return item[0] >> 11 not in (0b01001, 0b10100) and item[0] >> 8 not in (0xB6, 0xBD) and item[0] >> 6 != 0
 
 
-def it_blocks(rng, runner, count):
+def it_blocks(rng, runner, count, tools):
     """An IT instruction and as many Thumb instructions as its mask covers, none of them a branch: drawn at random from
-    the encodings, and from the hand-picked ones of thumb_test.py, that the decoder has."""
+    the encodings, and from the hand-picked ones of thumb_test.py, that the decoder has (and llvm-objdump, with
+    tools)."""
     pool = generate(rng, 't16', 3000) + generate(rng, 't32', 12000)
     pool += [hws for _, n, hws in thumb_catalogue() if n == 1]
     blocks = Blocks(runner, [('thumb', PC, item) for item in pool])
-    picked = [item for item, names in zip(pool, blocks.names) if allowed_in_it(item, names[0])]
+    texts = disassemble(tools, 'thumb', pool) if tools else pool
+    picked = [
+        item for item, names, text in zip(pool, blocks.names, texts) if names and text and allowed_in_it(item, names[0])
+    ]
     blocks.close()
     out = []
     while len(out) < count:
@@ -211,6 +225,80 @@ def it_blocks(rng, runner, count):
         n = 5 - (mask & -mask).bit_length()
         out.append([0xBF00 | firstcond << 4 | mask] + [h for item in rng.choices(picked, k=n) for h in item])
     return out
+
+
+SLOT = 32
+
+
+def disassemble(tools, isa, items):
+    """Each item's text, or None for an encoding the Cortex-A57 doesn't have. llvm-mc's disassembler resynchronizes
+    a byte at a time after an invalid Thumb32 encoding, so the items are assembled as .inst directives into slots of
+    their own and disassembled by llvm-objdump, which steps over an unknown one by its size."""
+    mc, objdump = tools
+    triple = 'armv8a-linux-gnueabi' if isa == 'arm' else 'thumbv8a-linux-gnueabi'
+    source = ['.syntax unified', '.arm' if isa == 'arm' else '.thumb']
+    for item in items:
+        source.append(f'.balign {SLOT}')
+        i = 0
+        while i < len(item):
+            if isa == 'arm':
+                source.append(f'.inst 0x{item[i]:08x}')
+                i += 1
+            elif item[i] >> 11 >= 0b11101:
+                source.append(f'.inst.w 0x{item[i]:04x}{item[i + 1]:04x}')
+                i += 2
+            else:
+                source.append(f'.inst.n 0x{item[i]:04x}')
+                i += 1
+    with tempfile.TemporaryDirectory(prefix='snx-arm-fuzz-mc-') as path:
+        asm, obj = pathlib.Path(path) / 'items.s', pathlib.Path(path) / 'items.o'
+        asm.write_text('\n'.join(source) + '\n')
+        subprocess.run(
+            [mc, f'-triple={triple}', '-mcpu=cortex-a57', '-filetype=obj', str(asm), '-o', str(obj)], check=True
+        )
+        listing = subprocess.run(
+            [objdump, '-d', '--mcpu=cortex-a57', '--no-show-raw-insn', str(obj)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+    found = collections.defaultdict(list)
+    for line in listing.splitlines():
+        m = re.match(r'\s*([0-9a-f]+):\s*(.*)$', line)
+        if m:
+            address = int(m.group(1), 16)
+            found[address // SLOT].append((address % SLOT, m.group(2).strip().split('@')[0].strip()))
+    out = []
+    width = 4 if isa == 'arm' else 2
+    for index, item in enumerate(items):
+        texts = [t for offset, t in found[index] if offset < width * len(item)]
+        out.append(None if not texts or any(t == '<unknown>' for t in texts) else '; '.join(texts))
+    return out
+
+
+def soft_fail(mc, isa, item):
+    """llvm-mc's warning for an encoding it decodes but the Arm ARM calls UNPREDICTABLE (SoftFail)."""
+    data = b''.join(w.to_bytes(4 if isa == 'arm' else 2, 'little') for w in item)
+    triple = 'armv8a-linux-gnueabi' if isa == 'arm' else 'thumbv8a-linux-gnueabi'
+    proc = subprocess.run(
+        [mc, '--disassemble', f'-triple={triple}', '-mcpu=cortex-a57'],
+        input=' '.join(f'0x{b:02x}' for b in data) + '\n',
+        text=True,
+        capture_output=True,
+        check=False,  # an encoding it has not is not a SoftFail
+    )
+    return 'potentially undefined' in proc.stderr
+
+
+def a57_words(tools, isa, items):
+    """the items llvm-objdump has for the Cortex-A57"""
+    return [item for item, text in zip(items, disassemble(tools, isa, items)) if text]
+
+
+def uncounted(tools, isa, item):
+    """whether a difference on the item is left uncounted: the Arm ARM leaves its result open (unpredictable), or, with
+    LLVM's tools, llvm-mc warns of it (SoftFail)"""
+    return unpredictable(isa, item) or bool(tools and soft_fail(tools[0], isa, item))
 
 
 def unpredictable(isa, item):
@@ -394,7 +482,7 @@ def run_one(fn, uni, isa, item, rng):
     return 'pass', ''
 
 
-def items_of(args, name):
+def items_of(args, name, tools):
     rng = random.Random(f'{args.seed}:{name}')
     if name == 'a32-exclusive':
         return 'arm', exclusive_pairs(rng, 'arm', args.count)
@@ -403,7 +491,7 @@ def items_of(args, name):
     if name == 'a32-monitor':
         return 'arm', monitor_sequences(rng, args.count)
     if name == 't-it':
-        return 'thumb', it_blocks(rng, args.blocks, args.count)
+        return 'thumb', it_blocks(rng, args.blocks, args.count, tools)
     isa = 'arm' if CLASSES[name][0] == 'arm' else 'thumb'
     return isa, generate(rng, name, args.count)
 
@@ -415,18 +503,28 @@ def main():
     p.add_argument('--count', type=int, default=2000, help='encodings drawn per class')
     p.add_argument('--states', type=int, default=6, help='random states per encoding')
     p.add_argument('--seed', type=int, default=1)
-    p.add_argument('--pool', type=int, default=0, help='the host registers its values are in (0: all of them)')
+    p.add_argument('--pool', type=int, help="a native back end's: the host registers its values are in (0: all)")
+    p.add_argument('--opt', type=int, choices=(0, 2), help="LLVM's runner's: the passes' -O level")
+    p.add_argument('--mc', help="llvm-mc, for LLVM's verdict (with --objdump)")
+    p.add_argument('--objdump', help='llvm-objdump, which keeps the words the Cortex-A57 has')
     p.add_argument('--examples', type=int, default=3)
     p.add_argument('--only', metavar='ISA:HEX[,HEX...]',
                    help='one encoding (arm:e1a00001, thumb:4408 or thumb:e850,0f00), every state printed')
     args = p.parse_args()
+    if bool(args.mc) != bool(args.objdump):
+        p.error(f"--mc {args.mc} and --objdump {args.objdump}: LLVM's verdict takes both")
+    tools = (args.mc, args.objdump) if args.mc else None
+    for tool in tools or ():
+        if not os.access(tool, os.X_OK):
+            print(f"SKIP: {tool} is not there, which LLVM's verdict needs (the LLVM this was built with has none)")
+            return SKIP
     if args.only:
         isa, words = args.only.split(':')
         item = [int(w, 16) for w in words.split(',')]
-        blocks = Blocks(args.blocks, [(isa, PC, item)], pool=args.pool)
+        blocks = Blocks(args.blocks, [(isa, PC, item)], pool=args.pool, opt=args.opt)
         blocks.refuse()
         uni = Unicorn(isa != 'arm')
-        print(blocks.machine, ' '.join(blocks.names[0]))
+        print(blocks.name, ' '.join(blocks.names[0]), *(disassemble(tools, isa, [item]) if tools else ()))
         for state in range(args.states):
             rng = random.Random(f'{args.seed}:only:{state}')
             cpu, _ = initial(random.Random(f'{args.seed}:only:{state}'), isa, item)
@@ -438,9 +536,12 @@ def main():
         return 0
     wrong = 0
     for name in args.classes or list(CLASSES) + list(EXCLUSIVE):
-        isa, items = items_of(args, name)
+        isa, items = items_of(args, name, tools)
         items = list({tuple(item): item for item in items}.values())
-        blocks = Blocks(args.blocks, [(isa, PC, item) for item in items], pool=args.pool)
+        drawn = len(items)
+        if tools:
+            items = a57_words(tools, isa, items)
+        blocks = Blocks(args.blocks, [(isa, PC, item) for item in items], pool=args.pool, opt=args.opt)
         uni = Unicorn(isa != 'arm')
         report = collections.defaultdict(lambda: collections.defaultdict(list))
         runs = 0
@@ -459,7 +560,7 @@ def main():
                 runs += 1
                 if kind != 'pass' and implementation_defined(name, item):
                     kind = 'impl-defined'
-                elif kind in ('wrong', 'missing', 'extra', 'fault') and unpredictable(isa, item):
+                elif kind in ('wrong', 'missing', 'extra', 'fault') and uncounted(tools, isa, item):
                     kind = 'unpredictable'
                 entry[kind].append(f'{text} {detail}')
                 if kind not in ('pass', 'endian'):
@@ -468,7 +569,10 @@ def main():
         kinds = ('wrong', 'refused', 'missing', 'extra', 'fault', 'alignment', 'unpredictable', 'impl-defined',
                  'unicorn-dies')
         bad = {k: v for k, v in report.items() if any(v[x] for x in kinds)}
-        print(f'== {name}: {len(items)} encodings, {runs} runs, {len(bad)} of their kinds disagree', flush=True)
+        kept = (
+            f' ({drawn - len(items)} of {drawn} drawn left out: llvm-objdump has no A57 instruction)' if tools else ''
+        )
+        print(f'== {name}: {len(items)} encodings{kept}, {runs} runs, {len(bad)} of their kinds disagree', flush=True)
         for said in sorted(bad, key=lambda m: -sum(len(bad[m][x]) for x in kinds)):
             entry = bad[said]
             summary = ', '.join(f'{x} {len(entry[x])}' for x in kinds + ('endian',) if entry[x])

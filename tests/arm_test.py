@@ -5,7 +5,8 @@
 
 python tests/arm_test.py --blocks build/.../snx-test-arm-blocks [--unicorn]
 The blocks are this host's back end's, or (run under Unicorn) another machine's: snx-test-arm-blocks-rv64 and its like.
-Each is made twice, its values in all the host registers and in three of them, so that they spill.
+Each is made twice, its values in all the host registers and in three of them, so that they spill; or by LLVM
+(snx-test-arm-blocks-llvm), at each --opt level.
 No game assets. Unicorn is optional and pinned to 2.1.4 for reproducibility.
 """
 
@@ -14,7 +15,7 @@ import ctypes as C
 import platform
 import random
 
-from arm_blocks import CPU, PC, SIZE, Blocks
+from arm_blocks import CPU, PC, SIZE, Blocks, add_variants, variants
 
 # On an AArch64 host Unicorn 2.1.4 dies of SIGILL emulating VQADD, VQSUB and VSHL (register) with 64-bit lanes in D
 # registers: its TCG emits for them the vector SQADD, UQADD, SQSUB, UQSUB, SSHL and USHL with 64-bit lanes and Q 0,
@@ -272,9 +273,9 @@ def state(words, seed=1, group='data'):
     return cpu, memory
 
 
-def make(runner, pool):
+def make(runner, variant):
     """the back end's blocks of PROGRAMS, every one of which it makes"""
-    return Blocks(runner, [('arm', pc, words) for pc, words in zip(PCS, PROGRAMS)], pool=pool).refuse()
+    return Blocks(runner, [('arm', pc, words) for pc, words in zip(PCS, PROGRAMS)], **variant).refuse()
 
 
 def witnesses():
@@ -503,14 +504,12 @@ def main():
     parser.add_argument('--unicorn', action='store_true')
     parser.add_argument('--states', type=int, default=64, help='of each encoding, under --unicorn')
     parser.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
-    parser.add_argument(
-        '--pool', type=int, action='append', help='the host registers its values are in (0: all of them)'
-    )
+    add_variants(parser)
     args = parser.parse_args()
     if args.unicorn:
         catalogue()
     tests = witnesses()
-    libraries = [make(args.blocks, pool) for pool in args.pool or (0, 3)]
+    libraries = [make(args.blocks, variant) for variant in variants(parser, args)]
     for blocks in libraries:
         print(f'A32: {blocks.name}', flush=True)
         run_witnesses(blocks.functions, tests)

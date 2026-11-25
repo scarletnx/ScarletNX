@@ -167,7 +167,8 @@ whole-buffer RAM/MMIO/permission checks, quotas, rollback and handle lifetime.
 Existing NX tree/service/raw-image fixtures run in CTR-only builds as well.
 
 `arm_native_arm11_vfp` compares 52,800 exact instruction/state cases against
-Unicorn's ARM11 MPCore, flat and checked, with all the host registers and with three, including registers, FPSCR,
+Unicorn's ARM11 MPCore, flat and checked, with all the host registers and with three (and `arm_llvm_arm11_vfp` the
+same of LLVM's blocks at O0 and O2), including registers, FPSCR,
 conditions, aliases, DN/FZ and rounding modes. Checked callbacks forbid direct
 pointer bypasses; negative tests verify fault rollback and unsupported controls,
 legacy format-word saves and wide transfers. Native CTR tests cover atomic RAM

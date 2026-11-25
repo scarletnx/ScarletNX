@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Scalar VFPv2 blocks of a native back end vs Unicorn's explicit ARM11 MPCore, no tolerances."""
+"""Scalar VFPv2 blocks of a native back end, or LLVM's, vs Unicorn's explicit ARM11 MPCore, no tolerances."""
 
 import argparse
 import ctypes as C
 
 import arm_vector_test as V
-from arm_blocks import CHECKED_ABI, CPU, PC, SIZE, Access, Blocks, Checked, arm
+from arm_blocks import CHECKED_ABI, CPU, PC, SIZE, Access, Blocks, Checked, add_variants, arm, variants
 
 
 def catalogue():
@@ -94,6 +94,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     parser.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
+    add_variants(parser)
     args = parser.parse_args()
     listed = catalogue()
     words, names = [word for word, _ in listed], [text for _, text in listed]
@@ -108,10 +109,10 @@ def main():
     u.ctl_set_cpu_model(R.UC_CPU_ARM_11MPCORE)
     u.mem_map(0, SIZE)
     regs = [getattr(R, f'UC_ARM_REG_R{i}') for i in range(13)] + [R.UC_ARM_REG_SP, R.UC_ARM_REG_LR, R.UC_ARM_REG_PC]
-    for pool in (0, 3):
+    for variant in variants(parser, args):
         for mode in ['flat', 'checked']:
             listed = arm([(word,) for word in words])
-            blocks = Blocks(args.blocks, listed, profile='arm11', memory=mode, pool=pool).refuse()
+            blocks = Blocks(args.blocks, listed, profile='arm11', memory=mode, **variant).refuse()
             functions = blocks.functions
             total = 0
             for index, (word, text) in enumerate(zip(words, names)):

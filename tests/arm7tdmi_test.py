@@ -3,16 +3,16 @@
 # Copyright 2026 the ScarletNX contributors
 """The ARM7TDMI profile (the AGB board's CPU) and A57, on the same words.
 
-Each witness runs under both profiles, its values in all the host registers and in three, so that they spill: the
-ARM7TDMI's rules (misaligned loads rotate and stores align, PC + 12 stores, STM's written back base, an unaligned LDM
-base, Thumb's POP {pc} without interworking and the bus hook, BL's halves apart) must hold there, and none of them may
-reach A57's blocks.
+Each witness runs under both profiles, its values in all the host registers and in three, so that they spill (or
+LLVM's blocks at each --opt level): the ARM7TDMI's rules (misaligned loads rotate and stores align, PC + 12 stores,
+STM's written back base, an unaligned LDM base, Thumb's POP {pc} without interworking and the bus hook, BL's halves
+apart) must hold there, and none of them may reach A57's blocks.
 """
 
 import argparse
 import ctypes as C
 
-from arm_blocks import CPU, PC, Blocks, Hook, arm, thumb
+from arm_blocks import CPU, PC, Blocks, Hook, add_variants, arm, thumb, variants
 
 SIZE = 0x04010000  # up to the AGB board's I/O window at 0x04000000, so the hook's addresses are mapped
 
@@ -38,9 +38,9 @@ THUMB = {
 }
 
 
-def build(runner, profile, pool):
+def build(runner, profile, variant):
     """each witness's block under profile, ARM's and THUMB's: (the blocks, its function)"""
-    blocks = Blocks(runner, arm(ARM.values()) + thumb(THUMB.values()), size=SIZE, profile=profile, pool=pool).refuse()
+    blocks = Blocks(runner, arm(ARM.values()) + thumb(THUMB.values()), size=SIZE, profile=profile, **variant).refuse()
     made = [(blocks, function) for function in blocks.functions]
     return dict(zip(ARM, made)), dict(zip(THUMB, made[len(ARM) :])), blocks
 
@@ -180,10 +180,11 @@ def check(arm, thumb, profile):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
+    add_variants(parser)
     args = parser.parse_args()
-    for pool in (0, 3):
+    for variant in variants(parser, args):
         for profile in ('arm7tdmi', 'a57'):
-            arm_blocks, thumb_blocks, blocks = build(args.blocks, profile, pool)
+            arm_blocks, thumb_blocks, blocks = build(args.blocks, profile, variant)
             check(arm_blocks, thumb_blocks, profile)
             print(f'  {blocks.name}, {profile}: {len(ARM) + len(THUMB)} witnesses passed', flush=True)
             blocks.close()

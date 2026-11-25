@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Checked A32 integer blocks of a native back end vs Unicorn's ARM11 MPCore model.
+"""Checked A32 integer blocks of a native back end, or LLVM's, vs Unicorn's ARM11 MPCore model.
 
 An independent ISA oracle, unlike arm_checked_matrix.py. Includes serialized
 ARMv6K exclusive sequences. A separate C gate tests the real CTR bus against
@@ -13,7 +13,7 @@ import argparse
 import ctypes as C
 
 import arm_test as A
-from arm_blocks import CHECKED_ABI, Access, Checked
+from arm_blocks import CHECKED_ABI, Access, Checked, add_variants, variants
 from arm_checked_matrix import make
 
 
@@ -25,6 +25,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     parser.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
+    add_variants(parser)
     args = parser.parse_args()
     A.catalogue()
     for condition in range(15):
@@ -69,8 +70,8 @@ def main():
     emu = U.Uc(U.UC_ARCH_ARM, U.UC_MODE_ARM)
     emu.ctl_set_cpu_model(R.UC_CPU_ARM_11MPCORE)
     emu.mem_map(0, A.SIZE)
-    for pool in (0, 3):
-        blocks = make(args.blocks, 'arm11', 'checked', pool)
+    for variant in variants(parser, args):
+        blocks = make(args.blocks, 'arm11', 'checked', variant)
         total = invalid = 0
         for index, group in A.CASES:
             words = A.PROGRAMS[index]
