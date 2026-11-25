@@ -12,6 +12,7 @@
 #include "agb/ppu/ppu.h"
 #include "common/utilities/common.h"
 #include "common/utilities/notice.h"
+#include "common/utilities/vpad_consoles.h"
 #include "support/sdl_real_pads.h"
 #include "support/vpad_window.h"
 #include <SDL3/SDL.h>
@@ -212,7 +213,7 @@ static int controls(AgbHost* host, SDL_Window* window, const char* dir, const ch
     CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && !vpad_editing());
     CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 21, 480, 320) && keys(host) == AGB_KEY_A);
     CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 21, 480, 320) && !keys(host));
-    vpad_console(&agb_host_pad); /* the defaults, as a run starts */
+    vpad_console(&snx_vpad_gba); /* the defaults, as a run starts */
     CHECK(vpad_config()->at[SNX_VPAD_A].x > 0.9f);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_A].x == 0.5f && vpad_config()->at[SNX_VPAD_A].y == 0.5f);
@@ -244,7 +245,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
     sdl_real_pads_hide();
-    vpad_console(&agb_host_pad);
+    vpad_console(&snx_vpad_gba);
     char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
     char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
     if (!ini || snx_write_file(ini, "[Game]\nsystem=gba\n", strlen("[Game]\nsystem=gba\n"))) {

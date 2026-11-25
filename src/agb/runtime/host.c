@@ -43,18 +43,6 @@ struct AgbHost {
     int notice_w, notice_h, notice_failed;
 };
 
-/* the Switch's controls they are, as a gamepad's buttons are the GBA's (agb_host_button): Start Plus, Select Minus */
-static const SnxVpadControl pad[] = {
-    {SNX_VPAD_L, "L", "L", {0.10f, 0.12f}, {0.16f, 0.68f}},
-    {SNX_VPAD_R, "R", "R", {0.90f, 0.12f}, {0.84f, 0.68f}},
-    {SNX_VPAD_MINUS, "Select", "SE", {0.07f, 0.40f}, {0.40f, 0.94f}},
-    {SNX_VPAD_PLUS, "Start", "ST", {0.93f, 0.40f}, {0.60f, 0.94f}},
-    {SNX_VPAD_DPAD, "D-pad", "", {0.10f, 0.72f}, {0.20f, 0.82f}},
-    {SNX_VPAD_A, "A", "A", {0.94f, 0.65f}, {0.88f, 0.79f}},
-    {SNX_VPAD_B, "B", "B", {0.87f, 0.79f}, {0.72f, 0.85f}},
-};
-const SnxVpadConsole agb_host_pad = {"GBA", pad, sizeof pad / sizeof *pad, 0};
-
 uint16_t agb_host_key(int scancode) {
     switch (scancode) {
         case SDL_SCANCODE_X:

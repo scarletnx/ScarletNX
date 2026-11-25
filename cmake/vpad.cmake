@@ -13,6 +13,11 @@ target_link_libraries(snx_vpad PUBLIC scarletnx-common snx_settings_runtime)
 set_target_properties(snx_vpad PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_vpad PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                         -Werror=missing-variable-declarations)
+# which controls each console has (src/common/utilities/vpad_consoles.c): tables alone, the launcher's too
+add_library(snx_vpad_consoles STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/vpad_consoles.c")
+target_link_libraries(snx_vpad_consoles PUBLIC scarletnx-common snx_settings)
+set_target_properties(snx_vpad_consoles PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_compile_options(snx_vpad_consoles PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-variable-declarations)
 # and in an SDL window (src/common/utilities/vpad_sdl.c), which the Switch's and every other console's share
 if(TARGET SDL3::SDL3)
     include("${CMAKE_CURRENT_LIST_DIR}/notice.cmake") # the menu's letters' scale
