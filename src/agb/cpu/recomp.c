@@ -6,13 +6,12 @@
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
-#include "common/cpu/arm/llvm.h"
+#include "common/utilities/endian.h"
+#include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/platform/dl.h"
-#include <llvm-c/Core.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -278,68 +277,47 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
 /* ---- linking ---- */
 
 
-/* Emits every block into <base>.so: compiled for this machine as the backend compiles the Switch's
-   32-bit modules (module_arm.c), with the helpers they call (armlib.c), and linked by the backend's own linker, which
-   exports each block's function by its name */
+/* Emits every block into <base>.so: by the host's native back end, and LLVM for what that does not make
+   (cpu/arm/aot.h), with the helpers they call (armlib.c), and linked by the backend's own linker, which exports each
+   block's function by its name */
 static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    size_t count = recomp->count, object_size = 0;
-    unsigned char* object = NULL;
+    size_t count = recomp->count;
     char **names = (char**)calloc(count ? count : 1, sizeof(*names)), *library = snx_format("%s.so", recomp->base), *tmp = NULL;
-    SnxIr* ir = NULL;
-    LLVMModuleRef module = NULL;
-    SnxLinkInput inputs[2];
+    SnxArmAot* aot = snx_arm_aot_new(recomp->opt, recomp->keep_ir);
+    SnxLinkInput inputs[3] = {{(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"}};
     SnxLinkOutput linked = {NULL, 0};
-    int result = -1;
-    if (!names || !library) {
+    int result = -1, objects;
+    if (!names || !library || !aot) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("agb-code", recomp->opt, error, error_size))) goto done;
-    module = LLVMModuleCreateWithNameInContext("agb-code", ir->ctx);
-    LLVMSetTarget(module, LLVMGetTarget(ir->mod));
-    LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
     for (size_t i = 1; i <= recomp->count; ++i) {
         AgbBlock* block = &recomp->blocks[i];
         char* name = names[i - 1] = block_name(i);
-        size_t consumed = 0;
-        LLVMValueRef fn;
+        unsigned char code[AGB_BLOCK_MAX * 4];
+        size_t consumed = 0, units = AGB_BLOCK_MAX;
         if (!name) {
             snprintf(error, error_size, "out of memory");
             goto done;
         }
-        if (block->thumb) {
-            uint16_t words[AGB_BLOCK_MAX];
-            for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read16(board, block->pc + j * 2);
-            fn = snx_thumb_llvm_block_ex(module, name, words, AGB_BLOCK_MAX, block->pc, &consumed, &agb_codegen);
-        } else {
+        if (block->thumb)
+            for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j)
+                snx_st_le16(code + j * 2, agb_read16(board, block->pc + j * 2));
+        else {
             uint32_t words[AGB_BLOCK_MAX];
-            size_t count = arm_words(board, block->pc, words);
-            fn = snx_arm_llvm_block_ex(module, name, words, count, block->pc, &consumed, &agb_codegen);
+            units = arm_words(board, block->pc, words);
+            for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) snx_st_le32(code + j * 4, words[j]);
         }
-        if (!fn || !consumed) {
-            snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
+        if (snx_arm_aot_block(aot, name, code, units, block->pc, block->thumb, &agb_codegen, &consumed, error,
+                              error_size))
             goto done;
-        }
-        block->instructions = (uint16_t)(consumed > 0xFFFF ? 0xFFFF : consumed);
+        block->instructions = (uint16_t)consumed;
         block->code = code_hash(board, block->pc, block->thumb, block->instructions);
     }
-    if (recomp->keep_ir) { /* the module's IR as the backend made it, before its passes */
-        char *text = LLVMPrintModuleToString(module), *kept = snx_path_join(recomp->keep_ir, "blocks.ll");
-        int failed = !kept || snx_write_file(kept, text, strlen(text));
-        if (failed) {
-            char why[256];
-            snprintf(error, error_size, "cannot save the IR of blocks in %s: %s", recomp->keep_ir,
-                     snx_os_error(why, sizeof why));
-        }
-        LLVMDisposeMessage(text);
-        free(kept);
-        if (failed) goto done;
-    }
-    if (snx_ir_module_object(ir, module, recomp->opt, &object, &object_size, error, error_size)) goto done;
-    inputs[0].data = (unsigned char*)snx_armlib_object, inputs[0].size = (size_t)snx_armlib_object_size;
-    inputs[0].name = "armlib";
-    inputs[1].data = object, inputs[1].size = object_size, inputs[1].name = "blocks";
-    if (snx_link(inputs, 2, (const char* const*)names, count, snx_path_leaf(library), &linked, error, error_size))
+    if ((objects = snx_arm_aot_objects(aot, "blocks", inputs + 1, error, error_size)) < 0) goto done;
+    recomp->made = *snx_arm_aot_count(aot);
+    if (snx_link(inputs, 1 + (size_t)objects, (const char* const*)names, count, snx_path_leaf(library), &linked, error,
+                 error_size))
         goto done;
     tmp = snx_format("%s.tmp", library);
     if (!tmp || snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, library)) {
@@ -355,10 +333,9 @@ done:
     free(names);
     free(library);
     free(tmp);
-    free(object);
+    for (int k = 1; k < 3; ++k) free((void*)inputs[k].data);
     free(linked.data);
-    if (module) LLVMDisposeModule(module);
-    snx_ir_free(ir);
+    snx_arm_aot_free(aot);
     return result;
 }
 

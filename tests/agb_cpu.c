@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The whole machine: a hand assembled ROM goes through the AOT recompiler and runs on the board, through
-   a BIOS call and an interrupt, and the board's memory shows what happened. */
+   a BIOS call and an interrupt, and the board's memory shows what happened. Its module is the host's native back end's,
+   and the machine runs the same from one LLVM alone makes. */
 #include "agb/bios/bios.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
 #include "agb/cpu/recomp.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,6 +184,115 @@ static int rom_mirrors(void) {
     return 0;
 }
 
+/* ---- the module's blocks, by the native back end and by LLVM alone ---- */
+
+/* ARM code in IWRAM that stores over its own block, three instructions ahead of the store: a block ends with it */
+#define AHEAD 0x03000A00u
+static const uint32_t ahead[] = {
+    0xE59F1014, /* ldr r1, [pc, #20]: the last word */
+    0xE58F1004, /* str r1, [pc, #4]: over mov r0, #2 */
+    0xE1A08008, /* mov r8, r8 */
+    0xE1A08008, /* mov r8, r8 */
+    0xE3A00002, /* mov r0, #2 */
+    0xE5820000, /* str r0, [r2] */
+    0xEAFFFFFE, /* b . */
+    0xE3A00003, /* mov r0, #3 */
+};
+static uint64_t hash_words(AgbBoard* board, uint64_t hash, uint32_t from, uint32_t bytes) {
+    for (uint32_t at = from; at < from + bytes; at += 4) {
+        const uint32_t word = agb_read32(board, at);
+        hash = snx_fnv1a(hash, &word, sizeof word);
+    }
+    return hash;
+}
+/* The machine after five frames of the ROM and the code above, its memory, registers and sound hashed. Its module is
+   recompiled from what the ROM's entry reaches, or (again) from the blocks the run before reached too: the Thumb ones,
+   which only a BX goes to, and those in IWRAM */
+static int machine(const char* base, int llvm, int again, uint64_t* hash, SnxArmAotCount* made) {
+    AgbBoard board;
+    AgbMap map;
+    AgbCpu cpu;
+    AgbRecomp recomp;
+    char error[512] = {0};
+    size_t size = 0;
+    uint8_t* rom = make_rom(&size);
+    int16_t* audio = (int16_t*)calloc(2 * AGB_APU_RATE, sizeof(int16_t));
+    CHECK(rom && audio);
+    agb_board_init(&board);
+    CHECK(!agb_board_insert(&board, rom, size, error, sizeof error));
+    free(rom);
+    CHECK(!agb_map_init(&map, &board, error, sizeof error));
+    agb_cpu_init(&cpu, &board, map.base);
+    for (uint32_t i = 0; i < sizeof ahead / sizeof *ahead; ++i) agb_write32(&board, AHEAD + i * 4, ahead[i]);
+    agb_recomp_init(&recomp, base);
+    if (llvm) recomp.keep_ir = snx_strdup("."); /* blocks.ll */
+    if ((again && agb_recomp_load_map(&recomp, &board, error, sizeof error)) ||
+        agb_recomp_build(&recomp, &board, error, sizeof error)) {
+        fprintf(stderr, "agb_cpu: recompiling the ROM: %s\n", error);
+        return 1;
+    }
+    *made = recomp.made;
+    if (!llvm && snx_native_arm_available())
+        CHECK(made->native && !made->llvm);
+    else
+        CHECK(!made->native && made->llvm);
+    *hash = SNX_FNV_BASIS;
+    for (int frame = 0; frame < 6; ++frame) {
+        uint32_t written = 0;
+        if (frame == 5) {
+            CHECK(again ? !recomp.compiled : recomp.compiled); /* every block the ROM's run reached is the module's */
+            agb_write16(&board, 0x04000208, 0);                /* IME off */
+            cpu.arm.r[2] = 0x02000700;
+            cpu.arm.r[15] = AHEAD;
+            cpu.arm.cpsr = 0x9F;
+            board.cpu_halted = 0;
+        }
+        if (agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
+                        error, sizeof error)) {
+            fprintf(stderr, "agb_cpu: %s\n", error);
+            return 1;
+        }
+        *hash = snx_fnv1a(*hash, &written, sizeof written);
+        *hash = snx_fnv1a(*hash, audio, written * 2 * sizeof *audio);
+    }
+    CHECK(agb_read32(&board, 0x02000000) == 42 && agb_read32(&board, 0x02000700) == 3);
+    *hash = snx_fnv1a(*hash, cpu.arm.r, sizeof cpu.arm.r);
+    *hash = snx_fnv1a(*hash, &cpu.arm.cpsr, sizeof cpu.arm.cpsr);
+    *hash = hash_words(&board, *hash, 0x02000000, 0x40000);
+    *hash = hash_words(&board, *hash, 0x03000000, 0x8000);
+    *hash = hash_words(&board, *hash, 0x06000000, 0x18000);
+    if (!again) CHECK(!agb_recomp_save(&recomp, &board, error, sizeof error));
+    agb_recomp_free(&recomp);
+    agb_map_destroy(&map, &board);
+    agb_board_destroy(&board);
+    free(audio);
+    return 0;
+}
+static int modes(void) {
+    static const char* const bases[] = {"agb_cpu_native.code", "agb_cpu_llvm.code"};
+    uint64_t hash[4];
+    size_t blocks[4];
+    for (int k = 0; k < 4; ++k) {
+        SnxArmAotCount made;
+        char* files[] = {snx_format("%s.so", bases[k >> 1]), snx_format("%s.map", bases[k >> 1])};
+        CHECK(files[0] && files[1]);
+        if (!(k & 1)) remove(files[0]), remove(files[1]); /* a run that stopped left them */
+        if (machine(bases[k >> 1], k >> 1, k & 1, &hash[k], &made)) return 1;
+        blocks[k] = made.native + made.llvm;
+        if (k & 1) remove(files[0]), remove(files[1]);
+        free(files[0]), free(files[1]);
+    }
+    remove("blocks.ll");
+    if (blocks[0] >= blocks[1] || blocks[0] != blocks[2] || blocks[1] != blocks[3] || hash[0] != hash[1] ||
+        hash[0] != hash[2] || hash[0] != hash[3]) {
+        for (int k = 0; k < 4; ++k)
+            fprintf(stderr, "agb_cpu: the machine from %s's module of %zu blocks is %016llx\n", bases[k >> 1],
+                    blocks[k], (unsigned long long)hash[k]);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     AgbBoard board;
     AgbMap map;
@@ -192,6 +304,7 @@ int main(void) {
     int16_t* audio = (int16_t*)calloc(2 * AGB_APU_RATE, sizeof(int16_t));
     int result = 1;
     CHECK(rom && audio);
+    if (modes()) return 1;
     agb_board_init(&board);
     CHECK(!agb_board_insert(&board, rom, size, error, sizeof error));
     free(rom);

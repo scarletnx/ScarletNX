@@ -708,7 +708,9 @@ jumps. Each block is
 ends' blocks call each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
 block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the
 x86-64 back end refused; `nx/loader/module_x64.c` writes the module's descriptor without LLVM. The recompile prints
-`x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM.
+`x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM. The 3DS's, the DS's and the GBA's
+compilers make their blocks the same way through `cpu/arm/aot.h`, and the Vita's as it discovers them; each writes its
+module's index as data (`snx_native_data`).
 
 **The test** (`tests/arm_x64.c`, `arm_x64`): random blocks of one to six words of 42 A32 and VFP classes made by
 both back ends and run from random states (registers in and out of memory, the flags, the monitor, FPSCR with FZ, DN,
