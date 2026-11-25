@@ -5,7 +5,7 @@
    some blocks; each module loaded and run by the run loop's rules, with the block table and the imports called directly
    and without either. Every run ends in the state the code says and goes back to the loop as often as LLVM's does,
    every block is the native back end's where the host has one and it refuses none, and the module's descriptor is read
-   back from its file */
+   back from its file. A module is the same bytes however many threads made it */
 #include "vita/aot/module.h"
 #include "vita/runtime/process.h"
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -25,6 +25,8 @@
 #define STOP  0x70000000u /* where the code returns to: no block is there */
 #define PAGE  0x10000u
 #define POLL  7 /* a slice's steps back: few, so the loops end slices */
+#define MANY         6000 /* blocks, for rounds of discovery that the threads share */
+#define LIST         (CODE + 0x1000u)
 /* the times the loop enters a block, with the table and the direct imports and without either: the blocks go on to each
    other but past a slice's last step back and, without, at a branch through a register and an import's stub */
 #define ENTERED_FAST 58u
@@ -38,6 +40,8 @@ static struct {
     VitaSegment segment;
     VitaImport imports[2];
     uint32_t seeds[1];
+    VitaImage many;
+    uint32_t many_seeds[MANY];
     VitaLookup cache[VITA_LOOKUP_SLOTS];
     VitaThread thread;
     unsigned calls; /* of imports */
@@ -198,6 +202,50 @@ static Runs compile(const char* folder, const SnxCliRecompile* asked, char** sai
     free(lines);
     return r;
 }
+/* the module of many blocks, made on threads threads, its size in *size (the caller's to free): NULL where it fails */
+static unsigned char* made_on(const char* folder, const char* path, int threads, size_t* size) {
+    char error[512] = "";
+    const SnxCliRecompile quiet = {.quiet = 1};
+    g_settings.aot_threads = threads;
+    VitaNative native;
+    CHECK(!vita_aot_compile(folder, &g_test.many, &quiet, error, sizeof error) && !error[0]);
+    if (vita_native_open(path, &g_test.many, &native, error, sizeof error)) {
+        CHECK(native.module->count == MANY);
+        vita_native_close(&native);
+    } else
+        CHECK(!"the module of many blocks opens");
+    return snx_read_file(path, size);
+}
+/* MANY blocks, each that a relocation alone goes to, the half of them Thumb: the module of one thread, and those of two
+   and five, are the same bytes */
+static void test_threads(const char* folder) {
+    char* path = vita_game_file(folder, VITA_MODULE_SUFFIX);
+    size_t size = 0;
+    CHECK(path && !snx_mkdirs(folder));
+    for (uint32_t i = 0; i < MANY; ++i) {
+        const uint32_t at = LIST + i * 8;
+        if (i % 2) /* movs r0, #i; bx lr; nop; nop */
+            snx_st_le32(g_test.mem + at, 0x47702000u | (i & 255)), snx_st_le32(g_test.mem + at + 4, 0xBF00BF00u);
+        else /* mov r0, #i; bx lr */
+            snx_st_le32(g_test.mem + at, 0xE3A00000u | (i & 255)), snx_st_le32(g_test.mem + at + 4, 0xE12FFF1Eu);
+        g_test.many_seeds[i] = at | i % 2;
+    }
+    g_test.many.segment[0] = (VitaSegment){LIST, MANY * 8, 5, g_test.mem + LIST};
+    g_test.many.segment_count = 1;
+    g_test.many.module_start = LIST;
+    g_test.many.seeds = g_test.many_seeds;
+    g_test.many.seed_count = MANY;
+    unsigned char* one = made_on(folder, path, 1, &size);
+    CHECK(one && size);
+    for (int threads = 2; one && threads <= 5; threads += 3) {
+        size_t other_size = 0;
+        unsigned char* other = made_on(folder, path, threads, &other_size);
+        CHECK(other && other_size == size && !memcmp(one, other, size));
+        free(other);
+    }
+    free(one);
+    free(path);
+}
 
 int main(void) {
     char *root = snx_temp_dir(NULL), *said = NULL, line[128];
@@ -205,7 +253,8 @@ int main(void) {
     char *none = root ? snx_path_join(root, "none") : NULL, *both = root ? snx_path_join(root, "both") : NULL,
          *kept = NULL;
     g_test.mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
-    if (!none || !both || !g_test.mem || plat_mem_commit(g_test.mem + CODE, PAGE) ||
+    char* many = root ? snx_path_join(root, "many") : NULL;
+    if (!none || !both || !many || !g_test.mem || plat_mem_commit(g_test.mem + CODE, PAGE) ||
         plat_mem_commit(g_test.mem + DATA, PAGE) || plat_mem_commit(g_test.mem + STACK, PAGE)) {
         fprintf(stderr, "vita_aot: no folder, or no guest memory\n");
         return 1;
@@ -259,13 +308,14 @@ int main(void) {
     CHECK(by_llvm.fast == ENTERED_FAST && by_llvm.slow == ENTERED_SLOW);
     CHECK(compile(none, &jit, &said).blocks == 0 && said && strstr(said, "No code ahead of time (--jit-only)"));
     free(said);
+    if (snx_native_arm_available()) test_threads(many);
 #ifdef _WIN32
     CHECK(freopen("NUL", "w", stdout)); /* the folder's file closed */
 #else
     CHECK(freopen("/dev/null", "w", stdout));
 #endif
     (void)snx_remove_tree(root);
-    free(kept), free(native), free(llvm), free(none), free(both), free(root);
+    free(kept), free(native), free(llvm), free(none), free(both), free(many), free(root);
     plat_mem_release(g_test.mem, VITA_SPACE + 0x10000);
     if (g_test.failures) {
         fprintf(stderr, "vita_aot: %d failures\n", g_test.failures);
