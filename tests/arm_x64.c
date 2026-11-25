@@ -41,95 +41,9 @@
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#if defined(SNX_TEST_ARM64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/arm64/arm64_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxArm64Arm Back;
-#define back_(name) snx_arm64_arm_##name
-#if defined(SNX_TEST_ARM64WIN)
-#include "common/cpu/recompiler/arm64/arm64_codegen.h"
-#define BACK_NAME "arm64 (Windows)"
-#define BACK_UC   HOSTUC_ARM64_WIN
-#else
-#define BACK_NAME "arm64"
-#define BACK_UC   HOSTUC_ARM64
-#endif
-#elif defined(SNX_TEST_LA64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/la64/la64_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxLa64Arm Back;
-#define back_(name) snx_la64_arm_##name
-#define BACK_NAME   "loongarch64"
-#define BACK_UC     HOSTUC_LA64
-#elif defined(SNX_TEST_MIPS64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/mips64/mips64_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxMips64Arm Back;
-#define back_(name) snx_mips64_arm_##name
-#define BACK_NAME   "mips64el"
-#define BACK_UC     HOSTUC_MIPS64EL
-#elif defined(SNX_TEST_PPC64BE)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/ppc64/ppc64be_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxPpc64beArm Back;
-#define back_(name) snx_ppc64be_arm_##name
-#define BACK_NAME   "ppc64"
-#define BACK_UC     HOSTUC_PPC64
-#elif defined(SNX_TEST_S390X)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/s390x/s390x_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxS390xArm Back;
-#define back_(name) snx_s390x_arm_##name
-#define BACK_NAME   "s390x"
-#define BACK_UC     HOSTUC_S390X
-#elif defined(SNX_TEST_MIPS64BE)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/mips64/mips64be_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxMips64beArm Back;
-#define back_(name) snx_mips64be_arm_##name
-#define BACK_NAME   "mips64"
-#define BACK_UC     HOSTUC_MIPS64
-#elif defined(SNX_TEST_PPC64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/ppc64/ppc64_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxPpc64Arm Back;
-#define back_(name) snx_ppc64_arm_##name
-#define BACK_NAME   "ppc64le"
-#define BACK_UC     HOSTUC_PPC64LE
-#elif defined(SNX_TEST_RV64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/rv64/rv64_arm.h"
-#include "support/host_unicorn.h"
-typedef SnxRv64Arm Back;
-#define back_(name) snx_rv64_arm_##name
-#define BACK_NAME   "riscv64"
-#define BACK_UC     HOSTUC_RV64
-#elif defined(SNX_TEST_WIN64)
-#define SNX_TEST_NATIVE 1
-#include "common/cpu/recompiler/x64/x64_arm.h"
-#include "common/cpu/recompiler/x64/x64_codegen.h"
-#include "support/host_unicorn.h"
-typedef SnxX64Arm Back;
-#define back_(name) snx_x64_arm_##name
-#define BACK_NAME   "x86-64 (Windows)"
-#define BACK_UC     HOSTUC_WIN64
-#else
-#include "common/cpu/recompiler/x64/x64_arm.h"
+#include "support/arm_back.h"
+#if !defined(SNX_TEST_NATIVE)
 #include "common/cpu/recompiler/x64/x64_elf.h"
-typedef SnxX64Arm Back;
-#define back_(name) snx_x64_arm_##name
-#define BACK_NAME   "x86-64"
-#endif
-/* the blocks have a function table, their frames unwound by it (hostuc_step, hostuc_unwound) */
-#if defined(SNX_TEST_WIN64) || defined(SNX_TEST_ARM64WIN)
-#define SNX_TEST_UNWINDS 1
 #endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
@@ -2296,11 +2210,7 @@ int main(int argc, char** argv) {
         }
         hostuc_free(probe);
     }
-#if defined(SNX_TEST_WIN64)
-    snx_x64_set_win64(1);
-#elif defined(SNX_TEST_ARM64WIN)
-    snx_arm64_set_windows(1);
-#endif
+    back_begin();
 #else
     if (!back_(available)()) {
         printf("SKIP: no " BACK_NAME " back end on this host\n");
