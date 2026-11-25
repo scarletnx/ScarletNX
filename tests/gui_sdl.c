@@ -1132,6 +1132,18 @@ static void room_password_row(App* app, const char* temporary) {
     key(app, SDLK_ESCAPE); /* Cancel: none kept, the text gone */
     assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
     key(app, SDLK_RETURN);
+    typed(app, "s3cret pass");
+    { /* the pointer on Cancel: its row lit, and Enter takes it as a click would */
+        GuiTypedBoxes b;
+        render(app);
+        typed_place(app, &b);
+        point(app, choice_box(app, &b.c, 1), false);
+        render(app);
+        shows(app, "- Cancel", yellow);
+        key(app, SDLK_RETURN);
+        assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
+    }
+    key(app, SDLK_RETURN);
     key(app, SDLK_RETURN); /* nothing typed: no change, as it says */
     assert(strstr(app->editor.note, "nothing was typed") && !app->editor.typing && !snx_is_file(online));
     key(app, SDLK_RETURN);
@@ -8317,6 +8329,43 @@ int main(int argc, char** argv) {
         shows(&app, "- OK", yellow);
         shows(&app, "- Cancel", normal);
         assert(SDL_TextInputActive(app.window) && !gui_settings_value(&app.settings, "resolution"));
+        /* the pointer on Cancel: the look of what Enter takes is its row's, not OK's; off it, and once more is typed,
+           the pointer still there, OK's again; on OK, OK's; Enter there takes it as ever */
+        point(&app, choice_box(&app, &b.c, 1), false);
+        render(&app);
+        shows(&app, "- Cancel", yellow);
+        shows(&app, "- OK", normal);
+        mouse_px(&app, b.field.x + 4, b.field.y + 4, false);
+        render(&app);
+        shows(&app, "- OK", yellow);
+        shows(&app, "- Cancel", normal);
+        point(&app, choice_box(&app, &b.c, 1), false);
+        key(&app, SDLK_BACKSPACE);
+        typed(&app, "5");
+        render(&app);
+        shows(&app, "- OK", yellow);
+        shows(&app, "- Cancel", normal);
+        point(&app, choice_box(&app, &b.c, 0), false);
+        render(&app);
+        shows(&app, "- OK", yellow);
+        point(&app, choice_box(&app, &b.c, 1), false); /* Enter on Cancel: as ESC, the row as it was */
+        key(&app, SDLK_RETURN);
+        assert(!app.editor.typing && !SDL_TextInputActive(app.window) &&
+               !gui_settings_value(&app.settings, "resolution"));
+        key(&app, SDLK_RETURN);
+        typed(&app, "0.5");
+        assert(app.editor.typing);
+        render(&app);
+        shows(&app, "- OK", yellow); /* opened again: on OK, the pointer not moved since */
+        {
+            SDL_Event left = {0};
+            left.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+            point(&app, choice_box(&app, &b.c, 1), false);
+            event(&app, &left);
+            render(&app);
+            shows(&app, "- OK", yellow);
+            shows(&app, "- Cancel", normal);
+        }
         key(&app, SDLK_ESCAPE);
         assert(!app.editor.typing && !SDL_TextInputActive(app.window) &&
                !gui_settings_value(&app.settings, "resolution"));
