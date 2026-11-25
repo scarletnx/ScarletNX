@@ -1764,6 +1764,24 @@ static void table_cases(const char* what, const SnxU32* words, size_t n, const u
     snx_codegen_free(&codegen);
 }
 
+/* A table found by every way to its BR (llvm-mc).
+   paths: cmp w1, #1; b.hi d; cbz w3, L2; mov w0, w1 (or w2); b join; L2: mov w0, w2 (or w1); b join; d: mov w0, #0; ret;
+     join: adr x10, c0; ldrb w11, [x9, x0]; ...: the index of one way is bounded, the other's isn't, in either order */
+static void jump_table_ways_test(void) {
+    static const SnxU32 paths_a[] = {0x90000009UL, 0x91020129UL, 0x7100043FUL, 0x540000C8UL, 0x34000063UL, 0x2A0103E0UL,
+                                     0x14000005UL, 0x2A0203E0UL, 0x14000003UL, 0x52800000UL, 0xD65F03C0UL, 0x1000008AUL,
+                                     0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const SnxU32 paths_b[] = {0x90000009UL, 0x91020129UL, 0x7100043FUL, 0x540000C8UL, 0x34000063UL, 0x2A0203E0UL,
+                                     0x14000005UL, 0x2A0103E0UL, 0x14000003UL, 0x52800000UL, 0xD65F03C0UL, 0x1000008AUL,
+                                     0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const unsigned char four[] = {0, 2, 4, 6};
+    static const TableCases none[] = {{0x38, {0}}};
+    table_cases("a way of two with a bound", paths_a, sizeof(paths_a) / 4, four, 4, NULL, 0, none, 1);
+    table_cases("the ways swapped", paths_b, sizeof(paths_b) / 4, four, 4, NULL, 0, none, 1);
+}
+
 /* A switch whose index is made after a compare of what was in its register (llvm-mc): cmp w1, #0; cneg w1, w1, mi;
    and x1, x1, #3; adr x10, c0; ldrb w11, [x9, x1]; ... */
 static void jump_table_met_test(void) {
@@ -1789,6 +1807,7 @@ int main(void) {
     jump_table_mask_test();
     jump_table_flow_test();
     jump_table_flags_test();
+    jump_table_ways_test();
     jump_table_met_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();

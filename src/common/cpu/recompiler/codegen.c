@@ -912,85 +912,94 @@ static int sets_flags(SnxU32 w) {
     return 1;
 }
 
+/* a state of function_bound's walk: the instruction, the index's register on the path, and the guard passed (0 none,
+   1 HI/LS: the bound is the compare's immediate + 1, 2 HS/LO: the immediate) */
+typedef struct {
+    size_t at;
+    unsigned char reg, guard;
+} BoundState;
+/* the guard passed by the instruction at address a, left by its branch (by) or by falling through: a B.HI's or a
+   B.HS's way past, a B.LS's or a B.LO's jump */
+static unsigned bound_guard(SnxCodegen* codegen, SnxU64 a, unsigned by) {
+    SnxU32 w;
+    if (!snx_codegen_word(codegen, a, &w) || (w & 0xff000010UL) != 0x54000000UL) return 0;
+    switch (w & 15) {
+        case 8: return by ? 0 : 1;
+        case 9: return by ? 1 : 0;
+        case 2: return by ? 0 : 2;
+        case 3: return by ? 2 : 0;
+        default: return 0;
+    }
+}
+/* each instruction and guard once (seen: its register + 1); 0 where it comes again with the index in another register */
+static int bound_push(BoundState* stack, size_t* top, unsigned char* seen, size_t at, unsigned reg, unsigned guard) {
+    unsigned char* s = &seen[3 * at + guard];
+    if (*s) return *s == reg + 1;
+    *s = (unsigned char)(reg + 1);
+    stack[*top].at = at;
+    stack[*top].reg = (unsigned char)reg;
+    stack[(*top)++].guard = (unsigned char)guard;
+    return 1;
+}
+
 /* The bound of the table of the BR at br that no compare just before its load gives, from its function's flow: every
-   path back from the load passes the guard of the default (the way past a B.HI or B.HS, a B.LS's or B.LO's jump), then
-   the compare of the index with an immediate it guards, nothing else setting the flags between; or a mask that
-   bounds the index (index_bound's) is the index's making on it. The largest of the paths', 0 where one has none */
+   path back from the load passes the guard of the default, then the compare of the index with an immediate it guards,
+   nothing else setting the flags between; or a mask that bounds the index (index_bound's) is the index's making on it.
+   The largest of the paths', 0 where one has none, or where two ways to one instruction have the index in two registers
+   (what bounds one says nothing of the other) */
 static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, const SnxU64* body, SnxU64 first,
                                size_t count, SnxU64 entry, const Flow* flow) {
-    /* a path's state: the instruction, the index's register on it, and the guard passed (0 none, 1 HI/LS: the bound
-       is the immediate + 1, 2 HS/LO: the immediate) */
-    typedef struct {
-        size_t at;
-        unsigned reg, guard;
-    } State;
     size_t top = 0, k, load = body_index(body, first, count, table->load);
-    State* stack = (State*)malloc((3 * count + 1) * sizeof(*stack));
-    unsigned char* seen = (unsigned char*)calloc(count + 1, 1); /* bit 1 << guard */
+    BoundState* stack = (BoundState*)malloc((3 * count + 1) * sizeof(*stack));
+    unsigned char* seen = (unsigned char*)calloc(3 * count + 1, 1);
     unsigned bound = 0;
-    int ok = stack && seen && load < count;
-    for (k = ok ? flow->start[load] : 0; ok && k < flow->start[load + 1]; ++k) {
-        State s = {flow->pred[k] / 2, table->index_reg, 0};
-        if (flow->pred[k] & 1) { /* the load reached by a branch: a B.LS/B.LO to it guards */
-            SnxU32 w;
-            SnxU64 a = body ? body[s.at] : first + (SnxU64)s.at * 4;
-            if (snx_codegen_word(codegen, a, &w) && (w & 0xff000010UL) == 0x54000000UL)
-                s.guard = (w & 15) == 9 ? 1 : (w & 15) == 3 ? 2 : 0;
-        }
-        stack[top++] = s;
-    }
+    int ok = stack && seen && load < count && bound_push(stack, &top, seen, load, table->index_reg, 0);
     while (ok && top) {
-        State s = stack[--top];
+        BoundState s = stack[--top];
         SnxU64 a = body ? body[s.at] : first + (SnxU64)s.at * 4;
         SnxU32 w;
         SnxA64Flow kind;
-        if (seen[s.at] & (1u << s.guard)) continue;
-        seen[s.at] |= (unsigned char)(1u << s.guard);
-        if (!snx_codegen_word(codegen, a, &w)) {
-            ok = 0;
-            break;
-        }
-        kind = snx_a64_flow(w, codegen->features);
-        if (s.guard) {
-            unsigned limit = compare_bound(w, s.reg);
-            if (limit) { /* cmp index, #imm: imm + 1 entries past HI/LS, imm past HS/LO */
-                limit -= s.guard == 2;
-                bound = limit > bound ? limit : bound;
-                continue;
-            }
-            if (kind == SNX_A64_FLOW_PLAIN && sets_flags(w)) {
+        unsigned reg = s.reg;
+        if (s.at != load || s.guard) { /* the load itself is past the paths */
+            if (!snx_codegen_word(codegen, a, &w)) {
                 ok = 0;
                 break;
             }
-        }
-        if (kind == SNX_A64_FLOW_PLAIN && writes_reg(w, s.reg)) {
-            unsigned mask = index_bound(codegen, a + 4, s.reg, 0);
-            if ((w & 0xffe0ffe0UL) == 0x2a0003e0UL) /* mov wI, wS: the index was S's before */
-                s.reg = (w >> 16) & 31;
-            else if (mask) {
-                bound = mask > bound ? mask : bound;
-                continue;
-            } else {
-                ok = 0;
-                break;
-            }
-        } else if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR || kind == SNX_A64_FLOW_SVC || a == entry) {
-            ok = 0;
-            break;
-        }
-        for (k = flow->start[s.at]; k < flow->start[s.at + 1]; ++k) {
-            State n = {flow->pred[k] / 2, s.reg, s.guard};
-            if (!s.guard) {
-                /* the instruction s came to n from: a B.HI/B.HS passed by falling through, a B.LS/B.LO by its jump */
-                SnxU32 b;
-                SnxU64 pa = body ? body[n.at] : first + (SnxU64)n.at * 4;
-                if (snx_codegen_word(codegen, pa, &b) && (b & 0xff000010UL) == 0x54000000UL) {
-                    unsigned cond = b & 15, by = (unsigned)(flow->pred[k] & 1);
-                    if ((cond == 8 && !by) || (cond == 9 && by)) n.guard = 1;
-                    if ((cond == 2 && !by) || (cond == 3 && by)) n.guard = 2;
+            kind = snx_a64_flow(w, codegen->features);
+            if (s.guard) {
+                unsigned limit = compare_bound(w, reg);
+                if (limit) { /* cmp index, #imm: imm + 1 entries past HI/LS, imm past HS/LO */
+                    limit -= s.guard == 2;
+                    bound = limit > bound ? limit : bound;
+                    continue;
+                }
+                if (kind == SNX_A64_FLOW_PLAIN && sets_flags(w)) {
+                    ok = 0;
+                    break;
                 }
             }
-            if (top < 3 * count) stack[top++] = n;
+            if (kind == SNX_A64_FLOW_PLAIN && writes_reg(w, reg)) {
+                unsigned mask = index_bound(codegen, a + 4, reg, 0);
+                if ((w & 0xffe0ffe0UL) == 0x2a0003e0UL) /* mov wI, wS: the index was S's before */
+                    reg = (w >> 16) & 31;
+                else if (mask) {
+                    bound = mask > bound ? mask : bound;
+                    continue;
+                } else {
+                    ok = 0;
+                    break;
+                }
+            } else if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR || kind == SNX_A64_FLOW_SVC) {
+                ok = 0;
+                break;
+            }
+        }
+        if (a == entry) ok = 0; /* the caller's index */
+        for (k = flow->start[s.at]; ok && k < flow->start[s.at + 1]; ++k) {
+            size_t at = flow->pred[k] / 2;
+            SnxU64 from = body ? body[at] : first + (SnxU64)at * 4;
+            unsigned guard = s.guard ? s.guard : bound_guard(codegen, from, (unsigned)(flow->pred[k] & 1));
+            ok = bound_push(stack, &top, seen, at, reg, guard);
         }
     }
     free(stack), free(seen);
