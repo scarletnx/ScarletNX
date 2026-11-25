@@ -130,8 +130,9 @@ chown -R "$(stat -c %u:%g /src)" /src/.cache/ccache /src/.cache/deps
 EOF
 }
 
-# The A64 differential against the qemu-reference job's recording: the cross build's tests are off, so the
-# one test is configured and built alone, then run here through qemu-user, with and without the generic path
+# The A64 differential against the qemu-reference job's recording, of the target's native back end and of the LLVM
+# one: the cross build's tests are off, so the tests are configured and built alone, then run here through qemu-user,
+# the LLVM one with and without the generic path
 # env: ARCH PRESET QEMU
 differential() {
   docker exec -i -e PRESET -e ARCH -e QEMU -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
@@ -144,25 +145,27 @@ cmake --preset ${PRESET} -DBUILD_TESTING=ON \
   -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= \
   -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset ${PRESET} --parallel "$(getconf _NPROCESSORS_ONLN)" \
-  --target snx-test-llvm-qemu-differential
-# both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
-# takes minutes; at 20 its SIGBUS makes the test name the case it was in, where a hang would hold the job 3 hours
-# the two forms at once, each with one thread and its own folder
-for form in host generic; do
-  flag=; [ "$form" = generic ] && flag=--generic
+  --target snx-test-llvm-qemu-differential snx-test-llvm-qemu-differential-native
+# the target's native back end, then the LLVM one's two forms, and a failing one's examples go to the log: the
+# container's /tmp goes with the job. A form takes minutes; at 20 its SIGBUS makes the test name the case it was
+# in, where a hang would hold the job 3 hours. All at once, each with one thread and its own folder
+for form in native host generic; do
+  test=snx-test-llvm-qemu-differential flag= expected=llvm
+  [ "$form" = generic ] && flag=--generic
+  [ "$form" = native ] && test=$test-native expected=native
   ( timeout -s BUS -k 30 1200 \
-    qemu-${QEMU} -L /src/sysroot build/${PRESET}/tests/snx-test-llvm-qemu-differential \
-    /tmp/llvm_qemu_reference_$form /src/tests/llvm_qemu_expected.txt \
+    qemu-${QEMU} -L /src/sysroot build/${PRESET}/tests/$test \
+    /tmp/llvm_qemu_reference_$form /src/tests/${expected}_qemu_expected.txt \
     --reference /src/reference/llvm_qemu_reference.bin --quiet $flag > /tmp/differential_$form.log 2>&1 \
     && echo 0 > /tmp/differential_$form.status || echo $? > /tmp/differential_$form.status ) &
 done
 wait
 failed=0
-for form in host generic; do
+for form in native host generic; do
   cat /tmp/differential_$form.log
   if [ "$(cat /tmp/differential_$form.status)" != 0 ]; then
     failed=1
-    cat /tmp/llvm_qemu_reference_$form/llvm_qemu_mismatches.txt || true
+    cat /tmp/llvm_qemu_reference_$form/*_qemu_mismatches.txt || true
   fi
 done
 exit $failed
