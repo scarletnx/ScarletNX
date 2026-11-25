@@ -75,6 +75,13 @@ def main():
                 failures.append(f'{given} refused:\n{out}')
         run(['-r', '--nds-trace=9', *missing], 2, 'scarletnx-nds: nds_trace=9 is not a whole number from 0 to 2')
         run(['-r', '--nds-aot=x', *missing], 2, 'scarletnx-nds: nds_aot=x is not a whole number from 0 to 1')
+        # the on-screen controls' settings and the pen's, as a Switch game's; a value they do not take stops the run
+        for given in (['--controls=1', '--controls-x-shown=0'], ['--touch=0', '--launcher-picks=1']):
+            out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
+            if 'unexpected argument' in out:
+                failures.append(f'{given} refused:\n{out}')
+        run(['-r', '--touch=3', *missing], 2, 'scarletnx-nds: touch=3 ')
+        run(['-r', '--controls-scale=big', *missing], 2, 'scarletnx-nds: controls_scale=big ')
         # the WFC service: a word the list has not, refused with it and the list
         run(['-r', '--nds-wfc=official', *missing], 2, '"official" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')

@@ -25,7 +25,8 @@ target_compile_options(scarletnx-nds PRIVATE -Wall -Wextra -Werror=missing-proto
 add_library(snx_nds_gpu STATIC gpu/vk/device.c gpu/vk/frame.c gpu/vk/render3d.c gpu/vk/present.c
             "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_nds_gpu PUBLIC "${volk_SOURCE_DIR}")
-target_link_libraries(snx_nds_gpu PUBLIC scarletnx-common Vulkan::Headers SDL3::SDL3 snx_vk_common ${CMAKE_DL_LIBS})
+target_link_libraries(snx_nds_gpu PUBLIC scarletnx-common Vulkan::Headers SDL3::SDL3 snx_vk_common snx_vpad_sdl
+                                         ${CMAKE_DL_LIBS})
 # snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings), vulkan_ban_ignore and vk_debug_hide_commands the
 # device takes (gpu/vk/device.c)
 target_link_libraries(snx_nds_gpu PUBLIC snx_settings_runtime)
@@ -52,11 +53,13 @@ snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/clear.frag NAME snx_nds_clear_f
 snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/aa.frag NAME snx_nds_aa_frag_spv
                HEADER nds/gpu/vk/shaders/post_spv.h)
 target_link_libraries(scarletnx-nds PUBLIC snx_nds_gpu)
+# which calls the board's: a linker that reads each archive once is given the two again
+target_link_libraries(snx_nds_gpu PUBLIC scarletnx-nds)
 
 # snx_settings: the settings its command line takes, by their names there (settings_arg)
 add_library(snx_nds_program STATIC runtime/main.c runtime/host.c aot/compiler.c aot/discover.c)
 target_link_libraries(snx_nds_program PUBLIC scarletnx-nds snx_nds_gpu snx_build_info snx_window_icon snx_pad_sdl
-                      snx_settings PRIVATE snx_online) # the WFC service's DNS server (runtime/main.c)
+                      snx_settings snx_vpad_consoles PRIVATE snx_online) # the WFC service's DNS server (runtime/main.c)
 set_target_properties(snx_nds_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/nds.cmake") # its tests
