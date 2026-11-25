@@ -1529,6 +1529,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
                   (unsigned long long)s->gva, (unsigned long long)need);
         return 0;
     }
+    vk_bl_scratch_reuse(cb);
     if (s->msaa && !surf_volume(s)) {
         /* a layer at a time through the scratch buffer: one whose samples did not unpack is not moved, and buf keeps
            its bytes there, as the copy of a pitch linear one does. Moved, it would swizzle the scratch buffer's old
@@ -1549,7 +1550,6 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
     /* a hosted target narrower in its host than its rows (padded to whole GOBs): the columns past its level have no
        pixels, zeros in their place and not the scratch buffer's old bytes */
     if (s->host && vk_surf_view_w(s) < s->w) {
-        vk_bl_barrier(cb, 0);
         rec_CmdFillBuffer(cb, scratch, 0, need, 0); /* rows 16 bytes apart: whole words */
         VkMemoryBarrier2 fill = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                  .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
