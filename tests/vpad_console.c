@@ -6,6 +6,7 @@
    game's lines reading as they do there, then the game's own picks and the command line's in the order
    --launcher-picks says, each setting the console has nothing for said with its value, a value a setting does not take
    refused with why */
+#include "common/utilities/ascii.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/vpad.h"
 #include <stdio.h>
@@ -53,8 +54,9 @@ static int taken(float x, float y) {
     return t;
 }
 
-/* the settings back at their defaults, then read from text in the .ini at ini, picks beside it (NULL for none) and the
-   command line's a and b (NULL for none) */
+/* the settings back at their defaults, then read from text in the .ini at ini, "a game"'s of dir, picks beside it (NULL
+   for none) and the command line's a and b (NULL for none) */
+static const char* dir;
 static int settings(const SnxVpadConsole* console, const char* ini, const char* text, const char* picks, char* a,
                     char* b) {
     char *argv[] = {"program", a ? a : "--", b ? b : "--"},
@@ -70,7 +72,7 @@ static int settings(const SnxVpadConsole* console, const char* ini, const char* 
     else if (snx_is_file(beside))
         failed |= snx_remove_tree(beside);
     free(beside);
-    if (!failed) vpad_settings(ini, 3, argv);
+    if (!failed) vpad_settings(dir, "a game", 3, argv);
     return !failed;
 }
 
@@ -137,8 +139,9 @@ int main(void) {
     CHECK(vpad_arg("--launcher-picks=2", error, sizeof error) == -1 &&
           strstr(error, "--launcher-picks=2 is not 0 or 1"));
 
-    char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
-    char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
+    char *root = snx_temp_root(), *made = root ? snx_temp_dir(root) : NULL;
+    char* ini = made ? snx_path_join(made, "a game.ini") : NULL;
+    dir = made;
     CHECK(ini);
     /* a Switch game's .ini read as there: a place, an older version's fourth number (shown), a broken one left */
     CHECK(settings(&none, ini,
@@ -151,10 +154,9 @@ int main(void) {
     CHECK(vpad_config()->at[SNX_VPAD_PLUS].x == 0.75f && g_settings.show_controls == 1);
     CHECK(g_settings.controls_scale == 80 && !g_test.said[0]);
     /* no .ini yet: the defaults, nothing said */
-    char* missing = snx_path_join(dir, "missing.ini");
     vpad_console(&none);
     g_settings.show_controls = 2;
-    vpad_settings(missing, 0, NULL);
+    vpad_settings(dir, "another game", 0, NULL);
     CHECK(g_settings.show_controls == 2 && vpad_config()->at[SNX_VPAD_A].x == 0.90f && !g_test.said[0]);
     /* the order: the .ini's, the game's own, the command line's; the launcher's picks under the game's own */
     CHECK(settings(&none, ini, "controls=0\n", "controls=1\n", NULL, NULL) && g_settings.show_controls == 1);
@@ -173,6 +175,28 @@ int main(void) {
     CHECK(strstr(g_test.said, "settings: controls_rel_center=0 does nothing: the GBA has no stick\n"));
     CHECK(settings(&touch, ini, "touch=1\n", NULL, NULL, NULL) && g_settings.touch_screen == 1 && !g_test.said[0]);
     CHECK(settings(&touch, ini, "", NULL, NULL, NULL) && g_settings.touch_screen == 2);
+    /* an installed copy's game: its own picks are in the config folder, where the launcher keeps them. Under the home the
+       ctest gives the test alone (SNX_TEST_HOME) */
+    if (getenv("SNX_TEST_HOME")) {
+        char *data = snx_user_data_dir(), *game = data ? snx_format("%s/recompiled/third game", data) : NULL;
+        char *kept = game ? snx_game_ini(game, "third game") : NULL, *own = kept ? snx_game_picks(kept) : NULL;
+        char *there = own ? snx_dirname(own) : NULL, *driver = game ? snx_format("%s/third game.ini", game) : NULL;
+        const char* home = getenv("SNX_TEST_HOME");
+        CHECK(there);
+        for (size_t i = 0; home[i]; ++i) /* that home, not the user's: Windows joins with its own separator */
+            CHECK(data[i] == home[i] || (snx_is_separator(data[i]) && snx_is_separator(home[i])));
+        CHECK(!snx_mkdirs(game) && !snx_mkdirs(there) && !snx_write_file(driver, "controls=0\n", 11) &&
+              !snx_write_file(own, "controls=1\n", 11));
+        vpad_settings(game, "third game", 0, NULL);
+        CHECK(g_settings.show_controls == 1);
+        printf("vpad_console: the picks at %s go over the .ini at %s\n", own, driver);
+        free(driver);
+        free(there);
+        free(own);
+        free(kept);
+        free(game);
+        free(data);
+    }
     /* a place as a window keeps it: in the controls' section, made where the .ini has none, the rest as it was */
     const char* const before = "[Game]\nsystem=gba\n";
     size_t size;
@@ -185,9 +209,8 @@ int main(void) {
                                 "controls_b=0.1 0.2 80\n"));
     free(text);
     CHECK(!snx_remove_tree(dir));
-    free(missing);
     free(ini);
-    free(dir);
+    free(made);
     free(root);
     puts("vpad_console: a console's controls, their settings' order and what it has nothing for passed");
     return 0;
