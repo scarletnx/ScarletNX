@@ -8,7 +8,9 @@
    each region's end, as each write stores them.
 
    The function is a block's: void name(SnxArmCPU*), System V x86-64, the state in RDI kept in RBX (pushed), RSP
-   16-aligned after the prologue (the push and a frame of spill slots, its size patched in at the end). Its entry
+   16-aligned after the prologue (the push and a frame of spill slots, its size patched in at the end). Windows' (the
+   features' SGX_F_WIN64) has the state in RCX and no other register of the callee's: a block's values are in the
+   registers a call may change (x64.h's pool), so it saves RBX alone there too. Its entry
    checks are llvm.c's block_begin's (exit and syndrome cleared, R15 the block's address, CPSR.T and E clear), and it
    ends where arm_block ends: after an instruction that branches, one that leaves for the backend, or the last word.
    Where the block goes on to a known address in A32 or Thumb state and the caller names that block a successor, the
@@ -24,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
+#if defined(__x86_64__) && defined(SNX_HAVE_X64)
 #define MG_ARM_INC "a32_x64.inc"
 #define MG_ARM SnxX64Arm
 #define MG_ARM_NEXT SnxX64ArmNext
@@ -36,7 +38,14 @@
 #define MG_ARM_CALL_RELOC R_X86_64_PLT32
 #define MG_ARM_LOAD_FENCE 0 /* an x86 load is an acquire one */
 #define MG_ARM_FP_HOT 1
+#define MG_ARM_ABI SGX_F_WIN64
+#define MG_ARM_COFF snx_x64_win64()
+#define MG_ARM_UNWIND unwind_block
+#if defined(__APPLE__) || defined(_WIN32)
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#else
 #include <elf.h>
+#endif
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -48,6 +57,8 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
+                         size_t nrel);
 #include "common/cpu/recompiler/mach/mach_arm.inc"
 
 /* ---- the x86-64 glue ---- */
@@ -125,11 +136,23 @@ static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, Sg
                        (int)offsetof(SnxArmCPU, fpscr), (int)offsetof(SnxArmCPU, fpscr), 0, 0, NULL, 0);
 }
 
+/* Windows' calling convention: the code's, and the object's format with it */
+static int win64(const MG_ARM* c) { return (c->features & SGX_F_WIN64) != 0; }
+/* ModRM of [rdi + disp8] (Windows' [rcx + disp8]) with the register or opcode extension reg: the state, before RBX has it */
+static unsigned char state8(const MG_ARM* c, unsigned reg) {
+    return (unsigned char)((win64(c) ? 0x41 : 0x47) | reg << 3);
+}
+
 /* the frame's room, patched once the block is done (sgx_patch_frame's sizes): SUB or ADD RSP of an 8-bit immediate,
-   a four-byte NOP where the block has no slot. A block whose frame passes 127 bytes is made again with 32-bit ones */
+   a four-byte NOP where the block has no slot. A block whose frame passes 127 bytes is made again with 32-bit ones, and
+   on Windows one of a page or more again, with a probe of it (sgx_stack_probe) */
 static void frame(MG_ARM* c, int add) {
     SgXBuf* b = &c->b;
-    if (c->a.nframe >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
+    if (c->a.nframe + (c->big > 1) >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
+    if (c->big > 1 && !add) {
+        sgx_stack_probe(b);
+        c->a.frame_at[c->a.nframe++] = b->n - SGX_STACK_PROBE_SIZE + 1;
+    }
     sgx_bytes(b, c->big ? (add ? "48 81 C4" : "48 81 EC") : add ? "48 83 C4" : "48 83 EC");
     c->a.frame_at[c->a.nframe++] = b->n;
     sgx_imm(b, 0, c->big ? 4 : 1);
@@ -138,6 +161,7 @@ static void frame(MG_ARM* c, int add) {
    immediate doesn't hold it */
 static int mg_patch_frame(MG_ARM* c) {
     int k, size = (c->a.slots_max * 8 + 15) & ~15;
+    if (c->big == 1 && win64(c) && size >= 4096) return -1;
     if (c->big) {
         sgx_patch_frame(&c->a);
         return 0;
@@ -153,26 +177,27 @@ static int mg_patch_frame(MG_ARM* c) {
     }
     return 0;
 }
-/* block_begin's checks of the entry's state, on RDI */
+/* block_begin's checks of the entry's state, on RDI (RCX) */
 static void entry_checks(MG_ARM* c, SnxU32 pc, int bad) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
-    sgx_bytes(b, "81 7F"), sgx_byte(b, (unsigned char)(offsetof(SnxArmCPU, r) + 60)), sgx_imm(b, pc, 4); /* cmp */
+    sgx_byte(b, 0x81), sgx_byte(b, state8(c, 7));
+    sgx_byte(b, (unsigned char)(offsetof(SnxArmCPU, r) + 60)), sgx_imm(b, pc, 4); /* cmp */
     sgx_a32_jcc(g, b, 5, bad);
     if (g->thumb) { /* mov eax, [rdi + cpsr]; and eax, T, E and ITSTATE's bits; cmp eax, T */
-        sgx_bytes(b, "8B 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
+        sgx_byte(b, 0x8B), sgx_byte(b, state8(c, 0)), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
         sgx_byte(b, 0x25), sgx_imm(b, (long long)(SNX_ARM_T | SNX_ARM_E | SG_IT_BITS), 4);
         sgx_bytes(b, "83 F8"), sgx_byte(b, SNX_ARM_T);
     } else {
-        sgx_bytes(b, "F7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
+        sgx_byte(b, 0xF7), sgx_byte(b, state8(c, 0)), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, cpsr));
         sgx_imm(b, SNX_ARM_T | SNX_ARM_E, 4);
     }
     sgx_a32_jcc(g, b, 5, bad);
-    sgx_bytes(b, "48 C7 47"), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, exit)),
+    sgx_bytes(b, "48 C7"), sgx_byte(b, state8(c, 0)), sgx_byte(b, (unsigned char)offsetof(SnxArmCPU, exit)),
         sgx_imm(b, 0, 4); /* and syndrome */
 }
 /* the entry (block_begin's checks: R15 the block's address, CPSR.T and E clear, a Thumb block's T set and its ITSTATE
-   0; then exit and syndrome cleared), on RDI, before the frame; where a check fails, a jump to bad (entry_exit). Then
+   0; then exit and syndrome cleared), on RDI (RCX), before the frame; where a check fails, a jump to bad (entry_exit). Then
    the entry the block's own jumps from another of the x86-64 back end's take (X and the block's name), past them: RBX
    the state, the frame. A hosted block's entry is that one alone (codegen.h) */
 static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
@@ -181,16 +206,17 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     *bad = sgx_a32_label(g);
     if (!sgx_a32_hosted(g)) entry_checks(c, pc, *bad);
     c->own = b->n;
-    sgx_bytes(b, "53 48 89 FB"); /* push rbx; mov rbx, rdi */
+    sgx_bytes(b, win64(c) ? "53 48 89 CB" : "53 48 89 FB"); /* push rbx; mov rbx, rdi (rcx) */
     frame(c, 0);
 }
-/* where a check of the entry failed: ESI the block's address, EDX its first word (a Thumb block's halfword), and
-   snx_x64_arm_entry_exit or snx_x64_thumb_entry (the object's own, which set the exit) */
+/* where a check of the entry failed: ESI the block's address, EDX its first word (a Thumb block's halfword; Windows' EDX
+   and R8D), and snx_x64_arm_entry_exit or snx_x64_thumb_entry (the object's own, which set the exit) */
+#define ENTRY_EXIT_WIN64 16 /* its bytes there, whose frame isn't up (unwind_block's) */
 static void mg_entry_exit(MG_ARM* c, SnxU32 pc, SnxU32 first, int bad) {
     SgXBuf* b = &c->b;
     sgx_a32_bind(&c->g, b, bad);
-    sgx_byte(b, 0xBE), sgx_imm(b, pc, 4);    /* mov esi, pc */
-    sgx_byte(b, 0xBA), sgx_imm(b, first, 4); /* mov edx, first */
+    sgx_byte(b, win64(c) ? 0xBA : 0xBE), sgx_imm(b, pc, 4);                   /* mov esi (edx), pc */
+    sgx_bytes(b, win64(c) ? "41 B8" : "BA"), sgx_imm(b, (long long)first, 4); /* mov edx (r8d), first */
     sgx_byte(b, 0xE9);
     add_rel(c, b->n, c->g.thumb ? "snx_x64_thumb_entry" : "snx_x64_arm_entry_exit", R_X86_64_PLT32, -4);
     sgx_imm(b, 0, 4);
@@ -228,7 +254,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         sgx_a32_jmp(g, b, g->ret);
         sgx_a32_bind(g, b, go);
     }
-    sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
+    sgx_state_arg(&c->a, b);
     epilogue(c);
     char sym[24];
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
@@ -243,9 +269,9 @@ static void mg_return(MG_ARM* c) {
     epilogue(c);
     sgx_byte(&c->b, 0xC3); /* ret */
 }
-/* snx_x64_arm_entry_exit(state RDI, the block's address ESI, its first word EDX), each object's own, where a
-   block's entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address;
-   else CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
+/* snx_x64_arm_entry_exit(state RDI, the block's address ESI, its first word EDX; Windows' RCX, EDX, R8D), each object's
+   own, where a block's entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the
+   address; else CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
 static_assert(offsetof(SnxArmCPU, r) + 60 == 0x3C && offsetof(SnxArmCPU, cpsr) == 0x40 &&
                   offsetof(SnxArmCPU, exit) == 0x44 && offsetof(SnxArmCPU, syndrome) == 0x48,
               "entry_exit_fn's bytes reach R15, CPSR, the exit and the syndrome at their offsets");
@@ -254,45 +280,58 @@ static_assert(SNX_ARM_BAD_ENTRY == 8 && SNX_ARM_ENDIAN_UNSUPPORTED == 9 && SNX_A
 static void entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
     unsigned char code[64];
+    const int w = snx_x64_win64();
+    size_t pc, thumb, word;
     b.p = code;
     b.cap = sizeof code;
-    sgx_bytes(&b, "39 77 3C 75 1D");             /* cmp [rdi + r15], esi; jne pc */
-    sgx_bytes(&b, "F7 47 40 20 00 00 00 75 09"); /* test dword [rdi + cpsr], T; jnz thumb */
-    sgx_bytes(&b, "C7 47 44 09 00 00 00 EB 07"); /* mov dword [rdi + exit], ENDIAN_UNSUPPORTED; jmp word */
-    sgx_bytes(&b, "C7 47 44 08 00 00 00");       /* thumb: mov dword [rdi + exit], BAD_ENTRY */
-    sgx_bytes(&b, "89 57 48 C3");                /* word: mov [rdi + syndrome], edx; ret */
-    sgx_bytes(&b, "C7 47 44 08 00 00 00");       /* pc: mov dword [rdi + exit], BAD_ENTRY */
-    sgx_bytes(&b, "89 77 48 C3");                /* mov [rdi + syndrome], esi; ret */
+    sgx_bytes(&b, w ? "39 51 3C 75 00" : "39 77 3C 75 00"), pc = b.n - 1; /* cmp [rdi + r15], esi; jne pc */
+    sgx_bytes(&b, w ? "F7 41 40 20 00 00 00 75 00" : "F7 47 40 20 00 00 00 75 00");
+    thumb = b.n - 1; /* test dword [rdi + cpsr], T; jnz thumb */
+    sgx_bytes(&b, w ? "C7 41 44 09 00 00 00 EB 00" : "C7 47 44 09 00 00 00 EB 00");
+    word = b.n - 1; /* mov dword [rdi + exit], ENDIAN_UNSUPPORTED; jmp word */
+    sgx_a32_patch8(&b, thumb);
+    sgx_bytes(&b, w ? "C7 41 44 08 00 00 00" : "C7 47 44 08 00 00 00"); /* thumb: mov dword [rdi + exit], BAD_ENTRY */
+    sgx_a32_patch8(&b, word);
+    sgx_bytes(&b, w ? "44 89 41 48 C3" : "89 57 48 C3"); /* word: mov [rdi + syndrome], edx (r8d); ret */
+    sgx_a32_patch8(&b, pc);
+    sgx_bytes(&b, w ? "C7 41 44 08 00 00 00" : "C7 47 44 08 00 00 00"); /* pc: mov dword [rdi + exit], BAD_ENTRY */
+    sgx_bytes(&b, w ? "89 51 48 C3" : "89 77 48 C3");                   /* mov [rdi + syndrome], esi (edx); ret */
     size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
     snx_xelf_symbol(o, "snx_x64_arm_entry_exit", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
 }
-/* snx_x64_thumb_entry(state RDI, the block's address ESI, its first halfword EDX), where a Thumb block's entry
-   check failed (thumb_block's, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY
-   with the halfword; ITSTATE in CPSR (its [1:0] in bits 26:25, [7:2] in 15:10), IT_ENTRY with it; else (E)
-   ENDIAN_UNSUPPORTED with the halfword */
+/* snx_x64_thumb_entry(state RDI, the block's address ESI, its first halfword EDX; Windows' RCX, EDX, R8D), where a Thumb
+   block's entry check failed (thumb_block's, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T
+   clear, BAD_ENTRY with the halfword; ITSTATE in CPSR (its [1:0] in bits 26:25, [7:2] in 15:10), IT_ENTRY with it; else
+   (E) ENDIAN_UNSUPPORTED with the halfword */
 static void thumb_entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
-    unsigned char code[80];
+    unsigned char code[96];
+    const int w = snx_x64_win64();
     b.p = code;
     b.cap = sizeof code;
-    sgx_bytes(&b, "39 77 3C 75 00"); /* cmp [rdi + r15], esi; jne pc */
+    sgx_bytes(&b, w ? "39 51 3C 75 00" : "39 77 3C 75 00"); /* cmp [rdi + r15], esi; jne pc */
     size_t pc = b.n - 1;
-    sgx_bytes(&b, "8B 47 40 A8 20 74 00"); /* mov eax, [rdi + cpsr]; test al, T; jz clear */
+    sgx_bytes(&b,
+              w ? "8B 41 40 A8 20 74 00" : "8B 47 40 A8 20 74 00"); /* mov eax, [rdi + cpsr]; test al, T; jz clear */
     size_t clear = b.n - 1;
-    sgx_bytes(&b, "89 C1 C1 E9 19 83 E1 03"); /* mov ecx, eax; shr ecx, 25; and ecx, 3 */
-    sgx_bytes(&b, "C1 E8 08 25 FC 00 00 00"); /* shr eax, 8; and eax, 0xFC */
-    sgx_bytes(&b, "09 C1 75 00");             /* or ecx, eax; jnz it */
+    /* mov ecx (r9d), eax; shr ecx, 25; and ecx, 3 */
+    sgx_bytes(&b, w ? "41 89 C1 41 C1 E9 19 41 83 E1 03" : "89 C1 C1 E9 19 83 E1 03");
+    sgx_bytes(&b, "C1 E8 08 25 FC 00 00 00");            /* shr eax, 8; and eax, 0xFC */
+    sgx_bytes(&b, w ? "41 09 C1 75 00" : "09 C1 75 00"); /* or ecx, eax; jnz it */
     size_t it = b.n - 1;
-    sgx_bytes(&b, "C7 47 44 09 00 00 00 EB 00"); /* mov dword [rdi + exit], ENDIAN_UNSUPPORTED; jmp word */
+    /* mov dword [rdi + exit], ENDIAN_UNSUPPORTED; jmp word */
+    sgx_bytes(&b, w ? "C7 41 44 09 00 00 00 EB 00" : "C7 47 44 09 00 00 00 EB 00");
     size_t word = b.n - 1;
     sgx_a32_patch8(&b, clear);
-    sgx_bytes(&b, "C7 47 44 08 00 00 00"); /* clear: mov dword [rdi + exit], BAD_ENTRY */
+    sgx_bytes(&b, w ? "C7 41 44 08 00 00 00" : "C7 47 44 08 00 00 00"); /* clear: mov dword [rdi + exit], BAD_ENTRY */
     sgx_a32_patch8(&b, word);
-    sgx_bytes(&b, "89 57 48 C3"); /* word: mov [rdi + syndrome], edx; ret */
+    sgx_bytes(&b, w ? "44 89 41 48 C3" : "89 57 48 C3"); /* word: mov [rdi + syndrome], edx; ret */
     sgx_a32_patch8(&b, it);
-    sgx_bytes(&b, "C7 47 44 0D 00 00 00 89 4F 48 C3"); /* it: mov dword [rdi + exit], IT_ENTRY; mov [..], ecx; ret */
+    /* it: mov dword [rdi + exit], IT_ENTRY; mov [rdi + syndrome], ecx; ret */
+    sgx_bytes(&b, w ? "C7 41 44 0D 00 00 00 44 89 49 48 C3" : "C7 47 44 0D 00 00 00 89 4F 48 C3");
     sgx_a32_patch8(&b, pc);
-    sgx_bytes(&b, "C7 47 44 08 00 00 00 89 77 48 C3"); /* pc: BAD_ENTRY; mov [rdi + syndrome], esi; ret */
+    /* pc: BAD_ENTRY; mov [rdi + syndrome], esi; ret */
+    sgx_bytes(&b, w ? "C7 41 44 08 00 00 00 89 51 48 C3" : "C7 47 44 08 00 00 00 89 77 48 C3");
     if (b.n > b.cap) sg_fail("the Thumb entry's exit past its room", (long long)b.n, (long long)b.cap);
     size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
     snx_xelf_symbol(o, "snx_x64_thumb_entry", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
@@ -301,8 +340,21 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     entry_exit_fn(o);
     thumb_entry_exit_fn(o);
 }
+/* a block's function table (COFF's): its frame from its own entry on, but where the failed check's exit leaves before it
+   (the jump to entry_exit_fn's or thumb_entry_exit_fn's, its one relocation) */
+static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
+                         size_t nrel) {
+    const Rel* r = (const Rel*)rel;
+    size_t k, out = size, past = size;
+    if (own == (size_t)-1) return; /* a jump of no frame */
+    for (k = 0; k < nrel; ++k)
+        if (!strcmp(r[k].sym, "snx_x64_arm_entry_exit") || !strcmp(r[k].sym, "snx_x64_thumb_entry"))
+            past = r[k].at + 4, out = past - ENTRY_EXIT_WIN64;
+    snx_xelf_unwind(o, at + own, at + out, code + own, size - own, 0);
+    snx_xelf_unwind(o, at + past, at + size, code + own, size - own, 1);
+}
 int snx_x64_arm_entry(MG_ARM* c, uint32_t key) {
-    unsigned char code[12] = {0xC7, 0x47, (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9, 0, 0, 0, 0};
+    unsigned char code[12] = {0xC7, state8(c, 0), (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9};
     SnxU32 address = key & ~1u;
     memcpy(code + 3, &address, 4); /* mov dword [rdi + r15], address; jmp the block */
     Rel rel = {.at = 8, .type = R_X86_64_PLT32, .addend = -4};

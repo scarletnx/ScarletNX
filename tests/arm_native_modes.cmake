@@ -4,8 +4,13 @@
 # same options: arm_x64.c's --profile, --memory and --trace. The Cortex-A57 on flat memory is arm_<machine> itself
 
 # snx_arm_native_modes(<machine> [<argument>...]): arm_<machine>_<mode> for each mode of snx-test-arm-<machine>, with
-# the arguments (how many blocks and states), and each again with three host registers, so that values spill
+# the arguments (how many blocks and states), and each again with three host registers (four of x86-64's on Windows,
+# whose first are a shift count's and a pair's), so that values spill
 function(snx_arm_native_modes machine)
+    set(pool 3)
+    if(machine STREQUAL "win64")
+        set(pool 4)
+    endif()
     foreach(mode a9 arm11 arm946e arm7tdmi arm7tdmi_trace a57_hosted a9_hosted arm11_hosted a57_checked a9_checked
                  arm11_checked)
         string(REGEX MATCH "^[^_]+" profile "${mode}")
@@ -16,7 +21,7 @@ function(snx_arm_native_modes machine)
             list(APPEND options --trace)
         endif()
         add_test(NAME arm_${machine}_${mode} COMMAND snx-test-arm-${machine} ${options} ${ARGN})
-        add_test(NAME arm_${machine}_${mode}_spill COMMAND snx-test-arm-${machine} ${options} ${ARGN} --pool 3 --seed 2)
+        add_test(NAME arm_${machine}_${mode}_spill COMMAND snx-test-arm-${machine} ${options} ${ARGN} --pool ${pool} --seed 2)
         set_tests_properties(arm_${machine}_${mode} arm_${machine}_${mode}_spill
                              PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     endforeach()

@@ -42,9 +42,10 @@
 #ifndef SGX_ARG_REG
 #define SGX_ARG_REG(x, n) sgx_arg_regs[n]
 #endif
-#ifndef SGX_A32_ARG /* AArch32's calls' after the state, and its exclusive store's registers */
+#ifndef SGX_A32_ARG /* AArch32's calls' after the state, its exclusive store's registers and a bus access's memory's base */
 #define SGX_A32_ARG(x, n) sgx_a32_args[n]
 #define SGX_A32_STREX_REGS(x) sgx_a32_strex
+#define SGX_A32_BUS_MEM(x) sgx_a32_args[3]
 #endif
 #ifndef SGX_SLOT0
 #define SGX_SLOT0(a) 0

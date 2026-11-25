@@ -350,8 +350,8 @@ enum {
     SGX_A32_EXIT,    /* to a new exit on cc: exit imm, R15 kv[1] unless kv[0] bit 1, syndrome in[0] (or kv[0] >> 32) */
     SGX_A32_MONITOR, /* a store's check of the monitor: the address in[0], imm bytes */
     SGX_A32_FENCE,   /* MFENCE */
-    SGX_A32_CALL,    /* sym(state, in[0..]) (sgx_a32_args' registers); the result in SGX_RET where def */
-    SGX_A32_STREX,   /* the exclusive store: address, value, memory's base in sgx_a32_strex's registers, imm bytes;
+    SGX_A32_CALL,    /* sym(state, in[0..]) (SGX_A32_ARG's registers); the result in SGX_RET where def */
+    SGX_A32_STREX,   /* the exclusive store: address, value, memory's base in SGX_A32_STREX_REGS', imm bytes;
                         the status in SGX_RET */
     SGX_A32_UNDEF_END, /* after snx_arm_undefined: R15 = imm where it set no exit, then the block's return */
     SGX_A32_CHECK,     /* after a call of the backend's: the block's return where it set an exit */
@@ -517,7 +517,7 @@ static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) { sgx_a32_trace(
 
 /* ---- calls ---- */
 
-/* sym(state, args...): every value in a caller-saved register spilled, the arguments in sgx_a32_args'; the call
+/* sym(state, args...): every value in a caller-saved register spilled, the arguments in SGX_A32_ARG's; the call
    may change any of the state, so the region's registers and CPSR are read again after it */
 static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs, int result) {
     SgX* x = sgx(g);
@@ -529,7 +529,7 @@ static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs,
     i->calls = 1;
     for (int k = 0; k < nargs; ++k) {
         i->in[k] = regs[k];
-        i->fixed[k] = sgx_a32_args[k];
+        i->fixed[k] = SGX_A32_ARG(x, k);
     }
     if (result) i->def = sgx_vreg(x, x->n - 1, 64);
     for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
@@ -726,8 +726,8 @@ static inline SgD sgx_a32_bus(SgCtx* g, SgB out, SgD hook, SgD address, int byte
     i->kv[0] |= (SnxU64)(SnxU32)g->pc << 32;
     i->kv[1] = !value;
     for (int k = 0; k < 4; ++k) i->in[k] = in[k];
-    i->fixed[0] = sgx_a32_args[0], i->fixed[1] = sgx_a32_args[3], i->fixed[2] = sgx_a32_args[1];
-    i->fixed[3] = sgx_a32_args[2];
+    i->fixed[0] = SGX_A32_ARG(x, 0), i->fixed[1] = SGX_A32_BUS_MEM(x), i->fixed[2] = SGX_A32_ARG(x, 1);
+    i->fixed[3] = SGX_A32_ARG(x, 2);
     i->side = 1;
     i->def = sgx_vreg(x, x->n - 1, 64);
     SgD r = sg_d_slice(g, sgx_val(64, i->def), 31, 0);
