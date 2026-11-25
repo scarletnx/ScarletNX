@@ -449,6 +449,56 @@ static void jump_table_anchor_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A byte table no compare guards, its index masked: and x0, x0, #3 bounds it to four entries, as a compare would */
+static void jump_table_mask_test(void) {
+    static const SnxU32 words[] = {
+        0x92400400UL, /* and x0, x0, #3 */
+        0xD503201FUL, /* nop */
+        0x90000009UL, /* adrp x9, base's page */
+        0x91020129UL, /* add x9, x9, #0x80: the table */
+        0x100000AAUL, /* adr x10, 0x24: what an entry counts from */
+        0x3860692BUL, /* ldrb w11, [x9, x0] */
+        0x8B0B094AUL, /* add x10, x10, x11, lsl #2 */
+        0x2A1F03E8UL, /* mov w8, wzr */
+        0xD61F0140UL, /* br x10 */
+        0x52800020UL, /* 0x24, case 0: mov w0, #1 */
+        0x14000006UL, /* b 0x40 */
+        0x52800040UL, /* 0x2c, case 1 */
+        0x14000004UL, /* b 0x40 */
+        0x52800060UL, /* 0x34, case 2 */
+        0x14000002UL, /* b 0x40 */
+        0x52800080UL, /* 0x3c, case 3 */
+        0xD65F03C0UL, /* 0x40: ret */
+    };
+    static const SnxU64 cases[] = {0x24, 0x2C, 0x34, 0x3C};
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i, n;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    for (i = 0; i < 4; ++i) image[0x80 + i] = (unsigned char)((cases[i] - 0x24) / 4);
+    image[0x84] = 7; /* past the mask's bound: it would name the RET */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table of a masked index");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8);
+    check(n == 4, "the masked byte table's four cases");
+    for (i = 0; i < n && i < 4; ++i) check(targets[i] == SNX_CODE_BASE + cases[i], "a masked table's case");
+    for (i = 0; i < 4; ++i)
+        check(function && has_leader(function, SNX_CODE_BASE + cases[i]), "a masked table's case is a leader");
+    snx_codegen_free(&codegen);
+    /* a mask of nine bits is no bound a byte table is followed to */
+    put32(image, 0, 0x92402000UL); /* and x0, x0, #0x1ff */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table of a wide mask");
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8) == 0, "a mask too wide for a bound");
+    snx_codegen_free(&codegen);
+}
+
 /* The same with halves, the table's address taken before the compare's branch: the code that takes it is not next
    to the load (in a loop it is outside the loop) */
 static void jump_table_anchor_far_test(void) {
@@ -1559,6 +1609,7 @@ int main(void) {
     svc_resume_test();
     jump_table_other_function_test();
     jump_table_anchor_test();
+    jump_table_mask_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();

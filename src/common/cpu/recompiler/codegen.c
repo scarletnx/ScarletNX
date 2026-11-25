@@ -581,6 +581,28 @@ static unsigned branch_bound(SnxCodegen* codegen, SnxU64 block, unsigned index_r
     return 0;
 }
 
+/* the entries the index's own value bounds a table to where no compare guards it, its making nearest before at: an
+   AND of its low k bits, a UBFX of k bits (LSR, UXTB and UXTH are UBFMs too), 2^k for k up to 8; a 32-bit MOV's
+   source's (the index widened); 0 for none */
+static unsigned index_bound(SnxCodegen* codegen, SnxU64 at, unsigned reg, int depth) {
+    SnxU64 made = written_at(codegen, at, reg, SNX_JUMP_TABLE_GAP, 0);
+    SnxU32 word;
+    unsigned k = 0;
+    if (!made || !snx_codegen_word(codegen, made, &word) || (word & 31) != reg) return 0;
+    if ((word & 0x7f800000UL) == 0x12000000UL && !((word >> 16) & 63)) { /* AND (immediate), no rotation */
+        unsigned imms = (word >> 10) & 63;
+        if ((word >> 22) & 1) /* N: one 64-bit element */
+            k = imms + 1;
+        else if (!(imms & 0x20)) /* one 32-bit element */
+            k = (imms & 31) + 1;
+    } else if ((word & 0x7f800000UL) == 0x53000000UL) { /* UBFM */
+        unsigned immr = (word >> 16) & 63, imms = (word >> 10) & 63;
+        if (imms >= immr) k = imms - immr + 1;
+    } else if ((word & 0xffe0ffe0UL) == 0x2a0003e0UL && depth < 2) /* mov wd, wm */
+        return index_bound(codegen, made, (word >> 16) & 31, depth + 1);
+    return k && k <= 8 ? 1u << k : 0;
+}
+
 /* the entries the compare guarding the table bounds: cases + 1, or 0 when there is no such compare */
 static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg) {
     for (unsigned i = 1; i <= 16 && load >= (SnxU64)i * 4; ++i) {
@@ -620,6 +642,7 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
         !jump_table_shape(codegen, address, word, &table))
         return 0;
     limit = table_bound(codegen, table.load, table.index_reg);
+    if (!limit) limit = index_bound(codegen, table.load, table.index_reg, 0);
     table_generation = image_generation(codegen, table.base);
     table_version = table_generation == code_generation
                         ? code_version
