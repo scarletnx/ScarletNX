@@ -221,7 +221,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           # poppler: pdftotext, which the x86-64 back end's instruction selection is derived with (cmake/sdm.cmake);
-          # without it the back end is left out and LLVM makes every function
+          # without it the configure stops
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
@@ -754,11 +754,12 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with; poppler: pdftotext
+      # (cmake/sdm.cmake)
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
