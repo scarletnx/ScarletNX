@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Every scalar/vector FRINT mode, signed zero, NaN payload, input flush and sticky FPSR through both loaders. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,7 +69,7 @@ static const u32 edge32[] = {0, 0x80000000u, 1, 0x80000001u, 0x007fffffu, 0x0080
     0x40200000u, 0x4b000000u, 0x7f7fffffu, 0x7f800000u, 0xff800000u, 0x7fc12345u, 0xff812345u};
 static const u16 edge16[] = {0,0x8000,1,0x8001,0x03ff,0x0400,0x3400,0xb400,0x3800,0xb800,0x3e00,0xbe00,
     0x4100,0x6400,0x7bff,0x7c00,0xfc00,0x7e7b,0xfc7b};
-static int check(LlvmStep step, const Insn* insn, const CPU* input, unsigned rd) {
+static int check(Step step, const Insn* insn, const CPU* input, unsigned rd) {
     CPU actual = *input, expected = *input;
     expected.v[rd] = (V128){0};
     for (unsigned lane = 0; lane < insn->lanes; ++lane) {
@@ -80,19 +80,19 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input, unsigned rd)
         else if (insn->width == 32) expected.v[rd].s[lane] = (u32)result;
         else expected.v[rd].d[lane] = result;
     }
-    if (step(&actual) == 0x1004 && !memcmp(&actual, &expected, sizeof actual)) return 0;
+    if (step_run(step, &actual) == 0x1004 && !memcmp(&actual, &expected, sizeof actual)) return 0;
     fprintf(stderr, "FRINT %08x rd%u FPCR %x input %llx result %llx/%llx flags %x/%x\n", insn->word, rd, input->fpcr,
             (unsigned long long)input->v[1].d[0], (unsigned long long)actual.v[rd].d[0],
             (unsigned long long)expected.v[rd].d[0], actual.fpsr, expected.fpsr);
     return 1;
 }
 static int run(int jit, int portable, char opt, unsigned long long* checks) {
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps,jit,portable,opt,error,sizeof error)) return snx_error("%s",error);
+    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i)
-        for(unsigned rd=0;rd<2;rd++)llvm_steps_add(&steps,instructions[i].word|rd,0x1000,SNX_A64_TARGET_MAX);
-    if (llvm_steps_load(&steps,error,sizeof error)) return snx_error("%s",error);
+        for (unsigned rd = 0; rd < 2; rd++) steps_add(&steps, instructions[i].word | rd, 0x1000, SNX_A64_TARGET_MAX);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     u64 rng = 0x49b2c075136a8fedull;
     int failed = 0;
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0] && !failed; ++i) {
@@ -108,7 +108,10 @@ static int run(int jit, int portable, char opt, unsigned long long* checks) {
                     if (insn->width == 16) c.v[1].h[lane] = edge16[edge];
                     else if (insn->width == 32) c.v[1].s[lane] = edge32[edge];
                     else c.v[1].d[lane] = edge64[edge];
-                    for(unsigned rd=0;rd<2&&!failed;rd++){failed = check(steps.steps[2*i+rd],insn,&c,rd); ++*checks;}
+                    for (unsigned rd = 0; rd < 2 && !failed; rd++) {
+                        failed = check(steps_at(&steps, 2 * i + rd), insn, &c, rd);
+                        ++*checks;
+                    }
                 }
         for (unsigned sample = 0; sample < (insn->width == 16 ? 65536u : 4096u) && !failed; ++sample) {
             CPU c = {0}; c.pc = 0x1000;
@@ -117,22 +120,28 @@ static int run(int jit, int portable, char opt, unsigned long long* checks) {
             for (unsigned reg = 0; reg < 32; ++reg)
                 for (unsigned h = 0; h < 2; ++h) c.v[reg].d[h] = random_next(&rng);
             if (insn->width == 16) for (unsigned lane=0;lane<insn->lanes;lane++) c.v[1].h[lane]=(u16)(sample+lane);
-            for(unsigned rd=0;rd<2&&!failed;rd++){failed = check(steps.steps[2*i+rd],insn,&c,rd); ++*checks;}
+            for (unsigned rd = 0; rd < 2 && !failed; rd++) {
+                failed = check(steps_at(&steps, 2 * i + rd), insn, &c, rd);
+                ++*checks;
+            }
         }
     }
-    llvm_steps_end(&steps); return failed;
+    steps_end(&steps);
+    return failed;
 }
 static int bench(unsigned index,char opt,int reference, const char* dump, unsigned pattern) {
     if (index >= sizeof instructions / sizeof instructions[0] || pattern > 2) return 2;
-    LlvmSteps steps; char error[1024];
-    if (llvm_steps_begin_opt(&steps,1,reference,opt,error,sizeof error)) return snx_error("%s",error);
-    llvm_steps_add(&steps,instructions[index].word,0x1000,SNX_A64_TARGET_MAX);
+    Steps steps;
+    char error[1024];
+    if (steps_begin_opt(&steps, 1, reference, opt, error, sizeof error)) return snx_error("%s", error);
+    steps_add(&steps, instructions[index].word, 0x1000, SNX_A64_TARGET_MAX);
     if (dump && strcmp(dump,"-")) {
-        int failed=llvm_steps_dump(&steps,dump,error,sizeof error);
+        int failed = steps_dump(&steps, dump, error, sizeof error);
         if(failed)fprintf(stderr,"%s\n",error);
-        llvm_steps_end(&steps);return failed!=0;
+        steps_end(&steps);
+        return failed != 0;
     }
-    if (llvm_steps_load(&steps,error,sizeof error)) return snx_error("%s",error);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU c = {0}; c.pc = 0x1000; c.fpcr = 1u << 24;
     if (instructions[index].width == 16) c.v[1] = (V128){.h={0x3e00,0xc100,0x3555,0xb800,0x3e00,0xc100,0x3555,0xb800}};
     else if (instructions[index].width == 32) c.v[1] = (V128){.s = {0x3fc00000u,0xc0200000u,0x3eaaaaabu,0xbf000000u}};
@@ -149,16 +158,23 @@ static int bench(unsigned index,char opt,int reference, const char* dump, unsign
         c.fpcr |= 1u<<19;
     }
     u64 checksum = 0; double begin = snx_seconds();
-    for (unsigned i=0;i<1000000;++i) { steps.steps[0](&c); checksum += c.v[0].d[0] + (c.v[0].d[1] ^ c.fpsr); }
+    for (unsigned i = 0; i < 1000000; ++i) {
+        step_run(steps_at(&steps, 0), &c);
+        checksum += c.v[0].d[0] + (c.v[0].d[1] ^ c.fpsr);
+    }
     double elapsed = snx_seconds()-begin;
     printf("{\"elapsed_ns\":%.0f,\"checksum\":\"%016llx\"}\n",elapsed*1e9,(unsigned long long)checksum);
-    llvm_steps_end(&steps); return 0;
+    steps_end(&steps);
+    return 0;
 }
 int main(int argc,char**argv) {
+    STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1],"--bench"))
         return bench((unsigned)strtoul(argv[2],NULL,10),argc>3?argv[3][0]:'0',argc>4&&!strcmp(argv[4],"--reference"),argc>5?argv[5]:NULL,argc>6?(unsigned)strtoul(argv[6],NULL,10):0);
     unsigned long long checks = 0;
-    for(int jit=0;jit<2;++jit) for(int portable=0;portable<2;++portable) for(unsigned opt=0;opt<2;++opt)
-        if(run(jit,portable,opt?'2':'0',&checks)) return 1;
+    for (int jit = 0; jit < 2; ++jit)
+        for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
+            for (unsigned opt = 0; opt < STEPS_LEVELS(2); ++opt)
+                if (run(jit, portable, opt ? '2' : '0', &checks)) return 1;
     printf("FRINT: %llu exact cases\n",checks);return 0;
 }

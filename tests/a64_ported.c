@@ -7,7 +7,7 @@
    and the memory window. The code is at CODE on both sides, so they run the same pcs, and in guest memory on both
    (a literal load reads it).
      snx-test-a64-ported [--module] [QEMU RUNNER DIR] */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "a64_ported_cases.h"
 #include "qemu_ref/qemu_ref.h"
 #include <stdlib.h>
@@ -34,7 +34,7 @@ typedef struct {
 static struct {
     int failures, checks, traps;
     const char* name;
-    LlvmSteps steps;
+    Steps steps;
     size_t* step_of; /* script op -> step */
     size_t minmax_first, fixed_first;
     u64 base;
@@ -210,7 +210,7 @@ static int script(void) {
                 /* past the code, dynarmic's environment reads B . */
                 for (t = 0; t < op->b; ++t) {
                     if (pc < CODE || ((pc - CODE) & 3) || (pc - CODE) / 4 >= count) break;
-                    pc = g.steps.steps[g.step_of[first + (size_t)((pc - CODE) / 4)]](&c);
+                    pc = step_run(steps_at(&g.steps, g.step_of[first + (size_t)((pc - CODE) / 4)]), &c);
                 }
                 recorded(r, &c, pc);
                 expect(!g.traps, "undefined-instruction, SVC or BRK traps", (u64)g.traps, 0);
@@ -331,7 +331,7 @@ static int minmax(void) {
                         vset(&c.v[1], swap ? row->b : row->a, 0);
                         vset(&c.v[2], swap ? row->a : row->b, 0);
                         run = record(word->text, &word->word, 1, CODE, 1, &c, 0);
-                        pc = g.steps.steps[g.minmax_first + w](&c);
+                        pc = step_run(steps_at(&g.steps, g.minmax_first + w), &c);
                         recorded(run, &c, pc);
                         snprintf(what, sizeof(what), "V0[63:0] for %08llx, %08llx under FPCR %08x",
                                  (unsigned long long)vlo(&c.v[1]), (unsigned long long)vlo(&c.v[2]), c.fpcr);
@@ -364,7 +364,7 @@ static int fixed(void) {
         memory(&c, 0, SNX_QREF_SEED_ZERO);
         vset(&c.v[0], f->input, 0);
         run = record("FPToFixed", &g_fixed_words[r], 1, CODE, 1, &c, 0);
-        pc = g.steps.steps[g.fixed_first + r](&c);
+        pc = step_run(steps_at(&g.steps, g.fixed_first + r), &c);
         recorded(run, &c, pc);
         snprintf(what, sizeof(what), "%016llx to %d bits, rounding %d", (unsigned long long)f->input, f->int_width,
                  f->rm);
@@ -460,6 +460,7 @@ static int against_qemu(const char* qemu, const char* runner, const char* dir) {
 }
 
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     const size_t ops = sizeof(snx_a64p_script) / sizeof(snx_a64p_script[0]);
     const size_t words = sizeof(snx_a64p_minmax_words) / sizeof(snx_a64p_minmax_words[0]);
     const size_t rows = sizeof(snx_a64p_fixed) / sizeof(snx_a64p_fixed[0]);
@@ -481,22 +482,22 @@ int main(int argc, char** argv) {
         return 2;
     }
     /* each case's code from CODE: a branch's step resolves its target from its own pc */
-    if (llvm_steps_begin(&g.steps, jit, 0, error, sizeof(error))) return snx_error("%s", error);
+    if (steps_begin(&g.steps, jit, 0, error, sizeof(error))) return snx_error("%s", error);
     g.step_of = (size_t*)snx_alloc(ops * sizeof(*g.step_of));
     for (i = 0; i < ops; ++i) {
         if (snx_a64p_script[i].op == SNX_A64P_OP_CASE) address = 0;
         if (snx_a64p_script[i].op != SNX_A64P_OP_CODE) continue;
-        g.step_of[i] = llvm_steps_add(&g.steps, (u32)snx_a64p_script[i].a, CODE + address, 0);
+        g.step_of[i] = steps_add(&g.steps, (u32)snx_a64p_script[i].a, CODE + address, 0);
         address += 4;
     }
     g.minmax_first = g.steps.count;
-    for (i = 0; i < words; ++i) llvm_steps_add(&g.steps, snx_a64p_minmax_words[i].word, CODE, 0);
+    for (i = 0; i < words; ++i) steps_add(&g.steps, snx_a64p_minmax_words[i].word, CODE, 0);
     g.fixed_first = g.steps.count;
     for (i = 0; i < rows; ++i) {
         g_fixed_words[i] = fixed_word(&snx_a64p_fixed[i]);
-        llvm_steps_add(&g.steps, g_fixed_words[i], CODE, 0);
+        steps_add(&g.steps, g_fixed_words[i], CODE, 0);
     }
-    if (llvm_steps_load(&g.steps, error, sizeof(error))) return snx_error("%s", error);
+    if (steps_load(&g.steps, error, sizeof(error))) return snx_error("%s", error);
     cases = script();
     minmaxes = minmax();
     conversions = fixed();
@@ -512,6 +513,6 @@ int main(int argc, char** argv) {
     }
     free(g.runs);
     free(g.step_of);
-    llvm_steps_end(&g.steps);
+    steps_end(&g.steps);
     return g.failures != 0;
 }

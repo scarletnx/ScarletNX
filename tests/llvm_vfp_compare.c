@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Whole-vector comparisons against independent soft-float unpack/order, with exact sticky FPSR. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,7 +126,7 @@ static void reverse_lanes(CPU* c, unsigned width) {
                 c->v[reg].b[at + bytes - i - 1] = value;
             }
 }
-static int check(LlvmStep step, const Insn* insn, unsigned rd, const CPU* input, int reversed) {
+static int check(Step step, const Insn* insn, unsigned rd, const CPU* input, int reversed) {
     CPU expected = *input, actual = *input;
     expected.v[rd] = (V128){0};
     u64 sign = (u64)1 << (insn->width - 1), all = sign | (sign - 1);
@@ -142,7 +142,7 @@ static int check(LlvmStep step, const Insn* insn, unsigned rd, const CPU* input,
         put(&expected.v[rd], lane, insn->width, match ? all : 0);
     }
     if (reversed) reverse_lanes(&actual, insn->width);
-    u64 pc = step(&actual);
+    u64 pc = step_run(step, &actual);
     if (reversed) reverse_lanes(&actual, insn->width);
     if (pc == 0x1004 && !memcmp(&actual, &expected, sizeof actual)) return 0;
     fprintf(stderr, "comparison %08x rd %u FPCR %08x FPSR %08x: actual %016llx/%016llx %08x, "
@@ -152,15 +152,19 @@ static int check(LlvmStep step, const Insn* insn, unsigned rd, const CPU* input,
     return 1;
 }
 static int run(int jit, int portable, char opt, unsigned long long* checked, int reversed) {
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
-    if (reversed && steps.ir->big_endian) { llvm_steps_end(&steps); return 0; }
+    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+#ifndef SNX_TEST_NATIVE_STEPS
+    if (reversed && steps.ir->big_endian) {
+        steps_end(&steps);
+        return 0;
+    }
     if (reversed) steps.ir->big_endian = 1;
+#endif
     for (unsigned i = 0; i < COUNT; ++i)
-        for (unsigned rd = 0; rd < 3; ++rd)
-            llvm_steps_add(&steps, instructions[i].word | rd, 0x1000, SNX_A64_TARGET_MAX);
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+        for (unsigned rd = 0; rd < 3; ++rd) steps_add(&steps, instructions[i].word | rd, 0x1000, SNX_A64_TARGET_MAX);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     static const u32 sticky[] = {0, 1, 0x80, 0x0800009f};
     u64 random = 0x9e3779b97f4a7c15ull;
     int failed = 0;
@@ -181,7 +185,7 @@ static int run(int jit, int portable, char opt, unsigned long long* checked, int
                     put(&input.v[2], lane, insn->width, edge(e / 2 + lane, insn->width));
                 }
                 for (unsigned rd = 0; rd < 3 && !failed; ++rd) {
-                    failed = check(steps.steps[3 * i + rd], insn, rd, &input, reversed);
+                    failed = check(steps_at(&steps, 3 * i + rd), insn, rd, &input, reversed);
                     ++*checked;
                 }
             }
@@ -194,7 +198,7 @@ static int run(int jit, int portable, char opt, unsigned long long* checked, int
                 put(&input.v[1], lane, insn->width, random_next(&random));
                 put(&input.v[2], lane, insn->width, random_next(&random));
             }
-            failed = check(steps.steps[3 * i], insn, 0, &input, reversed);
+            failed = check(steps_at(&steps, 3 * i), insn, 0, &input, reversed);
             ++*checked;
         }
     }
@@ -209,13 +213,13 @@ static int run(int jit, int portable, char opt, unsigned long long* checked, int
                     put(&input.v[1], lane, 16, base + lane);
                     put(&input.v[2], lane, 16, edge((base / 8 + lane) & 15, 16));
                 }
-                failed = check(steps.steps[3 * i], &instructions[i], 0, &input, reversed);
+                failed = check(steps_at(&steps, 3 * i), &instructions[i], 0, &input, reversed);
                 ++*checked;
                 V128 swap = input.v[1]; input.v[1] = input.v[2]; input.v[2] = swap;
-                if (!failed) failed = check(steps.steps[3 * i], &instructions[i], 0, &input, reversed);
+                if (!failed) failed = check(steps_at(&steps, 3 * i), &instructions[i], 0, &input, reversed);
                 ++*checked;
             }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return failed;
 }
 static int bench(const char* workload, char opt, const char* dump, int portable) {
@@ -223,16 +227,16 @@ static int bench(const char* workload, char opt, const char* dump, int portable)
     unsigned index = strstr(workload, "16") ? 0 : strstr(workload, "64") ? 60 : 30;
     if (strncmp(workload, "eq", 2)) ++index;
     const Insn* insn = &instructions[index];
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, 1, portable, opt, error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add(&steps, insn->word, 0x1000, SNX_A64_TARGET_MAX);
+    if (steps_begin_opt(&steps, 1, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    steps_add(&steps, insn->word, 0x1000, SNX_A64_TARGET_MAX);
     if (dump) {
-        int result = llvm_steps_dump(&steps, dump, error, sizeof error);
-        llvm_steps_end(&steps);
+        int result = steps_dump(&steps, dump, error, sizeof error);
+        steps_end(&steps);
         return result != 0;
     }
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU input = {0};
     input.pc = 0x1000; input.fpcr = (1u << 24) | (1u << 19); input.fpsr = 0x10;
     for (unsigned lane = 0; lane < insn->lanes; ++lane) {
@@ -244,25 +248,27 @@ static int bench(const char* workload, char opt, const char* dump, int portable)
     u64 checksum = 0;
     double start = snx_seconds();
     for (unsigned n = 0; n < 8000000; ++n) {
-        steps.steps[0](&input);
+        step_run(steps_at(&steps, 0), &input);
         checksum += SNX_VD(input.v[0], 0) ^ SNX_VD(input.v[0], 1) ^ input.fpsr;
     }
     double elapsed = snx_seconds() - start;
     printf("{\"elapsed_ns\":%.0f,\"checksum\":\"%016llx\"}\n", elapsed * 1e9, (unsigned long long)checksum);
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return 0;
 }
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1], "--bench"))
         return bench(argv[2], argc > 3 ? argv[3][0] : '2',
                      argc > 4 && strcmp(argv[4], "-") ? argv[4] : NULL, argc > 5 ? atoi(argv[5]) : 0);
     unsigned long long checked = 0;
     for (int jit = 0; jit < 2; ++jit)
-        for (int portable = 0; portable < 2; ++portable)
-            for (unsigned level = 0; level < 2; ++level)
+        for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
+            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
                 if (run(jit, portable, level ? '2' : '0', &checked, 0)) return 1;
-    if (run(1, LLVM_STEPS_PORTABLE, '0', &checked, 1) ||
-        run(1, LLVM_STEPS_PORTABLE, '2', &checked, 1)) return 1;
+#ifndef SNX_TEST_NATIVE_STEPS /* the portable form's lowering for a big-endian host: the IR's own */
+    if (run(1, STEPS_PORTABLE, '0', &checked, 1) || run(1, STEPS_PORTABLE, '2', &checked, 1)) return 1;
+#endif
     printf("Vector comparisons: %llu exact cases\n", checked);
     return 0;
 }

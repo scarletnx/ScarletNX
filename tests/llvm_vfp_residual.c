@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Vector arithmetic's residuals preserve results and sticky FPSR, at O0 and O2, through both loaders. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +39,7 @@ static u64 random_next(u64* state) {
     *state ^= *state << 17;
     return *state;
 }
-static int check(LlvmStep step, const Insn* insn, const CPU* input) {
+static int check(Step step, const Insn* insn, const CPU* input) {
     CPU expected = *input, actual = *input;
     expected.v[0] = (V128){0};
     for (unsigned lane = 0; lane < insn->lanes; ++lane) {
@@ -49,7 +49,7 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input) {
         if (insn->width == 32) expected.v[0].s[lane] = (u32)result;
         else expected.v[0].d[lane] = result;
     }
-    u64 next = step(&actual);
+    u64 next = step_run(step, &actual);
     if (next == 0x1004 && !memcmp(&actual, &expected, sizeof actual)) return 0;
     fprintf(stderr, "word %08x FPCR %08x FPSR %08x: got %016llx/%016llx flags %08x, "
                     "expected %016llx/%016llx flags %08x\n", insn->word, input->fpcr, input->fpsr,
@@ -58,11 +58,12 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input) {
     return 1;
 }
 static int run(int jit, int portable, char opt, unsigned long long* checked) {
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i) {
-        llvm_steps_add(&steps, instructions[i].word, 0x1000, 0);
+        steps_add(&steps, instructions[i].word, 0x1000, 0);
+#ifndef SNX_TEST_NATIVE_STEPS
         if (instructions[i].width != 32 || instructions[i].op == SNX_FP_ADD ||
             instructions[i].op == SNX_FP_SUB) continue;
         for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(steps.fns[i]); block;
@@ -70,8 +71,9 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
             for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
                 if (LLVMGetInstructionOpcode(inst) == LLVMFPExt && strcmp(LLVMGetBasicBlockName(block), "vfp_ixc"))
                     return snx_error("a residual's widening escaped the IXC-clear block");
+#endif
     }
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     u64 rng = 0x9e3779b97f4a7c15ull;
     static const u32 sticky[] = {0, 0x10, 0x80, 0x0800009f};
     int failed = 0;
@@ -99,11 +101,14 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
                         }
                         if (insn->width == 32) cpu.v[1].s[lane] = edges32[edge];
                         else cpu.v[1].d[lane] = edges[edge];
-                        failed = check(steps.steps[i], insn, &cpu);
+                        failed = check(steps_at(&steps, i), insn, &cpu);
                         ++*checked;
                         if (insn->width == 32) cpu.v[2].s[(lane + 1) % insn->lanes] = edges32[(edge + 5) % 16];
                         else cpu.v[2].d[(lane + 1) % insn->lanes] = edges[(edge + 5) % 16];
-                        if (!failed) { failed = check(steps.steps[i], insn, &cpu); ++*checked; }
+                        if (!failed) {
+                            failed = check(steps_at(&steps, i), insn, &cpu);
+                            ++*checked;
+                        }
                     }
         for (unsigned n = 0; n < 4096 && !failed; ++n) {
             CPU cpu = {0};
@@ -112,28 +117,28 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
             cpu.fpsr = sticky[(n >> 3) & 3];
             for (unsigned v = 0; v < 32; ++v)
                 for (unsigned half = 0; half < 2; ++half) cpu.v[v].d[half] = random_next(&rng);
-            failed = check(steps.steps[i], insn, &cpu);
+            failed = check(steps_at(&steps, i), insn, &cpu);
             ++*checked;
         }
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return failed;
 }
 
 static int bench(const char* workload, char opt, const char* dump) {
     unsigned index = !strncmp(workload, "abd", 3) ? 15 : !strncmp(workload, "add", 3) ? 0 : !strncmp(workload, "sub", 3) ? 1 :
                      !strncmp(workload, "div", 3) ? 3 : 2;
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add(&steps, instructions[index].word, 0x1000, 0);
+    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    steps_add(&steps, instructions[index].word, 0x1000, 0);
     if (dump) {
-        int failed = llvm_steps_dump(&steps, dump, error, sizeof error);
+        int failed = steps_dump(&steps, dump, error, sizeof error);
         if (failed) fprintf(stderr, "%s\n", error);
-        llvm_steps_end(&steps);
+        steps_end(&steps);
         return failed != 0;
     }
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU cpu = {0};
     cpu.pc = 0x1000;
     cpu.fpcr = 1u << 24;
@@ -149,21 +154,22 @@ static int bench(const char* workload, char opt, const char* dump) {
     double begin = snx_seconds();
     for (unsigned n = 0; n < 2000000; ++n) {
         if (clear) cpu.fpsr = 0;
-        steps.steps[0](&cpu);
+        step_run(steps_at(&steps, 0), &cpu);
         checksum += cpu.v[0].d[0] ^ cpu.v[0].d[1] ^ cpu.fpsr;
     }
     double elapsed = snx_seconds() - begin;
     printf("{\"elapsed_ns\":%.0f,\"checksum\":\"%016llx\"}\n", elapsed * 1e9, (unsigned long long)checksum);
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return 0;
 }
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1], "--bench"))
         return bench(argv[2], argc > 3 ? argv[3][0] : '0', argc > 4 ? argv[4] : NULL);
     unsigned long long checked = 0;
     for (int jit = 0; jit < 2; ++jit)
-        for (int portable = 0; portable < 2; ++portable)
-            for (unsigned level = 0; level < 2; ++level)
+        for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
+            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
                 if (run(jit, portable, level ? '2' : '0', &checked)) return 1;
     printf("Vector FP residuals: %llu exact cases\n", checked);
     return 0;
