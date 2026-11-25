@@ -19,6 +19,19 @@
 #ifndef R_X86_64_PLT32
 #define R_X86_64_PLT32 4
 #endif
+/* AArch64's machine and relocations, by number: not every <elf.h> has them (ELF for the Arm 64-bit Architecture, 5.7) */
+#ifndef EM_AARCH64
+#define EM_AARCH64 183
+#endif
+enum {
+    A64_ABS64 = 257,
+    A64_ADR_PREL_PG_HI21 = 275,
+    A64_ADD_ABS_LO12_NC = 277,
+    A64_LDST8_ABS_LO12_NC = 278,
+    A64_JUMP26 = 282,
+    A64_CALL26 = 283,
+    A64_LDST64_ABS_LO12_NC = 286
+};
 #if !defined(_WIN32)
 /* elf_object.c's (its header clashes with this one's): r_info of a symbol and a type, MIPS64's n64 layout on EM_MIPS;
    the host's byte order; an object's tables turned to the other */
@@ -44,7 +57,7 @@ typedef struct {
     unsigned type;
     long long addend;
 } Rel;
-/* the function table's entry: [begin, end) of .text, its UNWIND_INFO at info of .xdata */
+/* the function table's entry: [begin, end) of .text, its UNWIND_INFO (arm64's record) at info of .xdata */
 typedef struct {
     uint32_t begin, end, info;
 } Unwind;
@@ -65,6 +78,7 @@ struct SnxXElf {
     size_t nunwinds, cap_unwinds;
     size_t* infos; /* a hash table of .xdata's infos, their offsets + 1: each kind of prologue has one */
     size_t ninfos, cap_infos;
+    int formless; /* a prologue, or a relocation, COFF has no form of */
 };
 
 static int room(Buf* b, size_t n) {
@@ -316,9 +330,7 @@ static size_t info_at(SnxXElf* o, const unsigned char* info, size_t size) {
     ++o->ninfos;
     return i;
 }
-void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size) {
-    unsigned char info[INFO_MAX];
-    if (!o->coff || begin >= end) return;
+static void unwind_entry(SnxXElf* o, size_t begin, size_t end, size_t info) {
     if (o->nunwinds == o->cap_unwinds) {
         size_t cap = o->cap_unwinds ? o->cap_unwinds * 2 : 256;
         Unwind* p = (Unwind*)realloc(o->unwinds, cap * sizeof *p);
@@ -331,8 +343,167 @@ void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* 
     }
     o->unwinds[o->nunwinds].begin = (uint32_t)begin;
     o->unwinds[o->nunwinds].end = (uint32_t)end;
-    o->unwinds[o->nunwinds].info = (uint32_t)info_at(o, info, unwind_info(code, size, info));
-    ++o->nunwinds;
+    o->unwinds[o->nunwinds++].info = (uint32_t)info;
+}
+
+/* ---- arm64's unwind data (Microsoft's ARM64 exception handling): a record of each piece of the code, its words, its
+   epilogues, and the unwind codes of the prologue (its last instruction's first, one of each instruction) and of an
+   epilogue (in its order), which the unwinder skips as many of as the instructions not run yet, or run already ---- */
+
+#define A64_PIECE 0x3FFFFu /* the words a record holds */
+typedef struct {
+    unsigned char b[96];
+    size_t n;
+} A64Codes;
+enum { A64_END = 0xE4, A64_END_C = 0xE5, A64_SET_FP = 0xE1, A64_NOP = 0xE3 };
+
+static void a64_code(A64Codes* c, unsigned v) {
+    if (c->n < sizeof c->b) c->b[c->n] = (unsigned char)v;
+    ++c->n;
+}
+/* alloc_s, alloc_m or alloc_l of bytes (a multiple of 16, under 256 MiB) */
+static void a64_alloc(A64Codes* c, uint32_t bytes) {
+    uint32_t n = bytes / 16;
+    if (n < 32)
+        a64_code(c, n);
+    else if (n < 0x800) {
+        a64_code(c, 0xC0 | n >> 8);
+        a64_code(c, n & 0xFF);
+    } else {
+        a64_code(c, 0xE0);
+        a64_code(c, n >> 16 & 0xFF);
+        a64_code(c, n >> 8 & 0xFF);
+        a64_code(c, n & 0xFF);
+    }
+}
+static uint32_t a64_word(const unsigned char* code, size_t k) { return snx_ld_le32(code + 4 * k); }
+/* an LDP's or STP's offset of doublewords, signed, in bytes */
+static int32_t a64_pair_offset(uint32_t w) { return (int32_t)((w >> 15 & 0x7F) ^ 0x40) * 8 - 0x40 * 8; }
+/* STP (LDP) Xn, Xn+1, [SP, #offset] of two of X19 to X28 (save_regp): 1 and its code, 0 another word */
+static int a64_pair(A64Codes* c, uint32_t w) {
+    uint32_t rt = w & 31;
+    int32_t offset = a64_pair_offset(w);
+    if ((w & 0xFFC003E0u) != 0xA90003E0u || rt < 19 || rt > 27 || (w >> 10 & 31) != rt + 1 || offset < 0) return 0;
+    a64_code(c, 0xC8 | (rt - 19) >> 2);
+    a64_code(c, ((rt - 19) & 3) << 6 | (uint32_t)offset / 8);
+    return 1;
+}
+/* a function's frame as its prologue says it: the codes of the prologue and of an epilogue, and the epilogue's words */
+typedef struct {
+    A64Codes prologue, epilogue;
+    uint32_t word[12];
+    size_t words;
+} A64Frame;
+/* the prologue of words words at most at code, as arm64_codegen.c's prologue and arm64_arm.c's mg_prologue write it:
+   STP X29, X30 with the frame's base in X29, the pairs saved, MOV X19, X0, a frame of a page's probe (arm64_asm.h's
+   sga_stack_probe), then SUB SP; and the epilogue they have: ADD SP, the pairs back (the first, X19's, last), LDP X29,
+   X30. The prologue's words, 0 where it is none */
+static size_t a64_prologue(const unsigned char* code, size_t words, A64Frame* f) {
+    A64Codes step[24];
+    uint32_t pair[8], base = 0;
+    size_t k, n, pairs = 0;
+    for (k = 0; k < words && k < sizeof step / sizeof *step; ++k) {
+        uint32_t w = a64_word(code, k);
+        step[k].n = 0;
+        if (!k) { /* STP X29, X30, [SP, #-base]!: save_fplr_x */
+            if ((w & 0xFFC07FFFu) != 0xA9807BFDu || a64_pair_offset(w) >= 0) return 0;
+            base = (uint32_t)-a64_pair_offset(w);
+            a64_code(&step[k], 0x80 | (base / 8 - 1));
+        } else if (w == 0x910003FDu) /* MOV X29, SP */
+            a64_code(&step[k], A64_SET_FP);
+        else if (pairs < sizeof pair / sizeof *pair && a64_pair(&step[k], w))
+            pair[pairs++] = w;
+        else if (w == 0xAA0003F3u ||                                                         /* MOV X19, X0 */
+                 w == 0x910003F1u || (w & 0xFF8003FFu) == 0xD10003F0u || w == 0xD1400631u || /* the probe's */
+                 w == 0x3940023Fu || w == 0xEB10023Fu || w == 0x54FFFFA8u)
+            a64_code(&step[k], A64_NOP);
+        else if ((w & 0xFF8003FFu) == 0xD10003FFu && pairs) { /* SUB SP, SP, #frame */
+            uint32_t frame = (w >> 10 & 0xFFF) << (w >> 22 & 1 ? 12 : 0);
+            a64_alloc(&step[k], frame);
+            for (n = k + 1; n-- > 0;)
+                for (size_t b = 0; b < step[n].n; ++b) a64_code(&f->prologue, step[n].b[b]);
+            a64_code(&f->prologue, A64_END);
+            f->word[f->words++] = w ^ 0x40000000u; /* ADD SP */
+            a64_alloc(&f->epilogue, frame);
+            for (n = 1; n <= pairs; ++n) {
+                uint32_t p = pair[n % pairs];
+                (void)a64_pair(&f->epilogue, p);
+                f->word[f->words++] = p | 0x00400000u; /* LDP */
+            }
+            a64_code(&f->epilogue, 0x80 | (base / 8 - 1));
+            a64_code(&f->epilogue, A64_END);
+            f->word[f->words++] = 0xA8C07BFDu | base / 8 << 15; /* LDP X29, X30, [SP], #base */
+            return k + 1;
+        } else
+            return 0;
+    }
+    return 0;
+}
+/* the record of words words from at on, epilogues the words of the n that start in them, in order. A piece past the
+   code's start has no prologue, its body's codes the code's own after end_c */
+static void a64_record(SnxXElf* o, size_t begin, size_t at, size_t words, const A64Frame* f, const uint32_t* epilogues,
+                       size_t n) {
+    A64Codes codes = {.n = 0};
+    size_t k, start, info = o->xdata.n, code_words;
+    unsigned char w[4];
+    if (at) a64_code(&codes, A64_END_C);
+    for (k = 0; k < f->prologue.n; ++k) a64_code(&codes, f->prologue.b[k]);
+    start = codes.n;
+    for (k = 0; n && k < f->epilogue.n; ++k) a64_code(&codes, f->epilogue.b[k]);
+    while (codes.n % 4) a64_code(&codes, A64_END);
+    code_words = codes.n / 4; /* under 32: the frame's pairs are X19 to X28's */
+    snx_st_le32(w, (uint32_t)(n < 32 ? words | n << 22 | code_words << 27 : words));
+    put(&o->xdata, w, 4);
+    if (n >= 32) {
+        snx_st_le32(w, (uint32_t)(n | code_words << 16));
+        put(&o->xdata, w, 4);
+    }
+    for (k = 0; k < n; ++k) {
+        snx_st_le32(w, (uint32_t)(epilogues[k] - at) | (uint32_t)start << 22);
+        put(&o->xdata, w, 4);
+    }
+    put(&o->xdata, codes.b, codes.n);
+    if (o->xdata.oom) o->oom = 1;
+    unwind_entry(o, begin + 4 * at, begin + 4 * (at + words), info);
+}
+static void a64_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size) {
+    A64Frame f = {0};
+    size_t words = (end - begin) / 4, at, k, j, first = 0, last, n;
+    Buf found = {0}; /* the epilogues' words, as uint32_t */
+    k = size < end - begin ? 0 : a64_prologue(code, words, &f);
+    if (!k) {
+        o->formless = 1;
+        return;
+    }
+    while (k + f.words < words) { /* a return or a jump after it */
+        uint32_t here = (uint32_t)k;
+        for (j = 0; j < f.words && a64_word(code, k + j) == f.word[j]; ++j) {}
+        if (j == f.words) put(&found, &here, sizeof here);
+        k += j == f.words ? j + 1 : 1;
+    }
+    n = found.n / sizeof(uint32_t);
+    for (at = 0; at < words && !found.oom; at += last) {
+        uint32_t none = 0;
+        const uint32_t* epilogues = n ? (const uint32_t*)(const void*)found.p : &none;
+        size_t count = 0;
+        last = words - at > A64_PIECE ? A64_PIECE : words - at;
+        while (first + count < n && epilogues[first + count] < at + last) ++count;
+        /* an epilogue and what follows it in one piece */
+        if (count && epilogues[first + count - 1] + f.words + 1 > at + last) last = epilogues[first + --count] - at;
+        a64_record(o, begin, at, last, &f, epilogues + first, count);
+        first += count;
+    }
+    if (found.oom) o->oom = 1;
+    free(found.p);
+}
+
+void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size) {
+    unsigned char info[INFO_MAX];
+    if (!o->coff || begin >= end) return;
+    if (o->machine == EM_AARCH64)
+        a64_unwind(o, begin, end, code, size);
+    else
+        unwind_entry(o, begin, end, info_at(o, info, unwind_info(code, size, info)));
 }
 
 /* a symbol's record: name, value, section (1-based, 0 undefined), type 0x20 a function's, class */
@@ -359,6 +530,36 @@ static void coff_reloc(Buf* relocs, uint32_t at, size_t symbol, unsigned type) {
     snx_st_le16(r + 8, type);
     put(relocs, r, sizeof r);
 }
+/* arm64's relocation r, its ELF type's, at p: COFF's type, its addend in the field; -1 for a type or an addend it has no
+   form of */
+static int a64_reloc(unsigned char* p, const Rel* r) {
+    uint32_t w;
+    unsigned long long a = (unsigned long long)r->addend;
+    if (r->type == A64_ABS64) {
+        snx_st_le64(p, a);
+        return REL_A64_ADDR64;
+    }
+    w = snx_ld_le32(p);
+    switch (r->type) {
+        case A64_ADR_PREL_PG_HI21: /* in bytes */
+            if (r->addend < -(1 << 20) || r->addend >= 1 << 20) return -1;
+            snx_st_le32(p, (w & 0x9F00001Fu) | (uint32_t)(a & 3) << 29 | (uint32_t)(a >> 2 & 0x7FFFF) << 5);
+            return REL_A64_PAGEBASE_REL21;
+        case A64_ADD_ABS_LO12_NC:
+            snx_st_le32(p, (w & ~0x3FFC00u) | (uint32_t)(a & 0xFFF) << 10);
+            return REL_A64_PAGEOFFSET_12A;
+        case A64_LDST8_ABS_LO12_NC:
+        case A64_LDST64_ABS_LO12_NC: { /* in the access's size */
+            unsigned scale = r->type == A64_LDST64_ABS_LO12_NC ? 3 : 0;
+            if (a & ((1u << scale) - 1)) return -1;
+            snx_st_le32(p, (w & ~0x3FFC00u) | (uint32_t)((a & 0xFFF) >> scale) << 10);
+            return REL_A64_PAGEOFFSET_12L;
+        }
+        case A64_JUMP26:
+        case A64_CALL26: return a ? -1 : REL_A64_BRANCH26;
+        default: return -1;
+    }
+}
 /* the sections the builder's five are, and the function table's two */
 enum { C_XDATA = SNX_ELF_SECTIONS, C_PDATA, C_SECTIONS };
 
@@ -377,7 +578,9 @@ static int coff_write(SnxXElf* o, unsigned char** out, size_t* size) {
     const char** undef;
     int number[C_SECTIONS] = {0}, nsec = 0, k, rc = -1;
     unsigned char zero4[4] = {0};
+    const int a64 = o->machine == EM_AARCH64;
     if (o->oom) return -1;
+    if (o->formless) return -2;
     for (i = 0; i < o->nsyms; ++i) number[o->syms[i].section] = 1; /* one with a symbol is written though it is empty */
     for (k = 0; k < C_SECTIONS; ++k) {
         size_t n = k == C_XDATA ? o->xdata.n : k == C_PDATA ? o->nunwinds : o->sec[k].n;
@@ -432,7 +635,30 @@ static int coff_write(SnxXElf* o, unsigned char** out, size_t* size) {
             }
             symbol = undef_index[utable[h] - 1];
         }
-        if (r->type == R_X86_64_64) {
+        if (a64) {
+            Rel c = *r;
+            int type;
+            if (to && to->section == r->section && (r->type == A64_JUMP26 || r->type == A64_CALL26) && !r->addend) {
+                /* both here: written, where B reaches */
+                long long d = ((long long)to->offset - (long long)r->offset) / 4;
+                if (d >= -(1 << 25) && d < 1 << 25) {
+                    snx_st_le32(p, (snx_ld_le32(p) & 0xFC000000u) | ((uint32_t)d & 0x3FFFFFFu));
+                    continue;
+                }
+            }
+            if (to && r->type == A64_ADR_PREL_PG_HI21 && (r->addend < -(1 << 20) || r->addend >= 1 << 20)) {
+                /* past an ADRP's field: a symbol of the place itself */
+                symbol = nsyms++;
+                coff_symbol(&symtab, &strings, "snx_at", (uint32_t)((long long)to->offset + r->addend),
+                            number[to->section], 0, SYM_STATIC);
+                c.addend = 0;
+            }
+            if ((type = a64_reloc(p, &c)) < 0) {
+                rc = -2;
+                goto done;
+            }
+            coff_reloc(&relocs[r->section], (uint32_t)r->offset, symbol, (unsigned)type);
+        } else if (r->type == R_X86_64_64) {
             snx_st_le64(p, (uint64_t)r->addend);
             coff_reloc(&relocs[r->section], (uint32_t)r->offset, symbol, REL_ADDR64);
         } else if (r->type == R_X86_64_PC32 || r->type == R_X86_64_PLT32) {
@@ -443,23 +669,27 @@ static int coff_write(SnxXElf* o, unsigned char** out, size_t* size) {
             /* ELF's addend counts from the field, COFF's from its end */
             snx_st_le32(p, (uint32_t)((uint64_t)r->addend + 4));
             coff_reloc(&relocs[r->section], (uint32_t)r->offset, symbol, REL_REL32);
-        } else
-            goto done; /* no other type of x86-64 ELF's is used */
+        } else {
+            rc = -2; /* no other type of x86-64 ELF's is used */
+            goto done;
+        }
     }
     for (i = 0; i < o->nunwinds; ++i) {
+        /* RUNTIME_FUNCTION: where it begins, x86-64's where it ends, its unwind data */
         unsigned char e[12];
         uint32_t here = (uint32_t)pdata.n;
+        const uint32_t size_of = (uint32_t)snx_coff_function_size(a64 ? COFF_ARM64 : COFF_X64);
         snx_st_le32(e, o->unwinds[i].begin);
-        snx_st_le32(e + 4, o->unwinds[i].end);
-        snx_st_le32(e + 8, o->unwinds[i].info);
-        put(&pdata, e, sizeof e);
-        coff_reloc(&relocs[C_PDATA], here, text_symbol, REL_ADDR32NB);
-        coff_reloc(&relocs[C_PDATA], here + 4, text_symbol, REL_ADDR32NB);
-        coff_reloc(&relocs[C_PDATA], here + 8, xdata_symbol, REL_ADDR32NB);
+        if (!a64) snx_st_le32(e + 4, o->unwinds[i].end);
+        snx_st_le32(e + size_of - 4, o->unwinds[i].info);
+        put(&pdata, e, size_of);
+        coff_reloc(&relocs[C_PDATA], here, text_symbol, a64 ? REL_A64_ADDR32NB : REL_ADDR32NB);
+        if (!a64) coff_reloc(&relocs[C_PDATA], here + 4, text_symbol, REL_ADDR32NB);
+        coff_reloc(&relocs[C_PDATA], here + size_of - 4, xdata_symbol, a64 ? REL_A64_ADDR32NB : REL_ADDR32NB);
     }
     put(&file, NULL, 20 + 40 * (size_t)nsec); /* the headers, below */
     if (!file.p) goto done;
-    snx_st_le16(file.p, COFF_X64);
+    snx_st_le16(file.p, a64 ? COFF_ARM64 : COFF_X64);
     snx_st_le16(file.p + 2, (uint32_t)nsec);
     for (k = 0; k < C_SECTIONS; ++k) {
         const Buf* b = k == C_XDATA ? &o->xdata : k == C_PDATA ? &pdata : &o->sec[k];

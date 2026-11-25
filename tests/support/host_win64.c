@@ -13,6 +13,7 @@
    codes of the prologue run so far, an epilogue's own instructions, else all of them), back to the entry, every register
    to its mark */
 #define _GNU_SOURCE /* the signal's registers */
+#include "support/host_near.h"
 #include "support/host_unicorn.h"
 #include "common/cpu/recompiler/llvm/code_loader_int.h"
 #include "common/cpu/recompiler/llvm/coff_defs.h"
@@ -346,26 +347,6 @@ int hostuc_big(HostUcArch arch) {
 void hostuc_swapper(HostUc* u, void (*fn)(void* user), void* user) { (void)u, (void)fn, (void)user; }
 void hostuc_changed(HostUc* u, const void* p, size_t size) { (void)u, (void)p, (void)size; }
 
-/* size bytes of pages within 1 GiB of the arena's (arena of them at base), where the code's 32-bit distances reach them:
-   the first free ones going down from it, else up from its end. NULL where there are none */
-void* hostuc_near(const void* base, size_t arena, size_t size) {
-    const uintptr_t lowest = (uintptr_t)base, end = lowest + arena, step = 1u << 20;
-    const uintptr_t reach = (uintptr_t)1 << 30;
-    size = (size + PAGE - 1) & ~(size_t)(PAGE - 1);
-    for (uintptr_t down = 16 * PAGE + size; down <= reach && down < lowest; down += step) {
-        void* p = mmap((void*)(lowest - down), size, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE, -1, 0);
-        if (p == (void*)(lowest - down)) return p;
-        if (p != MAP_FAILED) munmap(p, size); /* a kernel without the flag takes it as a hint */
-    }
-    for (uintptr_t up = 16 * PAGE; up + size <= reach; up += step) {
-        void* p =
-            mmap((void*)(end + up), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE, -1, 0);
-        if (p == (void*)(end + up)) return p;
-        if (p != MAP_FAILED) munmap(p, size);
-    }
-    return NULL;
-}
 static void* near_pages(HostUc* u, size_t size) { return hostuc_near(u->loader->base, ARENA, size); }
 
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {

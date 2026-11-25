@@ -85,7 +85,7 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_NVPINS 8
 #define MG_XRESERVED 0u
 #define MG_BOUND 1
-#define MG_WRITE_OBJECT write_unit
+#define MG_COFF win64
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
@@ -541,40 +541,6 @@ static int mg_finish(Unit* u, size_t fix0) {
         if (t < 0) return 0;
         if (u->fixups[i].at + 4 <= u->b.cap)
             snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - (long long)(u->fixups[i].at + 4)));
-    }
-    return 1;
-}
-/* the unit's COFF object for Windows' ABI (write_object's, as x64_elf.h's builder writes it): the code and its function
-   table, the functions global but a JIT unit's, whose table is its one global */
-static int write_unit(Unit* u, unsigned char** object, size_t* size) {
-    int jit = u->options->jit, rc;
-    SnxXElf* o;
-    size_t i;
-    if (!win64(u)) return 0;
-    if (!(o = snx_xelf_new())) {
-        fprintf(stderr, "x86-64 back end: out of memory\n");
-        abort();
-    }
-    snx_xelf_set_coff(o, 1);
-    snx_xelf_put(o, SNX_ELF_TEXT, u->b.p, u->b.n, 16);
-    for (i = 0; i < u->nsyms; ++i) {
-        const Sym* s = &u->syms[i];
-        snx_xelf_symbol(o, s->name, SNX_ELF_TEXT, s->at, s->size,
-                        SNX_ELF_FUNC | (jit ? SNX_ELF_LOCAL : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN));
-        snx_xelf_unwind(o, s->at, s->at + s->size, u->b.p + s->at, s->size);
-    }
-    for (i = 0; i < u->nrelocs; ++i)
-        snx_xelf_reloc(o, SNX_ELF_TEXT, u->relocs[i].at, u->relocs[i].sym, u->relocs[i].type, u->relocs[i].addend);
-    if (jit) {
-        size_t at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 8 * u->nsyms, 8);
-        snx_xelf_symbol(o, u->options->table_name, SNX_ELF_RELRO, at, 8 * u->nsyms, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN);
-        for (i = 0; i < u->nsyms; ++i) snx_xelf_reloc(o, SNX_ELF_RELRO, at + 8 * i, u->syms[i].name, R_X86_64_64, 0);
-    }
-    rc = snx_xelf_write(o, object, size);
-    snx_xelf_free(o);
-    if (rc) {
-        fprintf(stderr, "x86-64 back end: out of memory\n");
-        abort();
     }
     return 1;
 }

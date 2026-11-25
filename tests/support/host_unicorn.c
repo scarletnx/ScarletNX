@@ -2,7 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* A native back end's code under Unicorn for the back ends' tests (host_unicorn.h) */
 #include "support/host_unicorn.h"
+#include "support/arm64_unwinder.h"
+#include "support/host_near.h"
 #include "support/la64_interp.h"
+#include "common/cpu/recompiler/llvm/code_loader_int.h"
+#include "common/cpu/recompiler/llvm/coff_defs.h"
 #include "common/cpu/recompiler/llvm/elf_object.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
@@ -58,6 +62,10 @@ static const Arch g_arch[] = {
                       0x07FE07FEu, /* br r14, twice: the 2-byte return in each half of a word */
                       {UC_S390X_REG_R2, UC_S390X_REG_R3, UC_S390X_REG_R4, UC_S390X_REG_R5, UC_S390X_REG_R6, -1},
                       {UC_S390X_REG_R2, UC_S390X_REG_R3}, UC_S390X_REG_R15, UC_S390X_REG_R14, UC_S390X_REG_PC, 1},
+    [HOSTUC_ARM64_WIN] = {"arm64 (Windows)", UC_ARCH_ARM64, UC_MODE_ARM, UC_CPU_ARM64_MAX, EM_AARCH64, 0xD65F03C0u,
+                          {UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4,
+                           UC_ARM64_REG_X5},
+                          {UC_ARM64_REG_X0, UC_ARM64_REG_X1}, UC_ARM64_REG_SP, UC_ARM64_REG_X30, UC_ARM64_REG_PC, 0},
 };
 /* MIPS's virtual TLB: every address its own */
 static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
@@ -71,6 +79,18 @@ typedef struct {
     char* name;
     uint64_t at;
 } UcSym;
+/* an entry of a loaded function table: its code's start, its record */
+typedef struct {
+    uint64_t begin;
+    const unsigned char* record;
+} Entry;
+/* arm64's code for Windows */
+typedef struct {
+    SnxCodeLoader* loader;
+    Entry* entries;
+    size_t nentries;
+    size_t unwound, failures; /* the states unwound, and those that failed */
+} Windows;
 
 struct HostUc {
     const Arch* a;
@@ -91,6 +111,7 @@ struct HostUc {
     void (*swap)(void* user); /* a big-endian architecture's (hostuc_swapper) */
     void* swap_user;
     uint64_t sp; /* the entry's */
+    Windows w;   /* HOSTUC_ARM64_WIN's: w.loader */
 };
 static void swap(HostUc* u) {
     if (u->a->big && u->swap) u->swap(u->swap_user);
@@ -181,6 +202,173 @@ static int kept_changed(HostUc* u) {
     return bad;
 }
 
+/* ---- arm64's code for Windows ---- */
+
+/* what a callee may change, changed: X1 to X17 (X1 a wide result's), the vector registers but V8 to V15's low halves */
+static void win_clobber(HostUc* u, int wide) {
+    unsigned k;
+    uint64_t junk[2] = {0xBAD0BAD1BAD2BAD3ull, 0xBAD4BAD5BAD6BAD7ull};
+    for (k = wide ? 2 : 1; k < 18; ++k) uc_reg_write(u->uc, x_reg(k), &junk[0]);
+    for (k = 0; k < 32; ++k) {
+        uint64_t q[2] = {junk[0], junk[1]};
+        if (k >= 8 && k < 16) {
+            uc_reg_read(u->uc, UC_ARM64_REG_V0 + (int)k, q);
+            q[1] = junk[1];
+        }
+        uc_reg_write(u->uc, UC_ARM64_REG_V0 + (int)k, q);
+    }
+}
+static const Entry* entry_of(const HostUc* u, uint64_t pc) {
+    size_t lo = 0, hi = u->w.nentries;
+    while (lo < hi) {
+        size_t m = lo + (hi - lo) / 2;
+        if (u->w.entries[m].begin <= pc)
+            lo = m + 1;
+        else
+            hi = m;
+    }
+    if (!lo || pc - u->w.entries[lo - 1].begin >= 4ull * arm64_record(u->w.entries[lo - 1].record).words) return NULL;
+    return &u->w.entries[lo - 1];
+}
+/* the state of some of the code's instruction (pc) unwound to the entry: what is wrong with where it came to, NULL for
+   nothing. A function in no table is a leaf: its return is in X30 */
+static const char* win_unwinds(HostUc* u, Arm64State* s) {
+    const uint64_t exit = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
+    unsigned k, frames = 0;
+    ++u->w.unwound;
+    while (s->pc != exit) {
+        const Entry* e = entry_of(u, s->pc);
+        const char* why;
+        if (++frames > 10000) return "frames without an end";
+        if (!e && frames > 1) return "a return to code in no entry of the table";
+        if (!e)
+            s->pc = s->x[30];
+        else if ((why = arm64_unwind(e->record, e->begin, s)))
+            return why;
+        if (s->sp > u->sp || s->sp + STACK_SIZE < u->sp) return "a stack pointer off the stack";
+    }
+    if (s->sp != u->sp) return "a stack pointer not the entry's";
+    for (k = 1; k < KEPT_X; ++k)
+        if (s->x[18 + k] != mark_x(18 + k)) return "a register not its caller's";
+    return NULL;
+}
+static void win_state(HostUc* u, uint64_t pc) {
+    Arm64State s = {.pc = pc};
+    uint64_t x18;
+    const char* why;
+    unsigned k;
+    for (k = 0; k < 31; ++k) uc_reg_read(u->uc, x_reg(k), &s.x[k]);
+    uc_reg_read(u->uc, u->a->sp, &s.sp);
+    x18 = s.x[18];
+    why = s.sp & 15 ? "a stack pointer not 16-aligned" : x18 != mark_x(18) ? "X18 changed" : win_unwinds(u, &s);
+    if (why && ++u->w.failures <= 20) {
+        const Entry* e = entry_of(u, pc);
+        fprintf(stderr, "%s: unwound from +%llx of the function at %llx: %s\n", u->a->name,
+                (unsigned long long)(e ? pc - e->begin : 0), (unsigned long long)(e ? e->begin : pc), why);
+    }
+}
+/* hostuc_step's: before each instruction of the arena's code */
+static void on_step(uc_engine* uc, uint64_t address, uint32_t size, void* user) {
+    (void)uc, (void)size;
+    win_state((HostUc*)user, address);
+}
+void hostuc_step(HostUc* u, int on) {
+    uc_hook hook;
+    if (!u->w.loader || !on) return;
+    const SnxCodeRegion* text = &u->w.loader->region[SNX_CODE_TEXT];
+    uc_hook_add(u->uc, &hook, UC_HOOK_CODE, (void*)on_step, u, (uint64_t)(uintptr_t)(u->w.loader->base + text->start),
+                (uint64_t)(uintptr_t)(u->w.loader->base + text->start + text->size) - 1);
+}
+size_t hostuc_unwound(const HostUc* u, size_t* failures) {
+    *failures = u->w.failures;
+    return u->w.unwound;
+}
+uint32_t hostuc_table_entry(const HostUc* u, uint64_t pc, uint64_t* begin) {
+    const Entry* e = entry_of(u, pc);
+    if (!e) return 0;
+    *begin = e->begin;
+    return arm64_record(e->record).words;
+}
+const char* hostuc_unwind_frame(const HostUc* u, Arm64State* state) {
+    const Entry* e = entry_of(u, state->pc);
+    return e ? arm64_unwind(e->record, e->begin, state) : "no entry of the function table";
+}
+static void* near_pages(HostUc* u, size_t size) {
+    return hostuc_near(u->w.loader->base, u->w.loader->reserved, size);
+}
+static SnxU64 win_resolve(void* user, const char* name) {
+    HostUc* u = (HostUc*)user;
+    size_t k;
+    for (k = 0; k < u->nsyms; ++k)
+        if (!strcmp(u->syms[k].name, name)) return u->syms[k].at;
+    return hostuc_trap_of(u, name);
+}
+/* the section of the object named name: its header, NULL for none */
+static const unsigned char* section(const unsigned char* object, const char* name) {
+    unsigned n = snx_ld_le16(object + 2), k;
+    for (k = 0; k < n; ++k)
+        if (!strncmp((const char*)object + 20 + 40 * (size_t)k, name, 8)) return object + 20 + 40 * (size_t)k;
+    return NULL;
+}
+static int by_begin(const void* a, const void* b) {
+    const Entry *x = (const Entry*)a, *y = (const Entry*)b;
+    return x->begin < y->begin ? -1 : x->begin > y->begin;
+}
+/* the loaded object's function table: each entry as the loader relocated it (from the arena's start, its code at text),
+   found in the arena's read-only data, and its record, which is the object's */
+static int win_table(HostUc* u, const unsigned char* object, uint64_t text, char* error, size_t error_size) {
+    const unsigned char *p = section(object, ".pdata"), *x = section(object, ".xdata");
+    const SnxCodeLoader* l = u->w.loader;
+    const unsigned char* ro = l->base + l->region[SNX_CODE_RODATA].start;
+    size_t used = l->region[SNX_CODE_RODATA].used, n, k, at = 0;
+    Entry* grown;
+    if (!p || !x) return 0; /* functions of no frame alone: a descriptor's */
+    n = snx_ld_le32(p + 16) / 8;
+    if (!(grown = (Entry*)realloc(u->w.entries, (u->w.nentries + n) * sizeof *grown))) return -1;
+    u->w.entries = grown;
+    for (k = 0; k < n; ++k) {
+        const unsigned char* e = object + snx_ld_le32(p + 20) + 8 * k;
+        const unsigned char* record = object + snx_ld_le32(x + 20) + snx_ld_le32(e + 4);
+        uint32_t rva = (uint32_t)(text - (uint64_t)(uintptr_t)l->base) + snx_ld_le32(e), got = 0;
+        size_t tries;
+        for (tries = 0; tries < used / 4; ++tries, at = at + 12 <= used ? at + 4 : 0)
+            if (at + 8 <= used && snx_ld_le32(ro + at) == rva && !((got = snx_ld_le32(ro + at + 4)) & 3) &&
+                got + arm64_record_size(record) <= l->reserved &&
+                !memcmp(l->base + got, record, arm64_record_size(record)))
+                break;
+        if (tries == used / 4) {
+            snprintf(error, error_size, "entry %zu of the function table is not in the arena, or not its record", k);
+            return -1;
+        }
+        u->w.entries[u->w.nentries].begin = text + snx_ld_le32(e);
+        u->w.entries[u->w.nentries++].record = l->base + got;
+    }
+    qsort(u->w.entries, u->w.nentries, sizeof *u->w.entries, by_begin);
+    return 0;
+}
+static int win_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
+    unsigned char* copy = (unsigned char*)malloc(size);
+    SnxLinkInput input = {copy, size, "arm64 COFF object"};
+    SnxCodeLoader* l = u->w.loader;
+    uint64_t text = snx_align_up(snx_code_next_free(l, SNX_CODE_TEXT), 64); /* where the load's code starts */
+    uint32_t symbols, count, k;
+    int rc;
+    if (!copy) return -1;
+    memcpy(copy, object, size);
+    /* the object's own symbols made global, for hostuc_symbol (but its sections', and the writer's of a place) */
+    symbols = snx_ld_le32(copy + 8), count = snx_ld_le32(copy + 12);
+    for (k = 0; k < count; k += 1u + copy[symbols + 18 * (size_t)k + 17]) {
+        unsigned char* s = copy + symbols + 18 * (size_t)k;
+        if (s[16] == SYM_STATIC && s[0] != '.' && strncmp((const char*)s, "snx_at", 8)) s[16] = SYM_EXTERNAL;
+    }
+    snx_code_set_resolver(l, win_resolve, u);
+    rc = snx_code_load(l, &input, 1, NULL, 0, NULL, error, error_size);
+    if (!rc) rc = win_table(u, copy, text, error, error_size);
+    free(copy);
+    hostuc_changed(u, l->base + l->region[SNX_CODE_TEXT].start, l->region[SNX_CODE_TEXT].used);
+    return rc;
+}
+
 /* ---- the traps ---- */
 
 /* the native function of a trap the code reached, with the first six arguments (System V passes them the same way, a
@@ -209,6 +397,12 @@ static void on_trap(uc_engine* uc, uint64_t address, uint32_t size, void* user) 
             memcpy(&a[i], (const void*)(uintptr_t)(sp + 160), 8);
             if (u->a->big) a[i] = snx_bswap64(a[i]);
         }
+    if (u->w.loader) {
+        uint64_t lr;
+        uc_reg_read(uc, u->a->lr, &lr);
+        win_state(u, lr); /* from the call's return in the code */
+        win_clobber(u, u->wide[k]);
+    }
     swap(u); /* the C's numbers while it runs */
     if (u->wide[k]) {
         HostUcPair w = call_wide(u->fn[k], a);
@@ -310,6 +504,15 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
         hostuc_free(u);
         return NULL;
     }
+    if (arch == HOSTUC_ARM64_WIN) {
+        char error[256] = "";
+        u->w.loader = snx_code_loader_new_machine((size_t)64 << 20, SNX_CODE_COFF_ARM64, error, sizeof error);
+        if (!u->w.loader || hostuc_map(u, u->w.loader->base, u->w.loader->reserved)) {
+            fprintf(stderr, "%s: no arena for the code: %s\n", u->a->name, error);
+            hostuc_free(u);
+            return NULL;
+        }
+    }
     return u;
 }
 
@@ -317,6 +520,8 @@ void hostuc_free(HostUc* u) {
     size_t k;
     if (!u) return;
     if (u->uc) uc_close(u->uc);
+    snx_code_loader_free(u->w.loader);
+    free(u->w.entries);
     free(u->la);
     for (k = 0; k < u->ntraps; ++k) free(u->name[k]);
     for (k = 0; k < u->nsyms; ++k) free(u->syms[k].name);
@@ -325,7 +530,7 @@ void hostuc_free(HostUc* u) {
 }
 
 void* hostuc_alloc(HostUc* u, size_t size) {
-    void* p = hostuc_pages(size);
+    void* p = u->w.loader ? near_pages(u, size) : hostuc_pages(size);
     if (!p || hostuc_map(u, p, size)) return NULL;
     return p;
 }
@@ -376,7 +581,10 @@ uint64_t hostuc_symbol(HostUc* u, const char* name) {
     size_t k;
     for (k = 0; k < u->nsyms; ++k)
         if (!strcmp(u->syms[k].name, name)) return u->syms[k].at;
-    return 0;
+    {
+        SnxU64 at = 0;
+        return u->w.loader && snx_code_lookup(u->w.loader, name, &at) ? at : 0;
+    }
 }
 
 /* the bytes a relocation of the architecture's type writes, where they're a number of its order (a big-endian one's
@@ -394,6 +602,7 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size) {
     unsigned char* copy;
     int rc;
+    if (u->w.loader) return win_load(u, object, size, error, error_size);
     if (size < EI_NIDENT || object[EI_DATA] == snx_elf_host_data()) return load(u, object, size, error, error_size);
     if (!(copy = (unsigned char*)malloc(size))) return -1;
     memcpy(copy, object, size);
@@ -524,6 +733,7 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     uc_reg_write(u->uc, u->a->lr, &lr);
     if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
     if (u->a->arch == UC_ARCH_MIPS) uc_reg_write(u->uc, UC_MIPS_REG_25, &fn); /* t9: an n64 PIC callee's */
+    size_t failures = u->w.failures;
     u->sp = sp;
     if (u->a->arch == UC_ARCH_ARM64) mark_kept(u);
     swap(u);
@@ -537,5 +747,6 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
         return -1;
     }
     if (result) uc_reg_read(u->uc, u->a->result[0], result);
-    return u->a->arch == UC_ARCH_ARM64 && kept_changed(u) ? -1 : 0;
+    if (u->a->arch == UC_ARCH_ARM64 && kept_changed(u)) return -1;
+    return u->w.failures != failures ? -1 : 0;
 }

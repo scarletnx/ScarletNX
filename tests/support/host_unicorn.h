@@ -18,7 +18,13 @@
    addressing mode (the PSW's EA and BA); a native function's sixth argument is the ABI's stack slot (160(r15)).
 
    hostuc_call marks what a callee of AAPCS64 keeps on arm64 (X19 to X29, the low halves of V8 to V15, SP), and X18, the
-   platform's on some, and fails where one came back changed */
+   platform's on some, and fails where one came back changed.
+
+   HOSTUC_ARM64_WIN is arm64's code for Windows: its COFF objects are loaded by the production loader
+   (code_loader_coff.c), its arena mapped into Unicorn. A native function leaves every register a callee may change
+   changed. The objects' function table is held to what Windows does with it
+   (arm64_unwinder.h): where a native function is called, and with hostuc_step at every instruction, the frames are
+   unwound by it back to the entry, every register to its mark */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
@@ -33,6 +39,7 @@ typedef enum {
     HOSTUC_PPC64, /* big-endian, ELFv2 */
     HOSTUC_MIPS64, /* big-endian */
     HOSTUC_S390X,
+    HOSTUC_ARM64_WIN, /* arm64's code for Windows, in COFF objects */
     HOSTUC_WIN64 /* x86-64's code for Windows, run by this x86-64 host itself (host_win64.c, with no Unicorn) */
 } HostUcArch;
 typedef struct HostUc HostUc;
@@ -60,7 +67,7 @@ uint64_t hostuc_trap_of(HostUc* u, const char* name);
 uint64_t hostuc_code(HostUc* u, const void* bytes, size_t size);
 /* the code at [p, p + size) changed: Unicorn's translations of it dropped */
 void hostuc_changed(HostUc* u, const void* p, size_t size);
-/* an ELF relocatable object of the architecture loaded into the region: 0, -1 with why in error */
+/* an ELF (for Windows COFF) relocatable object of the architecture loaded: 0, -1 with why in error */
 int hostuc_load(HostUc* u, const unsigned char* object, size_t size, char* error, size_t error_size);
 /* name defined at address for the objects loaded after (data of the test's an object names), as their own symbols
    are; 0, -1 out of memory */
@@ -74,11 +81,15 @@ void hostuc_swapper(HostUc* u, void (*swap)(void* user), void* user);
 /* the code at fn run with the first two arguments a0 and a1 until it returns: 0 and its result, -1 where Unicorn
    stopped (why on stderr) */
 int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* result);
-/* HOSTUC_WIN64's: the code's frames unwound by its function table after every instruction (1), not where it calls a
-   native function alone; and how many states were unwound, *failures of them wrongly (hostuc_call fails with them) */
+/* HOSTUC_WIN64's and HOSTUC_ARM64_WIN's: the code's frames unwound by its function table at every instruction (1), not
+   where it calls a native function alone; and how many states were unwound, *failures of them wrongly (hostuc_call fails
+   with them). Others have no function table: none */
 void hostuc_step(HostUc* u, int on);
-/* HOSTUC_WIN64's: size bytes of pages the code in the arena (arena bytes at base) reaches, NULL where none are free */
-void* hostuc_near(const void* base, size_t arena, size_t size);
 size_t hostuc_unwound(const HostUc* u, size_t* failures);
+/* HOSTUC_ARM64_WIN's function table (arm64_unwinder.h): the words of the code of the entry pc is in, which starts at
+   *begin, 0 where none is; a frame at *state's pc made its caller's, NULL, or what can't be */
+uint32_t hostuc_table_entry(const HostUc* u, uint64_t pc, uint64_t* begin);
+struct Arm64State;
+const char* hostuc_unwind_frame(const HostUc* u, struct Arm64State* state);
 
 #endif

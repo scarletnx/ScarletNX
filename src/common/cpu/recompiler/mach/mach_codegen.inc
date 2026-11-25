@@ -160,9 +160,9 @@ static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at);
 /* the literals so far, here, a jump over them */
 static void mg_pool_island(Unit* u);
 #endif
-#ifdef MG_WRITE_OBJECT
-/* the unit's object in another format than ELF (x86-64's COFF): 1 written, 0 for ELF's (write_object) */
-static int MG_WRITE_OBJECT(Unit* u, unsigned char** object, size_t* size);
+#ifdef MG_COFF
+/* 1 where the unit's code is for Windows: its object is COFF (write_coff), not ELF (write_object) */
+static int MG_COFF(const Unit* u);
 #endif
 #ifdef MG_BOUND
 /* what a bound PLT stub's slot is compared with (call_stub, the BR of a stub): a jump to label where the function at
@@ -2080,9 +2080,45 @@ out:
     return ok;
 }
 
+#ifdef MG_COFF
+/* ---- the COFF object, as x64_elf.h's builder writes it: the code and its function table, the functions global but a
+   JIT unit's, whose table is its one global ---- */
+
+static void write_coff(Unit* u, unsigned char** object, size_t* size) {
+    int jit = u->options->jit, rc = -1;
+    SnxXElf* o = snx_xelf_new();
+    size_t i;
+    if (o) {
+        snx_xelf_set_machine(o, MG_EM);
+        snx_xelf_set_coff(o, 1);
+        snx_xelf_put(o, SNX_ELF_TEXT, u->b.p, u->b.n, 16);
+        for (i = 0; i < u->nsyms; ++i) {
+            const Sym* s = &u->syms[i];
+            snx_xelf_symbol(o, s->name, SNX_ELF_TEXT, s->at, s->size,
+                            SNX_ELF_FUNC | (jit ? SNX_ELF_LOCAL : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN));
+            snx_xelf_unwind(o, s->at, s->at + s->size, u->b.p + s->at, s->size);
+        }
+        for (i = 0; i < u->nrelocs; ++i)
+            snx_xelf_reloc(o, SNX_ELF_TEXT, u->relocs[i].at, u->relocs[i].sym, u->relocs[i].type, u->relocs[i].addend);
+        if (jit) {
+            size_t at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 8 * u->nsyms, 8);
+            snx_xelf_symbol(o, u->options->table_name, SNX_ELF_RELRO, at, 8 * u->nsyms, SNX_ELF_GLOBAL | SNX_ELF_HIDDEN);
+            for (i = 0; i < u->nsyms; ++i) snx_xelf_reloc(o, SNX_ELF_RELRO, at + 8 * i, u->syms[i].name, MG_R_ABS64, 0);
+        }
+        rc = snx_xelf_write(o, object, size);
+        snx_xelf_free(o);
+    }
+    if (rc) {
+        fprintf(stderr, "native back end: %s\n",
+                rc == -1 ? "out of memory" : "a COFF object of a relocation or a prologue it has no form of");
+        abort();
+    }
+}
+#endif
+
 /* ---- the ELF object ---- */
 
-#if !defined(_WIN32) /* whose objects are COFF: MG_WRITE_OBJECT's */
+#if !defined(_WIN32) /* whose objects are COFF: MG_COFF's */
 typedef struct {
     unsigned char* p;
     size_t n, cap;
@@ -2389,14 +2425,15 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     }
     if (options->jit && count != last - first) count = 0;
     if (count) {
-        int written = 0;
-#ifdef MG_WRITE_OBJECT
-        written = MG_WRITE_OBJECT(&u, object, size);
+        int coff = 0;
+#ifdef MG_COFF
+        coff = MG_COFF(&u);
+        if (coff) write_coff(&u, object, size);
 #endif
 #if !defined(_WIN32)
-        if (!written) write_object(&u, object, size);
+        if (!coff) write_object(&u, object, size);
 #else
-        (void)written;
+        (void)coff;
 #endif
     }
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);

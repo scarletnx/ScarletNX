@@ -38,7 +38,9 @@
    CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function; --jit makes it a JIT unit, its
    functions its table's. With SNX_TEST_WIN64 (snx-test-recompiler-win64) it is the x86-64 back end's code for Windows
    that runs, on an x86-64 host itself, entered and called out of as that convention wants, its frames unwound by its
-   function table where it calls out, or with --step after every instruction (support/host_win64.c) */
+   function table where it calls out, or with --step after every instruction (support/host_win64.c). With
+   SNX_TEST_ARM64WIN beside SNX_TEST_ARM64 (snx-test-recompiler-arm64win) it is arm64's for Windows, in COFF objects,
+   unwound the same way (HOSTUC_ARM64_WIN) */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
@@ -58,12 +60,22 @@
 #include "support/host_unicorn.h"
 #define SNX_TEST_SWAP_CPU 1
 #include "support/swap_state.h"
+/* the code has a function table, its frames unwound by it (hostuc_step, hostuc_unwound) */
+#if defined(SNX_TEST_WIN64) || defined(SNX_TEST_ARM64WIN)
+#define SNX_TEST_UNWINDS 1
+#endif
 #if defined(SNX_TEST_ARM64)
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
-#define NATIVE_UC HOSTUC_ARM64
-#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
-    snx_arm64_object(cg, 0, (cg)->function_count, options, SNX_ARM64_F_ALL & ~g_without, made, object, size, error,    \
-                     sizeof error)
+#if defined(SNX_TEST_ARM64WIN)
+#define NATIVE_UC      HOSTUC_ARM64_WIN
+#define NATIVE_WINDOWS SNX_ARM64_F_WIN
+#else
+#define NATIVE_UC      HOSTUC_ARM64
+#define NATIVE_WINDOWS 0u
+#endif
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                          \
+    snx_arm64_object(cg, 0, (cg)->function_count, options, (SNX_ARM64_F_ALL & ~g_without) | NATIVE_WINDOWS, made,      \
+                     object, size, error, sizeof error)
 #elif defined(SNX_TEST_WIN64)
 #define NATIVE_UC       HOSTUC_WIN64
 #define NATIVE_MIN_MADE 90
@@ -982,7 +994,7 @@ int main(int argc, char** argv) {
     size_t longer = 0;
     int jit = 0;
 #endif
-#ifdef SNX_TEST_WIN64
+#ifdef SNX_TEST_UNWINDS
     int step = 0;
 #endif
     for (i = 1; i < (unsigned)argc; ++i) {
@@ -1001,7 +1013,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--jit"))
             jit = 1;
 #endif
-#ifdef SNX_TEST_WIN64
+#ifdef SNX_TEST_UNWINDS
         else if (!strcmp(argv[i], "--step"))
             step = 1;
 #endif
@@ -1218,8 +1230,10 @@ int main(int argc, char** argv) {
         NATIVE(snx_x64_half), NATIVE(snx_x64_bfdot), NATIVE(snx_x64_sm4_box);
         NATIVE(snx_x64_set), NATIVE(snx_x64_copy);
         NATIVE(snx_x64_fp_scale), NATIVE(snx_x64_fp8_widen), NATIVE(snx_x64_fp8_narrow), NATIVE(snx_x64_fp8_dot);
-#ifdef SNX_TEST_WIN64
+#ifdef SNX_TEST_UNWINDS
         hostuc_step(uc, step);
+#endif
+#ifdef SNX_TEST_WIN64
         NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_crypto);
         void* crc32_table = hostuc_alloc(uc, sizeof snx_x64_crc32_table);
         if (crc32_table) memcpy(crc32_table, snx_x64_crc32_table, sizeof snx_x64_crc32_table);
@@ -1472,7 +1486,7 @@ int main(int argc, char** argv) {
         }
 done:
     printf("recompiler backends: %u functions, %u states each: %d failures\n", functions, states, failures);
-#ifdef SNX_TEST_WIN64
+#ifdef SNX_TEST_UNWINDS
     {
         size_t bad, unwound = hostuc_unwound(uc, &bad);
         printf("recompiler backends: %zu states of the code unwound by its function table, %zu wrongly\n", unwound,

@@ -97,21 +97,40 @@ static inline void sgx_pool_emit(SgXAsm* a) {
     a->npool = a->nrips = 0;
 }
 
-/* the frame's size, patched into the prologue's SUB SP and every epilogue's ADD SP (frame_at: the word): its slots,
-   16-aligned, as an imm12 or (past 4095 bytes) an imm12 of 4 KiB units */
+/* the word at at, an ADD or a SUB (bit 30) of an immediate, the frame's size: the same one of i12, shifted or not */
+static inline void sga_frame_imm(SgXBuf* b, size_t at, unsigned i12, unsigned sh) {
+    SnxU32 w;
+    if (at + 4 > b->cap) return;
+    w = (SnxU32)b->p[at] | (SnxU32)b->p[at + 1] << 8 | (SnxU32)b->p[at + 2] << 16 | (SnxU32)b->p[at + 3] << 24;
+    w = (w >> 30 & 1) ? sge_a64_sub_addsub_imm(w & 31, w >> 5 & 31, i12, sh, 1)
+                      : sge_a64_add_addsub_imm(w & 31, w >> 5 & 31, i12, sh, 1);
+    b->p[at] = (unsigned char)w, b->p[at + 1] = (unsigned char)(w >> 8), b->p[at + 2] = (unsigned char)(w >> 16);
+    b->p[at + 3] = (unsigned char)(w >> 24);
+}
+/* the bytes of the frame's slots, 16-aligned */
+static inline unsigned sga_frame_size(const SgXAsm* a) { return ((unsigned)a->slots_max * 8 + 15) & ~15u; }
+/* a frame of a page or more, which Windows' prologue reads first (sga_stack_probe) */
+#define SGA_FRAME_PROBED(size) ((size) > 4095)
+/* the frame's size, patched into the prologue's SUB SP and every epilogue's ADD SP (frame_at: the word), as an imm12 or
+   (past 4095 bytes) an imm12 of 4 KiB units */
 static inline void sgx_patch_frame(SgXAsm* a) {
     int k;
-    unsigned size = ((unsigned)a->slots_max * 8 + 15) & ~15u, sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
+    unsigned size = sga_frame_size(a), sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
     if (i12 > 4095) sg_fail("a frame past 16 MiB", size, 0);
-    for (k = 0; k < a->nframe; ++k) {
-        size_t at = a->frame_at[k];
-        SnxU32 w;
-        if (at + 4 > a->b->cap) continue;
-        w = (SnxU32)a->b->p[at] | (SnxU32)a->b->p[at + 1] << 8 | (SnxU32)a->b->p[at + 2] << 16 |
-            (SnxU32)a->b->p[at + 3] << 24;
-        /* the same ADD or SUB of SP (bit 30 the op) with this size */
-        w = (w >> 30 & 1) ? sge_a64_sub_addsub_imm(31, 31, i12, sh, 1) : sge_a64_add_addsub_imm(31, 31, i12, sh, 1);
-        a->b->p[at] = (unsigned char)w, a->b->p[at + 1] = (unsigned char)(w >> 8);
-        a->b->p[at + 2] = (unsigned char)(w >> 16), a->b->p[at + 3] = (unsigned char)(w >> 24);
-    }
+    for (k = 0; k < a->nframe; ++k) sga_frame_imm(a->b, a->frame_at[k], i12, sh);
+}
+/* a frame of a page or more on Windows, before its SUB SP: a byte of each page down from SP read, nearest first, so
+   each read meets the guard page or one already committed (the system commits a thread's stack by it). X16 and X17 are
+   its own. MOV X17, SP; SUB X16, SP, #frame (patched); loop: SUB X17, X17, #4096; LDRB WZR, [X17]; CMP X17, X16;
+   B.HI loop. The SUB's place, which frame_at takes (x64_elf.c's a64_prologue knows the words) */
+static inline size_t sga_stack_probe(SgXBuf* b) {
+    size_t at;
+    sga_w(b, sge_a64_add_addsub_imm(SGA_X17, 31, 0, 0, 1));
+    at = b->n;
+    sga_w(b, sge_a64_sub_addsub_imm(SGA_X16, 31, 0, 0, 1));
+    sga_w(b, sge_a64_sub_addsub_imm(SGA_X17, SGA_X17, 1, 1, 1));
+    sga_w(b, sge_a64_ldrb_imm_immediate_unsigned(SGA_ZR, SGA_X17, 0));
+    sga_w(b, sge_a64_subs_addsub_shift(SGA_ZR, SGA_X17, 0, SGA_X16, 0, 1));
+    sga_w(b, sge_a64_b_cond(8, (SnxU32)-3 & 0x7FFFF));
+    return at;
 }
