@@ -1342,7 +1342,8 @@ static void no_code(Unit* u, const char* why) {
 }
 
 /* a call's reload of the pins: those live where it returns (the next instruction); and past it, until the next
-   instruction, every pin in sync with the state (stored before it, loaded after) or dead */
+   instruction, every pin in sync with the state (stored before it, loaded after) or dead. Past undef's or brk's, which
+   may change the state and which nothing is loaded after, the state is the newer: the exit stores none */
 static void call_masks(Unit* u, size_t i) {
     const SnxFunction* f = u->f;
     if (u->pinned && u->live && i + 1 < f->count && snx_function_address(f, i + 1) == snx_function_address(f, i) + 4)
@@ -1417,6 +1418,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     undef:
         flush(u);
         mg_undef(u, address, word);
+        after_call(u);
         leave(u);
         return 1;
     case SNX_A64_FLOW_PLAIN:
@@ -1457,6 +1459,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         if (g->undefined) {
             /* the Sail's UNDEF (SGX_K_UNDEF set the pc and called the runtime): the function returns */
             flush(u);
+            after_call(u);
             leave(u);
             return 1;
         }
@@ -1638,6 +1641,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     case SNX_A64_FLOW_BRK:
         flush(u);
         mg_brk(u, address, (word >> 5) & 0xFFFF);
+        after_call(u);
         leave(u);
         terminal = 1;
         break;

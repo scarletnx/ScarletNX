@@ -142,10 +142,11 @@ static void call_rt(Unit* u, int off) {
     w32(u, sge_a64_blr(SGA_X16));
 }
 
-/* the pins to the state (store) or from it: every one, or (caller) the vector ones, which a call may change */
+/* the pins to the state (store; none where none is newer than it) or from it: every one, or (caller) the vector ones,
+   which a call may change */
 static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
-    if (!u->pinned) return;
+    if (!u->pinned || (store && !u->cur_dirty && !u->vcur_dirty)) return;
     if (u->mempin >= 0 && !store && !caller) sga_ldst(b, 1, 8, u->mempin, SGX_BASE, -1, (int)offsetof(CPU, mem));
     for (n = 0; n < 32; ++n) {
         if (u->pin[n] >= 0 && !caller)
