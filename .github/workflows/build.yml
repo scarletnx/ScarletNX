@@ -1793,6 +1793,13 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      # Robolectric fetches the Android it runs the tests on (android-all-instrumented) from Maven Central as they start, into
+      # ~/.m2, not Gradle's cache: kept between runs, as Maven Central refuses a cold run's fetch at times (HTTP 429)
+      - uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ hashFiles('dist/android/build.gradle') }}
+          restore-keys: robolectric-
       # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
