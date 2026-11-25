@@ -421,7 +421,7 @@ static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t 
 }
 
 static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* gxm = vita_hle_gxm;
+    const VitaHle* gxm = vita_hle_table;
     uint32_t parameter = mem + 0x8000, patcher_out = mem + 0x8020, program = mem + 0x8040,
              fragment_out = mem + 0x8060;
     unsigned char* bytes = vita_ptr(p, parameter);
@@ -440,7 +440,7 @@ static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(slot < GXM_PROGRAMS && p->gxm->fragment[slot].references == 2);
 }
 static void gxm_texture_transfers(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* gxm = vita_hle_gxm;
+    const VitaHle* gxm = vita_hle_table;
     uint32_t texture = mem + 0x8080;
     assert(CALL(gxm, "sceGxmTextureInitCube", texture, mem + 0x9000, 0, 64, 32, 1) == 0);
     GxmTexture cube = {{vita_read32(p, texture), vita_read32(p, texture + 4), vita_read32(p, texture + 8),

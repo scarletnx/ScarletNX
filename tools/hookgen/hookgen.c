@@ -181,7 +181,7 @@
 #define MAX_HOOKS    1024 /* NVN alone has about 540 functions */
 #define MAX_ENTRIES  1024
 #define MAX_FAMILIES 64
-#define MAX_ARGS     16
+#define MAX_ARGS     24 /* sceGxmTransferCopy has 20 */
 #define MAX_USES     4
 #define MAX_VARIANTS 256
 #define MAX_FIELDS   64
