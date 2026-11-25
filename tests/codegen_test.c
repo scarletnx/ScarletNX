@@ -727,6 +727,33 @@ static void copy_current_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A module nothing updates: the AOT's analysis keeps none of its words (read_block stays empty, so it costs no memory),
+   and the JIT's discovery (snx_codegen_discover) keeps every one it read though the module has no generation counter:
+   a change of one of those leaves the codegen stale, one of a word it did not read, or a word put back, does not */
+static void plain_words_test(void) {
+    static const SnxU32 words[COPY_WORDS] = {0xD2800000UL, 0x91000400UL, 0xD503201FUL, 0xD65F03C0UL, 0, 0,
+                                             0xD503201FUL, 0xD65F03C0UL};
+    unsigned char image[COPY_WORDS * 4];
+    SnxCodeImage module = {.image = image, .image_size = sizeof(image), .base = COPY_BASE, .text_size = sizeof(image)};
+    SnxCodegen codegen;
+    SnxU64 root = COPY_BASE;
+    for (size_t i = 0; i < COPY_WORDS; ++i) snx_st_le32(image + i * 4, words[i]);
+    check(!snx_codegen_analyze(&codegen, &module, 1, &root, 1, 1, 0), "analyze a module nothing updates");
+    check(!codegen.read_block && !codegen.read_count && !codegen.read_capacity,
+          "the AOT's analysis keeps no word of it");
+    snx_codegen_free(&codegen);
+    check(!snx_codegen_discover(&codegen, &module, 1, &root, 1, NULL, NULL, 1, 0, 0, 0), "discover a root of it");
+    check(codegen.read_count, "the JIT's discovery keeps the words it read of it");
+    check(snx_codegen_words_current(&codegen), "nothing changed: current");
+    snx_st_le32(image + COPY_FAR * 4, 0xD2800021UL /* mov x1,#1 */);
+    check(snx_codegen_words_current(&codegen), "a word no function read changed: still current");
+    snx_st_le32(image + 4, 0x91000800UL /* add x0,x0,#2 */);
+    check(!snx_codegen_words_current(&codegen), "a word the discovery read changed: stale");
+    snx_st_le32(image + 4, 0x91000400UL);
+    check(snx_codegen_words_current(&codegen), "that word put back: current again");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1981,6 +2008,7 @@ int main(void) {
     large_range_test();
     copy_word_test();
     copy_current_test();
+    plain_words_test();
     semantics_test();
     poll_test();
     cpu_extensions_test();
