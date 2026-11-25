@@ -2711,6 +2711,11 @@ snx_test_target(snx-test-vpad gnu23)
 target_link_libraries(snx-test-vpad PRIVATE snx_vpad scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
+# a console's own on-screen controls and its game's settings of them (common/utilities/vpad.c)
+add_executable(snx-test-vpad-console vpad_console.c)
+snx_test_target(snx-test-vpad-console c23)
+target_link_libraries(snx-test-vpad-console PRIVATE snx_vpad scarletnx-common)
+add_test(NAME vpad_console COMMAND snx-test-vpad-console)
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")

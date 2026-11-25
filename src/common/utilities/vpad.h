@@ -45,6 +45,23 @@ typedef struct {
 typedef struct {
     SnxVpadPlace at[SNX_VPAD_COUNT];
 } SnxVpadConfig;
+/* A console's own pad: its controls, each the Switch's where it sits (its .ini key, its shape, its size and its button
+   bit), with the console's name and label for it and where it starts, in a window wider than it is tall and in one that
+   is not; a control it has none of is not there, and each is whole in the window. touch: it has a touch screen */
+typedef struct {
+    int control; /* SNX_VPAD_ */
+    const char *name, *label;
+    struct {
+        float x, y;
+    } wide, tall;
+} SnxVpadControl;
+typedef struct {
+    const char* name; /* the console's, as a line says it: "GBA" */
+    const SnxVpadControl* pad;
+    int count, touch;
+} SnxVpadConsole;
+/* the pad is console's from now on, its layout the default: before its settings are read. The Switch's until then */
+void vpad_console(const SnxVpadConsole* console);
 /* the layout, its defaults filled in on first use */
 SnxVpadConfig* vpad_config(void);
 #define SNX_VPAD_SIZE_MIN 50
@@ -73,10 +90,20 @@ void vpad_reset_layout(void);
 /* a key of the game's .ini (controls, controls_scale..., controls_a, controls_a_shown...): applied, 1; not one of
    these, 0 */
 int vpad_ini(const char* key, const char* value);
+/* Every console's but the Switch's, after vpad_console. A command line's argument: 1 for --KEY=VALUE of a setting of
+   the controls or of touch, or --launcher-picks=0|1, which vpad_settings then reads; 0 for another; -1 for a value the
+   setting does not take, why in error */
+int vpad_arg(const char* arg, char* error, size_t n);
+/* The game's settings of them: its .ini's, at ini, then the ones of its own (snx_game_picks) and the command line's,
+   which go over them, or with --launcher-picks=1 under them (the launcher's picks for every game). One the console has
+   nothing for does nothing, and is said with its value */
+void vpad_settings(const char* ini, int argc, char** argv);
 /* where changed settings go: called with each key and its value (the game's .ini) */
 void vpad_set_store(void (*store)(const char* key, const char* value));
 /* where what the controls say goes, a line without its newline (vpad_auto's): the game's log */
 void vpad_set_say(void (*say)(const char* line));
+/* called as the touch screen's setting is read (g_settings.touch_screen) */
+void vpad_set_touch(void (*changed)(void));
 /* a setting's current value to the store, named by its variable (&g_settings.controls_scale); a control's place
    with vpad_store_control, whether it is shown with vpad_store_shown */
 void vpad_store(const int* setting);
