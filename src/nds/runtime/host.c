@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The run's side of the host: the Vulkan device and its window (gpu/vk), the keyboard, the gamepads and the pointer,
-   and the pace of the console's frames. */
+/* The run's side of the host: the Vulkan device and its window (gpu/vk), the keyboard, the gamepads, the on-screen
+   controls and the pen, and the pace of the console's frames. */
 #include "nds/runtime/host.h"
 #include "nds/audio/spu.h"
 #include "nds/gpu/vk/vk.h"
@@ -9,6 +9,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -24,8 +25,13 @@ struct NdsHost {
     int headless, gpu, paced;
     SnxPadMap pad;
     uint16_t keyboard;
-    uint8_t pointer_down;
-    float pointer_x, pointer_y;
+    /* the pen: one finger, or the mouse's left button, the first that pressed the lower screen, until it lets go; its
+       id and where it is, in the window's pixels */
+    struct {
+        bool down;
+        u64 id;
+        float x, y;
+    } pen;
     uint64_t due, quit_by;
     SDL_AudioStream* audio;
     FILE* wav;
@@ -93,6 +99,46 @@ static uint16_t button_of(int bit) {
     }
 }
 
+void nds_host_say(const char* line) { fprintf(stderr, "scarletnx-nds: %s\n", line); }
+
+/* The pen's events. The touch setting, the Switch's, says which reach it: 0 none, 1 the fingers, 2 the fingers and the
+   mouse. A press off the lower screen starts nothing, and a drag off it keeps to its edge (pen_read) */
+static void pen_event(NdsHost* host, const SDL_Event* e) {
+    float x, y;
+    int fx, fy;
+    if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) host->pen.down = false; /* this window may not get the lift */
+    if (!snx_vpad_window_point(e, &x, &y)) return;
+    bool finger = e->type >= SDL_EVENT_FINGER_DOWN && e->type <= SDL_EVENT_FINGER_CANCELED;
+    u64 id = finger ? snx_vpad_sdl_finger(&e->tfinger) : SNX_VPAD_MOUSE;
+    switch (e->type) {
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_FINGER_DOWN:
+            if (host->pen.down || g_settings.touch_screen < (finger ? 1 : 2) ||
+                (!finger && e->button.button != SDL_BUTTON_LEFT) || !nds_vk_present_point(x, y, &fx, &fy) ||
+                fy < (int)NDS_SCREEN_HEIGHT)
+                return;
+            host->pen.down = true, host->pen.id = id;
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
+            if (id == host->pen.id && (finger || e->button.button == SDL_BUTTON_LEFT)) host->pen.down = false;
+            return;
+        default:
+            if (!host->pen.down || id != host->pen.id) return;
+            break;
+    }
+    host->pen.x = x, host->pen.y = y;
+}
+static void pen_read(const NdsHost* host, NdsInput* input) {
+    int x, y;
+    if (!host->pen.down) return;
+    (void)nds_vk_present_point(host->pen.x, host->pen.y, &x, &y);
+    input->touching = 1;
+    input->touch_x = (uint16_t)snx_clamp_int(x, 0, (int)NDS_SCREEN_WIDTH - 1);
+    input->touch_y = (uint16_t)snx_clamp_int(y - (int)NDS_SCREEN_HEIGHT, 0, (int)NDS_SCREEN_HEIGHT - 1);
+}
+
 static uint16_t gamepads(const NdsHost* host) {
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
@@ -112,8 +158,8 @@ static uint16_t gamepads(const NdsHost* host) {
     return keys;
 }
 
-NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* wav, int headless, int fullscreen, char* error,
-                       size_t error_size) {
+NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, const char* wav, int headless,
+                       int fullscreen, char* error, size_t error_size) {
     NdsHost* host = calloc(1, sizeof *host);
     if (!host) {
         snprintf(error, error_size, "out of memory");
@@ -122,6 +168,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* wav, int 
     host->board = board;
     host->headless = headless;
     host->paced = !headless;
+    if (!headless) snx_vpad_sdl_hints();
     if (!headless && !SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -154,6 +201,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* wav, int 
         snx_window_icon(v->host.window);
         if (fullscreen) SDL_SetWindowFullscreen(v->host.window, true);
         snx_pad_map_position(&host->pad);
+        snx_vpad_window_open(v->host.window, ini, nds_host_say);
     }
     if (!headless) {
         SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, (int)(NDS_SPU_RATE + 0.5)};
@@ -172,6 +220,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* wav, int 
 
 void nds_host_close(NdsHost* host) {
     if (!host) return;
+    if (!host->headless) snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->wav) {
         wav_header(host->wav, host->wav_frames);
@@ -192,6 +241,10 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
     if (!host->headless) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            SnxVpadEvent took = snx_vpad_window_event(&event);
+            if (took == SNX_VPAD_QUIT) open = false;
+            if (took != SNX_VPAD_PASS) continue;
+            pen_event(host, &event);
             switch (event.type) {
                 case SDL_EVENT_QUIT:
                 case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
@@ -213,28 +266,17 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
                     host->keyboard |= key_of(event.key.scancode);
                     break;
                 case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~key_of(event.key.scancode); break;
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                case SDL_EVENT_MOUSE_BUTTON_UP:
-                    if (event.button.button == SDL_BUTTON_LEFT) {
-                        host->pointer_down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-                        host->pointer_x = event.button.x, host->pointer_y = event.button.y;
-                    }
-                    break;
-                case SDL_EVENT_MOUSE_MOTION: host->pointer_x = event.motion.x, host->pointer_y = event.motion.y; break;
                 default: break;
             }
         }
         input->keys = host->keyboard | gamepads(host);
-        /* the pointer held on the lower screen is the pen */
-        if (host->pointer_down && nds_vk() && nds_vk()->host.window) {
-            int x, y;
-            float scale = SDL_GetWindowPixelDensity(nds_vk()->host.window);
-            if (nds_vk_present_point(host->pointer_x * scale, host->pointer_y * scale, &x, &y) &&
-                y >= (int)NDS_SCREEN_HEIGHT) {
-                input->touching = 1;
-                input->touch_x = (uint16_t)x, input->touch_y = (uint16_t)(y - (int)NDS_SCREEN_HEIGHT);
-            }
-        }
+        u64 pressed;
+        i32 sticks[4]; /* the DS has none */
+        snx_vpad_window_state(&pressed, sticks);
+        for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
+            if (pressed >> bit & 1) input->keys |= button_of(bit);
+        pen_read(host, input);
+        if (vpad_editing()) input->keys = 0, input->touching = 0;
     }
     return open;
 }

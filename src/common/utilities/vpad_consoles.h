@@ -9,4 +9,7 @@
 /* the GBA's: A, B, L, R, Start, Select and the D-pad, beside the screen in a window wider than tall and under it in
    another */
 extern const SnxVpadConsole snx_vpad_gba;
+/* the DS's: those, X and Y, around the screens, clear of them in a phone held upright. Its touch screen is the lower
+   one */
+extern const SnxVpadConsole snx_vpad_nds;
 #endif
