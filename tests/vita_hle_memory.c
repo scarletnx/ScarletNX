@@ -504,7 +504,7 @@ static void shared_page_zero(VitaProcess* p) {
    the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
    stream's own block is made first, so the buffer is the last and the page past its end is no one's */
 static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
-    const VitaHle* libc = vita_hle_libc;
+    const VitaHle* libc = vita_hle_table;
     static unsigned char half[0x10000];
     memset(half, 0x5a, sizeof half);
     host_file(p, "two-buffers.bin", half, sizeof half, 2);
@@ -547,12 +547,12 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(kernel, "sceKernelGetSemaInfo", free_run, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x12c) == 2);
     /* a path's parts are parted by a backslash too where the host parts them so: ".." between two names no file */
     strcpy(vita_ptr(p, mem), "ux0:..\\..\\outside.txt"), strcpy(vita_ptr(p, mem + 0x40), "wb");
-    assert(CALL(vita_hle_libc, "fopen", mem, mem + 0x40) == 0);
+    assert(CALL(vita_hle_table, "fopen", mem, mem + 0x40) == 0);
 }
 /* a field's width from an argument is any 32 bits, and its digits any number: the widest field is 4096, to the left
    for a negative width, the most negative one too */
 static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* libc = vita_hle_libc;
+    const VitaHle* libc = vita_hle_table;
     uint32_t out = words_block(p);
     char* text = vita_ptr(p, out);
     strcpy(vita_ptr(p, mem), "%*d");
