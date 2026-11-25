@@ -1031,6 +1031,25 @@ static int vqshl_imm(SgCtx* g, unsigned size, int a, unsigned n, int uns, int mi
     return uns ? vor(g, r, over) : vsel(g, over, vlimit(g, size, a), r);
 }
 
+/* the by-element operand of a halfwords' (H:L:M of V0 to V15) or a words' (H:L) word in every lane */
+static int velement(SgCtx* g, unsigned size, SnxU32 word) {
+    unsigned h = word >> 11 & 1, l = word >> 21 & 1, m4 = word >> 20 & 1, rm = word >> 16 & 31;
+    return size == 1 ? vdup(g, 1, vread(g, rm & 15), (int)(h << 2 | l << 1 | m4))
+                     : vdup(g, 2, vread(g, rm), (int)(h << 1 | l));
+}
+/* SQDMULL: twice the products of the low (hi: high) halves' lanes, of twice their bits. Only the smallest by itself is
+   past the largest, and wraps to the smallest of those bits, which no other product gives */
+static int vqdmull(SgCtx* g, unsigned size, int a, int b, int hi, int* sat) {
+    int p, m;
+    if (size == 1)
+        p = op2(g, hi ? &sgx_v_punpckhwd : &sgx_v_punpcklwd, op2(g, &sgx_v_pmullw, a, b), op2(g, &sgx_v_pmulhw, a, b));
+    else
+        p = op2(g, &sgx_v_pmuldq, vwiden(g, 2, a, hi, 1), vwiden(g, 2, b, hi, 1));
+    p = vadd(g, size + 1, p, p);
+    m = veq(g, size + 1, p, vsplat(g, size + 1, smin_of(size + 1)));
+    *sat = m;
+    return vxor(g, p, m);
+}
 /* |a - b|'s building blocks and the rest of the lanes' integer arithmetic the instructions below share */
 static int vabs(SgCtx* g, unsigned size, int a) {
     if (k_abs[size]) return sgx_v1(X, k_abs[size], a, 0);
@@ -1671,10 +1690,15 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     }
     case SNX_A64_OP_ADDHN:
     case SNX_A64_OP_SUBHN:
+    case SNX_A64_OP_RADDHN:
+    case SNX_A64_OP_RSUBHN:
         if (size == 3) return -1;
         a = vread(g, rn);
         b = vread(g, rm);
-        r = insn->op == SNX_A64_OP_ADDHN ? vadd(g, size + 1, a, b) : vsub(g, size + 1, a, b);
+        r = insn->op == SNX_A64_OP_ADDHN || insn->op == SNX_A64_OP_RADDHN ? vadd(g, size + 1, a, b)
+                                                                          : vsub(g, size + 1, a, b);
+        if (insn->op == SNX_A64_OP_RADDHN || insn->op == SNX_A64_OP_RSUBHN)
+            r = vadd(g, size + 1, r, vsplat(g, size + 1, smin_of(size)));
         vwrite_narrow(g, rd, vnarrow(g, size, r, 1), q);
         return 1;
     /* halving */
@@ -1695,6 +1719,17 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             r = op2(g, &sgx_v_pavgw, a, b);
         else /* (a | b) - ((a ^ b) >> 1) */
             r = vsub(g, size, vor(g, a, b), vshr(g, size, vxor(g, a, b), 1, 0));
+        vwrite(g, rd, r, q);
+        return 1;
+    case SNX_A64_OP_SRHADD_v: /* (a | b) - ((a ^ b) >> 1); bytes and halfwords PAVG's, their signs flipped */
+        if (size == 3) return -1;
+        a = vread(g, rn);
+        b = vread(g, rm);
+        if (size < 2) {
+            int flip = vsplat(g, size, smin_of(size));
+            r = vxor(g, op2(g, size ? &sgx_v_pavgw : &sgx_v_pavgb, vxor(g, a, flip), vxor(g, b, flip)), flip);
+        } else
+            r = vsub(g, size, vor(g, a, b), vshr(g, size, vxor(g, a, b), 1, 1));
         vwrite(g, rd, r, q);
         return 1;
     /* saturating, QC where a lane saturates */
@@ -1783,17 +1818,56 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_SQDMULH_v:
     case SNX_A64_OP_SQRDMULH_v:
     case SNX_A64_OP_SQDMULH_vi:
-    case SNX_A64_OP_SQRDMULH_vi: {
-        int sat, round = insn->op == SNX_A64_OP_SQRDMULH_v || insn->op == SNX_A64_OP_SQRDMULH_vi;
+    case SNX_A64_OP_SQRDMULH_vi:
+    case SNX_A64_OP_SQDMULH_s:
+    case SNX_A64_OP_SQRDMULH_s:
+    case SNX_A64_OP_SQDMULH_si:
+    case SNX_A64_OP_SQRDMULH_si: {
+        int sat, round = insn->op == SNX_A64_OP_SQRDMULH_v || insn->op == SNX_A64_OP_SQRDMULH_vi ||
+                         insn->op == SNX_A64_OP_SQRDMULH_s || insn->op == SNX_A64_OP_SQRDMULH_si;
+        int scalar = insn->op == SNX_A64_OP_SQDMULH_s || insn->op == SNX_A64_OP_SQRDMULH_s ||
+                     insn->op == SNX_A64_OP_SQDMULH_si || insn->op == SNX_A64_OP_SQRDMULH_si;
         if (size != 1 && size != 2) return -1;
-        b = vread(g, insn->op == SNX_A64_OP_SQDMULH_vi || insn->op == SNX_A64_OP_SQRDMULH_vi ? (size == 1 ? rm & 15 : rm) : rm);
-        if (insn->op == SNX_A64_OP_SQDMULH_vi || insn->op == SNX_A64_OP_SQRDMULH_vi) {
-            unsigned h = word >> 11 & 1, l = word >> 21 & 1, m4 = word >> 20 & 1;
-            b = vdup(g, size, b, size == 1 ? (int)(h << 2 | l << 1 | m4) : (int)(h << 1 | l));
-        }
+        b = insn->op == SNX_A64_OP_SQDMULH_vi || insn->op == SNX_A64_OP_SQRDMULH_vi ||
+                    insn->op == SNX_A64_OP_SQDMULH_si || insn->op == SNX_A64_OP_SQRDMULH_si
+                ? velement(g, size, word)
+                : vread(g, rm);
         r = vqdmulh(g, size, vread(g, rn), b, round, &sat);
-        set_qc(g, sat, q ? 16 : 8);
-        vwrite(g, rd, r, q);
+        set_qc(g, sat, scalar ? 1 << size : q ? 16 : 8);
+        if (scalar)
+            vwrite_scalar(g, rd, size, r);
+        else
+            vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_SQDMULL_v:
+    case SNX_A64_OP_SQDMLAL_v:
+    case SNX_A64_OP_SQDMLSL_v:
+    case SNX_A64_OP_SQDMULL_vi:
+    case SNX_A64_OP_SQDMLAL_vi:
+    case SNX_A64_OP_SQDMLSL_vi:
+    case SNX_A64_OP_SQDMULL_si:
+    case SNX_A64_OP_SQDMLAL_si:
+    case SNX_A64_OP_SQDMLSL_si: { /* a scalar by register (bit 24 clear) is of element 0, its lane the lowest */
+        int sat, sat2,
+            scalar = insn->op == SNX_A64_OP_SQDMULL_si || insn->op == SNX_A64_OP_SQDMLAL_si ||
+                     insn->op == SNX_A64_OP_SQDMLSL_si;
+        int sub =
+            insn->op == SNX_A64_OP_SQDMLSL_v || insn->op == SNX_A64_OP_SQDMLSL_vi || insn->op == SNX_A64_OP_SQDMLSL_si;
+        int acc = sub || insn->op == SNX_A64_OP_SQDMLAL_v || insn->op == SNX_A64_OP_SQDMLAL_vi ||
+                  insn->op == SNX_A64_OP_SQDMLAL_si;
+        if (size != 1 && size != 2) return -1;
+        b = word >> 24 & 1 ? velement(g, size, word) : vread(g, rm);
+        r = vqdmull(g, size, vread(g, rn), b, scalar ? 0 : (int)q, &sat);
+        if (acc) {
+            r = vqaddsub(g, size + 1, vread(g, rd), r, 0, sub, &sat2);
+            sat = vor(g, sat, sat2);
+        }
+        set_qc(g, sat, scalar ? 2 << size : 16);
+        if (scalar)
+            vwrite_scalar(g, rd, size + 1, r);
+        else
+            vwrite(g, rd, r, 1);
         return 1;
     }
     case SNX_A64_OP_SQSHL_v: {
