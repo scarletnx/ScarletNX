@@ -17,6 +17,8 @@
    - Descriptor sets: where the host has host-only pools, each set has a twin in host memory that copies read
      (GvkTwinSet). */
 #include "nx/gpu/gvk/gvk.h"
+#include "common/utilities/bits.h"
+#include "nx/gpu/gvk/gvk_query.h"
 #include "nx/gpu/gvk/gvk_rect.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/ledger.h"
@@ -47,6 +49,7 @@
 #define GVK_SC_MAX     1920u                 /* the widest swapchain the game is told of (maxImageExtent) */
 #define GVK_SC_MAX_H   1080u                 /* and the highest */
 #define GVK_TEMPLATES  (1u << 10)            /* its descriptor update templates */
+#define GVK_QUERIES    (1u << 10)            /* its pools of pipeline statistics */
 
 typedef struct {
     u64 mem;  /* the host's VkDeviceMemory, 0 for a free slot */
@@ -227,6 +230,11 @@ typedef struct {
 typedef struct {
     u64 module, dual;
 } GvkDual;
+/* a pool of pipeline statistics, with the values of each of its queries */
+typedef struct {
+    u64 pool;
+    u32 values;
+} GvkQuery;
 
 /* Objects the guest has released, in queue completion order. Keep imported pages mapped until the host memory goes.
    An image with dm is a shadow (GvkTarget), its memory the renderer's */
@@ -271,7 +279,7 @@ static struct {
     u64 import_align;                               /* minImportedHostPointerAlignment, or a host page for dma-bufs */
     VkExternalMemoryHandleTypeFlagBits handle_type; /* how the host imports guest pages: host memory or a dma-buf */
     u32 nmem, nimage, nrpass, npass, ntarget, nview, nsfb, ndyn, ndual, nsetscale, nmsizes, npsizes, nbound, nlayout,
-        ncbw, ndsl, nsetinfo, npoolmasks, nmixed, ntmpl;
+        ncbw, ndsl, nsetinfo, npoolmasks, nmixed, ntmpl, nquery;
     GvkMem mem[GVK_MEMS]; /* open addressing by handle */
     GvkImage image[GVK_IMAGES];
     GvkRpass rpass[GVK_RPASSES];
@@ -281,6 +289,7 @@ static struct {
     u64 sfb[GVK_SCALED];
     GvkMixed mixed[GVK_SCALED];
     GvkTemplate tmpl[GVK_TEMPLATES];
+    GvkQuery query[GVK_QUERIES];
     GvkDyn dyn[GVK_CBS];
     GvkDual dual[GVK_DUALS];
     GvkSetScale setscale[GVK_IMAGES / 4];
@@ -521,7 +530,8 @@ static_assert(sizeof(GvkMem) <= 64 && sizeof(GvkRpass) <= 64 && sizeof(GvkPass) 
                   sizeof(GvkView) <= 64 && sizeof(GvkDyn) <= 64 && sizeof(GvkPoolTwin) <= 64 &&
                   sizeof(GvkSizes) <= 64 && sizeof(GvkBound) <= 64 && sizeof(GvkLayout) <= 64 &&
                   sizeof(GvkCbWrites) <= 64 && sizeof(GvkDsLayout) <= 64 && sizeof(GvkSetInfo) <= 64 &&
-                  sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64 && sizeof(GvkTemplate) <= 64,
+                  sizeof(GvkPoolMasks) <= 64 && sizeof(GvkMixed) <= 64 && sizeof(GvkTemplate) <= 64 &&
+                  sizeof(GvkQuery) <= 64,
               "tab_take_nl moves an entry through 64 bytes");
 
 static void mem_put(GvkMem m) { tab_put(TAB(mem), &g_gvk_api.nmem, &m); }
@@ -2107,7 +2117,21 @@ static void gvk_CreateFramebuffer(CPU* RESTRICT c, u64 entry) {
 }
 CREATE(CreateFence, VkFence, gvk_t_fence)
 CREATE(CreateSemaphore, VkSemaphore, gvk_t_sem)
-CREATE(CreateQueryPool, VkQueryPool, gvk_t_query)
+/* a pool of pipeline statistics answers one value for each statistic, the other types one: gvk_GetQueryPoolResults */
+static void gvk_CreateQueryPool(CPU* RESTRICT c, u64 entry) {
+    REQUIRE_OUT(c->x[3], 8);
+    gvk_scratch_reset();
+    const VkQueryPoolCreateInfo* ci = gvk_in(&gvk_t_query, c->x[1], 1);
+    VkQueryPool h = VK_NULL_HANDLE;
+    VkResult r = ci ? vkCreateQueryPool(g_vk.dev, ci, NULL, &h) : VK_ERROR_INITIALIZATION_FAILED;
+    if (r == VK_SUCCESS && ci->queryType == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
+        GvkQuery q = {.pool = U(h), .values = snx_popcount64(ci->pipelineStatistics)};
+        tab_put(TAB(query), &g_gvk_api.nquery, &q);
+    }
+    if (r != VK_SUCCESS) WARN_LIMIT(16, "gvk: vkCreateQueryPool failed (%d)\n", (int)r);
+    put_handle(c->x[3], U(h));
+    ret_vk(c, r);
+}
 CREATE(CreateEvent, VkEvent, gvk_t_event)
 DESTROY(DestroyBuffer, VkBuffer)
 static void gvk_DestroyImageView(CPU* RESTRICT c, u64 entry) {
@@ -2175,7 +2199,12 @@ static void gvk_DestroyPipeline(CPU* RESTRICT c, u64 entry) {
 }
 DESTROY(DestroyFence, VkFence)
 DESTROY(DestroySemaphore, VkSemaphore)
-DESTROY(DestroyQueryPool, VkQueryPool)
+static void gvk_DestroyQueryPool(CPU* RESTRICT c, u64 entry) {
+    GvkQuery q;
+    tab_take(TAB(query), &g_gvk_api.nquery, c->x[1], &q);
+    vkDestroyQueryPool(g_vk.dev, H(VkQueryPool, c->x[1]), NULL);
+    ret(c, 0);
+}
 DESTROY(DestroyEvent, VkEvent)
 
 /* A buffer or an image of the one queue family: its sharing exclusive. Each buffer can be bound to imported memory, and
@@ -4034,7 +4063,15 @@ static void gvk_CmdResetEvent(CPU* RESTRICT c, u64 entry) {
 static void gvk_GetQueryPoolResults(CPU* RESTRICT c, u64 entry) {
     size_t size = c->x[4];
     VkQueryResultFlags flags = (VkQueryResultFlags)c->x[7];
-    if (!c->x[5] || !gvk_writable(c->x[5], size)) {
+    GvkQuery q;
+    u32 values = tab_get(TAB(query), c->x[1], &q) ? q.values : 1;
+    u64 bytes = gvk_query_bytes((u32)c->x[3], values, flags, c->x[6]);
+    if (!c->x[5] || bytes > size || !gvk_writable(c->x[5], size)) {
+        WARN_LIMIT(16,
+                   "gvk: vkGetQueryPoolResults of %u queries of %u values, %llu bytes apart, takes %llu bytes and the "
+                   "game gives %zu at %llx: refused\n",
+                   (u32)c->x[3], values, (unsigned long long)c->x[6], (unsigned long long)bytes, size,
+                   (unsigned long long)c->x[5]);
         ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
         return;
     }

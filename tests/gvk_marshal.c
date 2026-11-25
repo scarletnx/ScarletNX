@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/gvk/gvk.h"
+#include "nx/gpu/gvk/gvk_query.h"
 #include "nx/gpu/gvk/gvk_rect.h"
 #include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -329,6 +330,20 @@ static void scaled_rect(void) {
     assert(part.offset.x == -24 && part.offset.y == 40 && part.extent.width == 56 && part.extent.height == 88);
 }
 
+static void query_bytes(void) {
+    /* ucas: two queries 8 bytes apart write 8 + 8, past the 8 bytes a game gave */
+    assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_64_BIT, 8) == 16);
+    assert(gvk_query_bytes(1, 1, VK_QUERY_RESULT_64_BIT, 1u << 20) == 8);
+    assert(gvk_query_bytes(3, 1, 0, 16) == 36);
+    assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_WITH_AVAILABILITY_BIT, 8) == 16);
+    assert(gvk_query_bytes(2, 11, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT, 96) == 192);
+    assert(gvk_query_bytes(0, 1, VK_QUERY_RESULT_64_BIT, 8) == 0);
+    /* a stride of which n - 1 pass 64 bits */
+    assert(gvk_query_bytes(3, 1, VK_QUERY_RESULT_64_BIT, UINT64_MAX / 2 + 1) == UINT64_MAX);
+    assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_64_BIT, UINT64_MAX - 8) == UINT64_MAX);
+    assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_64_BIT, UINT64_MAX - 7) == UINT64_MAX);
+}
+
 int main(void) {
     marshal_submit();
     gvk_scratch_reset();
@@ -343,6 +358,7 @@ int main(void) {
     marshal_core_chains();
     gvk_scratch_free();
     scaled_rect();
+    query_bytes();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
     install_driver();
 #endif
