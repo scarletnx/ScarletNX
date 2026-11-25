@@ -557,6 +557,16 @@ static void unlisted_names(void) {
 #undef UNLISTED
 }
 
+static void copies_depth(void) {
+    VkBufferImageCopy r[2] = {{.imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT}},
+                              {.imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT}}};
+    assert(!gvk_copies_depth(r, 2) && !gvk_copies_depth(NULL, 2));
+    r[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    assert(gvk_copies_depth(r, 2) && !gvk_copies_depth(r, 1));
+    r[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    assert(gvk_copies_depth(r, 2));
+}
+
 static void query_bytes(void) {
     /* ucas: two queries 8 bytes apart write 8 + 8, past the 8 bytes a game gave */
     assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_64_BIT, 8) == 16);
@@ -593,6 +603,7 @@ int main(void) {
     gvk_scratch_free();
     scratch_pieces();
     query_bytes();
+    copies_depth();
     unlisted_names();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
     install_driver();
