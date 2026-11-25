@@ -132,6 +132,7 @@ typedef struct {
        of it; fd -1 for an import of guest memory where it is */
     int fd;
     void* handle;
+    int stuck;   /* its pages did not all move back (imp_let_go): tried again at a present alone */
     int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
     u32 rid;     /* its table of pages (Rgn) while it is in the table, 0 for none */
 } Imp;
@@ -909,6 +910,7 @@ static u32 imp_find(u64 cpu);
 static int imp_let_go(u32 i, int publish) {
     const Imp* m = &g_uma.imp[i];
     int r;
+    if (m->stuck && !publish) return 0;
     /* A watch over a render target on a region's pages (vk_own_watch) traps them, and the move back below copies them
        under mem.c's lock and vk_lock. That copy faulted: the trap thread, which takes faults one at a time, waited in
        another thread's landing there for vk_lock, and never took it. The targets pending there are published first, in
@@ -938,9 +940,24 @@ static int imp_let_go(u32 i, int publish) {
                   "vulkan: the region over guest memory %llx+%llx goes with writes in place pending: they land in its "
                   "buffer alone, and memory keeps the bytes from before them\n",
                   (unsigned long long)m->cpu, (unsigned long long)m->size);
-    if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size)) != 0)
-        WARN("vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d) until it is unmapped\n",
-             (unsigned long long)m->cpu, (unsigned long long)m->size, r);
+    u64 moved = 0;
+    if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size, &moved)) != 0) {
+        /* The pages that stay are the buffer's: own.c and mem.c read them through its view, so the import stays with it
+           (freed, they read unmapped memory). Where some went back it is dead, and holds the others alone (imp_holds).
+           Tried again at a present, not in each draw's setup: the try freezes its pages */
+        WARN_LIMIT(8,
+                   "vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d, %llu KiB of it moved "
+                   "back): it is tried again at a present\n",
+                   (unsigned long long)m->cpu, (unsigned long long)m->size, r, (unsigned long long)(moved >> 10));
+        pm_lock(&g_uma.lk);
+        g_uma.imp[i].stuck = 1;
+        if (moved) {
+            g_uma.imp[i].dead = 1;
+            atomic_store_explicit(&g_uma.any_dead, 1, memory_order_release);
+        }
+        pm_unlock(&g_uma.lk);
+        return 0;
+    }
     imp_drop(i);
     return 1;
 }
@@ -1616,7 +1633,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         for (u32 k = 0; k < g_uma.nimp; k++) {
             const Imp* c = &g_uma.imp[k];
             if ((i32)(c->used - g_uma.imp[old].used) < 0) old = k;
-            if ((pick == g_uma.nimp || (i32)(c->used - g_uma.imp[pick].used) < 0) &&
+            if ((pick == g_uma.nimp || (i32)(c->used - g_uma.imp[pick].used) < 0) && !c->stuck &&
                 (c->fd < 0 || !own_trapped(c->cpu, c->size)))
                 pick = k;
         }
@@ -2602,7 +2619,7 @@ void vk_uma_before_write(u64 gva, u64 len) {
     }
 }
 void vk_uma_table_max(u32 n) { g_uma.max = n < UMA_MAX ? n : 0; }
-/* a save state's load: every import goes */
+/* a save state's load: every import goes, but a region the host cannot move back (imp_let_go) */
 void vk_uma_forget_all(void) {
     for (u32 i = g_uma.nimp; i-- > 0;) /* a let-go can take others with it (imp_let_go) */
         if (i < g_uma.nimp) imp_let_go(i, 1);

@@ -1112,7 +1112,7 @@ static void test_moved(void) {
         CHECK(mem_foreign(out, sizeof out) == 1 && foreign.lo == by + 0x8000000ull && foreign.hi == by + size);
         snprintf(want, sizeof want, "%#llx", (unsigned long long)(HEAP_BASE + 0x1000));
         CHECK(!strcmp(out, want));
-        CHECK(mem_unmigrate(HEAP_BASE, 0x1000) == 0);
+        CHECK(mem_unmigrate(HEAP_BASE, 0x1000, NULL) == 0);
         CHECK(mem_foreign(out, sizeof out) == 2); /* moved back, it is no buffer's */
         foreign.n = 0;
         share_ok = 0;

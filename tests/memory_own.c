@@ -652,7 +652,7 @@ static void test_watch_in_place(void) {
     CHECK(g_opens == opens + 5 && g_open_lo == a + 0x8000 && g_open_bytes == view + 0x8000 && !own_trapped(a, 0x10000));
     /* the buffer's pages moved back at its start and in its middle: what is left of it is read, and opened, at its own
        place in the view */
-    CHECK(mem_unmigrate(a, 0x5000) == 0 && mem_unmigrate(a + 0xA000, 0x1000) == 0);
+    CHECK(mem_unmigrate(a, 0x5000, NULL) == 0 && mem_unmigrate(a + 0xA000, 0x1000, NULL) == 0);
     CHECK(own_watch_in_place(a + 0x4000, 0x1000) == -1 && own_watch_in_place(a + 0xA000, 0x1000) == -1);
     for (u64 at = 0x6000; at <= 0xC000; at += 0x6000) {
         CHECK(own_watch_in_place(a + at, 0x2000) == 0 && own_stage(a + at, 0x2000, buf, o, 4) == 0);
